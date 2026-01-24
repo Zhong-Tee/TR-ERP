@@ -1,0 +1,574 @@
+id,created_at,product_code,product_name,product_type,product_category,storage_location,rubber_code,is_active,image_url
+7782,2025-11-17 03:42:19.22824+00,110000001,CK02-SET (เซ็ตปฏิทินรถ) สีแดง,FINISHPRODUCT,CALENDAR,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000001-1768445845558.jpg
+7783,2025-11-17 03:42:19.22824+00,110000002,CK03-SET (เซ็ตปฏิทินยูนิคอร์น) สีชมพู,FINISHPRODUCT,CALENDAR,4Dชั้น5แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000002-1768446728054.jpg
+7784,2025-11-17 03:42:19.22824+00,110000003,CK04-SET (เซ็ตปฏิทินทานตะวัน) สีเหลือง,FINISHPRODUCT,CALENDAR,4Dชั้น5แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000003-1768446728615.jpg
+7785,2025-11-17 03:42:19.22824+00,110000004,CK05-SET (เซ็ตปฏิทินหมีขั้วโลก) สีฟ้า,FINISHPRODUCT,CALENDAR,4Dชั้น5แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000004-1768447516453.jpg
+7786,2025-11-17 03:42:19.22824+00,110000005,CK06-SET (เซ็ตปฏิทินแม่มด) สีม่วง,FINISHPRODUCT,CALENDAR,4Dชั้น5แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000005-1768447518163.jpg
+7787,2025-11-17 03:42:19.22824+00,110000006,CTT คริสตัลแท็ก,FINISHPRODUCT,UV-DTF,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000006-1768884862091.jpg
+7788,2025-11-17 03:42:19.22824+00,110000007,เชือกสีดำ 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000007-1768884550650.jpg
+7790,2025-11-17 03:42:19.22824+00,110000009,Color Pencil#12,FINISHPRODUCT,ETC,4KBแถว04ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000009-1768884551310.jpg
+7791,2025-11-17 03:42:19.22824+00,110000010,Color Pencil#24,FINISHPRODUCT,ETC,4KBแถว04ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000010-1768884551677.jpg
+7792,2025-11-17 03:42:19.22824+00,110000011,ปกห่อหนังสือ CV SET,FINISHPRODUCT,ETC,4Dชั้น3แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000011-1768884552083.jpg
+7793,2025-11-17 03:42:19.22824+00,110000012,ปกห่อหนังสือ CV3425,FINISHPRODUCT,ETC,4Dชั้น3แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000012-1768884552481.jpg
+7794,2025-11-17 03:42:19.22824+00,110000013,ปกห่อหนังสือ CV4330,FINISHPRODUCT,ETC,4Dชั้น3แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000013-1768884552834.jpg
+7795,2025-11-17 03:42:19.22824+00,110000014,ปกห่อหนังสือ CV4734,FINISHPRODUCT,ETC,4Dชั้น3แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000014-1768884553245.jpg
+7796,2025-11-17 03:42:19.22824+00,110000015,ปากกาเคมี DLB สีน้ำเงิน,FINISHPRODUCT,ETC,4KBแถว05ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000015-1768884553574.jpg
+7797,2025-11-17 03:42:19.22824+00,110000016,ปากกาเคมี DLBK สีดำ,FINISHPRODUCT,ETC,4KBแถว05ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000016-1768884553963.jpg
+7798,2025-11-17 03:42:19.22824+00,110000017,ปากกาเคมี DLR สีแดง,FINISHPRODUCT,ETC,4KBแถว05ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000017-1768884554360.jpg
+7799,2025-11-17 03:42:19.22824+00,110000018,ป้ายสะท้อนแสง LST1 (เหลืองนีออน),FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000018-1768884554710.jpg
+7800,2025-11-17 03:42:19.22824+00,110000019,ป้ายสะท้อนแสง LST2 (เขียวนีออน),FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000019-1768884555288.jpg
+7801,2025-11-17 03:42:19.22824+00,110000020,ป้ายสะท้อนแสง LST3 (เหลืองทอง),FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000020-1768884555760.jpg
+7802,2025-11-17 03:42:19.22824+00,110000021,ป้ายสะท้อนแสง LST4 (ฟ้า),FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000021-1768884556163.jpg
+7803,2025-11-17 03:42:19.22824+00,110000022,ป้ายสะท้อนแสง LST5 (แดง),FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000022-1768884556555.jpg
+7804,2025-11-17 03:42:19.22824+00,110000023,ดินสอกด 2มิล PC2MA2 สีฟ้า,FINISHPRODUCT,ETC,4KBแถว03ชั้น6,,true,
+7805,2025-11-17 03:42:19.22824+00,110000024,ดินสอกด 2มิล PC2MA3 สีเขียว,FINISHPRODUCT,ETC,4KBแถว03ชั้น6,,true,
+7806,2025-11-17 03:42:19.22824+00,110000025,ดินสอกด 2มิล PC2MB1 สีชมพู,FINISHPRODUCT,ETC,4KBแถว03ชั้น4,,true,
+7807,2025-11-17 03:42:19.22824+00,110000026,ดินสอกด 2มิล PC2MB2 สีฟ้า,FINISHPRODUCT,ETC,4KBแถว03ชั้น3,,true,
+7808,2025-11-17 03:42:19.22824+00,110000027,ดินสอกด 2มิล PC2MB3 สีเขียว,FINISHPRODUCT,ETC,4KBแถว03ชั้น2,,true,
+7809,2025-11-17 03:42:19.22824+00,110000028,ดินสอกด 2มิล PC2MB4 สีเหลือง,FINISHPRODUCT,ETC,4KBแถว03ชั้น1,,true,
+7814,2025-11-17 03:42:19.22824+00,110000033,RLC ไม้บรรทัดใส 18cm,FINISHPRODUCT,ETC,4KBแถว07ชั้น6 & 4KBแถวที่08ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000033-1768884556918.jpg
+7815,2025-11-17 03:42:19.22824+00,110000034,สติกเกอร์เขียนเอง RNS01,FINISHPRODUCT,ETC,3Aชั้น3แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000034-1768884557257.jpg
+7816,2025-11-17 03:42:19.22824+00,110000035,สติกเกอร์เขียนเอง RNS02,FINISHPRODUCT,ETC,3Aชั้น3แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000035-1768884557615.jpg
+7817,2025-11-17 03:42:19.22824+00,110000036,สติกเกอร์เขียนเอง RNS03,FINISHPRODUCT,ETC,3Aชั้น3แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000036-1768884557956.jpg
+7818,2025-11-17 03:42:19.22824+00,110000037,สติกเกอร์เขียนเอง RNS04,FINISHPRODUCT,ETC,3Aชั้น3แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000037-1768884558389.jpg
+7819,2025-11-17 03:42:19.22824+00,110000038,สติกเกอร์เขียนเอง RNS05,FINISHPRODUCT,ETC,3Aชั้น2แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000038-1768884558797.jpg
+7820,2025-11-17 03:42:19.22824+00,110000039,สติกเกอร์เขียนเอง RNS06,FINISHPRODUCT,ETC,3Aชั้น2แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000039-1768884559177.jpg
+7821,2025-11-17 03:42:19.22824+00,110000040,สติกเกอร์เขียนเอง RNS07,FINISHPRODUCT,ETC,3Aชั้น2แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000040-1768884559542.jpg
+7822,2025-11-17 03:42:19.22824+00,110000041,สติกเกอร์เขียนเอง RNS08,FINISHPRODUCT,ETC,3Aชั้น2แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000041-1768884559912.jpg
+7823,2025-11-17 03:42:19.22824+00,110000042,สติกเกอร์รองเท้า Shoe Labels A,FINISHPRODUCT,ETC,3Aชั้น3แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000042-1768884560533.jpg
+7824,2025-11-17 03:42:19.22824+00,110000043,สติกเกอร์รองเท้า Shoe Labels B,FINISHPRODUCT,ETC,3Aชั้น3แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000043-1768884560894.jpg
+7825,2025-11-17 03:42:19.22824+00,110000044,เชือกรองเท้า ShoeLNB สีดำ,FINISHPRODUCT,ETC,4KBแถว04ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000044-1768884561254.jpg
+7826,2025-11-17 03:42:19.22824+00,110000045,เชือกรองเท้า ShoeLNW สีขาว,FINISHPRODUCT,ETC,4KBแถว04ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000045-1768884561615.jpg
+7827,2025-11-17 03:42:19.22824+00,110000046,สติกเกอร์เขียนเอง SNS01,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000046-1768884561948.jpg
+7828,2025-11-17 03:42:19.22824+00,110000047,สติกเกอร์เขียนเอง SNS02,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000047-1768884562295.jpg
+7829,2025-11-17 03:42:19.22824+00,110000048,สติกเกอร์เขียนเอง SNS03,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000048-1768884562608.jpg
+7830,2025-11-17 03:42:19.22824+00,110000049,สติกเกอร์เขียนเอง SNS04,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000049-1768884562937.jpg
+7831,2025-11-17 03:42:19.22824+00,110000050,สติกเกอร์เขียนเอง SNS05,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000050-1768884563260.jpg
+7832,2025-11-17 03:42:19.22824+00,110000051,สติกเกอร์เขียนเอง SNS06,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000051-1768884563570.jpg
+7833,2025-11-17 03:42:19.22824+00,110000052,สติกเกอร์เขียนเอง SNS07,FINISHPRODUCT,ETC,3Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000052-1768884563957.jpg
+7834,2025-11-17 03:42:19.22824+00,110000053,สติกเกอร์เขียนเอง SNS08,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000053-1768884564435.jpg
+7835,2025-11-17 03:42:19.22824+00,110000054,สติกเกอร์เขียนเอง SNS09,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000054-1768884564787.jpg
+7836,2025-11-17 03:42:19.22824+00,110000055,สติกเกอร์เขียนเอง SNS10,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000055-1768884565179.jpg
+7837,2025-11-17 03:42:19.22824+00,110000056,สติกเกอร์เขียนเอง SNS11,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000056-1768884565577.jpg
+7838,2025-11-17 03:42:19.22824+00,110000057,สติกเกอร์เขียนเอง SNS12,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000057-1768884565989.jpg
+7839,2025-11-17 03:42:19.22824+00,110000058,สติกเกอร์เขียนเอง SNS13,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000058-1768884566345.jpg
+7840,2025-11-17 03:42:19.22824+00,110000059,สติกเกอร์เขียนเอง SNS14,FINISHPRODUCT,ETC,3Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000059-1768884566786.jpg
+7841,2025-11-17 03:42:19.22824+00,110000060,สติกเกอร์เขียนเอง SNS15,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000060-1768884567253.jpg
+7842,2025-11-17 03:42:19.22824+00,110000061,สติกเกอร์เขียนเอง SNS16,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000061-1768884567624.jpg
+7843,2025-11-17 03:42:19.22824+00,110000062,สติกเกอร์เขียนเอง SNS17,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000062-1768884568055.jpg
+7844,2025-11-17 03:42:19.22824+00,110000063,สติกเกอร์เขียนเอง SNS18,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000063-1768884568438.jpg
+7845,2025-11-17 03:42:19.22824+00,110000064,สติกเกอร์เขียนเอง SNS19,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000064-1768884568897.jpg
+7846,2025-11-17 03:42:19.22824+00,110000065,สติกเกอร์เขียนเอง SNS20,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000065-1768884569375.jpg
+7847,2025-11-17 03:42:19.22824+00,110000066,SUPER SLIDE,FINISHPRODUCT,ETC,หาไม่เจอ,,true,
+7848,2025-11-17 03:42:19.22824+00,110000067,กบเหลาดินสอ SPN1 (แพนด้า),FINISHPRODUCT,ETC,4KBแถว11ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000067-1768884569826.jpg
+7849,2025-11-17 03:42:19.22824+00,110000068,กบเหลาดินสอ SPN10 (ยูนิคอร์น),FINISHPRODUCT,ETC,3KBแถว1ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000068-1768884570291.jpg
+7850,2025-11-17 03:42:19.22824+00,110000069,กบเหลาดินสอ SPN2 (แครอทอ้วน),FINISHPRODUCT,ETC,4KBแถว11ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000069-1768884570725.jpg
+7851,2025-11-17 03:42:19.22824+00,110000070,กบเหลาดินสอ SPN3 (เข้เขียว),FINISHPRODUCT,ETC,4KBแถว11ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000070-1768884571169.jpg
+7852,2025-11-17 03:42:19.22824+00,110000071,กบเหลาดินสอ SPN4 (เข้เหลือง),FINISHPRODUCT,ETC,4KBแถว11ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000071-1768884571592.jpg
+7853,2025-11-17 03:42:19.22824+00,110000072,กบเหลาดินสอ SPN5 (หมีน้ำตาล),FINISHPRODUCT,ETC,4KBแถว11ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000072-1768884572037.jpg
+7854,2025-11-17 03:42:19.22824+00,110000073,กบเหลาดินสอ SPN6 (นักบินอวกาศ),FINISHPRODUCT,ETC,4KBแถว11ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000073-1768884572461.jpg
+7855,2025-11-17 03:42:19.22824+00,110000074,กบเหลาดินสอ SPN7 (โคล่า),FINISHPRODUCT,ETC,4KBแถว11ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000074-1768884572864.jpg
+7856,2025-11-17 03:42:19.22824+00,110000075,กบเหลาดินสอ SPN8 (ไดโนเขียว),FINISHPRODUCT,ETC,4KBแถว11ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000075-1768884573289.jpg
+7857,2025-11-17 03:42:19.22824+00,110000076,กบเหลาดินสอ SPN9 (กระต่ายขาว),FINISHPRODUCT,ETC,3KBแถว1ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000076-1768884573718.jpg
+7858,2025-11-17 03:42:19.22824+00,110000077,เชือกคละสี 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว9,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000077-1768884574143.jpg
+7859,2025-11-17 03:42:19.22824+00,110000078,เชือกคละสี 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว9,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000078-1768884574517.jpg
+7860,2025-11-17 03:42:19.22824+00,110000079,เชือกสีขาว 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000079-1768884574893.jpg
+7861,2025-11-17 03:42:19.22824+00,110000080,เชือกสีขาว 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000080-1768884575650.jpg
+7862,2025-11-17 03:42:19.22824+00,110000081,เชือกสีชมพู 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000081-1768884576151.jpg
+7863,2025-11-17 03:42:19.22824+00,110000082,เชือกสีชมพู 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000082-1768884577240.jpg
+7864,2025-11-17 03:42:19.22824+00,110000083,เชือกสีดำ 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000083-1768884577668.jpg
+7865,2025-11-17 03:42:19.22824+00,110000084,เชือกสีฟ้า 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000084-1768884578089.jpg
+7866,2025-11-17 03:42:19.22824+00,110000085,เชือกสีฟ้า 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000085-1768884578480.jpg
+7867,2025-11-17 03:42:19.22824+00,110000086,เชือกสีส้ม 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000086-1768884579008.jpg
+7868,2025-11-17 03:42:19.22824+00,110000087,เชือกสีส้ม 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000087-1768884579460.jpg
+7869,2025-11-17 03:42:19.22824+00,110000088,เชือกสีเหลือง 10 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000088-1768884579838.jpg
+7870,2025-11-17 03:42:19.22824+00,110000089,เชือกสีเหลือง 24 เส้น,FINISHPRODUCT,ETC,4Eชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000089-1768884580578.jpg
+7871,2025-11-17 03:42:19.22824+00,110000090,ปากกากาว AA (สีฟ้า),FINISHPRODUCT,ETC,4KBแถว09ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000090-1768884580926.jpg
+7872,2025-11-17 03:42:19.22824+00,110000091,ปากกากาว AB (สีขาว),FINISHPRODUCT,ETC,4KBแถว09ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000091-1768884581298.jpg
+7873,2025-11-17 03:42:19.22824+00,110000092,ปากกากาว AC (สีชมพู),FINISHPRODUCT,ETC,4KBแถว09ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000092-1768884581665.jpg
+7874,2025-11-17 03:42:19.22824+00,110000093,ไส้ดินสอ 2.0 หลอด,FINISHPRODUCT,ETC,4KBแถว09ชั้น1,,true,
+7875,2025-11-17 03:42:19.22824+00,110000094,ไส้สีกดแบบเติม12สี,FINISHPRODUCT,ETC,4KBแถว03ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000094-1768884582174.jpg
+7876,2025-11-17 03:42:19.22824+00,110000095,ไส้สีกดแบบเติม24สี,FINISHPRODUCT,ETC,4KBแถว03ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000095-1768884582615.jpg
+7877,2025-11-17 03:42:19.22824+00,110000096,ตรายาง A1 แมวชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว1,หน้ายาง+โฟม A,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000096-1768884583053.jpg
+7878,2025-11-17 03:42:19.22824+00,110000097,ตรายาง A2 นกฮูกฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว2,หน้ายาง+โฟม A,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000097-1768884583381.jpg
+7879,2025-11-17 03:42:19.22824+00,110000098,ตรายาง A3 ชิบะเหลือง,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว3,หน้ายาง+โฟม A,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000098-1768884583750.jpg
+7880,2025-11-17 03:42:19.22824+00,110000099,ตรายาง A4 แพนด้าขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว4,หน้ายาง+โฟม A,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000099-1768884584116.jpg
+7881,2025-11-17 03:42:19.22824+00,110000100,ตรายาง AM1 คาปิบาร่า,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว5,หน้ายาง+โฟม W AM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000100-1768884584540.jpg
+7882,2025-11-17 03:42:19.22824+00,110000101,ตรายาง AM2 ไดโนเสาร์,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว4,หน้ายาง+โฟม W AM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000101-1768884584936.jpg
+7883,2025-11-17 03:42:19.22824+00,110000102,ตรายาง AM3 สิงโต,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว8,หน้ายาง+โฟม W AM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000102-1768884585328.jpg
+7884,2025-11-17 03:42:19.22824+00,110000103,ตรายาง B2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว9,หน้ายาง+โฟม B,true,
+7885,2025-11-17 03:42:19.22824+00,110000104,ตรายาง B3 ชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว3,หน้ายาง+โฟม B,true,
+7886,2025-11-17 03:42:19.22824+00,110000105,ตรายาง CC1 เมฆขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว8,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000105-1768884585903.jpg
+7887,2025-11-17 03:42:19.22824+00,110000106,ตรายาง CC2 เมฆฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว3,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000106-1768884586269.jpg
+7888,2025-11-17 03:42:19.22824+00,110000107,ตรายาง CC3 เมฆชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว6,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000107-1768884586660.jpg
+7889,2025-11-17 03:42:19.22824+00,110000108,ตรายาง D1 ชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น5แถว2,หน้ายาง+โฟม MB CC C TC,true,
+7890,2025-11-17 03:42:19.22824+00,110000109,ตรายาง D2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Bชั้น5แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000109-1768884587075.jpg
+7891,2025-11-17 03:42:19.22824+00,110000110,ตรายาง D3 เขียว,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว5,หน้ายาง+โฟม MB CC C TC,true,
+7892,2025-11-17 03:42:19.22824+00,110000111,ตรายาง D4 ขาว,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000111-1768884587552.jpg
+7893,2025-11-17 03:42:19.22824+00,110000112,ตรายาง DS1 แฮมเบอร์เกอร์,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000112-1768885246243.jpg
+7894,2025-11-17 03:42:19.22824+00,110000113,ตรายาง DS2 เฟรนช์ฟรายส์,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000113-1768885287371.jpg
+7895,2025-11-17 03:42:19.22824+00,110000114,ตรายาง DS3 กล่องนม,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000114-1768885309051.jpg
+7896,2025-11-17 03:42:19.22824+00,110000115,ตรายาง E1 เป็ด,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000115-1768884588017.jpg
+7897,2025-11-17 03:42:19.22824+00,110000116,ตรายาง E10 วาฬ,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000116-1768884588427.jpg
+7898,2025-11-17 03:42:19.22824+00,110000117,ตรายาง E2 ยูนิคอร์น,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000117-1768884588943.jpg
+7899,2025-11-17 03:42:19.22824+00,110000118,ตรายาง E3 ไดโนเสาร์,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว3,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000118-1768884589311.jpg
+7900,2025-11-17 03:42:19.22824+00,110000119,ตรายาง E5 รถไฟ,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว6,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000119-1768884589677.jpg
+7901,2025-11-17 03:42:19.22824+00,110000120,ตรายาง E6 สิงโต,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว5,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000120-1768884590028.jpg
+7902,2025-11-17 03:42:19.22824+00,110000121,ตรายาง E7 หมีกอด,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว4,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000121-1768884590404.jpg
+7903,2025-11-17 03:42:19.22824+00,110000122,ตรายาง E8 หมีปาร์ตี้,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว3,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000122-1768884590746.jpg
+7904,2025-11-17 03:42:19.22824+00,110000123,ตรายาง E9 กระต่าย,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000123-1768884591118.jpg
+7905,2025-11-17 03:42:19.22824+00,110000124,ตรายาง GM1 ชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว9,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000124-1768884591526.jpg
+7906,2025-11-17 03:42:19.22824+00,110000125,ตรายาง GM2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว8,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000125-1768884591925.jpg
+7907,2025-11-17 03:42:19.22824+00,110000126,ตรายาง GM3 เหลือง,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว7,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000126-1768884592339.jpg
+7908,2025-11-17 03:42:19.22824+00,110000127,ตรายาง GM4 ขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว6,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000127-1768884592768.jpg
+7909,2025-11-17 03:42:19.22824+00,110000128,ตรายาง KY1 รถ,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000128-1768884593229.jpg
+7910,2025-11-17 03:42:19.22824+00,110000129,ตรายาง KY4 ยูนิคอร์น,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000129-1768884593561.jpg
+7911,2025-11-17 03:42:19.22824+00,110000130,ตรายาง M1 มอนสเตอร์แดง,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว10,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000130-1768884593917.jpg
+7912,2025-11-17 03:42:19.22824+00,110000131,ตรายาง M2 มอนสเตอร์น้ำเงิน,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว9,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000131-1768884594340.jpg
+7913,2025-11-17 03:42:19.22824+00,110000132,ตรายาง M3 มอนสเตอร์ชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว8,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000132-1768884594755.jpg
+7914,2025-11-17 03:42:19.22824+00,110000133,ตรายาง M4 มอนสเตอร์ตาเดียว,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว7,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000133-1768884595139.jpg
+7915,2025-11-17 03:42:19.22824+00,110000134,ตรายาง M5 มอนสเตอร์ตาขวาง,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว7,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000134-1768884595498.jpg
+7916,2025-11-17 03:42:19.22824+00,110000135,ตรายาง M6 มอนสเตอร์ขาว,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว6,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000135-1768884595910.jpg
+7917,2025-11-17 03:42:19.22824+00,110000136,ตรายาง M7 มอนสเตอร์ดำ,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว5,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000136-1768884596222.jpg
+7918,2025-11-17 03:42:19.22824+00,110000137,ตรายาง MB1 หมีขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000137-1768884596605.jpg
+7919,2025-11-17 03:42:19.22824+00,110000138,ตรายาง MB2 หมีฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000138-1768884596990.jpg
+7920,2025-11-17 03:42:19.22824+00,110000139,ตรายาง MB3 หมีชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น4แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000139-1768884597379.jpg
+7921,2025-11-17 03:42:19.22824+00,110000140,ตรายาง MT1 ชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว8,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000140-1768884597729.jpg
+7922,2025-11-17 03:42:19.22824+00,110000141,ตรายาง MT2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว7,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000141-1768884598145.jpg
+7923,2025-11-17 03:42:19.22824+00,110000142,ตรายาง MT3 เหลือง,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว6,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000142-1768884598535.jpg
+7924,2025-11-17 03:42:19.22824+00,110000143,ตรายาง MT4 เขียว,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว5,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000143-1768884598935.jpg
+7925,2025-11-17 03:42:19.22824+00,110000144,ตรายาง MU1 ชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว8,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000144-1768884599339.jpg
+7926,2025-11-17 03:42:19.22824+00,110000145,ตรายาง MU2 น้ำเงิน,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว7,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000145-1768884599764.jpg
+7927,2025-11-17 03:42:19.22824+00,110000146,ตรายาง MU3 เหลือง,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว6,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000146-1768884600117.jpg
+7928,2025-11-17 03:42:19.22824+00,110000147,ตรายาง MU4 เขียว,FINISHPRODUCT,FANCY STAMP,4Bชั้น5แถว7,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000147-1768884600540.jpg
+7929,2025-11-17 03:42:19.22824+00,110000148,ตรายาง MU5 ดำ,FINISHPRODUCT,FANCY STAMP,4Bชั้น5แถว6,หน้ายาง+โฟม MU MT,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000148-1768884600916.jpg
+7930,2025-11-17 03:42:19.22824+00,110000149,ตรายาง QM1 ขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว10,หน้ายาง+โฟม QM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000149-1768884601299.jpg
+7931,2025-11-17 03:42:19.22824+00,110000150,ตรายาง QM2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว9,หน้ายาง+โฟม QM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000150-1768884601659.jpg
+7932,2025-11-17 03:42:19.22824+00,110000151,ตรายาง QM3 ดำ,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว8,หน้ายาง+โฟม QM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000151-1768884602121.jpg
+7933,2025-11-17 03:42:19.22824+00,110000152,ตรายาง QM4 ชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว7,หน้ายาง+โฟม QM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000152-1768884603182.jpg
+7934,2025-11-17 03:42:19.22824+00,110000153,ตรายาง S1 ช้างเขียว,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว6,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000153-1768885405315.jpg
+7935,2025-11-17 03:42:19.22824+00,110000154,ตรายาง S2 ช้างชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว5,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000154-1768885452267.jpg
+7936,2025-11-17 03:42:19.22824+00,110000155,ตรายาง S4 กระรอกเขียว,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว4,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000155-1768884603870.jpg
+7937,2025-11-17 03:42:19.22824+00,110000156,ตรายาง S5 แมวชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว3,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000156-1768884604356.jpg
+7938,2025-11-17 03:42:19.22824+00,110000157,ตรายาง S6 แมวนำโชค,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว2,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000157-1768884604934.jpg
+7939,2025-11-17 03:42:19.22824+00,110000158,ตรายาง S7 ชิบะเหลือง,FINISHPRODUCT,FANCY STAMP,4Bชั้น1แถว1,หน้ายาง+โฟม S M,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000158-1768884607423.jpg
+7940,2025-11-17 03:42:19.22824+00,110000159,ตรายาง TC1 แมว,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว2,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000159-1768884608087.jpg
+7941,2025-11-17 03:42:19.22824+00,110000160,ตรายาง TC2 ชิบะ,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว2,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000160-1768884608364.jpg
+7942,2025-11-17 03:42:19.22824+00,110000161,ตรายาง TC3 ไดโนเสาร์,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว1,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000161-1768884608647.jpg
+7943,2025-11-17 03:42:19.22824+00,110000162,ตรายาง TC4 แพนด้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น3แถว3,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000162-1768884608947.jpg
+7944,2025-11-17 03:42:19.22824+00,110000163,ตรายางคอนโด TWB ฟ้า,FINISHPRODUCT,CONDO STAMP,4Aชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000163-1768884609248.jpg
+7945,2025-11-17 03:42:19.22824+00,110000164,ตรายางคอนโด TWP ชมพู,FINISHPRODUCT,CONDO STAMP,4Aชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000164-1768884609593.jpg
+7946,2025-11-17 03:42:19.22824+00,110000165,ตรายาง W สปริง,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว3,หน้ายาง+โฟม W AM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000165-1768885555491.jpg
+7947,2025-11-17 03:42:19.22824+00,110000166,ตรายาง WB1 ชมพู,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว1,หน้ายาง+โฟม WB,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000166-1768884609932.jpg
+7948,2025-11-17 03:42:19.22824+00,110000167,ตรายาง WB2 ฟ้า,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว2,หน้ายาง+โฟม WB,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000167-1768884610258.jpg
+7949,2025-11-17 03:42:19.22824+00,110000168,ตรายาง WB3 ขาว,FINISHPRODUCT,FANCY STAMP,4Aชั้น1แถว3,หน้ายาง+โฟม WB,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000168-1768884610590.jpg
+7950,2025-11-17 03:42:19.22824+00,110000169,ตรายาง XW1 ม่วง,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000169-1768884610982.jpg
+7951,2025-11-17 03:42:19.22824+00,110000170,ตรายาง XW2 เขียว,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000170-1768884611289.jpg
+7952,2025-11-17 03:42:19.22824+00,110000171,ตรายาง XW3 ชมพู,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000171-1768884611585.jpg
+7953,2025-11-17 03:42:19.22824+00,110000172,ตรายาง XW4 ดำ,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000172-1768884611898.jpg
+7954,2025-11-17 03:42:19.22824+00,110000173,ตรายาง XW5 ส้ม,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000173-1768962706293.jpg
+7955,2025-11-17 03:42:19.22824+00,110000174,ตรายาง XW6 แดง,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000174-1768962752733.jpg
+7956,2025-11-17 03:42:19.22824+00,110000175,ตรายาง XW7 เหลือง,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000175-1768962804885.jpg
+7957,2025-11-17 03:42:19.22824+00,110000176,ตรายาง XW8 ฟ้า,FINISHPRODUCT,FANCY STAMP,ชั้น4เสากลาง,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000176-1768962835989.jpg
+7958,2025-11-17 03:42:19.22824+00,110000177,ตรายาง Y1 กลิตเตอร์ฟ้า,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว5,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000177-1768884612282.jpg
+7959,2025-11-17 03:42:19.22824+00,110000178,ตรายาง Y10 เฟรนฟราย,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว4,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000178-1768884612581.jpg
+7960,2025-11-17 03:42:19.22824+00,110000179,ตรายาง Y11 แฮมเบอร์เกอร์,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว3,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000179-1768885622371.jpg
+7961,2025-11-17 03:42:19.22824+00,110000180,ตรายาง Y12 ชานม,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000180-1768885643603.jpg
+7962,2025-11-17 03:42:19.22824+00,110000181,ตรายาง Y13 คัพเค้ก,FINISHPRODUCT,FANCY STAMP,4Bชั้น2แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000181-1768884612923.jpg
+7963,2025-11-17 03:42:19.22824+00,110000182,ตรายาง Y2 กลิตเตอร์ชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว4,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000182-1768884613248.jpg
+7964,2025-11-17 03:42:19.22824+00,110000183,ตรายาง Y3 หมู,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว3,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000183-1768884613569.jpg
+7965,2025-11-17 03:42:19.22824+00,110000184,ตรายาง Y4 ยูนิคอร์นฟ้า,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000184-1768884613833.jpg
+7966,2025-11-17 03:42:19.22824+00,110000185,ตรายาง Y5 วาฬฟ้า,FINISHPRODUCT,FANCY STAMP,4Bชั้น4แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000185-1768884614148.jpg
+7967,2025-11-17 03:42:19.22824+00,110000186,ตรายาง Y6 กระต่าย,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว4,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000186-1768884614405.jpg
+7968,2025-11-17 03:42:19.22824+00,110000187,ตรายาง Y7 วาฬชมพู,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว3,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000187-1768884614666.jpg
+7969,2025-11-17 03:42:19.22824+00,110000188,ตรายาง Y8 ไดโนเสาร์,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว2,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000188-1768884614963.jpg
+7970,2025-11-17 03:42:19.22824+00,110000189,ตรายาง Y9 ยูนิคอร์นเหลือง,FINISHPRODUCT,FANCY STAMP,4Bชั้น3แถว1,หน้ายาง+โฟม E Y KY,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000189-1768884615257.jpg
+7971,2025-11-17 03:42:19.22824+00,110000190,FPB01-SA กล่องดินสอ 5DAY สีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว06ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000190-1768884615524.jpg
+7972,2025-11-17 03:42:19.22824+00,110000191,FPB01-SB กล่องดินสอ 5DAY สีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000191-1768884615858.jpg
+7973,2025-11-17 03:42:19.22824+00,110000192,FPB01-SC กล่องดินสอ 5DAY สีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000192-1768884616162.jpg
+7974,2025-11-17 03:42:19.22824+00,110000193,FPB01-SD กล่องดินสอ 5DAY สีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว09ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000193-1768884616482.jpg
+7975,2025-11-17 03:42:19.22824+00,110000194,FPB01-SE กล่องดินสอ 5DAY สีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว10ชั้น8,,true,
+7976,2025-11-17 03:42:19.22824+00,110000195,FPB02-SA กล่องดินสอ 5DAY สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000195-1768884616774.jpg
+7977,2025-11-17 03:42:19.22824+00,110000196,FPB02-SB กล่องดินสอ 5DAY สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น7,,true,
+7978,2025-11-17 03:42:19.22824+00,110000197,FPB02-SC กล่องดินสอ 5DAY สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000197-1768884617084.jpg
+7979,2025-11-17 03:42:19.22824+00,110000198,FPB02-SD กล่องดินสอ 5DAY สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว09ชั้น7,,true,
+7980,2025-11-17 03:42:19.22824+00,110000199,FPB02-SE กล่องดินสอ 5DAY สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว10ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000199-1768884617446.jpg
+7981,2025-11-17 03:42:19.22824+00,110000200,PCA ดินสอแท่งขาว2B 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000200-1768884617738.jpg
+7982,2025-11-17 03:42:19.22824+00,110000201,PCA ดินสอแท่งขาว2B 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000201-1768884618268.jpg
+7983,2025-11-17 03:42:19.22824+00,110000202,PCA ดินสอแท่งขาว2B 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000202-1768884618585.jpg
+7984,2025-11-17 03:42:19.22824+00,110000203,PCA ดินสอแท่งขาว2B 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000203-1768884618898.jpg
+7985,2025-11-17 03:42:19.22824+00,110000204,PCB ดินสอพาสเทลHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000204-1768884619209.jpg
+7986,2025-11-17 03:42:19.22824+00,110000205,PCB ดินสอพาสเทลHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000205-1768884619587.jpg
+7987,2025-11-17 03:42:19.22824+00,110000206,PCB ดินสอพาสเทลHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000206-1768884619921.jpg
+7988,2025-11-17 03:42:19.22824+00,110000207,PCB ดินสอพาสเทลHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000207-1768884620351.jpg
+7989,2025-11-17 03:42:19.22824+00,110000208,PCC ดินสอหน้ายิ้มHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000208-1768884620777.jpg
+7990,2025-11-17 03:42:19.22824+00,110000209,PCC ดินสอหน้ายิ้มHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000209-1768884621138.jpg
+7991,2025-11-17 03:42:19.22824+00,110000210,PCC ดินสอหน้ายิ้มHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000210-1768884621550.jpg
+7992,2025-11-17 03:42:19.22824+00,110000211,PCC ดินสอหน้ายิ้มHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000211-1768884621909.jpg
+7993,2025-11-17 03:42:19.22824+00,110000212,PCD ดินสอร่องสีHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000212-1768884622240.jpg
+7994,2025-11-17 03:42:19.22824+00,110000213,PCD ดินสอร่องสีHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000213-1768884622651.jpg
+7995,2025-11-17 03:42:19.22824+00,110000214,PCD ดินสอร่องสีHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000214-1768884623015.jpg
+7996,2025-11-17 03:42:19.22824+00,110000215,PCD ดินสอร่องสีHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000215-1768884623344.jpg
+7997,2025-11-17 03:42:19.22824+00,110000216,PCG ดินสอแท่งสีน้ำเงินHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000216-1768884623728.jpg
+7998,2025-11-17 03:42:19.22824+00,110000217,PCG ดินสอแท่งสีน้ำเงินHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000217-1768884624063.jpg
+7999,2025-11-17 03:42:19.22824+00,110000218,PCG ดินสอแท่งสีน้ำเงินHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000218-1768884624418.jpg
+8000,2025-11-17 03:42:19.22824+00,110000219,PCG ดินสอแท่งสีน้ำเงินHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000219-1768884624762.jpg
+8001,2025-11-17 03:42:19.22824+00,110000220,PCH ดินสอมีร่องHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น5,,true,
+8002,2025-11-17 03:42:19.22824+00,110000221,PCH ดินสอมีร่องHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น5,,true,
+8003,2025-11-17 03:42:19.22824+00,110000222,PCH ดินสอมีร่องHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น5,,true,
+8004,2025-11-17 03:42:19.22824+00,110000223,PCH ดินสอมีร่องHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น5,,true,
+8005,2025-11-17 03:42:19.22824+00,110000224,PCI ดินสอไม่มีร่องHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น4,,true,
+8006,2025-11-17 03:42:19.22824+00,110000225,PCI ดินสอไม่มีร่องHB 30 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น4,,true,
+8007,2025-11-17 03:42:19.22824+00,110000226,PCI ดินสอไม่มีร่องHB 45 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น4,,true,
+8008,2025-11-17 03:42:19.22824+00,110000227,PCI ดินสอไม่มีร่องHB 60 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น4,,true,
+8009,2025-11-17 03:42:19.22824+00,110000228,PCJ ดินสอแท่งใหญ่HB 10แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว03ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000228-1768884625114.jpg
+8010,2025-11-17 03:42:19.22824+00,110000229,PCJ ดินสอแท่งใหญ่HB 20แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว02ชั้น3,,true,
+8011,2025-11-17 03:42:19.22824+00,110000230,ชุดเครื่องเขียนเซ็ต PCSETA1,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น8,,true,
+8012,2025-11-17 03:42:19.22824+00,110000231,ชุดเครื่องเขียนเซ็ต PCSETB1,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น7,,true,
+8013,2025-11-17 03:42:19.22824+00,110000232,ชุดเครื่องเขียนเซ็ต PCSETC1,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น6,,true,
+8014,2025-11-17 03:42:19.22824+00,110000233,ชุดเครื่องเขียนเซ็ต PCSETD1,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น5,,true,
+8015,2025-11-17 03:42:19.22824+00,110000234,ชุดเครื่องเขียนเซ็ต PCSETD2,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น4,,true,
+8016,2025-11-17 03:42:19.22824+00,110000235,ยางลบคัตเตอร์ RB01 สีม่วง,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000235-1768884625549.jpg
+8017,2025-11-17 03:42:19.22824+00,110000236,ยางลบคัตเตอร์ RB02 สีชมพู,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000236-1768884625890.jpg
+8018,2025-11-17 03:42:19.22824+00,110000237,ยางลบคัตเตอร์ RB03 สีฟ้า,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000237-1768884626207.jpg
+8019,2025-11-17 03:42:19.22824+00,110000238,ยางลบคัตเตอร์ RB04 สีเหลือง,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000238-1768884626512.jpg
+8020,2025-11-17 03:42:19.22824+00,110000239,ยางลบคัตเตอร์ RB05 สีเขียว,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000239-1768884626812.jpg
+8021,2025-11-17 03:42:19.22824+00,110000240,ยางลบคัตเตอร์ RB06 สีเขียว(ไดโน),FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000240-1768884627137.jpg
+8022,2025-11-17 03:42:19.22824+00,110000241,ไม้บรรทัด RL01สีน้ำตาล,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000241-1768884627450.jpg
+8023,2025-11-17 03:42:19.22824+00,110000242,ไม้บรรทัด RL02สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000242-1768884627826.jpg
+8024,2025-11-17 03:42:19.22824+00,110000243,ไม้บรรทัด RL03สีน้ำเงิน,FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000243-1768884628138.jpg
+8025,2025-11-17 03:42:19.22824+00,110000244,สีไม้ wood colorA#12,FINISHPRODUCT,FIBERLASER,4KBแถว04ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000244-1768884628500.jpg
+8026,2025-11-17 03:42:19.22824+00,110000245,สีไม้ wood colorA#24,FINISHPRODUCT,FIBERLASER,4KBแถว04ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000245-1768884628833.jpg
+8027,2025-11-17 03:42:19.22824+00,110000246,กบเหลาดินสอ 2 ช่อง SPA1 สีเขียว,FINISHPRODUCT,FIBERLASER,4KBแถว09ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000246-1768884629163.jpg
+8028,2025-11-17 03:42:19.22824+00,110000247,กบเหลาดินสอ 2 ช่อง SPA2 สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว09ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000247-1768884629464.jpg
+8029,2025-11-17 03:42:19.22824+00,110000248,กบเหลาดินสอ 2 ช่อง SPA3 สีครีม,FINISHPRODUCT,FIBERLASER,4KBแถว09ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000248-1768884629841.jpg
+8030,2025-11-17 03:42:19.22824+00,110000249,กระบอกน้ำ BTB01 สีชมพู,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8031,2025-11-17 03:42:19.22824+00,110000250,กระบอกน้ำ BTB02 สีม่วง,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8032,2025-11-17 03:42:19.22824+00,110000251,กระบอกน้ำ BTB03 สีฟ้า,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8033,2025-11-17 03:42:19.22824+00,110000252,กระบอกน้ำ BTB04 สีขาว,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8034,2025-11-17 03:42:19.22824+00,110000253,กระบอกน้ำ BTC01สีฟ้า,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000253-1768884630218.jpg
+8035,2025-11-17 03:42:19.22824+00,110000254,กระบอกน้ำ BTC02 สีชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000254-1768884630513.jpg
+8036,2025-11-17 03:42:19.22824+00,110000255,กระบอกน้ำ BTC03 สีขาว,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000255-1768884630892.jpg
+8037,2025-11-17 03:42:19.22824+00,110000256,กระบอกน้ำ BTD01 สีฟ้า,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000256-1768884631186.jpg
+8038,2025-11-17 03:42:19.22824+00,110000257,กระบอกน้ำ BTD02 สีชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000257-1768884631501.jpg
+8039,2025-11-17 03:42:19.22824+00,110000258,กระบอกน้ำ BTD03 สีขาว,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว9,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000258-1768884631828.jpg
+8040,2025-11-17 03:42:19.22824+00,110000259,กระบอกน้ำ BTD04 สีน้ำตาล,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว10,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000259-1768884632133.jpg
+8041,2025-11-17 03:42:19.22824+00,110000260,กระบอกน้ำ BTE01 ลายแมว,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว11,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000260-1768884632444.jpg
+8042,2025-11-17 03:42:19.22824+00,110000261,กระบอกน้ำ BTE02 ลายกระต่าย,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว12,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000261-1768884632861.jpg
+8043,2025-11-17 03:42:19.22824+00,110000262,กระบอกน้ำ BTE03 ลายไดโนเสาร์,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว13,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000262-1768884633221.jpg
+8044,2025-11-17 03:42:19.22824+00,110000263,กระบอกน้ำ BTE04 ลายหมี,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว14,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000263-1768884633565.jpg
+8045,2025-11-17 03:42:19.22824+00,110000264,กระบอกน้ำ BTF01 สีฟ้า,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000264-1768884633952.jpg
+8046,2025-11-17 03:42:19.22824+00,110000265,กระบอกน้ำ BTF02 สีชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000265-1768884634272.jpg
+8047,2025-11-17 03:42:19.22824+00,110000266,กระบอกน้ำ BTF03 สีม่วง,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000266-1768884634628.jpg
+8048,2025-11-17 03:42:19.22824+00,110000267,กระบอกน้ำ BTF04 สีขาว,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000267-1768884634976.jpg
+8049,2025-11-17 03:42:19.22824+00,110000268,กระบอกน้ำ BTG01 สีฟ้า,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000268-1768884635317.jpg
+8050,2025-11-17 03:42:19.22824+00,110000269,กระบอกน้ำ BTG02 สีชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000269-1768884635661.jpg
+8051,2025-11-17 03:42:19.22824+00,110000270,กระบอกน้ำ BTG03 สีเหลือง,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000270-1768884636052.jpg
+8052,2025-11-17 03:42:19.22824+00,110000271,กระบอกน้ำ BTG04 สีม่วง,FINISHPRODUCT,FIBERLASER,4Eชั้น3แถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000271-1768884636432.jpg
+8053,2025-11-17 03:42:19.22824+00,110000272,กระบอกน้ำ BTH01 สีขาว,FINISHPRODUCT,FIBERLASER,4Eชั้น2แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000272-1768884636791.jpg
+8054,2025-11-17 03:42:19.22824+00,110000273,กระบอกน้ำ BTH02 สีเขียว,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000273-1768884637116.jpg
+8055,2025-11-17 03:42:19.22824+00,110000274,กระบอกน้ำ BTI01 สีฟ้า,FINISHPRODUCT,FIBERLASER,4Eชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000274-1768884637440.jpg
+8056,2025-11-17 03:42:19.22824+00,110000275,กระบอกน้ำ BTI02 สีชมพู,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000275-1768884637829.jpg
+8057,2025-11-17 03:42:19.22824+00,110000276,กระบอกน้ำ BTI03 สีเขียว,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000276-1768884638167.jpg
+8058,2025-11-17 03:42:19.22824+00,110000277,กระบอกน้ำ BTI04 สีม่วง,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000277-1768884638504.jpg
+8059,2025-11-17 03:42:19.22824+00,110000278,กระบอกน้ำ BTJ01 สีแดง,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000278-1768884638920.jpg
+8060,2025-11-17 03:42:19.22824+00,110000279,กระบอกน้ำ BTJ02 สีน้ำเงิน,FINISHPRODUCT,FIBERLASER,4Eชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000279-1768884639285.jpg
+8061,2025-11-17 03:42:19.22824+00,110000280,กระบอกน้ำ BTJ03 สีม่วง,FINISHPRODUCT,FIBERLASER,ไม่มี,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000280-1768884639629.jpg
+8062,2025-11-17 03:42:19.22824+00,110000281,ไม้บรรทัด RL18CM1 (ขาว),FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000281-1768884639996.jpg
+8063,2025-11-17 03:42:19.22824+00,110000282,ไม้บรรทัด RL18CM2 (ดำ),FINISHPRODUCT,FIBERLASER,4KBแถว08ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000282-1768884640299.jpg
+8064,2025-11-17 03:42:19.22824+00,110000283,ไม้บรรทัด RL30CM1 (ม่วง),FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8065,2025-11-17 03:42:19.22824+00,110000284,ไม้บรรทัด RL30CM2 (เขียว),FINISHPRODUCT,FIBERLASER,4KBแถว10ชั้น4,,true,
+8066,2025-11-17 03:42:19.22824+00,110000285,ไม้บรรทัด RL30CM3 (ชมพู),FINISHPRODUCT,FIBERLASER,4KBแถว10ชั้น3,,true,
+8067,2025-11-17 03:42:19.22824+00,110000286,ไม้บรรทัด RL30CM4 (ฟ้า),FINISHPRODUCT,FIBERLASER,ไม่มี,,true,
+8068,2025-11-17 03:42:19.22824+00,110000287,ไม้บรรทัดเรขาคณิต RLD1 สีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000287-1768884640633.jpg
+8069,2025-11-17 03:42:19.22824+00,110000288,ไม้บรรทัดเรขาคณิต RLD2 สีน้ำเงิน,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000288-1768884640970.jpg
+8070,2025-11-17 03:42:19.22824+00,110000289,ไม้บรรทัดเรขาคณิต RLD3 สีแดง,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000289-1768884641290.jpg
+8071,2025-11-17 03:42:19.22824+00,110000290,ไม้บรรทัดเรขาคณิต RLD4 สีม่วง,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000290-1768884641644.jpg
+8072,2025-11-17 03:42:19.22824+00,110000291,ไม้บรรทัดเรขาคณิต RLD5 สีดำ,FINISHPRODUCT,FIBERLASER,4KBแถว07ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000291-1768884641958.jpg
+8073,2025-11-17 03:42:19.22824+00,110000292,ยางลบ 4B,FINISHPRODUCT,ETC,4KBแถว03ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000292-1768884642347.jpg
+8074,2025-11-17 03:42:19.22824+00,110000293,ยางลบ 4B ช้าง,FINISHPRODUCT,ETC,4KBแถว08ชั้น3,,true,
+8075,2025-11-17 03:42:19.22824+00,110000294,ยางลบคัตเตอร์ RBB01 สีเทา,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000294-1768884642699.jpg
+8076,2025-11-17 03:42:19.22824+00,110000295,ยางลบคัตเตอร์ RBB02 สีฟ้า,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000295-1768884643065.jpg
+8077,2025-11-17 03:42:19.22824+00,110000296,ยางลบคัตเตอร์ RBB03 สีเหลือง,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000296-1768884643422.jpg
+8078,2025-11-17 03:42:19.22824+00,110000297,ยางลบคัตเตอร์ RBB04 สีชมพู,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000297-1768884643760.jpg
+8079,2025-11-17 03:42:19.22824+00,110000298,ยางลบคัตเตอร์ RBC01 สีม่วง,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000298-1768884644090.jpg
+8080,2025-11-17 03:42:19.22824+00,110000299,ยางลบคัตเตอร์ RBC02 สีเหลือง,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000299-1768884644428.jpg
+8081,2025-11-17 03:42:19.22824+00,110000300,ยางลบคัตเตอร์ RBC03 สีชมพู,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000300-1768884644763.jpg
+8082,2025-11-17 03:42:19.22824+00,110000301,ยางลบคัตเตอร์ RBC04 สีเขียว,FINISHPRODUCT,FIBERLASER,3KBแถว2ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000301-1768884645389.jpg
+8083,2025-11-17 03:42:19.22824+00,110000302,ยางลบคัตเตอร์ RBD01 สีม่วง,FINISHPRODUCT,FIBERLASER,3KBแถว1ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000302-1768884645730.jpg
+8084,2025-11-17 03:42:19.22824+00,110000303,ยางลบคัตเตอร์ RBD02 สีชมพู,FINISHPRODUCT,FIBERLASER,3KBแถว1ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000303-1768884646040.jpg
+8085,2025-11-17 03:42:19.22824+00,110000304,ยางลบคัตเตอร์ RBD03 สีฟ้า,FINISHPRODUCT,FIBERLASER,3KBแถว1ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000304-1768884646339.jpg
+8086,2025-11-17 03:42:19.22824+00,110000305,ยางลบคัตเตอร์ RBD04สีเหลือง,FINISHPRODUCT,FIBERLASER,3KBแถว1ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000305-1768884646652.jpg
+8087,2025-11-17 03:42:19.22824+00,110000306,ยางลบคัตเตอร์ RBD05 สีเขียวมิ้น,FINISHPRODUCT,FIBERLASER,3KBแถว1ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000306-1768884646977.jpg
+8088,2025-11-17 03:42:19.22824+00,110000307,ยางลบคัตเตอร์ RBD06 สีเขียวอ่อน,FINISHPRODUCT,FIBERLASER,4KBแถว12ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000307-1768884647461.jpg
+8089,2025-11-17 03:42:19.22824+00,110000308,กระบอกน้ำ BTA01 สีเขียวเทา,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000308-1768884647770.jpg
+8090,2025-11-17 03:42:19.22824+00,110000309,กระบอกน้ำ BTA02 สีเหลืองชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000309-1768884648203.jpg
+8091,2025-11-17 03:42:19.22824+00,110000310,กระบอกน้ำ BTA03 สีครีมเขียว,FINISHPRODUCT,FIBERLASER,4Eชั้น4แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000310-1768884648611.jpg
+8092,2025-11-17 03:42:19.22824+00,110000311,PCE ดินสอ 2B สีขาว (กล่อง 10แท่ง),FINISHPRODUCT,FIBERLASER,4KBแถว01ชั้น3,,true,
+8093,2025-11-17 03:42:19.22824+00,110000312,หมึกแฟลชกระดาษ 5 ml. (เขียว),FINISHPRODUCT,INK,3KBแถว5ชั้น3,,true,
+8094,2025-11-17 03:42:19.22824+00,110000313,หมึกแฟลชกระดาษ 5 ml. (ดำ),FINISHPRODUCT,INK,3KBแถว4ชั้น4,,true,
+8095,2025-11-17 03:42:19.22824+00,110000314,หมึกแฟลชกระดาษ 5 ml. (แดง),FINISHPRODUCT,INK,3KBแถว4ชั้น3,,true,
+8096,2025-11-17 03:42:19.22824+00,110000315,หมึกแฟลชกระดาษ 5 ml. (น้ำเงิน),FINISHPRODUCT,INK,3KBแถว5ชั้น4,,true,
+8097,2025-11-17 03:42:19.22824+00,110000316,หมึกแฟลชผ้า 5 ml. (เขียว),FINISHPRODUCT,INK,3KBแถว5ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000316-1768884648920.jpg
+8098,2025-11-17 03:42:19.22824+00,110000317,หมึกแฟลชผ้า 5 ml. (ชมพู),FINISHPRODUCT,INK,3KBแถว4ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000317-1768884649225.jpg
+8099,2025-11-17 03:42:19.22824+00,110000318,หมึกแฟลชผ้า 5 ml. (ดำ),FINISHPRODUCT,INK,3KBแถว5ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000318-1768884649535.jpg
+8100,2025-11-17 03:42:19.22824+00,110000319,หมึกแฟลชผ้า 5 ml. (น้ำเงิน),FINISHPRODUCT,INK,3KBแถว4ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000319-1768884649833.jpg
+8101,2025-11-17 03:42:19.22824+00,110000320,หมึกแฟลชพลาสติก 5 ml. (เขียว),FINISHPRODUCT,INK,3KBแถว5ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000320-1768884650157.jpg
+8102,2025-11-17 03:42:19.22824+00,110000321,หมึกแฟลชพลาสติก 5 ml. (ดำ),FINISHPRODUCT,INK,3KBแถว5ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000321-1768884650511.jpg
+8103,2025-11-17 03:42:19.22824+00,110000322,หมึกแฟลชพลาสติก 5 ml. (แดง),FINISHPRODUCT,INK,3KBแถว4ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000322-1768884650869.jpg
+8104,2025-11-17 03:42:19.22824+00,110000323,หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน),FINISHPRODUCT,INK,3KBแถว4ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000323-1768884651205.jpg
+8105,2025-11-17 03:42:19.22824+00,110000324,IRONB สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8106,2025-11-17 03:42:19.22824+00,110000325,IRONC สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8107,2025-11-17 03:42:19.22824+00,110000326,IRONC2 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000326-1768884651535.jpg
+8108,2025-11-17 03:42:19.22824+00,110000327,IRONC3 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000327-1768884651933.jpg
+8109,2025-11-17 03:42:19.22824+00,110000328,IRONC4 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000328-1768884652313.jpg
+8110,2025-11-17 03:42:19.22824+00,110000329,IRONG สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000329-1768884652720.jpg
+8111,2025-11-17 03:42:19.22824+00,110000330,IRONNL1 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8112,2025-11-17 03:42:19.22824+00,110000331,IRONNL2 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8113,2025-11-17 03:42:19.22824+00,110000332,IRONNL3 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8114,2025-11-17 03:42:19.22824+00,110000333,IRONNL4 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8115,2025-11-17 03:42:19.22824+00,110000334,IRONNL5 สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8116,2025-11-17 03:42:19.22824+00,110000335,IRONNS สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8117,2025-11-17 03:42:19.22824+00,110000336,IRONO สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000336-1768884653069.jpg
+8118,2025-11-17 03:42:19.22824+00,110000337,IRONW สติกเกอร์แบบรีด,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,
+8119,2025-11-17 03:42:19.22824+00,110000338,LBT ลาเบลแท็ก,FINISHPRODUCT,IRON STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000338-1768884653490.jpg
+8120,2025-11-17 03:42:19.22824+00,110000339,ตรายางด้ามขาว FS08(1660),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว1,,true,
+8121,2025-11-17 03:42:19.22824+00,110000340,ตรายางด้ามขาว FS11(2050),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว2,,true,
+8122,2025-11-17 03:42:19.22824+00,110000341,ตรายางด้ามขาว FS12(2070),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว3,,true,
+8123,2025-11-17 03:42:19.22824+00,110000342,ตรายางด้ามขาว FS15(3065),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว4,,true,
+8124,2025-11-17 03:42:19.22824+00,110000343,ตรายางด้ามขาว FS16(3575),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว5,,true,
+8125,2025-11-17 03:42:19.22824+00,110000344,ตรายางด้ามขาว FS17(5080),FINISHPRODUCT,OFFICE STAMP,4Gชั้น2แถว6,,true,
+8126,2025-11-17 03:42:19.22824+00,110000345,ตรายาง FSR12 ดำ,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8127,2025-11-17 03:42:19.22824+00,110000346,ตรายาง FSR12 แดง,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8128,2025-11-17 03:42:19.22824+00,110000347,ตรายาง FSR12 น้ำเงิน,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8129,2025-11-17 03:42:19.22824+00,110000348,ตรายาง FSR12 ฟ้า,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8130,2025-11-17 03:42:19.22824+00,110000349,ตรายาง FSR20 เขียว,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8131,2025-11-17 03:42:19.22824+00,110000350,ตรายาง FSR20 ดำ,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8132,2025-11-17 03:42:19.22824+00,110000351,ตรายาง FSR20 แดง,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8133,2025-11-17 03:42:19.22824+00,110000352,ตรายาง FSR20 น้ำเงิน,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8134,2025-11-17 03:42:19.22824+00,110000353,ตรายาง FSR21 ขาว,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8135,2025-11-17 03:42:19.22824+00,110000354,ตรายาง FSR21 เขียว,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8136,2025-11-17 03:42:19.22824+00,110000355,ตรายาง FSR21 น้ำตาล,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8137,2025-11-17 03:42:19.22824+00,110000356,ตรายาง FSR21 ส้ม,FINISHPRODUCT,OFFICE STAMP,ชั้น4ริมบันได,,true,
+8138,2025-11-17 03:42:19.22824+00,110000357,ตรายางสปริง HA3030,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว8,,true,
+8139,2025-11-17 03:42:19.22824+00,110000358,ตรายางสปริง HA4040,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว7,,true,
+8140,2025-11-17 03:42:19.22824+00,110000359,ตรายางสปริง HA5555,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว9,,true,
+8141,2025-11-17 03:42:19.22824+00,110000360,ตรายางสปริง HA90125,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว10,,true,
+8142,2025-11-17 03:42:19.22824+00,110000361,ตรายางสปริง HAR33 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว7,,true,
+8143,2025-11-17 03:42:19.22824+00,110000362,ตรายางสปริง HAR40 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว2,,true,
+8144,2025-11-17 03:42:19.22824+00,110000363,ตรายางสปริง HAR45 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว3,,true,
+8145,2025-11-17 03:42:19.22824+00,110000364,ตรายางสปริง HAR51 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว5,,true,
+8146,2025-11-17 03:42:19.22824+00,110000365,ตรายางสปริง HAR51 วงกลมสีดำ,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว6,,true,
+8147,2025-11-17 03:42:19.22824+00,110000366,ตรายางสปริง HAV2535 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว8,,true,
+8148,2025-11-17 03:42:19.22824+00,110000367,ตรายางสปริง HAV3040 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว4,,true,
+8149,2025-11-17 03:42:19.22824+00,110000368,ตรายางสปริง HAV3446 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว9,,true,
+8150,2025-11-17 03:42:19.22824+00,110000369,ตรายางหัวเพชร HBR42 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว1,,true,
+8151,2025-11-17 03:42:19.22824+00,110000370,ตรายางหัวเพชร HBR50 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว4,,true,
+8152,2025-11-17 03:42:19.22824+00,110000371,ตรายางหัวเพชร HBV4060 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว3,,true,
+8153,2025-11-17 03:42:19.22824+00,110000372,HNB2040 สีดำ,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000372-1768884653799.jpg
+8154,2025-11-17 03:42:19.22824+00,110000373,HNB3060 สีดำ,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000373-1768884654151.jpg
+8155,2025-11-17 03:42:19.22824+00,110000374,HNR2040 สีแดง,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000374-1768884654515.jpg
+8156,2025-11-17 03:42:19.22824+00,110000375,HNR3060 สีแดง,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000375-1768884654876.jpg
+8157,2025-11-17 03:42:19.22824+00,110000376,HNW2040 สีขาว,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000376-1768884655196.jpg
+8158,2025-11-17 03:42:19.22824+00,110000377,HNW3060 สีขาว,FINISHPRODUCT,OFFICE STAMP,4Cชั้น1แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000377-1768884655556.jpg
+8159,2025-11-17 03:42:19.22824+00,110000378,ตรายางหัวเพชร HY1050,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว1,,true,
+8160,2025-11-17 03:42:19.22824+00,110000379,ตรายางหัวเพชร HY1660,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว2,,true,
+8161,2025-11-17 03:42:19.22824+00,110000380,ตรายางหัวเพชร HY2040,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว3,,true,
+8162,2025-11-17 03:42:19.22824+00,110000381,ตรายางหัวเพชร HY2050,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว4,,true,
+8163,2025-11-17 03:42:19.22824+00,110000382,ตรายางหัวเพชร HY2070,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000382-1768884655860.jpg
+8164,2025-11-17 03:42:19.22824+00,110000383,ตรายางหัวเพชร HY2565,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว5,,true,
+8165,2025-11-17 03:42:19.22824+00,110000384,ตรายางหัวเพชร HY3030,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว6,,true,
+8166,2025-11-17 03:42:19.22824+00,110000385,ตรายางหัวเพชร HY3050,FINISHPRODUCT,OFFICE STAMP,4Cชั้น2แถว1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000385-1768884656173.jpg
+8167,2025-11-17 03:42:19.22824+00,110000386,ตรายางหัวเพชร HY35105,FINISHPRODUCT,OFFICE STAMP,4Cชั้น2แถว3,,true,
+8168,2025-11-17 03:42:19.22824+00,110000387,ตรายางหัวเพชร HY3575,FINISHPRODUCT,OFFICE STAMP,4Cชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000387-1768884656507.jpg
+8169,2025-11-17 03:42:19.22824+00,110000388,ตรายางหัวเพชร HY4040,FINISHPRODUCT,OFFICE STAMP,4Cชั้น2แถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000388-1768884656805.jpg
+8170,2025-11-17 03:42:19.22824+00,110000389,ตรายางหัวเพชร HY4565,FINISHPRODUCT,OFFICE STAMP,4Cชั้น2แถว5,,true,
+8171,2025-11-17 03:42:19.22824+00,110000390,ตรายางหัวเพชร HY5080,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000390-1768884657182.jpg
+8172,2025-11-17 03:42:19.22824+00,110000391,ตรายางหัวเพชร HY5555,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000391-1768884657501.jpg
+8173,2025-11-17 03:42:19.22824+00,110000392,ตรายางหัวเพชร HY80105,FINISHPRODUCT,OFFICE STAMP,4Cชั้น3แถว9,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000392-1768884657830.jpg
+8174,2025-11-17 03:42:19.22824+00,110000393,ตรายางหัวเพชร HYR40 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว1,,true,
+8175,2025-11-17 03:42:19.22824+00,110000394,ตรายางหัวเพชร HYR45 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว1,,true,
+8176,2025-11-17 03:42:19.22824+00,110000395,ตรายางหัวเพชร HYV3045 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น5แถว10,,true,
+8177,2025-11-17 03:42:19.22824+00,110000396,ตรายางหัวเพชร HYV3550 วงรี,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว5,,true,
+8178,2025-11-17 03:42:19.22824+00,110000397,ตรายางวงกลม P1 ชมพู,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว3,,true,
+8179,2025-11-17 03:42:19.22824+00,110000398,ตรายางวงกลม P2 ฟ้า,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว4,,true,
+8180,2025-11-17 03:42:19.22824+00,110000399,ตรายางวงกลม P3 เหลือง,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว5,,true,
+8181,2025-11-17 03:42:19.22824+00,110000400,ตรายางวงกลม P4 ขาว,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว6,,true,
+8182,2025-11-17 03:42:19.22824+00,110000401,ตรายางวงกลม P5 ม่วง,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว7,,true,
+8183,2025-11-17 03:42:19.22824+00,110000402,RH1 ขาว,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว11,,true,
+8184,2025-11-17 03:42:19.22824+00,110000403,RH2 เทาอ่อน,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว11,,true,
+8185,2025-11-17 03:42:19.22824+00,110000404,RH4 ดำ,FINISHPRODUCT,OFFICE STAMP,4Cชั้น4แถว11,,true,
+8186,2025-11-17 03:42:19.22824+00,110000405,ตรายางด้ามขาว SS21 จัตุรัส,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว2,,true,
+8187,2025-11-17 03:42:19.22824+00,110000406,ตรายางด้ามขาว SSR17 วงกลม,FINISHPRODUCT,OFFICE STAMP,4Hชั้น5แถว1,,true,
+8188,2025-11-17 03:42:19.22824+00,110000407,PVCL1,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000407-1768884658139.jpg
+8189,2025-11-17 03:42:19.22824+00,110000408,PVCL2,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8190,2025-11-17 03:42:19.22824+00,110000409,PVCL4,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000409-1768884658553.jpg
+8191,2025-11-17 03:42:19.22824+00,110000410,PVCL5,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8192,2025-11-17 03:42:19.22824+00,110000411,PVCL5C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8193,2025-11-17 03:42:19.22824+00,110000412,PVCL6,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000412-1768884658903.jpg
+8194,2025-11-17 03:42:19.22824+00,110000413,PVCL7,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000413-1768884659276.jpg
+8195,2025-11-17 03:42:19.22824+00,110000414,PVCL8C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000414-1768884659604.jpg
+8196,2025-11-17 03:42:19.22824+00,110000415,PVCM1,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000415-1768884659944.jpg
+8197,2025-11-17 03:42:19.22824+00,110000416,PVCM10,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000416-1768884660272.jpg
+8198,2025-11-17 03:42:19.22824+00,110000417,PVCM11,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000417-1768884660738.jpg
+8199,2025-11-17 03:42:19.22824+00,110000418,PVCM12,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000418-1768884661097.jpg
+8200,2025-11-17 03:42:19.22824+00,110000419,PVCM13,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000419-1768884661442.jpg
+8201,2025-11-17 03:42:19.22824+00,110000420,PVCM2,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000420-1768884661757.jpg
+8202,2025-11-17 03:42:19.22824+00,110000421,PVCMH6,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000421-1768884662222.jpg
+8203,2025-11-17 03:42:19.22824+00,110000422,PVCS1,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000422-1768884662776.jpg
+8204,2025-11-17 03:42:19.22824+00,110000423,PVCS18,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000423-1768885996722.png
+8205,2025-11-17 03:42:19.22824+00,110000424,PVCS1C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000424-1768884663133.jpg
+8206,2025-11-17 03:42:19.22824+00,110000425,PVCS2,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8207,2025-11-17 03:42:19.22824+00,110000426,PVCS26,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000426-1768884663452.jpg
+8208,2025-11-17 03:42:19.22824+00,110000427,PVCS27,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000427-1768884663802.jpg
+8209,2025-11-17 03:42:19.22824+00,110000428,PVCS28,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000428-1768884664126.jpg
+8210,2025-11-17 03:42:19.22824+00,110000429,PVCS29,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000429-1768884664516.jpg
+8211,2025-11-17 03:42:19.22824+00,110000430,PVCS2C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000430-1768884664877.jpg
+8212,2025-11-17 03:42:19.22824+00,110000431,PVCS3,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8213,2025-11-17 03:42:19.22824+00,110000432,PVCS30G กลิตเตอร์,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000432-1768966665872.jpg
+8214,2025-11-17 03:42:19.22824+00,110000433,PVCS31G กลิตเตอร์,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000433-1768884665558.jpg
+8215,2025-11-17 03:42:19.22824+00,110000434,PVCS32G กลิตเตอร์,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000434-1768884665894.jpg
+8216,2025-11-17 03:42:19.22824+00,110000435,PVCS33G กลิตเตอร์,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000435-1768884666223.jpg
+8217,2025-11-17 03:42:19.22824+00,110000436,PVCS34,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000436-1768884666615.jpg
+8218,2025-11-17 03:42:19.22824+00,110000437,PVCS35,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000437-1768884666919.jpg
+8219,2025-11-17 03:42:19.22824+00,110000438,PVCS4,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8220,2025-11-17 03:42:19.22824+00,110000439,PVCS40,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000439-1768884667265.jpg
+8221,2025-11-17 03:42:19.22824+00,110000440,PVCS41C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000440-1768884667586.jpg
+8222,2025-11-17 03:42:19.22824+00,110000441,PVCS5,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8223,2025-11-17 03:42:19.22824+00,110000442,PVCS5C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000442-1768884667916.jpg
+8224,2025-11-17 03:42:19.22824+00,110000443,PVCS6,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8225,2025-11-17 03:42:19.22824+00,110000444,PVCS8,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8226,2025-11-17 03:42:19.22824+00,110000445,PVCSH36,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000445-1768884668302.jpg
+8227,2025-11-17 03:42:19.22824+00,110000446,PVCSH37,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000446-1768884668617.jpg
+8228,2025-11-17 03:42:19.22824+00,110000447,PVCSH38C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,
+8229,2025-11-17 03:42:19.22824+00,110000448,PVCSH39C ใส,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000448-1768884668939.jpg
+8230,2025-11-17 03:42:19.22824+00,110000449,PVCXL1,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000449-1768884669260.jpg
+8231,2025-11-17 03:42:19.22824+00,110000450,TUBEB เนมทูปสีฟ้า,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000450-1768884669602.jpg
+8232,2025-11-17 03:42:19.22824+00,110000451,TUBEBW เนมทูปสีน้ำตาล,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,
+8233,2025-11-17 03:42:19.22824+00,110000452,TUBEG เนมทูปสีเขียว,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000452-1768884669962.jpg
+8234,2025-11-17 03:42:19.22824+00,110000453,TUBELM เนมทูปเรืองแสง,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000453-1768884670366.jpg
+8235,2025-11-17 03:42:19.22824+00,110000454,TUBEO เนมทูปสีส้ม,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000454-1768884670904.jpg
+8236,2025-11-17 03:42:19.22824+00,110000455,TUBER เนมทูปสีแดง,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000455-1768884671237.jpg
+8237,2025-11-17 03:42:19.22824+00,110000456,TUBEW เนมทูปสีขาว,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000456-1768884671537.jpg
+8238,2025-11-17 03:42:19.22824+00,110000457,TUBEY เนมทูปสีเหลือง,FINISHPRODUCT,TUBE,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000457-1768884671982.jpg
+8239,2025-11-17 03:42:19.22824+00,110000470,PVCS14,FINISHPRODUCT,STK,ตึกใหม่,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000470-1768885880874.jpg
+8240,2025-11-17 03:42:19.22824+00,110000471,PVCS17,FINISHPRODUCT,STK,ตึกใหม่,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000471-1768884672317.jpg
+8241,2025-11-17 03:42:19.22824+00,110000487,ยางลบแบบแพ็ค RBA1 สีเขียว,FINISHPRODUCT,FIBERLASER,3KBแถว3ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000487-1768884672665.jpg
+8242,2025-11-17 03:42:19.22824+00,110000488,ยางลบแบบแพ็ค RBA2 สีม่วง,FINISHPRODUCT,FIBERLASER,4KBแถว14ชั้น1,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000488-1768884673032.jpg
+8243,2025-11-17 03:42:19.22824+00,110000499,PVCXS1,FINISHPRODUCT,STK,ไม่มีจุดจัดเก็บ,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000499-1768884673350.jpg
+8244,2025-11-17 03:42:19.22824+00,110000501,กระบอกน้ำ BTJ04 สีชมพู,FINISHPRODUCT,FIBERLASER,4Eชั้น2แถว2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000501-1768884673773.jpg
+8245,2025-11-17 03:42:19.22824+00,110000502,PCK ดินสอแท่งเขียวHB 15 แท่ง,FINISHPRODUCT,FIBERLASER,4KBแถว03ชั้น7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000502-1768884674158.jpg
+8246,2025-11-17 03:42:19.22824+00,110000503,กบเหลาสีพาสเทล,FINISHPRODUCT,ETC,4KBแถว09ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000503-1768884674741.jpg
+8247,2025-11-17 03:42:19.22824+00,110000504,กบเหลา JUMBO,FINISHPRODUCT,ETC,4KBแถว09ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000504-1768884675075.jpg
+8248,2025-11-17 03:42:19.22824+00,110000505,สายคล้องขวดน้ำ ฤดูร้อน,FINISHPRODUCT,ETC,4KBแถวที่06ชั้น6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000505-1768884675374.jpg
+8249,2025-11-17 03:42:19.22824+00,110000506,สายคล้องขวดน้ำ อะโวคาโด,FINISHPRODUCT,ETC,4KBแถวที่06ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000506-1768884675694.jpg
+8250,2025-11-17 03:42:19.22824+00,110000507,สายคล้องขวดน้ำ คอร์กี้,FINISHPRODUCT,ETC,4KBแถวที่06ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000507-1768884676116.jpg
+8251,2025-11-17 03:42:19.22824+00,110000508,สายคล้องขวดน้ำ พีชชมพู,FINISHPRODUCT,ETC,4KBแถวที่06ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000508-1768884676478.jpg
+8252,2025-11-17 03:42:19.22824+00,110000509,สายคล้องขวดน้ำ ดอกไม้สีฟ้า,FINISHPRODUCT,ETC,4KBแถวที่06ชั้น2,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000509-1768884676855.jpg
+8253,2025-11-17 03:42:19.22824+00,110000510,สีไม้ wood colorA#36,FINISHPRODUCT,FIBERLASER,4KBแถว04ชั้น4,,true,
+8254,2025-11-17 03:42:19.22824+00,110000511,ยางลบ 4B ช้างสีชมพู,FINISHPRODUCT,FIBERLASER,4KBแถว03ชั้น5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000511-1768884677264.jpg
+8255,2025-11-17 03:42:19.22824+00,110000512,ยางลบ 4B ช้างสีฟ้า,FINISHPRODUCT,FIBERLASER,4KBแถว03ชั้น4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000512-1768884677594.jpg
+8256,2025-11-17 03:42:19.22824+00,110000513,ตรายาง GM5 น้ำตาล,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว8,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000513-1768884677888.jpg
+8257,2025-11-17 03:42:19.22824+00,110000514,กระบอกน้ำ BTK01 สีแดง,FINISHPRODUCT,ETC,,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000514-1768884678175.jpg
+8258,2025-11-17 03:42:19.22824+00,110000515,กระบอกน้ำ BTK02 สีฟ้า,FINISHPRODUCT,ETC,,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000515-1768884678542.jpg
+8259,2025-11-17 03:42:19.22824+00,110000516,กระบอกน้ำ BTK03 สีเขียว,FINISHPRODUCT,ETC,,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000516-1768884678904.jpg
+8260,2025-11-17 03:42:19.22824+00,110000517,กระบอกน้ำ BTK04 สีเหลือง,FINISHPRODUCT,ETC,,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000517-1768884679214.jpg
+8261,2025-11-17 03:42:19.22824+00,110000518,กระบอกน้ำใส BTL01 สีฟ้า,FINISHPRODUCT,ETC,,,true,
+8262,2025-11-17 03:42:19.22824+00,110000519,กระบอกน้ำใส BTL02 สีชมพู,FINISHPRODUCT,ETC,,,true,
+8263,2025-11-17 03:42:19.22824+00,110000520,กระบอกน้ำใส BTL03 สีเหลือง,FINISHPRODUCT,ETC,,,true,
+8264,2025-11-17 03:42:19.22824+00,110000521,กระบอกน้ำใส BTL04 สีขาว,FINISHPRODUCT,ETC,,,true,
+8265,2025-11-17 03:42:19.22824+00,110000522,กระบอกน้ำใส BTL05 สีเขียว,FINISHPRODUCT,ETC,,,true,
+8266,2025-11-17 03:42:19.22824+00,110000523,กระบอกน้ำใส BTL06 สีดำ,FINISHPRODUCT,ETC,,,true,
+8267,2025-11-17 03:42:19.22824+00,110000524,ปากกาลบคำผิด CPA01 สีชมพู,FINISHPRODUCT,ETC,3KBเเถว3ชั้น7,,true,
+8268,2025-11-17 03:42:19.22824+00,110000525,ปากกาลบคำผิด CPA02 สีฟ้า,FINISHPRODUCT,ETC,3KBเเถว3ชั้น6,,true,
+8269,2025-11-17 03:42:19.22824+00,110000526,ปากกาลบคำผิด CPA03 สีเขียว,FINISHPRODUCT,ETC,3KBเเถว3ชั้น5,,true,
+8270,2025-11-17 03:42:19.22824+00,110000527,ปากกาลบคำผิด CPA04 สีม่วง,FINISHPRODUCT,ETC,3KBเเถว3ชั้น4,,true,
+8271,2025-11-17 03:42:19.22824+00,110000528,ไส้เติมปากกาลบคำผิด CPA,FINISHPRODUCT,ETC,3KBเเถว3ชั้น3,,true,
+8272,2025-11-17 03:42:19.22824+00,110000529,ตรายาง TCA1 แมวดำ,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000529-1768884679588.jpg
+8273,2025-11-17 03:42:19.22824+00,110000530,ตรายาง TCA2 แมวครีม,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000530-1768884680034.jpg
+8274,2025-11-17 03:42:19.22824+00,110000531,ตรายาง TCA3 ปลาดำ,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000531-1768884680403.jpg
+8275,2025-11-17 03:42:19.22824+00,110000532,ตรายาง TCA4 ปลาครีม,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000532-1768884680774.jpg
+8276,2025-11-17 03:42:19.22824+00,110000533,ตรายาง TCA5 หมีน้ำตาล,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว6,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000533-1768884681147.jpg
+8277,2025-11-17 03:42:19.22824+00,110000534,ตรายาง TCA6 หมีขาว,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว6,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000534-1768884681508.jpg
+8278,2025-11-17 03:42:19.22824+00,110000535,ตรายาง TCB1 มินิพิงค์,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว7,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000535-1768884681864.jpg
+8279,2025-11-17 03:42:19.22824+00,110000536,ตรายาง TCB2 เจี๊ยบจิ๋ว,FINISHPRODUCT,FANCY STAMP,4Hชั้น4แถว7,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000536-1768884682204.jpg
+8280,2025-11-17 03:42:19.22824+00,110000537,ตรายาง TCB3 ฮาร์ทตี้,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว8,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000537-1768884682525.jpg
+8281,2025-11-17 03:42:19.22824+00,110000538,ตรายาง TCB4 บลูโบะ,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว8,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000538-1768884682878.jpg
+8282,2025-11-17 03:42:19.22824+00,110000539,ตรายาง TCB5 โกโก้จิ๋ว,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว7,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000539-1768884683201.jpg
+8283,2025-11-17 03:42:19.22824+00,110000540,ตรายาง TCB6 ปิงกี้,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว7,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000540-1768884683528.jpg
+8284,2025-11-17 03:42:19.22824+00,110000541,ตรายาง TCC1ลาเวนเดอร์,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว6,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000541-1768884683823.jpg
+8285,2025-11-17 03:42:19.22824+00,110000542,ตรายาง TCC2 บัตเตอร์บลู,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว6,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000542-1768884684135.jpg
+8286,2025-11-17 03:42:19.22824+00,110000543,ตรายาง TCC3 ซันนี่,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000543-1768884684416.jpg
+8287,2025-11-17 03:42:19.22824+00,110000544,ตรายาง TCC4 พิงค์บลอสซัม,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว5,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000544-1768884684731.jpg
+8288,2025-11-17 03:42:19.22824+00,110000545,ตรายาง TCD1 กระต่าย,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000545-1768884685049.jpg
+8289,2025-11-17 03:42:19.22824+00,110000546,ตรายาง TCD2 แมว,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว4,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000546-1768884685372.jpg
+8290,2025-11-17 03:42:19.22824+00,110000547,ตรายาง TCD3 แพนด้า,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว3,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000547-1768884685671.jpg
+8291,2025-11-17 03:42:19.22824+00,110000548,ตรายาง TCD4 ป๊อปปี้,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว3,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000548-1768884685988.jpg
+8292,2025-11-17 03:42:19.22824+00,110000549,ดินสอกด สีน้ำเงิน,FINISHPRODUCT,ETC,3KBแถว3ชั้น2,,true,
+8293,2025-11-17 03:42:19.22824+00,110000550,ดินสอกด สีเงิน,FINISHPRODUCT,ETC,3KBแถว3ชั้น2,,true,
+8294,2025-11-17 03:42:19.22824+00,110000551,สมุดล่องหน Magic Practice Copybook 4In1,FINISHPRODUCT,ETC,4KBแถวที่10ชั้น1,,true,
+8295,2025-11-17 03:42:19.22824+00,110000552,ตรายาง TCE1 แมวชมพู,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว2,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000552-1768884686417.jpg
+8296,2025-11-17 03:42:19.22824+00,110000553,ตรายาง TCE2 ช้างฟ้า,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว2,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000553-1768884686726.jpg
+8297,2025-11-17 03:42:19.22824+00,110000554,ตรายาง TCE3 ป๊อบปี้เหลือง,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว1,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000554-1768884687040.jpg
+8298,2025-11-17 03:42:19.22824+00,110000555,ตรายาง TCE4 แพนด้าขาว,FINISHPRODUCT,FANCY STAMP,4Hชั้น3แถว1,หน้ายาง+โฟม MB CC C TC,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000555-1768884687361.jpg
+8299,2025-11-17 03:42:19.22824+00,110000556,ดินสอสี Jumbo Color#12,FINISHPRODUCT,ETC,3KBเเถว2ชั้น8,,true,
+8300,2025-11-17 03:42:19.22824+00,110000557,ปากกาเจลลบได้ #A1กล่องฟ้า,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8301,2025-11-17 03:42:19.22824+00,110000558,ปากกาเจลลบได้ #A2กล่องชมพู,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8302,2025-11-17 03:42:19.22824+00,110000559,ปากกาเจลลบได้ #B1Blue,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8303,2025-11-17 03:42:19.22824+00,110000560,ปากกาเจลลบได้ #B2Green,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8304,2025-11-17 03:42:19.22824+00,110000561,ปากกาเจลลบได้ #B3Ping,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8305,2025-11-17 03:42:19.22824+00,110000562,ปากกาเจลลบได้ #B4Black,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8306,2025-11-17 03:42:19.22824+00,110000563,ปากกาเจลลบได้ #B5Red,FINISHPRODUCT,ETC,3KBแถว2ชั้น3,,true,
+8307,2025-11-17 03:42:19.22824+00,110000564,Shoe Tag Jumbo,FINISHPRODUCT,FIBERLASER,3KBเเถว3ชั้น8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000564-1768884687736.jpg
+8308,2025-11-17 03:42:19.22824+00,110000565,Shoe tags Small #1White,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000565-1768884688071.jpg
+8309,2025-11-17 03:42:19.22824+00,110000566,Shoe tags Small #2Black,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000566-1768884688418.jpg
+8310,2025-11-17 03:42:19.22824+00,110000567,Shoe tags Small #3Blue,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000567-1768884688703.jpg
+8311,2025-11-17 03:42:19.22824+00,110000568,Shoe tags Small #4Brown,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว4,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000568-1768884689256.jpg
+8312,2025-11-17 03:42:19.22824+00,110000569,Shoe tags Small #5Green,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000569-1768884689587.jpg
+8313,2025-11-17 03:42:19.22824+00,110000570,Shoe tags Small #6Yellow,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว5,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000570-1768884690023.jpg
+8314,2025-11-17 03:42:19.22824+00,110000572,ยางลบแท่ง RBE01 คละสี,FINISHPRODUCT,FIBERLASER,3Aชั้น3แถว3,,true,
+8315,2025-11-17 03:42:19.22824+00,110000573,ไม้บรรทัดเรขาคณิตใส RLE01,FINISHPRODUCT,ETC,3Aชั้น2แถว3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000573-1768884690301.jpg
+8316,2025-11-17 03:42:19.22824+00,110000574,ยางลบดินสอ RBP001 Green Pastel,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว6,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000574-1768884690713.jpg
+8317,2025-11-17 03:42:19.22824+00,110000575,ยางลบดินสอ RBP002 Blue Pastel,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว7,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000575-1768884691074.jpg
+8318,2025-11-17 03:42:19.22824+00,110000576,ยางลบดินสอ RBP003 Yellow Pastel,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว8,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000576-1768884691394.jpg
+8319,2025-11-17 03:42:19.22824+00,110000577,ยางลบดินสอ RBF001 สีเขียว,FINISHPRODUCT,ETC,,,true,
+8320,2025-11-17 03:42:19.22824+00,110000578,ยางลบดินสอ RBP004 Pink Pastel,FINISHPRODUCT,FIBERLASER,3Aชั้น3แแถว9,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000578-1768884691685.jpg
+8860,2025-12-02 02:14:09.737533+00,110000579,ตรายาง GM6 กระต่าย,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว7,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000579-1768884691987.jpg
+8861,2025-12-02 02:14:09.737533+00,110000580,ตรายาง GM7 ชิบะ,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว6,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000580-1768884692447.jpg
+8862,2025-12-02 02:14:09.737533+00,110000581,ตรายาง GM8 ฉลาม,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว5,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000581-1768884692735.jpg
+8863,2025-12-02 02:14:09.737533+00,110000582,ตรายาง GM9 ไดโนเสาร์,FINISHPRODUCT,FANCY STAMP,4Aชั้น2แถว4,หน้ายาง+โฟม GM,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000582-1768884693120.jpg
+8864,2025-12-02 02:14:09.737533+00,110000583,สีไม้ wood colorA#48,FINISHPRODUCT,FIBERLASER,4KBแถว04ชั้น3,,true,https://scxcuwjhjbkxvqmpywqs.supabase.co/storage/v1/object/public/product-images/products/110000583-1768884693415.jpg
+9954,2025-12-18 03:33:14.603871+00,220000002,PVCS9G,FINISHPRODUCT,STKWY,,,true,
+9955,2025-12-18 03:33:14.603871+00,220000003,PVCS10,FINISHPRODUCT,STKWY,,,true,
+9956,2025-12-18 03:33:14.603871+00,220000004,PVCS11,FINISHPRODUCT,STKWY,,,true,
+9957,2025-12-18 03:33:14.603871+00,220000005,PVCS12,FINISHPRODUCT,STKWY,,,true,
+9958,2025-12-18 03:33:14.603871+00,220000006,PVCS13,FINISHPRODUCT,STKWY,,,true,
+9959,2025-12-18 03:33:14.603871+00,220000007,PVCS14,FINISHPRODUCT,STKWY,,,true,
+9960,2025-12-18 03:33:14.603871+00,220000008,PVCS15,FINISHPRODUCT,STKWY,,,true,
+9961,2025-12-18 03:33:14.603871+00,220000009,PVCS16,FINISHPRODUCT,STKWY,,,true,
+9962,2025-12-18 03:33:14.603871+00,220000010,PVCS17,FINISHPRODUCT,STKWY,,,true,
+9963,2025-12-18 03:33:14.603871+00,220000011,PVCS19,FINISHPRODUCT,STKWY,,,true,
+9964,2025-12-18 03:33:14.603871+00,220000012,PVCS20,FINISHPRODUCT,STKWY,,,true,
+9965,2025-12-18 03:33:14.603871+00,220000013,PVCS21,FINISHPRODUCT,STKWY,,,true,
+9966,2025-12-18 03:33:14.603871+00,220000014,PVCS22,FINISHPRODUCT,STKWY,,,true,
+9967,2025-12-18 03:33:14.603871+00,220000015,PVCS23,FINISHPRODUCT,STKWY,,,true,
+9968,2025-12-18 03:33:14.603871+00,220000016,PVCS24,FINISHPRODUCT,STKWY,,,true,
+9969,2025-12-18 03:33:14.603871+00,220000017,PVCS25,FINISHPRODUCT,STKWY,,,true,
+9972,2025-12-18 03:33:14.603871+00,220000020,WYS01G,FINISHPRODUCT,STKWY,,,true,
+9973,2025-12-18 03:33:14.603871+00,220000021,WYS02G,FINISHPRODUCT,STKWY,,,true,
+9974,2025-12-18 03:33:14.603871+00,220000022,WYS03G,FINISHPRODUCT,STKWY,,,true,
+9981,2025-12-18 03:33:14.603871+00,220000029,PNNP-S02,FINISHPRODUCT,STKWY,,,true,
+9995,2025-12-18 03:33:14.603871+00,220000043,WYM01G,FINISHPRODUCT,STKWY,,,true,
+10002,2025-12-18 03:33:14.603871+00,220000050,WYS04G,FINISHPRODUCT,STKWY,,,true,
+10003,2025-12-18 03:33:14.603871+00,220000051,WYS05G,FINISHPRODUCT,STKWY,,,true,
+10012,2025-12-18 03:33:14.603871+00,220000060,WYS06,FINISHPRODUCT,STKWY,,,true,
+10014,2025-12-18 03:33:14.603871+00,220000062,WYS07,FINISHPRODUCT,STKWY,,,true,
+10028,2025-12-18 04:54:07.141067+00,220000035,PVCM3,FINISHPRODUCT,STKWY,,,true,
+10031,2025-12-18 04:58:44.509263+00,220000036,PVCM4,FINISHPRODUCT,STKWY,,,true,
+10032,2025-12-18 04:59:24.13305+00,220000037,PVCM5,FINISHPRODUCT,STKWY,,,true,
+10033,2025-12-18 04:59:51.438401+00,220000038,PVCM7,FINISHPRODUCT,STKWY,,,true,
+10034,2025-12-18 05:00:22.851978+00,220000039,PVCM8,FINISHPRODUCT,STKWY,,,true,
+10035,2025-12-18 05:00:55.566182+00,220000040,PVCM9,FINISHPRODUCT,STKWY,,,true,
+10610,2026-01-06 02:40:35.339606+00,220000041,PVCM13,FINISHPRODUCT,STKWY,,,true,
+10611,2026-01-06 02:40:35.339606+00,220000042,PVCM14,FINISHPRODUCT,STKWY,,,true,
+10613,2026-01-06 02:40:35.339606+00,220000045,PVCL5,FINISHPRODUCT,STKWY,,,true,
