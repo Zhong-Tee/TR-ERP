@@ -1,11 +1,20 @@
+<<<<<<< HEAD
 import { useState, useEffect } from 'react'
+=======
+import { useState } from 'react'
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
+<<<<<<< HEAD
 import { supabase } from '../lib/supabase'
 
 type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'shipped' | 'cancelled'
+=======
+
+type Tab = 'create' | 'waiting' | 'complete' | 'work-orders' | 'shipped' | 'cancelled'
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 
 export default function Orders() {
   const { user } = useAuthContext()
@@ -13,9 +22,12 @@ export default function Orders() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
+<<<<<<< HEAD
   const [waitingCount, setWaitingCount] = useState(0)
   const [cancelledCount, setCancelledCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+=======
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)
@@ -31,6 +43,7 @@ export default function Orders() {
     setSelectedOrder(null)
   }
 
+<<<<<<< HEAD
   // โหลด channels จากตาราง
   useEffect(() => {
     async function loadChannels() {
@@ -114,6 +127,8 @@ export default function Orders() {
     loadCancelledCount()
   }, [searchTerm, channelFilter])
 
+=======
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">จัดการออเดอร์</h1>
@@ -136,16 +151,21 @@ export default function Orders() {
               สร้าง / แก้ไข
             </button>
             <button
+<<<<<<< HEAD
               onClick={() => {
                 setActiveTab('waiting')
                 setSelectedOrder(null)
               }}
+=======
+              onClick={() => setActiveTab('waiting')}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               className={`px-6 py-3 font-medium ${
                 activeTab === 'waiting'
                   ? 'border-b-2 border-blue-500 text-blue-600'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
+<<<<<<< HEAD
               รอลงข้อมูล {waitingCount > 0 ? `(${waitingCount})` : ''}
             </button>
             <button
@@ -153,6 +173,12 @@ export default function Orders() {
                 setActiveTab('complete')
                 setSelectedOrder(null)
               }}
+=======
+              รอลงข้อมูล
+            </button>
+            <button
+              onClick={() => setActiveTab('complete')}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               className={`px-6 py-3 font-medium ${
                 activeTab === 'complete'
                   ? 'border-b-2 border-blue-500 text-blue-600'
@@ -162,6 +188,7 @@ export default function Orders() {
               ลงข้อมูลเสร็จสิ้น
             </button>
             <button
+<<<<<<< HEAD
               onClick={() => {
                 setActiveTab('verified')
                 setSelectedOrder(null)
@@ -179,6 +206,9 @@ export default function Orders() {
                 setActiveTab('work-orders')
                 setSelectedOrder(null)
               }}
+=======
+              onClick={() => setActiveTab('work-orders')}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               className={`px-6 py-3 font-medium ${
                 activeTab === 'work-orders'
                   ? 'border-b-2 border-blue-500 text-blue-600'
@@ -188,10 +218,14 @@ export default function Orders() {
               ใบงาน (กำลังผลิต)
             </button>
             <button
+<<<<<<< HEAD
               onClick={() => {
                 setActiveTab('shipped')
                 setSelectedOrder(null)
               }}
+=======
+              onClick={() => setActiveTab('shipped')}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               className={`px-6 py-3 font-medium ${
                 activeTab === 'shipped'
                   ? 'border-b-2 border-blue-500 text-blue-600'
@@ -201,16 +235,21 @@ export default function Orders() {
               จัดส่งแล้ว
             </button>
             <button
+<<<<<<< HEAD
               onClick={() => {
                 setActiveTab('cancelled')
                 setSelectedOrder(null)
               }}
+=======
+              onClick={() => setActiveTab('cancelled')}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               className={`px-6 py-3 font-medium ${
                 activeTab === 'cancelled'
                   ? 'border-b-2 border-blue-500 text-blue-600'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
+<<<<<<< HEAD
               ยกเลิก {cancelledCount > 0 ? `(${cancelledCount})` : ''}
             </button>
           </nav>
@@ -238,13 +277,42 @@ export default function Orders() {
                 </select>
               </>
             )}
+=======
+              ยกเลิก
+            </button>
+          </nav>
+          <div className="flex items-center gap-4">
+            <input
+              type="text"
+              placeholder="ค้นหา..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="px-4 py-2 border rounded-lg"
+            />
+            <select
+              value={channelFilter}
+              onChange={(e) => setChannelFilter(e.target.value)}
+              className="px-4 py-2 border rounded-lg"
+            >
+              <option value="">ทุกช่องทาง</option>
+              <option value="SPTR">SPTR</option>
+              <option value="FSPTR">FSPTR</option>
+              <option value="LZTR">LZTR</option>
+              <option value="TTTR">TTTR</option>
+              <option value="SHOP">SHOP</option>
+            </select>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             {user && (
               <div className="text-sm font-medium text-gray-700 bg-gray-100 px-4 py-2 rounded-lg">
                 <span className="text-gray-500">แอดมิน:</span> {user.username || user.email}
               </div>
             )}
           </div>
+<<<<<<< HEAD
         </div>
+=======
+          </div>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
         </div>
 
         <div className="p-6">
@@ -255,12 +323,17 @@ export default function Orders() {
               onCancel={handleCancel}
             />
           )}
+<<<<<<< HEAD
           {activeTab === 'waiting' && !selectedOrder && (
+=======
+          {activeTab === 'waiting' && (
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <OrderList
               status="รอลงข้อมูล"
               onOrderClick={handleOrderClick}
               searchTerm={searchTerm}
               channelFilter={channelFilter}
+<<<<<<< HEAD
               showBillingStatus={true}
               onCountChange={setWaitingCount}
             />
@@ -273,11 +346,17 @@ export default function Orders() {
             />
           )}
           {activeTab === 'complete' && !selectedOrder && (
+=======
+            />
+          )}
+          {activeTab === 'complete' && (
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <OrderList
               status="ลงข้อมูลเสร็จสิ้น"
               onOrderClick={handleOrderClick}
               searchTerm={searchTerm}
               channelFilter={channelFilter}
+<<<<<<< HEAD
               showBillingStatus={true}
             />
           )}
@@ -305,6 +384,11 @@ export default function Orders() {
             />
           )}
           {activeTab === 'work-orders' && !selectedOrder && (
+=======
+            />
+          )}
+          {activeTab === 'work-orders' && (
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <OrderList
               status="ใบงานกำลังผลิต"
               onOrderClick={handleOrderClick}
@@ -312,6 +396,7 @@ export default function Orders() {
               channelFilter={channelFilter}
             />
           )}
+<<<<<<< HEAD
           {activeTab === 'work-orders' && selectedOrder && (
             <OrderForm
               order={selectedOrder}
@@ -320,6 +405,9 @@ export default function Orders() {
             />
           )}
           {activeTab === 'shipped' && !selectedOrder && (
+=======
+          {activeTab === 'shipped' && (
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <OrderList
               status="จัดส่งแล้ว"
               onOrderClick={handleOrderClick}
@@ -327,6 +415,7 @@ export default function Orders() {
               channelFilter={channelFilter}
             />
           )}
+<<<<<<< HEAD
           {activeTab === 'shipped' && selectedOrder && (
             <OrderForm
               order={selectedOrder}
@@ -335,11 +424,15 @@ export default function Orders() {
             />
           )}
           {activeTab === 'cancelled' && !selectedOrder && (
+=======
+          {activeTab === 'cancelled' && (
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <OrderList
               status="ยกเลิก"
               onOrderClick={handleOrderClick}
               searchTerm={searchTerm}
               channelFilter={channelFilter}
+<<<<<<< HEAD
               onCountChange={setCancelledCount}
             />
           )}
@@ -348,6 +441,8 @@ export default function Orders() {
               order={selectedOrder}
               onSave={handleSave}
               onCancel={handleCancel}
+=======
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             />
           )}
         </div>

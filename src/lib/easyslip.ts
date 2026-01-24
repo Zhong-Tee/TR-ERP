@@ -21,6 +21,7 @@ export interface MultipleSlipVerificationResult {
  */
 export async function verifySlipImage(
   imageFile: File,
+<<<<<<< HEAD
   imageUrl?: string,
   retries = 2
 ): Promise<SlipVerificationResult> {
@@ -100,6 +101,49 @@ export async function verifySlipImage(
   return {
     success: false,
     error: lastError?.message || 'Failed to verify slip after retries'
+=======
+  imageUrl?: string
+): Promise<SlipVerificationResult> {
+  try {
+    let finalUrl = imageUrl
+
+    // If no URL provided, upload the file first
+    if (!finalUrl) {
+      const fileExt = imageFile.name.split('.').pop()
+      const fileName = `slips/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('slip-images')
+        .upload(fileName, imageFile)
+      
+      if (uploadError) {
+        throw new Error(`Upload failed: ${uploadError.message}`)
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('slip-images')
+        .getPublicUrl(fileName)
+
+      finalUrl = urlData.publicUrl
+    }
+
+    // Call Edge Function to verify slip
+    const { data, error } = await supabase.functions.invoke('verify-slip', {
+      body: { imageUrl: finalUrl }
+    })
+
+    if (error) {
+      throw error
+    }
+
+    return data as SlipVerificationResult
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || 'Failed to verify slip'
+    }
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   }
 }
 

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, Product, CartoonPattern } from '../../types'
@@ -346,6 +347,13 @@ function SlipUploadSimple({
     </div>
   )
 }
+=======
+import { useState, useEffect } from 'react'
+import { supabase } from '../../lib/supabase'
+import { Order, OrderItem, Product, CartoonPattern } from '../../types'
+import { useAuthContext } from '../../contexts/AuthContext'
+import SlipUpload from './SlipUpload'
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 
 interface OrderFormProps {
   order?: Order | null
@@ -365,10 +373,13 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
+<<<<<<< HEAD
   const [showProductDropdown, setShowProductDropdown] = useState<{ [key: number]: boolean }>({})
   const [uploadedSlipUrls, setUploadedSlipUrls] = useState<string[]>([])
   const dropdownRefs = React.useRef<{ [key: number]: HTMLDivElement | null }>({})
   const selectRefs = React.useRef<{ [key: number]: HTMLSelectElement | null }>({})
+=======
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   
   const [formData, setFormData] = useState({
     channel_code: '',
@@ -397,6 +408,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     items_note: '',
   })
 
+<<<<<<< HEAD
   async function loadSlipImages(billNo: string) {
     try {
       const folderName = `slip${billNo}`
@@ -515,6 +527,43 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       }
     }
     loadOrderData()
+=======
+  useEffect(() => {
+    loadInitialData()
+    if (order) {
+      setFormData({
+        channel_code: order.channel_code,
+        customer_name: order.customer_name,
+        customer_address: order.customer_address,
+        price: order.price,
+        shipping_cost: order.shipping_cost,
+        discount: order.discount,
+        total_amount: order.total_amount,
+        payment_method: order.payment_method || 'โอน',
+        promotion: order.promotion || '',
+        payment_date: order.payment_date || '',
+        payment_time: order.payment_time || '',
+      })
+      if (order.order_items && order.order_items.length > 0) {
+        const loadedItems = order.order_items.map(item => ({ ...item }))
+        setItems(loadedItems)
+        // ตั้งค่า productSearchTerm สำหรับแต่ละรายการ
+        const searchTerms: { [key: number]: string } = {}
+        loadedItems.forEach((item, idx) => {
+          if (item.product_name) {
+            searchTerms[idx] = item.product_name
+          }
+        })
+        setProductSearchTerm(searchTerms)
+      } else {
+        // เพิ่มรายการแรกอัตโนมัติ
+        setItems([{ product_type: 'ชั้น1' }])
+      }
+    } else {
+      // เพิ่มรายการแรกอัตโนมัติสำหรับออเดอร์ใหม่
+      setItems([{ product_type: 'ชั้น1' }])
+    }
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   }, [order])
 
   async function loadInitialData() {
@@ -562,6 +611,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     e.preventDefault()
     if (!user) return
 
+<<<<<<< HEAD
     // Validation สำหรับบันทึก "รอลงข้อมูล"
     if (!formData.channel_code || formData.channel_code.trim() === '') {
       alert('กรุณาเลือกช่องทาง')
@@ -687,16 +737,30 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           })) : []
       }
       
+=======
+    setLoading(true)
+    try {
+      // คำนวณราคารวมจากรายการสินค้า
+      const calculatedPrice = calculateItemsTotal()
+      const calculatedTotal = calculatedPrice + formData.shipping_cost - formData.discount
+      
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
       const orderData = {
         ...formData,
         price: calculatedPrice,
         total_amount: calculatedTotal,
+<<<<<<< HEAD
         payment_date: paymentDate,
         payment_time: paymentTime,
         status: targetStatus,
         admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || showCashBill) ? billingDetails : null,
+=======
+        status: 'รอลงข้อมูล' as const,
+        admin_user: user.username || user.email,
+        entry_date: new Date().toISOString().slice(0, 10),
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
       }
 
       let orderId: string
@@ -720,6 +784,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       }
 
       // Save order items
+<<<<<<< HEAD
       console.log('All items before filtering:', itemsToSave)
       console.log('Items with product_id:', itemsToSave.filter(item => item.product_id))
       
@@ -825,6 +890,40 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       if (uploadedSlipUrls.length > 0) {
         setUploadedSlipUrls([]) // ล้างสลิปที่อัพโหลดไว้
       }
+=======
+      if (items.length > 0) {
+        await supabase.from('or_order_items').delete().eq('order_id', orderId)
+        const itemsToInsert = items
+          .filter(item => item.product_id)
+          .map(item => ({
+            order_id: orderId,
+            item_uid: `${formData.channel_code}-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+            product_id: item.product_id!,
+            product_name: item.product_name || '',
+            quantity: item.quantity || 1,
+            unit_price: item.unit_price || 0,
+            ink_color: item.ink_color || null,
+            product_type: item.product_type || 'ชั้น1',
+            cartoon_pattern: item.cartoon_pattern || null,
+            line_pattern: item.line_pattern || null,
+            font: item.font || null,
+            line_1: item.line_1 || null,
+            line_2: item.line_2 || null,
+            line_3: item.line_3 || null,
+            notes: item.notes || null,
+            file_attachment: item.file_attachment || null,
+          }))
+        
+        if (itemsToInsert.length > 0) {
+          const { error: itemsError } = await supabase
+            .from('or_order_items')
+            .insert(itemsToInsert)
+          if (itemsError) throw itemsError
+        }
+      }
+
+      alert(order ? 'อัปเดตข้อมูลสำเร็จ' : 'บันทึกสำเร็จ!')
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
       onSave()
     } catch (error: any) {
       console.error('Error saving order:', error)
@@ -834,6 +933,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     }
   }
 
+<<<<<<< HEAD
   // ฟังก์ชันตรวจสอบสลิปที่อัพโหลดไว้
   async function verifyUploadedSlips(orderId: string, slipUrls: string[], orderAmount: number) {
     try {
@@ -1004,6 +1104,8 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     }
   }
 
+=======
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   async function generateBillNo(channelCode: string): Promise<string> {
     const today = new Date()
     const year = today.getFullYear().toString().slice(-2)
@@ -1027,6 +1129,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
   }
 
   function addItem() {
+<<<<<<< HEAD
     // คัดลอกข้อมูลจากรายการสุดท้าย (ถ้ามี)
     const lastItem = items.length > 0 ? items[items.length - 1] : null
     const newItem = lastItem 
@@ -1040,6 +1143,9 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     } else {
       setProductSearchTerm({ ...productSearchTerm, [items.length]: '' })
     }
+=======
+    setItems([...items, { product_type: 'ชั้น1' }])
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
   }
 
   function removeItem(index: number) {
@@ -1055,6 +1161,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="bg-white p-6 rounded-lg shadow">
+<<<<<<< HEAD
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-bold">ข้อมูลหลัก</h3>
           {order?.bill_no && (
@@ -1064,6 +1171,9 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
             </div>
           )}
         </div>
+=======
+        <h3 className="text-xl font-bold mb-4">ข้อมูลหลัก</h3>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium mb-1">ช่องทาง</label>
@@ -1104,15 +1214,26 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
         </div>
       </div>
 
+<<<<<<< HEAD
       <div className="bg-white p-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'visible' }}>
         <h3 className="text-xl font-bold mb-4">รายการสินค้า</h3>
         <div className="overflow-x-auto" style={{ overflowY: 'visible' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
+=======
+      <div className="bg-white p-6 rounded-lg shadow">
+        <h3 className="text-xl font-bold mb-4">รายการสินค้า</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <thead>
               <tr className="bg-gray-100">
                 <th className="border p-2">ชื่อสินค้า</th>
                 <th className="border p-2">สีหมึก</th>
+<<<<<<< HEAD
                 <th className="border p-2">ชั้น</th>
+=======
+                <th className="border p-2">ชั้นที่</th>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                 <th className="border p-2">ลายการ์ตูน</th>
                 <th className="border p-2">ลายเส้น</th>
                 <th className="border p-2">ฟอนต์</th>
@@ -1138,6 +1259,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                         onChange={(e) => {
                           const searchTerm = e.target.value
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
+<<<<<<< HEAD
                           
                           // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ทันที
                           const matchedProduct = products.find(
@@ -1170,10 +1292,39 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                           )
                           
                           if (matchedProduct) {
+=======
+                        }}
+                        onInput={(e) => {
+                          const input = e.target as HTMLInputElement
+                          const selectedOption = document.querySelector(
+                            `#product-list-${index} option[value="${input.value}"]`
+                          ) as HTMLOptionElement
+                          if (selectedOption) {
+                            const productId = selectedOption.getAttribute('data-id')
+                            if (productId) {
+                              const product = products.find(p => p.id === productId)
+                              if (product) {
+                                updateItem(index, 'product_id', product.id)
+                                updateItem(index, 'product_name', product.product_name)
+                                setProductSearchTerm({ ...productSearchTerm, [index]: product.product_name })
+                              }
+                            }
+                          }
+                        }}
+                        onBlur={(e) => {
+                          // ถ้าไม่ตรงกับสินค้าใดๆ ให้ใช้ชื่อสินค้าที่เลือกไว้
+                          const matchedProduct = products.find(
+                            p => p.product_name.toLowerCase() === e.target.value.toLowerCase()
+                          )
+                          if (!matchedProduct) {
+                            setProductSearchTerm({ ...productSearchTerm, [index]: item.product_name || '' })
+                          } else {
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                             // อัพเดตให้ตรงกับสินค้าที่เลือก
                             updateItem(index, 'product_id', matchedProduct.id)
                             updateItem(index, 'product_name', matchedProduct.product_name)
                             setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+<<<<<<< HEAD
                           } else if (item.product_id) {
                             // ถ้าไม่ตรงกับสินค้าใดๆ แต่มี product_id อยู่แล้ว ให้ใช้ชื่อสินค้าที่เลือกไว้
                             setProductSearchTerm({ ...productSearchTerm, [index]: item.product_name || '' })
@@ -1218,6 +1369,22 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                             <option key={p.id} value={p.product_name} data-id={p.id} />
                           ))
                         })()}
+=======
+                          }
+                        }}
+                        placeholder="พิมพ์ค้นหาหรือเลือกสินค้า"
+                        className="w-full px-2 py-1 border rounded min-w-[120px]"
+                      />
+                      <datalist id={`product-list-${index}`}>
+                        {products
+                          .filter(p => 
+                            !productSearchTerm[index] || 
+                            p.product_name.toLowerCase().includes(productSearchTerm[index].toLowerCase())
+                          )
+                          .map((p) => (
+                            <option key={p.id} value={p.product_name} data-id={p.id} />
+                          ))}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                       </datalist>
                     </div>
                   </td>
@@ -1225,7 +1392,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                     <select
                       value={item.ink_color || ''}
                       onChange={(e) => updateItem(index, 'ink_color', e.target.value)}
+<<<<<<< HEAD
                       className="w-full px-2 py-1 border rounded min-w-[150px]"
+=======
+                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                     >
                       <option value="">-- เลือกสี --</option>
                       {inkTypes.map((ink) => (
@@ -1239,7 +1410,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                     <select
                       value={item.product_type || 'ชั้น1'}
                       onChange={(e) => updateItem(index, 'product_type', e.target.value)}
+<<<<<<< HEAD
                       className="w-full px-2 py-1 border rounded min-w-[60px]"
+=======
+                      className="w-full px-2 py-1 border rounded min-w-[80px]"
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                     >
                       <option value="ชั้น1">ชั้น1</option>
                       <option value="ชั้น2">ชั้น2</option>
@@ -1253,7 +1428,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       type="text"
                       value={item.cartoon_pattern || ''}
                       onChange={(e) => updateItem(index, 'cartoon_pattern', e.target.value)}
+<<<<<<< HEAD
                       className="w-full px-2 py-1 border rounded min-w-[70px]"
+=======
+                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                       placeholder="ลายการ์ตูน"
                     />
                   </td>
@@ -1262,7 +1441,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       type="text"
                       value={item.line_pattern || ''}
                       onChange={(e) => updateItem(index, 'line_pattern', e.target.value)}
+<<<<<<< HEAD
                       className="w-full px-2 py-1 border rounded min-w-[70px]"
+=======
+                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                       placeholder="ลายเส้น"
                     />
                   </td>
@@ -1310,7 +1493,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       value={item.quantity || 1}
                       onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
                       min="1"
+<<<<<<< HEAD
                       className="w-full px-2 py-1 border rounded min-w-[50px]"
+=======
+                      className="w-full px-2 py-1 border rounded min-w-[60px]"
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                     />
                   </td>
                   <td className="border p-2">
@@ -1376,6 +1563,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">
+<<<<<<< HEAD
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน */}
           <div>
@@ -1480,6 +1668,92 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
             </div>
           </div>
         </div>
+=======
+        <h3 className="text-xl font-bold mb-4">ข้อมูลการชำระเงิน</h3>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">ราคา</label>
+            <input
+              type="number"
+              value={calculateItemsTotal()}
+              readOnly
+              step="0.01"
+              className="w-full px-3 py-2 border rounded-lg bg-gray-100 font-semibold"
+            />
+            <p className="text-xs text-gray-500 mt-1">คำนวณจากรายการสินค้า</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
+            <input
+              type="number"
+              value={formData.shipping_cost}
+              onChange={(e) => setFormData({ ...formData, shipping_cost: parseFloat(e.target.value) || 0 })}
+              step="0.01"
+              className="w-full px-3 py-2 border rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">ส่วนลด</label>
+            <input
+              type="number"
+              value={formData.discount}
+              onChange={(e) => setFormData({ ...formData, discount: parseFloat(e.target.value) || 0 })}
+              step="0.01"
+              className="w-full px-3 py-2 border rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">ยอดสุทธิ</label>
+            <input
+              type="number"
+              value={formData.total_amount}
+              readOnly
+              className="w-full px-3 py-2 border rounded-lg bg-gray-100 font-bold"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">วิธีการชำระ</label>
+            <select
+              value={formData.payment_method}
+              onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
+              className="w-full px-3 py-2 border rounded-lg"
+            >
+              <option value="โอน">โอน</option>
+              <option value="COD">COD</option>
+            </select>
+          </div>
+        </div>
+
+        {formData.payment_method === 'โอน' && (
+          <>
+            <div className="border-t pt-4">
+              <h4 className="font-semibold mb-3">อัพโหลดสลิปโอนเงิน</h4>
+              {order && order.id ? (
+                <SlipUpload
+                  orderId={order.id}
+                  orderAmount={formData.total_amount}
+                  onVerificationComplete={(success, totalAmount) => {
+                    if (success) {
+                      alert('ตรวจสอบสลิปสำเร็จ! ออเดอร์จะถูกส่งไปให้ Admin QC ตรวจสอบ')
+                    }
+                  }}
+                />
+              ) : (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <p className="text-yellow-800 text-sm mb-2">กรุณาบันทึกออเดอร์ก่อนเพื่ออัพโหลดสลิป</p>
+                  <button
+                    type="button"
+                    onClick={handleSubmit}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+                  >
+                    บันทึกออเดอร์เพื่ออัพโหลดสลิป
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">
@@ -1517,7 +1791,11 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
 
         {showTaxInvoice && (
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
+<<<<<<< HEAD
             <h4 className="font-semibold text-blue-800 mb-3">ข้อมูลสำหรับใบกำกับภาษี</h4>
+=======
+            <h4 className="font-semibold text-blue-800 mb-3">ข้อมูลสำหรับใบกำกับภาษี / บิลเงินสด</h4>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
@@ -1549,16 +1827,27 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
+<<<<<<< HEAD
                 <div className="border rounded-lg p-3 bg-gray-50">
+=======
+                <div className="border rounded-lg p-3 bg-gray-50 max-h-48 overflow-y-auto">
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                   {items.filter(item => item.product_id).length > 0 ? (
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
+<<<<<<< HEAD
                           <th className="text-center p-2" style={{ width: '8%' }}>ลำดับ</th>
                           <th className="text-left p-2">ชื่อสินค้า</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '15%' }}>จำนวน</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>ราคา/หน่วย</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>รวม</th>
+=======
+                          <th className="text-left p-2">ชื่อสินค้า</th>
+                          <th className="text-left p-2">จำนวน</th>
+                          <th className="text-right p-2">ราคา/หน่วย</th>
+                          <th className="text-right p-2">รวม</th>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                         </tr>
                       </thead>
                       <tbody>
@@ -1570,16 +1859,24 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                             const total = quantity * unitPrice
                             return (
                               <tr key={idx} className="border-b">
+<<<<<<< HEAD
                                 <td className="p-2 text-center">{idx + 1}</td>
                                 <td className="p-2">{item.product_name || '-'}</td>
                                 <td className="p-2 pl-2 pr-4 text-right">{quantity}</td>
                                 <td className="p-2 pl-2 pr-4 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
                                 <td className="p-2 pl-2 pr-4 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+=======
+                                <td className="p-2">{item.product_name || '-'}</td>
+                                <td className="p-2">{quantity}</td>
+                                <td className="p-2 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                                <td className="p-2 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                               </tr>
                             )
                           })}
                       </tbody>
                       <tfoot>
+<<<<<<< HEAD
                         {(() => {
                           const totalAmount = items
                             .filter(item => item.product_id)
@@ -1614,6 +1911,21 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                             </>
                           )
                         })()}
+=======
+                        <tr className="border-t font-bold">
+                          <td colSpan={3} className="p-2 text-right">รวมทั้งสิ้น:</td>
+                          <td className="p-2 text-right">
+                            {items
+                              .filter(item => item.product_id)
+                              .reduce((sum, item) => {
+                                const quantity = item.quantity || 1
+                                const unitPrice = item.unit_price || 0
+                                return sum + (quantity * unitPrice)
+                              }, 0)
+                              .toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                       </tfoot>
                     </table>
                   ) : (
@@ -1661,11 +1973,18 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
+<<<<<<< HEAD
                           <th className="text-center p-2" style={{ width: '8%' }}>ลำดับ</th>
                           <th className="text-left p-2">ชื่อสินค้า</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '15%' }}>จำนวน</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>ราคา/หน่วย</th>
                           <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>รวม</th>
+=======
+                          <th className="text-left p-2">ชื่อสินค้า</th>
+                          <th className="text-left p-2">จำนวน</th>
+                          <th className="text-right p-2">ราคา/หน่วย</th>
+                          <th className="text-right p-2">รวม</th>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                         </tr>
                       </thead>
                       <tbody>
@@ -1677,19 +1996,31 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                             const total = quantity * unitPrice
                             return (
                               <tr key={idx} className="border-b">
+<<<<<<< HEAD
                                 <td className="p-2 text-center">{idx + 1}</td>
                                 <td className="p-2">{item.product_name || '-'}</td>
                                 <td className="p-2 pl-2 pr-4 text-right">{quantity}</td>
                                 <td className="p-2 pl-2 pr-4 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
                                 <td className="p-2 pl-2 pr-4 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+=======
+                                <td className="p-2">{item.product_name || '-'}</td>
+                                <td className="p-2">{quantity}</td>
+                                <td className="p-2 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                                <td className="p-2 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                               </tr>
                             )
                           })}
                       </tbody>
                       <tfoot>
                         <tr className="border-t font-bold">
+<<<<<<< HEAD
                           <td colSpan={4} className="p-2 pl-2 pr-4 text-right">รวมทั้งสิ้น:</td>
                           <td className="p-2 pl-2 pr-4 text-right">
+=======
+                          <td colSpan={3} className="p-2 text-right">รวมทั้งสิ้น:</td>
+                          <td className="p-2 text-right">
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                             {items
                               .filter(item => item.product_id)
                               .reduce((sum, item) => {
@@ -1721,6 +2052,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
 
       <div className="flex gap-4">
         <button
+<<<<<<< HEAD
           type="button"
           onClick={async (e) => {
             e.preventDefault()
@@ -1846,6 +2178,20 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 disabled:opacity-50"
         >
           {loading ? 'กำลังยกเลิก...' : 'ยกเลิก'}
+=======
+          type="submit"
+          disabled={loading}
+          className="px-6 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+        >
+          {loading ? 'กำลังบันทึก...' : order ? 'อัปเดต' : 'บันทึก'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
+        >
+          ยกเลิก
+>>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
         </button>
       </div>
     </form>
