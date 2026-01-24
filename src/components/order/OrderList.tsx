@@ -8,12 +8,9 @@ interface OrderListProps {
   onOrderClick: (order: Order) => void
   searchTerm?: string
   channelFilter?: string
-<<<<<<< HEAD
   showBillingStatus?: boolean
   verifiedOnly?: boolean
   onCountChange?: (count: number) => void
-=======
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 }
 
 export default function OrderList({
@@ -21,34 +18,23 @@ export default function OrderList({
   onOrderClick,
   searchTerm = '',
   channelFilter = '',
-<<<<<<< HEAD
   showBillingStatus = false,
   verifiedOnly = false,
   onCountChange,
-=======
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 }: OrderListProps) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     loadOrders()
-<<<<<<< HEAD
   }, [status, searchTerm, channelFilter, verifiedOnly])
-=======
-  }, [status, searchTerm, channelFilter])
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 
   async function loadOrders() {
     setLoading(true)
     try {
       let query = supabase
         .from('or_orders')
-<<<<<<< HEAD
         .select('*, or_order_items(*), or_order_reviews(*)')
-=======
-        .select('*, or_order_items(*)')
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
         .order('created_at', { ascending: false })
 
       if (Array.isArray(status)) {
@@ -70,7 +56,6 @@ export default function OrderList({
       const { data, error } = await query.limit(100)
 
       if (error) throw error
-<<<<<<< HEAD
       
       // กรองข้อมูล verifiedOnly ใน client-side (เพราะ join อาจไม่ทำงานถูกต้อง)
       let filteredData = data || []
@@ -88,9 +73,6 @@ export default function OrderList({
       if (onCountChange) {
         onCountChange(filteredData.length)
       }
-=======
-      setOrders(data || [])
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
     } catch (error: any) {
       console.error('Error loading orders:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
@@ -125,11 +107,7 @@ export default function OrderList({
         >
           <div className="flex items-center justify-between">
             <div className="flex-1">
-<<<<<<< HEAD
               <div className="flex items-center gap-3 mb-2 flex-wrap">
-=======
-              <div className="flex items-center gap-3 mb-2">
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
                 <strong className="text-blue-600 text-lg">{order.bill_no}</strong>
                 <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-sm">
                   {order.channel_code}
@@ -147,7 +125,6 @@ export default function OrderList({
                 >
                   {order.status}
                 </span>
-<<<<<<< HEAD
                 {showBillingStatus && order.billing_details && (
                   <>
                     {order.billing_details.request_tax_invoice && (
@@ -162,8 +139,6 @@ export default function OrderList({
                     )}
                   </>
                 )}
-=======
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
               </div>
               <div className="text-sm text-gray-600">
                 <p className="mb-1">

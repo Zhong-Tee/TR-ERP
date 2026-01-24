@@ -2,7 +2,6 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const EASYSLIP_API_URL = 'https://api.easyslip.com/v1/verify/bank/image'
-<<<<<<< HEAD
 const MAX_RETRIES = 3
 const RETRY_DELAY = 1000 // 1 second
 
@@ -79,11 +78,6 @@ async function callEasyslipAPI(
   }
   
   throw new Error('Max retries exceeded')
-=======
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
 }
 
 serve(async (req) => {
@@ -93,7 +87,6 @@ serve(async (req) => {
   }
 
   try {
-<<<<<<< HEAD
     console.log('[Edge Function] verify-slip called')
     
     // Get API key from Supabase secrets
@@ -154,42 +147,6 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: data.success !== false, // Default to true if not explicitly false
-=======
-    // Get API key from Supabase secrets
-    const easyslipApiKey = Deno.env.get('EASYSLIP_API_KEY')
-    if (!easyslipApiKey) {
-      throw new Error('EASYSLIP_API_KEY not configured')
-    }
-
-    // Get image URL from request
-    const { imageUrl } = await req.json()
-    if (!imageUrl) {
-      throw new Error('imageUrl is required')
-    }
-
-    // Call EasySlip API
-    const response = await fetch(EASYSLIP_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${easyslipApiKey}`,
-      },
-      body: JSON.stringify({
-        image_url: imageUrl,
-      }),
-    })
-
-    if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.message || 'EasySlip API error')
-    }
-
-    const data = await response.json()
-
-    return new Response(
-      JSON.stringify({
-        success: data.success || false,
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
         amount: data.amount || 0,
         message: data.message || 'Verification completed',
       }),
@@ -199,11 +156,8 @@ serve(async (req) => {
       }
     )
   } catch (error: any) {
-<<<<<<< HEAD
     console.error('[Edge Function] Error:', error.message, error.stack)
     
-=======
->>>>>>> 5799147c33d410ddc7b97eb4cc2ead5021147208
     return new Response(
       JSON.stringify({
         success: false,
