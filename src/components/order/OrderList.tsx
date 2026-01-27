@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
@@ -59,12 +59,41 @@ export default function OrderList({
       
       // กรองข้อมูล verifiedOnly ใน client-side (เพราะ join อาจไม่ทำงานถูกต้อง)
       let filteredData = data || []
-      if (verifiedOnly) {
+      const statusIncludesVerified = Array.isArray(status)
+        ? status.includes('ตรวจสอบแล้ว')
+        : status === 'ตรวจสอบแล้ว'
+      if (verifiedOnly && !statusIncludesVerified) {
         filteredData = filteredData.filter((order: any) => {
           return order.or_order_reviews && 
                  Array.isArray(order.or_order_reviews) &&
                  order.or_order_reviews.some((review: any) => review.status === 'approved')
         })
+      }
+      
+      // Load verification statuses for each order
+      const orderIds = filteredData.map((o: any) => o.id)
+      if (orderIds.length > 0) {
+        const { data: verifiedSlipsData } = await supabase
+          .from('ac_verified_slips')
+          .select('order_id, account_name_match, bank_code_match, amount_match, validation_status, validation_errors')
+          .in('order_id', orderIds)
+        
+        // Map verification data to orders
+        const verifiedMap = new Map()
+        if (verifiedSlipsData) {
+          verifiedSlipsData.forEach((slip: any) => {
+            if (!verifiedMap.has(slip.order_id)) {
+              verifiedMap.set(slip.order_id, [])
+            }
+            verifiedMap.get(slip.order_id).push(slip)
+          })
+        }
+        
+        // Add verification data to orders
+        filteredData = filteredData.map((order: any) => ({
+          ...order,
+          verified_slips: verifiedMap.get(order.id) || []
+        }))
       }
       
       setOrders(filteredData)
@@ -120,6 +149,10 @@ export default function OrderList({
                       ? 'bg-yellow-100 text-yellow-700'
                       : order.status === 'รอตรวจคำสั่งซื้อ'
                       ? 'bg-orange-100 text-orange-700'
+                      : order.status === 'ตรวจสอบแล้ว'
+                      ? 'bg-blue-100 text-blue-700'
+                      : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
+                      ? 'bg-red-100 text-red-700'
                       : 'bg-gray-100 text-gray-700'
                   }`}
                 >
@@ -137,6 +170,87 @@ export default function OrderList({
                         ขอบิลเงินสด
                       </span>
                     )}
+                  </>
+                )}
+                {/* แสดงสถานะการตรวจสลิปในแถวเดียวกัน */}
+                {(order.status === 'ตรวจสอบแล้ว' || order.status === 'ตรวจสอบไม่ผ่าน') && 
+                 (order as any).verified_slips && 
+                 (order as any).verified_slips.length > 0 && (
+                  <>
+                    {(order as any).verified_slips.map((slip: any, idx: number) => {
+                      // Check for duplicate slip status
+                      const isDuplicate = slip.validation_errors && 
+                        Array.isArray(slip.validation_errors) &&
+                        slip.validation_errors.some((err: string) => err.includes('สลิปซ้ำ'))
+                      
+                      const slipNumber = idx + 1
+                      const hasAnyMatch = slip.account_name_match !== null || 
+                                        slip.bank_code_match !== null || 
+                                        slip.amount_match !== null
+                      
+                      // ถ้ามีสลิปหลายใบ ให้แสดงเป็นกลุ่มที่ชัดเจน
+                      const isMultipleSlips = (order as any).verified_slips.length > 1
+                      
+                      return (
+                        <React.Fragment key={idx}>
+                          {hasAnyMatch && (
+                            <>
+                              {/* แสดงหมายเลขสลิป (เฉพาะเมื่อมีหลายใบ) */}
+                              {isMultipleSlips && (
+                                <span className="px-2 py-1 bg-gray-200 text-gray-800 rounded text-sm font-semibold border border-gray-300">
+                                  ใบที่ {slipNumber}
+                                </span>
+                              )}
+                              {isDuplicate && (
+                                <span className="px-2 py-1 bg-orange-100 text-orange-700 rounded text-sm">
+                                  สลิปซ้ำ
+                                </span>
+                              )}
+                              {/* แสดงสถานะแต่ละรายการพร้อมหมายเลขสลิป */}
+                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                                slip.account_name_match !== null
+                                  ? (slip.account_name_match 
+                                      ? 'bg-green-100 text-green-700' 
+                                      : 'bg-red-100 text-red-700')
+                                  : 'bg-gray-100 text-gray-600'
+                              }`} title={`สลิปที่ ${slipNumber}: ชื่อบัญชี ${slip.account_name_match === null ? 'ไม่ระบุ' : (slip.account_name_match ? 'ตรง' : 'ไม่ตรง')}`}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>ชื่อบัญชี</span>
+                                {slip.account_name_match !== null && (
+                                  <span>{slip.account_name_match ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                                slip.bank_code_match !== null
+                                  ? (slip.bank_code_match 
+                                      ? 'bg-green-100 text-green-700' 
+                                      : 'bg-red-100 text-red-700')
+                                  : 'bg-gray-100 text-gray-600'
+                              }`} title={`สลิปที่ ${slipNumber}: สาขา ${slip.bank_code_match === null ? 'ไม่ระบุ' : (slip.bank_code_match ? 'ตรง' : 'ไม่ตรง')}`}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>สาขา</span>
+                                {slip.bank_code_match !== null && (
+                                  <span>{slip.bank_code_match ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                                slip.amount_match !== null
+                                  ? (slip.amount_match 
+                                      ? 'bg-green-100 text-green-700' 
+                                      : 'bg-red-100 text-red-700')
+                                  : 'bg-gray-100 text-gray-600'
+                              }`} title={`สลิปที่ ${slipNumber}: ยอดเงิน ${slip.amount_match === null ? 'ไม่ระบุ' : (slip.amount_match ? 'ตรง' : 'ไม่ตรง')}`}>
+                                {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
+                                <span>ยอดเงิน</span>
+                                {slip.amount_match !== null && (
+                                  <span>{slip.amount_match ? '✓' : '✗'}</span>
+                                )}
+                              </span>
+                            </>
+                          )}
+                        </React.Fragment>
+                      )
+                    })}
                   </>
                 )}
               </div>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
-import { Order, OrderItem, Product, CartoonPattern } from '../../types'
+import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -11,20 +12,59 @@ function SlipUploadSimple({
   readOnly = false,
 }: {
   billNo?: string | null
-  onSlipsUploaded?: (slipUrls: string[]) => void
+  onSlipsUploaded?: (slipStoragePaths: string[]) => void
   existingSlips?: string[]
   readOnly?: boolean
 }) {
   const { user } = useAuthContext()
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
-  const [uploadedSlips, setUploadedSlips] = useState<string[]>(existingSlips)
+  const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>(existingSlips)
   const [previewUrls, setPreviewUrls] = useState<string[]>([])
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null)
+  const [uploadedSlipUrls, setUploadedSlipUrls] = useState<string[]>([])
 
   // Sync existingSlips when it changes
   useEffect(() => {
-    setUploadedSlips(existingSlips)
+    setUploadedSlipPaths(existingSlips)
   }, [existingSlips])
+
+  // Resolve uploaded slip URLs (use signed URLs for private buckets)
+  useEffect(() => {
+    let isMounted = true
+    async function loadUploadedUrls() {
+      if (uploadedSlipPaths.length === 0) {
+        if (isMounted) setUploadedSlipUrls([])
+        return
+      }
+
+      const urls = await Promise.all(
+        uploadedSlipPaths.map(async (storagePath) => {
+          const [bucket, ...pathParts] = storagePath.split('/')
+          const filePath = pathParts.join('/')
+          const { data, error } = await supabase.storage
+            .from(bucket)
+            .createSignedUrl(filePath, 3600)
+
+          if (error || !data?.signedUrl) {
+            return ''
+          }
+
+          return data.signedUrl
+        })
+      )
+
+      if (isMounted) {
+        setUploadedSlipUrls(urls)
+      }
+    }
+
+    loadUploadedUrls()
+
+    return () => {
+      isMounted = false
+    }
+  }, [uploadedSlipPaths])
 
   // Cleanup preview URLs when component unmounts or files change
   useEffect(() => {
@@ -70,117 +110,24 @@ function SlipUploadSimple({
 
     // ตรวจสอบว่ามี bill_no หรือไม่
     if (!billNo) {
-      alert('กรุณาบันทึกออเดอร์เพื่อสร้างเลขบิลก่อนอัพโหลดสลิป')
+      setUploadNotice('กรุณาบันทึกออเดอร์เพื่อสร้างเลขบิลก่อนอัพโหลดสลิป')
       return
     }
 
+    setUploadNotice(null)
     setUploading(true)
     try {
       // ตั้งชื่อโฟลเดอร์: slip{billNo}
       const folderName = `slip${billNo}`
       
-      // ตรวจสอบไฟล์ที่มีอยู่ในโฟลเดอร์เพื่อหาลำดับถัดไป
-      const { data: existingFiles, error: listError } = await supabase.storage
-        .from('slip-images')
-        .list(folderName)
+      // อัปโหลดไฟล์ไปยัง Storage โดยใช้ API function ใหม่
+      const storagePaths = await uploadMultipleToStorage(files, 'slip-images', folderName)
       
-      if (listError && listError.message !== 'The resource was not found') {
-        console.error('Error listing files:', listError)
-      }
-
-      // หาลำดับถัดไป
-      let nextNumber = 1
-      if (existingFiles && existingFiles.length > 0) {
-        // หาเลขลำดับสูงสุด
-        const numbers = existingFiles
-          .map(file => {
-            const match = file.name.match(/slip.*-(\d+)\./i)
-            return match ? parseInt(match[1]) : 0
-          })
-          .filter(num => num > 0)
-        
-        if (numbers.length > 0) {
-          nextNumber = Math.max(...numbers) + 1
-        }
-      }
-
-      const slipUrls: string[] = []
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const fileExt = file.name.split('.').pop() || 'jpg'
-        
-        // ตั้งชื่อไฟล์: slip{billNo}-{ลำดับ}.{ext}
-        const fileNumber = String(nextNumber + i).padStart(2, '0')
-        const fileName = `${folderName}/slip${billNo}-${fileNumber}.${fileExt}`
-        
-        console.log('Uploading file:', fileName)
-        console.log('Folder:', folderName)
-        console.log('Bill No:', billNo)
-        console.log('File size:', file.size, 'bytes')
-        console.log('File type:', file.type)
-        
-        // ใช้ authenticated client
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('slip-images')
-          .upload(fileName, file, {
-            cacheControl: '3600',
-            upsert: false,
-            contentType: file.type || `image/${fileExt}`
-          })
-        
-        if (uploadError) {
-          console.error('Upload error:', uploadError)
-          console.error('Error details:', {
-            message: uploadError.message,
-          })
-          
-          // ถ้าเป็น RLS error ให้แสดงคำแนะนำ
-          if (uploadError.message.includes('row-level security') || uploadError.message.includes('RLS')) {
-            throw new Error('ไม่มีสิทธิ์ในการอัพโหลดไฟล์ กรุณาตรวจสอบการตั้งค่า Storage Policy ใน Supabase')
-          }
-          
-          // ถ้าไฟล์ซ้ำ ให้ลองใช้ชื่อใหม่
-          if (uploadError.message.includes('already exists')) {
-            const newFileNumber = String(nextNumber + i + 100).padStart(2, '0')
-            const newFileName = `${folderName}/slip${billNo}-${newFileNumber}.${fileExt}`
-            console.log('File exists, trying new name:', newFileName)
-            
-            const { data: retryUploadData, error: retryError } = await supabase.storage
-              .from('slip-images')
-              .upload(newFileName, file, {
-                cacheControl: '3600',
-                upsert: false,
-                contentType: file.type || `image/${fileExt}`
-              })
-            
-            if (retryError) {
-              throw retryError
-            }
-            
-            const { data: urlData } = supabase.storage
-              .from('slip-images')
-              .getPublicUrl(retryUploadData.path)
-            
-            slipUrls.push(urlData.publicUrl)
-            continue
-          }
-          
-          throw uploadError
-        }
-
-        console.log('Upload success:', uploadData)
-
-        const { data: urlData } = supabase.storage
-          .from('slip-images')
-          .getPublicUrl(uploadData.path)
-
-        console.log('Public URL:', urlData.publicUrl)
-        slipUrls.push(urlData.publicUrl)
-      }
+      console.log('Uploaded storage paths:', storagePaths)
 
       // อัพเดตรายการสลิปที่อัพโหลดแล้ว (รวมกับรายการเดิม)
-      const updatedSlips = [...uploadedSlips, ...slipUrls]
-      setUploadedSlips(updatedSlips)
+      const updatedSlipPaths = [...uploadedSlipPaths, ...storagePaths]
+      setUploadedSlipPaths(updatedSlipPaths)
       
       // Cleanup preview URLs
       previewUrls.forEach(url => URL.revokeObjectURL(url))
@@ -188,10 +135,10 @@ function SlipUploadSimple({
       setFiles([])
       
       if (onSlipsUploaded) {
-        onSlipsUploaded(updatedSlips)
+        onSlipsUploaded(updatedSlipPaths)
       }
       
-      alert(`อัพโหลดสลิปสำเร็จ ${slipUrls.length} ไฟล์`)
+      alert(`อัพโหลดสลิปสำเร็จ ${storagePaths.length} ไฟล์`)
     } catch (error: any) {
       console.error('Error uploading slips:', error)
       alert('เกิดข้อผิดพลาดในการอัพโหลดสลิป: ' + error.message)
@@ -286,19 +233,24 @@ function SlipUploadSimple({
           <button
             type="button"
             onClick={handleUpload}
-            disabled={uploading}
+            disabled={uploading || !billNo}
             className="w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {uploading ? 'กำลังอัพโหลด...' : `อัพโหลดสลิป ${files.length} ไฟล์`}
           </button>
+          {uploadNotice && (
+            <p className="text-sm text-orange-600 bg-orange-50 border border-orange-200 rounded-lg p-2">
+              {uploadNotice}
+            </p>
+          )}
         </div>
       )}
 
-      {uploadedSlips.length > 0 && (
+      {uploadedSlipPaths.length > 0 && (
         <div className="space-y-3">
           <div className="bg-green-50 border border-green-200 rounded-lg p-3">
             <p className="text-green-800 text-sm font-medium">
-              อัพโหลดแล้ว {uploadedSlips.length} ไฟล์
+              อัพโหลดแล้ว {uploadedSlipPaths.length} ไฟล์
             </p>
             <p className="text-green-700 text-xs mt-1">
               สลิปจะถูกตรวจสอบเมื่อกดปุ่ม "บันทึก (ข้อมูลครบ)"
@@ -309,36 +261,124 @@ function SlipUploadSimple({
           <div>
             <p className="text-sm font-medium mb-2 text-gray-700">รูปภาพสลิปที่อัพโหลดแล้ว:</p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {uploadedSlips.map((url, index) => (
-                <div key={index} className="relative group">
-                  <img
-                    src={url}
-                    alt={`สลิป ${index + 1}`}
-                    className="w-full aspect-square object-contain rounded-lg border-2 border-gray-200 hover:border-blue-400 transition-colors cursor-pointer bg-gray-50"
-                    onClick={() => window.open(url, '_blank')}
-                    onError={(e) => {
-                      console.error('Error loading image:', url)
-                      e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23ddd" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="14" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eไม่สามารถโหลดรูปภาพ%3C/text%3E%3C/svg%3E'
-                    }}
-                  />
-                  {!readOnly && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const newSlips = uploadedSlips.filter((_, i) => i !== index)
-                        setUploadedSlips(newSlips)
-                        if (onSlipsUploaded) {
-                          onSlipsUploaded(newSlips)
-                        }
-                      }}
-                      className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                      title="ลบรูปภาพ"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              ))}
+              {uploadedSlipPaths.map((storagePath, index) => {
+                const imageUrl = uploadedSlipUrls[index]
+                return (
+                  <div key={index} className="relative group">
+                    {imageUrl ? (
+                      <img
+                        src={imageUrl}
+                        alt={`สลิป ${index + 1}`}
+                        className="w-full aspect-square object-contain rounded-lg border-2 border-gray-200 hover:border-blue-400 transition-colors cursor-pointer bg-gray-50"
+                        onClick={() => window.open(imageUrl, '_blank')}
+                        onError={(e) => {
+                          e.currentTarget.src =
+                            'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23ddd" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="14" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eไม่สามารถโหลดรูปภาพ%3C/text%3E%3C/svg%3E'
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full aspect-square bg-gray-100 rounded-lg border-2 border-gray-200 flex items-center justify-center text-xs text-gray-500">
+                        กำลังโหลดรูป...
+                      </div>
+                    )}
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const storagePath = uploadedSlipPaths[index]
+                          
+                          if (!storagePath) {
+                            console.warn('No storage path to delete')
+                            return
+                          }
+
+                          // Parse storage path: format is "bucket/path/to/file"
+                          const pathParts = storagePath.split('/')
+                          if (pathParts.length < 2) {
+                            console.error('Invalid storage path format:', storagePath)
+                            alert('รูปแบบ path ไม่ถูกต้อง: ' + storagePath)
+                            return
+                          }
+
+                          const bucket = pathParts[0]
+                          const filePath = pathParts.slice(1).join('/')
+                          
+                          console.log('Deleting file from bucket:', bucket, 'path:', filePath)
+                          
+                          try {
+                            // ตรวจสอบ session ก่อนลบ
+                            const { data: { session } } = await supabase.auth.getSession()
+                            if (!session) {
+                              alert('กรุณาเข้าสู่ระบบก่อนลบไฟล์')
+                              return
+                            }
+
+                            console.log('Attempting to delete:', { bucket, filePath, storagePath })
+                            
+                            // ลบรูปจาก bucket
+                            const { data, error: deleteError } = await supabase.storage
+                              .from(bucket)
+                              .remove([filePath])
+                            
+                            if (deleteError) {
+                              console.error('Error deleting file from bucket:', {
+                                error: deleteError,
+                                message: deleteError.message,
+                                statusCode: deleteError.statusCode,
+                                errorCode: deleteError.error,
+                                bucket,
+                                filePath,
+                                storagePath
+                              })
+                              
+                              // แสดง error message ที่ชัดเจนขึ้น
+                              let errorMessage = 'เกิดข้อผิดพลาดในการลบไฟล์'
+                              if (deleteError.message) {
+                                errorMessage += ': ' + deleteError.message
+                              }
+                              if (deleteError.statusCode === 403 || deleteError.error === 'permission_denied') {
+                                errorMessage += '\n\nสาเหตุ: ไม่มีสิทธิ์ลบไฟล์\n\nวิธีแก้ไข:\n1. ตรวจสอบว่า Storage policies ถูกตั้งค่าแล้ว (รัน migration 012_setup_slip_images_storage_policies.sql)\n2. ตรวจสอบว่า bucket "slip-images" มีการเปิดใช้งาน RLS\n3. ตรวจสอบว่า user มีสิทธิ์ authenticated'
+                              } else if (deleteError.statusCode === 404) {
+                                errorMessage += '\n\nสาเหตุ: ไม่พบไฟล์ที่ต้องการลบ (อาจถูกลบไปแล้ว)'
+                              }
+                              
+                              alert(errorMessage)
+                              return // Don't remove from UI if deletion failed
+                            }
+
+                            console.log('File deleted successfully:', { filePath, data })
+                            
+                            // Update UI only after successful deletion
+                            const newSlips = uploadedSlipPaths.filter((_, i) => i !== index)
+                            setUploadedSlipPaths(newSlips)
+                            
+                            if (onSlipsUploaded) {
+                              onSlipsUploaded(newSlips)
+                            }
+                            
+                            // แสดงข้อความสำเร็จ
+                            console.log('File removed from UI successfully')
+                          } catch (error: any) {
+                            console.error('Exception deleting file:', {
+                              error,
+                              message: error?.message,
+                              stack: error?.stack,
+                              bucket,
+                              filePath,
+                              storagePath
+                            })
+                            alert('เกิดข้อผิดพลาดในการลบไฟล์: ' + (error?.message || String(error)))
+                          }
+                        }}
+                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="ลบรูปภาพ"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>
@@ -351,9 +391,10 @@ interface OrderFormProps {
   order?: Order | null
   onSave: () => void
   onCancel: () => void
+  readOnly?: boolean
 }
 
-export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
+export default function OrderForm({ order, onSave, onCancel, readOnly = false }: OrderFormProps) {
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -366,9 +407,163 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
   const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [showProductDropdown, setShowProductDropdown] = useState<{ [key: number]: boolean }>({})
-  const [uploadedSlipUrls, setUploadedSlipUrls] = useState<string[]>([])
+  const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
+  const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
+  const [preBillNo, setPreBillNo] = useState<string | null>(null)
   const dropdownRefs = React.useRef<{ [key: number]: HTMLDivElement | null }>({})
   const selectRefs = React.useRef<{ [key: number]: HTMLSelectElement | null }>({})
+
+  const [formData, setFormData] = useState({
+    channel_code: '',
+    customer_name: '',
+    customer_address: '',
+    price: 0,
+    shipping_cost: 0,
+    discount: 0,
+    total_amount: 0,
+    payment_method: 'โอน',
+    promotion: '',
+    payment_date: '',
+    payment_time: '',
+  })
+  const [taxInvoiceData, setTaxInvoiceData] = useState({
+    company_name: '',
+    address: '',
+    tax_id: '',
+    items_note: '',
+  })
+  const [cashBillData, setCashBillData] = useState({
+    company_name: '',
+    address: '',
+    items_note: '',
+  })
+
+  async function loadSlipImages(billNo: string) {
+    try {
+      const folderName = `slip${billNo}`
+      const { data: files, error } = await supabase.storage
+        .from('slip-images')
+        .list(folderName, { limit: 100 })
+
+      if (error) {
+        console.error('Error loading slip images:', error)
+        return
+      }
+
+      if (!files || files.length === 0) {
+        setUploadedSlipPaths([])
+        return
+      }
+
+      // Convert to storage paths (bucket/path/to/file)
+      const storagePaths = files
+        .filter(file => file.name && !file.name.endsWith('/'))
+        .map(file => `slip-images/${folderName}/${file.name}`)
+        .sort()
+
+      setUploadedSlipPaths(storagePaths)
+    } catch (error) {
+      console.error('Error loading slip images:', error)
+    }
+  }
+
+  async function loadBankSettings() {
+    try {
+      const { data, error } = await supabase
+        .from('bank_settings')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+      setBankSettings(data || [])
+    } catch (error) {
+      console.error('Error loading bank settings:', error)
+    }
+  }
+
+  useEffect(() => {
+    loadInitialData()
+    loadBankSettings()
+    async function loadOrderData() {
+      if (order) {
+        setPreBillNo(order.bill_no || null)
+        setFormData({
+          channel_code: order.channel_code,
+          customer_name: order.customer_name,
+          customer_address: order.customer_address,
+          price: order.price,
+          shipping_cost: order.shipping_cost,
+          discount: order.discount,
+          total_amount: order.total_amount,
+          payment_method: order.payment_method || 'โอน',
+          promotion: order.promotion || '',
+          payment_date: order.payment_date || '',
+          payment_time: order.payment_time || '',
+        })
+
+        let orderItems = order.order_items || []
+        if (orderItems.length === 0 && order.id) {
+          const { data: itemsData, error } = await supabase
+            .from('or_order_items')
+            .select('*')
+            .eq('order_id', order.id)
+            .order('created_at', { ascending: true })
+
+          if (error) {
+            console.error('Error loading order items:', error)
+          } else if (itemsData) {
+            orderItems = itemsData
+          }
+        }
+
+        if (orderItems && orderItems.length > 0) {
+          const loadedItems = orderItems.map(item => ({ ...item }))
+          setItems(loadedItems)
+          const searchTerms: { [key: number]: string } = {}
+          loadedItems.forEach((item, idx) => {
+            if (item.product_name) {
+              searchTerms[idx] = item.product_name
+            }
+          })
+          setProductSearchTerm(searchTerms)
+        } else {
+          setItems([{ product_type: 'ชั้น1' }])
+        }
+
+        if (order.billing_details) {
+          const bd = order.billing_details
+          setShowTaxInvoice(bd.request_tax_invoice || false)
+          setShowCashBill(bd.request_cash_bill || false)
+          if (bd.request_tax_invoice) {
+            setTaxInvoiceData({
+              company_name: bd.tax_customer_name || '',
+              address: bd.tax_customer_address || '',
+              tax_id: bd.tax_id || '',
+              items_note: '',
+            })
+          }
+          if (bd.request_cash_bill) {
+            setCashBillData({
+              company_name: bd.tax_customer_name || '',
+              address: bd.tax_customer_address || '',
+              items_note: '',
+            })
+          }
+        }
+
+        if (order.bill_no) {
+          await loadSlipImages(order.bill_no)
+        } else {
+          setUploadedSlipPaths([])
+        }
+      } else {
+        setItems([{ product_type: 'ชั้น1' }])
+        setUploadedSlipUrls([])
+        setPreBillNo(null)
+      }
+    }
+    loadOrderData()
   }, [order])
 
   async function loadInitialData() {
@@ -475,7 +670,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       setItems(updatedItems)
       // รอ state อัพเดตแล้วค่อยบันทึก
       setTimeout(async () => {
-        await handleSubmitInternal(updatedItems)
+        await handleSubmitInternal(updatedItems, 'รอลงข้อมูล')
       }, 100)
       return
     }
@@ -483,7 +678,13 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     // ตรวจสอบว่ามีรายการสินค้าที่มี product_id หรือไม่
     const itemsWithProduct = items.filter(item => item.product_id)
     if (itemsWithProduct.length === 0) {
-      alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
+      // ตรวจสอบว่ามีรายการที่สร้างไว้แล้วหรือไม่
+      const hasItems = items.length > 0
+      if (hasItems) {
+        alert('กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)')
+      } else {
+        alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
+      }
       return
     }
 
@@ -554,6 +755,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       }
 
       let orderId: string
+      let currentBillNo: string | null = null
       if (order) {
         const { error } = await supabase
           .from('or_orders')
@@ -561,9 +763,10 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           .eq('id', order.id)
         if (error) throw error
         orderId = order.id
+        currentBillNo = order.bill_no || null
       } else {
-        // Generate bill number
-        const billNo = await generateBillNo(formData.channel_code)
+        // Use pre-generated bill number if available
+        const billNo = preBillNo || await generateBillNo(formData.channel_code)
         const { data, error } = await supabase
           .from('or_orders')
           .insert({ ...orderData, bill_no: billNo })
@@ -571,6 +774,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           .single()
         if (error) throw error
         orderId = data.id
+        currentBillNo = data.bill_no || billNo
       }
 
       // Save order items
@@ -665,20 +869,37 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
       }
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" และมีสลิปที่อัพโหลดไว้ ให้ตรวจสอบสลิป
-      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && uploadedSlipUrls.length > 0) {
+      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && uploadedSlipPaths.length > 0) {
         try {
-          await verifyUploadedSlips(orderId, uploadedSlipUrls, calculatedTotal)
+          await verifyUploadedSlips(orderId, uploadedSlipPaths, calculatedTotal)
         } catch (error: any) {
           console.error('Error verifying slips:', error)
-          alert('บันทึกออเดอร์สำเร็จ แต่เกิดข้อผิดพลาดในการตรวจสอบสลิป: ' + error.message)
+          // Error handling is done inside verifyUploadedSlips
+          // If status was updated to "ตรวจสอบไม่ผ่าน", verifyUploadedSlips will return (not throw)
+          // If there's a real error, show alert and refresh UI anyway
+          alert('เกิดข้อผิดพลาดในการตรวจสอบสลิป: ' + error.message)
+          // Refresh UI even if there's an error (status might have been updated)
+          onSave()
+          return // Don't continue with normal success flow
         }
       }
 
       const statusText = targetStatus === 'ลงข้อมูลเสร็จสิ้น' ? 'บันทึกข้อมูลครบ' : 'บันทึก (รอลงข้อมูล)'
       alert(order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`)
-      if (uploadedSlipUrls.length > 0) {
-        setUploadedSlipUrls([]) // ล้างสลิปที่อัพโหลดไว้
+      
+      // โหลดรูปสลิปกลับมา (ถ้ามี bill_no)
+      // ไม่ล้าง uploadedSlipPaths เพราะรูปสลิปถูกอัพโหลดไปแล้วใน storage
+      if (currentBillNo) {
+        console.log('[บันทึกออเดอร์] โหลดรูปสลิปกลับมาสำหรับ bill_no:', currentBillNo)
+        await loadSlipImages(currentBillNo)
+      } else {
+        // ถ้าไม่มี bill_no ให้ล้าง uploadedSlipPaths (ไม่น่าจะเกิดขึ้น)
+        console.warn('[บันทึกออเดอร์] ไม่มี bill_no ไม่สามารถโหลดรูปสลิปได้')
+        if (uploadedSlipPaths.length > 0) {
+          setUploadedSlipPaths([])
+        }
       }
+      
       onSave()
     } catch (error: any) {
       console.error('Error saving order:', error)
@@ -688,160 +909,472 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     }
   }
 
-  // ฟังก์ชันตรวจสอบสลิปที่อัพโหลดไว้
-  async function verifyUploadedSlips(orderId: string, slipUrls: string[], orderAmount: number) {
+  // ฟังก์ชันตรวจสอบสลิปที่อัพโหลดไว้ (ใช้ระบบใหม่)
+  async function verifyUploadedSlips(orderId: string, slipStoragePaths: string[], orderAmount: number) {
     try {
-      // Check for duplicates
-      const { data: existingSlips, error: duplicateCheckError } = await supabase
-        .from('ac_verified_slips')
-        .select('slip_image_url')
-        .in('slip_image_url', slipUrls)
+      // Get order data including status
+      const { data: orderData, error: orderError } = await supabase
+        .from('or_orders')
+        .select('channel_code, status, total_amount')
+        .eq('id', orderId)
+        .single()
 
-      if (duplicateCheckError) {
-        console.error('Error checking duplicate slips:', duplicateCheckError)
-        throw new Error('เกิดข้อผิดพลาดในการตรวจสอบสลิปซ้ำ: ' + duplicateCheckError.message)
+      if (orderError || !orderData) {
+        throw new Error('ไม่พบข้อมูลออเดอร์: ' + (orderError?.message || 'Unknown error'))
       }
 
-      if (existingSlips && existingSlips.length > 0) {
-        const duplicateUrls = existingSlips.map(s => s.slip_image_url).join(', ')
-        throw new Error(`พบสลิปที่เคยใช้แล้ว กรุณาใช้สลิปใหม่\n\nสลิปที่ซ้ำ: ${duplicateUrls}`)
+      // ถ้ารายการอยู่ที่ "ตรวจสอบแล้ว" และยอดเงินเท่าเดิม ไม่ต้องตรวจสอบซ้ำ
+      if (orderData.status === 'ตรวจสอบแล้ว' && 
+          orderData.total_amount && 
+          Math.abs(orderData.total_amount - orderAmount) < 0.01) {
+        console.log('[Verify Slips] Order already verified with same amount, skipping verification')
+        return
       }
 
-      // Helper function to convert image URL to Base64
-      async function imageUrlToBase64(url: string): Promise<string> {
-        console.log(`[Verify Slips] Converting image to base64: ${url.substring(0, 50)}...`)
-        try {
-          const response = await fetch(url)
-          const blob = await response.blob()
-          return new Promise((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onloadend = () => {
-              const base64 = reader.result as string
-              // Remove 'data:image/...;base64,' prefix to get just the base64 string
-              const base64String = base64.split(',')[1]
-              resolve(base64String)
-            }
-            reader.onerror = reject
-            reader.readAsDataURL(blob)
-          })
-        } catch (error: any) {
-          throw new Error(`Failed to convert image to base64: ${error.message}`)
+      const channelCode = orderData.channel_code
+
+      // Get bank settings for this channel
+      // First, get bank_setting_ids for this channel
+      const { data: bankChannelsData, error: bankChannelsError } = await supabase
+        .from('bank_settings_channels')
+        .select('bank_setting_id')
+        .eq('channel_code', channelCode)
+
+      if (bankChannelsError) {
+        console.error('[Verify Slips] Error loading bank settings channels:', bankChannelsError)
+      }
+
+      // Find active bank setting for this channel
+      let bankAccount: string | undefined
+      let bankCode: string | undefined
+
+      if (bankChannelsData && bankChannelsData.length > 0) {
+        // Get bank_setting_ids
+        const bankSettingIds = bankChannelsData.map((bsc: any) => bsc.bank_setting_id)
+
+        // Load bank settings
+        const { data: bankSettingsData, error: bankError } = await supabase
+          .from('bank_settings')
+          .select('account_number, bank_code, account_name, is_active')
+          .in('id', bankSettingIds)
+          .eq('is_active', true)
+          .limit(1)
+
+        if (bankError) {
+          console.error('[Verify Slips] Error loading bank settings:', bankError)
+        } else if (bankSettingsData && bankSettingsData.length > 0) {
+          bankAccount = bankSettingsData[0].account_number
+          bankCode = bankSettingsData[0].bank_code
         }
       }
 
-      // Verify slips using Easyslip
-      const results: any[] = []
+      // Fallback: if no channel-specific bank setting, use any active bank setting
+      if (!bankAccount && bankSettings.length > 0) {
+        const activeBankSettings = bankSettings.filter(b => b.is_active)
+        if (activeBankSettings.length > 0) {
+          bankAccount = activeBankSettings[0].account_number
+          bankCode = activeBankSettings[0].bank_code
+        }
+      }
+
+      if (!bankAccount) {
+        console.warn('[Verify Slips] No active bank settings found for channel:', channelCode)
+      }
+
+      console.log(`[Verify Slips] Starting verification for ${slipStoragePaths.length} slip(s)`)
+      console.log(`[Verify Slips] Channel: ${channelCode}`)
+      console.log(`[Verify Slips] Expected amount: ${orderAmount}`)
+      console.log(`[Verify Slips] Bank account: ${bankAccount}, Bank code: ${bankCode}`)
+
+      // Verify slips using new API
+      const results = await verifyMultipleSlipsFromStorage(
+        slipStoragePaths,
+        orderAmount,
+        bankAccount,
+        bankCode
+      )
+
+      // Log all results for debugging
+      console.log('[Verify Slips] All verification results:', results)
+      results.forEach((result, index) => {
+        console.log(`[Verify Slips] Result ${index + 1}:`, {
+          success: result.success,
+          amount: result.amount,
+          error: result.error,
+          hasEasyslipResponse: !!result.easyslipResponse,
+          easyslipResponseKeys: result.easyslipResponse ? Object.keys(result.easyslipResponse) : [],
+        })
+      })
+
+      // Convert storage paths to URLs for saving (needed for logs)
+      const slipUrls = slipStoragePaths.map(storagePath => {
+        const [bucket, ...pathParts] = storagePath.split('/')
+        const filePath = pathParts.join('/')
+        const { data: urlData } = supabase.storage
+          .from(bucket)
+          .getPublicUrl(filePath)
+        return urlData.publicUrl
+      })
+
+      const verifiedBy = user?.id || null
+
+      // Check for duplicate slips BEFORE saving
+      // Check by transRef or amount + date combination
+      const duplicateCheckPromises = results.map(async (r: any) => {
+        if (!r.easyslipResponse || r.amount === undefined) {
+          return { isDuplicate: false, duplicateOrderId: null }
+        }
+        
+        const transRef = r.easyslipResponse?.data?.transRef
+        const amount = r.amount
+        const date = r.easyslipResponse?.data?.date
+        
+        // Check by transRef first (most reliable)
+        if (transRef) {
+          const { data: duplicateByRef } = await supabase
+            .from('ac_verified_slips')
+            .select('order_id')
+            .eq('easyslip_trans_ref', transRef)
+            .neq('order_id', orderId)
+            .limit(1)
+          
+          if (duplicateByRef && duplicateByRef.length > 0) {
+            return { isDuplicate: true, duplicateOrderId: duplicateByRef[0].order_id }
+          }
+        }
+        
+        // Check by amount + date combination (fallback)
+        if (amount && date) {
+          const { data: duplicateByAmountDate } = await supabase
+            .from('ac_verified_slips')
+            .select('order_id')
+            .eq('verified_amount', amount)
+            .eq('easyslip_date', date)
+            .neq('order_id', orderId)
+            .limit(1)
+          
+          if (duplicateByAmountDate && duplicateByAmountDate.length > 0) {
+            return { isDuplicate: true, duplicateOrderId: duplicateByAmountDate[0].order_id }
+          }
+        }
+        
+        return { isDuplicate: false, duplicateOrderId: null }
+      })
+      
+      const duplicateChecks = await Promise.all(duplicateCheckPromises)
+
+      // Save verification logs FIRST (for all attempts, success & failure)
+      // This must be done before throwing errors, so we don't lose the data
+      const logsToInsert = results.map((r: any, idx) => {
+        const duplicateCheck = duplicateChecks[idx]
+        const isDuplicate = duplicateCheck.isDuplicate
+        
+        // Combine error, message, and validationErrors for better logging
+        let errorMessage = r.error || null
+        if (isDuplicate) {
+          errorMessage = 'สลิปซ้ำ (พบในออเดอร์อื่น)'
+        } else if (!errorMessage && r.validationErrors && r.validationErrors.length > 0) {
+          // If validation errors exist, use them
+          errorMessage = r.validationErrors.join(', ')
+        } else if (!errorMessage && r.message && !r.success) {
+          // If no error but has message and failed, use message
+          errorMessage = r.message
+        }
+        
+        return {
+          order_id: orderId,
+          slip_image_url: slipUrls[idx],
+          slip_storage_path: slipStoragePaths[idx],
+          verified_by: verifiedBy,
+          status: (r.success && !isDuplicate) ? 'passed' : 'failed',
+          verified_amount: r.amount || 0,
+          error: errorMessage,
+          easyslip_response: r.easyslipResponse || null,
+        }
+      })
+
+      // Log what we're about to insert
+      console.log('[Verify Slips] Logs to insert:', logsToInsert.map((log, idx) => ({
+        index: idx + 1,
+        status: log.status,
+        hasEasyslipResponse: !!log.easyslip_response,
+        easyslipResponseType: log.easyslip_response ? typeof log.easyslip_response : 'null',
+        easyslipResponseKeys: log.easyslip_response && typeof log.easyslip_response === 'object' 
+          ? Object.keys(log.easyslip_response) 
+          : [],
+        error: log.error,
+      })))
+
+      if (logsToInsert.length > 0) {
+        const { data: insertedLogs, error: logError } = await supabase
+          .from('ac_slip_verification_logs')
+          .insert(logsToInsert)
+          .select()
+
+        if (logError) {
+          console.error('[Verify Slips] Error inserting verification logs:', logError)
+        } else {
+          console.log('[Verify Slips] Successfully inserted logs:', insertedLogs?.length || 0, 'records')
+        }
+      }
+
+      // Process results
       let totalAmount = 0
       const errors: string[] = []
       const successfulVerifications: number[] = []
+      const validationErrors: string[] = []
 
-      console.log(`[Verify Slips] Starting verification for ${slipUrls.length} slip(s)`)
-
-      for (let i = 0; i < slipUrls.length; i++) {
-        const url = slipUrls[i]
-        console.log(`[Verify Slips] Verifying slip ${i + 1}/${slipUrls.length}`)
-
-        try {
-          // Convert image to base64
-          const imageBase64 = await imageUrlToBase64(url)
+      results.forEach((result, index) => {
+        const duplicateCheck = duplicateChecks[index]
+        const isDuplicate = duplicateCheck.isDuplicate
+        
+        // If duplicate, treat as failed
+        if (isDuplicate) {
+          errors.push(`สลิป ${index + 1}: สลิปซ้ำ (พบในออเดอร์อื่น)`)
+        } else if (result.success) {
+          totalAmount += result.amount || 0
+          successfulVerifications.push(index + 1)
           
-          const { data, error: verifyError } = await supabase.functions.invoke('verify-slip', {
-            body: { imageBase64: imageBase64 }
-          })
+          // Check for validation errors from result.validationErrors array or result.error
+          if (result.validationErrors && Array.isArray(result.validationErrors) && result.validationErrors.length > 0) {
+            validationErrors.push(...result.validationErrors.map((err: string) => `สลิป ${index + 1}: ${err}`))
+          } else if (result.error && result.error.includes('ไม่ตรง')) {
+            validationErrors.push(`สลิป ${index + 1}: ${result.error}`)
+          }
+        } else {
+          errors.push(`สลิป ${index + 1}: ${result.error || result.message || 'การตรวจสอบล้มเหลว'}`)
+        }
+      })
 
-          if (verifyError) {
-            const errorMsg = verifyError.message || 'Unknown error'
-            console.error(`[Verify Slips] Slip ${i + 1} verification failed:`, errorMsg)
+      // Save ALL EasySlip responses to ac_verified_slips FIRST (before validation)
+      // This stores the raw response data, then we'll update validation status
+      const slipsToInsert = results
+        .map((r: any, idx) => {
+          // Skip if no EasySlip response received
+          if (!r.easyslipResponse || r.amount === undefined) {
+            return null
+          }
+          
+          const duplicateCheck = duplicateChecks[idx]
+          const isDuplicate = duplicateCheck.isDuplicate
+          
+          // Determine validation status
+          let validationStatus: 'pending' | 'passed' | 'failed' = 'pending'
+          const validationErrors: string[] = []
+          
+          // Add duplicate error if found
+          if (isDuplicate) {
+            validationErrors.push(`สลิปซ้ำ (พบในออเดอร์อื่น)`)
+            validationStatus = 'failed'
+          } else if (r.success === true) {
+            validationStatus = 'passed'
+          } else if (r.success === false) {
+            validationStatus = 'failed'
+            // Collect validation errors
+            if (r.validationErrors && Array.isArray(r.validationErrors)) {
+              validationErrors.push(...r.validationErrors)
+            } else if (r.error) {
+              validationErrors.push(r.error)
+            } else if (r.message && !r.success) {
+              validationErrors.push(r.message)
+            }
+          }
+          
+          return {
+            order_id: orderId,
+            slip_image_url: slipUrls[idx],
+            verified_amount: r.amount || 0,
+            verified_by: verifiedBy,
+            easyslip_response: r.easyslipResponse || null,
+            easyslip_trans_ref: r.easyslipResponse?.data?.transRef || null,
+            easyslip_date: r.easyslipResponse?.data?.date || null,
+            easyslip_receiver_bank_id: r.easyslipResponse?.data?.receiver?.bank?.id || null,
+            easyslip_receiver_account: r.easyslipResponse?.data?.receiver?.account?.bank?.account || null,
+            // Validation status fields
+            is_validated: r.success !== undefined || isDuplicate, // true if we got a validation result
+            validation_status: validationStatus,
+            validation_errors: validationErrors.length > 0 ? validationErrors : null,
+            expected_amount: orderAmount || null,
+            expected_bank_account: bankAccount || null,
+            expected_bank_code: bankCode || null,
+            // Individual validation statuses
+            account_name_match: r.accountNameMatch !== undefined ? r.accountNameMatch : null,
+            bank_code_match: r.bankCodeMatch !== undefined ? r.bankCodeMatch : null,
+            amount_match: r.amountMatch !== undefined ? r.amountMatch : null,
+          }
+        })
+        .filter((s: any) => s !== null) // Remove null entries
+
+      // Log what we're about to insert into ac_verified_slips
+      console.log('[Verify Slips] All slips to insert (before validation):', slipsToInsert.map((slip, idx) => ({
+        index: idx + 1,
+        verified_amount: slip.verified_amount,
+        hasEasyslipResponse: !!slip.easyslip_response,
+        validation_status: slip.validation_status,
+        validation_errors: slip.validation_errors,
+        is_validated: slip.is_validated,
+      })))
+
+      // Insert or Update ALL slips (regardless of validation result)
+      // Handle duplicate slip_image_url (unique constraint) by checking and updating existing records
+      if (slipsToInsert.length > 0) {
+        const slipUrls = slipsToInsert.map((s: any) => s.slip_image_url).filter(Boolean)
+        
+        if (slipUrls.length > 0) {
+          // Check existing records for this order
+          const { data: existingSlips, error: checkError } = await supabase
+            .from('ac_verified_slips')
+            .select('id, slip_image_url, order_id')
+            .in('slip_image_url', slipUrls)
+            .eq('order_id', orderId)
+
+          if (checkError) {
+            console.error('[Verify Slips] Error checking existing slips:', checkError)
+          }
+
+          // Separate into inserts and updates based on existing records for THIS order
+          const existingUrlsForThisOrder = new Set(existingSlips?.map((s: any) => s.slip_image_url) || [])
+          const toInsert = slipsToInsert.filter((s: any) => !existingUrlsForThisOrder.has(s.slip_image_url))
+          const toUpdate = slipsToInsert.filter((s: any) => existingUrlsForThisOrder.has(s.slip_image_url))
+
+          // Insert new records (handle duplicate key errors gracefully)
+          if (toInsert.length > 0) {
+            try {
+              const { data: insertedData, error: insertError } = await supabase
+                .from('ac_verified_slips')
+                .insert(toInsert)
+                .select()
+
+              if (insertError) {
+                console.error('[Verify Slips] Error inserting verified slips:', insertError)
+                
+                // If it's a duplicate key error (slip_image_url exists in another order),
+                // update the existing record to point to this order instead
+                if (insertError.message.includes('duplicate key') || insertError.code === '23505' || insertError.message.includes('ac_verified_slips_slip_image_url_key')) {
+                  console.log('[Verify Slips] Duplicate key detected for slip_image_url, updating existing records instead')
+                  
+                  // Update existing records by slip_image_url (regardless of order_id)
+                  for (const slip of toInsert) {
+                    const { error: updateError } = await supabase
+                      .from('ac_verified_slips')
+                      .update({
+                        order_id: slip.order_id,
+                        verified_amount: slip.verified_amount,
+                        verified_by: slip.verified_by,
+                        easyslip_response: slip.easyslip_response,
+                        easyslip_trans_ref: slip.easyslip_trans_ref,
+                        easyslip_date: slip.easyslip_date,
+                        easyslip_receiver_bank_id: slip.easyslip_receiver_bank_id,
+                        easyslip_receiver_account: slip.easyslip_receiver_account,
+                        is_validated: slip.is_validated,
+                        validation_status: slip.validation_status,
+                        validation_errors: slip.validation_errors,
+                        expected_amount: slip.expected_amount,
+                        expected_bank_account: slip.expected_bank_account,
+                        expected_bank_code: slip.expected_bank_code,
+                        account_name_match: slip.account_name_match,
+                        bank_code_match: slip.bank_code_match,
+                        amount_match: slip.amount_match,
+                      })
+                      .eq('slip_image_url', slip.slip_image_url)
+
+                    if (updateError) {
+                      console.error('[Verify Slips] Error updating verified slip:', updateError, 'for slip:', slip.slip_image_url)
+                      // Continue with other slips even if one fails
+                    } else {
+                      console.log('[Verify Slips] Successfully updated existing verified slip:', slip.slip_image_url)
+                    }
+                  }
+                } else {
+                  throw new Error('เกิดข้อผิดพลาดในการบันทึกสลิปที่ตรวจสอบแล้ว: ' + insertError.message)
+                }
+              } else {
+                console.log('[Verify Slips] Successfully inserted verified slips:', insertedData?.length || 0, 'records')
+              }
+            } catch (error: any) {
+              // If insert fails with duplicate key, try to update instead
+              if (error.message && (error.message.includes('duplicate key') || error.message.includes('ac_verified_slips_slip_image_url_key'))) {
+                console.log('[Verify Slips] Catch: Duplicate key detected, updating existing records')
+                for (const slip of toInsert) {
+                  const { error: updateError } = await supabase
+                    .from('ac_verified_slips')
+                    .update({
+                      order_id: slip.order_id,
+                      verified_amount: slip.verified_amount,
+                      verified_by: slip.verified_by,
+                      easyslip_response: slip.easyslip_response,
+                      easyslip_trans_ref: slip.easyslip_trans_ref,
+                      easyslip_date: slip.easyslip_date,
+                      easyslip_receiver_bank_id: slip.easyslip_receiver_bank_id,
+                      easyslip_receiver_account: slip.easyslip_receiver_account,
+                      is_validated: slip.is_validated,
+                      validation_status: slip.validation_status,
+                      validation_errors: slip.validation_errors,
+                      expected_amount: slip.expected_amount,
+                      expected_bank_account: slip.expected_bank_account,
+                      expected_bank_code: slip.expected_bank_code,
+                      account_name_match: slip.account_name_match,
+                      bank_code_match: slip.bank_code_match,
+                      amount_match: slip.amount_match,
+                    })
+                    .eq('slip_image_url', slip.slip_image_url)
+
+                  if (updateError) {
+                    console.error('[Verify Slips] Error updating verified slip in catch:', updateError)
+                  }
+                }
+              } else {
+                throw error
+              }
+            }
+          }
+
+          // Update existing records for this order
+          if (toUpdate.length > 0) {
+            console.log('[Verify Slips] Updating', toUpdate.length, 'existing verified slips for this order')
             
-            // Check if it's a configuration error
-            if (errorMsg.includes('not configured') || errorMsg.includes('EASYSLIP_API_KEY')) {
-              throw new Error('Easyslip API Key ยังไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่า EASYSLIP_API_KEY ใน Supabase Secrets')
+            for (const slip of toUpdate) {
+              const { error: updateError } = await supabase
+                .from('ac_verified_slips')
+                .update({
+                  verified_amount: slip.verified_amount,
+                  verified_by: slip.verified_by,
+                  easyslip_response: slip.easyslip_response,
+                  easyslip_trans_ref: slip.easyslip_trans_ref,
+                  easyslip_date: slip.easyslip_date,
+                  easyslip_receiver_bank_id: slip.easyslip_receiver_bank_id,
+                  easyslip_receiver_account: slip.easyslip_receiver_account,
+                  is_validated: slip.is_validated,
+                  validation_status: slip.validation_status,
+                  validation_errors: slip.validation_errors,
+                  expected_amount: slip.expected_amount,
+                  expected_bank_account: slip.expected_bank_account,
+                  expected_bank_code: slip.expected_bank_code,
+                  account_name_match: slip.account_name_match,
+                  bank_code_match: slip.bank_code_match,
+                  amount_match: slip.amount_match,
+                })
+                .eq('slip_image_url', slip.slip_image_url)
+                .eq('order_id', orderId)
+
+              if (updateError) {
+                console.error('[Verify Slips] Error updating verified slip:', updateError, 'for slip:', slip.slip_image_url)
+              }
             }
             
-            errors.push(`สลิป ${i + 1}: ${errorMsg}`)
-            results.push({
-              success: false,
-              error: errorMsg
-            })
-          } else if (!data) {
-            const errorMsg = 'ไม่ได้รับข้อมูลจาก Edge Function'
-            console.error(`[Verify Slips] Slip ${i + 1} - No data received`)
-            errors.push(`สลิป ${i + 1}: ${errorMsg}`)
-            results.push({
-              success: false,
-              error: errorMsg
-            })
-          } else if (!data.success) {
-            const errorMsg = data.error || 'การตรวจสอบสลิปล้มเหลว'
-            console.error(`[Verify Slips] Slip ${i + 1} verification failed:`, errorMsg)
-            errors.push(`สลิป ${i + 1}: ${errorMsg}`)
-            results.push({
-              success: false,
-              error: errorMsg
-            })
-          } else {
-            const amount = data.amount || 0
-            totalAmount += amount
-            successfulVerifications.push(i + 1)
-            console.log(`[Verify Slips] Slip ${i + 1} verified successfully - Amount: ${amount}`)
-            results.push({
-              success: true,
-              amount,
-              message: data.message || 'ตรวจสอบสำเร็จ'
-            })
+            console.log('[Verify Slips] Successfully updated verified slips:', toUpdate.length, 'records')
           }
-        } catch (error: any) {
-          // Re-throw configuration errors immediately
-          if (error.message?.includes('EASYSLIP_API_KEY') || error.message?.includes('not configured')) {
-            throw error
-          }
-          
-          const errorMsg = error.message || 'เกิดข้อผิดพลาดในการตรวจสอบสลิป'
-          console.error(`[Verify Slips] Slip ${i + 1} error:`, errorMsg)
-          errors.push(`สลิป ${i + 1}: ${errorMsg}`)
-          results.push({
-            success: false,
-            error: errorMsg
-          })
         }
+      } else {
+        console.log('[Verify Slips] No slips to insert (no EasySlip response received)')
       }
 
-      // If all slips failed, throw error
+      // Now process validation results to determine order status
+      // If all slips failed validation, mark as "ตรวจสอบไม่ผ่าน"
       if (successfulVerifications.length === 0) {
-        throw new Error(`ตรวจสอบสลิปไม่สำเร็จทั้งหมด:\n${errors.join('\n')}`)
-      }
-
-      // If some slips failed, show warning but continue
-      if (errors.length > 0) {
-        console.warn(`[Verify Slips] ${errors.length} slip(s) failed, ${successfulVerifications.length} succeeded`)
-      }
-
-      // Save verified slips (only successful ones)
-      const slipsToInsert = results
-        .map((r, idx) => ({
-          order_id: orderId,
-          slip_image_url: slipUrls[idx],
-          verified_amount: r.amount || 0,
-        }))
-        .filter((s, idx) => results[idx].success && s.verified_amount > 0)
-
-      if (slipsToInsert.length > 0) {
-        const { error: insertError } = await supabase
-          .from('ac_verified_slips')
-          .insert(slipsToInsert)
-
-        if (insertError) {
-          console.error('Error inserting verified slips:', insertError)
-          throw new Error('เกิดข้อผิดพลาดในการบันทึกสลิปที่ตรวจสอบแล้ว: ' + insertError.message)
-        }
-      }
-
-      // Check if amount matches or exceeds
-      if (totalAmount >= orderAmount) {
-        // Update order status to "รอตรวจคำสั่งซื้อ"
         const { error: updateError } = await supabase
           .from('or_orders')
-          .update({ status: 'รอตรวจคำสั่งซื้อ' })
+          .update({ status: 'ตรวจสอบไม่ผ่าน' })
           .eq('id', orderId)
 
         if (updateError) {
@@ -849,13 +1382,30 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           throw new Error('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
         }
 
-        const successMsg = errors.length > 0
-          ? `ตรวจสอบสลิปสำเร็จบางส่วน!\n\nยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})\n\nสลิปที่สำเร็จ: ${successfulVerifications.join(', ')}\nสลิปที่ล้มเหลว: ${errors.length} ใบ`
-          : `ตรวจสอบสลิปสำเร็จ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
-        
-        alert(successMsg)
+        // Status updated successfully - show alert and return (don't throw error)
+        // This allows the UI to refresh and show the order in "ตรวจสอบไม่ผ่าน" menu
+        const errorMessage = `ตรวจสอบสลิปไม่สำเร็จทั้งหมด:\n${errors.join('\n')}\n\nบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"\n\nคำแนะนำ:\n- ตรวจสอบว่า Edge Function ตั้งค่า Secrets ถูกต้องแล้ว\n- ตรวจสอบว่า EasySlip API เปิดใช้งานแล้ว\n- ดู Logs ใน Supabase Dashboard → Edge Functions → verify-slip → Logs`
+        alert(errorMessage)
+        return // Return instead of throwing error so UI can refresh
+      }
+
+      // Determine status based on verification results
+      let newStatus: string = 'ตรวจสอบไม่ผ่าน'
+      let statusMessage = ''
+
+      // Check if amount matches or exceeds
+      if (totalAmount >= orderAmount) {
+        if (validationErrors.length === 0 && errors.length === 0) {
+          // All validations passed - move to "ตรวจสอบแล้ว"
+          newStatus = 'ตรวจสอบแล้ว'
+          statusMessage = `ตรวจสอบสลิปสำเร็จ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+        } else {
+          // Amount matches but has validation errors - move to "ตรวจสอบไม่ผ่าน"
+          newStatus = 'ตรวจสอบไม่ผ่าน'
+          statusMessage = `ยอดเงินถูกต้อง แต่พบข้อผิดพลาดในการตรวจสอบ:\n${validationErrors.join('\n')}\n\nยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+        }
       } else {
-        // Amount is less than order amount - create refund record
+        // Amount is less than order amount - move to "ตรวจสอบไม่ผ่าน"
         const excessAmount = orderAmount - totalAmount
         const { error: refundError } = await supabase
           .from('ac_refunds')
@@ -871,18 +1421,72 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           throw new Error('เกิดข้อผิดพลาดในการสร้างรายการโอนคืน: ' + refundError.message)
         }
 
-        const refundMsg = errors.length > 0
-          ? `ยอดสลิปไม่พอ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})\n\nสลิปที่สำเร็จ: ${successfulVerifications.join(', ')}\nสลิปที่ล้มเหลว: ${errors.length} ใบ\n\nสร้างรายการโอนคืนแล้ว`
-          : `ยอดสลิปไม่พอ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()}) - สร้างรายการโอนคืนแล้ว`
-        
-        alert(refundMsg)
+        newStatus = 'ตรวจสอบไม่ผ่าน'
+        statusMessage = `ยอดสลิปไม่พอ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()}) - สร้างรายการโอนคืนแล้ว`
       }
+      
+      // Any verification errors keep as "ตรวจสอบไม่ผ่าน"
+      if (errors.length > 0 && successfulVerifications.length < slipStoragePaths.length) {
+        newStatus = 'ตรวจสอบไม่ผ่าน'
+      }
+
+      // Add error details if any
+      if (errors.length > 0) {
+        statusMessage += `\n\nสลิปที่สำเร็จ: ${successfulVerifications.join(', ')}\nสลิปที่ล้มเหลว: ${errors.length} ใบ`
+      }
+
+      // Update order status
+      const { error: updateError } = await supabase
+        .from('or_orders')
+        .update({ status: newStatus })
+        .eq('id', orderId)
+
+      if (updateError) {
+        console.error('Error updating order status:', updateError)
+        throw new Error('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
+      }
+
+      alert(statusMessage)
     } catch (error: any) {
       console.error('[Verify Slips] Error:', error)
       throw error
     }
   }
 
+  async function generateBillNo(channelCode: string): Promise<string> {
+    const today = new Date()
+    const year = today.getFullYear().toString().slice(-2)
+    const month = (today.getMonth() + 1).toString().padStart(2, '0')
+
+    const { data } = await supabase
+      .from('or_orders')
+      .select('bill_no')
+      .like('bill_no', `${channelCode}${year}${month}%`)
+      .order('bill_no', { ascending: false })
+      .limit(1)
+
+    let sequence = 1
+    if (data && data.length > 0) {
+      const lastBillNo = data[0].bill_no
+      const lastSeq = parseInt(lastBillNo.slice(-4)) || 0
+      sequence = lastSeq + 1
+    }
+
+    return `${channelCode}${year}${month}${sequence.toString().padStart(4, '0')}`
+  }
+
+  function addItem() {
+    const lastItem = items.length > 0 ? items[items.length - 1] : null
+    const newItem = lastItem
+      ? { ...lastItem }
+      : { product_type: 'ชั้น1' }
+    setItems([...items, newItem])
+
+    if (items.length > 0 && lastItem?.product_name) {
+      setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem.product_name })
+    } else {
+      setProductSearchTerm({ ...productSearchTerm, [items.length]: '' })
+    }
   }
 
   function removeItem(index: number) {
@@ -899,13 +1503,33 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold">ข้อมูลหลัก</h3>
-          {order?.bill_no && (
-            <div className="text-right">
-              <span className="text-sm text-gray-500">เลขบิล:</span>
-              <span className="ml-2 text-lg font-bold text-blue-600">{order.bill_no}</span>
-            </div>
-          )}
+          <h3 className="text-xl font-bold">ข้อมูลลูกค้า</h3>
+          <div className="flex items-center gap-3">
+            {(order?.bill_no || preBillNo) && (
+              <div className="text-right">
+                <span className="text-sm text-gray-500">เลขบิล:</span>
+                <span className="ml-2 text-lg font-bold text-blue-600">
+                  {order?.bill_no || preBillNo}
+                </span>
+              </div>
+            )}
+            {!order?.bill_no && !preBillNo && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!formData.channel_code || formData.channel_code.trim() === '') {
+                    alert('กรุณาเลือกช่องทางก่อนสร้างเลขบิล')
+                    return
+                  }
+                  const billNo = await generateBillNo(formData.channel_code)
+                  setPreBillNo(billNo)
+                }}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              >
+                สร้างบิล
+              </button>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -1222,15 +1846,15 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน */}
           <div>
-            {formData.payment_method === 'โอน' || uploadedSlipUrls.length > 0 ? (
+            {formData.payment_method === 'โอน' || uploadedSlipPaths.length > 0 ? (
               <>
                 <h4 className="font-semibold mb-3 text-lg">อัพโหลดสลิปโอนเงิน</h4>
                 <SlipUploadSimple
-                  billNo={order?.bill_no || null}
-                  existingSlips={uploadedSlipUrls}
+                  billNo={order?.bill_no || preBillNo || null}
+                  existingSlips={uploadedSlipPaths}
                   readOnly={formData.payment_method !== 'โอน'}
-                  onSlipsUploaded={(slipUrls) => {
-                    setUploadedSlipUrls(slipUrls)
+                  onSlipsUploaded={(slipStoragePaths) => {
+                    setUploadedSlipPaths(slipStoragePaths)
                   }}
                 />
               </>
@@ -1393,7 +2017,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
               <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
                 <div className="border rounded-lg p-3 bg-gray-50">
-                  {items.filter(item => item.product_id).length > 0 ? (
+                  {items.filter(item => item.product_id || item.product_name).length > 0 ? (
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
@@ -1406,7 +2030,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       </thead>
                       <tbody>
                         {items
-                          .filter(item => item.product_id)
+                          .filter(item => item.product_id || item.product_name)
                           .map((item, idx) => {
                             const quantity = item.quantity || 1
                             const unitPrice = item.unit_price || 0
@@ -1425,7 +2049,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       <tfoot>
                         {(() => {
                           const totalAmount = items
-                            .filter(item => item.product_id)
+                            .filter(item => item.product_id || item.product_name)
                             .reduce((sum, item) => {
                               const quantity = item.quantity || 1
                               const unitPrice = item.unit_price || 0
@@ -1500,7 +2124,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
               <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในบิล</label>
                 <div className="border rounded-lg p-3 bg-gray-50 max-h-48 overflow-y-auto">
-                  {items.filter(item => item.product_id).length > 0 ? (
+                  {items.filter(item => item.product_id || item.product_name).length > 0 ? (
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
@@ -1513,7 +2137,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                       </thead>
                       <tbody>
                         {items
-                          .filter(item => item.product_id)
+                          .filter(item => item.product_id || item.product_name)
                           .map((item, idx) => {
                             const quantity = item.quantity || 1
                             const unitPrice = item.unit_price || 0
@@ -1534,7 +2158,7 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
                           <td colSpan={4} className="p-2 pl-2 pr-4 text-right">รวมทั้งสิ้น:</td>
                           <td className="p-2 pl-2 pr-4 text-right">
                             {items
-                              .filter(item => item.product_id)
+                              .filter(item => item.product_id || item.product_name)
                               .reduce((sum, item) => {
                                 const quantity = item.quantity || 1
                                 const unitPrice = item.unit_price || 0
@@ -1579,73 +2203,131 @@ export default function OrderForm({ order, onSave, onCancel }: OrderFormProps) {
           onClick={async (e) => {
             e.preventDefault()
             
-            // Validation สำหรับบันทึก "ข้อมูลครบ"
-            if (!formData.channel_code || formData.channel_code.trim() === '') {
-              alert('กรุณาเลือกช่องทาง')
-              return
-            }
-
-            if (!formData.customer_name || formData.customer_name.trim() === '') {
-              alert('กรุณากรอกชื่อลูกค้า')
-              return
-            }
-
-            if (!formData.customer_address || formData.customer_address.trim() === '') {
-              alert('กรุณากรอกที่อยู่ลูกค้า')
-              return
-            }
-
-            // ตรวจสอบรายการสินค้า
-            const itemsWithProduct = items.filter(item => item.product_id)
-            if (itemsWithProduct.length === 0) {
-              alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
-              return
-            }
-
-            // ตรวจสอบว่ารายการสินค้าทุกรายการมีราคา/หน่วยหรือไม่
-            const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
-            if (itemsWithoutPrice.length > 0) {
-              const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-              alert(`กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`)
-              return
-            }
-
-            // ตรวจสอบสลิปโอน
-            if (uploadedSlipUrls.length === 0) {
-              alert('กรุณาอัพโหลดสลิปโอนเงิน')
-              return
-            }
-
-            // พยายาม match สินค้าก่อน
-            let hasUpdates = false
-            const updatedItems = items.map((item, index) => {
-              if (!item.product_id && item.product_name?.trim()) {
-                const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
-                let matchedProduct = products.find(
-                  p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
-                )
-                if (!matchedProduct) {
-                  matchedProduct = products.find(
-                    p => {
-                      const dbName = p.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
-                      return dbName.includes(searchName) || searchName.includes(dbName)
-                    }
-                  )
-                }
-                if (matchedProduct) {
-                  hasUpdates = true
-                  return { ...item, product_id: matchedProduct.id, product_name: matchedProduct.product_name }
-                }
+            try {
+              console.log('[บันทึกข้อมูลครบ] เริ่มต้นการบันทึก...')
+              console.log('[บันทึกข้อมูลครบ] formData:', formData)
+              console.log('[บันทึกข้อมูลครบ] items:', items)
+              console.log('[บันทึกข้อมูลครบ] uploadedSlipPaths:', uploadedSlipPaths)
+              
+              // Validation สำหรับบันทึก "ข้อมูลครบ"
+              if (!formData.channel_code || formData.channel_code.trim() === '') {
+                alert('กรุณาเลือกช่องทาง')
+                return
               }
-              return item
-            })
-            if (hasUpdates) {
-              setItems(updatedItems)
-              setTimeout(async () => {
-                await handleSubmitInternal(updatedItems, 'ลงข้อมูลเสร็จสิ้น')
-              }, 100)
-            } else {
-              await handleSubmitInternal(items, 'ลงข้อมูลเสร็จสิ้น')
+
+              if (!formData.customer_name || formData.customer_name.trim() === '') {
+                alert('กรุณากรอกชื่อลูกค้า')
+                return
+              }
+
+              if (!formData.customer_address || formData.customer_address.trim() === '') {
+                alert('กรุณากรอกที่อยู่ลูกค้า')
+                return
+              }
+
+              console.log('[บันทึกข้อมูลครบ] เริ่ม match สินค้า...')
+
+              // พยายาม match สินค้าก่อน (รองรับกรณีเลือกจาก dropdown แต่ product_id ยังไม่ถูก set)
+              let hasUpdates = false
+              const updatedItems = items.map((item, index) => {
+                if (!item.product_id && item.product_name?.trim()) {
+                  const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
+                  let matchedProduct = products.find(
+                    p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
+                  )
+                  if (!matchedProduct) {
+                    matchedProduct = products.find(
+                      p => {
+                        const dbName = p.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
+                        return dbName.includes(searchName) || searchName.includes(dbName)
+                      }
+                    )
+                  }
+                  if (matchedProduct) {
+                    hasUpdates = true
+                    return { ...item, product_id: matchedProduct.id, product_name: matchedProduct.product_name }
+                  }
+                }
+                return item
+              })
+              
+              console.log('[บันทึกข้อมูลครบ] hasUpdates:', hasUpdates)
+
+              const itemsToValidate = hasUpdates ? updatedItems : items
+
+              // ตรวจสอบรายการสินค้า
+              const itemsWithProduct = itemsToValidate.filter(item => item.product_id)
+              console.log('[บันทึกข้อมูลครบ] itemsWithProduct:', itemsWithProduct.length)
+              if (itemsWithProduct.length === 0) {
+                const hasItems = itemsToValidate.length > 0
+                if (hasItems) {
+                  alert('กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)')
+                } else {
+                  alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
+                }
+                return
+              }
+
+              // ตรวจสอบว่ารายการสินค้ามีราคา/หน่วยหรือไม่
+              const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
+              if (itemsWithoutPrice.length > 0) {
+                const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
+                alert(`กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`)
+                return
+              }
+
+              // ตรวจสอบสลิปโอน
+              if (uploadedSlipPaths.length === 0) {
+                alert('กรุณาอัพโหลดสลิปโอนเงิน')
+                return
+              }
+              
+              // Show verification popup if there are slips to verify
+              let verificationPopup: HTMLElement | null = null
+              if (uploadedSlipPaths.length > 0) {
+                verificationPopup = document.createElement('div')
+                verificationPopup.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50'
+                verificationPopup.innerHTML = `
+                  <div class="bg-white p-6 rounded-lg shadow-lg max-w-md">
+                    <div class="flex items-center space-x-4">
+                      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                      <div>
+                        <h3 class="text-lg font-semibold">กำลังตรวจสอบสลิป...</h3>
+                        <p class="text-sm text-gray-600">กรุณารอสักครู่ กำลังตรวจสอบสลิป ${uploadedSlipPaths.length} ใบ</p>
+                      </div>
+                    </div>
+                  </div>
+                `
+                document.body.appendChild(verificationPopup)
+              }
+              
+              try {
+                if (hasUpdates) {
+                  console.log('[บันทึกข้อมูลครบ] มีการอัพเดต items กำลัง setItems...')
+                  setItems(updatedItems)
+                  setTimeout(async () => {
+                    console.log('[บันทึกข้อมูลครบ] เรียก handleSubmitInternal หลังจาก setItems...')
+                    await handleSubmitInternal(updatedItems, 'ลงข้อมูลเสร็จสิ้น')
+                    if (verificationPopup) {
+                      document.body.removeChild(verificationPopup)
+                    }
+                  }, 100)
+                } else {
+                  console.log('[บันทึกข้อมูลครบ] ไม่มีการอัพเดต items เรียก handleSubmitInternal ทันที...')
+                  await handleSubmitInternal(items, 'ลงข้อมูลเสร็จสิ้น')
+                  if (verificationPopup) {
+                    document.body.removeChild(verificationPopup)
+                  }
+                }
+              } catch (error: any) {
+                if (verificationPopup) {
+                  document.body.removeChild(verificationPopup)
+                }
+                throw error
+              }
+            } catch (error: any) {
+              console.error('[บันทึกข้อมูลครบ] Error:', error)
+              alert('เกิดข้อผิดพลาดในการบันทึก: ' + (error.message || error))
             }
           }}
           disabled={loading}

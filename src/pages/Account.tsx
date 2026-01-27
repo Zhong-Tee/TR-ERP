@@ -3,12 +3,21 @@ import { supabase } from '../lib/supabase'
 import { Refund } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { useAuthContext } from '../contexts/AuthContext'
+import { getEasySlipQuota } from '../lib/slipVerification'
 
 export default function Account() {
   const { user } = useAuthContext()
   const [refunds, setRefunds] = useState<Refund[]>([])
   const [loading, setLoading] = useState(true)
   const [easyslipQuota, setEasyslipQuota] = useState<number | null>(null)
+  const [easyslipQuotaInfo, setEasyslipQuotaInfo] = useState<{
+    usedQuota: number
+    maxQuota: number
+    remainingQuota: number
+    expiredAt: string
+    currentCredit: number
+  } | null>(null)
+  const [quotaLoading, setQuotaLoading] = useState(true)
 
   useEffect(() => {
     loadRefunds()
@@ -34,9 +43,28 @@ export default function Account() {
   }
 
   async function loadEasySlipQuota() {
-    // This would call EasySlip API to get quota
-    // For now, we'll set a placeholder
-    setEasyslipQuota(1000) // Placeholder
+    setQuotaLoading(true)
+    try {
+      console.log('[Account] Loading EasySlip quota...')
+      const result = await getEasySlipQuota()
+      console.log('[Account] getEasySlipQuota result:', result)
+      
+      if (result.success && result.data) {
+        console.log('[Account] Quota data received:', result.data)
+        setEasyslipQuota(result.data.remainingQuota)
+        setEasyslipQuotaInfo(result.data)
+      } else {
+        console.error('[Account] Error loading EasySlip quota:', result.error)
+        setEasyslipQuota(null)
+        setEasyslipQuotaInfo(null)
+      }
+    } catch (error: any) {
+      console.error('[Account] Exception loading EasySlip quota:', error)
+      setEasyslipQuota(null)
+      setEasyslipQuotaInfo(null)
+    } finally {
+      setQuotaLoading(false)
+    }
   }
 
   async function approveRefund(refund: Refund) {
@@ -104,10 +132,23 @@ export default function Account() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-lg shadow">
           <h2 className="text-xl font-bold mb-4">EasySlip Quota</h2>
-          <div className="text-3xl font-bold text-blue-600">
-            {easyslipQuota !== null ? easyslipQuota.toLocaleString() : 'Loading...'}
-          </div>
-          <p className="text-sm text-gray-600 mt-2">จำนวนโคต้าคงเหลือ</p>
+          {quotaLoading ? (
+            <div className="text-3xl font-bold text-gray-400">Loading...</div>
+          ) : easyslipQuotaInfo ? (
+            <>
+              <div className="text-3xl font-bold text-blue-600">
+                {easyslipQuotaInfo.remainingQuota.toLocaleString()}
+              </div>
+              <p className="text-sm text-gray-600 mt-2">จำนวนโคต้าคงเหลือ</p>
+              <div className="mt-4 space-y-1 text-sm text-gray-500">
+                <p>ใช้ไปแล้ว: {easyslipQuotaInfo.usedQuota.toLocaleString()} / {easyslipQuotaInfo.maxQuota.toLocaleString()}</p>
+                <p>หมดอายุ: {formatDateTime(easyslipQuotaInfo.expiredAt)}</p>
+                <p>เครดิตคงเหลือ: {easyslipQuotaInfo.currentCredit.toLocaleString()}</p>
+              </div>
+            </>
+          ) : (
+            <div className="text-red-600">ไม่สามารถโหลดข้อมูลโควต้าได้</div>
+          )}
         </div>
 
         <div className="bg-white p-6 rounded-lg shadow">

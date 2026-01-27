@@ -23,6 +23,11 @@ export type OrderStatus =
   | 'ตรวจสลิป'
   | 'รอตรวจคำสั่งซื้อ'
   | 'ลงข้อมูลเสร็จสิ้น'
+  | 'ลงข้อมูลผิด'
+  | 'ตรวจสอบไม่ผ่าน'
+  | 'ตรวจสอบไม่สำเร็จ'
+  | 'ตรวจสอบแล้ว'
+  | 'ใบสั่งงาน'
   | 'ใบงานกำลังผลิต'
   | 'จัดส่งแล้ว'
   | 'ยกเลิก'
@@ -205,3 +210,38 @@ export interface VerifiedSlip {
   verified_at: string
   created_at: string
 }
+
+// Bank Settings Types
+export interface BankSetting {
+  id: string
+  account_number: string
+  bank_code: string
+  bank_name: string | null
+  account_name: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  channels?: { channel_code: string; channel_name: string }[]
+}
+
+// Bank Codes from EasySlip
+export const BANK_CODES = [
+  { code: '002', name: 'ธนาคารกรุงเทพ', abbreviation: 'BBL' },
+  { code: '004', name: 'ธนาคารกสิกรไทย', abbreviation: 'KBANK' },
+  { code: '006', name: 'ธนาคารกรุงไทย', abbreviation: 'KTB' },
+  { code: '011', name: 'ธนาคารทหารไทยธนชาต', abbreviation: 'TTB' },
+  { code: '014', name: 'ธนาคารไทยพาณิชย์', abbreviation: 'SCB' },
+  { code: '022', name: 'ธนาคารซีไอเอ็มบีไทย', abbreviation: 'CIMBT' },
+  { code: '024', name: 'ธนาคารยูโอบี', abbreviation: 'UOBT' },
+  { code: '025', name: 'ธนาคารกรุงศรีอยุธยา', abbreviation: 'BAY' },
+  { code: '030', name: 'ธนาคารออมสิน', abbreviation: 'GSB' },
+  { code: '033', name: 'ธนาคารอาคารสงเคราะห์', abbreviation: 'GHB' },
+  { code: '034', name: 'ธนาคารเพื่อการเกษตรและสหกรณ์การเกษตร', abbreviation: 'BAAC' },
+  { code: '035', name: 'ธนาคารเพื่อการส่งออกและนำเข้าแห่งประเทศไทย', abbreviation: 'EXIM' },
+  { code: '067', name: 'ธนาคารทิสโก้', abbreviation: 'TISCO' },
+  { code: '069', name: 'ธนาคารเกียรตินาคินภัทร', abbreviation: 'KKP' },
+  { code: '070', name: 'ธนาคารไอซีบีซี (ไทย)', abbreviation: 'ICBCT' },
+  { code: '071', name: 'ธนาคารไทยเครดิตเพื่อรายย่อย', abbreviation: 'TCD' },
+  { code: '073', name: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', abbreviation: 'LHFG' },
+  { code: '098', name: 'ธนาคารพัฒนาวิสาหกิจขนาดกลางและขนาดย่อมแห่งประเทศไทย', abbreviation: 'SME' },
+] as const
