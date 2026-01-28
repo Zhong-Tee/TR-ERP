@@ -46,9 +46,6 @@ export default function AdminQC() {
       <div className="w-full px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-3xl font-bold">รอตรวจคำสั่งซื้อ</h1>
-          <div className="text-sm text-gray-600">
-            {count} รายการ
-          </div>
         </div>
         <OrderReviewList onStatusUpdate={refreshCounts} />
       </div>

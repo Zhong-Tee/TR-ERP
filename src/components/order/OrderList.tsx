@@ -77,6 +77,8 @@ export default function OrderList({
           .from('ac_verified_slips')
           .select('order_id, account_name_match, bank_code_match, amount_match, validation_status, validation_errors')
           .in('order_id', orderIds)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: true })
         
         // Map verification data to orders
         const verifiedMap = new Map()

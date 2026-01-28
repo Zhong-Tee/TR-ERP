@@ -12,10 +12,71 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
+  const [productImageMap, setProductImageMap] = useState<Record<string, { image_url: string | null; product_name?: string }>>({})
+  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { image_url: string | null; pattern_name?: string; pattern_code?: string }>>({})
 
   useEffect(() => {
     loadOrders()
   }, [])
+
+  // Load product & cartoon pattern images for selected order items
+  useEffect(() => {
+    async function loadItemImages() {
+      const items: any[] =
+        (selectedOrder as any)?.order_items ||
+        (selectedOrder as any)?.or_order_items ||
+        []
+
+      if (!selectedOrder || items.length === 0) {
+        setProductImageMap({})
+        setCartoonPatternImageMap({})
+        return
+      }
+
+      try {
+        const productIds = Array.from(
+          new Set(items.map((i) => i.product_id).filter(Boolean))
+        )
+        const cartoonKeys = Array.from(
+          new Set(items.map((i) => i.cartoon_pattern).filter(Boolean))
+        )
+
+        const [productsRes, patternsByCodeRes, patternsByNameRes] = await Promise.all([
+          productIds.length > 0
+            ? supabase.from('pr_products').select('id, product_name, image_url').in('id', productIds)
+            : Promise.resolve({ data: [] as any[] }),
+          cartoonKeys.length > 0
+            ? supabase.from('cp_cartoon_patterns').select('pattern_code, pattern_name, image_url').in('pattern_code', cartoonKeys)
+            : Promise.resolve({ data: [] as any[] }),
+          cartoonKeys.length > 0
+            ? supabase.from('cp_cartoon_patterns').select('pattern_code, pattern_name, image_url').in('pattern_name', cartoonKeys)
+            : Promise.resolve({ data: [] as any[] }),
+        ])
+
+        const nextProductMap: Record<string, { image_url: string | null; product_name?: string }> = {}
+        ;(productsRes as any)?.data?.forEach((p: any) => {
+          nextProductMap[p.id] = { image_url: p.image_url || null, product_name: p.product_name }
+        })
+        setProductImageMap(nextProductMap)
+
+        const nextPatternMap: Record<string, { image_url: string | null; pattern_name?: string; pattern_code?: string }> = {}
+        const allPatterns = [
+          ...(((patternsByCodeRes as any)?.data || []) as any[]),
+          ...(((patternsByNameRes as any)?.data || []) as any[]),
+        ]
+        allPatterns.forEach((p: any) => {
+          const payload = { image_url: p.image_url || null, pattern_name: p.pattern_name, pattern_code: p.pattern_code }
+          if (p.pattern_code) nextPatternMap[p.pattern_code] = payload
+          if (p.pattern_name) nextPatternMap[p.pattern_name] = payload
+        })
+        setCartoonPatternImageMap(nextPatternMap)
+      } catch (error) {
+        console.error('Error loading item images:', error)
+      }
+    }
+
+    loadItemImages()
+  }, [selectedOrder?.id])
 
   async function loadOrders() {
     setLoading(true)
@@ -112,12 +173,12 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   return (
-    <div className="flex gap-6 h-[calc(100vh-200px)]">
+    <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-200px)] text-[12pt]">
       {/* Left Sidebar - Order List */}
-      <div className="w-1/3 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+      <div className="w-full lg:w-1/2 bg-white rounded-lg shadow overflow-hidden flex flex-col">
         <div className="p-4 border-b bg-gray-50">
           <h2 className="text-lg font-bold">รายการบิล (ตรวจสอบแล้ว)</h2>
-          <p className="text-sm text-gray-600 mt-1">{orders.length} รายการ</p>
+          <p className="text-gray-600 mt-1">{orders.length} รายการ</p>
         </div>
         <div className="flex-1 overflow-y-auto">
           {orders.length === 0 ? (
@@ -134,13 +195,21 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     selectedOrder?.id === order.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                   }`}
                 >
-                  <div className="font-semibold text-gray-900">{order.bill_no}</div>
-                  <div className="text-sm text-gray-600 mt-1">{order.customer_name}</div>
-                  <div className="text-sm font-medium text-green-600 mt-1">
-                    ฿{order.total_amount.toLocaleString()}
+                  {/* Row 1: Bill no (left) + Customer name (right) */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-semibold text-gray-900">{order.bill_no}</div>
+                    <div className="text-gray-700 text-right truncate max-w-[55%]">
+                      {order.customer_name}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    {formatDateTime(order.created_at)}
+                  {/* Row 2: Date (left) + Amount (right) */}
+                  <div className="flex items-center justify-between gap-3 mt-2">
+                    <div className="text-gray-500">
+                      {formatDateTime(order.created_at)}
+                    </div>
+                    <div className="font-semibold text-green-600">
+                      ฿{Number(order.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
                   </div>
                 </button>
               ))}
@@ -150,7 +219,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       </div>
 
       {/* Right Side - Order Details */}
-      <div className="flex-1 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+      <div className="w-full lg:w-1/2 bg-white rounded-lg shadow overflow-hidden flex flex-col">
         {selectedOrder ? (
           <>
             <div className="p-6 border-b bg-gray-50 flex-1 overflow-y-auto">
@@ -158,70 +227,174 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               
               <div className="space-y-4">
                 {/* Basic Info */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">เลขบิล</label>
-                    <div className="mt-1 text-lg font-semibold">{selectedOrder.bill_no}</div>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-28 text-gray-600 font-medium">เลขบิล</div>
+                    <div className="text-lg font-semibold">
+                      {selectedOrder.bill_no}
+                      {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length > 0 && (
+                        <span className="text-base font-normal text-gray-600 ml-2">
+                          ({(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length} รายการ)
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">สถานะ</label>
-                    <div className="mt-1">
-                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-sm">
+                  <div className="flex items-center gap-3">
+                    <div className="w-28 text-gray-600 font-medium">สถานะ</div>
+                    <div>
+                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded">
                         {selectedOrder.status}
                       </span>
                     </div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">ชื่อลูกค้า</label>
-                    <div className="mt-1">{selectedOrder.customer_name}</div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-28 text-gray-600 font-medium shrink-0">ชื่อลูกค้า</div>
+                    <div className="flex-1">{selectedOrder.customer_name}</div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">ที่อยู่</label>
-                    <div className="mt-1">{selectedOrder.customer_address}</div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-28 text-gray-600 font-medium shrink-0">ที่อยู่</div>
+                    <div className="flex-1 whitespace-pre-wrap">{selectedOrder.customer_address}</div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">ยอดรวม</label>
-                    <div className="mt-1 text-lg font-bold text-green-600">
-                      ฿{selectedOrder.total_amount.toLocaleString()}
+                  <div className="flex items-center gap-3">
+                    <div className="w-28 text-gray-600 font-medium">วันที่สร้าง</div>
+                    <div>{formatDateTime(selectedOrder.created_at)}</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="w-28 text-gray-600 font-medium">ยอดรวม</div>
+                    <div className="text-lg font-bold text-green-600">
+                      ฿{Number(selectedOrder.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">วันที่สร้าง</label>
-                    <div className="mt-1">{formatDateTime(selectedOrder.created_at)}</div>
                   </div>
                 </div>
 
                 {/* Order Items */}
-                {selectedOrder.order_items && selectedOrder.order_items.length > 0 && (
+                {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length > 0 && (
                   <div className="mt-6">
                     <h3 className="text-lg font-semibold mb-3">รายการสินค้า</h3>
-                    <div className="border rounded-lg overflow-hidden">
-                      <table className="w-full">
-                        <thead className="bg-gray-100">
-                          <tr>
-                            <th className="p-3 text-left text-sm font-medium">ชื่อสินค้า</th>
-                            <th className="p-3 text-right text-sm font-medium">จำนวน</th>
-                            <th className="p-3 text-right text-sm font-medium">ราคา/หน่วย</th>
-                            <th className="p-3 text-right text-sm font-medium">รวม</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                          {selectedOrder.order_items.map((item) => (
-                            <tr key={item.id}>
-                              <td className="p-3">{item.product_name}</td>
-                              <td className="p-3 text-right">{item.quantity}</td>
-                              <td className="p-3 text-right">
-                                {item.unit_price ? `฿${item.unit_price.toLocaleString()}` : '-'}
-                              </td>
-                              <td className="p-3 text-right font-medium">
-                                {item.unit_price
-                                  ? `฿${(item.quantity * item.unit_price).toLocaleString()}`
-                                  : '-'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div className="space-y-3">
+                      {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).map((item: any) => {
+                        const product = productImageMap[item.product_id] || null
+                        const productImageUrl = product?.image_url || null
+                        const patternKey = item.cartoon_pattern || ''
+                        const pattern = patternKey ? cartoonPatternImageMap[patternKey] : null
+                        const patternImageUrl = pattern?.image_url || null
+
+                        const unitPrice = Number(item.unit_price || 0)
+                        const qty = Number(item.quantity || 0)
+                        const total = unitPrice && qty ? unitPrice * qty : 0
+
+                        return (
+                          <div key={item.id} className="border rounded-lg p-3">
+                            <div className="flex gap-4">
+                              {/* Images: product (top) + cartoon pattern (bottom) */}
+                              <div className="shrink-0 w-28">
+                                <div className="w-28 h-28 rounded border bg-gray-50 flex items-center justify-center overflow-hidden">
+                                  {productImageUrl ? (
+                                    <img
+                                      src={productImageUrl}
+                                      alt={item.product_name}
+                                      className="w-full h-full object-contain"
+                                    />
+                                  ) : (
+                                    <div className="text-gray-400 text-xs text-center px-2">
+                                      ไม่มีรูปสินค้า
+                                    </div>
+                                  )}
+                                </div>
+                                {item.cartoon_pattern && (
+                                  <div className="mt-2">
+                                    <div className="w-28 h-28 rounded border bg-gray-50 flex items-center justify-center overflow-hidden">
+                                      {patternImageUrl ? (
+                                        <img
+                                          src={patternImageUrl}
+                                          alt={item.cartoon_pattern}
+                                          className="w-full h-full object-contain"
+                                        />
+                                      ) : (
+                                        <div className="text-gray-400 text-xs text-center px-2">
+                                          ไม่มีรูปลาย
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="font-semibold text-gray-900 truncate">
+                                      {item.product_name}
+                                    </div>
+                                    {item.cartoon_pattern && (
+                                      <div className="text-gray-600 mt-1">
+                                        ลายการ์ตูน: <span className="font-medium">{item.cartoon_pattern}</span>
+                                      </div>
+                                    )}
+                                    {/* Extra item details for checking */}
+                                    <div className="mt-3 space-y-1 text-gray-700">
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">สีหมึก</div>
+                                        <div className="flex-1">{item.ink_color || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">ชั้น</div>
+                                        <div className="flex-1">{item.product_type || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">ลายเส้น</div>
+                                        <div className="flex-1">{item.line_pattern || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">ฟอนต์</div>
+                                        <div className="flex-1">{item.font || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 1</div>
+                                        <div className="flex-1">{item.line_1 || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 2</div>
+                                        <div className="flex-1">{item.line_2 || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 3</div>
+                                        <div className="flex-1">{item.line_3 || '-'}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="text-right shrink-0">
+                                    <div className="text-gray-700">
+                                      จำนวน: <span className="font-semibold">{qty || '-'}</span>
+                                    </div>
+                                    <div className="text-gray-700 mt-1">
+                                      ราคา/หน่วย:{' '}
+                                      <span className="font-semibold">
+                                        {unitPrice ? `฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                {/* Pattern lookup info (optional) */}
+                                {item.cartoon_pattern && (
+                                  <div className="mt-2 text-gray-600">
+                                    {pattern?.pattern_name || pattern?.pattern_code ? (
+                                      <div>
+                                        พบข้อมูลลาย: <span className="font-medium">{pattern?.pattern_name || pattern?.pattern_code}</span>
+                                      </div>
+                                    ) : (
+                                      <div>
+                                        ไม่พบข้อมูลลายในระบบ
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
@@ -233,14 +406,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     <div className="bg-gray-50 p-4 rounded-lg space-y-2">
                       {selectedOrder.billing_details.request_tax_invoice && (
                         <div className="flex items-center gap-2">
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-sm">
+                          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
                             ขอใบกำกับภาษี
                           </span>
                         </div>
                       )}
                       {selectedOrder.billing_details.request_cash_bill && (
                         <div className="flex items-center gap-2">
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-sm">
+                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded">
                             ขอบิลเงินสด
                           </span>
                         </div>
