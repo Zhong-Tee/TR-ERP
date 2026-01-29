@@ -281,7 +281,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
                         const unitPrice = Number(item.unit_price || 0)
                         const qty = Number(item.quantity || 0)
-                        const total = unitPrice && qty ? unitPrice * qty : 0
 
                         return (
                           <div key={item.id} className="border rounded-lg p-3">

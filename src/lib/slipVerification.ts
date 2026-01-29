@@ -179,6 +179,9 @@ export async function verifySlipFromStorage(
   error?: string
   data?: any
   easyslipResponse?: any
+  accountNameMatch?: boolean
+  bankCodeMatch?: boolean
+  validationErrors?: string[]
 }> {
   // No need to check environment variables - supabase client is already initialized
 
@@ -261,6 +264,9 @@ export async function verifyMultipleSlipsFromStorage(
   message?: string
   error?: string
   easyslipResponse?: any
+  accountNameMatch?: boolean
+  bankCodeMatch?: boolean
+  validationErrors?: string[]
 }>> {
   const results = []
   

@@ -35,7 +35,7 @@ export async function verifySlipImage(
         const fileExt = imageFile.name.split('.').pop()
         const fileName = `slips/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
         
-        const { data: uploadData, error: uploadError } = await supabase.storage
+        const { data: _uploadData, error: uploadError } = await supabase.storage
           .from('slip-images')
           .upload(fileName, imageFile)
         

@@ -261,7 +261,7 @@ function SlipUploadSimple({
           <div>
             <p className="text-sm font-medium mb-2 text-gray-700">รูปภาพสลิปที่อัพโหลดแล้ว:</p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {uploadedSlipPaths.map((storagePath, index) => {
+              {uploadedSlipPaths.map((_, index) => {
                 const imageUrl = uploadedSlipUrls[index]
                 return (
                   <div key={index} className="relative group">
@@ -325,11 +325,12 @@ function SlipUploadSimple({
                               .remove([filePath])
                             
                             if (deleteError) {
+                              const err = deleteError as { message?: string; statusCode?: number; error?: string }
                               console.error('Error deleting file from bucket:', {
                                 error: deleteError,
-                                message: deleteError.message,
-                                statusCode: deleteError.statusCode,
-                                errorCode: deleteError.error,
+                                message: err.message,
+                                statusCode: err.statusCode,
+                                errorCode: err.error,
                                 bucket,
                                 filePath,
                                 storagePath
@@ -337,12 +338,12 @@ function SlipUploadSimple({
                               
                               // แสดง error message ที่ชัดเจนขึ้น
                               let errorMessage = 'เกิดข้อผิดพลาดในการลบไฟล์'
-                              if (deleteError.message) {
-                                errorMessage += ': ' + deleteError.message
+                              if (err.message) {
+                                errorMessage += ': ' + err.message
                               }
-                              if (deleteError.statusCode === 403 || deleteError.error === 'permission_denied') {
+                              if (err.statusCode === 403 || err.error === 'permission_denied') {
                                 errorMessage += '\n\nสาเหตุ: ไม่มีสิทธิ์ลบไฟล์\n\nวิธีแก้ไข:\n1. ตรวจสอบว่า Storage policies ถูกตั้งค่าแล้ว (รัน migration 012_setup_slip_images_storage_policies.sql)\n2. ตรวจสอบว่า bucket "slip-images" มีการเปิดใช้งาน RLS\n3. ตรวจสอบว่า user มีสิทธิ์ authenticated'
-                              } else if (deleteError.statusCode === 404) {
+                              } else if (err.statusCode === 404) {
                                 // ไฟล์อาจถูกลบไปแล้ว แต่ยังต้องทำ soft delete ใน DB ต่อ
                                 console.warn('File not found in bucket (404), proceeding with DB soft delete:', storagePath)
                                 errorMessage += '\n\nสาเหตุ: ไม่พบไฟล์ที่ต้องการลบ (อาจถูกลบไปแล้ว)\n\nระบบจะทำการซ่อนสลิปนี้จากรายการต่อไป'
@@ -423,7 +424,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
-  const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
+  const [_cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
@@ -431,12 +432,9 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
-  const [showProductDropdown, setShowProductDropdown] = useState<{ [key: number]: boolean }>({})
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [preBillNo, setPreBillNo] = useState<string | null>(null)
-  const dropdownRefs = React.useRef<{ [key: number]: HTMLDivElement | null }>({})
-  const selectRefs = React.useRef<{ [key: number]: HTMLSelectElement | null }>({})
 
   const [formData, setFormData] = useState({
     channel_code: '',
@@ -588,7 +586,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         }
       } else {
         setItems([{ product_type: 'ชั้น1' }])
-        setUploadedSlipUrls([])
+        setUploadedSlipPaths([])
         setPreBillNo(null)
       }
     }
@@ -1316,14 +1314,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         .filter((s: any) => s !== null) // Remove null entries
 
       // Log what we're about to insert into ac_verified_slips
-      console.log('[Verify Slips] All slips to insert (before validation):', slipsToInsert.map((slip, idx) => ({
+      console.log('[Verify Slips] All slips to insert (before validation):', slipsToInsert.map((s, idx) => s ? {
         index: idx + 1,
-        verified_amount: slip.verified_amount,
-        hasEasyslipResponse: !!slip.easyslip_response,
-        validation_status: slip.validation_status,
-        validation_errors: slip.validation_errors,
-        is_validated: slip.is_validated,
-      })))
+        verified_amount: s.verified_amount,
+        hasEasyslipResponse: !!s.easyslip_response,
+        validation_status: s.validation_status,
+        validation_errors: s.validation_errors,
+        is_validated: s.is_validated,
+      } : null))
 
       // Insert or Update ALL slips (regardless of validation result)
       // Handle duplicate slip_image_url (unique constraint) by checking and updating existing records
@@ -1365,6 +1363,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                   
                   // Update existing records by slip_image_url (regardless of order_id)
                   for (const slip of toInsert) {
+                    if (!slip) continue
                     const { error: updateError } = await supabase
                       .from('ac_verified_slips')
                       .update({
@@ -1406,6 +1405,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
               if (error.message && (error.message.includes('duplicate key') || error.message.includes('ac_verified_slips_slip_image_url_key'))) {
                 console.log('[Verify Slips] Catch: Duplicate key detected, updating existing records')
                 for (const slip of toInsert) {
+                  if (!slip) continue
                   const { error: updateError } = await supabase
                     .from('ac_verified_slips')
                     .update({
@@ -1444,6 +1444,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
             console.log('[Verify Slips] Updating', toUpdate.length, 'existing verified slips for this order')
             
             for (const slip of toUpdate) {
+              if (!slip) continue
               const { error: updateError } = await supabase
                 .from('ac_verified_slips')
                 .update({
@@ -2371,7 +2372,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
 
               // พยายาม match สินค้าก่อน (รองรับกรณีเลือกจาก dropdown แต่ product_id ยังไม่ถูก set)
               let hasUpdates = false
-              const updatedItems = items.map((item, index) => {
+              const updatedItems = items.map((item, _index) => {
                 if (!item.product_id && item.product_name?.trim()) {
                   const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
                   let matchedProduct = products.find(

@@ -5,7 +5,7 @@ interface LoginProps {
   onLoginSuccess: () => void
 }
 
-export default function Login({ onLoginSuccess }: LoginProps) {
+export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -18,7 +18,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setLoading(true)
 
     try {
-      const result = await signIn(email, password)
+      await signIn(email, password)
       // รอให้ auth state change และ load user data
       // onAuthStateChange จะจัดการให้อัตโนมัติ
       // ไม่ต้องเรียก onLoginSuccess ทันที

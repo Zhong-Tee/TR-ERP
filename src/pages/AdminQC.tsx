@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useState, useEffect } from 'react'
 
 export default function AdminQC() {
-  const [count, setCount] = useState(0)
+  const [_count, setCount] = useState(0)
 
   useEffect(() => {
     loadCount()
