@@ -25,7 +25,7 @@ export default function OrderList({
   onOrderClick,
   searchTerm = '',
   channelFilter = '',
-  showBillingStatus = false,
+  showBillingStatus: _showBillingStatus = false,
   verifiedOnly = false,
   onCountChange,
   disableOrderClick = false,

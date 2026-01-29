@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 
@@ -14,7 +14,7 @@ export default function WorkOrderSelectionList({
   searchTerm = '',
   channelFilter = '',
   onCountChange,
-  onOrderClick,
+  onOrderClick: _onOrderClick,
   onCreateWorkOrder,
 }: WorkOrderSelectionListProps) {
   const [orders, setOrders] = useState<Order[]>([])

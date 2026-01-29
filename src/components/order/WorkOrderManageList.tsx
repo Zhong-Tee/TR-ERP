@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, WorkOrder } from '../../types'
 
@@ -21,7 +21,7 @@ export default function WorkOrderManageList({
   const [editingTrackingId, setEditingTrackingId] = useState<string | null>(null)
   const [editingTrackingValue, setEditingTrackingValue] = useState('')
   const [updating, setUpdating] = useState(false)
-  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [_channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
 
   useEffect(() => {
     loadWorkOrders()
