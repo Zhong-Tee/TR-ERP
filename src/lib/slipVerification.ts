@@ -237,7 +237,13 @@ export async function uploadMultipleToStorage(
       paths.push(path)
     } catch (error: any) {
       console.error(`Failed to upload ${file.name}:`, error)
-      throw new Error(`ไม่สามารถอัปโหลดไฟล์ ${file.name}: ${error.message}`)
+      const msg = error?.message || ''
+      const isHtmlInsteadOfJson =
+        /Unexpected token\s*'<'|is not valid JSON|JSON\.parse/i.test(msg) || (msg.includes('<') && msg.includes('html'))
+      const friendlyMessage = isHtmlInsteadOfJson
+        ? 'เซิร์ฟเวอร์ตอบกลับเป็น HTML แทน JSON — กรุณาตรวจสอบ: (1) Supabase Dashboard → Storage ว่ามี bucket ชื่อ slip-images และนโยบาย RLS อนุญาตให้อัพโหลด (2) ตัวแปร VITE_SUPABASE_URL ถูกต้อง (3) ไม่มี proxy/firewall บล็อกหรือเปลี่ยน response'
+        : msg
+      throw new Error(`ไม่สามารถอัปโหลดไฟล์ ${file.name}: ${friendlyMessage}`)
     }
   }
   
@@ -269,12 +275,19 @@ export async function verifyMultipleSlipsFromStorage(
   validationErrors?: string[]
 }>> {
   const results = []
-  
-  for (const storagePath of storagePaths) {
+  // กรณีมากกว่า 1 สลิป: ไม่ส่ง expectedAmount ต่อใบ — จะรวมยอดทุกใบแล้วเช็คกับยอดออเดอร์ในฝั่ง OrderForm
+  const perSlipExpectedAmount = storagePaths.length > 1 ? undefined : expectedAmount
+
+  const delayMs = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+  const delayBetweenSlips = 1000 // ลดโอกาส rate limit จาก EasySlip เมื่อตรวจหลายใบติดกัน
+
+  for (let i = 0; i < storagePaths.length; i++) {
+    const storagePath = storagePaths[i]
+    if (i > 0) await delayMs(delayBetweenSlips)
     try {
       const result = await verifySlipFromStorage(
         storagePath,
-        expectedAmount,
+        perSlipExpectedAmount,
         bankAccount,
         bankCode
       )

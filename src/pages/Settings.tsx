@@ -9,7 +9,7 @@ export default function Settings() {
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'users' | 'banks' | 'order-status'>('users')
+  const [activeTab, setActiveTab] = useState<'users' | 'banks' | 'product-settings' | 'order-status'>('users')
   const [fixingStatus, setFixingStatus] = useState(false)
   const [statusFixResult, setStatusFixResult] = useState<{
     success: boolean
@@ -49,11 +49,54 @@ export default function Settings() {
     selectedChannels: [] as string[],
   })
 
+  // ตั้งค่าสินค้า: หมวดหมู่ + ฟิลด์ที่อนุญาตให้กรอก
+  const PRODUCT_FIELD_KEYS = [
+    { key: 'product_name', label: 'ชื่อสินค้า' },
+    { key: 'ink_color', label: 'สีหมึก' },
+    { key: 'layer', label: 'ชั้น' },
+    { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
+    { key: 'line_pattern', label: 'ลายเส้น' },
+    { key: 'font', label: 'ฟอนต์' },
+    { key: 'line_1', label: 'บรรทัด 1' },
+    { key: 'line_2', label: 'บรรทัด 2' },
+    { key: 'line_3', label: 'บรรทัด 3' },
+    { key: 'quantity', label: 'จำนวน' },
+    { key: 'unit_price', label: 'ราคา/หน่วย' },
+    { key: 'notes', label: 'หมายเหตุ' },
+    { key: 'attachment', label: 'ไฟล์แนบ' },
+  ] as const
+  type ProductFieldKey = (typeof PRODUCT_FIELD_KEYS)[number]['key']
+  const defaultCategoryFields: Record<ProductFieldKey, boolean> = {
+    product_name: true,
+    ink_color: true,
+    layer: true,
+    cartoon_pattern: true,
+    line_pattern: true,
+    font: true,
+    line_1: true,
+    line_2: true,
+    line_3: true,
+    quantity: true,
+    unit_price: true,
+    notes: true,
+    attachment: true,
+  }
+  const [productCategories, setProductCategories] = useState<string[]>([])
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<ProductFieldKey, boolean>>>({})
+  const [savingProductSettings, setSavingProductSettings] = useState(false)
+
   useEffect(() => {
     loadUsers()
     loadBankSettings()
     loadChannels()
   }, [])
+
+  useEffect(() => {
+    if (activeTab === 'product-settings') {
+      loadProductCategories()
+      loadCategoryFieldSettings()
+    }
+  }, [activeTab])
 
   async function testConnection() {
     setTestingConnection(true)
@@ -213,6 +256,109 @@ export default function Settings() {
     } catch (error: any) {
       console.error('Error loading bank settings:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+    }
+  }
+
+  async function loadProductCategories() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('product_category')
+        .eq('is_active', true)
+        .not('product_category', 'is', null)
+
+      if (error) throw error
+      const categories = Array.from(
+        new Set(
+          (data || [])
+            .map((r: { product_category: string | null }) => r.product_category)
+            .filter((c): c is string => !!c && String(c).trim() !== '')
+        )
+      ).sort((a, b) => a.localeCompare(b))
+      setProductCategories(categories)
+    } catch (error: any) {
+      console.error('Error loading product categories:', error)
+      setProductCategories([])
+    }
+  }
+
+  async function loadCategoryFieldSettings() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_category_field_settings')
+        .select('*')
+
+      if (error) throw error
+      const map: Record<string, Record<ProductFieldKey, boolean>> = {}
+      ;(data || []).forEach((row: any) => {
+        map[row.category] = {
+          product_name: row.product_name ?? true,
+          ink_color: row.ink_color ?? true,
+          layer: row.layer ?? true,
+          cartoon_pattern: row.cartoon_pattern ?? true,
+          line_pattern: row.line_pattern ?? true,
+          font: row.font ?? true,
+          line_1: row.line_1 ?? true,
+          line_2: row.line_2 ?? true,
+          line_3: row.line_3 ?? true,
+          quantity: row.quantity ?? true,
+          unit_price: row.unit_price ?? true,
+          notes: row.notes ?? true,
+          attachment: row.attachment ?? true,
+        }
+      })
+      setCategoryFieldSettings(map)
+    } catch (error: any) {
+      console.error('Error loading category field settings:', error)
+      setCategoryFieldSettings({})
+    }
+  }
+
+  function getCategoryFields(category: string): Record<ProductFieldKey, boolean> {
+    return categoryFieldSettings[category]
+      ? { ...categoryFieldSettings[category] }
+      : { ...defaultCategoryFields }
+  }
+
+  function setCategoryField(category: string, field: ProductFieldKey, value: boolean) {
+    setCategoryFieldSettings((prev) => ({
+      ...prev,
+      [category]: { ...getCategoryFields(category), [field]: value },
+    }))
+  }
+
+  async function saveCategoryFieldSettings() {
+    setSavingProductSettings(true)
+    try {
+      for (const category of productCategories) {
+        const fields = getCategoryFields(category)
+        await supabase.from('pr_category_field_settings').upsert(
+          {
+            category,
+            product_name: fields.product_name,
+            ink_color: fields.ink_color,
+            layer: fields.layer,
+            cartoon_pattern: fields.cartoon_pattern,
+            line_pattern: fields.line_pattern,
+            font: fields.font,
+            line_1: fields.line_1,
+            line_2: fields.line_2,
+            line_3: fields.line_3,
+            quantity: fields.quantity,
+            unit_price: fields.unit_price,
+            notes: fields.notes,
+            attachment: fields.attachment,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'category' }
+        )
+      }
+      alert('บันทึกตั้งค่าสินค้าสำเร็จ')
+    } catch (error: any) {
+      console.error('Error saving category field settings:', error)
+      alert('เกิดข้อผิดพลาดในการบันทึก: ' + error.message)
+    } finally {
+      setSavingProductSettings(false)
     }
   }
 
@@ -769,6 +915,16 @@ export default function Settings() {
             ตั้งค่าข้อมูลธนาคาร
           </button>
           <button
+            onClick={() => setActiveTab('product-settings')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'product-settings'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            ตั้งค่าสินค้า
+          </button>
+          <button
             onClick={() => setActiveTab('order-status')}
             className={`py-4 px-1 border-b-2 font-medium text-sm ${
               activeTab === 'order-status'
@@ -1069,6 +1225,62 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ตั้งค่าสินค้า Tab */}
+      {activeTab === 'product-settings' && (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
+            <button
+              onClick={saveCategoryFieldSettings}
+              disabled={savingProductSettings || productCategories.length === 0}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+          <p className="text-gray-600 text-sm mb-4">
+            ติ๊กรายการที่อนุญาตให้กรอกได้สำหรับแต่ละหมวดหมู่ หากไม่ได้ติ๊ก ฟิลด์นั้นจะกรอกไม่ได้ในฟอร์มสร้าง/แก้ไขออเดอร์
+          </p>
+          {productCategories.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="bg-gray-100 border-b">
+                    <th className="p-3 text-left border font-medium whitespace-nowrap">ชื่อหมวดหมู่สินค้า</th>
+                    {PRODUCT_FIELD_KEYS.map(({ key, label }) => (
+                      <th key={key} className="p-2 text-center border font-medium text-sm whitespace-nowrap">
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {productCategories.map((category) => (
+                    <tr key={category} className="border-b hover:bg-gray-50">
+                      <td className="p-3 border font-medium whitespace-nowrap">{category}</td>
+                      {PRODUCT_FIELD_KEYS.map(({ key }) => (
+                        <td key={key} className="p-2 text-center border">
+                          <input
+                            type="checkbox"
+                            checked={getCategoryFields(category)[key]}
+                            onChange={(e) => setCategoryField(category, key, e.target.checked)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

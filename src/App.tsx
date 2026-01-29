@@ -9,6 +9,7 @@ import AdminQC from './pages/AdminQC'
 import Account from './pages/Account'
 import QC from './pages/QC'
 import Packing from './pages/Packing'
+import WorkOrders from './pages/WorkOrders'
 import Products from './pages/Products'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
@@ -85,11 +86,10 @@ function AppRoutes() {
       <Route
         path="/export"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'order_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'order_staff', 'packing_staff']}>
             <Layout>
               <div className="p-6">
-                <h1 className="text-3xl font-bold mb-4">ใบงาน</h1>
-                <p className="text-gray-600">Work Orders Export - Coming Soon</p>
+                <WorkOrders />
               </div>
             </Layout>
           </ProtectedRoute>

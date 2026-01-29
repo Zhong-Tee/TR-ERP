@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
+import VerificationResultModal, { type AmountStatus, type VerificationResultType } from './VerificationResultModal'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -141,7 +142,13 @@ function SlipUploadSimple({
       alert(`อัพโหลดสลิปสำเร็จ ${storagePaths.length} ไฟล์`)
     } catch (error: any) {
       console.error('Error uploading slips:', error)
-      alert('เกิดข้อผิดพลาดในการอัพโหลดสลิป: ' + error.message)
+      const msg = error?.message || ''
+      const isHtmlInsteadOfJson =
+        /Unexpected token\s*'<'|is not valid JSON/i.test(msg)
+      const displayMessage = isHtmlInsteadOfJson
+        ? 'เซิร์ฟเวอร์ตอบกลับเป็น HTML แทน JSON — กรุณาตรวจสอบ Supabase Dashboard (Storage bucket slip-images, RLS) และตัวแปร VITE_SUPABASE_URL'
+        : msg
+      alert('เกิดข้อผิดพลาดในการอัพโหลดสลิป: ' + displayMessage)
     } finally {
       setUploading(false)
     }
@@ -313,9 +320,12 @@ function SlipUploadSimple({
                               return
                             }
                             
-                            const deletionReason =
-                              (prompt('เหตุผลในการลบสลิป (เช่น: สลิปซ้ำ / สลิปไม่ถูกต้อง / อื่นๆ)') || '').trim() ||
-                              'manual_delete'
+                            const rawReason = (prompt('กรุณากรอกเหตุผลในการลบสลิป (บังคับ)\nเช่น: สลิปซ้ำ / สลิปไม่ถูกต้อง / อื่นๆ') || '').trim()
+                            if (!rawReason) {
+                              alert('กรุณากรอกเหตุผลในการลบสลิป ไม่สามารถลบได้หากไม่ระบุเหตุผล')
+                              return
+                            }
+                            const deletionReason = rawReason
 
                             console.log('Attempting to delete:', { bucket, filePath, storagePath })
                             
@@ -418,9 +428,14 @@ interface OrderFormProps {
   onSave: () => void
   onCancel: () => void
   readOnly?: boolean
+  /** โหมดดูอย่างเดียว (จาก ตรวจสอบแล้ว/ยกเลิก): ซ่อนขอเอกสารและปุ่มบันทึก/ยกเลิก แสดงเฉพาะปุ่มกลับ */
+  viewOnly?: boolean
 }
 
-export default function OrderForm({ order, onSave, onCancel, readOnly = false }: OrderFormProps) {
+/** ช่องทางที่บล็อกที่อยู่ลูกค้า และเปิดให้กรอกเลขพัสดุ (SPTR, FSPTR, TTTR, LZTR, SHOP) */
+const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOP']
+
+export default function OrderForm({ order, onSave, onCancel, readOnly = false, viewOnly = false }: OrderFormProps) {
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -435,11 +450,39 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [preBillNo, setPreBillNo] = useState<string | null>(null)
+  const [verificationModal, setVerificationModal] = useState<{
+    type: VerificationResultType
+    accountMatch: boolean | null
+    bankCodeMatch: boolean | null
+    amountStatus: AmountStatus
+    orderAmount: number
+    totalAmount: number
+    overpayAmount?: number
+    errors: string[]
+    validationErrors: string[]
+    statusMessage: string
+    orderId?: string
+  } | null>(null)
+  const [confirmingOverpay, setConfirmingOverpay] = useState(false)
+  /** Popup ยกเลิกออเดอร์ (ถามยืนยัน → แสดงผลสำเร็จ/ผิดพลาด ใน popup เดียว) */
+  const [cancelOrderModal, setCancelOrderModal] = useState<{
+    open: boolean
+    success?: boolean
+    error?: string
+    submitting?: boolean
+  }>({ open: false })
+  /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
+  const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
+  /** หมายเหตุจาก review (ลงข้อมูลผิด) */
+  const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
+  /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
 
   const [formData, setFormData] = useState({
     channel_code: '',
     customer_name: '',
     customer_address: '',
+    tracking_number: '',
     price: 0,
     shipping_cost: 0,
     discount: 0,
@@ -461,7 +504,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
     items_note: '',
   })
 
-  async function loadSlipImages(billNo: string): Promise<string[]> {
+  /** โหลด path สลิปจาก storage; ถ้าระบุ orderId จะตัด path ที่ถูกลบแล้ว (ac_verified_slips.is_deleted) ออก */
+  async function loadSlipImages(billNo: string, orderId?: string): Promise<string[]> {
     try {
       const folderName = `slip${billNo}`
       const { data: files, error } = await supabase.storage
@@ -480,10 +524,23 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
       }
 
       // Convert to storage paths (bucket/path/to/file)
-      const storagePaths = files
+      let storagePaths = files
         .filter(file => file.name && !file.name.endsWith('/'))
         .map(file => `slip-images/${folderName}/${file.name}`)
         .sort()
+
+      // ตอนโหลดออเดอร์: ตัด path ที่มีใน ac_verified_slips ที่ is_deleted = true ออก (ใช้เฉพาะการอัพปัจจุบัน)
+      if (orderId) {
+        const { data: deletedRows } = await supabase
+          .from('ac_verified_slips')
+          .select('slip_storage_path')
+          .eq('order_id', orderId)
+          .eq('is_deleted', true)
+        const deletedPaths = new Set(
+          (deletedRows || []).map((r: { slip_storage_path?: string | null }) => r.slip_storage_path).filter(Boolean) as string[]
+        )
+        storagePaths = storagePaths.filter(p => !deletedPaths.has(p))
+      }
 
       setUploadedSlipPaths(storagePaths)
       return storagePaths
@@ -519,6 +576,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
           channel_code: order.channel_code,
           customer_name: order.customer_name,
           customer_address: order.customer_address,
+          tracking_number: (order as { tracking_number?: string }).tracking_number || '',
           price: order.price,
           shipping_cost: order.shipping_cost,
           discount: order.discount,
@@ -580,7 +638,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         }
 
         if (order.bill_no) {
-          await loadSlipImages(order.bill_no)
+          await loadSlipImages(order.bill_no, order.id)
         } else {
           setUploadedSlipPaths([])
         }
@@ -593,14 +651,94 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
     loadOrderData()
   }, [order])
 
+  // โหลด review (error_fields + rejection_reason) เมื่อออเดอร์สถานะ "ลงข้อมูลผิด"
+  useEffect(() => {
+    if (!order?.id || order?.status !== 'ลงข้อมูลผิด') {
+      setReviewErrorFields(null)
+      setReviewRemarks(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('or_order_reviews')
+        .select('error_fields, rejection_reason')
+        .eq('order_id', order.id)
+        .eq('status', 'rejected')
+        .order('reviewed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (cancelled) return
+      if (error) {
+        console.error('Error loading order review:', error)
+        setReviewErrorFields(null)
+        setReviewRemarks(null)
+        return
+      }
+      setReviewErrorFields((data?.error_fields as Record<string, boolean>) ?? null)
+      setReviewRemarks(data?.rejection_reason ?? null)
+    })()
+    return () => { cancelled = true }
+  }, [order?.id, order?.status])
+
+  /** แปลงค่าเป็น boolean จริง (รองรับทั้ง boolean และ string จาก API); undefined/null = true (แสดงฟิลด์) */
+  function toBool(v: unknown, defaultVal = true): boolean {
+    if (v === undefined || v === null) return defaultVal
+    return v === true || v === 'true'
+  }
+
+  /** โหลดการตั้งค่าฟิลด์ต่อหมวดหมู่แยก (ไม่พึ่ง loadInitialData) เพื่อให้ได้ข้อมูลแม้ request อื่นล้มเหลว */
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
+        if (cancelled) return
+        if (error) {
+          console.error('Error loading category field settings:', error)
+          return
+        }
+        const settingsMap: Record<string, Record<string, boolean>> = {}
+        if (data && Array.isArray(data)) {
+          data.forEach((row: any) => {
+            const cat = row.category
+            if (cat != null && String(cat).trim() !== '') {
+              const key = String(cat).trim()
+              settingsMap[key] = {
+                product_name: toBool(row.product_name, true),
+                ink_color: toBool(row.ink_color, true),
+                layer: toBool(row.layer, true),
+                cartoon_pattern: toBool(row.cartoon_pattern, true),
+                line_pattern: toBool(row.line_pattern, true),
+                font: toBool(row.font, true),
+                line_1: toBool(row.line_1, true),
+                line_2: toBool(row.line_2, true),
+                line_3: toBool(row.line_3, true),
+                quantity: toBool(row.quantity, true),
+                unit_price: toBool(row.unit_price, true),
+                notes: toBool(row.notes, true),
+                attachment: toBool(row.attachment, true),
+              }
+            }
+          })
+        }
+        setCategoryFieldSettings(settingsMap)
+      } catch (e) {
+        if (!cancelled) console.error('Error loading category field settings:', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
+        supabase.from('pr_category_field_settings').select('*'),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
@@ -608,9 +746,63 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
       if (channelsRes.data) setChannels(channelsRes.data)
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
+      
+      // โหลดการตั้งค่าฟิลด์ต่อหมวดหมู่ (แปลงเป็น boolean จริง เพื่อกันค่า string "false" ที่เป็น truthy)
+      const settingsMap: Record<string, Record<string, boolean>> = {}
+      if (categorySettingsRes.data && Array.isArray(categorySettingsRes.data)) {
+        categorySettingsRes.data.forEach((row: any) => {
+          const cat = row.category
+          if (cat != null && String(cat).trim() !== '') {
+            const key = String(cat).trim()
+            settingsMap[key] = {
+              product_name: toBool(row.product_name, true),
+              ink_color: toBool(row.ink_color, true),
+              layer: toBool(row.layer, true),
+              cartoon_pattern: toBool(row.cartoon_pattern, true),
+              line_pattern: toBool(row.line_pattern, true),
+              font: toBool(row.font, true),
+              line_1: toBool(row.line_1, true),
+              line_2: toBool(row.line_2, true),
+              line_3: toBool(row.line_3, true),
+              quantity: toBool(row.quantity, true),
+              unit_price: toBool(row.unit_price, true),
+              notes: toBool(row.notes, true),
+              attachment: toBool(row.attachment, true),
+            }
+          }
+        })
+      }
+      setCategoryFieldSettings(settingsMap)
     } catch (error) {
       console.error('Error loading data:', error)
     }
+  }
+
+  /** เช็คว่าฟิลด์นี้ควรแสดงหรือไม่ สำหรับ item ที่ index นี้ */
+  function isFieldEnabled(itemIndex: number, fieldKey: string): boolean {
+    const item = items[itemIndex]
+    if (!item?.product_id) return true // ถ้ายังไม่เลือกสินค้า แสดงทุกฟิลด์
+    
+    // หา product จาก id ก่อน; ถ้าไม่เจอลองจาก product_name (เผื่อ type ไม่ตรง)
+    let product = products.find(p => String(p.id) === String(item.product_id))
+    if (!product && item.product_name) {
+      product = products.find(
+        p => p.product_name && String(p.product_name).trim().toLowerCase() === String(item.product_name).trim().toLowerCase()
+      )
+    }
+    if (!product) return true
+
+    const catRaw = (product as { product_category?: string | null }).product_category
+    if (catRaw === undefined || catRaw === null || String(catRaw).trim() === '') return true
+
+    const catKey = String(catRaw).trim()
+    const categorySettings = categoryFieldSettings[catKey]
+    if (!categorySettings) return true // ถ้าไม่มี setting สำหรับหมวดหมู่นี้ แสดงทุกฟิลด์ (default = true)
+
+    // คืนค่า boolean จริง (ถ้าค่าเป็น string "false" จะได้ false; ไม่มี key = แสดงฟิลด์)
+    const v = categorySettings[fieldKey] as boolean | string | undefined
+    if (v === undefined || v === null) return true
+    return v === true || v === 'true'
   }
 
   // คำนวณราคารวมจากรายการสินค้า
@@ -662,23 +854,29 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
       return
     }
 
-    if (!formData.customer_address || formData.customer_address.trim() === '') {
+    const isAddressBlocked = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
+    if (!isAddressBlocked && (!formData.customer_address || formData.customer_address.trim() === '')) {
       alert('กรุณากรอกที่อยู่ลูกค้า')
       return
     }
 
-    // พยายาม match สินค้าที่ไม่มี product_id แต่มี product_name
+    // พยายาม match สินค้าที่ไม่มี product_id แต่มี product_name หรือรหัสสินค้า
     let hasUpdates = false
     const updatedItems = items.map((item, index) => {
       if (!item.product_id && item.product_name?.trim()) {
         const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
         
-        // พยายาม match สินค้าจากชื่อ (case-insensitive, normalize spaces)
+        // พยายาม match จากรหัสสินค้า (ตรงทุกตัว)
         let matchedProduct = products.find(
-          p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
+          p => p.product_code && p.product_code.toLowerCase().trim() === searchName
         )
-        
-        // ถ้ายังไม่ match ลอง match แบบ partial (ถ้าชื่อสินค้าที่พิมพ์เป็นส่วนหนึ่งของชื่อสินค้าในฐานข้อมูล)
+        // หรือ match จากชื่อสินค้า (case-insensitive, normalize spaces)
+        if (!matchedProduct) {
+          matchedProduct = products.find(
+            p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
+          )
+        }
+        // ถ้ายังไม่ match ลอง match แบบ partial (ชื่อสินค้า)
         if (!matchedProduct) {
           matchedProduct = products.find(
             p => {
@@ -793,14 +991,42 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
             unit_price: item.unit_price || 0,
           })) : []
       }
-      
+
+      // บิลที่บันทึก "ข้อมูลครบ" แต่ช่องทางไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว" เพื่อให้แสดงในเมนู ตรวจสอบแล้ว
+      let statusToSave: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' | 'ตรวจสอบแล้ว' = targetStatus
+      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
+        let channelHasSlipVerification = false
+        if (formData.payment_method === 'โอน') {
+          const channelCode = formData.channel_code?.trim() || ''
+          const { data: bscData, error: bscError } = await supabase
+            .from('bank_settings_channels')
+            .select('bank_setting_id')
+            .eq('channel_code', channelCode)
+          if (bscError) {
+            channelHasSlipVerification = true
+          } else if (bscData && bscData.length > 0) {
+            const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+            const { data: activeBank } = await supabase
+              .from('bank_settings')
+              .select('id')
+              .in('id', ids)
+              .eq('is_active', true)
+              .limit(1)
+            channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
+          }
+        }
+        if (!channelHasSlipVerification) {
+          statusToSave = 'ตรวจสอบแล้ว'
+        }
+      }
+
       const orderData = {
         ...formData,
         price: calculatedPrice,
         total_amount: calculatedTotal,
         payment_date: paymentDate,
         payment_time: paymentTime,
-        status: targetStatus,
+        status: statusToSave,
         admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || showCashBill) ? billingDetails : null,
@@ -920,56 +1146,70 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         alert('กรุณาเพิ่มรายการสินค้าก่อนบันทึก')
       }
 
-      // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป
-      // สำหรับบิลที่อยู่ในสถานะ "ลงข้อมูลผิด" หรือ "ตรวจสอบไม่ผ่าน" ต้องตรวจสอบ EasySlip เสมอ
+      // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
+      // ถ้าช่องทางไม่มีใน bank_settings_channels อนุญาตให้บันทึกได้โดยไม่ต้องอัพโหลดสลิป
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const originalStatus = order?.status
-        const shouldVerifySlips = 
-          uploadedSlipPaths.length > 0 || 
-          originalStatus === 'ลงข้อมูลผิด' || 
-          originalStatus === 'ตรวจสอบไม่ผ่าน'
-        
-        if (shouldVerifySlips) {
-          let slipsToVerify = uploadedSlipPaths
-          
-          // ถ้าไม่มีสลิปใหม่ แต่บิลอยู่ในสถานะ "ลงข้อมูลผิด" หรือ "ตรวจสอบไม่ผ่าน" 
-          // ให้โหลดสลิปเก่าจาก storage
-          if (slipsToVerify.length === 0 && currentBillNo && 
-              (originalStatus === 'ลงข้อมูลผิด' || originalStatus === 'ตรวจสอบไม่ผ่าน')) {
-            console.log('[บันทึกข้อมูลครบ] ไม่มีสลิปใหม่ กำลังโหลดสลิปเก่าจาก storage...')
-            const loadedSlips = await loadSlipImages(currentBillNo)
-            slipsToVerify = loadedSlips
+        let channelHasSlipVerification = false
+        if (formData.payment_method === 'โอน') {
+          const channelCode = formData.channel_code?.trim() || ''
+          const { data: bscData, error: bscError } = await supabase
+            .from('bank_settings_channels')
+            .select('bank_setting_id')
+            .eq('channel_code', channelCode)
+          if (bscError) {
+            channelHasSlipVerification = true // fail secure
+          } else if (bscData && bscData.length > 0) {
+            const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+            const { data: activeBank } = await supabase
+              .from('bank_settings')
+              .select('id')
+              .in('id', ids)
+              .eq('is_active', true)
+              .limit(1)
+            channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
           }
-          
-          if (slipsToVerify.length > 0) {
-            try {
-              await verifyUploadedSlips(orderId, slipsToVerify, calculatedTotal)
-            } catch (error: any) {
-              console.error('Error verifying slips:', error)
-              // Error handling is done inside verifyUploadedSlips
-              // If status was updated to "ตรวจสอบไม่ผ่าน", verifyUploadedSlips will return (not throw)
-              // If there's a real error, show alert and refresh UI anyway
-              alert('เกิดข้อผิดพลาดในการตรวจสอบสลิป: ' + error.message)
-              // Refresh UI even if there's an error (status might have been updated)
-              onSave()
-              return // Don't continue with normal success flow
-            }
-          } else {
-            // ถ้าไม่มีสลิปเลย แต่บิลอยู่ในสถานะ "ลงข้อมูลผิด" หรือ "ตรวจสอบไม่ผ่าน"
-            // ให้แจ้งเตือนและย้ายไปสถานะ "ตรวจสอบไม่ผ่าน"
-            if (originalStatus === 'ลงข้อมูลผิด' || originalStatus === 'ตรวจสอบไม่ผ่าน') {
-              const { error: updateError } = await supabase
-                .from('or_orders')
-                .update({ status: 'ตรวจสอบไม่ผ่าน' })
-                .eq('id', orderId)
-              
-              if (updateError) {
-                console.error('Error updating order status:', updateError)
-                alert('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
-              } else {
-                alert('ไม่พบสลิปโอนเงิน บิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน" กรุณาอัพโหลดสลิปโอนเงิน')
+        }
+
+        if (channelHasSlipVerification) {
+          const shouldVerifySlips =
+            uploadedSlipPaths.length > 0 ||
+            originalStatus === 'ลงข้อมูลผิด' ||
+            originalStatus === 'ตรวจสอบไม่ผ่าน'
+
+          if (shouldVerifySlips) {
+            // ใช้เฉพาะ uploadedSlipPaths (การอัพปัจจุบัน) — ไม่ fallback โหลดจาก storage เพื่อไม่ให้ไปดึงสลิปเก่า
+            const slipsToVerify = uploadedSlipPaths
+
+            if (slipsToVerify.length > 0) {
+              try {
+                await verifyUploadedSlips(orderId, slipsToVerify, calculatedTotal)
+                // หลังแสดงผลตรวจสลิป โหลด path กลับมา (ตัด path ที่ถูกลบแล้วถ้ามี orderId)
+                if (currentBillNo) await loadSlipImages(currentBillNo, orderId)
+                return
+              } catch (error: any) {
+                console.error('Error verifying slips:', error)
+                alert('เกิดข้อผิดพลาดในการตรวจสอบสลิป: ' + error.message)
                 onSave()
                 return
+              }
+            } else {
+              // ถ้าไม่มีสลิปเลย แต่บิลอยู่ในสถานะ "ลงข้อมูลผิด" หรือ "ตรวจสอบไม่ผ่าน"
+              // ให้แจ้งเตือนและย้ายไปสถานะ "ตรวจสอบไม่ผ่าน"
+              if (originalStatus === 'ลงข้อมูลผิด' || originalStatus === 'ตรวจสอบไม่ผ่าน') {
+                const { error: updateError } = await supabase
+                  .from('or_orders')
+                  .update({ status: 'ตรวจสอบไม่ผ่าน' })
+                  .eq('id', orderId)
+
+                if (updateError) {
+                  console.error('Error updating order status:', updateError)
+                  alert('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
+                } else {
+                  alert('ไม่พบสลิปโอนเงิน บิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน" กรุณาอัพโหลดสลิปโอนเงิน')
+                  onSave()
+                  return
+                }
               }
             }
           }
@@ -977,22 +1217,30 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
       }
 
       const statusText = targetStatus === 'ลงข้อมูลเสร็จสิ้น' ? 'บันทึกข้อมูลครบ' : 'บันทึก (รอลงข้อมูล)'
-      alert(order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`)
-      
-      // โหลดรูปสลิปกลับมา (ถ้ามี bill_no)
-      // ไม่ล้าง uploadedSlipPaths เพราะรูปสลิปถูกอัพโหลดไปแล้วใน storage
+      const successMessage = order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`
+
+      // โหลดรูปสลิปกลับมา (ถ้ามี bill_no) — ส่ง orderId เพื่อตัด path ที่ถูกลบแล้ว
       if (currentBillNo) {
         console.log('[บันทึกออเดอร์] โหลดรูปสลิปกลับมาสำหรับ bill_no:', currentBillNo)
-        await loadSlipImages(currentBillNo)
+        await loadSlipImages(currentBillNo, orderId)
       } else {
-        // ถ้าไม่มี bill_no ให้ล้าง uploadedSlipPaths (ไม่น่าจะเกิดขึ้น)
-        console.warn('[บันทึกออเดอร์] ไม่มี bill_no ไม่สามารถโหลดรูปสลิปได้')
         if (uploadedSlipPaths.length > 0) {
           setUploadedSlipPaths([])
         }
       }
-      
-      onSave()
+
+      // แสดงผลด้วย VerificationResultModal แทน alert (localhost)
+      setVerificationModal({
+        type: 'save_success',
+        accountMatch: null,
+        bankCodeMatch: null,
+        amountStatus: 'match',
+        orderAmount: 0,
+        totalAmount: 0,
+        errors: [],
+        validationErrors: [],
+        statusMessage: successMessage,
+      })
     } catch (error: any) {
       console.error('Error saving order:', error)
       alert('เกิดข้อผิดพลาด: ' + error.message)
@@ -1110,8 +1358,9 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
 
       const verifiedBy = user?.id || null
 
-      // Check for duplicate slips BEFORE saving
+      // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำก็ต่อเมื่อพบในรายการที่สถานะ "ตรวจสอบแล้ว" เท่านั้น (ไม่นับออเดอร์อื่น)
       // Check by transRef or amount + date combination
+      const VERIFIED_STATUS = 'ตรวจสอบแล้ว'
       const duplicateCheckPromises = results.map(async (r: any) => {
         if (!r.easyslipResponse || r.amount === undefined) {
           return { isDuplicate: false, duplicateOrderId: null }
@@ -1121,34 +1370,38 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         const amount = r.amount
         const date = r.easyslipResponse?.data?.date
         
-        // Check by transRef first (most reliable)
+        // Check by transRef first (most reliable) — เฉพาะ order ที่สถานะ ตรวจสอบแล้ว
         if (transRef) {
           const { data: duplicateByRef } = await supabase
             .from('ac_verified_slips')
-            .select('order_id')
+            .select('order_id, or_orders(status)')
             .eq('easyslip_trans_ref', transRef)
             .eq('is_deleted', false)
             .neq('order_id', orderId)
-            .limit(1)
           
-          if (duplicateByRef && duplicateByRef.length > 0) {
-            return { isDuplicate: true, duplicateOrderId: duplicateByRef[0].order_id }
+          const verifiedDuplicate = (duplicateByRef || []).find(
+            (row: any) => row.or_orders?.status === VERIFIED_STATUS
+          )
+          if (verifiedDuplicate) {
+            return { isDuplicate: true, duplicateOrderId: verifiedDuplicate.order_id }
           }
         }
         
-        // Check by amount + date combination (fallback)
+        // Check by amount + date combination (fallback) — เฉพาะ order ที่สถานะ ตรวจสอบแล้ว
         if (amount && date) {
           const { data: duplicateByAmountDate } = await supabase
             .from('ac_verified_slips')
-            .select('order_id')
+            .select('order_id, or_orders(status)')
             .eq('verified_amount', amount)
             .eq('easyslip_date', date)
             .eq('is_deleted', false)
             .neq('order_id', orderId)
-            .limit(1)
           
-          if (duplicateByAmountDate && duplicateByAmountDate.length > 0) {
-            return { isDuplicate: true, duplicateOrderId: duplicateByAmountDate[0].order_id }
+          const verifiedDuplicate = (duplicateByAmountDate || []).find(
+            (row: any) => row.or_orders?.status === VERIFIED_STATUS
+          )
+          if (verifiedDuplicate) {
+            return { isDuplicate: true, duplicateOrderId: verifiedDuplicate.order_id }
           }
         }
         
@@ -1212,7 +1465,28 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         }
       }
 
-      // Process results
+      // ดึงยอดจากผลตรวจ — รองรับ amount เป็น string จาก API และ fallback จาก easyslipResponse
+      const getSlipAmount = (r: any): number => {
+        const raw = r?.amount ?? r?.easyslipResponse?.data?.amount?.amount ?? r?.data?.amount?.amount
+        if (raw == null || raw === '') return 0
+        const n = Number(raw)
+        return Number.isFinite(n) ? n : 0
+      }
+
+      // ยอดรวมจากผลตรวจรอบนี้ (ใช้ชั่วคราวสำหรับ build slipsToInsert; หลัง insert จะ query จาก ac_verified_slips)
+      let totalFromSlips = results.reduce((sum, r) => sum + getSlipAmount(r), 0)
+      const isMultiSlip = slipStoragePaths.length > 1
+      const totalAmountMatchesOrder = Math.abs(totalFromSlips - orderAmount) <= 0.01
+
+      if (isMultiSlip) {
+        console.log('[Verify Slips] Multi-slip total:', {
+          perSlipAmounts: results.map((r, i) => ({ slip: i + 1, amount: getSlipAmount(r), raw: (r as any).amount })),
+          totalFromSlips,
+          orderAmount,
+          match: totalAmountMatchesOrder,
+        })
+      }
+
       let totalAmount = 0
       const errors: string[] = []
       const successfulVerifications: number[] = []
@@ -1224,13 +1498,13 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         const duplicateCheck = duplicateChecks[index]
         const isDuplicate = duplicateCheck.isDuplicate
         
-        // If duplicate, treat as failed
+        // If duplicate, treat as failed แต่ยังใช้ผลตรวจเลขบัญชี/สาขา/ยอดจาก API ได้ (สลิปซ้ำไม่ได้แปลว่าไม่ตรง)
         if (isDuplicate) {
           errors.push(`สลิป ${index + 1}: สลิปซ้ำ (พบในออเดอร์อื่น)`)
-          allAccountNameMatch = false
-          allBankCodeMatch = false
+          if (result.accountNameMatch === false) allAccountNameMatch = false
+          if (result.bankCodeMatch === false) allBankCodeMatch = false
         } else if (result.success) {
-          totalAmount += result.amount || 0
+          totalAmount += getSlipAmount(result)
           successfulVerifications.push(index + 1)
           
           // Track account name and bank code matches
@@ -1241,25 +1515,45 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
             allBankCodeMatch = false
           }
           
-          // Check for validation errors from result.validationErrors array or result.error
+          // กรณีหลายสลิป: ไม่เอา "ยอดเงินไม่ตรง" ต่อใบมาเป็น validation error — ใช้ผลรวมเทียบทีเดียว
           if (result.validationErrors && Array.isArray(result.validationErrors) && result.validationErrors.length > 0) {
-            validationErrors.push(...result.validationErrors.map((err: string) => `สลิป ${index + 1}: ${err}`))
-          } else if (result.error && result.error.includes('ไม่ตรง')) {
+            const errs = isMultiSlip
+              ? result.validationErrors.filter((err: string) => !/ยอดเงิน|amount/i.test(err))
+              : result.validationErrors
+            if (errs.length > 0) {
+              validationErrors.push(...errs.map((err: string) => `สลิป ${index + 1}: ${err}`))
+            }
+          } else if (result.error && result.error.includes('ไม่ตรง') && !isMultiSlip) {
             validationErrors.push(`สลิป ${index + 1}: ${result.error}`)
           }
         } else {
-          errors.push(`สลิป ${index + 1}: ${result.error || result.message || 'การตรวจสอบล้มเหลว'}`)
-          allAccountNameMatch = false
-          allBankCodeMatch = false
+          const rawError = result.error || result.message || 'การตรวจสอบล้มเหลว'
+          const friendlyError = /slip_not_found|not_found|อ่านข้อมูลไม่ได้/i.test(rawError)
+            ? 'ระบบอ่านข้อมูลสลิปจากรูปนี้ไม่ได้ (รูปอาจไม่ชัด ไม่ใช่สลิปที่รองรับ หรือไฟล์เสีย) — กรุณาตรวจสอบรูปหรืออัพโหลดใหม่'
+            : rawError
+          errors.push(`สลิป ${index + 1}: ${friendlyError}`)
+          // ใช้ค่าจริงจาก EasySlip — ไม่บังคับให้เลขบัญชี/สาขาเป็นไม่ตรงเมื่อสลิป fail (เช่น แค่ยอดเกิน)
+          if (result.accountNameMatch === false) allAccountNameMatch = false
+          if (result.bankCodeMatch === false) allBankCodeMatch = false
         }
       })
 
+      // กรณีหลายสลิปและผลรวมไม่ตรงยอดออเดอร์: เพิ่มข้อความสำหรับ modal
+      if (isMultiSlip && !totalAmountMatchesOrder && totalFromSlips > 0) {
+        validationErrors.push(
+          totalFromSlips < orderAmount
+            ? `ยอดรวมสลิป (฿${totalFromSlips.toLocaleString()}) ไม่พอ ยอดออเดอร์ (฿${orderAmount.toLocaleString()})`
+            : `ยอดรวมสลิป (฿${totalFromSlips.toLocaleString()}) เกิน ยอดออเดอร์ (฿${orderAmount.toLocaleString()})`
+        )
+      }
+
       // Save ALL EasySlip responses to ac_verified_slips FIRST (before validation)
-      // This stores the raw response data, then we'll update validation status
+      // กรณีหลายสลิป: ยอดเงินใช้ผลรวมเทียบกับยอดออเดอร์ — เลขบัญชี/สาขาต้องตรงทุกใบ
       const slipsToInsert = results
         .map((r: any, idx) => {
-          // Skip if no EasySlip response received
-          if (!r.easyslipResponse || r.amount === undefined) {
+          // Skip if no EasySlip response (ไม่มีข้อมูลจาก API) หรือดึงยอดไม่ได้
+          const slipAmount = getSlipAmount(r)
+          if (!r.easyslipResponse && slipAmount === 0) {
             return null
           }
           
@@ -1268,30 +1562,51 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
           
           // Determine validation status
           let validationStatus: 'pending' | 'passed' | 'failed' = 'pending'
-          const validationErrors: string[] = []
+          const slipValidationErrors: string[] = []
           
           // Add duplicate error if found
           if (isDuplicate) {
-            validationErrors.push(`สลิปซ้ำ (พบในออเดอร์อื่น)`)
+            slipValidationErrors.push(`สลิปซ้ำ (พบในออเดอร์อื่น)`)
             validationStatus = 'failed'
           } else if (r.success === true) {
-            validationStatus = 'passed'
+            // กรณีหลายสลิป: ผ่านต่อใบเมื่อไม่มี error อื่น (ยอดใช้ผลรวมเช็คแยก)
+            if (isMultiSlip) {
+              const nonAmountErrors = (r.validationErrors && Array.isArray(r.validationErrors))
+                ? r.validationErrors.filter((err: string) => !/ยอดเงิน|amount/i.test(err))
+                : []
+              if (nonAmountErrors.length > 0) {
+                slipValidationErrors.push(...nonAmountErrors)
+                validationStatus = 'failed'
+              } else {
+                validationStatus = totalAmountMatchesOrder ? 'passed' : 'failed'
+              }
+            } else {
+              validationStatus = 'passed'
+            }
           } else if (r.success === false) {
             validationStatus = 'failed'
-            // Collect validation errors
+            // กรณีหลายสลิป: ไม่เก็บ error เรื่องยอดเงินต่อใบ
             if (r.validationErrors && Array.isArray(r.validationErrors)) {
-              validationErrors.push(...r.validationErrors)
-            } else if (r.error) {
-              validationErrors.push(r.error)
-            } else if (r.message && !r.success) {
-              validationErrors.push(r.message)
+              const errs = isMultiSlip
+                ? r.validationErrors.filter((err: string) => !/ยอดเงิน|amount/i.test(err))
+                : r.validationErrors
+              slipValidationErrors.push(...errs)
+            }
+            if (slipValidationErrors.length === 0 && r.error && !/ยอดเงิน|amount/i.test(r.error)) {
+              slipValidationErrors.push(r.error)
+            } else if (slipValidationErrors.length === 0 && r.message && !r.success && !/ยอดเงิน|amount/i.test(r.message)) {
+              slipValidationErrors.push(r.message)
             }
           }
+          
+          // กรณีหลายสลิป: amount_match = ผลรวมตรงกับยอดออเดอร์หรือไม่ (ทุกใบใช้ค่าเดียวกัน)
+          const amountMatchValue = isMultiSlip ? totalAmountMatchesOrder : (r.amountMatch !== undefined ? r.amountMatch : null)
           
           return {
             order_id: orderId,
             slip_image_url: slipUrls[idx],
-            verified_amount: r.amount || 0,
+            slip_storage_path: slipStoragePaths[idx] || null,
+            verified_amount: slipAmount,
             verified_by: verifiedBy,
             easyslip_response: r.easyslipResponse || null,
             easyslip_trans_ref: r.easyslipResponse?.data?.transRef || null,
@@ -1299,16 +1614,16 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
             easyslip_receiver_bank_id: r.easyslipResponse?.data?.receiver?.bank?.id || null,
             easyslip_receiver_account: r.easyslipResponse?.data?.receiver?.account?.bank?.account || null,
             // Validation status fields
-            is_validated: r.success !== undefined || isDuplicate, // true if we got a validation result
+            is_validated: r.success !== undefined || isDuplicate,
             validation_status: validationStatus,
-            validation_errors: validationErrors.length > 0 ? validationErrors : null,
+            validation_errors: slipValidationErrors.length > 0 ? slipValidationErrors : null,
             expected_amount: orderAmount || null,
             expected_bank_account: bankAccount || null,
             expected_bank_code: bankCode || null,
-            // Individual validation statuses
+            // Individual validation statuses — เลขบัญชี/สาขาต้องตรงทุกใบ; ยอดใช้ผลรวมเมื่อหลายสลิป
             account_name_match: r.accountNameMatch !== undefined ? r.accountNameMatch : null,
             bank_code_match: r.bankCodeMatch !== undefined ? r.bankCodeMatch : null,
-            amount_match: r.amountMatch !== undefined ? r.amountMatch : null,
+            amount_match: amountMatchValue !== null ? amountMatchValue : (r.amountMatch !== undefined ? r.amountMatch : null),
           }
         })
         .filter((s: any) => s !== null) // Remove null entries
@@ -1368,6 +1683,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       .from('ac_verified_slips')
                       .update({
                         order_id: slip.order_id,
+                        slip_storage_path: slip.slip_storage_path ?? null,
                         verified_amount: slip.verified_amount,
                         verified_by: slip.verified_by,
                         easyslip_response: slip.easyslip_response,
@@ -1410,6 +1726,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                     .from('ac_verified_slips')
                     .update({
                       order_id: slip.order_id,
+                      slip_storage_path: slip.slip_storage_path ?? null,
                       verified_amount: slip.verified_amount,
                       verified_by: slip.verified_by,
                       easyslip_response: slip.easyslip_response,
@@ -1448,6 +1765,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
               const { error: updateError } = await supabase
                 .from('ac_verified_slips')
                 .update({
+                  slip_storage_path: slip.slip_storage_path ?? null,
                   verified_amount: slip.verified_amount,
                   verified_by: slip.verified_by,
                   easyslip_response: slip.easyslip_response,
@@ -1480,6 +1798,18 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         console.log('[Verify Slips] No slips to insert (no EasySlip response received)')
       }
 
+      // แหล่งความจริงของยอดรวมสลิป: sum จาก ac_verified_slips (ไม่รวมสลิปที่ลบแล้ว)
+      const { data: verifiedSlipsForOrder } = await supabase
+        .from('ac_verified_slips')
+        .select('verified_amount')
+        .eq('order_id', orderId)
+        .eq('is_deleted', false)
+      const sumFromVerifiedSlips = (verifiedSlipsForOrder || []).reduce(
+        (sum, r) => sum + (Number((r as any).verified_amount) || 0),
+        0
+      )
+      totalFromSlips = sumFromVerifiedSlips
+
       // Now process validation results to determine order status
       // If all slips failed validation, mark as "ตรวจสอบไม่ผ่าน"
       if (successfulVerifications.length === 0) {
@@ -1493,90 +1823,104 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
           throw new Error('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
         }
 
-        // Status updated successfully - show alert and return (don't throw error)
-        // This allows the UI to refresh and show the order in "ตรวจสอบไม่ผ่าน" menu
-        const errorMessage = `ตรวจสอบสลิปไม่สำเร็จทั้งหมด:\n${errors.join('\n')}\n\nบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"\n\nคำแนะนำ:\n- ตรวจสอบว่า Edge Function ตั้งค่า Secrets ถูกต้องแล้ว\n- ตรวจสอบว่า EasySlip API เปิดใช้งานแล้ว\n- ดู Logs ใน Supabase Dashboard → Edge Functions → verify-slip → Logs`
-        alert(errorMessage)
-        return // Return instead of throwing error so UI can refresh
+        // ยอดจากสลิป (รวมทุกใบ ไม่รวมที่ลบ) — มาจาก ac_verified_slips (totalFromSlips ที่ query แล้ว)
+        const displayTotal = totalFromSlips > 0 ? totalFromSlips : totalAmount
+        let failedAmountStatus: AmountStatus = 'mismatch'
+        if (displayTotal === orderAmount) failedAmountStatus = 'match'
+        else if (displayTotal > orderAmount) failedAmountStatus = 'over'
+        else if (displayTotal < orderAmount && displayTotal > 0) failedAmountStatus = 'under'
+
+        // เลขบัญชีตรง สาขาตรง แต่ยอดเกิน → แสดงปุ่ม "ยืนยัน โอนเงินเกิน" แทน modal ไม่สำเร็จ
+        if (displayTotal > orderAmount && allAccountNameMatch && allBankCodeMatch) {
+          const overpay = displayTotal - orderAmount
+          const msg = errors.length === 0 && validationErrors.length === 0
+            ? `เลขบัญชีและสาขาตรงกัน แต่ยอดสลิปเกิน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+          setVerificationModal({
+            type: 'over_transfer',
+            accountMatch: true,
+            bankCodeMatch: true,
+            amountStatus: 'over',
+            orderAmount,
+            totalAmount: displayTotal,
+            overpayAmount: overpay,
+            errors,
+            validationErrors,
+            statusMessage: msg,
+            orderId,
+          })
+          return
+        }
+
+        const errorMessage = `ตรวจสอบสลิปไม่สำเร็จทั้งหมด\n\nบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"`
+        setVerificationModal({
+          type: 'failed',
+          accountMatch: allAccountNameMatch,
+          bankCodeMatch: allBankCodeMatch,
+          amountStatus: failedAmountStatus,
+          orderAmount,
+          totalAmount: displayTotal,
+          errors,
+          validationErrors: [],
+          statusMessage: errorMessage,
+        })
+        return
       }
 
-      // Determine status based on verification results
+      // กรณีหลายสลิป: ใช้ผลรวมจากทุกใบ (totalFromSlips) สำหรับเช็คยอด
+      const amountForCheck = isMultiSlip ? totalFromSlips : totalAmount
       let newStatus: string = 'ตรวจสอบไม่ผ่าน'
       let statusMessage = ''
+      let amountStatus: AmountStatus = 'mismatch'
+      const overpayAmount = amountForCheck > orderAmount ? amountForCheck - orderAmount : 0
 
-      // Check if amount matches, exceeds, or is less
-      if (totalAmount === orderAmount) {
-        // Amount matches exactly
+      if (Math.abs(amountForCheck - orderAmount) <= 0.01) {
+        amountStatus = 'match'
         if (validationErrors.length === 0 && errors.length === 0) {
-          // All validations passed - move to "ตรวจสอบแล้ว"
           newStatus = 'ตรวจสอบแล้ว'
-          statusMessage = `ตรวจสอบสลิปสำเร็จ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+          statusMessage = `ตรวจสอบสลิปสำเร็จ! ยอดรวม: ฿${amountForCheck.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
         } else {
-          // Amount matches but has validation errors - move to "ตรวจสอบไม่ผ่าน"
           newStatus = 'ตรวจสอบไม่ผ่าน'
-          statusMessage = `ยอดเงินถูกต้อง แต่พบข้อผิดพลาดในการตรวจสอบ:\n${validationErrors.join('\n')}\n\nยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+          statusMessage = `ยอดเงินถูกต้อง แต่พบข้อผิดพลาดในการตรวจสอบ\n\nยอดรวม: ฿${amountForCheck.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
         }
-      } else if (totalAmount > orderAmount) {
-        // Amount exceeds order amount - check if account name and bank code match
-        const overpayAmount = totalAmount - orderAmount
-        
-        if (allAccountNameMatch && allBankCodeMatch && validationErrors.length === 0 && errors.length === 0) {
-          // Account name and bank code match, no validation errors - show popup
-          const confirmed = window.confirm(
-            `ยอดสลิปเกินยอดออเดอร์!\n\n` +
-            `ยอดออเดอร์: ฿${orderAmount.toLocaleString()}\n` +
-            `ยอดสลิป: ฿${totalAmount.toLocaleString()}\n` +
-            `ยอดเกิน: ฿${overpayAmount.toLocaleString()}\n\n` +
-            `เลขบัญชีและสาขาตรงกัน\n\n` +
-            `ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
-          )
-
-          if (confirmed) {
-            // User confirmed overpayment - create refund record
-            const { error: refundError } = await supabase
-              .from('ac_refunds')
-              .insert({
-                order_id: orderId,
-                amount: overpayAmount,
-                reason: `ลูกค้าโอนเกิน (ยอดออเดอร์: ฿${orderAmount.toLocaleString()}, ยอดสลิป: ฿${totalAmount.toLocaleString()})`,
-                status: 'pending',
-              })
-
-            if (refundError) {
-              console.error('Error creating refund record:', refundError)
-              throw new Error('เกิดข้อผิดพลาดในการสร้างรายการโอนคืน: ' + refundError.message)
-            }
-
-            // Slip is valid - move to "ตรวจสอบแล้ว"
-            newStatus = 'ตรวจสอบแล้ว'
-            statusMessage = `ตรวจสอบสลิปสำเร็จ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})\n\nสร้างรายการโอนคืน ฿${overpayAmount.toLocaleString()} แล้ว`
-          } else {
-            // User did not confirm - move to "ตรวจสอบไม่ผ่าน"
-            newStatus = 'ตรวจสอบไม่ผ่าน'
-            statusMessage = `ยอดสลิปเกิน แต่ผู้ใช้ไม่ยืนยันโอนเกิน\n\nบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"`
-          }
+      } else if (amountForCheck > orderAmount) {
+        amountStatus = 'over'
+        if (allAccountNameMatch && allBankCodeMatch) {
+          // เลขบัญชีและสาขาตรง แต่ยอดเกิน → แสดง popup ยืนยันโอนเงินเกิน (ยังไม่อัปเดต DB)
+          const msg = errors.length === 0 && validationErrors.length === 0
+            ? `เลขบัญชีและสาขาตรงกัน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+            : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
+          setVerificationModal({
+            type: 'over_transfer',
+            accountMatch: true,
+            bankCodeMatch: true,
+            amountStatus: 'over',
+            orderAmount,
+            totalAmount: amountForCheck,
+            overpayAmount,
+            errors,
+            validationErrors,
+            statusMessage: msg,
+            orderId,
+          })
+          return
         } else {
-          // Account name or bank code doesn't match, or has validation errors
           newStatus = 'ตรวจสอบไม่ผ่าน'
-          statusMessage = `ยอดสลิปเกิน แต่เลขบัญชีหรือสาขาไม่ตรง หรือมีข้อผิดพลาดในการตรวจสอบ:\n${validationErrors.join('\n')}\n\nยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+          statusMessage = `ยอดสลิปเกิน แต่เลขบัญชีหรือสาขาไม่ตรง หรือมีข้อผิดพลาดในการตรวจสอบ\n\nยอดรวม: ฿${amountForCheck.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
         }
       } else {
-        // Amount is less than order amount - no refund needed (just mark as failed)
+        amountStatus = 'under'
         newStatus = 'ตรวจสอบไม่ผ่าน'
-        statusMessage = `ยอดสลิปไม่พอ! ยอดรวม: ฿${totalAmount.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
+        statusMessage = `ยอดสลิปไม่พอ! ยอดรวม: ฿${amountForCheck.toLocaleString()} (ยอดออเดอร์: ฿${orderAmount.toLocaleString()})`
       }
-      
-      // Any verification errors keep as "ตรวจสอบไม่ผ่าน"
+
       if (errors.length > 0 && successfulVerifications.length < slipStoragePaths.length) {
         newStatus = 'ตรวจสอบไม่ผ่าน'
       }
-
-      // Add error details if any
       if (errors.length > 0) {
         statusMessage += `\n\nสลิปที่สำเร็จ: ${successfulVerifications.join(', ')}\nสลิปที่ล้มเหลว: ${errors.length} ใบ`
       }
 
-      // Update order status
       const { error: updateError } = await supabase
         .from('or_orders')
         .update({ status: newStatus })
@@ -1587,7 +1931,19 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         throw new Error('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
       }
 
-      alert(statusMessage)
+      const modalType: VerificationResultType = newStatus === 'ตรวจสอบแล้ว' ? 'success' : 'failed'
+      setVerificationModal({
+        type: modalType,
+        accountMatch: allAccountNameMatch ? true : (errors.length === 0 ? false : null),
+        bankCodeMatch: allBankCodeMatch ? true : (errors.length === 0 ? false : null),
+        amountStatus,
+        orderAmount,
+        totalAmount: amountForCheck,
+        overpayAmount: overpayAmount > 0 ? overpayAmount : undefined,
+        errors,
+        validationErrors,
+        statusMessage,
+      })
     } catch (error: any) {
       console.error('[Verify Slips] Error:', error)
       throw error
@@ -1635,17 +1991,32 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
   }
 
   function updateItem(index: number, field: keyof OrderItem, value: any) {
-    const newItems = [...items]
-    newItems[index] = { ...newItems[index], [field]: value }
-    setItems(newItems)
+    setItems((prev) => {
+      const newItems = [...prev]
+      newItems[index] = { ...newItems[index], [field]: value }
+      return newItems
+    })
   }
 
+  /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
+  const formDisabled = readOnly || viewOnly
+
   return (
+    <>
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="bg-white p-6 rounded-lg shadow">
+        {reviewRemarks && (
+          <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
+            <p className="text-sm font-semibold text-red-800 mb-1">หมายเหตุ (รายการที่ต้องแก้ไข):</p>
+            <p className="text-red-900 whitespace-pre-wrap">{reviewRemarks}</p>
+          </div>
+        )}
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-bold">ข้อมูลลูกค้า</h3>
           <div className="flex items-center gap-3">
+            <span className="font-bold text-gray-700">
+              ผู้ลงออเดอร์: {order?.admin_user ?? user?.username ?? user?.email ?? '-'}
+            </span>
             {(order?.bill_no || preBillNo) && (
               <div className="text-right">
                 <span className="text-sm text-gray-500">เลขบิล:</span>
@@ -1654,7 +2025,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 </span>
               </div>
             )}
-            {!order?.bill_no && !preBillNo && (
+            {!order?.bill_no && !preBillNo && !formDisabled && (
               <button
                 type="button"
                 onClick={async () => {
@@ -1678,10 +2049,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
             <select
               value={formData.channel_code}
               onChange={(e) => setFormData({ ...formData, channel_code: e.target.value })}
-              disabled={readOnly || !!order?.bill_no || !!preBillNo}
+              disabled={formDisabled || !!order?.bill_no || !!preBillNo}
               required
               className={`w-full px-3 py-2 border rounded-lg ${
-                (readOnly || !!order?.bill_no || !!preBillNo) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                (formDisabled || !!order?.bill_no || !!preBillNo) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
               }`}
             >
               <option value="">-- เลือกช่องทาง --</option>
@@ -1699,19 +2070,34 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
               value={formData.customer_name}
               onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
               required
-              className="w-full px-3 py-2 border rounded-lg"
+              disabled={formDisabled}
+              className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
           </div>
         </div>
-        <div className="mt-4">
-          <label className="block text-sm font-medium mb-1">ที่อยู่ลูกค้า</label>
-          <textarea
-            value={formData.customer_address}
-            onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
-            required
-            rows={4}
-            className="w-full px-3 py-2 border rounded-lg"
-          />
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">ที่อยู่ลูกค้า</label>
+            <textarea
+              value={formData.customer_address}
+              onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
+              required={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)}
+              disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+              rows={4}
+              className={`w-full px-3 py-2 border rounded-lg ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
+            <input
+              type="text"
+              value={formData.tracking_number}
+              onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
+              placeholder="กรอกเลขพัสดุ"
+              disabled={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+              className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+            />
+          </div>
         </div>
       </div>
 
@@ -1746,18 +2132,22 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                         type="text"
                         list={`product-list-${index}`}
                         value={productSearchTerm[index] !== undefined ? productSearchTerm[index] : (item.product_name || '')}
+                        disabled={formDisabled}
                         onChange={(e) => {
                           const searchTerm = e.target.value
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
                           
-                          // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ทันที
+                          // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ (ชื่อสินค้าหรือรหัสสินค้า)
                           const matchedProduct = products.find(
-                            p => p.product_name.toLowerCase().trim() === searchTerm.toLowerCase().trim()
+                            p =>
+                              p.product_name.toLowerCase().trim() === searchTerm.toLowerCase().trim() ||
+                              (p.product_code && p.product_code.toLowerCase().trim() === searchTerm.toLowerCase().trim())
                           )
                           
                           if (matchedProduct) {
                             updateItem(index, 'product_id', matchedProduct.id)
                             updateItem(index, 'product_name', matchedProduct.product_name)
+                            setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
                           } else if (searchTerm === '') {
                             // ถ้าล้างค่า ให้ล้าง product_id ด้วย
                             updateItem(index, 'product_id', undefined)
@@ -1775,9 +2165,11 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                             return
                           }
                           
-                          // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์
+                          // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ (ชื่อสินค้าหรือรหัสสินค้า)
                           const matchedProduct = products.find(
-                            p => p.product_name.toLowerCase().trim() === inputValue.toLowerCase().trim()
+                            p =>
+                              p.product_name.toLowerCase().trim() === inputValue.toLowerCase().trim() ||
+                              (p.product_code && p.product_code.toLowerCase().trim() === inputValue.toLowerCase().trim())
                           )
                           
                           if (matchedProduct) {
@@ -1794,7 +2186,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                           }
                         }}
                         placeholder="ค้นหาหรือเลือกสินค้า..."
-                        className="w-full px-2 py-1 border rounded min-w-[220px]"
+                        className={`w-full px-2 py-1 border rounded min-w-[220px] ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.product_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
                       <datalist id={`product-list-${index}`}>
@@ -1812,12 +2204,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                             font.font_name.toLowerCase().includes(searchLower)
                           )
                           
-                          // กรองสินค้าตามเงื่อนไข
+                          // กรองสินค้าตามเงื่อนไข (ชื่อสินค้า หรือ รหัสสินค้า)
                           const filteredProducts = products.filter(p => {
                             // ถ้าไม่มีคำค้นหา ให้แสดงสินค้าทั้งหมด
                             if (!searchLower) return true
                             // ค้นหาในชื่อสินค้า
                             if (p.product_name.toLowerCase().includes(searchLower)) return true
+                            // ค้นหาในรหัสสินค้า
+                            if (p.product_code && p.product_code.toLowerCase().includes(searchLower)) return true
                             // ถ้าคำค้นหาตรงกับสีหมึก ให้แสดงสินค้าทั้งหมด
                             if (matchedInk) return true
                             // ถ้าคำค้นหาตรงกับฟอนต์ ให้แสดงสินค้าทั้งหมด
@@ -1836,9 +2230,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                     <select
                       value={item.ink_color || ''}
                       onChange={(e) => updateItem(index, 'ink_color', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[150px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'ink_color')}
+                      className={`w-full px-2 py-1 border rounded min-w-[90px] ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.ink_color ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
-                      <option value="">-- เลือกสี --</option>
+                      <option value="">เลือกสี</option>
                       {inkTypes.map((ink) => (
                         <option key={ink.id} value={ink.ink_name}>
                           {ink.ink_name}
@@ -1850,7 +2245,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                     <select
                       value={item.product_type || 'ชั้น1'}
                       onChange={(e) => updateItem(index, 'product_type', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[60px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'layer')}
+                      className={`w-full px-2 py-1 border rounded min-w-[60px] ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.layer ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="ชั้น1">ชั้น1</option>
                       <option value="ชั้น2">ชั้น2</option>
@@ -1864,7 +2260,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.cartoon_pattern || ''}
                       onChange={(e) => updateItem(index, 'cartoon_pattern', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[70px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
+                      className={`w-full px-2 py-1 border rounded min-w-[70px] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                       placeholder="ลายการ์ตูน"
                     />
                   </td>
@@ -1873,7 +2270,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.line_pattern || ''}
                       onChange={(e) => updateItem(index, 'line_pattern', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[70px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_pattern')}
+                      className={`w-full px-2 py-1 border rounded min-w-[70px] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_art ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                       placeholder="ลายเส้น"
                     />
                   </td>
@@ -1881,9 +2279,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                     <select
                       value={item.font || ''}
                       onChange={(e) => updateItem(index, 'font', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[120px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'font')}
+                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.font ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
-                      <option value="">-- เลือกฟอนต์ --</option>
+                      <option value="">เลือกฟอนต์</option>
                       {fonts.map((font) => (
                         <option key={font.font_code} value={font.font_name}>
                           {font.font_name}
@@ -1896,7 +2295,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_1')}
+                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_1')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_1 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1904,7 +2304,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.line_2 || ''}
                       onChange={(e) => updateItem(index, 'line_2', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_2')}
+                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_2')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_2 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1912,7 +2313,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.line_3 || ''}
                       onChange={(e) => updateItem(index, 'line_3', e.target.value)}
-                      className="w-full px-2 py-1 border rounded min-w-[100px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_3')}
+                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_3')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_3 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1921,7 +2323,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       value={item.quantity || 1}
                       onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
                       min="1"
-                      className="w-full px-2 py-1 border rounded min-w-[50px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
+                      className={`w-full px-2 py-1 border rounded min-w-[50px] ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1941,7 +2344,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       }}
                       step="0.01"
                       placeholder="0.00"
-                      className="w-full px-2 py-1 border rounded min-w-[80px]"
+                      disabled={formDisabled || !isFieldEnabled(index, 'unit_price')}
+                      className={`w-full px-2 py-1 border rounded min-w-[80px] ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1949,8 +2353,9 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.notes || ''}
                       onChange={(e) => updateItem(index, 'notes', e.target.value)}
+                      disabled={formDisabled || !isFieldEnabled(index, 'notes')}
                       placeholder="หมายเหตุเพิ่มเติม"
-                      className="w-full px-2 py-1 border rounded min-w-[120px]"
+                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'notes')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
@@ -1958,11 +2363,13 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                       type="text"
                       value={item.file_attachment || ''}
                       onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
+                      disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
                       placeholder="URL ไฟล์แนบ"
-                      className="w-full px-2 py-1 border rounded min-w-[120px]"
+                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
                     />
                   </td>
                   <td className="border p-2">
+                    {!formDisabled && (
                     <button
                       type="button"
                       onClick={() => removeItem(index)}
@@ -1971,12 +2378,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                     >
                       ×
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        {!formDisabled && (
         <button
           type="button"
           onClick={addItem}
@@ -1984,6 +2393,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         >
           + เพิ่มแถว
         </button>
+        )}
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">
@@ -1996,7 +2406,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 <SlipUploadSimple
                   billNo={order?.bill_no || preBillNo || null}
                   existingSlips={uploadedSlipPaths}
-                  readOnly={formData.payment_method !== 'โอน'}
+                  readOnly={formData.payment_method !== 'โอน' || formDisabled}
                   onSlipsUploaded={(slipStoragePaths) => {
                     setUploadedSlipPaths(slipStoragePaths)
                   }}
@@ -2040,7 +2450,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 }}
                 step="0.01"
                 placeholder="0"
-                className={`w-full px-3 py-2 border rounded-lg ${
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.shipping_cost === 0 ? 'text-gray-400' : ''
                 }`}
               />
@@ -2063,7 +2474,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 }}
                 step="0.01"
                 placeholder="0"
-                className={`w-full px-3 py-2 border rounded-lg ${
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
@@ -2082,7 +2494,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
               <select
                 value={formData.payment_method}
                 onChange={(e) => setFormData({ ...formData, payment_method: e.target.value })}
-                className="w-full px-3 py-2 border rounded-lg"
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
               >
                 <option value="โอน">โอน</option>
                 <option value="COD">COD</option>
@@ -2092,6 +2505,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         </div>
       </div>
 
+      {!viewOnly && (
       <div className="bg-white p-6 rounded-lg shadow">
         <h3 className="text-xl font-bold mb-4">ขอเอกสาร</h3>
         <div className="flex gap-4 mb-4">
@@ -2328,8 +2742,19 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
           </div>
         )}
       </div>
+      )}
 
       <div className="flex gap-4">
+        {viewOnly ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
+          >
+            กลับ
+          </button>
+        ) : (
+        <>
         <button
           type="button"
           onClick={async (e) => {
@@ -2363,21 +2788,27 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 return
               }
 
-              if (!formData.customer_address || formData.customer_address.trim() === '') {
+              const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
+              if (!isAddressBlockedSave && (!formData.customer_address || formData.customer_address.trim() === '')) {
                 alert('กรุณากรอกที่อยู่ลูกค้า')
                 return
               }
 
               console.log('[บันทึกข้อมูลครบ] เริ่ม match สินค้า...')
 
-              // พยายาม match สินค้าก่อน (รองรับกรณีเลือกจาก dropdown แต่ product_id ยังไม่ถูก set)
+              // พยายาม match สินค้าก่อน (รองรับกรณีเลือกจาก dropdown หรือพิมพ์รหัส/ชื่อ)
               let hasUpdates = false
               const updatedItems = items.map((item, _index) => {
                 if (!item.product_id && item.product_name?.trim()) {
                   const searchName = item.product_name.toLowerCase().trim().replace(/\s+/g, ' ')
                   let matchedProduct = products.find(
-                    p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
+                    p => p.product_code && p.product_code.toLowerCase().trim() === searchName
                   )
+                  if (!matchedProduct) {
+                    matchedProduct = products.find(
+                      p => p.product_name.toLowerCase().trim().replace(/\s+/g, ' ') === searchName
+                    )
+                  }
                   if (!matchedProduct) {
                     matchedProduct = products.find(
                       p => {
@@ -2419,12 +2850,35 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
                 return
               }
 
-              // ตรวจสอบสลิปโอน
-              if (uploadedSlipPaths.length === 0) {
-                alert('กรุณาอัพโหลดสลิปโอนเงิน')
-                return
+              // ตรวจสอบสลิปโอน — ถ้าช่องทางไม่มีในข้อมูลธนาคารสำหรับตรวจสลิป (และ bank เปิดใช้งาน) อนุญาตให้บันทึกได้โดยไม่ต้องอัพโหลดสลิป
+              if (formData.payment_method === 'โอน') {
+                const channelCode = formData.channel_code?.trim() || ''
+                const { data: bscData, error: bscError } = await supabase
+                  .from('bank_settings_channels')
+                  .select('bank_setting_id')
+                  .eq('channel_code', channelCode)
+                if (bscError) {
+                  // query ผิดพลาด → fail secure ต้องมีสลิป
+                  if (uploadedSlipPaths.length === 0) {
+                    alert('กรุณาอัพโหลดสลิปโอนเงิน')
+                    return
+                  }
+                } else if (bscData && bscData.length > 0) {
+                  const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+                  const { data: activeBank } = await supabase
+                    .from('bank_settings')
+                    .select('id')
+                    .in('id', ids)
+                    .eq('is_active', true)
+                    .limit(1)
+                  const channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
+                  if (channelHasSlipVerification && uploadedSlipPaths.length === 0) {
+                    alert('กรุณาอัพโหลดสลิปโอนเงิน')
+                    return
+                  }
+                }
               }
-              
+
               // Show verification popup if there are slips to verify
               let verificationPopup: HTMLElement | null = null
               if (uploadedSlipPaths.length > 0) {
@@ -2480,42 +2934,189 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false }:
         </button>
         <button
           type="button"
-          onClick={async (e) => {
+          onClick={(e) => {
             e.preventDefault()
             if (!order) {
               onCancel()
               return
             }
-            
-            const confirmMessage = `ต้องการยกเลิกออเดอร์ ${order.bill_no} หรือไม่?`
-            if (!confirm(confirmMessage)) {
-              return
-            }
-
-            try {
-              setLoading(true)
-              const { error } = await supabase
-                .from('or_orders')
-                .update({ status: 'ยกเลิก' })
-                .eq('id', order.id)
-
-              if (error) throw error
-
-              alert('ยกเลิกออเดอร์สำเร็จ')
-              onSave()
-            } catch (error: any) {
-              console.error('Error cancelling order:', error)
-              alert('เกิดข้อผิดพลาดในการยกเลิกออเดอร์: ' + error.message)
-            } finally {
-              setLoading(false)
-            }
+            setCancelOrderModal({ open: true })
           }}
           disabled={loading}
           className="px-6 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 disabled:opacity-50"
         >
-          {loading ? 'กำลังยกเลิก...' : 'ยกเลิก'}
+          ยกเลิก
         </button>
+        </>
+        )}
       </div>
     </form>
+
+    {/* Popup ยกเลิกออเดอร์ (ถามยืนยัน → แสดงผลสำเร็จ/ผิดพลาด ใน popup เดียว) */}
+    {cancelOrderModal.open && order && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div
+          className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+          aria-hidden
+        />
+        <div
+          className="relative flex flex-col w-full max-w-md rounded-2xl bg-white shadow-xl overflow-hidden"
+          role="dialog"
+          aria-modal
+          aria-labelledby="cancel-order-modal-title"
+        >
+          <div
+            className={`shrink-0 px-6 py-4 ${
+              cancelOrderModal.success
+                ? 'bg-green-500'
+                : cancelOrderModal.error
+                  ? 'bg-red-500'
+                  : 'bg-gray-600'
+            } text-white`}
+          >
+            <h2 id="cancel-order-modal-title" className="text-lg font-semibold">
+              {cancelOrderModal.success
+                ? 'ยกเลิกออเดอร์สำเร็จ'
+                : cancelOrderModal.error
+                  ? 'เกิดข้อผิดพลาด'
+                  : 'ยืนยันยกเลิกออเดอร์'}
+            </h2>
+          </div>
+          <div className="flex-1 px-6 py-4 text-gray-700">
+            {cancelOrderModal.success ? (
+              <p className="text-sm">ออเดอร์ {order.bill_no} ถูกยกเลิกแล้ว</p>
+            ) : cancelOrderModal.error ? (
+              <p className="text-sm">{cancelOrderModal.error}</p>
+            ) : (
+              <p className="text-sm">
+                ต้องการยกเลิกออเดอร์ {order.bill_no} หรือไม่?
+              </p>
+            )}
+          </div>
+          <div className="shrink-0 px-6 py-4 bg-gray-50 border-t border-gray-200 flex gap-2 justify-end">
+            {cancelOrderModal.success ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelOrderModal({ open: false })
+                  onSave()
+                }}
+                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 text-sm font-medium"
+              >
+                ตกลง
+              </button>
+            ) : cancelOrderModal.error ? (
+              <button
+                type="button"
+                onClick={() => setCancelOrderModal({ open: false })}
+                className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 text-sm font-medium"
+              >
+                ตกลง
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setCancelOrderModal({ open: false })}
+                  disabled={cancelOrderModal.submitting}
+                  className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+                >
+                  ไม่ยืนยัน
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setCancelOrderModal((prev) => ({ ...prev, submitting: true }))
+                    try {
+                      const { error } = await supabase
+                        .from('or_orders')
+                        .update({ status: 'ยกเลิก' })
+                        .eq('id', order.id)
+                      if (error) throw error
+                      setCancelOrderModal((prev) => ({ ...prev, success: true, submitting: false }))
+                    } catch (err: any) {
+                      console.error('Error cancelling order:', err)
+                      setCancelOrderModal((prev) => ({
+                        ...prev,
+                        success: false,
+                        error: err?.message || 'เกิดข้อผิดพลาดในการยกเลิกออเดอร์',
+                        submitting: false,
+                      }))
+                    }
+                  }}
+                  disabled={cancelOrderModal.submitting}
+                  className="px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+                >
+                  {cancelOrderModal.submitting ? (
+                    <>
+                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                      กำลังยกเลิก...
+                    </>
+                  ) : (
+                    'ยืนยันยกเลิก'
+                  )}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {verificationModal && (
+      <VerificationResultModal
+        open
+        onClose={async () => {
+          if (verificationModal.type === 'over_transfer' && verificationModal.orderId) {
+            await supabase
+              .from('or_orders')
+              .update({ status: 'ตรวจสอบไม่ผ่าน' })
+              .eq('id', verificationModal.orderId)
+          }
+          setVerificationModal(null)
+          onSave()
+        }}
+        type={verificationModal.type}
+        accountMatch={verificationModal.accountMatch}
+        bankCodeMatch={verificationModal.bankCodeMatch}
+        amountStatus={verificationModal.amountStatus}
+        orderAmount={verificationModal.orderAmount}
+        totalAmount={verificationModal.totalAmount}
+        overpayAmount={verificationModal.overpayAmount}
+        errors={verificationModal.errors}
+        validationErrors={verificationModal.validationErrors}
+        statusMessage={verificationModal.statusMessage}
+        onConfirmOverpay={
+          verificationModal.type === 'over_transfer' && verificationModal.orderId && verificationModal.overpayAmount != null
+            ? async () => {
+                setConfirmingOverpay(true)
+                try {
+                  const { error: refundError } = await supabase.from('ac_refunds').insert({
+                    order_id: verificationModal.orderId,
+                    amount: verificationModal.overpayAmount,
+                    reason: `ลูกค้าโอนเกิน (ยอดออเดอร์: ฿${verificationModal.orderAmount.toLocaleString()}, ยอดสลิป: ฿${verificationModal.totalAmount.toLocaleString()})`,
+                    status: 'pending',
+                  })
+                  if (refundError) throw new Error(refundError.message)
+                  const { error: updateError } = await supabase
+                    .from('or_orders')
+                    .update({ status: 'ตรวจสอบแล้ว' })
+                    .eq('id', verificationModal.orderId)
+                  if (updateError) throw new Error(updateError.message)
+                  setVerificationModal(null)
+                  onSave()
+                } catch (err: any) {
+                  console.error('Error confirming overpay:', err)
+                  alert('เกิดข้อผิดพลาด: ' + (err?.message || err))
+                } finally {
+                  setConfirmingOverpay(false)
+                }
+              }
+            : undefined
+        }
+        confirmingOverpay={confirmingOverpay}
+      />
+    )}
+    </>
   )
 }

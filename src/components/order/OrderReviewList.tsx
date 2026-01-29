@@ -2,18 +2,41 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
+import { useAuthContext } from '../../contexts/AuthContext'
+
+export const ERROR_FIELD_KEYS = [
+  { key: 'customer_name', label: 'ชื่อลูกค้า' },
+  { key: 'address', label: 'ที่อยู่' },
+  { key: 'product_name', label: 'ชื่อสินค้า' },
+  { key: 'ink_color', label: 'สีหมึก' },
+  { key: 'layer', label: 'ชั้น' },
+  { key: 'line_art', label: 'ลายเส้น' },
+  { key: 'font', label: 'ฟอนต์' },
+  { key: 'line_1', label: 'บรรทัด 1' },
+  { key: 'line_2', label: 'บรรทัด 2' },
+  { key: 'line_3', label: 'บรรทัด 3' },
+] as const
+
+export type ErrorFieldKey = (typeof ERROR_FIELD_KEYS)[number]['key']
 
 interface OrderReviewListProps {
   onStatusUpdate?: () => void
 }
 
 export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps) {
+  const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
   const [productImageMap, setProductImageMap] = useState<Record<string, { image_url: string | null; product_name?: string }>>({})
-  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { image_url: string | null; pattern_name?: string; pattern_code?: string }>>({})
+  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { image_url: string | null; pattern_name?: string }>>({})
+  const [rejectModalOpen, setRejectModalOpen] = useState(false)
+  const [approveModalOpen, setApproveModalOpen] = useState(false)
+  const [rejectErrorFields, setRejectErrorFields] = useState<Record<string, boolean>>(
+    ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {})
+  )
+  const [rejectRemarks, setRejectRemarks] = useState('')
 
   useEffect(() => {
     loadOrders()
@@ -41,15 +64,12 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           new Set(items.map((i) => i.cartoon_pattern).filter(Boolean))
         )
 
-        const [productsRes, patternsByCodeRes, patternsByNameRes] = await Promise.all([
+        const [productsRes, patternsRes] = await Promise.all([
           productIds.length > 0
             ? supabase.from('pr_products').select('id, product_name, image_url').in('id', productIds)
             : Promise.resolve({ data: [] as any[] }),
           cartoonKeys.length > 0
-            ? supabase.from('cp_cartoon_patterns').select('pattern_code, pattern_name, image_url').in('pattern_code', cartoonKeys)
-            : Promise.resolve({ data: [] as any[] }),
-          cartoonKeys.length > 0
-            ? supabase.from('cp_cartoon_patterns').select('pattern_code, pattern_name, image_url').in('pattern_name', cartoonKeys)
+            ? supabase.from('cp_cartoon_patterns').select('id, pattern_name, image_url').in('pattern_name', cartoonKeys)
             : Promise.resolve({ data: [] as any[] }),
         ])
 
@@ -59,14 +79,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         })
         setProductImageMap(nextProductMap)
 
-        const nextPatternMap: Record<string, { image_url: string | null; pattern_name?: string; pattern_code?: string }> = {}
-        const allPatterns = [
-          ...(((patternsByCodeRes as any)?.data || []) as any[]),
-          ...(((patternsByNameRes as any)?.data || []) as any[]),
-        ]
-        allPatterns.forEach((p: any) => {
-          const payload = { image_url: p.image_url || null, pattern_name: p.pattern_name, pattern_code: p.pattern_code }
-          if (p.pattern_code) nextPatternMap[p.pattern_code] = payload
+        const nextPatternMap: Record<string, { image_url: string | null; pattern_name?: string }> = {}
+        ;((patternsRes as any)?.data || []).forEach((p: any) => {
+          const payload = { image_url: p.image_url || null, pattern_name: p.pattern_name }
           if (p.pattern_name) nextPatternMap[p.pattern_name] = payload
         })
         setCartoonPatternImageMap(nextPatternMap)
@@ -78,8 +93,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     loadItemImages()
   }, [selectedOrder?.id])
 
-  async function loadOrders() {
-    setLoading(true)
+  async function loadOrders(silent = false): Promise<Order[]> {
+    if (!silent) setLoading(true)
     try {
       const { data, error } = await supabase
         .from('or_orders')
@@ -88,28 +103,32 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         .order('created_at', { ascending: false })
 
       if (error) throw error
-      setOrders(data || [])
-      
-      // Auto-select first order if available
-      if (data && data.length > 0 && !selectedOrder) {
-        setSelectedOrder(data[0])
+      const list = data || []
+      setOrders(list)
+      // Auto-select first order if available (เฉพาะตอนโหลดครั้งแรก)
+      if (list.length > 0 && !selectedOrder) {
+        setSelectedOrder(list[0])
       }
+      return list
     } catch (error: any) {
       console.error('Error loading orders:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      return []
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
-  async function handleApprove() {
+  function openApproveModal() {
     if (!selectedOrder) return
-    
-    if (!confirm(`ต้องการยืนยันว่าบิล ${selectedOrder.bill_no} ถูกต้อง และย้ายไปเมนู "ใบสั่งงาน" หรือไม่?`)) {
-      return
-    }
+    setApproveModalOpen(true)
+  }
+
+  async function handleApproveConfirm() {
+    if (!selectedOrder) return
 
     setUpdating(true)
+    setApproveModalOpen(false)
     try {
       const { error } = await supabase
         .from('or_orders')
@@ -118,10 +137,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
       if (error) throw error
 
-      alert('ยืนยันสำเร็จ บิลถูกย้ายไปเมนู "ใบสั่งงาน" แล้ว')
-      
-      // Reload orders and select next one
-      await loadOrders()
+      const newOrders = await loadOrders(true)
+      setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
       if (onStatusUpdate) {
         onStatusUpdate()
       }
@@ -133,29 +150,50 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }
 
-  async function handleReject() {
+  function openRejectModal() {
     if (!selectedOrder) return
-    
-    if (!confirm(`ต้องการยืนยันว่าบิล ${selectedOrder.bill_no} มีข้อมูลผิด และย้ายกลับไปเมนู "ลงข้อมูลผิด" หรือไม่?`)) {
-      return
-    }
+    setRejectErrorFields(ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {}))
+    setRejectRemarks('')
+    setRejectModalOpen(true)
+  }
+
+  async function handleRejectSubmit() {
+    if (!selectedOrder || !user?.id) return
+
+    const errorFieldsObj: Record<string, boolean> = {}
+    ERROR_FIELD_KEYS.forEach(({ key }) => {
+      if (rejectErrorFields[key]) errorFieldsObj[key] = true
+    })
 
     setUpdating(true)
     try {
-      const { error } = await supabase
+      const { error: orderError } = await supabase
         .from('or_orders')
         .update({ status: 'ลงข้อมูลผิด' })
         .eq('id', selectedOrder.id)
 
-      if (error) throw error
+      if (orderError) throw orderError
 
+      const { error: reviewError } = await supabase
+        .from('or_order_reviews')
+        .upsert(
+          {
+            order_id: selectedOrder.id,
+            reviewed_by: user.id,
+            status: 'rejected',
+            rejection_reason: rejectRemarks.trim() || null,
+            error_fields: Object.keys(errorFieldsObj).length > 0 ? errorFieldsObj : null,
+          },
+          { onConflict: 'order_id' }
+        )
+
+      if (reviewError) throw reviewError
+
+      setRejectModalOpen(false)
       alert('ยืนยันสำเร็จ บิลถูกย้ายกลับไปเมนู "ลงข้อมูลผิด" แล้ว')
-      
-      // Reload orders and select next one
-      await loadOrders()
-      if (onStatusUpdate) {
-        onStatusUpdate()
-      }
+      const newOrders = await loadOrders(true)
+      setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
+      if (onStatusUpdate) onStatusUpdate()
     } catch (error: any) {
       console.error('Error rejecting order:', error)
       alert('เกิดข้อผิดพลาด: ' + error.message)
@@ -378,9 +416,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                 {/* Pattern lookup info (optional) */}
                                 {item.cartoon_pattern && (
                                   <div className="mt-2 text-gray-600">
-                                    {pattern?.pattern_name || pattern?.pattern_code ? (
+                                    {pattern?.pattern_name ? (
                                       <div>
-                                        พบข้อมูลลาย: <span className="font-medium">{pattern?.pattern_name || pattern?.pattern_code}</span>
+                                        พบข้อมูลลาย: <span className="font-medium">{pattern.pattern_name}</span>
                                       </div>
                                     ) : (
                                       <div>
@@ -426,14 +464,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             {/* Action Buttons */}
             <div className="p-6 border-t bg-gray-50 flex gap-4">
               <button
-                onClick={handleReject}
+                onClick={openRejectModal}
                 disabled={updating}
                 className="flex-1 px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {updating ? 'กำลังอัพเดต...' : 'ผิด'}
               </button>
               <button
-                onClick={handleApprove}
+                onClick={openApproveModal}
                 disabled={updating}
                 className="flex-1 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
@@ -447,6 +485,91 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           </div>
         )}
       </div>
+
+      {/* Approve modal: ยืนยันแค่อันเดียวแล้วย้ายไปใบสั่งงาน */}
+      {approveModalOpen && selectedOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันบิลถูกต้อง</h3>
+            <p className="text-gray-700 mb-6">
+              ต้องการยืนยันว่าบิล <strong>{selectedOrder.bill_no}</strong> ถูกต้อง และย้ายไปเมนู &quot;ใบสั่งงาน&quot; หรือไม่?
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setApproveModalOpen(false)}
+                disabled={updating}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleApproveConfirm}
+                disabled={updating}
+                className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50"
+              >
+                {updating ? 'กำลังย้าย...' : 'ยืนยัน ย้ายไปใบสั่งงาน'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject modal: choose error fields + remarks — ชิดซ้ายเพื่อไม่บังรายละเอียดบิลด้านขวา */}
+      {rejectModalOpen && selectedOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-start bg-black/50 p-4 pl-[540px]">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b">
+              <h3 className="text-lg font-bold text-gray-900">ลงข้อมูลผิด — เลือกรายการที่ผิด</h3>
+              <p className="text-gray-600 mt-1 text-sm">บิล {selectedOrder.bill_no}</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm font-medium text-gray-700">ติ๊กรายการที่ผิด (แสดงกรอบแดงในฟอร์มแก้ไข):</p>
+              <div className="grid grid-cols-1 gap-2">
+                {ERROR_FIELD_KEYS.map(({ key, label }) => (
+                  <label key={key} className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!rejectErrorFields[key]}
+                      onChange={(e) => setRejectErrorFields((prev) => ({ ...prev, [key]: e.target.checked }))}
+                      className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                    />
+                    <span className="text-gray-800">{label}</span>
+                  </label>
+                ))}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ (ข้อความที่ต้องแก้ไข)</label>
+                <textarea
+                  value={rejectRemarks}
+                  onChange={(e) => setRejectRemarks(e.target.value)}
+                  placeholder="ระบุรายละเอียดที่ต้องแก้ไข..."
+                  rows={3}
+                  className="w-full px-3 py-2 border rounded-lg border-gray-300 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                />
+              </div>
+            </div>
+            <div className="p-6 border-t flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectSubmit}
+                disabled={updating}
+                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
+              >
+                {updating ? 'กำลังอัพเดต...' : 'ยืนยัน ย้ายไปลงข้อมูลผิด'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
+import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
+import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { Order } from '../types'
 import { supabase } from '../lib/supabase'
 
-type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'data-error' | 'shipped' | 'cancelled'
+type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'work-orders-manage' | 'data-error' | 'shipped' | 'cancelled'
 
 export default function Orders() {
   const [activeTab, setActiveTab] = useState<Tab>('create')
@@ -17,10 +19,16 @@ export default function Orders() {
   const [dataErrorCount, setDataErrorCount] = useState(0)
   const [cancelledCount, setCancelledCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [listRefreshKey, setListRefreshKey] = useState(0)
 
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)
     setActiveTab('create')
+  }
+
+  /** คลิกที่รายการใน ตรวจสอบแล้ว/ยกเลิก → แสดงรายละเอียดเพื่อดู (read-only) โดยไม่สลับแท็บ */
+  function handleOrderClickViewOnly(order: Order) {
+    setSelectedOrder(order)
   }
 
   function handleSave() {
@@ -74,6 +82,21 @@ export default function Orders() {
 
   function handleCancel() {
     setSelectedOrder(null)
+  }
+
+  async function handleMoveToWaiting(order: Order) {
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'รอลงข้อมูล' })
+        .eq('id', order.id)
+      if (error) throw error
+      refreshCounts()
+      setListRefreshKey((k) => k + 1)
+    } catch (err: any) {
+      console.error('Error moving order to waiting:', err)
+      alert('เกิดข้อผิดพลาด: ' + (err?.message || err))
+    }
   }
 
   // โหลด channels จากตาราง
@@ -178,9 +201,10 @@ export default function Orders() {
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
-              { id: 'complete', label: `ตรวจสอบไม่ผ่าน (${completeCount})` },
-              { id: 'verified', label: `ตรวจสอบแล้ว (${verifiedCount})` },
+              { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
+              { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
               { id: 'work-orders', label: 'ใบสั่งงาน' },
+              { id: 'work-orders-manage', label: 'จัดการใบงาน' },
               { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})` },
             ].map((tab) => (
@@ -196,7 +220,13 @@ export default function Orders() {
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
-                {tab.label}
+                {'count' in tab && tab.count !== undefined && 'countColor' in tab
+                  ? <>
+                      {tab.label}{' '}
+                      <span className={`font-semibold ${tab.countColor}`}>({tab.count})</span>
+                    </>
+                  : tab.label
+                }
               </button>
             ))}
           </nav>
@@ -238,6 +268,7 @@ export default function Orders() {
             onSave={handleSave}
             onCancel={handleCancel}
             readOnly={activeTab !== 'create'}
+            viewOnly={activeTab === 'verified' || activeTab === 'cancelled'}
           />
         ) : activeTab === 'waiting' ? (
           <OrderList
@@ -262,16 +293,24 @@ export default function Orders() {
             status="ตรวจสอบแล้ว"
             searchTerm={searchTerm}
             channelFilter={channelFilter}
-            onOrderClick={handleOrderClick}
+            onOrderClick={handleOrderClickViewOnly}
             verifiedOnly={true}
             onCountChange={setVerifiedCount}
+            showMoveToWaitingButton={true}
+            onMoveToWaiting={handleMoveToWaiting}
+            refreshTrigger={listRefreshKey}
           />
         ) : activeTab === 'work-orders' ? (
-          <OrderList
-            status="ใบสั่งงาน"
+          <WorkOrderSelectionList
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
+          />
+        ) : activeTab === 'work-orders-manage' ? (
+          <WorkOrderManageList
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            onRefresh={() => setListRefreshKey((k) => k + 1)}
           />
         ) : activeTab === 'data-error' ? (
           <OrderList
@@ -294,8 +333,11 @@ export default function Orders() {
             status="ยกเลิก"
             searchTerm={searchTerm}
             channelFilter={channelFilter}
-            onOrderClick={handleOrderClick}
+            onOrderClick={handleOrderClickViewOnly}
             onCountChange={setCancelledCount}
+            showMoveToWaitingButton={true}
+            onMoveToWaiting={handleMoveToWaiting}
+            refreshTrigger={listRefreshKey}
           />
         ) : (
           <OrderForm onSave={handleSave} onCancel={handleCancel} />
