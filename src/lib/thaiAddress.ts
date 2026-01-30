@@ -132,26 +132,35 @@ export async function getAddressByZip(
       .limit(50)
 
     if (!error && rows && rows.length > 0) {
-      const options: SubDistrictOption[] = rows.map((r: { name_th: string; thai_districts: { name_th: string | null } | null }) => ({
+      type Row = { name_th?: string; thai_districts?: { name_th?: string | null; thai_provinces?: { name_th?: string } | null } | { name_th?: string | null }[] | null }
+      const getDistrict = (r: Row): string => {
+        const td = r.thai_districts
+        if (!td) return ''
+        const one = Array.isArray(td) ? td[0] : td
+        return (one?.name_th ?? '').trim()
+      }
+      const getProvince = (r: Row): string => {
+        const td = r.thai_districts
+        if (!td) return ''
+        const one = Array.isArray(td) ? td[0] : td
+        const prov = one && 'thai_provinces' in one ? (one as { thai_provinces?: { name_th?: string } | null }).thai_provinces : null
+        return prov?.name_th ?? ''
+      }
+      const options: SubDistrictOption[] = rows.map((r: Row) => ({
         subDistrict: r.name_th ?? '',
-        district: (r.thai_districts?.name_th ?? '').trim(),
+        district: getDistrict(r),
       }))
       const hint = (addressHint ?? '').trim()
-      let chosen = rows[0] as {
-        name_th: string
-        thai_districts: { name_th: string | null } | null
-      }
+      let chosen: Row = rows[0] as Row
       if (hint) {
-        const matched = rows.find((r: { name_th?: string }) => r.name_th && hint.includes(r.name_th))
-        if (matched) chosen = matched as typeof chosen
+        const matched = rows.find((r: Row) => r.name_th && hint.includes(r.name_th))
+        if (matched) chosen = matched as Row
       }
-      const dist = chosen.thai_districts
-      const prov = (chosen as { thai_districts?: { thai_provinces?: { name_th: string } | null } | null }).thai_districts?.thai_provinces
       return {
-        province: prov?.name_th ?? '',
+        province: getProvince(chosen),
         options,
         subDistrict: chosen.name_th ?? '',
-        district: dist?.name_th?.trim() ?? '',
+        district: getDistrict(chosen),
       }
     }
   }
@@ -163,11 +172,10 @@ export async function getAddressByZip(
   if (subs.length === 0) return empty
 
   const provinces = cachedProvinces ?? []
-  const options: SubDistrictOption[] = subs.map((s) => {
-    const provinceId = Math.floor(s.district_id / 1000)
-    const prov = provinces.find((p) => p.id === provinceId)
-    return { subDistrict: s.name_th, district: '' }
-  })
+  const options: SubDistrictOption[] = subs.map((s) => ({
+    subDistrict: s.name_th,
+    district: '',
+  }))
   const s = subs[0]
   const provinceId = Math.floor(s.district_id / 1000)
   const prov = provinces.find((p) => p.id === provinceId)

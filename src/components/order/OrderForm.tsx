@@ -186,7 +186,7 @@ function SlipUploadSimple({
       return
     }
     try {
-      const { data, error: deleteError } = await supabase.storage.from(bucket).remove([filePath])
+      const { error: deleteError } = await supabase.storage.from(bucket).remove([filePath])
       if (deleteError) {
         const err = deleteError as { message?: string; statusCode?: number; error?: string }
         let errorMessage = 'เกิดข้อผิดพลาดในการลบไฟล์' + (err.message ? ': ' + err.message : '')
