@@ -3,7 +3,9 @@ import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
+import { parseAddressText, type SubDistrictOption } from '../../lib/thaiAddress'
 import VerificationResultModal, { type AmountStatus, type VerificationResultType } from './VerificationResultModal'
+import Modal from '../ui/Modal'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -24,6 +26,12 @@ function SlipUploadSimple({
   const [previewUrls, setPreviewUrls] = useState<string[]>([])
   const [uploadNotice, setUploadNotice] = useState<string | null>(null)
   const [uploadedSlipUrls, setUploadedSlipUrls] = useState<string[]>([])
+  /** Modal กรอกเหตุผลลบสลิป (แทน prompt) */
+  const [deleteSlipModal, setDeleteSlipModal] = useState<{ open: boolean; index: number | null; storagePath: string | null }>({ open: false, index: null, storagePath: null })
+  const [deleteSlipReason, setDeleteSlipReason] = useState('')
+  const [deleteSlipSubmitting, setDeleteSlipSubmitting] = useState(false)
+  /** Modal แจ้งอัพโหลดสลิปสำเร็จ (แทน alert) */
+  const [uploadSuccessModal, setUploadSuccessModal] = useState<{ open: boolean; count: number }>({ open: false, count: 0 })
 
   // Sync existingSlips when it changes
   useEffect(() => {
@@ -139,7 +147,7 @@ function SlipUploadSimple({
         onSlipsUploaded(updatedSlipPaths)
       }
       
-      alert(`อัพโหลดสลิปสำเร็จ ${storagePaths.length} ไฟล์`)
+      setUploadSuccessModal({ open: true, count: storagePaths.length })
     } catch (error: any) {
       console.error('Error uploading slips:', error)
       const msg = error?.message || ''
@@ -162,6 +170,57 @@ function SlipUploadSimple({
     
     setFiles(files.filter((_, i) => i !== index))
     setPreviewUrls(previewUrls.filter((_, i) => i !== index))
+  }
+
+  async function performDeleteSlip(index: number, storagePath: string, deletionReason: string) {
+    const pathParts = storagePath.split('/')
+    if (pathParts.length < 2) {
+      alert('รูปแบบ path ไม่ถูกต้อง: ' + storagePath)
+      return
+    }
+    const bucket = pathParts[0]
+    const filePath = pathParts.slice(1).join('/')
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      alert('กรุณาเข้าสู่ระบบก่อนลบไฟล์')
+      return
+    }
+    try {
+      const { data, error: deleteError } = await supabase.storage.from(bucket).remove([filePath])
+      if (deleteError) {
+        const err = deleteError as { message?: string; statusCode?: number; error?: string }
+        let errorMessage = 'เกิดข้อผิดพลาดในการลบไฟล์' + (err.message ? ': ' + err.message : '')
+        if (err.statusCode === 403 || err.error === 'permission_denied') {
+          errorMessage += '\n\nสาเหตุ: ไม่มีสิทธิ์ลบไฟล์'
+        } else if (err.statusCode === 404) {
+          // ไปทำ soft delete ต่อ
+        } else {
+          alert(errorMessage)
+          return
+        }
+      }
+      const { error: softDeleteError } = await supabase
+        .from('ac_verified_slips')
+        .update({
+          is_deleted: true,
+          deleted_at: new Date().toISOString(),
+          deleted_by: session.user.id,
+          deletion_reason: deletionReason,
+        })
+        .eq('slip_storage_path', storagePath)
+      if (softDeleteError) {
+        alert('ลบไฟล์สำเร็จ แต่บันทึก Soft Delete ไม่สำเร็จ: ' + softDeleteError.message)
+      }
+      const newSlips = uploadedSlipPaths.filter((_, i) => i !== index)
+      setUploadedSlipPaths(newSlips)
+      if (onSlipsUploaded) onSlipsUploaded(newSlips)
+      setDeleteSlipModal({ open: false, index: null, storagePath: null })
+      setDeleteSlipReason('')
+    } catch (error: any) {
+      alert('เกิดข้อผิดพลาดในการลบไฟล์: ' + (error?.message || String(error)))
+    } finally {
+      setDeleteSlipSubmitting(false)
+    }
   }
 
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -291,120 +350,11 @@ function SlipUploadSimple({
                     {!readOnly && (
                       <button
                         type="button"
-                        onClick={async () => {
+                        onClick={() => {
                           const storagePath = uploadedSlipPaths[index]
-                          
-                          if (!storagePath) {
-                            console.warn('No storage path to delete')
-                            return
-                          }
-
-                          // Parse storage path: format is "bucket/path/to/file"
-                          const pathParts = storagePath.split('/')
-                          if (pathParts.length < 2) {
-                            console.error('Invalid storage path format:', storagePath)
-                            alert('รูปแบบ path ไม่ถูกต้อง: ' + storagePath)
-                            return
-                          }
-
-                          const bucket = pathParts[0]
-                          const filePath = pathParts.slice(1).join('/')
-                          
-                          console.log('Deleting file from bucket:', bucket, 'path:', filePath)
-                          
-                          try {
-                            // ตรวจสอบ session ก่อนลบ
-                            const { data: { session } } = await supabase.auth.getSession()
-                            if (!session) {
-                              alert('กรุณาเข้าสู่ระบบก่อนลบไฟล์')
-                              return
-                            }
-                            
-                            const rawReason = (prompt('กรุณากรอกเหตุผลในการลบสลิป (บังคับ)\nเช่น: สลิปซ้ำ / สลิปไม่ถูกต้อง / อื่นๆ') || '').trim()
-                            if (!rawReason) {
-                              alert('กรุณากรอกเหตุผลในการลบสลิป ไม่สามารถลบได้หากไม่ระบุเหตุผล')
-                              return
-                            }
-                            const deletionReason = rawReason
-
-                            console.log('Attempting to delete:', { bucket, filePath, storagePath })
-                            
-                            // ลบรูปจาก bucket
-                            const { data, error: deleteError } = await supabase.storage
-                              .from(bucket)
-                              .remove([filePath])
-                            
-                            if (deleteError) {
-                              const err = deleteError as { message?: string; statusCode?: number; error?: string }
-                              console.error('Error deleting file from bucket:', {
-                                error: deleteError,
-                                message: err.message,
-                                statusCode: err.statusCode,
-                                errorCode: err.error,
-                                bucket,
-                                filePath,
-                                storagePath
-                              })
-                              
-                              // แสดง error message ที่ชัดเจนขึ้น
-                              let errorMessage = 'เกิดข้อผิดพลาดในการลบไฟล์'
-                              if (err.message) {
-                                errorMessage += ': ' + err.message
-                              }
-                              if (err.statusCode === 403 || err.error === 'permission_denied') {
-                                errorMessage += '\n\nสาเหตุ: ไม่มีสิทธิ์ลบไฟล์\n\nวิธีแก้ไข:\n1. ตรวจสอบว่า Storage policies ถูกตั้งค่าแล้ว (รัน migration 012_setup_slip_images_storage_policies.sql)\n2. ตรวจสอบว่า bucket "slip-images" มีการเปิดใช้งาน RLS\n3. ตรวจสอบว่า user มีสิทธิ์ authenticated'
-                              } else if (err.statusCode === 404) {
-                                // ไฟล์อาจถูกลบไปแล้ว แต่ยังต้องทำ soft delete ใน DB ต่อ
-                                console.warn('File not found in bucket (404), proceeding with DB soft delete:', storagePath)
-                                errorMessage += '\n\nสาเหตุ: ไม่พบไฟล์ที่ต้องการลบ (อาจถูกลบไปแล้ว)\n\nระบบจะทำการซ่อนสลิปนี้จากรายการต่อไป'
-                              } else {
-                                alert(errorMessage)
-                                return // Don't remove from UI if deletion failed
-                              }
-                              
-                              // ถ้าเป็น 404 ให้ไปทำ soft delete ต่อ (ไม่ return)
-                            }
-
-                            console.log('File deleted successfully:', { filePath, data })
-
-                            // Soft delete record in DB (for KPI/audit)
-                            const { error: softDeleteError } = await supabase
-                              .from('ac_verified_slips')
-                              .update({
-                                is_deleted: true,
-                                deleted_at: new Date().toISOString(),
-                                deleted_by: session.user.id,
-                                deletion_reason: deletionReason,
-                              })
-                              .eq('slip_storage_path', storagePath)
-
-                            if (softDeleteError) {
-                              console.error('Error soft deleting ac_verified_slips:', softDeleteError)
-                              alert('ลบไฟล์สำเร็จ แต่บันทึก Soft Delete ไม่สำเร็จ: ' + softDeleteError.message)
-                              // ยังให้ลบจาก UI ต่อ เพื่อไม่ให้ผู้ใช้สับสน (ไฟล์ถูกลบแล้ว)
-                            }
-                            
-                            // Update UI only after successful deletion
-                            const newSlips = uploadedSlipPaths.filter((_, i) => i !== index)
-                            setUploadedSlipPaths(newSlips)
-                            
-                            if (onSlipsUploaded) {
-                              onSlipsUploaded(newSlips)
-                            }
-                            
-                            // แสดงข้อความสำเร็จ
-                            console.log('File removed from UI successfully')
-                          } catch (error: any) {
-                            console.error('Exception deleting file:', {
-                              error,
-                              message: error?.message,
-                              stack: error?.stack,
-                              bucket,
-                              filePath,
-                              storagePath
-                            })
-                            alert('เกิดข้อผิดพลาดในการลบไฟล์: ' + (error?.message || String(error)))
-                          }
+                          if (!storagePath) return
+                          setDeleteSlipReason('')
+                          setDeleteSlipModal({ open: true, index, storagePath })
                         }}
                         className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
                         title="ลบรูปภาพ"
@@ -419,13 +369,102 @@ function SlipUploadSimple({
           </div>
         </div>
       )}
+
+      {/* Modal กรอกเหตุผลลบสลิป (แทน prompt) */}
+      {deleteSlipModal.open && deleteSlipModal.index !== null && deleteSlipModal.storagePath !== null && (
+        <Modal
+          open
+          onClose={() => {
+            if (!deleteSlipSubmitting) {
+              setDeleteSlipModal({ open: false, index: null, storagePath: null })
+              setDeleteSlipReason('')
+            }
+          }}
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">เหตุผลในการลบสลิป (บังคับ)</h3>
+            <p className="text-sm text-gray-600 mb-3">เช่น: สลิปซ้ำ / สลิปไม่ถูกต้อง / อื่นๆ</p>
+            <input
+              type="text"
+              value={deleteSlipReason}
+              onChange={(e) => setDeleteSlipReason(e.target.value)}
+              placeholder="กรอกเหตุผล..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-500"
+              disabled={deleteSlipSubmitting}
+            />
+            <div className="flex gap-3 justify-end mt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!deleteSlipSubmitting) {
+                    setDeleteSlipModal({ open: false, index: null, storagePath: null })
+                    setDeleteSlipReason('')
+                  }
+                }}
+                disabled={deleteSlipSubmitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const reason = deleteSlipReason.trim()
+                  if (!reason) {
+                    alert('กรุณากรอกเหตุผลในการลบสลิป ไม่สามารถลบได้หากไม่ระบุเหตุผล')
+                    return
+                  }
+                  setDeleteSlipSubmitting(true)
+                  await performDeleteSlip(deleteSlipModal.index!, deleteSlipModal.storagePath!, reason)
+                }}
+                disabled={deleteSlipSubmitting}
+                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+              >
+                {deleteSlipSubmitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                    กำลังลบ...
+                  </>
+                ) : (
+                  'ยืนยันลบ'
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal แจ้งอัพโหลดสลิปสำเร็จ */}
+      <Modal
+        open={uploadSuccessModal.open}
+        onClose={() => setUploadSuccessModal({ open: false, count: 0 })}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="p-5">
+          <p className="text-gray-800">
+            อัพโหลดสลิปสำเร็จ {uploadSuccessModal.count} ไฟล์
+          </p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setUploadSuccessModal({ open: false, count: 0 })}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              ตกลง
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }
 
 interface OrderFormProps {
   order?: Order | null
-  onSave: () => void
+  /** options.switchToTab: 'complete' = หลัง save ให้สลับไปแท็บ "ตรวจสอบไม่ผ่าน" (ใช้เมื่อปฏิเสธโอนเกิน) */
+  onSave: (options?: { switchToTab?: 'complete' }) => void
   onCancel: () => void
   readOnly?: boolean
   /** โหมดดูอย่างเดียว (จาก ตรวจสอบแล้ว/ยกเลิก): ซ่อนขอเอกสารและปุ่มบันทึก/ยกเลิก แสดงเฉพาะปุ่มกลับ */
@@ -441,6 +480,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
   const [products, setProducts] = useState<Product[]>([])
   const [_cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
   const [items, setItems] = useState<Partial<OrderItem>[]>([])
@@ -449,6 +489,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
+  /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
+  const [channelCodesWithSlipVerification, setChannelCodesWithSlipVerification] = useState<Set<string>>(new Set())
   const [preBillNo, setPreBillNo] = useState<string | null>(null)
   const [verificationModal, setVerificationModal] = useState<{
     type: VerificationResultType
@@ -482,6 +524,12 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     channel_code: '',
     customer_name: '',
     customer_address: '',
+    address_line: '',
+    sub_district: '',
+    district: '',
+    province: '',
+    postal_code: '',
+    mobile_phone: '',
     tracking_number: '',
     price: 0,
     shipping_cost: 0,
@@ -503,6 +551,33 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     address: '',
     items_note: '',
   })
+  const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
+  /** เบอร์โทรที่ parse ได้หลายเบอร์ (จาก Auto fill) — แสดง dropdown ให้เลือก */
+  const [mobilePhoneCandidates, setMobilePhoneCandidates] = useState<string[]>([])
+  /** รายการแขวง/ตำบล + เขต (จาก Auto fill) — แสดง dropdown แขวง/เขต */
+  const [subDistrictOptions, setSubDistrictOptions] = useState<SubDistrictOption[]>([])
+  /** แสดง Modal แทน alert เมื่อยังไม่ได้เลือกสินค้าจาก dropdown */
+  const [productSelectAlertOpen, setProductSelectAlertOpen] = useState(false)
+
+  async function handleAutoFillAddress() {
+    setAutoFillAddressLoading(true)
+    try {
+      const parsed = await parseAddressText(formData.customer_address || '', supabase)
+      setMobilePhoneCandidates(parsed.mobilePhoneCandidates ?? [])
+      setSubDistrictOptions(parsed.subDistrictOptions ?? [])
+      setFormData(prev => ({
+        ...prev,
+        address_line: parsed.addressLine,
+        sub_district: parsed.subDistrict,
+        district: parsed.district,
+        province: parsed.province,
+        postal_code: parsed.postalCode,
+        mobile_phone: parsed.mobilePhone,
+      }))
+    } finally {
+      setAutoFillAddressLoading(false)
+    }
+  }
 
   /** โหลด path สลิปจาก storage; ถ้าระบุ orderId จะตัด path ที่ถูกลบแล้ว (ac_verified_slips.is_deleted) ออก */
   async function loadSlipImages(billNo: string, orderId?: string): Promise<string[]> {
@@ -560,7 +635,24 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         .order('created_at', { ascending: false })
 
       if (error) throw error
-      setBankSettings(data || [])
+      const banks = data || []
+      setBankSettings(banks)
+
+      if (banks.length === 0) {
+        setChannelCodesWithSlipVerification(new Set())
+        return
+      }
+      const bankIds = banks.map((b: { id: string }) => b.id)
+      const { data: bscData, error: bscError } = await supabase
+        .from('bank_settings_channels')
+        .select('channel_code')
+        .in('bank_setting_id', bankIds)
+      if (bscError) {
+        setChannelCodesWithSlipVerification(new Set())
+        return
+      }
+      const codes = new Set((bscData || []).map((r: { channel_code: string }) => r.channel_code).filter(Boolean))
+      setChannelCodesWithSlipVerification(codes)
     } catch (error) {
       console.error('Error loading bank settings:', error)
     }
@@ -572,10 +664,21 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     async function loadOrderData() {
       if (order) {
         setPreBillNo(order.bill_no || null)
+        const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
+        const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
+        const customerAddress = hasAddressParts
+          ? [bd?.address_line, bd?.sub_district, bd?.district, bd?.province, bd?.postal_code].filter(Boolean).join(' ')
+          : order.customer_address
         setFormData({
           channel_code: order.channel_code,
           customer_name: order.customer_name,
-          customer_address: order.customer_address,
+          customer_address: customerAddress,
+          address_line: bd?.address_line ?? '',
+          sub_district: bd?.sub_district ?? '',
+          district: bd?.district ?? '',
+          province: bd?.province ?? '',
+          postal_code: bd?.postal_code ?? '',
+          mobile_phone: bd?.mobile_phone ?? '',
           tracking_number: (order as { tracking_number?: string }).tracking_number || '',
           price: order.price,
           shipping_cost: order.shipping_cost,
@@ -732,18 +835,20 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
         supabase.from('pr_category_field_settings').select('*'),
+        supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
       if (patternsRes.data) setCartoonPatterns(patternsRes.data)
       if (channelsRes.data) setChannels(channelsRes.data)
+      if (promotionsRes.data) setPromotions(promotionsRes.data)
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
       
@@ -855,8 +960,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     }
 
     const isAddressBlocked = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
-    if (!isAddressBlocked && (!formData.customer_address || formData.customer_address.trim() === '')) {
-      alert('กรุณากรอกที่อยู่ลูกค้า')
+    const composedAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
+    const hasAddress = (formData.customer_address?.trim() || composedAddress) !== ''
+    if (!isAddressBlocked && !hasAddress) {
+      alert('กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill')
       return
     }
 
@@ -919,7 +1026,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       // ตรวจสอบว่ามีรายการที่สร้างไว้แล้วหรือไม่
       const hasItems = items.length > 0
       if (hasItems) {
-        alert('กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)')
+        setProductSelectAlertOpen(true)
       } else {
         alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
       }
@@ -976,8 +1083,13 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         ? formData.payment_time 
         : null
       
-      // เตรียมข้อมูล billing_details
+      // เตรียมข้อมูล billing_details (รวม address parts สำหรับที่อยู่ลูกค้า)
+      const hasAddressParts = !!(formData.address_line?.trim() || formData.sub_district?.trim() || formData.district?.trim() || formData.province?.trim() || formData.postal_code?.trim() || formData.mobile_phone?.trim())
+      const customerAddressToSave = hasAddressParts
+        ? [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ')
+        : (formData.customer_address || '')
       const billingDetails = {
+        ...(order?.billing_details && typeof order.billing_details === 'object' ? order.billing_details : {}),
         request_tax_invoice: showTaxInvoice,
         request_cash_bill: showCashBill,
         tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : (showCashBill ? cashBillData.company_name : null),
@@ -989,7 +1101,13 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             product_name: item.product_name || '',
             quantity: item.quantity || 1,
             unit_price: item.unit_price || 0,
-          })) : []
+          })) : [],
+        address_line: formData.address_line?.trim() || null,
+        sub_district: formData.sub_district?.trim() || null,
+        district: formData.district?.trim() || null,
+        province: formData.province?.trim() || null,
+        postal_code: formData.postal_code?.trim() || null,
+        mobile_phone: formData.mobile_phone?.trim() || null,
       }
 
       // บิลที่บันทึก "ข้อมูลครบ" แต่ช่องทางไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว" เพื่อให้แสดงในเมนู ตรวจสอบแล้ว
@@ -1020,8 +1138,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         }
       }
 
+      const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, ...formDataForDb } = formData
       const orderData = {
-        ...formData,
+        ...formDataForDb,
+        customer_address: customerAddressToSave,
         price: calculatedPrice,
         total_amount: calculatedTotal,
         payment_date: paymentDate,
@@ -1029,7 +1149,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         status: statusToSave,
         admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
-        billing_details: (showTaxInvoice || showCashBill) ? billingDetails : null,
+        billing_details: (showTaxInvoice || showCashBill || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
       }
 
       let orderId: string
@@ -1358,9 +1478,11 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
       const verifiedBy = user?.id || null
 
-      // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำก็ต่อเมื่อพบในรายการที่สถานะ "ตรวจสอบแล้ว" เท่านั้น (ไม่นับออเดอร์อื่น)
-      // Check by transRef or amount + date combination
-      const VERIFIED_STATUS = 'ตรวจสอบแล้ว'
+      // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำเมื่อพบในออเดอร์อื่นที่สถานะ "นอกจาก" รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน (ปลอดภัยกว่า — สถานะใหม่ที่เพิ่มในอนาคตจะนับว่าสลิปถูกใช้โดยอัตโนมัติ)
+      const SLIP_NOT_USED_STATUSES = ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน'] as const
+      const isSlipUsedByOrder = (status: string | null | undefined) =>
+        status != null && !SLIP_NOT_USED_STATUSES.includes(status as any)
+
       const duplicateCheckPromises = results.map(async (r: any) => {
         if (!r.easyslipResponse || r.amount === undefined) {
           return { isDuplicate: false, duplicateOrderId: null }
@@ -1370,7 +1492,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         const amount = r.amount
         const date = r.easyslipResponse?.data?.date
         
-        // Check by transRef first (most reliable) — เฉพาะ order ที่สถานะ ตรวจสอบแล้ว
+        // Check by transRef first (most reliable)
         if (transRef) {
           const { data: duplicateByRef } = await supabase
             .from('ac_verified_slips')
@@ -1380,14 +1502,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             .neq('order_id', orderId)
           
           const verifiedDuplicate = (duplicateByRef || []).find(
-            (row: any) => row.or_orders?.status === VERIFIED_STATUS
+            (row: any) => isSlipUsedByOrder(row.or_orders?.status)
           )
           if (verifiedDuplicate) {
             return { isDuplicate: true, duplicateOrderId: verifiedDuplicate.order_id }
           }
         }
         
-        // Check by amount + date combination (fallback) — เฉพาะ order ที่สถานะ ตรวจสอบแล้ว
+        // Check by amount + date combination (fallback)
         if (amount && date) {
           const { data: duplicateByAmountDate } = await supabase
             .from('ac_verified_slips')
@@ -1398,7 +1520,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             .neq('order_id', orderId)
           
           const verifiedDuplicate = (duplicateByAmountDate || []).find(
-            (row: any) => row.or_orders?.status === VERIFIED_STATUS
+            (row: any) => isSlipUsedByOrder(row.or_orders?.status)
           )
           if (verifiedDuplicate) {
             return { isDuplicate: true, duplicateOrderId: verifiedDuplicate.order_id }
@@ -2077,26 +2199,171 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         </div>
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium mb-1">ที่อยู่ลูกค้า</label>
+            <div className="flex items-center gap-2 mb-1">
+              <label className="block text-sm font-medium">ที่อยู่ลูกค้า</label>
+              <button
+                type="button"
+                onClick={handleAutoFillAddress}
+                disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled || autoFillAddressLoading}
+                className="text-sm px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}
+              </button>
+            </div>
             <textarea
               value={formData.customer_address}
               onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
+              placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วกด Auto fill"
               required={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)}
               disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
               rows={4}
               className={`w-full px-3 py-2 border rounded-lg ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">ที่อยู่</label>
+                <input
+                  type="text"
+                  value={formData.address_line}
+                  onChange={(e) => setFormData({ ...formData, address_line: e.target.value })}
+                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">แขวง/ตำบล</label>
+                {subDistrictOptions.length > 0 ? (
+                  <select
+                    value={(() => {
+                      const i = subDistrictOptions.findIndex((o) => o.subDistrict === formData.sub_district)
+                      return i >= 0 ? String(i) : ''
+                    })()}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      if (v === '') return
+                      const i = parseInt(v, 10)
+                      const o = subDistrictOptions[i]
+                      if (o) setFormData((prev) => ({ ...prev, sub_district: o.subDistrict, district: o.district }))
+                    }}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  >
+                    <option value="">-- เลือกแขวง/ตำบล --</option>
+                    {subDistrictOptions.map((o, i) => (
+                      <option key={i} value={i}>{o.subDistrict}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.sub_district}
+                    onChange={(e) => setFormData({ ...formData, sub_district: e.target.value })}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  />
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">เขต/อำเภอ</label>
+                {subDistrictOptions.length > 0 ? (
+                  <select
+                    value={formData.district}
+                    onChange={(e) => setFormData({ ...formData, district: e.target.value })}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  >
+                    <option value="">-- เลือกเขต/อำเภอ --</option>
+                    {Array.from(new Set(subDistrictOptions.map((o) => o.district).filter(Boolean))).map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.district}
+                    onChange={(e) => setFormData({ ...formData, district: e.target.value })}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  />
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">จังหวัด</label>
+                <input
+                  type="text"
+                  value={formData.province}
+                  onChange={(e) => setFormData({ ...formData, province: e.target.value })}
+                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">รหัสไปรษณีย์</label>
+                <input
+                  type="text"
+                  value={formData.postal_code}
+                  onChange={(e) => setFormData({ ...formData, postal_code: e.target.value })}
+                  disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                  className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">เบอร์โทรมือถือ</label>
+                {mobilePhoneCandidates.length > 1 ? (
+                  <select
+                    value={formData.mobile_phone}
+                    onChange={(e) => setFormData({ ...formData, mobile_phone: e.target.value })}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  >
+                    {mobilePhoneCandidates.map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.mobile_phone}
+                    onChange={(e) => {
+                      setFormData({ ...formData, mobile_phone: e.target.value })
+                      if (mobilePhoneCandidates.length > 0) setMobilePhoneCandidates([])
+                    }}
+                    placeholder="0 ตามด้วย 9 หลัก (06-09)"
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
+                  />
+                )}
+              </div>
+            </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
-            <input
-              type="text"
-              value={formData.tracking_number}
-              onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
-              placeholder="กรอกเลขพัสดุ"
-              disabled={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-              className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-            />
+          <div className="flex flex-col gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
+              <input
+                type="text"
+                value={formData.tracking_number}
+                onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
+                placeholder="กรอกเลขพัสดุ"
+                disabled={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">โปรโมชั่น</label>
+              <select
+                value={formData.promotion}
+                onChange={(e) => setFormData({ ...formData, promotion: e.target.value })}
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+              >
+                <option value="">-- เลือกโปรโมชั่น --</option>
+                {promotions.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -2398,25 +2665,40 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน */}
+          {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน — แสดงเฉพาะเมื่อช่องทางอยู่ใน bank_settings_channels */}
           <div>
-            {formData.payment_method === 'โอน' || uploadedSlipPaths.length > 0 ? (
-              <>
-                <h4 className="font-semibold mb-3 text-lg">อัพโหลดสลิปโอนเงิน</h4>
-                <SlipUploadSimple
-                  billNo={order?.bill_no || preBillNo || null}
-                  existingSlips={uploadedSlipPaths}
-                  readOnly={formData.payment_method !== 'โอน' || formDisabled}
-                  onSlipsUploaded={(slipStoragePaths) => {
-                    setUploadedSlipPaths(slipStoragePaths)
-                  }}
-                />
-              </>
-            ) : (
-              <div className="text-gray-400 text-sm italic">
-                เลือกวิธีการชำระ "โอน" เพื่ออัพโหลดสลิป
-              </div>
-            )}
+            {(() => {
+              const channelCode = formData.channel_code?.trim() || ''
+              const channelRequiresSlip = formData.payment_method === 'โอน' && channelCodesWithSlipVerification.has(channelCode)
+              const hasExistingSlips = uploadedSlipPaths.length > 0
+              if (channelRequiresSlip || hasExistingSlips) {
+                return (
+                  <>
+                    <h4 className="font-semibold mb-3 text-lg">อัพโหลดสลิปโอนเงิน</h4>
+                    <SlipUploadSimple
+                      billNo={order?.bill_no || preBillNo || null}
+                      existingSlips={uploadedSlipPaths}
+                      readOnly={formData.payment_method !== 'โอน' || formDisabled}
+                      onSlipsUploaded={(slipStoragePaths) => {
+                        setUploadedSlipPaths(slipStoragePaths)
+                      }}
+                    />
+                  </>
+                )
+              }
+              if (formData.payment_method === 'โอน' && channelCode) {
+                return (
+                  <div className="text-amber-700 text-sm bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    ช่องทางนี้ไม่อยู่ในตัวเลือกการตั้งค่าข้อมูลธนาคาร ไม่ต้องอัพโหลดสลิป
+                  </div>
+                )
+              }
+              return (
+                <div className="text-gray-400 text-sm italic">
+                  เลือกวิธีการชำระ &quot;โอน&quot; เพื่ออัพโหลดสลิป
+                </div>
+              )
+            })()}
           </div>
 
           {/* ฝั่งขวา: ข้อมูลการชำระเงิน */}
@@ -2789,8 +3071,10 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               }
 
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
-              if (!isAddressBlockedSave && (!formData.customer_address || formData.customer_address.trim() === '')) {
-                alert('กรุณากรอกที่อยู่ลูกค้า')
+              const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
+              const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
+              if (!isAddressBlockedSave && !hasAddressSave) {
+                alert('กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill')
                 return
               }
 
@@ -2835,7 +3119,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               if (itemsWithProduct.length === 0) {
                 const hasItems = itemsToValidate.length > 0
                 if (hasItems) {
-                  alert('กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)')
+                  setProductSelectAlertOpen(true)
                 } else {
                   alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
                 }
@@ -2954,17 +3238,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
     {/* Popup ยกเลิกออเดอร์ (ถามยืนยัน → แสดงผลสำเร็จ/ผิดพลาด ใน popup เดียว) */}
     {cancelOrderModal.open && order && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div
-          className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-          aria-hidden
-        />
-        <div
-          className="relative flex flex-col w-full max-w-md rounded-2xl bg-white shadow-xl overflow-hidden"
-          role="dialog"
-          aria-modal
-          aria-labelledby="cancel-order-modal-title"
-        >
+      <Modal
+        open
+        onClose={() => setCancelOrderModal({ open: false })}
+        contentClassName="max-w-md"
+        role="dialog"
+        ariaModal
+        ariaLabelledby="cancel-order-modal-title"
+      >
           <div
             className={`shrink-0 px-6 py-4 ${
               cancelOrderModal.success
@@ -3059,8 +3340,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               </>
             )}
           </div>
-        </div>
-      </div>
+      </Modal>
     )}
 
     {verificationModal && (
@@ -3068,10 +3348,19 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         open
         onClose={async () => {
           if (verificationModal.type === 'over_transfer' && verificationModal.orderId) {
-            await supabase
+            const { error } = await supabase
               .from('or_orders')
               .update({ status: 'ตรวจสอบไม่ผ่าน' })
               .eq('id', verificationModal.orderId)
+            if (error) {
+              console.error('Error updating order status:', error)
+              alert('เกิดข้อผิดพลาดในการอัปเดตสถานะ: ' + error.message)
+            } else {
+              // สลับไปแท็บ "ตรวจสอบไม่ผ่าน" เพื่อให้ผู้ใช้เห็นบิลที่เพิ่งปฏิเสธโอนเกิน
+              onSave({ switchToTab: 'complete' })
+              setVerificationModal(null)
+              return
+            }
           }
           setVerificationModal(null)
           onSave()
@@ -3117,6 +3406,28 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         confirmingOverpay={confirmingOverpay}
       />
     )}
+
+    <Modal
+      open={productSelectAlertOpen}
+      onClose={() => setProductSelectAlertOpen(false)}
+      contentClassName="max-w-md"
+      closeOnBackdropClick
+    >
+      <div className="p-5">
+        <p className="text-gray-800">
+          กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)
+        </p>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setProductSelectAlertOpen(false)}
+            className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+          >
+            ตกลง
+          </button>
+        </div>
+      </div>
+    </Modal>
     </>
   )
 }

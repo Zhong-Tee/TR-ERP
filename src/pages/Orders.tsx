@@ -6,7 +6,7 @@ import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { Order } from '../types'
 import { supabase } from '../lib/supabase'
 
-type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'work-orders-manage' | 'data-error' | 'shipped' | 'cancelled'
+type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'work-orders-manage' | 'data-error' | 'shipped' | 'cancelled' | 'rejected-refund'
 
 export default function Orders() {
   const [activeTab, setActiveTab] = useState<Tab>('create')
@@ -18,6 +18,7 @@ export default function Orders() {
   const [verifiedCount, setVerifiedCount] = useState(0)
   const [dataErrorCount, setDataErrorCount] = useState(0)
   const [cancelledCount, setCancelledCount] = useState(0)
+  const [rejectedRefundCount, setRejectedRefundCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
 
@@ -31,9 +32,10 @@ export default function Orders() {
     setSelectedOrder(order)
   }
 
-  function handleSave() {
+  /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน) */
+  function handleSave(options?: { switchToTab?: 'complete' }) {
     setSelectedOrder(null)
-    setActiveTab('waiting')
+    setActiveTab(options?.switchToTab === 'complete' ? 'complete' : 'waiting')
     // Refresh counts immediately
     refreshCounts()
   }
@@ -46,11 +48,11 @@ export default function Orders() {
         .select('id', { count: 'exact', head: true })
         .eq('status', 'รอลงข้อมูล')
       
-      // Load complete count
+      // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
       const { count: completeCount } = await supabase
         .from('or_orders')
         .select('id', { count: 'exact', head: true })
-        .eq('status', 'ตรวจสอบไม่ผ่าน')
+        .in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
 
       // Load verified count
       const { count: verifiedCount } = await supabase
@@ -69,6 +71,15 @@ export default function Orders() {
         .from('or_orders')
         .select('id', { count: 'exact', head: true })
         .eq('status', 'ยกเลิก')
+
+      // Load count of orders that have rejected overpay refund (ปฏิเสธโอนคืน)
+      const { data: rejectedRefundRows } = await supabase
+        .from('ac_refunds')
+        .select('order_id')
+        .ilike('reason', '%โอนเกิน%')
+        .eq('status', 'rejected')
+      const rejectedOrderIds = [...new Set((rejectedRefundRows || []).map((r: any) => r.order_id).filter(Boolean))]
+      setRejectedRefundCount(rejectedOrderIds.length)
 
       setWaitingCount(waitingCount || 0)
       setCompleteCount(completeCount || 0)
@@ -118,72 +129,36 @@ export default function Orders() {
     loadChannels()
   }, [])
 
-  // โหลด waiting count และ cancelled count ทันที
+  // โหลดตัวเลขทุกแท็บทันทีเมื่อเปิดหน้า (แบบขนาน) + realtime เมื่อ or_orders / ac_refunds เปลี่ยน
   useEffect(() => {
     async function loadCounts() {
       try {
-        // Load waiting count
-        const { count: waitingCount, error: waitingError } = await supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'รอลงข้อมูล')
-
-        if (waitingError) throw waitingError
-        
-        // Load complete count
-        const { count: completeCount, error: completeError } = await supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'ตรวจสอบไม่ผ่าน')
-
-        if (completeError) throw completeError
-
-        // Load verified count
-        const { count: verifiedCount, error: verifiedError } = await supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'ตรวจสอบแล้ว')
-
-        if (verifiedError) throw verifiedError
-
-        // Load data error count
-        const { count: dataErrorCount, error: dataErrorError } = await supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'ลงข้อมูลผิด')
-
-        if (dataErrorError) throw dataErrorError
-
-        // Load cancelled count
-        const { count: cancelledCount, error: cancelledError } = await supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'ยกเลิก')
-
-        if (cancelledError) throw cancelledError
-
-        setWaitingCount(waitingCount || 0)
-        setCompleteCount(completeCount || 0)
-        setVerifiedCount(verifiedCount || 0)
-        setDataErrorCount(dataErrorCount || 0)
-        setCancelledCount(cancelledCount || 0)
+        const [rWaiting, rComplete, rVerified, rDataError, rCancelled, rRejectedRefund] = await Promise.all([
+          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล'),
+          supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']),
+          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว'),
+          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ลงข้อมูลผิด'),
+          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ยกเลิก'),
+          supabase.from('ac_refunds').select('order_id').ilike('reason', '%โอนเกิน%').eq('status', 'rejected'),
+        ])
+        const rejectedOrderIds = [...new Set((rRejectedRefund.data || []).map((r: any) => r.order_id).filter(Boolean))]
+        setWaitingCount(rWaiting.count ?? 0)
+        setCompleteCount(rComplete.count ?? 0)
+        setVerifiedCount(rVerified.count ?? 0)
+        setDataErrorCount(rDataError.count ?? 0)
+        setCancelledCount(rCancelled.count ?? 0)
+        setRejectedRefundCount(rejectedOrderIds.length)
       } catch (error) {
         console.error('Error loading counts:', error)
       }
     }
 
     loadCounts()
-    
-    // Set up real-time subscription for order status changes
+
     const channel = supabase
       .channel('orders-count-updates')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'or_orders' },
-        () => {
-          // Refresh counts when any order changes
-          loadCounts()
-        }
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
       .subscribe()
 
     return () => {
@@ -206,7 +181,8 @@ export default function Orders() {
               { id: 'work-orders', label: 'ใบสั่งงาน' },
               { id: 'work-orders-manage', label: 'จัดการใบงาน' },
               { id: 'shipped', label: 'จัดส่งแล้ว' },
-              { id: 'cancelled', label: `ยกเลิก (${cancelledCount})` },
+              { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
+              { id: 'rejected-refund', label: 'ปฏิเสธโอนคืน', count: rejectedRefundCount, countColor: 'text-red-600', labelColor: 'text-red-600' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -216,8 +192,8 @@ export default function Orders() {
                 }}
                 className={`py-4 px-1 border-b-2 font-medium text-sm ${
                   activeTab === tab.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    ? 'border-blue-500 ' + ('labelColor' in tab ? tab.labelColor : 'text-blue-600')
+                    : 'border-transparent ' + ('labelColor' in tab ? tab.labelColor : 'text-gray-500') + ' hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
                 {'count' in tab && tab.count !== undefined && 'countColor' in tab
@@ -268,7 +244,7 @@ export default function Orders() {
             onSave={handleSave}
             onCancel={handleCancel}
             readOnly={activeTab !== 'create'}
-            viewOnly={activeTab === 'verified' || activeTab === 'cancelled'}
+            viewOnly={activeTab === 'verified' || activeTab === 'cancelled' || activeTab === 'rejected-refund'}
           />
         ) : activeTab === 'waiting' ? (
           <OrderList
@@ -281,7 +257,7 @@ export default function Orders() {
           />
         ) : activeTab === 'complete' ? (
           <OrderList
-            status="ตรวจสอบไม่ผ่าน"
+            status={['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
@@ -337,6 +313,15 @@ export default function Orders() {
             onCountChange={setCancelledCount}
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
+            refreshTrigger={listRefreshKey}
+          />
+        ) : activeTab === 'rejected-refund' ? (
+          <OrderList
+            filterByRejectedOverpayRefund={true}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            onCountChange={setRejectedRefundCount}
             refreshTrigger={listRefreshKey}
           />
         ) : (

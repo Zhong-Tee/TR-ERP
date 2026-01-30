@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
+import Modal from '../ui/Modal'
 
 interface WorkOrderSelectionListProps {
   searchTerm?: string
@@ -288,7 +289,8 @@ export default function WorkOrderSelectionList({
                   <th className="p-2 text-left font-medium w-32">เลขบิล</th>
                   <th className="p-2 text-left font-medium min-w-[140px]">ชื่อลูกค้า</th>
                   <th className="p-2 text-left font-medium w-28">ผู้ลงข้อมูล</th>
-                  <th className="p-2 text-left font-medium min-w-[100px]">เลขพัสดุ</th>
+                  <th className="w-16 shrink-0" aria-hidden="true" />
+                  <th className="p-2 text-left font-medium min-w-[120px] w-40">เลขพัสดุ</th>
                 </tr>
               </thead>
               <tbody>
@@ -313,6 +315,7 @@ export default function WorkOrderSelectionList({
                       {(order as Order).customer_name ?? '-'}
                     </td>
                     <td className="p-2 align-middle text-gray-700">{order.admin_user ?? '-'}</td>
+                    <td className="w-16 shrink-0" aria-hidden="true" />
                     <td className="p-2 align-middle text-gray-700">{order.tracking_number ?? '-'}</td>
                   </tr>
                 ))}
@@ -324,11 +327,13 @@ export default function WorkOrderSelectionList({
 
       {/* Popup แจ้งผลสร้างใบงาน (ครั้งเดียว) */}
       {successPopup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSuccessPopup(null)}>
-          <div
-            className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 text-center"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <Modal
+          open
+          onClose={() => setSuccessPopup(null)}
+          closeOnBackdropClick
+          contentClassName="max-w-sm w-full"
+        >
+          <div className="p-6 text-center">
             <div className="text-green-600 text-4xl mb-3">✓</div>
             <h3 className="text-lg font-bold text-gray-900 mb-1">สร้างใบงานสำเร็จ</h3>
             <p className="text-gray-600 text-sm mb-6">สร้าง {successPopup.count} ใบงานแล้ว — ดูได้ที่เมนู ใบงาน</p>
@@ -340,7 +345,7 @@ export default function WorkOrderSelectionList({
               ตกลง
             </button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

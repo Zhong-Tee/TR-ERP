@@ -4,7 +4,8 @@ import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 
 interface OrderListProps {
-  status: OrderStatus | OrderStatus[]
+  /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
+  status?: OrderStatus | OrderStatus[]
   onOrderClick: (order: Order) => void
   searchTerm?: string
   channelFilter?: string
@@ -18,6 +19,8 @@ interface OrderListProps {
   onMoveToWaiting?: (order: Order) => void | Promise<void>
   /** เปลี่ยนค่าเพื่อให้ list โหลดใหม่ (หลังย้ายสถานะ) */
   refreshTrigger?: number
+  /** แสดงเฉพาะบิลที่มีรายการโอนคืน (โอนเกิน) ที่ถูกปฏิเสธ — ไม่กรองตาม status */
+  filterByRejectedOverpayRefund?: boolean
 }
 
 export default function OrderList({
@@ -32,6 +35,7 @@ export default function OrderList({
   showMoveToWaitingButton = false,
   onMoveToWaiting,
   refreshTrigger = 0,
+  filterByRejectedOverpayRefund = false,
 }: OrderListProps) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -39,42 +43,78 @@ export default function OrderList({
 
   useEffect(() => {
     loadOrders()
-  }, [status, searchTerm, channelFilter, verifiedOnly, refreshTrigger])
+  }, [status, searchTerm, channelFilter, verifiedOnly, refreshTrigger, filterByRejectedOverpayRefund])
 
   async function loadOrders() {
     setLoading(true)
     try {
-      let query = supabase
-        .from('or_orders')
-        .select('*, or_order_items(*), or_order_reviews(*)')
-        .order('created_at', { ascending: false })
+      let filteredData: any[] = []
 
-      if (Array.isArray(status)) {
-        query = query.in('status', status)
+      if (filterByRejectedOverpayRefund) {
+        // โหลดบิลที่ปฏิเสธโอนคืน: จาก ac_refunds (status=rejected, reason โอนเกิน) แล้วดึง or_orders
+        const { data: rejectedData } = await supabase
+          .from('ac_refunds')
+          .select('order_id')
+          .ilike('reason', '%โอนเกิน%')
+          .eq('status', 'rejected')
+        const orderIds = [...new Set((rejectedData || []).map((r: any) => r.order_id).filter(Boolean))]
+        if (orderIds.length === 0) {
+          setOrders([])
+          if (onCountChange) onCountChange(0)
+          setLoading(false)
+          return
+        }
+        let query = supabase
+          .from('or_orders')
+          .select('*, or_order_items(*), or_order_reviews(*)')
+          .in('id', orderIds)
+          .order('created_at', { ascending: false })
+        if (searchTerm) {
+          query = query.or(
+            `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
+          )
+        }
+        if (channelFilter) {
+          query = query.eq('channel_code', channelFilter)
+        }
+        const { data, error } = await query.limit(100)
+        if (error) throw error
+        filteredData = data || []
       } else {
-        query = query.eq('status', status)
+        let query = supabase
+          .from('or_orders')
+          .select('*, or_order_items(*), or_order_reviews(*)')
+          .order('created_at', { ascending: false })
+
+        if (status != null) {
+          if (Array.isArray(status)) {
+            query = query.in('status', status)
+          } else {
+            query = query.eq('status', status)
+          }
+        }
+
+        if (searchTerm) {
+          query = query.or(
+            `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
+          )
+        }
+
+        if (channelFilter) {
+          query = query.eq('channel_code', channelFilter)
+        }
+
+        const { data, error } = await query.limit(100)
+
+        if (error) throw error
+        filteredData = data || []
       }
-
-      if (searchTerm) {
-        query = query.or(
-          `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
-        )
-      }
-
-      if (channelFilter) {
-        query = query.eq('channel_code', channelFilter)
-      }
-
-      const { data, error } = await query.limit(100)
-
-      if (error) throw error
       
       // กรองข้อมูล verifiedOnly ใน client-side (เพราะ join อาจไม่ทำงานถูกต้อง)
       // เมนู "ตรวจสอบแล้ว" แสดงทุกบิลที่ status = ตรวจสอบแล้ว (รวมบิลที่ไม่ได้ตรวจสลิปเพราะช่องทางไม่มี bank setting)
-      let filteredData = data || []
-      const statusIncludesVerified = Array.isArray(status)
-        ? status.includes('ตรวจสอบแล้ว')
-        : status === 'ตรวจสอบแล้ว'
+      const statusIncludesVerified = status != null && (
+        Array.isArray(status) ? status.includes('ตรวจสอบแล้ว') : status === 'ตรวจสอบแล้ว'
+      )
       if (verifiedOnly && !statusIncludesVerified) {
         filteredData = filteredData.filter((order: any) => {
           return order.or_order_reviews && 
@@ -131,9 +171,21 @@ export default function OrderList({
           .ilike('reason', '%โอนเกิน%')
 
         const orderIdsWithOverpayRefund = new Set((refundsData || []).map((r: any) => r.order_id))
+
+        // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน"
+        const { data: rejectedRefundsData } = await supabase
+          .from('ac_refunds')
+          .select('order_id')
+          .in('order_id', orderIds)
+          .ilike('reason', '%โอนเกิน%')
+          .eq('status', 'rejected')
+
+        const orderIdsWithRejectedOverpayRefund = new Set((rejectedRefundsData || []).map((r: any) => r.order_id))
+
         filteredData = filteredData.map((order: any) => ({
           ...order,
-          has_overpay_refund: orderIdsWithOverpayRefund.has(order.id)
+          has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
+          has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id)
         }))
       }
       
@@ -205,6 +257,11 @@ export default function OrderList({
                     ? 'ตรวจสอบแล้ว (โอนเกิน)'
                     : order.status}
                 </span>
+                {(order as any).has_rejected_overpay_refund && (
+                  <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-sm">
+                    ปฏิเสธโอนคืน
+                  </span>
+                )}
                 {/* แสดง คำขอใบกำกับภาษี / บิลเงินสด สำหรับสถานะ รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน, ตรวจสอบแล้ว */}
                 {order.billing_details && (
                   <>
@@ -247,10 +304,30 @@ export default function OrderList({
                         isMultipleSlips && (order as any).slip_logs_amount_matches !== null
                           ? (order as any).slip_logs_amount_matches
                           : slip.amount_match
+                      const orderTotalAmount = order.total_amount != null ? Number(order.total_amount) : null
+                      // เมื่อยอดไม่ตรง แยกว่า ขาด หรือ เกิน (สำหรับป้าย ยอดเงินขาด / ยอดเงินเกิน)
+                      let amountMismatchType: 'under' | 'over' | null = null
+                      if (amountMatchForDisplay === false && orderTotalAmount != null) {
+                        if (isMultipleSlips && (order as any).slip_logs_total_amount != null) {
+                          const slipTotal = Number((order as any).slip_logs_total_amount)
+                          amountMismatchType = slipTotal < orderTotalAmount ? 'under' : 'over'
+                        } else if (slip.verified_amount != null) {
+                          const slipAmount = Number(slip.verified_amount)
+                          amountMismatchType = slipAmount < orderTotalAmount ? 'under' : 'over'
+                        }
+                      }
+                      const amountLabel =
+                        amountMatchForDisplay === true
+                          ? 'ยอดเงิน'
+                          : amountMismatchType === 'under'
+                            ? 'ยอดเงินขาด'
+                            : amountMismatchType === 'over'
+                              ? 'ยอดเงินเกิน'
+                              : 'ยอดเงิน'
                       const amountMatchTitle =
                         isMultipleSlips && (order as any).slip_logs_total_amount != null
-                          ? `ยอดรวมสลิป ฿${Number((order as any).slip_logs_total_amount).toLocaleString()} ${(order as any).slip_logs_amount_matches ? 'ตรง' : 'ไม่ตรง'} ยอดออเดอร์`
-                          : `สลิปที่ ${slipNumber}: ยอดเงิน ${slip.amount_match === null ? 'ไม่ระบุ' : (slip.amount_match ? 'ตรง' : 'ไม่ตรง')}`
+                          ? `ยอดรวมสลิป ฿${Number((order as any).slip_logs_total_amount).toLocaleString()} ${(order as any).slip_logs_amount_matches ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง')} ยอดออเดอร์`
+                          : `สลิปที่ ${slipNumber}: ยอดเงิน ${slip.amount_match === null ? 'ไม่ระบุ' : (slip.amount_match ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง'))}`
 
                       return (
                         <React.Fragment key={idx}>
@@ -302,7 +379,7 @@ export default function OrderList({
                                   : 'bg-gray-100 text-gray-600'
                               }`} title={amountMatchTitle}>
                                 {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
-                                <span>ยอดเงิน</span>
+                                <span>{amountLabel}</span>
                                 {amountMatchForDisplay !== null && (
                                   <span>{amountMatchForDisplay ? '✓' : '✗'}</span>
                                 )}

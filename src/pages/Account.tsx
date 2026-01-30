@@ -4,9 +4,26 @@ import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getEasySlipQuota } from '../lib/slipVerification'
+import Modal from '../components/ui/Modal'
+import * as XLSX from 'xlsx'
 
+type AccountSection = 'dashboard' | 'slip-verification'
 type AccountTab = 'refunds' | 'tax-invoice' | 'cash-bill' | 'approvals'
 type ApprovalFilter = 'refund' | 'tax-invoice' | 'cash-bill'
+
+type VerifiedSlipRow = {
+  id: string
+  order_id: string
+  verified_amount: number
+  verified_at: string | null
+  easyslip_date: string | null
+  easyslip_response: Record<string, unknown> | null
+  easyslip_receiver_account: string | null
+  validation_status: string | null
+  is_deleted: boolean | null
+  deletion_reason: string | null
+  or_orders: { channel_code: string | null; admin_user: string | null } | null
+}
 
 type BillingRequestOrder = {
   id: string
@@ -18,8 +35,48 @@ type BillingRequestOrder = {
   billing_details: any
 }
 
+/** ดึงชื่อบัญชีผู้โอนจาก easyslip_response (data.sender.account.name.th / .en) */
+function getPayerName(res: Record<string, unknown> | null): string {
+  if (!res?.data || typeof res.data !== 'object') return '–'
+  const d = res.data as Record<string, unknown>
+  const sender = d.sender as Record<string, unknown> | undefined
+  const acc = sender?.account as Record<string, unknown> | undefined
+  const nameObj = acc?.name as Record<string, string> | undefined
+  if (nameObj?.th && typeof nameObj.th === 'string') return nameObj.th
+  if (nameObj?.en && typeof nameObj.en === 'string') return nameObj.en
+  if (sender?.name && typeof sender.name === 'string') return sender.name
+  const from = d.from as Record<string, unknown> | undefined
+  const fromAcc = from?.account as Record<string, unknown> | undefined
+  if (fromAcc?.name && typeof fromAcc.name === 'string') return fromAcc.name
+  if (from?.name && typeof from.name === 'string') return from.name
+  return '–'
+}
+
+/** ดึงเลขบัญชีผู้โอนจาก easyslip_response (data.sender.account.bank.account) */
+function getPayerAccountNumber(res: Record<string, unknown> | null): string {
+  if (!res?.data || typeof res.data !== 'object') return '–'
+  const d = res.data as Record<string, unknown>
+  const sender = d.sender as Record<string, unknown> | undefined
+  const acc = sender?.account as Record<string, unknown> | undefined
+  const bank = acc?.bank as Record<string, unknown> | undefined
+  if (bank?.account && typeof bank.account === 'string') return bank.account
+  return '–'
+}
+
+function getReceiverName(res: Record<string, unknown> | null, fallbackAccount: string | null): string {
+  if (!res?.data || typeof res.data !== 'object') return fallbackAccount || '–'
+  const d = res.data as Record<string, unknown>
+  const receiver = d.receiver as Record<string, unknown> | undefined
+  const acc = receiver?.account as Record<string, unknown> | undefined
+  if (acc?.name && typeof acc.name === 'string') return acc.name
+  const bank = acc?.bank as Record<string, unknown> | undefined
+  if (bank?.account && typeof bank.account === 'string') return bank.account
+  return fallbackAccount || '–'
+}
+
 export default function Account() {
   const { user } = useAuthContext()
+  const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
   const [refunds, setRefunds] = useState<Refund[]>([])
   const [loading, setLoading] = useState(true)
@@ -47,6 +104,18 @@ export default function Account() {
   const [slipPopupUrls, setSlipPopupUrls] = useState<string[]>([])
   const [slipPopupLoading, setSlipPopupLoading] = useState(false)
   const [slipPopupFailed, setSlipPopupFailed] = useState<Set<number>>(new Set())
+  /** Popup ยืนยัน อนุมัติ/ปฏิเสธ โอนคืน — ใช้ Modal เดียว */
+  const [refundActionModal, setRefundActionModal] = useState<{
+    open: boolean
+    refund: Refund | null
+    action: 'approve' | 'reject' | null
+    submitting: boolean
+  }>({ open: false, refund: null, action: null, submitting: false })
+  /** Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน (แทน alert) */
+  const [refundResultModal, setRefundResultModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
+  const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
+  const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
 
   function copyToClipboard(text: string) {
     if (!text) return
@@ -80,6 +149,46 @@ export default function Account() {
     if (viewOrderId) fetchOrderForView(viewOrderId)
     else setViewOrder(null)
   }, [viewOrderId])
+
+  async function loadVerifiedSlipsList() {
+    setVerifiedSlipsLoading(true)
+    try {
+      const { data: slipsData, error: slipsError } = await supabase
+        .from('ac_verified_slips')
+        .select('id, order_id, verified_amount, verified_at, easyslip_date, easyslip_response, easyslip_receiver_account, validation_status, is_deleted, deletion_reason')
+        .order('created_at', { ascending: false })
+        .limit(2000)
+      if (slipsError) throw slipsError
+      const slips = (slipsData || []) as Omit<VerifiedSlipRow, 'or_orders'>[]
+      const orderIds = [...new Set(slips.map((s) => s.order_id).filter(Boolean))]
+      const orderMap: Record<string, { channel_code: string | null; admin_user: string | null }> = {}
+      if (orderIds.length > 0) {
+        const { data: ordersData, error: ordersError } = await supabase
+          .from('or_orders')
+          .select('id, channel_code, admin_user')
+          .in('id', orderIds)
+        if (!ordersError && ordersData) {
+          ordersData.forEach((o: { id: string; channel_code: string | null; admin_user: string | null }) => {
+            orderMap[o.id] = { channel_code: o.channel_code ?? null, admin_user: o.admin_user ?? null }
+          })
+        }
+      }
+      const rows: VerifiedSlipRow[] = slips.map((s) => ({
+        ...s,
+        or_orders: orderMap[s.order_id] ?? null,
+      }))
+      setVerifiedSlipsList(rows)
+    } catch (e) {
+      console.error('Error loading verified slips:', e)
+      setVerifiedSlipsList([])
+    } finally {
+      setVerifiedSlipsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (accountSection === 'slip-verification') loadVerifiedSlipsList()
+  }, [accountSection])
 
   async function openSlipPopup(orderId: string, billNo: string) {
     setSlipPopupOrderId(orderId)
@@ -227,51 +336,42 @@ export default function Account() {
     }
   }
 
-  async function approveRefund(refund: Refund) {
-    if (!user) return
-    if (!confirm(`ต้องการอนุมัติการโอนคืน ฿${refund.amount.toLocaleString()} หรือไม่?`)) return
+  function openRefundActionModal(refund: Refund, action: 'approve' | 'reject') {
+    setRefundActionModal({ open: true, refund, action, submitting: false })
+  }
 
-    try {
-      const { error } = await supabase
-        .from('ac_refunds')
-        .update({
-          status: 'approved',
-          approved_by: user.id,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', refund.id)
-
-      if (error) throw error
-      alert('อนุมัติการโอนคืนสำเร็จ')
-      loadRefunds()
-      loadHistory()
-    } catch (error: any) {
-      console.error('Error approving refund:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+  function closeRefundActionModal() {
+    if (!refundActionModal.submitting) {
+      setRefundActionModal({ open: false, refund: null, action: null, submitting: false })
     }
   }
 
-  async function rejectRefund(refund: Refund) {
-    if (!user) return
-    if (!confirm(`ต้องการปฏิเสธการโอนคืน ฿${refund.amount.toLocaleString()} หรือไม่?`)) return
-
+  async function submitRefundAction() {
+    const { refund, action } = refundActionModal
+    if (!user || !refund || !action) return
+    setRefundActionModal((prev) => ({ ...prev, submitting: true }))
     try {
       const { error } = await supabase
         .from('ac_refunds')
         .update({
-          status: 'rejected',
+          status: action === 'approve' ? 'approved' : 'rejected',
           approved_by: user.id,
           approved_at: new Date().toISOString(),
         })
         .eq('id', refund.id)
 
       if (error) throw error
-      alert('ปฏิเสธการโอนคืนสำเร็จ')
+      setRefundActionModal({ open: false, refund: null, action: null, submitting: false })
+      setRefundResultModal({
+        open: true,
+        message: action === 'approve' ? 'อนุมัติการโอนคืนสำเร็จ' : 'ปฏิเสธการโอนคืนสำเร็จ',
+      })
       loadRefunds()
       loadHistory()
     } catch (error: any) {
-      console.error('Error rejecting refund:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      console.error('Error updating refund:', error)
+      setRefundActionModal((prev) => ({ ...prev, submitting: false }))
+      setRefundResultModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
@@ -292,7 +392,7 @@ export default function Account() {
         supabase
           .from('ac_refunds')
           .select('*, or_orders(bill_no, customer_name, customer_address)')
-          .eq('status', 'approved')
+          .in('status', ['approved', 'rejected'])
           .order('created_at', { ascending: false }),
       ])
 
@@ -399,8 +499,140 @@ export default function Account() {
       <header className="border-b border-gray-200 pb-4">
         <h1 className="text-2xl font-bold text-gray-800">บัญชี</h1>
         <p className="text-sm text-gray-500 mt-1">จัดการโอนคืน คำขอใบกำกับภาษี และบิลเงินสด</p>
+        <nav className="mt-4 flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setAccountSection('dashboard')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${accountSection === 'dashboard' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          >
+            Dashboard
+          </button>
+          <button
+            type="button"
+            onClick={() => setAccountSection('slip-verification')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${accountSection === 'slip-verification' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+          >
+            รายการการตรวจสลิป
+          </button>
+        </nav>
       </header>
 
+      {accountSection === 'slip-verification' ? (
+        <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-800">รายการการตรวจสลิป</h2>
+              <p className="text-sm text-gray-500 mt-0.5">รายการตรวจสลิปทั้งหมดจากตาราง ac_verified_slips</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const headers = ['วันที่โอน', 'เวลาโอน', 'ชื่อบัญชีผู้โอน', 'เลขบัญชี', 'ชื่อบัญชีผู้รับโอน', 'ช่องทางขาย', 'ผู้ขาย', 'ยอดเงิน', 'ผลการตรวจสลิป', 'สถานะสลิป', 'เหตุผลการลบ']
+                const rows = verifiedSlipsList.map((row) => {
+                  const dt = row.easyslip_date || row.verified_at || ''
+                  let dateStr = '–'
+                  let timeStr = '–'
+                  if (dt) {
+                    const formatted = formatDateTime(dt)
+                    const parts = formatted.split(' ')
+                    timeStr = parts.length > 0 ? (parts[parts.length - 1] || '–') : '–'
+                    dateStr = parts.length > 1 ? parts.slice(0, -1).join(' ') : formatted
+                  }
+                  return [
+                    dateStr,
+                    timeStr,
+                    getPayerName(row.easyslip_response),
+                    getPayerAccountNumber(row.easyslip_response),
+                    getReceiverName(row.easyslip_response, row.easyslip_receiver_account),
+                    row.or_orders?.channel_code ?? '–',
+                    row.or_orders?.admin_user ?? '–',
+                    row.verified_amount,
+                    row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–',
+                    row.is_deleted ? 'ลบ' : 'ปกติ',
+                    row.deletion_reason ?? '–',
+                  ]
+                })
+                const wb = XLSX.utils.book_new()
+                const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+                XLSX.utils.book_append_sheet(wb, ws, 'รายการตรวจสลิป')
+                XLSX.writeFile(wb, 'รายการตรวจสลิป.xlsx')
+              }}
+              disabled={verifiedSlipsLoading || verifiedSlipsList.length === 0}
+              className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              ดาวน์โหลด Excel
+            </button>
+          </div>
+          {verifiedSlipsLoading ? (
+            <div className="flex justify-center items-center py-14">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200">
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">วันที่โอน</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">เวลาโอน</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">ชื่อบัญชีผู้โอน</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">เลขบัญชี</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">ชื่อบัญชีผู้รับโอน</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ช่องทางขาย</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผู้ขาย</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ยอดเงิน</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผลการตรวจสลิป</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะสลิป</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700">เหตุผลการลบ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {verifiedSlipsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={11} className="px-4 py-12 text-center text-gray-500">
+                        ไม่พบรายการตรวจสลิป
+                      </td>
+                    </tr>
+                  ) : (
+                    verifiedSlipsList.map((row) => {
+                      const dt = row.easyslip_date || row.verified_at || ''
+                      let dateStr = '–'
+                      let timeStr = '–'
+                      if (dt) {
+                        const formatted = formatDateTime(dt)
+                        const parts = formatted.split(' ')
+                        timeStr = parts.length > 0 ? (parts[parts.length - 1] || '–') : '–'
+                        dateStr = parts.length > 1 ? parts.slice(0, -1).join(' ') : formatted
+                      }
+                      return (
+                        <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50/50">
+                          <td className="px-4 py-3 text-center text-gray-800 whitespace-nowrap">{dateStr}</td>
+                          <td className="px-4 py-3 text-center text-gray-800 whitespace-nowrap">{timeStr}</td>
+                          <td className="px-4 py-3 text-center text-gray-700">{getPayerName(row.easyslip_response)}</td>
+                          <td className="px-4 py-3 text-center text-gray-700 font-mono text-xs">{getPayerAccountNumber(row.easyslip_response)}</td>
+                          <td className="px-4 py-3 text-center text-gray-700">{getReceiverName(row.easyslip_response, row.easyslip_receiver_account)}</td>
+                          <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{row.or_orders?.channel_code ?? '–'}</td>
+                          <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{row.or_orders?.admin_user ?? '–'}</td>
+                          <td className="px-4 py-3 text-center font-medium text-gray-800 tabular-nums">฿{Number(row.verified_amount).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={row.validation_status === 'passed' ? 'text-emerald-600' : row.validation_status === 'failed' ? 'text-red-600' : 'text-gray-500'}>
+                              {row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={row.is_deleted ? 'text-amber-600 font-medium' : 'text-gray-600'}>{row.is_deleted ? 'ลบ' : 'ปกติ'}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center text-gray-600 max-w-[200px] truncate" title={row.deletion_reason ?? ''}>{row.deletion_reason ?? '–'}</td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : (
+        <>
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
           <div className="h-1 w-full bg-blue-500 shrink-0" />
@@ -509,7 +741,7 @@ export default function Account() {
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการอนุมัติ</h2>
-          <p className="text-sm text-gray-500 mt-0.5">รายการที่ยืนยัน/อนุมัติแล้ว — คลิกรายการเพื่อดูข้อมูลบิล</p>
+          <p className="text-sm text-gray-500 mt-0.5">รายการที่ยืนยัน/อนุมัติหรือปฏิเสธแล้ว — คลิกรายการเพื่อดูข้อมูลบิล</p>
           <div className="mt-3 flex gap-2 flex-wrap">
             <span className="text-sm font-medium text-gray-600">กรองประเภทเอกสาร:</span>
             <button
@@ -542,7 +774,7 @@ export default function Account() {
         ) : (
           <div className="p-6">
             {approvalFilter === 'refund' && (historyRefunds.length === 0 ? (
-                <div className="text-center py-12 text-gray-500 text-base">ไม่พบรายการโอนคืนที่อนุมัติแล้ว</div>
+                <div className="text-center py-12 text-gray-500 text-base">ไม่พบรายการโอนคืนที่อนุมัติหรือปฏิเสธแล้ว</div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-gray-100">
                   <table className="w-full text-base">
@@ -553,7 +785,8 @@ export default function Account() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เหตุผล</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่อนุมัติ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ดำเนินการ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
                       </tr>
                     </thead>
@@ -569,6 +802,11 @@ export default function Account() {
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={refund.reason}>{refund.reason}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${refund.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                              {refund.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
+                            </span>
+                          </td>
                           <td className="px-4 py-3 text-gray-500 text-sm">{refund.approved_at ? formatDateTime(refund.approved_at) : '–'}</td>
                           <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                             <button
@@ -744,13 +982,13 @@ export default function Account() {
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex gap-2">
                         <button
-                          onClick={(e) => { e.stopPropagation(); approveRefund(refund) }}
+                          onClick={(e) => { e.stopPropagation(); openRefundActionModal(refund, 'approve') }}
                           className="px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors"
                         >
                           อนุมัติ
                         </button>
                         <button
-                          onClick={(e) => { e.stopPropagation(); rejectRefund(refund) }}
+                          onClick={(e) => { e.stopPropagation(); openRefundActionModal(refund, 'reject') }}
                           className="px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm font-medium transition-colors"
                         >
                           ปฏิเสธ
@@ -1002,11 +1240,12 @@ export default function Account() {
 
       {/* Modal ดูสลิปโอน */}
       {slipPopupOrderId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setSlipPopupOrderId(null)}>
-          <div
-            className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <Modal
+          open
+          onClose={() => setSlipPopupOrderId(null)}
+          closeOnBackdropClick
+          contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        >
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-800">สลิปโอน — บิล {slipPopupBillNo}</h3>
               <button
@@ -1049,17 +1288,17 @@ export default function Account() {
                 </div>
               )}
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* Modal ดูข้อมูลบิล (อ่านอย่างเดียว) */}
       {viewOrderId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setViewOrderId(null)}>
-          <div
-            className="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <Modal
+          open
+          onClose={() => setViewOrderId(null)}
+          closeOnBackdropClick
+          contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        >
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-gray-800">ข้อมูลบิล (ดูอย่างเดียว)</h3>
               <button
@@ -1115,8 +1354,80 @@ export default function Account() {
                 <p className="text-gray-500">ไม่พบข้อมูลบิล</p>
               )}
             </div>
+        </Modal>
+      )}
+
+      {/* Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน */}
+      <Modal
+        open={refundResultModal.open}
+        onClose={() => setRefundResultModal({ open: false, message: '' })}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="p-5">
+          <p className="text-gray-800">{refundResultModal.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRefundResultModal({ open: false, message: '' })}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              ตกลง
+            </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Modal ยืนยัน อนุมัติ/ปฏิเสธ โอนคืน (popup เดียว) */}
+      {refundActionModal.open && refundActionModal.refund && refundActionModal.action && (
+        <Modal
+          open
+          onClose={closeRefundActionModal}
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">
+              {refundActionModal.action === 'approve' ? 'ยืนยันอนุมัติการโอนคืน' : 'ยืนยันปฏิเสธการโอนคืน'}
+            </h3>
+            <p className="text-gray-700 mb-6">
+              {refundActionModal.action === 'approve'
+                ? `ต้องการอนุมัติการโอนคืน ฿${refundActionModal.refund.amount.toLocaleString()} หรือไม่?`
+                : `ต้องการปฏิเสธการโอนคืน ฿${refundActionModal.refund.amount.toLocaleString()} หรือไม่?`}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={closeRefundActionModal}
+                disabled={refundActionModal.submitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={submitRefundAction}
+                disabled={refundActionModal.submitting}
+                className={`px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2 ${
+                  refundActionModal.action === 'approve'
+                    ? 'bg-emerald-500 hover:bg-emerald-600'
+                    : 'bg-red-500 hover:bg-red-600'
+                }`}
+              >
+                {refundActionModal.submitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  'ยืนยัน'
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+        </>
       )}
 
     </div>

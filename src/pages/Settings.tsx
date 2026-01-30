@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import type { User, BankSetting } from '../types'
 import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
+import Modal from '../components/ui/Modal'
 
 export default function Settings() {
   const [users, setUsers] = useState<User[]>([])
@@ -1078,8 +1079,12 @@ export default function Settings() {
 
           {/* Bank Form Modal */}
           {showBankForm && (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-              <div className="bg-white p-6 rounded-lg shadow-lg max-w-2xl w-full mx-4 my-8">
+            <Modal
+              open
+              onClose={closeBankForm}
+              contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
                 <h3 className="text-xl font-bold mb-4">
                   {editingBank ? 'แก้ไขข้อมูลธนาคาร' : 'เพิ่มข้อมูลธนาคาร'}
                 </h3>
@@ -1225,7 +1230,7 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
-            </div>
+            </Modal>
           )}
         </div>
       )}

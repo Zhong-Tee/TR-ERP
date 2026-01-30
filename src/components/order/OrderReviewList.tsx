@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
+import Modal from '../ui/Modal'
 
 export const ERROR_FIELD_KEYS = [
   { key: 'customer_name', label: 'ชื่อลูกค้า' },
@@ -488,8 +489,12 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
       {/* Approve modal: ยืนยันแค่อันเดียวแล้วย้ายไปใบสั่งงาน */}
       {approveModalOpen && selectedOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+        <Modal
+          open
+          onClose={() => setApproveModalOpen(false)}
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6">
             <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันบิลถูกต้อง</h3>
             <p className="text-gray-700 mb-6">
               ต้องการยืนยันว่าบิล <strong>{selectedOrder.bill_no}</strong> ถูกต้อง และย้ายไปเมนู &quot;ใบสั่งงาน&quot; หรือไม่?
@@ -513,13 +518,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Reject modal: choose error fields + remarks — ชิดซ้ายเพื่อไม่บังรายละเอียดบิลด้านขวา */}
       {rejectModalOpen && selectedOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-start bg-black/50 p-4 pl-[540px]">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+        <Modal
+          open
+          onClose={() => setRejectModalOpen(false)}
+          align="start"
+          contentClassName="max-w-md w-full max-h-[90vh] overflow-y-auto"
+        >
             <div className="p-6 border-b">
               <h3 className="text-lg font-bold text-gray-900">ลงข้อมูลผิด — เลือกรายการที่ผิด</h3>
               <p className="text-gray-600 mt-1 text-sm">บิล {selectedOrder.bill_no}</p>
@@ -567,8 +576,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 {updating ? 'กำลังอัพเดต...' : 'ยืนยัน ย้ายไปลงข้อมูลผิด'}
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

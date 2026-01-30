@@ -1,3 +1,5 @@
+import Modal from '../ui/Modal'
+
 export type VerificationResultType = 'success' | 'failed' | 'over_transfer' | 'save_success'
 export type AmountStatus = 'match' | 'over' | 'under' | 'mismatch'
 
@@ -78,19 +80,14 @@ export default function VerificationResultModal({
   const showVerificationDetails = !isSaveSuccess
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop — ไม่ปิดเมื่อคลิก outside ให้ปิดเฉพาะเมื่อกดปุ่ม ตกลง / ไม่ยืนยัน / ยืนยัน โอนเงินเกิน */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        aria-hidden
-      />
-      {/* Modal — ใช้ flex ให้ปุ่ม "ตกลง" อยู่ใต้ผลการตรวจสอบเสมอ อ่านได้ก่อนค่อยกด */}
-      <div
-        className="relative flex flex-col w-full max-w-md max-h-[90vh] rounded-2xl bg-white shadow-xl overflow-hidden"
-        role="dialog"
-        aria-modal
-        aria-labelledby="verification-result-title"
-      >
+    <Modal
+      open={open}
+      onClose={onClose}
+      contentClassName="max-w-md max-h-[90vh]"
+      role="dialog"
+      ariaModal
+      ariaLabelledby="verification-result-title"
+    >
         {/* Header */}
         <div
           className={`shrink-0 px-6 py-4 ${
@@ -190,7 +187,6 @@ export default function VerificationResultModal({
             </button>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

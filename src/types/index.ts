@@ -20,7 +20,6 @@ export type UserRole =
 // Order Types
 export type OrderStatus = 
   | 'รอลงข้อมูล'
-  | 'ตรวจสลิป'
   | 'รอตรวจคำสั่งซื้อ'
   | 'ลงข้อมูลเสร็จสิ้น'
   | 'ลงข้อมูลผิด'
@@ -91,6 +90,13 @@ export interface BillingDetails {
   tax_customer_address: string | null
   tax_id: string | null
   tax_items: TaxItem[]
+  /** Optional address parts for customer shipping (ที่อยู่, แขวง, เขต, จังหวัด, รหัสไปรษณีย์, เบอร์โทร) */
+  address_line?: string | null
+  sub_district?: string | null
+  district?: string | null
+  province?: string | null
+  postal_code?: string | null
+  mobile_phone?: string | null
 }
 
 export interface TaxItem {
