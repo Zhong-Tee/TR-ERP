@@ -451,11 +451,11 @@ export default function Account() {
   async function submitBillingConfirm() {
     const { order, type } = billingConfirmModal
     if (!user || !order || !type) return
+    const isTax = type === 'tax-invoice'
     setBillingConfirmModal((prev) => ({ ...prev, submitting: true }))
 
     try {
       const bd = order.billing_details || {}
-      const isTax = type === 'tax-invoice'
       const newBillingDetails = isTax
         ? { ...bd, account_confirmed_tax: true, account_confirmed_tax_at: new Date().toISOString(), account_confirmed_tax_by: user.id }
         : { ...bd, account_confirmed_cash: true, account_confirmed_cash_at: new Date().toISOString(), account_confirmed_cash_by: user.id }

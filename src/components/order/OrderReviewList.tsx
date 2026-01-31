@@ -81,7 +81,7 @@ function getVisibleErrorFieldsForOrder(
 
   const enabledItemFields = new Set<ErrorFieldKey>()
   for (const def of itemLevelDef) {
-    const settingsKey = ITEM_FIELD_TO_SETTINGS_KEY[def.key]
+    const settingsKey = (ITEM_FIELD_TO_SETTINGS_KEY as Record<ErrorFieldKey, string>)[def.key]
     for (const item of items) {
       const productId = item.product_id != null ? String(item.product_id) : null
       const cat = productId ? productCategoryByProductId[productId] : null
