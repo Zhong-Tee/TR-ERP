@@ -248,6 +248,8 @@ export default function OrderList({
                       ? (order as any).has_overpay_refund
                         ? 'bg-amber-100 text-amber-800'
                         : 'bg-blue-100 text-blue-700'
+                      : order.status === 'ลงข้อมูลผิด'
+                      ? 'bg-red-100 text-red-700'
                       : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
                       ? 'bg-red-100 text-red-700'
                       : 'bg-gray-100 text-gray-700'

@@ -6,6 +6,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 
 export const ERROR_FIELD_KEYS = [
+  { key: 'channel_name', label: 'ชื่อช่องทาง' },
   { key: 'customer_name', label: 'ชื่อลูกค้า' },
   { key: 'address', label: 'ที่อยู่' },
   { key: 'product_name', label: 'ชื่อสินค้า' },
@@ -16,9 +17,94 @@ export const ERROR_FIELD_KEYS = [
   { key: 'line_1', label: 'บรรทัด 1' },
   { key: 'line_2', label: 'บรรทัด 2' },
   { key: 'line_3', label: 'บรรทัด 3' },
+  { key: 'quantity', label: 'จำนวน' },
+  { key: 'unit_price', label: 'ราคา' },
 ] as const
 
 export type ErrorFieldKey = (typeof ERROR_FIELD_KEYS)[number]['key']
+
+/** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" ในฟอร์ม — แสดงช่องติ๊ก "ชื่อช่องทาง" เฉพาะช่องทางเหล่านี้ */
+const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
+
+/** แมป ErrorFieldKey ระดับรายการ → ชื่อคอลัมน์ใน pr_category_field_settings */
+const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address'>, string> = {
+  product_name: 'product_name',
+  ink_color: 'ink_color',
+  layer: 'layer',
+  line_art: 'line_pattern',
+  font: 'font',
+  line_1: 'line_1',
+  line_2: 'line_2',
+  line_3: 'line_3',
+  quantity: 'quantity',
+  unit_price: 'unit_price',
+}
+
+/** คืนรายการฟิลด์ที่แสดงในตัวเลือก "ลงข้อมูลผิด" ตามฟิลด์ที่ให้กรอก (pr_category_field_settings) เหมือนฟอร์มลงออเดอร์ */
+function getVisibleErrorFieldsForOrder(
+  order: Order | null,
+  categoryFieldSettings: Record<string, Record<string, boolean>>,
+  productCategoryByProductId: Record<string, string>
+): Array<{ key: ErrorFieldKey; label: string }> {
+  if (!order) return []
+  const items: any[] = (order as any).order_items || (order as any).or_order_items || []
+  const hasItems = items.length > 0
+
+  const channelCode = (order as any).channel_code || ''
+  const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = [
+    ...(CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode) ? [{ key: 'channel_name' as const, label: 'ชื่อช่องทาง' }] : []),
+    { key: 'customer_name', label: 'ชื่อลูกค้า' },
+    { key: 'address', label: 'ที่อยู่' },
+  ]
+
+  if (!hasItems) return orderLevel
+
+  const itemLevelDef: Array<{ key: ErrorFieldKey; label: string }> = [
+    { key: 'product_name', label: 'ชื่อสินค้า' },
+    { key: 'ink_color', label: 'สีหมึก' },
+    { key: 'layer', label: 'ชั้น' },
+    { key: 'line_art', label: 'ลายเส้น' },
+    { key: 'font', label: 'ฟอนต์' },
+    { key: 'line_1', label: 'บรรทัด 1' },
+    { key: 'line_2', label: 'บรรทัด 2' },
+    { key: 'line_3', label: 'บรรทัด 3' },
+    { key: 'quantity', label: 'จำนวน' },
+    { key: 'unit_price', label: 'ราคา' },
+  ]
+
+  const hasSettings = Object.keys(categoryFieldSettings).length > 0
+  const hasCategoryMap = Object.keys(productCategoryByProductId).length > 0
+
+  if (!hasSettings || !hasCategoryMap) {
+    return [...orderLevel, ...itemLevelDef]
+  }
+
+  const enabledItemFields = new Set<ErrorFieldKey>()
+  for (const def of itemLevelDef) {
+    const settingsKey = ITEM_FIELD_TO_SETTINGS_KEY[def.key]
+    for (const item of items) {
+      const productId = item.product_id != null ? String(item.product_id) : null
+      const cat = productId ? productCategoryByProductId[productId] : null
+      if (!cat || String(cat).trim() === '') {
+        enabledItemFields.add(def.key)
+        break
+      }
+      const categorySettings = categoryFieldSettings[String(cat).trim()]
+      if (!categorySettings) {
+        enabledItemFields.add(def.key)
+        break
+      }
+      const v = categorySettings[settingsKey] as boolean | string | undefined
+      if (v === undefined || v === null || v === true || v === 'true') {
+        enabledItemFields.add(def.key)
+        break
+      }
+    }
+  }
+
+  const itemLevel = itemLevelDef.filter((def) => enabledItemFields.has(def.key))
+  return [...orderLevel, ...itemLevel]
+}
 
 interface OrderReviewListProps {
   onStatusUpdate?: () => void
@@ -32,18 +118,75 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [updating, setUpdating] = useState(false)
   const [productImageMap, setProductImageMap] = useState<Record<string, { image_url: string | null; product_name?: string }>>({})
   const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { image_url: string | null; pattern_name?: string }>>({})
-  const [rejectModalOpen, setRejectModalOpen] = useState(false)
-  const [approveModalOpen, setApproveModalOpen] = useState(false)
   const [rejectErrorFields, setRejectErrorFields] = useState<Record<string, boolean>>(
     ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {})
   )
   const [rejectRemarks, setRejectRemarks] = useState('')
+  /** Modal แจ้งเตือน/ผลลัพธ์ (แทน alert): กรุณาติ๊กหรือกรอกหมายเหตุ, ยืนยันสำเร็จ, เกิดข้อผิดพลาด */
+  const [messageModal, setMessageModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
+  /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่ (pr_category_field_settings) — ใช้กรองปุ่มติ๊ก "ลงข้อมูลผิด" */
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
+  /** product_id → product_category สำหรับรายการในบิลที่เลือก (ใช้ร่วมกับ categoryFieldSettings) */
+  const [productCategoryByProductId, setProductCategoryByProductId] = useState<Record<string, string>>({})
 
   useEffect(() => {
     loadOrders()
   }, [])
 
-  // Load product & cartoon pattern images for selected order items
+  // โหลด pr_category_field_settings ครั้งเดียว (เหมือน OrderForm)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
+        if (cancelled) return
+        if (error) {
+          console.error('Error loading category field settings:', error)
+          return
+        }
+        function toBool(v: unknown, defaultVal = true): boolean {
+          if (v === undefined || v === null) return defaultVal
+          return v === true || v === 'true'
+        }
+        const settingsMap: Record<string, Record<string, boolean>> = {}
+        if (data && Array.isArray(data)) {
+          data.forEach((row: any) => {
+            const cat = row.category
+            if (cat != null && String(cat).trim() !== '') {
+              const key = String(cat).trim()
+              settingsMap[key] = {
+                product_name: toBool(row.product_name, true),
+                ink_color: toBool(row.ink_color, true),
+                layer: toBool(row.layer, true),
+                cartoon_pattern: toBool(row.cartoon_pattern, true),
+                line_pattern: toBool(row.line_pattern, true),
+                font: toBool(row.font, true),
+                line_1: toBool(row.line_1, true),
+                line_2: toBool(row.line_2, true),
+                line_3: toBool(row.line_3, true),
+                quantity: toBool(row.quantity, true),
+                unit_price: toBool(row.unit_price, true),
+                notes: toBool(row.notes, true),
+                attachment: toBool(row.attachment, true),
+              }
+            }
+          })
+        }
+        setCategoryFieldSettings(settingsMap)
+      } catch (e) {
+        if (!cancelled) console.error('Error loading category field settings:', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Load product & cartoon pattern images + product_category สำหรับ selected order items
   useEffect(() => {
     async function loadItemImages() {
       const items: any[] =
@@ -54,6 +197,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       if (!selectedOrder || items.length === 0) {
         setProductImageMap({})
         setCartoonPatternImageMap({})
+        setProductCategoryByProductId({})
         return
       }
 
@@ -67,7 +211,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
         const [productsRes, patternsRes] = await Promise.all([
           productIds.length > 0
-            ? supabase.from('pr_products').select('id, product_name, image_url').in('id', productIds)
+            ? supabase.from('pr_products').select('id, product_name, image_url, product_category').in('id', productIds)
             : Promise.resolve({ data: [] as any[] }),
           cartoonKeys.length > 0
             ? supabase.from('cp_cartoon_patterns').select('id, pattern_name, image_url').in('pattern_name', cartoonKeys)
@@ -75,10 +219,16 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         ])
 
         const nextProductMap: Record<string, { image_url: string | null; product_name?: string }> = {}
+        const nextCategoryMap: Record<string, string> = {}
         ;(productsRes as any)?.data?.forEach((p: any) => {
           nextProductMap[p.id] = { image_url: p.image_url || null, product_name: p.product_name }
+          const cat = p.product_category
+          if (cat != null && String(cat).trim() !== '') {
+            nextCategoryMap[String(p.id)] = String(cat).trim()
+          }
         })
         setProductImageMap(nextProductMap)
+        setProductCategoryByProductId(nextCategoryMap)
 
         const nextPatternMap: Record<string, { image_url: string | null; pattern_name?: string }> = {}
         ;((patternsRes as any)?.data || []).forEach((p: any) => {
@@ -92,6 +242,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
 
     loadItemImages()
+  }, [selectedOrder?.id])
+
+  // รีเซ็ตกล่องติ๊กเมื่อเปลี่ยนบิลที่เลือก
+  useEffect(() => {
+    if (selectedOrder) {
+      setRejectErrorFields(ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {}))
+      setRejectRemarks('')
+    }
   }, [selectedOrder?.id])
 
   async function loadOrders(silent = false): Promise<Order[]> {
@@ -120,16 +278,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }
 
-  function openApproveModal() {
-    if (!selectedOrder) return
-    setApproveModalOpen(true)
-  }
-
   async function handleApproveConfirm() {
     if (!selectedOrder) return
 
     setUpdating(true)
-    setApproveModalOpen(false)
     try {
       const { error } = await supabase
         .from('or_orders')
@@ -151,15 +303,20 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }
 
-  function openRejectModal() {
-    if (!selectedOrder) return
-    setRejectErrorFields(ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {}))
-    setRejectRemarks('')
-    setRejectModalOpen(true)
-  }
-
   async function handleRejectSubmit() {
     if (!selectedOrder || !user?.id) return
+
+    const hasAnyChecked = ERROR_FIELD_KEYS.some(({ key }) => !!rejectErrorFields[key])
+    const hasRemarks = (rejectRemarks || '').trim().length > 0
+    if (!hasAnyChecked && !hasRemarks) {
+      setMessageModal({
+        open: true,
+        title: 'กรุณาระบุรายการที่ผิด',
+        message:
+          'กรุณาติ๊กเลือกรายการที่ผิด หรือกรอกหมายเหตุ (ข้อความที่ต้องแก้ไข) อย่างน้อยหนึ่งอย่าง',
+      })
+      return
+    }
 
     const errorFieldsObj: Record<string, boolean> = {}
     ERROR_FIELD_KEYS.forEach(({ key }) => {
@@ -190,14 +347,21 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
       if (reviewError) throw reviewError
 
-      setRejectModalOpen(false)
-      alert('ยืนยันสำเร็จ บิลถูกย้ายกลับไปเมนู "ลงข้อมูลผิด" แล้ว')
+      setMessageModal({
+        open: true,
+        title: 'ยืนยันสำเร็จ',
+        message: 'บิลถูกย้ายกลับไปเมนู "ลงข้อมูลผิด" แล้ว',
+      })
       const newOrders = await loadOrders(true)
       setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
       if (onStatusUpdate) onStatusUpdate()
     } catch (error: any) {
       console.error('Error rejecting order:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      setMessageModal({
+        open: true,
+        title: 'เกิดข้อผิดพลาด',
+        message: error?.message || 'เกิดข้อผิดพลาด',
+      })
     } finally {
       setUpdating(false)
     }
@@ -212,16 +376,16 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-200px)] text-[12pt]">
-      {/* Left Sidebar - Order List */}
-      <div className="w-full lg:w-1/2 bg-white rounded-lg shadow overflow-hidden flex flex-col">
-        <div className="p-4 border-b bg-gray-50">
-          <h2 className="text-lg font-bold">รายการบิล (ตรวจสอบแล้ว)</h2>
-          <p className="text-gray-600 mt-1">{orders.length} รายการ</p>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-200px)] text-[12pt] min-h-0">
+      {/* การ์ดซ้าย - รายการบิล */}
+      <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
+        <div className="p-4 border-b bg-gray-50 shrink-0">
+          <h2 className="text-lg font-bold">รายการบิล</h2>
+          <p className="text-gray-600 mt-1 text-sm">{orders.length} รายการ</p>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
           {orders.length === 0 ? (
-            <div className="p-8 text-center text-gray-500">
+            <div className="flex-1 flex items-center justify-center text-gray-500 p-6 text-center min-h-0">
               ไม่พบรายการบิล
             </div>
           ) : (
@@ -234,19 +398,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     selectedOrder?.id === order.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                   }`}
                 >
-                  {/* Row 1: Bill no (left) + Customer name (right) */}
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-semibold text-gray-900">{order.bill_no}</div>
-                    <div className="text-gray-700 text-right truncate max-w-[55%]">
+                    <div className="text-gray-700 text-right truncate max-w-[55%] text-sm">
                       {order.customer_name}
                     </div>
                   </div>
-                  {/* Row 2: Date (left) + Amount (right) */}
                   <div className="flex items-center justify-between gap-3 mt-2">
-                    <div className="text-gray-500">
+                    <div className="text-gray-500 text-sm">
                       {formatDateTime(order.created_at)}
                     </div>
-                    <div className="font-semibold text-green-600">
+                    <div className="font-semibold text-green-600 text-sm">
                       ฿{Number(order.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
@@ -257,50 +419,55 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         </div>
       </div>
 
-      {/* Right Side - Order Details */}
-      <div className="w-full lg:w-1/2 bg-white rounded-lg shadow overflow-hidden flex flex-col">
+      {/* การ์ดกลาง - รายละเอียดบิล */}
+      <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
         {selectedOrder ? (
           <>
-            <div className="p-6 border-b bg-gray-50 flex-1 overflow-y-auto">
-              <h2 className="text-2xl font-bold mb-4">รายละเอียดบิล</h2>
-              
+            <div className="p-4 border-b bg-gray-50 shrink-0">
+              <h2 className="text-lg font-bold">รายละเอียดบิล</h2>
+              <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 min-h-0">
               <div className="space-y-4">
-                {/* Basic Info */}
                 <div className="space-y-2">
                   <div className="flex items-center gap-3">
-                    <div className="w-28 text-gray-600 font-medium">เลขบิล</div>
-                    <div className="text-lg font-semibold">
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">เลขบิล</div>
+                    <div className="text-base font-semibold">
                       {selectedOrder.bill_no}
                       {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length > 0 && (
-                        <span className="text-base font-normal text-gray-600 ml-2">
+                        <span className="text-gray-600 font-normal ml-2 text-sm">
                           ({(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length} รายการ)
                         </span>
                       )}
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div className="w-28 text-gray-600 font-medium">สถานะ</div>
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">สถานะ</div>
                     <div>
-                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded">
+                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-sm">
                         {selectedOrder.status}
                       </span>
                     </div>
                   </div>
                   <div className="flex items-start gap-3">
-                    <div className="w-28 text-gray-600 font-medium shrink-0">ชื่อลูกค้า</div>
-                    <div className="flex-1">{selectedOrder.customer_name}</div>
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อช่องทาง</div>
+                    <div className="flex-1 text-sm">{selectedOrder.customer_name}</div>
                   </div>
                   <div className="flex items-start gap-3">
-                    <div className="w-28 text-gray-600 font-medium shrink-0">ที่อยู่</div>
-                    <div className="flex-1 whitespace-pre-wrap">{selectedOrder.customer_address}</div>
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อลูกค้า</div>
+                    <div className="flex-1 text-sm">{(selectedOrder as Order & { recipient_name?: string | null }).recipient_name ?? selectedOrder.customer_name ?? '—'}</div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ที่อยู่</div>
+                    <div className="flex-1 whitespace-pre-wrap text-sm">{selectedOrder.customer_address}</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div className="w-28 text-gray-600 font-medium">วันที่สร้าง</div>
-                    <div>{formatDateTime(selectedOrder.created_at)}</div>
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">วันที่สร้าง</div>
+                    <div className="text-sm">{formatDateTime(selectedOrder.created_at)}</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div className="w-28 text-gray-600 font-medium">ยอดรวม</div>
-                    <div className="text-lg font-bold text-green-600">
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ยอดรวม</div>
+                    <div className="text-base font-bold text-green-600">
                       ฿{Number(selectedOrder.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
@@ -388,6 +555,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                         <div className="flex-1">{item.font || '-'}</div>
                                       </div>
                                       <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">ชื่อ ไม่รับชื่อ</div>
+                                        <div className="flex-1">{item.no_name_line ? '✓' : '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
                                         <div className="w-24 text-gray-600 font-medium">บรรทัด 1</div>
                                         <div className="flex-1">{item.line_1 || '-'}</div>
                                       </div>
@@ -398,6 +569,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                       <div className="flex gap-3">
                                         <div className="w-24 text-gray-600 font-medium">บรรทัด 3</div>
                                         <div className="flex-1">{item.line_3 || '-'}</div>
+                                      </div>
+                                      <div className="flex gap-3">
+                                        <div className="w-24 text-gray-600 font-medium">หมายเหตุ</div>
+                                        <div className="flex-1">{item.no_name_line ? ('ไม่รับชื่อ' + (item.notes ? ' ' + item.notes : '')) : (item.notes || '-')}</div>
                                       </div>
                                     </div>
                                   </div>
@@ -440,144 +615,114 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 {/* Billing Details */}
                 {selectedOrder.billing_details && (
                   <div className="mt-6">
-                    <h3 className="text-lg font-semibold mb-3">ข้อมูลเอกสาร</h3>
-                    <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                    <h3 className="text-base font-semibold mb-2">ข้อมูลเอกสาร</h3>
+                    <div className="bg-gray-50 p-3 rounded-lg space-y-2 text-sm">
                       {selectedOrder.billing_details.request_tax_invoice && (
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
-                            ขอใบกำกับภาษี
-                          </span>
-                        </div>
+                        <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">ขอใบกำกับภาษี</span>
                       )}
                       {selectedOrder.billing_details.request_cash_bill && (
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-1 bg-green-100 text-green-700 rounded">
-                            ขอบิลเงินสด
-                          </span>
-                        </div>
+                        <span className="px-2 py-1 bg-green-100 text-green-700 rounded">ขอบิลเงินสด</span>
                       )}
                     </div>
                   </div>
                 )}
               </div>
             </div>
+          </>
+        ) : (
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="p-4 border-b bg-gray-50 shrink-0">
+              <h2 className="text-lg font-bold">รายละเอียดบิล</h2>
+              <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
+            </div>
+            <div className="flex-1 flex items-center justify-center text-gray-500 p-6 text-center">
+              กรุณาเลือกบิลจากรายการด้านซ้าย
+            </div>
+          </div>
+        )}
+      </div>
 
-            {/* Action Buttons */}
-            <div className="p-6 border-t bg-gray-50 flex gap-4">
+      {/* การ์ดขวา - การตรวจสอบ */}
+      <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
+        <div className="p-4 border-b bg-gray-50 shrink-0">
+          <h2 className="text-lg font-bold">การตรวจสอบ</h2>
+          <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
+        </div>
+        {selectedOrder ? (
+          <>
+            <div className="flex-1 overflow-y-auto p-4 min-h-0">
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <h3 className="text-sm font-semibold text-amber-900 mb-2">ลงข้อมูลผิด — เลือกรายการที่ผิด</h3>
+                <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไข</p>
+                <div className="grid grid-cols-1 gap-2 mb-3">
+                  {getVisibleErrorFieldsForOrder(selectedOrder, categoryFieldSettings, productCategoryByProductId).map(({ key, label }) => (
+                    <label key={key} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!rejectErrorFields[key]}
+                        onChange={(e) => setRejectErrorFields((prev) => ({ ...prev, [key]: e.target.checked }))}
+                        className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                      />
+                      <span className="text-gray-800 text-sm">{label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ (ข้อความที่ต้องแก้ไข)</label>
+                  <textarea
+                    value={rejectRemarks}
+                    onChange={(e) => setRejectRemarks(e.target.value)}
+                    placeholder="ระบุรายละเอียดที่ต้องแก้ไข..."
+                    rows={3}
+                    className="w-full px-3 py-2 border rounded-lg border-gray-300 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="p-4 border-t bg-gray-50 flex flex-col gap-3 shrink-0">
               <button
-                onClick={openRejectModal}
+                onClick={() => handleRejectSubmit()}
                 disabled={updating}
-                className="flex-1 px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                className="w-full px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {updating ? 'กำลังอัพเดต...' : 'ผิด'}
               </button>
               <button
-                onClick={openApproveModal}
+                onClick={() => handleApproveConfirm()}
                 disabled={updating}
-                className="flex-1 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                className="w-full px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {updating ? 'กำลังอัพเดต...' : 'ถูกต้อง'}
               </button>
             </div>
           </>
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-500">
+          <div className="flex-1 flex items-center justify-center text-gray-500 p-6 text-center">
             กรุณาเลือกบิลจากรายการด้านซ้าย
           </div>
         )}
       </div>
 
-      {/* Approve modal: ยืนยันแค่อันเดียวแล้วย้ายไปใบสั่งงาน */}
-      {approveModalOpen && selectedOrder && (
-        <Modal
-          open
-          onClose={() => setApproveModalOpen(false)}
-          contentClassName="max-w-md w-full"
-        >
-          <div className="p-6">
-            <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันบิลถูกต้อง</h3>
-            <p className="text-gray-700 mb-6">
-              ต้องการยืนยันว่าบิล <strong>{selectedOrder.bill_no}</strong> ถูกต้อง และย้ายไปเมนู &quot;ใบสั่งงาน&quot; หรือไม่?
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                type="button"
-                onClick={() => setApproveModalOpen(false)}
-                disabled={updating}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                onClick={handleApproveConfirm}
-                disabled={updating}
-                className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50"
-              >
-                {updating ? 'กำลังย้าย...' : 'ยืนยัน ย้ายไปใบสั่งงาน'}
-              </button>
-            </div>
+      {/* Modal แจ้งเตือน/ผลลัพธ์ (แทน alert) */}
+      <Modal
+        open={messageModal.open}
+        onClose={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">{messageModal.title}</h3>
+          <p className="text-gray-700 text-sm whitespace-pre-wrap">{messageModal.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            >
+              ตกลง
+            </button>
           </div>
-        </Modal>
-      )}
-
-      {/* Reject modal: choose error fields + remarks — ชิดซ้ายเพื่อไม่บังรายละเอียดบิลด้านขวา */}
-      {rejectModalOpen && selectedOrder && (
-        <Modal
-          open
-          onClose={() => setRejectModalOpen(false)}
-          align="start"
-          contentClassName="max-w-md w-full max-h-[90vh] overflow-y-auto"
-        >
-            <div className="p-6 border-b">
-              <h3 className="text-lg font-bold text-gray-900">ลงข้อมูลผิด — เลือกรายการที่ผิด</h3>
-              <p className="text-gray-600 mt-1 text-sm">บิล {selectedOrder.bill_no}</p>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-sm font-medium text-gray-700">ติ๊กรายการที่ผิด (แสดงกรอบแดงในฟอร์มแก้ไข):</p>
-              <div className="grid grid-cols-1 gap-2">
-                {ERROR_FIELD_KEYS.map(({ key, label }) => (
-                  <label key={key} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={!!rejectErrorFields[key]}
-                      onChange={(e) => setRejectErrorFields((prev) => ({ ...prev, [key]: e.target.checked }))}
-                      className="rounded border-gray-300 text-red-600 focus:ring-red-500"
-                    />
-                    <span className="text-gray-800">{label}</span>
-                  </label>
-                ))}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ (ข้อความที่ต้องแก้ไข)</label>
-                <textarea
-                  value={rejectRemarks}
-                  onChange={(e) => setRejectRemarks(e.target.value)}
-                  placeholder="ระบุรายละเอียดที่ต้องแก้ไข..."
-                  rows={3}
-                  className="w-full px-3 py-2 border rounded-lg border-gray-300 focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                />
-              </div>
-            </div>
-            <div className="p-6 border-t flex gap-3 justify-end">
-              <button
-                type="button"
-                onClick={() => setRejectModalOpen(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                onClick={handleRejectSubmit}
-                disabled={updating}
-                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
-              >
-                {updating ? 'กำลังอัพเดต...' : 'ยืนยัน ย้ายไปลงข้อมูลผิด'}
-              </button>
-            </div>
-        </Modal>
-      )}
+        </div>
+      </Modal>
     </div>
   )
 }

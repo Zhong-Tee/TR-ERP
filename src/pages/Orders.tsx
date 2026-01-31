@@ -168,10 +168,10 @@ export default function Orders() {
 
   return (
     <div className="min-h-screen bg-gray-50 w-full">
-      {/* Navigation Tabs */}
-      <div className="bg-white border-b border-gray-200 sticky top-16 z-40">
-        <div className="w-full px-4 sm:px-6 lg:px-8">
-          <nav className="flex space-x-8" aria-label="Tabs">
+      {/* Navigation Tabs — เลื่อนแนวนอนได้ ไม่ล้นเข้าเมนูซ้าย */}
+      <div className="bg-white border-b border-gray-200 sticky top-16 z-40 min-w-0">
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto">
+          <nav className="flex space-x-8 flex-nowrap min-w-max" aria-label="Tabs">
             {[
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
@@ -190,7 +190,7 @@ export default function Orders() {
                   setActiveTab(tab.id as Tab)
                   setSelectedOrder(null)
                 }}
-                className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap flex-shrink-0 ${
                   activeTab === tab.id
                     ? 'border-blue-500 ' + ('labelColor' in tab ? tab.labelColor : 'text-blue-600')
                     : 'border-transparent ' + ('labelColor' in tab ? tab.labelColor : 'text-gray-500') + ' hover:text-gray-700 hover:border-gray-300'

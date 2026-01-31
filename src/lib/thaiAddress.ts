@@ -18,6 +18,8 @@ export interface ParsedAddress {
   province: string
   postalCode: string
   mobilePhone: string
+  /** ชื่อลูกค้า/ผู้รับ — แยกจากต้นข้อความที่อยู่ (คำก่อนเลขที่/หมู่/ต./อ.) */
+  recipientName?: string
   /** เบอร์โทรที่ parse ได้หลายเบอร์ (รูปแบบ 0 ตามด้วย 9 หลัก) — ให้เลือกจาก dropdown ได้ */
   mobilePhoneCandidates?: string[]
   /** รายการแขวง/ตำบล + เขต/อำเภอ ตามรหัสไปรษณีย์ — ให้เลือกจาก dropdown ได้ */
@@ -233,7 +235,21 @@ export async function parseAddressText(
 
   const { province, options: subDistrictOptions, subDistrict, district } = await getAddressByZip(postalCode, supabaseClient, rest)
 
-  const addressLine = cutAddressLine(rest, subDistrict, district, province)
+  let addressLine = cutAddressLine(rest, subDistrict, district, province)
+
+  /** แยกชื่อลูกค้าจากต้น addressLine (คำที่อยู่ก่อนเลขที่/หมู่/ต./อ.) แล้วตัดชื่อออกจากช่องที่อยู่ */
+  let recipientName: string | undefined
+  const tokens = addressLine.split(/\s+/).filter(Boolean)
+  const nameTokens: string[] = []
+  for (const t of tokens) {
+    if (/^\d/.test(t) || t === 'หมู่' || /^ต\.?/.test(t) || /^อ\.?/.test(t) || /^จ\.?/.test(t)) break
+    nameTokens.push(t)
+  }
+  if (nameTokens.length > 0) {
+    recipientName = nameTokens.join(' ').trim()
+    const remainingTokens = tokens.slice(nameTokens.length)
+    addressLine = remainingTokens.join(' ').trim()
+  }
 
   return {
     addressLine,
@@ -242,6 +258,7 @@ export async function parseAddressText(
     province,
     postalCode,
     mobilePhone,
+    recipientName: recipientName || undefined,
     mobilePhoneCandidates: localCandidates.length > 0 ? localCandidates : undefined,
     subDistrictOptions: subDistrictOptions.length > 0 ? subDistrictOptions : undefined,
   }

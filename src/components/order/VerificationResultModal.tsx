@@ -40,6 +40,16 @@ function StatusBadge({ match, isFailed }: { match: boolean | null; isFailed?: bo
   )
 }
 
+/** จัดรูปแบบข้อความรายละเอียดสลิป (ยอดเงินไม่ตรง) ให้แสดงเป็นบรรทัดและวงเล็บตามที่กำหนด */
+function formatSlipDetailMessage(msg: string): string {
+  const m = msg.match(/สลิป\s*(\d+):\s*(?:ตรวจสอบสำเร็จ\s*แต่พบข้อผิดพลาด:\s*)?ยอดเงินไม่ตรง:\s*ตรวจ\s*พบ\s*([\d.]+)\s*แต่คาดหวัง\s*([\d.]+)/)
+  if (m) {
+    const [, slipNum, found, expected] = m
+    return `สลิป ${slipNum}: ตรวจสอบสำเร็จ (แต่พบข้อผิดพลาด)\nยอดเงินไม่ตรง: ตรวจพบ ${found} \nแต่คาดหวัง ${expected}`
+  }
+  return msg
+}
+
 function AmountStatusBadge({ status }: { status: AmountStatus }) {
   const config = {
     match: { text: 'ตรง', className: 'text-green-600', dot: 'bg-green-500' },
@@ -136,13 +146,13 @@ export default function VerificationResultModal({
                 <h3 className="text-sm font-semibold text-red-800">รายละเอียด</h3>
               )}
               {errors.map((msg, i) => (
-                <p key={`e-${i}`} className="text-sm text-red-700">
-                  {msg}
+                <p key={`e-${i}`} className="text-sm text-red-700 whitespace-pre-line">
+                  {formatSlipDetailMessage(msg)}
                 </p>
               ))}
               {validationErrors.map((msg, i) => (
-                <p key={`v-${i}`} className="text-sm text-red-700">
-                  {msg}
+                <p key={`v-${i}`} className="text-sm text-red-700 whitespace-pre-line">
+                  {formatSlipDetailMessage(msg)}
                 </p>
               ))}
             </div>

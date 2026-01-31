@@ -7,10 +7,27 @@ import * as XLSX from 'xlsx'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
-/** ช่องทางอีคอมเมิร์ซ (ที่อยู่ไม่ส่งไปใบปะหน้า) */
-const ECOMMERCE_CHANNELS = ['SHOP', 'LZTR']
+/** ช่องทางที่ที่อยู่ไม่ส่งไปใบปะหน้า (SHOP แสดงที่อยู่เหมือน FBTR) */
+const ECOMMERCE_CHANNELS = ['LZTR']
 /** หมวดสินค้าที่ไม่นับเป็นสินค้าหลัก (นับเป็นอะไหล่เท่านั้น) */
 const PICKING_EXCLUDED_CATEGORIES = ['UV', 'STK', 'TUBE']
+
+/** คอลัมน์ระดับรายการใน Export ไฟล์ผลิต — แมป key → ชื่อคอลัมน์ใน pr_category_field_settings */
+const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKey: string }> = [
+  { key: 'product_name', label: 'ชื่อสินค้า', settingsKey: 'product_name' },
+  { key: 'ink_color', label: 'สีหมึก', settingsKey: 'ink_color' },
+  { key: 'product_type', label: 'ชั้นที่', settingsKey: 'layer' },
+  { key: 'cartoon_pattern', label: 'ลายการ์ตูน', settingsKey: 'cartoon_pattern' },
+  { key: 'line_pattern', label: 'ลายเส้น', settingsKey: 'line_pattern' },
+  { key: 'font', label: 'ฟอนต์', settingsKey: 'font' },
+  { key: 'no_name_line', label: 'ชื่อ ไม่รับชื่อ', settingsKey: 'line_1' },
+  { key: 'line_1', label: 'บรรทัด 1', settingsKey: 'line_1' },
+  { key: 'line_2', label: 'บรรทัด 2', settingsKey: 'line_2' },
+  { key: 'line_3', label: 'บรรทัด 3', settingsKey: 'line_3' },
+  { key: 'quantity', label: 'จำนวน', settingsKey: 'quantity' },
+  { key: 'notes', label: 'หมายเหตุ', settingsKey: 'notes' },
+  { key: 'file_attachment', label: 'ไฟล์แนบ', settingsKey: 'attachment' },
+]
 
 interface WorkOrderManageListProps {
   searchTerm?: string
@@ -66,10 +83,61 @@ export default function WorkOrderManageList({
   const trackingFileInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfInputRef = useRef<HTMLInputElement>(null)
   const pickingSlipContentRef = useRef<HTMLDivElement>(null)
+  /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่ (pr_category_field_settings) — ใช้กรองคอลัมน์ Export ไฟล์ผลิต ให้เหมือนเมนูรอตรวจคำสั่งซื้อ */
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
 
   useEffect(() => {
     loadWorkOrders()
   }, [channelFilter, searchTerm])
+
+  // โหลด pr_category_field_settings ครั้งเดียว (เหมือน OrderReviewList)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
+        if (cancelled) return
+        if (error) {
+          console.error('Error loading category field settings:', error)
+          return
+        }
+        function toBool(v: unknown, defaultVal = true): boolean {
+          if (v === undefined || v === null) return defaultVal
+          return v === true || v === 'true'
+        }
+        const settingsMap: Record<string, Record<string, boolean>> = {}
+        if (data && Array.isArray(data)) {
+          data.forEach((row: any) => {
+            const cat = row.category
+            if (cat != null && String(cat).trim() !== '') {
+              const key = String(cat).trim()
+              settingsMap[key] = {
+                product_name: toBool(row.product_name, true),
+                ink_color: toBool(row.ink_color, true),
+                layer: toBool(row.layer, true),
+                cartoon_pattern: toBool(row.cartoon_pattern, true),
+                line_pattern: toBool(row.line_pattern, true),
+                font: toBool(row.font, true),
+                line_1: toBool(row.line_1, true),
+                line_2: toBool(row.line_2, true),
+                line_3: toBool(row.line_3, true),
+                quantity: toBool(row.quantity, true),
+                unit_price: toBool(row.unit_price, true),
+                notes: toBool(row.notes, true),
+                attachment: toBool(row.attachment, true),
+              }
+            }
+          })
+        }
+        setCategoryFieldSettings(settingsMap)
+      } catch (e) {
+        if (!cancelled) console.error('Error loading category field settings:', e)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     async function loadChannels() {
@@ -525,7 +593,7 @@ export default function WorkOrderManageList({
     return str
   }
 
-  type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; notes: string | null; file_attachment: string | null; product_id: string }> }
+  type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
 
   async function fetchOrdersWithItems(workOrderName: string): Promise<OrderWithItems[]> {
     const { data, error } = await supabase
@@ -538,6 +606,46 @@ export default function WorkOrderManageList({
     return list
   }
 
+  /** คืนคอลัมน์ระดับรายการที่ "เปิดให้กรอก" ตาม pr_category_field_settings อย่างน้อยหนึ่งรายการ (เหมือน OrderReviewList) */
+  function getVisibleExportItemColumns(
+    orders: OrderWithItems[],
+    categoryFieldSettings: Record<string, Record<string, boolean>>,
+    productCategoryByProductId: Record<string, string>
+  ): Array<{ key: string; label: string; settingsKey: string }> {
+    const allItems: any[] = []
+    orders.forEach((order) => {
+      const items = order.or_order_items || (order as any).order_items || []
+      allItems.push(...items)
+    })
+    if (allItems.length === 0) return EXPORT_ITEM_COLUMNS
+    const hasSettings = Object.keys(categoryFieldSettings).length > 0
+    const hasCategoryMap = Object.keys(productCategoryByProductId).length > 0
+    if (!hasSettings || !hasCategoryMap) return EXPORT_ITEM_COLUMNS
+
+    const enabled = new Set<string>()
+    for (const def of EXPORT_ITEM_COLUMNS) {
+      for (const item of allItems) {
+        const productId = item.product_id != null ? String(item.product_id) : null
+        const cat = productId ? productCategoryByProductId[productId] : null
+        if (!cat || String(cat).trim() === '') {
+          enabled.add(def.key)
+          break
+        }
+        const categorySettings = categoryFieldSettings[String(cat).trim()]
+        if (!categorySettings) {
+          enabled.add(def.key)
+          break
+        }
+        const v = categorySettings[def.settingsKey] as boolean | string | undefined
+        if (v === undefined || v === null || v === true || v === 'true') {
+          enabled.add(def.key)
+          break
+        }
+      }
+    }
+    return EXPORT_ITEM_COLUMNS.filter((c) => enabled.has(c.key))
+  }
+
   async function exportProduction(workOrderName: string) {
     try {
       const orders = await fetchOrdersWithItems(workOrderName)
@@ -546,29 +654,44 @@ export default function WorkOrderManageList({
         setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
         return
       }
-      const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', 'ชื่อสินค้า', 'สีหมึก', 'ชั้นที่', 'ลายการ์ตูน', 'ลายเส้น', 'ฟอนต์', 'บรรทัด 1', 'บรรทัด 2', 'บรรทัด 3', 'จำนวน', 'หมายเหตุ', 'ไฟล์แนบ']
+      const allItems: any[] = []
+      ordersInWorkOrder.forEach((order) => {
+        const items = order.or_order_items || (order as any).order_items || []
+        allItems.push(...items)
+      })
+      const productIds = Array.from(new Set(allItems.map((i: any) => i.product_id).filter(Boolean)))
+      let productCategoryByProductId: Record<string, string> = {}
+      if (productIds.length > 0) {
+        const { data: products } = await supabase
+          .from('pr_products')
+          .select('id, product_category')
+          .in('id', productIds)
+        if (products) {
+          products.forEach((p: any) => {
+            const cat = p.product_category
+            if (cat != null && String(cat).trim() !== '') {
+              productCategoryByProductId[String(p.id)] = String(cat).trim()
+            }
+          })
+        }
+      }
+      const visibleColumns = getVisibleExportItemColumns(ordersInWorkOrder, categoryFieldSettings, productCategoryByProductId)
+      const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', ...visibleColumns.map((c) => c.label)]
       const dataToExport: unknown[][] = []
       ordersInWorkOrder.forEach((order) => {
         const items = order.or_order_items || (order as any).order_items || []
         items.forEach((item: any) => {
-          const cleanNotes = (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
-          dataToExport.push([
-            workOrderName,
-            order.bill_no,
-            item.item_uid,
-            item.product_name,
-            item.ink_color ?? '',
-            item.product_type ?? '',
-            item.cartoon_pattern ?? '',
-            item.line_pattern ?? '',
-            item.font ?? '',
-            forceText(item.line_1),
-            forceText(item.line_2),
-            forceText(item.line_3),
-            1,
-            cleanNotes,
-            item.file_attachment ?? '',
-          ])
+          const noName = !!item.no_name_line
+          const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+          const row: unknown[] = [workOrderName, order.bill_no, item.item_uid]
+          visibleColumns.forEach((col) => {
+            if (col.key === 'no_name_line') row.push(noName ? 'ใช่' : '')
+            else if (col.key === 'notes') row.push(cleanNotes)
+            else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
+            else if (col.key === 'quantity') row.push(1)
+            else row.push(item[col.key] ?? '')
+          })
+          dataToExport.push(row)
         })
       })
       if (dataToExport.length === 0) {
@@ -579,7 +702,6 @@ export default function WorkOrderManageList({
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'ProductionData')
       XLSX.writeFile(workbook, `Production_${workOrderName}.xlsx`)
-      setMessageModal({ open: true, message: 'Export ไฟล์ผลิตเรียบร้อย' })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
     }
@@ -616,7 +738,6 @@ export default function WorkOrderManageList({
       link.href = URL.createObjectURL(blob)
       link.download = `Barcode_${workOrderName}.csv`
       link.click()
-      setMessageModal({ open: true, message: 'Export Barcode เรียบร้อย' })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
     }
@@ -645,7 +766,6 @@ export default function WorkOrderManageList({
       link.href = URL.createObjectURL(blob)
       link.download = `Waybill_${workOrderName}.csv`
       link.click()
-      setMessageModal({ open: true, message: 'Export ใบปะหน้า (CSV) เรียบร้อย' })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
     }
@@ -768,7 +888,6 @@ export default function WorkOrderManageList({
       link.download = `ใบเบิก_${workOrderName}.csv`
       link.click()
 
-      setMessageModal({ open: true, message: 'Export ใบเบิก (PNG, XLSX, CSV) เรียบร้อย' })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาดในการ Export: ' + (err?.message ?? err) })
     }
@@ -811,7 +930,6 @@ export default function WorkOrderManageList({
             updated += 1
           }
         }
-        setMessageModal({ open: true, message: `นำเข้าสำเร็จ! อัปเดต ${updated} รายการ` })
         const woOrders = ordersByWo[workOrderName]
         if (woOrders) await loadOrdersForWo(workOrderName)
         onRefresh?.()

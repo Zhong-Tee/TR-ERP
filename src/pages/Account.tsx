@@ -113,6 +113,15 @@ export default function Account() {
   }>({ open: false, refund: null, action: null, submitting: false })
   /** Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน (แทน alert) */
   const [refundResultModal, setRefundResultModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  /** Modal ยืนยัน ขอใบกำกับภาษี / ขอบิลเงินสด (แทน confirm) */
+  const [billingConfirmModal, setBillingConfirmModal] = useState<{
+    open: boolean
+    order: BillingRequestOrder | null
+    type: 'tax-invoice' | 'cash-bill' | null
+    submitting: boolean
+  }>({ open: false, order: null, type: null, submitting: false })
+  /** Modal แจ้งผลหลังยืนยันใบกำกับภาษี/บิลเงินสด (แทน alert) */
+  const [billingResultModal, setBillingResultModal] = useState<{ open: boolean; title: string; message: string }>({ open: false, title: '', message: '' })
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
   const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
@@ -425,46 +434,31 @@ export default function Account() {
     }
   }
 
-  async function confirmTaxInvoice(order: BillingRequestOrder) {
-    if (!user) return
-    if (!confirm(`ต้องการยืนยันว่าออกใบกำกับภาษีสำหรับบิล ${order.bill_no} เรียบร้อยแล้วหรือไม่?`)) return
+  function openConfirmTaxInvoice(order: BillingRequestOrder) {
+    setBillingConfirmModal({ open: true, order, type: 'tax-invoice', submitting: false })
+  }
 
-    try {
-      const bd = order.billing_details || {}
-      const newBillingDetails = {
-        ...bd,
-        account_confirmed_tax: true,
-        account_confirmed_tax_at: new Date().toISOString(),
-        account_confirmed_tax_by: user.id,
-      }
+  function openConfirmCashBill(order: BillingRequestOrder) {
+    setBillingConfirmModal({ open: true, order, type: 'cash-bill', submitting: false })
+  }
 
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ billing_details: newBillingDetails })
-        .eq('id', order.id)
-
-      if (error) throw error
-      alert('ยืนยันใบกำกับภาษีเรียบร้อย')
-      await loadBillingRequests()
-      await loadHistory()
-    } catch (error: any) {
-      console.error('Error confirming tax invoice:', error)
-      alert('เกิดข้อผิดพลาดในการยืนยันใบกำกับภาษี: ' + error.message)
+  function closeBillingConfirmModal() {
+    if (!billingConfirmModal.submitting) {
+      setBillingConfirmModal({ open: false, order: null, type: null, submitting: false })
     }
   }
 
-  async function confirmCashBill(order: BillingRequestOrder) {
-    if (!user) return
-    if (!confirm(`ต้องการยืนยันว่าออกบิลเงินสดสำหรับบิล ${order.bill_no} เรียบร้อยแล้วหรือไม่?`)) return
+  async function submitBillingConfirm() {
+    const { order, type } = billingConfirmModal
+    if (!user || !order || !type) return
+    setBillingConfirmModal((prev) => ({ ...prev, submitting: true }))
 
     try {
       const bd = order.billing_details || {}
-      const newBillingDetails = {
-        ...bd,
-        account_confirmed_cash: true,
-        account_confirmed_cash_at: new Date().toISOString(),
-        account_confirmed_cash_by: user.id,
-      }
+      const isTax = type === 'tax-invoice'
+      const newBillingDetails = isTax
+        ? { ...bd, account_confirmed_tax: true, account_confirmed_tax_at: new Date().toISOString(), account_confirmed_tax_by: user.id }
+        : { ...bd, account_confirmed_cash: true, account_confirmed_cash_at: new Date().toISOString(), account_confirmed_cash_by: user.id }
 
       const { error } = await supabase
         .from('or_orders')
@@ -472,13 +466,31 @@ export default function Account() {
         .eq('id', order.id)
 
       if (error) throw error
-      alert('ยืนยันบิลเงินสดเรียบร้อย')
+      setBillingConfirmModal({ open: false, order: null, type: null, submitting: false })
+      setBillingResultModal({
+        open: true,
+        title: 'สำเร็จ',
+        message: isTax ? 'ยืนยันใบกำกับภาษีเรียบร้อย' : 'ยืนยันบิลเงินสดเรียบร้อย',
+      })
       await loadBillingRequests()
       await loadHistory()
     } catch (error: any) {
-      console.error('Error confirming cash bill:', error)
-      alert('เกิดข้อผิดพลาดในการยืนยันบิลเงินสด: ' + error.message)
+      console.error(isTax ? 'Error confirming tax invoice:' : 'Error confirming cash bill:', error)
+      setBillingConfirmModal({ open: false, order: null, type: null, submitting: false })
+      setBillingResultModal({
+        open: true,
+        title: 'เกิดข้อผิดพลาด',
+        message: type === 'tax-invoice' ? 'เกิดข้อผิดพลาดในการยืนยันใบกำกับภาษี: ' + error.message : 'เกิดข้อผิดพลาดในการยืนยันบิลเงินสด: ' + error.message,
+      })
     }
+  }
+
+  async function confirmTaxInvoice(order: BillingRequestOrder) {
+    openConfirmTaxInvoice(order)
+  }
+
+  async function confirmCashBill(order: BillingRequestOrder) {
+    openConfirmCashBill(order)
   }
 
   if (loading) {
@@ -1370,6 +1382,73 @@ export default function Account() {
             <button
               type="button"
               onClick={() => setRefundResultModal({ open: false, message: '' })}
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              ตกลง
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal ยืนยัน ขอใบกำกับภาษี / ขอบิลเงินสด */}
+      {billingConfirmModal.open && billingConfirmModal.order && billingConfirmModal.type && (
+        <Modal
+          open
+          onClose={closeBillingConfirmModal}
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">
+              {billingConfirmModal.type === 'tax-invoice' ? 'ยืนยัน ขอใบกำกับภาษี' : 'ยืนยัน ขอบิลเงินสด'}
+            </h3>
+            <p className="text-gray-700 mb-6">
+              {billingConfirmModal.type === 'tax-invoice'
+                ? `ต้องการยืนยันว่าออกใบกำกับภาษีสำหรับบิล ${billingConfirmModal.order.bill_no} เรียบร้อยแล้วหรือไม่?`
+                : `ต้องการยืนยันว่าออกบิลเงินสดสำหรับบิล ${billingConfirmModal.order.bill_no} เรียบร้อยแล้วหรือไม่?`}
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={closeBillingConfirmModal}
+                disabled={billingConfirmModal.submitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={submitBillingConfirm}
+                disabled={billingConfirmModal.submitting}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {billingConfirmModal.submitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  'ยืนยัน'
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal แจ้งผลหลังยืนยันใบกำกับภาษี/บิลเงินสด */}
+      <Modal
+        open={billingResultModal.open}
+        onClose={() => setBillingResultModal({ open: false, title: '', message: '' })}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="p-5">
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">{billingResultModal.title}</h3>
+          <p className="text-gray-800 text-sm">{billingResultModal.message}</p>
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setBillingResultModal({ open: false, title: '', message: '' })}
               className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
               ตกลง

@@ -46,6 +46,12 @@ export interface Order {
   payment_time: string | null
   customer_name: string
   customer_address: string
+  /** เลขคำสั่งซื้อ (ช่องทาง SPTR, FSPTR, TTTR, LZTR, PGTR, WY) */
+  channel_order_no?: string | null
+  /** ชื่อลูกค้า ใต้ที่อยู่ (ช่องทาง FBTR, PUMP, OATR, SHOP, INFU, PN) */
+  recipient_name?: string | null
+  /** วันที่ เวลา นัดรับ (ช่องทาง SHOP PICKUP) */
+  scheduled_pickup_at?: string | null
   admin_user: string
   entry_date: string
   work_order_name: string | null
@@ -77,6 +83,8 @@ export interface OrderItem {
   line_1: string | null
   line_2: string | null
   line_3: string | null
+  /** เมื่อ true = ไม่รับข้อความบรรทัด 1-3, แสดง "ไม่รับชื่อ" ที่หมายเหตุ */
+  no_name_line?: boolean
   notes: string | null
   file_attachment: string | null
   packing_status: string | null
@@ -88,6 +96,8 @@ export interface BillingDetails {
   request_cash_bill: boolean
   tax_customer_name: string | null
   tax_customer_address: string | null
+  /** เบอร์โทรสำหรับบิลเงินสด/ใบกำกับ (เมื่อระบุในฟอร์มขอเอกสาร) */
+  tax_customer_phone?: string | null
   tax_id: string | null
   tax_items: TaxItem[]
   /** Optional address parts for customer shipping (ที่อยู่, แขวง, เขต, จังหวัด, รหัสไปรษณีย์, เบอร์โทร) */

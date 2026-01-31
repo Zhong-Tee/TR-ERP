@@ -471,8 +471,18 @@ interface OrderFormProps {
   viewOnly?: boolean
 }
 
-/** ช่องทางที่บล็อกที่อยู่ลูกค้า และเปิดให้กรอกเลขพัสดุ (SPTR, FSPTR, TTTR, LZTR, SHOP) */
-const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOP']
+/** ช่องทางที่บล็อกที่อยู่ลูกค้า (SHOP PICKUP=SHOPP บล็อกที่อยู่ ปิดเลขพัสดุ; SHOP SHIPPING=SHOP แสดงที่อยู่+ชื่อช่องทาง ปิดเลขพัสดุ) */
+const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
+/** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" (SHOP + SHOPP) */
+const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
+/** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
+const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
+/** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
+const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
+/** ช่องทางที่เมื่อบันทึก "ข้อมูลครบ" ให้เคลื่อนสถานะไปที่ "ตรวจสอบแล้ว" โดยตรง (ไม่ต้องรอตรวจสลิป) */
+const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
+/** ช่องทางที่เปิดปุ่มอัพโหลดสลิป (นอกจากช่องทางที่อยู่ใน bank_settings_channels) */
+const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 
 export default function OrderForm({ order, onSave, onCancel, readOnly = false, viewOnly = false }: OrderFormProps) {
   const { user } = useAuthContext()
@@ -513,17 +523,30 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     error?: string
     submitting?: boolean
   }>({ open: false })
+  /** Modal แจ้งเตือนทั่วไป (แทน alert เช่น กรุณาอัพโหลดสลิปโอนเงิน) */
+  const [messageModal, setMessageModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
   /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
   /** หมายเหตุจาก review (ลงข้อมูลผิด) */
   const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
+  /** index ของแถวที่ช่องหมายเหตุกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
+  const [notesFocusedIndex, setNotesFocusedIndex] = useState<number | null>(null)
+  /** index ของแถวที่ช่องไฟล์แนบกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
+  const [fileAttachmentFocusedIndex, setFileAttachmentFocusedIndex] = useState<number | null>(null)
 
   const [formData, setFormData] = useState({
     channel_code: '',
     customer_name: '',
     customer_address: '',
+    channel_order_no: '',
+    recipient_name: '',
+    scheduled_pickup_at: '',
     address_line: '',
     sub_district: '',
     district: '',
@@ -549,6 +572,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
   const [cashBillData, setCashBillData] = useState({
     company_name: '',
     address: '',
+    mobile_phone: '',
     items_note: '',
   })
   const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
@@ -565,15 +589,23 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       const parsed = await parseAddressText(formData.customer_address || '', supabase)
       setMobilePhoneCandidates(parsed.mobilePhoneCandidates ?? [])
       setSubDistrictOptions(parsed.subDistrictOptions ?? [])
-      setFormData(prev => ({
-        ...prev,
+      const channelCode = formData.channel_code
+      const updates: Partial<typeof formData> = {
         address_line: parsed.addressLine,
         sub_district: parsed.subDistrict,
         district: parsed.district,
         province: parsed.province,
         postal_code: parsed.postalCode,
         mobile_phone: parsed.mobilePhone,
-      }))
+      }
+      if (parsed.recipientName?.trim()) {
+        if (CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode)) {
+          updates.recipient_name = parsed.recipientName.trim()
+        } else if (CHANNELS_SHOW_ORDER_NO.includes(channelCode)) {
+          updates.customer_name = parsed.recipientName.trim()
+        }
+      }
+      setFormData(prev => ({ ...prev, ...updates }))
     } finally {
       setAutoFillAddressLoading(false)
     }
@@ -669,10 +701,25 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         const customerAddress = hasAddressParts
           ? [bd?.address_line, bd?.sub_district, bd?.district, bd?.province, bd?.postal_code].filter(Boolean).join(' ')
           : order.customer_address
+        const orderAny = order as { channel_order_no?: string | null; recipient_name?: string | null; scheduled_pickup_at?: string | null }
+        const sp = orderAny.scheduled_pickup_at
+        const scheduledPickupLocal = sp ? (() => {
+          const d = new Date(sp)
+          if (isNaN(d.getTime())) return ''
+          const y = d.getFullYear()
+          const m = String(d.getMonth() + 1).padStart(2, '0')
+          const day = String(d.getDate()).padStart(2, '0')
+          const h = String(d.getHours()).padStart(2, '0')
+          const min = String(d.getMinutes()).padStart(2, '0')
+          return `${y}-${m}-${day}T${h}:${min}`
+        })() : ''
         setFormData({
           channel_code: order.channel_code,
           customer_name: order.customer_name,
           customer_address: customerAddress,
+          channel_order_no: orderAny.channel_order_no ?? '',
+          recipient_name: orderAny.recipient_name ?? '',
+          scheduled_pickup_at: scheduledPickupLocal,
           address_line: bd?.address_line ?? '',
           sub_district: bd?.sub_district ?? '',
           district: bd?.district ?? '',
@@ -732,9 +779,11 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             })
           }
           if (bd.request_cash_bill) {
+            const bdTyped = bd as { tax_customer_phone?: string | null }
             setCashBillData({
               company_name: bd.tax_customer_name || '',
               address: bd.tax_customer_address || '',
+              mobile_phone: bdTyped.tax_customer_phone ?? bd.mobile_phone ?? '',
               items_note: '',
             })
           }
@@ -950,13 +999,33 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
     // Validation สำหรับบันทึก "รอลงข้อมูล"
     if (!formData.channel_code || formData.channel_code.trim() === '') {
-      alert('กรุณาเลือกช่องทาง')
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
       return
     }
 
-    if (!formData.customer_name || formData.customer_name.trim() === '') {
-      alert('กรุณากรอกชื่อลูกค้า')
-      return
+    if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
+      if (!formData.customer_name || formData.customer_name.trim() === '') {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อช่องทาง' })
+        return
+      }
+    }
+    if (CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) {
+      if (!formData.channel_order_no || formData.channel_order_no.trim() === '') {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขคำสั่งซื้อ' })
+        return
+      }
+      // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED ไม่บังคับกรอกชื่อลูกค้าเมื่อบันทึก
+      if (!CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code) && (!formData.customer_name || formData.customer_name.trim() === '')) {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อลูกค้า' })
+        return
+      }
+    }
+
+    if (formData.channel_code === 'SHOPP') {
+      if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
+        return
+      }
     }
 
     const isAddressBlocked = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
@@ -1037,7 +1106,11 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
     if (itemsWithoutPrice.length > 0) {
       const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-      alert(`กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`)
+      setMessageModal({
+        open: true,
+        title: 'แจ้งเตือน',
+        message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
+      })
       return
     }
 
@@ -1094,6 +1167,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         request_cash_bill: showCashBill,
         tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : (showCashBill ? cashBillData.company_name : null),
         tax_customer_address: showTaxInvoice ? taxInvoiceData.address : (showCashBill ? cashBillData.address : null),
+        tax_customer_phone: showCashBill ? (cashBillData.mobile_phone?.trim() || null) : (order?.billing_details && typeof order.billing_details === 'object' ? (order.billing_details as { tax_customer_phone?: string | null }).tax_customer_phone ?? null : null),
         tax_id: showTaxInvoice ? taxInvoiceData.tax_id : null,
         tax_items: (showTaxInvoice || showCashBill) ? itemsToSave
           .filter(item => item.product_id)
@@ -1110,35 +1184,39 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         mobile_phone: formData.mobile_phone?.trim() || null,
       }
 
-      // บิลที่บันทึก "ข้อมูลครบ" แต่ช่องทางไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว" เพื่อให้แสดงในเมนู ตรวจสอบแล้ว
+      // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
       let statusToSave: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' | 'ตรวจสอบแล้ว' = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
-        let channelHasSlipVerification = false
-        if (formData.payment_method === 'โอน') {
-          const channelCode = formData.channel_code?.trim() || ''
-          const { data: bscData, error: bscError } = await supabase
-            .from('bank_settings_channels')
-            .select('bank_setting_id')
-            .eq('channel_code', channelCode)
-          if (bscError) {
-            channelHasSlipVerification = true
-          } else if (bscData && bscData.length > 0) {
-            const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
-            const { data: activeBank } = await supabase
-              .from('bank_settings')
-              .select('id')
-              .in('id', ids)
-              .eq('is_active', true)
-              .limit(1)
-            channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
-          }
-        }
-        if (!channelHasSlipVerification) {
+        const channelCode = formData.channel_code?.trim() || ''
+        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
           statusToSave = 'ตรวจสอบแล้ว'
+        } else {
+          let channelHasSlipVerification = false
+          if (formData.payment_method === 'โอน') {
+            const { data: bscData, error: bscError } = await supabase
+              .from('bank_settings_channels')
+              .select('bank_setting_id')
+              .eq('channel_code', channelCode)
+            if (bscError) {
+              channelHasSlipVerification = true
+            } else if (bscData && bscData.length > 0) {
+              const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+              const { data: activeBank } = await supabase
+                .from('bank_settings')
+                .select('id')
+                .in('id', ids)
+                .eq('is_active', true)
+                .limit(1)
+              channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
+            }
+          }
+          if (!channelHasSlipVerification) {
+            statusToSave = 'ตรวจสอบแล้ว'
+          }
         }
       }
 
-      const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, ...formDataForDb } = formData
+      const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, scheduled_pickup_at: _spForm, ...formDataForDb } = formData
       const orderData = {
         ...formDataForDb,
         customer_address: customerAddressToSave,
@@ -1150,6 +1228,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || showCashBill || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
+        scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
       }
 
       let orderId: string
@@ -1225,6 +1304,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               line_1: item.line_1 || null,
               line_2: item.line_2 || null,
               line_3: item.line_3 || null,
+              no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
               notes: item.notes || null,
               file_attachment: item.file_attachment || null,
             }
@@ -1267,12 +1347,16 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       }
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
-      // ถ้าช่องทางไม่มีใน bank_settings_channels อนุญาตให้บันทึกได้โดยไม่ต้องอัพโหลดสลิป
+      // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED บันทึกเป็น "ตรวจสอบแล้ว" แล้ว — ไม่ต้องรันตรวจสลิป
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
+        const channelCodeForVerify = formData.channel_code?.trim() || ''
+        if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCodeForVerify)) {
+          // ข้ามการตรวจสลิป — สถานะถูกบันทึกเป็น "ตรวจสอบแล้ว" แล้วใน handleSubmitInternal
+        } else {
         const originalStatus = order?.status
         let channelHasSlipVerification = false
         if (formData.payment_method === 'โอน') {
-          const channelCode = formData.channel_code?.trim() || ''
+          const channelCode = channelCodeForVerify
           const { data: bscData, error: bscError } = await supabase
             .from('bank_settings_channels')
             .select('bank_setting_id')
@@ -1324,15 +1408,24 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
                 if (updateError) {
                   console.error('Error updating order status:', updateError)
-                  alert('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
+                  setMessageModal({
+                    open: true,
+                    title: 'เกิดข้อผิดพลาด',
+                    message: 'เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message,
+                  })
                 } else {
-                  alert('ไม่พบสลิปโอนเงิน บิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน" กรุณาอัพโหลดสลิปโอนเงิน')
+                  setMessageModal({
+                    open: true,
+                    title: 'แจ้งเตือน',
+                    message: 'ไม่พบสลิปโอนเงิน บิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน" กรุณาอัพโหลดสลิปโอนเงิน',
+                  })
                   onSave()
                   return
                 }
               }
             }
           }
+        }
         }
       }
 
@@ -1650,9 +1743,14 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
           }
         } else {
           const rawError = result.error || result.message || 'การตรวจสอบล้มเหลว'
-          const friendlyError = /slip_not_found|not_found|อ่านข้อมูลไม่ได้/i.test(rawError)
-            ? 'ระบบอ่านข้อมูลสลิปจากรูปนี้ไม่ได้ (รูปอาจไม่ชัด ไม่ใช่สลิปที่รองรับ หรือไฟล์เสีย) — กรุณาตรวจสอบรูปหรืออัพโหลดใหม่'
-            : rawError
+          let friendlyError: string
+          if (/application_expired/i.test(rawError)) {
+            friendlyError = 'แพคเกจหมดอายุ หรือ โคต้าหมด'
+          } else if (/slip_not_found|not_found|อ่านข้อมูลไม่ได้/i.test(rawError)) {
+            friendlyError = 'ระบบอ่านข้อมูลสลิปจากรูปนี้ไม่ได้\n(รูปอาจไม่ชัด ไม่ใช่สลิปที่รองรับ หรือไฟล์เสีย)\nกรุณาตรวจสอบรูปหรืออัพโหลดใหม่'
+          } else {
+            friendlyError = rawError
+          }
           errors.push(`สลิป ${index + 1}: ${friendlyError}`)
           // ใช้ค่าจริงจาก EasySlip — ไม่บังคับให้เลขบัญชี/สาขาเป็นไม่ตรงเมื่อสลิป fail (เช่น แค่ยอดเกิน)
           if (result.accountNameMatch === false) allAccountNameMatch = false
@@ -2152,7 +2250,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                 type="button"
                 onClick={async () => {
                   if (!formData.channel_code || formData.channel_code.trim() === '') {
-                    alert('กรุณาเลือกช่องทางก่อนสร้างเลขบิล')
+                    setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทางก่อนสร้างเลขบิล' })
                     return
                   }
                   const billNo = await generateBillNo(formData.channel_code)
@@ -2185,19 +2283,35 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               ))}
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">ชื่อลูกค้า</label>
-            <input
-              type="text"
-              value={formData.customer_name}
-              onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
-              required
-              disabled={formDisabled}
-              className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-            />
-          </div>
+          {CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) && (
+            <div>
+              <label className="block text-sm font-medium mb-1">ชื่อช่องทาง</label>
+              <input
+                type="text"
+                value={formData.customer_name}
+                onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
+                required
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+              />
+            </div>
+          )}
+          {CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && (
+            <div>
+              <label className="block text-sm font-medium mb-1">เลขคำสั่งซื้อ</label>
+              <input
+                type="text"
+                value={formData.channel_order_no}
+                onChange={(e) => setFormData({ ...formData, channel_order_no: e.target.value })}
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+              />
+            </div>
+          )}
         </div>
+        {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | เลขพัสดุ + โปรโมชั่น (ขวา) — แสดงผลสม่ำเสมอ */}
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* ที่อยู่ลูกค้า — ฝั่งซ้าย */}
           <div>
             <div className="flex items-center gap-2 mb-1">
               <label className="block text-sm font-medium">ที่อยู่ลูกค้า</label>
@@ -2216,10 +2330,29 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วกด Auto fill"
               required={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)}
               disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-              rows={4}
+              rows={3}
               className={`w-full px-3 py-2 border rounded-lg ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.address ? 'ring-2 ring-red-500 border-red-500' : ''}`}
             />
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {(CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) || CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) && (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <label className="block text-xs text-gray-500 mb-0.5">ชื่อลูกค้า</label>
+                  <input
+                    type="text"
+                    value={CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) ? formData.recipient_name : formData.customer_name}
+                    onChange={(e) => {
+                      if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
+                        setFormData({ ...formData, recipient_name: e.target.value })
+                      } else {
+                        setFormData({ ...formData, customer_name: e.target.value })
+                      }
+                    }}
+                    required={CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && !CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code)}
+                    disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
+                    className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.customer_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-gray-500 mb-0.5">ที่อยู่</label>
                 <input
@@ -2337,6 +2470,37 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             </div>
           </div>
           <div className="flex flex-col gap-4">
+            {formData.channel_code === 'SHOPP' && (
+              <div>
+                <label className="block text-sm font-medium mb-1">วันที่ เวลา นัดรับ <span className="text-red-500">*</span></label>
+                <input
+                  type="datetime-local"
+                  value={formData.scheduled_pickup_at ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setFormData((prev) => ({ ...prev, scheduled_pickup_at: v }))
+                  }}
+                  step={60}
+                  required
+                  disabled={formDisabled}
+                  className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                />
+                {formData.scheduled_pickup_at && (() => {
+                  const d = new Date(formData.scheduled_pickup_at)
+                  if (isNaN(d.getTime())) return null
+                  const day = String(d.getDate()).padStart(2, '0')
+                  const month = String(d.getMonth() + 1).padStart(2, '0')
+                  const year = d.getFullYear() + 543
+                  const h = String(d.getHours()).padStart(2, '0')
+                  const m = String(d.getMinutes()).padStart(2, '0')
+                  return (
+                    <p className="mt-1 text-sm text-gray-600">
+                      เลือกแล้ว: {day}/{month}/{year} {h}:{m} น.
+                    </p>
+                  )
+                })()}
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
               <input
@@ -2344,8 +2508,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                 value={formData.tracking_number}
                 onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
                 placeholder="กรอกเลขพัสดุ"
-                disabled={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                disabled={!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
               />
             </div>
             <div>
@@ -2368,32 +2532,37 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         </div>
       </div>
 
-      <div className="bg-white p-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'visible' }}>
+      {/* ขยายเต็มความกว้างของพื้นที่เนื้อหา (ไม่กระทบเมนูซ้าย) */}
+      <div className="-mx-4 sm:-mx-6 lg:-mx-8 bg-white px-4 sm:px-6 lg:px-8 py-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'visible' }}>
         <h3 className="text-xl font-bold mb-4">รายการสินค้า</h3>
         <div className="overflow-x-auto" style={{ overflowY: 'visible' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
             <thead>
               <tr className="bg-gray-100">
-                <th className="border p-2">ชื่อสินค้า</th>
-                <th className="border p-2">สีหมึก</th>
-                <th className="border p-2">ชั้น</th>
-                <th className="border p-2">ลายการ์ตูน</th>
-                <th className="border p-2">ลายเส้น</th>
-                <th className="border p-2">ฟอนต์</th>
-                <th className="border p-2">บรรทัด 1</th>
-                <th className="border p-2">บรรทัด 2</th>
-                <th className="border p-2">บรรทัด 3</th>
-                <th className="border p-2">จำนวน</th>
-                <th className="border p-2">ราคา/หน่วย</th>
-                <th className="border p-2">หมายเหตุ</th>
-                <th className="border p-2">ไฟล์แนบ</th>
-                <th className="border p-2"></th>
+                <th className="border p-1.5">ชื่อสินค้า</th>
+                <th className="border p-1.5 w-28">สีหมึก</th>
+                <th className="border p-1.5 w-18">ชั้น</th>
+                <th className="border p-1.5 w-16">ลาย</th>
+                <th className="border p-1.5 w-16">เส้น</th>
+                <th className="border p-1.5 w-20">ฟอนต์</th>
+                <th className="border p-1.5 text-center w-16 leading-tight">
+                  <span className="block">ไม่</span>
+                  <span className="block">รับชื่อ</span>
+                </th>
+                <th className="border p-1.5">บรรทัด 1</th>
+                <th className="border p-1.5">บรรทัด 2</th>
+                <th className="border p-1.5">บรรทัด 3</th>
+                <th className="border p-1.5 w-14">จำนวน</th>
+                <th className="border p-1.5 w-20">ราคา/หน่วย</th>
+                <th className="border p-1.5">หมายเหตุ</th>
+                <th className="border p-1.5 w-20">ไฟล์แนบ</th>
+                <th className="border p-1.5 w-10"></th>
               </tr>
             </thead>
             <tbody>
               {items.map((item, index) => (
                 <tr key={index}>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <div className="relative">
                       <input
                         type="text"
@@ -2453,7 +2622,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                           }
                         }}
                         placeholder="ค้นหาหรือเลือกสินค้า..."
-                        className={`w-full px-2 py-1 border rounded min-w-[220px] ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.product_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.product_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
                       <datalist id={`product-list-${index}`}>
@@ -2493,12 +2662,12 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       </datalist>
                     </div>
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <select
                       value={item.ink_color || ''}
                       onChange={(e) => updateItem(index, 'ink_color', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'ink_color')}
-                      className={`w-full px-2 py-1 border rounded min-w-[90px] ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.ink_color ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.ink_color ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="">เลือกสี</option>
                       {inkTypes.map((ink) => (
@@ -2508,12 +2677,12 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       ))}
                     </select>
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <select
                       value={item.product_type || 'ชั้น1'}
                       onChange={(e) => updateItem(index, 'product_type', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'layer')}
-                      className={`w-full px-2 py-1 border rounded min-w-[60px] ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.layer ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.layer ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="ชั้น1">ชั้น1</option>
                       <option value="ชั้น2">ชั้น2</option>
@@ -2522,34 +2691,34 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       <option value="ชั้น5">ชั้น5</option>
                     </select>
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.cartoon_pattern || ''}
                       onChange={(e) => updateItem(index, 'cartoon_pattern', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
-                      className={`w-full px-2 py-1 border rounded min-w-[70px] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                      placeholder="ลายการ์ตูน"
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                      placeholder="ลาย"
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.line_pattern || ''}
                       onChange={(e) => updateItem(index, 'line_pattern', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_pattern')}
-                      className={`w-full px-2 py-1 border rounded min-w-[70px] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_art ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                      placeholder="ลายเส้น"
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_art ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      placeholder="เส้น"
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <select
                       value={item.font || ''}
                       onChange={(e) => updateItem(index, 'font', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'font')}
-                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.font ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.font ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
-                      <option value="">เลือกฟอนต์</option>
+                      <option value="">ฟอนต์</option>
                       {fonts.map((font) => (
                         <option key={font.font_code} value={font.font_name}>
                           {font.font_name}
@@ -2557,44 +2726,56 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       ))}
                     </select>
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5 align-middle">
+                    <div className="flex items-center justify-center min-h-[28px]">
+                      <input
+                        type="checkbox"
+                        checked={!!(item as { no_name_line?: boolean }).no_name_line}
+                        onChange={(e) => updateItem(index, 'no_name_line', e.target.checked)}
+                        disabled={formDisabled}
+                        title="ติ๊ก = ไม่รับข้อความบรรทัด 1–3"
+                        className="w-4 h-4 rounded border-gray-300"
+                      />
+                    </div>
+                  </td>
+                  <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_1')}
-                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_1')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_1 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_1 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.line_2 || ''}
                       onChange={(e) => updateItem(index, 'line_2', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_2')}
-                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_2')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_2 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_2') || !!(item as { no_name_line?: boolean }).no_name_line}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_2 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.line_3 || ''}
                       onChange={(e) => updateItem(index, 'line_3', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_3')}
-                      className={`w-full px-2 py-1 border rounded min-w-[140px] ${(formDisabled || !isFieldEnabled(index, 'line_3')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_3 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_3') || !!(item as { no_name_line?: boolean }).no_name_line}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_3 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="number"
                       value={item.quantity || 1}
                       onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
                       min="1"
                       disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
-                      className={`w-full px-2 py-1 border rounded min-w-[50px] ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.quantity ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5">
                     <input
                       type="number"
                       value={item.unit_price || ''}
@@ -2612,35 +2793,87 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       step="0.01"
                       placeholder="0.00"
                       disabled={formDisabled || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-2 py-1 border rounded min-w-[80px] ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.unit_price ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
-                  <td className="border p-2">
-                    <input
-                      type="text"
-                      value={item.notes || ''}
-                      onChange={(e) => updateItem(index, 'notes', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'notes')}
-                      placeholder="หมายเหตุเพิ่มเติม"
-                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'notes')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                    />
+                  <td className="border p-1.5">
+                    {(() => {
+                      const noName = !!(item as { no_name_line?: boolean }).no_name_line
+                      const displayValue = noName ? ('ไม่รับชื่อ' + (item.notes ? ' ' + item.notes : '')) : (item.notes || '')
+                      const isExpanded = notesFocusedIndex === index
+                      return isExpanded ? (
+                        <textarea
+                          value={displayValue}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            if (noName) {
+                              const rest = v.startsWith('ไม่รับชื่อ') ? v.replace(/^ไม่รับชื่อ\s*/, '') : v
+                              updateItem(index, 'notes', rest)
+                            } else {
+                              updateItem(index, 'notes', v)
+                            }
+                          }}
+                          onBlur={() => setNotesFocusedIndex(null)}
+                          disabled={formDisabled || !isFieldEnabled(index, 'notes')}
+                          placeholder={noName ? 'ไม่รับชื่อ (พิมพ์หมายเหตุเพิ่มได้)' : 'หมายเหตุเพิ่มเติม'}
+                          rows={4}
+                          className={`w-full min-w-[120px] px-1.5 py-1 border rounded resize-y text-xs ${(formDisabled || !isFieldEnabled(index, 'notes')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                          autoFocus
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={displayValue}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            if (noName) {
+                              const rest = v.startsWith('ไม่รับชื่อ') ? v.replace(/^ไม่รับชื่อ\s*/, '') : v
+                              updateItem(index, 'notes', rest)
+                            } else {
+                              updateItem(index, 'notes', v)
+                            }
+                          }}
+                          onFocus={() => setNotesFocusedIndex(index)}
+                          disabled={formDisabled || !isFieldEnabled(index, 'notes')}
+                          placeholder={noName ? 'ไม่รับชื่อ' : 'หมายเหตุเพิ่มเติม'}
+                          className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'notes')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                        />
+                      )
+                    })()}
                   </td>
-                  <td className="border p-2">
-                    <input
-                      type="text"
-                      value={item.file_attachment || ''}
-                      onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
-                      placeholder="URL ไฟล์แนบ"
-                      className={`w-full px-2 py-1 border rounded min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                    />
+                  <td className="border p-1.5">
+                    {(() => {
+                      const isFileExpanded = fileAttachmentFocusedIndex === index
+                      return isFileExpanded ? (
+                        <textarea
+                          value={item.file_attachment || ''}
+                          onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
+                          onBlur={() => setFileAttachmentFocusedIndex(null)}
+                          disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
+                          placeholder="URL ไฟล์แนบ"
+                          rows={3}
+                          className={`w-full min-w-[80px] px-1.5 py-1 border rounded resize-y text-xs ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                          autoFocus
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={item.file_attachment || ''}
+                          onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
+                          onFocus={() => setFileAttachmentFocusedIndex(index)}
+                          disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
+                          placeholder="ไฟล์แนบ"
+                          className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                        />
+                      )
+                    })()}
                   </td>
-                  <td className="border p-2">
+                  <td className="border p-1.5 align-middle">
                     {!formDisabled && (
                     <button
                       type="button"
                       onClick={() => removeItem(index)}
-                      className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xl"
+                      className="px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600 text-lg leading-tight"
                       title="ลบ"
                     >
                       ×
@@ -2669,7 +2902,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
           <div>
             {(() => {
               const channelCode = formData.channel_code?.trim() || ''
-              const channelRequiresSlip = formData.payment_method === 'โอน' && channelCodesWithSlipVerification.has(channelCode)
+              const channelRequiresSlip = formData.payment_method === 'โอน' && (channelCodesWithSlipVerification.has(channelCode) || CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode))
               const hasExistingSlips = uploadedSlipPaths.length > 0
               if (channelRequiresSlip || hasExistingSlips) {
                 return (
@@ -2808,8 +3041,20 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
           <button
             type="button"
             onClick={() => {
-              setShowCashBill(!showCashBill)
+              const willShow = !showCashBill
+              setShowCashBill(willShow)
               setShowTaxInvoice(false)
+              if (willShow) {
+                const composedAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
+                const addressForBill = composedAddress || formData.customer_address || ''
+                const customerNameForBill = CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) ? formData.recipient_name : formData.customer_name
+                setCashBillData(prev => ({
+                  ...prev,
+                  company_name: customerNameForBill?.trim() || prev.company_name,
+                  address: addressForBill || prev.address,
+                  mobile_phone: formData.mobile_phone?.trim() || prev.mobile_phone,
+                }))
+              }
             }}
             className={`px-6 py-2 rounded-lg font-medium transition-colors ${
               showCashBill
@@ -2961,6 +3206,16 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium mb-1">เบอร์โทร</label>
+                <input
+                  type="text"
+                  value={cashBillData.mobile_phone}
+                  onChange={(e) => setCashBillData({ ...cashBillData, mobile_phone: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg"
+                  placeholder="เบอร์โทรศัพท์"
+                />
+              </div>
+              <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในบิล</label>
                 <div className="border rounded-lg p-3 bg-gray-50 max-h-48 overflow-y-auto">
                   {items.filter(item => item.product_id || item.product_name).length > 0 ? (
@@ -3061,13 +3316,33 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               
               // Validation สำหรับบันทึก "ข้อมูลครบ"
               if (!formData.channel_code || formData.channel_code.trim() === '') {
-                alert('กรุณาเลือกช่องทาง')
+                setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
                 return
               }
 
-              if (!formData.customer_name || formData.customer_name.trim() === '') {
-                alert('กรุณากรอกชื่อลูกค้า')
-                return
+              if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
+                if (!formData.customer_name || formData.customer_name.trim() === '') {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อช่องทาง' })
+                  return
+                }
+              }
+              if (CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) {
+                if (!formData.channel_order_no || formData.channel_order_no.trim() === '') {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขคำสั่งซื้อ' })
+                  return
+                }
+                // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED ไม่บังคับกรอกชื่อลูกค้าเมื่อบันทึกข้อมูลครบ
+                if (!CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code) && (!formData.customer_name || formData.customer_name.trim() === '')) {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อลูกค้า' })
+                  return
+                }
+              }
+
+              if (formData.channel_code === 'SHOPP') {
+                if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
+                  return
+                }
               }
 
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
@@ -3130,35 +3405,57 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
               const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
               if (itemsWithoutPrice.length > 0) {
                 const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-                alert(`กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`)
+                setMessageModal({
+                  open: true,
+                  title: 'แจ้งเตือน',
+                  message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
+                })
                 return
               }
 
-              // ตรวจสอบสลิปโอน — ถ้าช่องทางไม่มีในข้อมูลธนาคารสำหรับตรวจสลิป (และ bank เปิดใช้งาน) อนุญาตให้บันทึกได้โดยไม่ต้องอัพโหลดสลิป
+              // ตรวจสอบสลิปโอน — ช่องทาง SHOP PICKUP / SHOP SHIPPING บังคับอัพโหลดสลิปก่อนกด บันทึก(ข้อมูลครบ)
               if (formData.payment_method === 'โอน') {
                 const channelCode = formData.channel_code?.trim() || ''
-                const { data: bscData, error: bscError } = await supabase
-                  .from('bank_settings_channels')
-                  .select('bank_setting_id')
-                  .eq('channel_code', channelCode)
-                if (bscError) {
-                  // query ผิดพลาด → fail secure ต้องมีสลิป
-                  if (uploadedSlipPaths.length === 0) {
-                    alert('กรุณาอัพโหลดสลิปโอนเงิน')
-                    return
-                  }
-                } else if (bscData && bscData.length > 0) {
-                  const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
-                  const { data: activeBank } = await supabase
-                    .from('bank_settings')
-                    .select('id')
-                    .in('id', ids)
-                    .eq('is_active', true)
-                    .limit(1)
-                  const channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
-                  if (channelHasSlipVerification && uploadedSlipPaths.length === 0) {
-                    alert('กรุณาอัพโหลดสลิปโอนเงิน')
-                    return
+                if (CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode) && uploadedSlipPaths.length === 0) {
+                  setMessageModal({
+                    open: true,
+                    title: 'แจ้งเตือน',
+                    message: 'กรุณาอัพโหลดสลิปโอนเงิน',
+                  })
+                  return
+                }
+                // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED (ที่ไม่ใช่ SHOP/SHOPP) บันทึก "ข้อมูลครบ" ไป "ตรวจสอบแล้ว" โดยตรง ไม่บังคับสลิป
+                if (!CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
+                  const { data: bscData, error: bscError } = await supabase
+                    .from('bank_settings_channels')
+                    .select('bank_setting_id')
+                    .eq('channel_code', channelCode)
+                  if (bscError) {
+                    if (uploadedSlipPaths.length === 0) {
+                      setMessageModal({
+                        open: true,
+                        title: 'แจ้งเตือน',
+                        message: 'กรุณาอัพโหลดสลิปโอนเงิน',
+                      })
+                      return
+                    }
+                  } else if (bscData && bscData.length > 0) {
+                    const ids = bscData.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+                    const { data: activeBank } = await supabase
+                      .from('bank_settings')
+                      .select('id')
+                      .in('id', ids)
+                      .eq('is_active', true)
+                      .limit(1)
+                    const channelHasSlipVerification = !!(activeBank && activeBank.length > 0)
+                    if (channelHasSlipVerification && uploadedSlipPaths.length === 0) {
+                      setMessageModal({
+                        open: true,
+                        title: 'แจ้งเตือน',
+                        message: 'กรุณาอัพโหลดสลิปโอนเงิน',
+                      })
+                      return
+                    }
                   }
                 }
               }
@@ -3407,6 +3704,27 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       />
     )}
 
+    {/* Modal แจ้งเตือนทั่วไป (แทน alert เช่น กรุณาอัพโหลดสลิปโอนเงิน) */}
+    <Modal
+      open={messageModal.open}
+      onClose={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+      contentClassName="max-w-md"
+    >
+      <div className="p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">{messageModal.title}</h3>
+        <p className="text-gray-700 text-sm whitespace-pre-line">{messageModal.message}</p>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setMessageModal((prev) => ({ ...prev, open: false }))}
+            className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </div>
+    </Modal>
+
     <Modal
       open={productSelectAlertOpen}
       onClose={() => setProductSelectAlertOpen(false)}
@@ -3414,8 +3732,9 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       closeOnBackdropClick
     >
       <div className="p-5">
-        <p className="text-gray-800">
-          กรุณาเลือกสินค้าจากรายการที่สร้างไว้ (กรุณาเลือกสินค้าจาก dropdown)
+        <p className="text-gray-800 whitespace-pre-line">
+          กรุณาเลือกสินค้าจากรายการที่สร้างไว้
+          {'\n'}(กรุณาเลือกสินค้าจาก dropdown)
         </p>
         <div className="mt-4 flex justify-end">
           <button
