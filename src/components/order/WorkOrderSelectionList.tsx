@@ -37,14 +37,14 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no')
         .eq('status', 'ใบสั่งงาน')
         .is('work_order_name', null)
         .order('created_at', { ascending: false })
 
       if (searchTerm) {
         query = query.or(
-          `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,admin_user.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
+          `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,admin_user.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%,channel_order_no.ilike.%${searchTerm}%,recipient_name.ilike.%${searchTerm}%`
         )
       }
       if (channelFilter) {
@@ -122,6 +122,46 @@ export default function WorkOrderSelectionList({
 
   const selectedOrders = filteredOrders.filter((o) => selectedIds.has(o.id))
 
+  /** สร้าง id สำหรับ plan_jobs (รูปแบบเดียวกับ Plan.tsx) */
+  const planJobId = () => 'J' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4)
+
+  /**
+   * คำนวณจำนวนต่อแผนกจาก order_items + product_category (logic ตาม index.html)
+   * PACK = จำนวนบิล, STAMP/STK/CTT/LASER/TUBE = นับจาก product_category ของแต่ละรายการ
+   */
+  async function computeQtyFromOrders(orderIds: string[]): Promise<Record<string, number>> {
+    const qty: Record<string, number> = { STAMP: 0, STK: 0, CTT: 0, LASER: 0, TUBE: 0, PACK: orderIds.length }
+    if (orderIds.length === 0) return qty
+
+    const { data: items, error: itemsErr } = await supabase
+      .from('or_order_items')
+      .select('product_id')
+      .in('order_id', orderIds)
+    if (itemsErr || !items?.length) return qty
+
+    const productIds = [...new Set((items as { product_id: string }[]).map((r) => r.product_id).filter(Boolean))]
+    const { data: products, error: prodErr } = await supabase
+      .from('pr_products')
+      .select('id, product_category')
+      .in('id', productIds)
+    if (prodErr || !products?.length) return qty
+
+    const categoryByProductId: Record<string, string> = {}
+    ;(products as { id: string; product_category: string | null }[]).forEach((p) => {
+      categoryByProductId[p.id] = (p.product_category || '').toUpperCase()
+    })
+
+    ;(items as { product_id: string }[]).forEach((row) => {
+      const category = categoryByProductId[row.product_id] || ''
+      if (category.includes('STAMP')) qty.STAMP += 1
+      if (category.includes('STK')) qty.STK += 1
+      if (category.includes('UV')) qty.CTT += 1
+      if (category.includes('LASER')) qty.LASER += 1
+      if (category.includes('TUBE')) qty.TUBE += 1
+    })
+    return qty
+  }
+
   async function handleCreateWorkOrder() {
     if (selectedOrders.length === 0) {
       alert('กรุณาเลือกรายการบิลอย่างน้อย 1 รายการ')
@@ -139,6 +179,14 @@ export default function WorkOrderSelectionList({
 
       const today = new Date()
       const datePart = today.toLocaleDateString('th-TH', { year: '2-digit', month: '2-digit', day: '2-digit' }).replace(/\//g, '')
+      const dateISO = today.toISOString().slice(0, 10)
+
+      const { data: maxOrder } = await supabase
+        .from('plan_jobs')
+        .select('order_index')
+        .order('order_index', { ascending: false })
+        .limit(1)
+      let nextOrderIndex = (maxOrder?.[0]?.order_index ?? -1) + 1
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
         const { data: existing } = await supabase
@@ -166,6 +214,30 @@ export default function WorkOrderSelectionList({
           .update({ work_order_name: workOrderName })
           .in('id', orderIds)
         if (updateError) throw updateError
+
+        const { data: existingPlan } = await supabase
+          .from('plan_jobs')
+          .select('id')
+          .eq('name', workOrderName)
+          .limit(1)
+        if (!existingPlan?.length) {
+          const cutTime = `${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`
+          const qty = await computeQtyFromOrders(orderIds)
+          const planRow = {
+            id: planJobId(),
+            date: dateISO,
+            name: workOrderName,
+            cut: cutTime,
+            qty,
+            tracks: {},
+            line_assignments: {},
+            manual_plan_starts: {},
+            locked_plans: {},
+            order_index: nextOrderIndex++,
+          }
+          const { error: planErr } = await supabase.from('plan_jobs').insert([planRow])
+          if (planErr) console.warn('Sync plan_jobs failed for', workOrderName, planErr)
+        }
       }
 
       await loadOrders()
@@ -267,7 +339,7 @@ export default function WorkOrderSelectionList({
         </button>
       </div>
 
-      {/* รายการบิล: บรรทัดเดียว เลขบิล | ชื่อลูกค้า | ผู้ลงข้อมูล | เลขพัสดุ + checkbox (ไม่ให้คลิกแถว) */}
+      {/* รายการบิล: ชื่อช่องทาง = or_orders.customer_name, ชื่อลูกค้า = or_orders.recipient_name */}
       {filteredOrders.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
           {orders.length === 0 ? 'ไม่พบบิลรอสร้างใบงาน' : `ไม่พบบิลในช่องทาง ${pillChannel}`}
@@ -288,6 +360,8 @@ export default function WorkOrderSelectionList({
                   </th>
                   <th className="p-2 text-left font-medium w-32">เลขบิล</th>
                   <th className="p-2 text-left font-medium min-w-[140px]">ชื่อลูกค้า</th>
+                  <th className="p-2 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
+                  <th className="p-2 text-left font-medium min-w-[110px]">เลขคำสั่งซื้อ</th>
                   <th className="p-2 text-left font-medium w-28">ผู้ลงข้อมูล</th>
                   <th className="w-16 shrink-0" aria-hidden="true" />
                   <th className="p-2 text-left font-medium min-w-[120px] w-40">เลขพัสดุ</th>
@@ -311,9 +385,13 @@ export default function WorkOrderSelectionList({
                     <td className="p-2 align-middle">
                       <span className="text-blue-600 font-medium">{order.bill_no}</span>
                     </td>
-                    <td className="p-2 align-middle text-gray-700 max-w-[200px] truncate" title={(order as Order).customer_name ?? ''}>
-                      {(order as Order).customer_name ?? '-'}
+                    <td className="p-2 align-middle text-gray-700 max-w-[200px] truncate" title={order.recipient_name ?? ''}>
+                      {order.recipient_name ?? '-'}
                     </td>
+                    <td className="p-2 align-middle text-gray-700 max-w-[140px] truncate" title={order.customer_name ?? ''}>
+                      {order.customer_name ?? '-'}
+                    </td>
+                    <td className="p-2 align-middle text-gray-700">{order.channel_order_no ?? '-'}</td>
                     <td className="p-2 align-middle text-gray-700">{order.admin_user ?? '-'}</td>
                     <td className="w-16 shrink-0" aria-hidden="true" />
                     <td className="p-2 align-middle text-gray-700">{order.tracking_number ?? '-'}</td>

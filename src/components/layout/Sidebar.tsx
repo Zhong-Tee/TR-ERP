@@ -1,6 +1,8 @@
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { UserRole } from '../../types'
+import { supabase } from '../../lib/supabase'
 
 interface MenuItem {
   key: string
@@ -37,6 +39,13 @@ const menuItems: MenuItem[] = [
     label: 'ใบงาน',
     icon: '📄',
     path: '/export',
+    roles: ['superadmin', 'admin', 'order_staff'],
+  },
+  {
+    key: 'plan',
+    label: 'Plan',
+    icon: '📋',
+    path: '/plan',
     roles: ['superadmin', 'admin', 'order_staff'],
   },
   {
@@ -88,9 +97,69 @@ interface SidebarProps {
   onToggle?: () => void
 }
 
+/** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
+const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account'] as const
+
 export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0 })
+
+  const loadCounts = useCallback(async () => {
+    try {
+      const [qcRes, accountRes] = await Promise.all([
+        supabase
+          .from('or_orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'ตรวจสอบแล้ว'),
+        supabase
+          .from('ac_refunds')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending'),
+      ])
+      setMenuCounts({
+        'admin-qc': qcRes.count ?? 0,
+        account: accountRes.count ?? 0,
+      })
+    } catch (e) {
+      console.error('Sidebar loadCounts:', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadCounts()
+    const channel = supabase
+      .channel('sidebar-menu-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [loadCounts])
+
+  // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc หรือ account เพื่อให้ตัวเลขตรงกับหน้านั้น
+  useEffect(() => {
+    if (location.pathname === '/admin-qc' || location.pathname === '/account') {
+      loadCounts()
+    }
+  }, [location.pathname, loadCounts])
+
+  // Refetch counts เมื่อผู้ใช้กลับมาเปิดแท็บ/หน้าต่าง (visibility change)
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') loadCounts()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [loadCounts])
+
+  // ฟัง event จากหน้า admin-qc / account เมื่อมีการอนุมัติ/ไม่อนุมัติ/อัปเดต เพื่อให้ตัวเลขเมนูอัปเดตทันที
+  useEffect(() => {
+    const onRefresh = () => loadCounts()
+    window.addEventListener('sidebar-refresh-counts', onRefresh)
+    return () => window.removeEventListener('sidebar-refresh-counts', onRefresh)
+  }, [loadCounts])
 
   const filteredMenuItems = menuItems.filter((item) =>
     user?.role ? item.roles.includes(user.role) : false
@@ -180,8 +249,34 @@ export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
                   }`}
                   title={!isOpen ? item.label : undefined}
                 >
-                  <span className="text-xl flex-shrink-0">{item.icon}</span>
-                  {isOpen && <span className="whitespace-nowrap">{item.label}</span>}
+                  <span className="relative text-xl flex-shrink-0">
+                    {item.icon}
+                    {MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
+                      (menuCounts[item.key] ?? 0) > 0 && (
+                        <span
+                          className={`absolute -top-1.5 -right-1.5 min-w-[1.25rem] h-5 px-1 flex items-center justify-center rounded-full text-xs font-bold ${
+                            isActive ? 'bg-white text-blue-600' : 'bg-amber-500 text-white'
+                          }`}
+                        >
+                          {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
+                        </span>
+                      )}
+                  </span>
+                  {isOpen && (
+                    <span className="whitespace-nowrap flex items-center gap-2">
+                      {item.label}
+                      {MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
+                        (menuCounts[item.key] ?? 0) > 0 && (
+                          <span
+                            className={`min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold ${
+                              isActive ? 'bg-white/20 text-white' : 'bg-amber-500/90 text-white'
+                            }`}
+                          >
+                            {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
+                          </span>
+                        )}
+                    </span>
+                  )}
                 </Link>
               </li>
             )

@@ -1,14 +1,24 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { WorkOrder } from '../types'
 
 export default function Packing() {
+  const location = useLocation()
+  const preselectedName = (location.state as { workOrderName?: string } | null)?.workOrderName
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [loading, setLoading] = useState(true)
+  const highlightedRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     loadWorkOrders()
   }, [])
+
+  useEffect(() => {
+    if (preselectedName && workOrders.length > 0 && highlightedRef.current) {
+      highlightedRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [preselectedName, workOrders.length])
 
   async function loadWorkOrders() {
     setLoading(true)
@@ -48,10 +58,15 @@ export default function Packing() {
           </div>
         ) : (
           <div className="space-y-2">
-            {workOrders.map((wo) => (
+            {workOrders.map((wo) => {
+              const isPreselected = preselectedName === wo.work_order_name
+              return (
               <div
                 key={wo.id}
-                className="p-4 border rounded-lg hover:bg-gray-50 cursor-pointer"
+                ref={isPreselected ? highlightedRef : undefined}
+                className={`p-4 border rounded-lg hover:bg-gray-50 cursor-pointer transition-colors ${
+                  isPreselected ? 'ring-2 ring-blue-500 bg-blue-50/50' : ''
+                }`}
               >
                 <div className="flex items-center justify-between">
                   <div>
@@ -65,7 +80,7 @@ export default function Packing() {
                   </button>
                 </div>
               </div>
-            ))}
+            )})}
           </div>
         )}
         <p className="text-gray-600 text-sm mt-4">

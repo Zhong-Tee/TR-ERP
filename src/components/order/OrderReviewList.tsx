@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { getPublicUrl } from '../../lib/qcApi'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+
+const PRODUCT_IMAGES_BUCKET = 'product-images'
 
 export const ERROR_FIELD_KEYS = [
   { key: 'channel_name', label: 'ชื่อช่องทาง' },
@@ -106,6 +109,21 @@ function getVisibleErrorFieldsForOrder(
   return [...orderLevel, ...itemLevel]
 }
 
+/** ฟิลด์ระดับบิล (ไม่แยกรายการ) */
+const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address']
+
+/** แยกรายการฟิลด์ที่แสดงเป็นระดับบิล vs ระดับรายการ */
+function getOrderLevelAndItemLevelErrorFields(
+  order: Order | null,
+  categoryFieldSettings: Record<string, Record<string, boolean>>,
+  productCategoryByProductId: Record<string, string>
+): { orderLevel: Array<{ key: ErrorFieldKey; label: string }>; itemLevel: Array<{ key: ErrorFieldKey; label: string }> } {
+  const allFields = getVisibleErrorFieldsForOrder(order, categoryFieldSettings, productCategoryByProductId)
+  const orderLevel = allFields.filter((f) => ORDER_LEVEL_KEYS.includes(f.key))
+  const itemLevel = allFields.filter((f) => !ORDER_LEVEL_KEYS.includes(f.key))
+  return { orderLevel, itemLevel }
+}
+
 interface OrderReviewListProps {
   onStatusUpdate?: () => void
 }
@@ -116,11 +134,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
-  const [productImageMap, setProductImageMap] = useState<Record<string, { image_url: string | null; product_name?: string }>>({})
-  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { image_url: string | null; pattern_name?: string }>>({})
-  const [rejectErrorFields, setRejectErrorFields] = useState<Record<string, boolean>>(
-    ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {})
+  const [productImageMap, setProductImageMap] = useState<Record<string, { product_code?: string; product_name?: string }>>({})
+  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string }>>({})
+  /** ระดับบิล: ชื่อช่องทาง, ชื่อลูกค้า, ที่อยู่ */
+  const [rejectErrorFieldsOrder, setRejectErrorFieldsOrder] = useState<Record<string, boolean>>(
+    ORDER_LEVEL_KEYS.reduce((acc, key) => ({ ...acc, [key]: false }), {} as Record<string, boolean>)
   )
+  /** ระดับรายการ: items[index][fieldKey] = true ถ้าฟิลด์นั้นผิดที่รายการที่ index */
+  const [rejectErrorFieldsByItem, setRejectErrorFieldsByItem] = useState<Record<number, Record<string, boolean>>>({})
   const [rejectRemarks, setRejectRemarks] = useState('')
   /** Modal แจ้งเตือน/ผลลัพธ์ (แทน alert): กรุณาติ๊กหรือกรอกหมายเหตุ, ยืนยันสำเร็จ, เกิดข้อผิดพลาด */
   const [messageModal, setMessageModal] = useState<{ open: boolean; title: string; message: string }>({
@@ -211,17 +232,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
         const [productsRes, patternsRes] = await Promise.all([
           productIds.length > 0
-            ? supabase.from('pr_products').select('id, product_name, image_url, product_category').in('id', productIds)
+            ? supabase.from('pr_products').select('id, product_name, product_code, product_category').in('id', productIds)
             : Promise.resolve({ data: [] as any[] }),
           cartoonKeys.length > 0
-            ? supabase.from('cp_cartoon_patterns').select('id, pattern_name, image_url').in('pattern_name', cartoonKeys)
+            ? supabase.from('cp_cartoon_patterns').select('id, pattern_name').in('pattern_name', cartoonKeys)
             : Promise.resolve({ data: [] as any[] }),
         ])
 
-        const nextProductMap: Record<string, { image_url: string | null; product_name?: string }> = {}
+        const nextProductMap: Record<string, { product_code?: string; product_name?: string }> = {}
         const nextCategoryMap: Record<string, string> = {}
         ;(productsRes as any)?.data?.forEach((p: any) => {
-          nextProductMap[p.id] = { image_url: p.image_url || null, product_name: p.product_name }
+          nextProductMap[p.id] = { product_code: p.product_code, product_name: p.product_name }
           const cat = p.product_category
           if (cat != null && String(cat).trim() !== '') {
             nextCategoryMap[String(p.id)] = String(cat).trim()
@@ -230,10 +251,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         setProductImageMap(nextProductMap)
         setProductCategoryByProductId(nextCategoryMap)
 
-        const nextPatternMap: Record<string, { image_url: string | null; pattern_name?: string }> = {}
+        const nextPatternMap: Record<string, { pattern_name?: string }> = {}
         ;((patternsRes as any)?.data || []).forEach((p: any) => {
-          const payload = { image_url: p.image_url || null, pattern_name: p.pattern_name }
-          if (p.pattern_name) nextPatternMap[p.pattern_name] = payload
+          if (p.pattern_name) nextPatternMap[p.pattern_name] = { pattern_name: p.pattern_name }
         })
         setCartoonPatternImageMap(nextPatternMap)
       } catch (error) {
@@ -244,10 +264,11 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     loadItemImages()
   }, [selectedOrder?.id])
 
-  // รีเซ็ตกล่องติ๊กเมื่อเปลี่ยนบิลที่เลือก
+  // รีเซ็ตกล่องติ๊กและหมายเหตุเมื่อเปลี่ยนบิลที่เลือก
   useEffect(() => {
     if (selectedOrder) {
-      setRejectErrorFields(ERROR_FIELD_KEYS.reduce((acc, { key }) => ({ ...acc, [key]: false }), {}))
+      setRejectErrorFieldsOrder(ORDER_LEVEL_KEYS.reduce((acc, key) => ({ ...acc, [key]: false }), {} as Record<string, boolean>))
+      setRejectErrorFieldsByItem({})
       setRejectRemarks('')
     }
   }, [selectedOrder?.id])
@@ -306,9 +327,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   async function handleRejectSubmit() {
     if (!selectedOrder || !user?.id) return
 
-    const hasAnyChecked = ERROR_FIELD_KEYS.some(({ key }) => !!rejectErrorFields[key])
+    const hasOrderChecked = ORDER_LEVEL_KEYS.some((key) => !!rejectErrorFieldsOrder[key])
+    const items: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
+    const hasItemChecked = items.some((_, i) => {
+      const itemFields = rejectErrorFieldsByItem[i]
+      return itemFields && Object.keys(itemFields).some((k) => !!itemFields[k])
+    })
     const hasRemarks = (rejectRemarks || '').trim().length > 0
-    if (!hasAnyChecked && !hasRemarks) {
+    if (!hasOrderChecked && !hasItemChecked && !hasRemarks) {
       setMessageModal({
         open: true,
         title: 'กรุณาระบุรายการที่ผิด',
@@ -318,10 +344,23 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       return
     }
 
-    const errorFieldsObj: Record<string, boolean> = {}
-    ERROR_FIELD_KEYS.forEach(({ key }) => {
-      if (rejectErrorFields[key]) errorFieldsObj[key] = true
+    const errorFieldsObj: Record<string, unknown> = {}
+    ORDER_LEVEL_KEYS.forEach((key) => {
+      if (rejectErrorFieldsOrder[key]) (errorFieldsObj as Record<string, boolean>)[key] = true
     })
+    if (items.length > 0) {
+      const itemsArray = items.map((_: any, i: number) => {
+        const itemFields = rejectErrorFieldsByItem[i]
+        if (!itemFields) return {}
+        const out: Record<string, boolean> = {}
+        Object.keys(itemFields).forEach((k) => {
+          if (itemFields[k]) out[k] = true
+        })
+        return out
+      })
+      if (itemsArray.some((o) => Object.keys(o).length > 0)) errorFieldsObj.items = itemsArray
+    }
+    const errorFieldsToSave = Object.keys(errorFieldsObj).length > 0 ? errorFieldsObj : null
 
     setUpdating(true)
     try {
@@ -340,7 +379,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             reviewed_by: user.id,
             status: 'rejected',
             rejection_reason: rejectRemarks.trim() || null,
-            error_fields: Object.keys(errorFieldsObj).length > 0 ? errorFieldsObj : null,
+            error_fields: errorFieldsToSave,
           },
           { onConflict: 'order_id' }
         )
@@ -399,7 +438,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   }`}
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <div className="font-semibold text-gray-900">{order.bill_no}</div>
+                    <div className="font-semibold text-gray-900 flex items-center gap-2">
+                      {order.bill_no}
+                      {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
+                        <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
+                          เคลม
+                        </span>
+                      )}
+                    </div>
                     <div className="text-gray-700 text-right truncate max-w-[55%] text-sm">
                       {order.customer_name}
                     </div>
@@ -480,10 +526,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     <div className="space-y-3">
                       {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).map((item: any) => {
                         const product = productImageMap[item.product_id] || null
-                        const productImageUrl = product?.image_url || null
+                        const productImageUrl = product?.product_code
+                          ? getPublicUrl(PRODUCT_IMAGES_BUCKET, product.product_code, '.jpg')
+                          : null
                         const patternKey = item.cartoon_pattern || ''
                         const pattern = patternKey ? cartoonPatternImageMap[patternKey] : null
-                        const patternImageUrl = pattern?.image_url || null
+                        const patternImageUrl = pattern?.pattern_name
+                          ? getPublicUrl('cartoon-patterns', pattern.pattern_name, '.jpg')
+                          : null
 
                         const unitPrice = Number(item.unit_price || 0)
                         const qty = Number(item.quantity || 0)
@@ -651,23 +701,63 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         {selectedOrder ? (
           <>
             <div className="flex-1 overflow-y-auto p-4 min-h-0">
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                <h3 className="text-sm font-semibold text-amber-900 mb-2">ลงข้อมูลผิด — เลือกรายการที่ผิด</h3>
-                <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไข</p>
-                <div className="grid grid-cols-1 gap-2 mb-3">
-                  {getVisibleErrorFieldsForOrder(selectedOrder, categoryFieldSettings, productCategoryByProductId).map(({ key, label }) => (
-                    <label key={key} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={!!rejectErrorFields[key]}
-                        onChange={(e) => setRejectErrorFields((prev) => ({ ...prev, [key]: e.target.checked }))}
-                        className="rounded border-gray-300 text-red-600 focus:ring-red-500"
-                      />
-                      <span className="text-gray-800 text-sm">{label}</span>
-                    </label>
-                  ))}
+              <div className="space-y-4">
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับบิล — เลือกรายการที่ผิด</h3>
+                  <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไข</p>
+                  <div className="grid grid-cols-1 gap-2">
+                    {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId).orderLevel.map(({ key, label }) => (
+                      <label key={key} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!rejectErrorFieldsOrder[key]}
+                          onChange={(e) => setRejectErrorFieldsOrder((prev) => ({ ...prev, [key]: e.target.checked }))}
+                          className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                        />
+                        <span className="text-gray-800 text-sm">{label}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-                <div>
+                {(() => {
+                  const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
+                  const { itemLevel } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId)
+                  if (orderItems.length === 0 || itemLevel.length === 0) return null
+                  return (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                      <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับรายการ — เลือกรายการที่ผิดต่อรายการ</h3>
+                      <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไขเฉพาะรายการที่เลือก</p>
+                      <div className="space-y-4">
+                        {orderItems.map((item: any, index: number) => (
+                          <div key={item.id || index} className="border border-amber-200 rounded-lg p-3 bg-white/60">
+                            <div className="text-sm font-medium text-amber-900 mb-2">
+                              รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
+                            </div>
+                            <div className="grid grid-cols-1 gap-1.5">
+                              {itemLevel.map(({ key, label }) => (
+                                <label key={key} className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!(rejectErrorFieldsByItem[index] || {})[key]}
+                                    onChange={(e) => {
+                                      setRejectErrorFieldsByItem((prev) => ({
+                                        ...prev,
+                                        [index]: { ...(prev[index] || {}), [key]: e.target.checked },
+                                      }))
+                                    }}
+                                    className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                                  />
+                                  <span className="text-gray-800 text-sm">{label}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
                   <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ (ข้อความที่ต้องแก้ไข)</label>
                   <textarea
                     value={rejectRemarks}

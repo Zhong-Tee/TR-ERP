@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -466,6 +466,8 @@ interface OrderFormProps {
   /** options.switchToTab: 'complete' = หลัง save ให้สลับไปแท็บ "ตรวจสอบไม่ผ่าน" (ใช้เมื่อปฏิเสธโอนเกิน) */
   onSave: (options?: { switchToTab?: 'complete' }) => void
   onCancel: () => void
+  /** เปิดบิลที่สร้างจากปุ่มเคลม (สร้างบิลเคลมแล้วให้ parent เปิดออเดอร์นั้น) */
+  onOpenOrder?: (order: Order) => void
   readOnly?: boolean
   /** โหมดดูอย่างเดียว (จาก ตรวจสอบแล้ว/ยกเลิก): ซ่อนขอเอกสารและปุ่มบันทึก/ยกเลิก แสดงเฉพาะปุ่มกลับ */
   viewOnly?: boolean
@@ -484,7 +486,7 @@ const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 /** ช่องทางที่เปิดปุ่มอัพโหลดสลิป (นอกจากช่องทางที่อยู่ใน bank_settings_channels) */
 const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 
-export default function OrderForm({ order, onSave, onCancel, readOnly = false, viewOnly = false }: OrderFormProps) {
+export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOnly = false, viewOnly = false }: OrderFormProps) {
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -529,8 +531,21 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     title: '',
     message: '',
   })
-  /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
+  /** Modal เคลม: step 1 เลือกบิลอ้างอิง, step 2 เลือกหัวข้อเคลม + ยืนยัน */
+  const [claimModalOpen, setClaimModalOpen] = useState(false)
+  const [claimStep, setClaimStep] = useState<1 | 2>(1)
+  const [claimOrders, setClaimOrders] = useState<Order[]>([])
+  const [claimOrdersLoading, setClaimOrdersLoading] = useState(false)
+  const [claimFilterSearch, setClaimFilterSearch] = useState('')
+  const [claimFilterChannel, setClaimFilterChannel] = useState('')
+  const [selectedClaimRefOrder, setSelectedClaimRefOrder] = useState<Order | null>(null)
+  const [claimTypes, setClaimTypes] = useState<{ code: string; name: string }[]>([])
+  const [selectedClaimType, setSelectedClaimType] = useState('')
+  const [claimConfirmSubmitting, setClaimConfirmSubmitting] = useState(false)
+  /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ระดับบิลที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
+  /** ฟิลด์ระดับรายการที่ผิดต่อ index (error_fields.items) — ถ้ามีใช้แยกรายการ ไม่ใช่ทั้งบิล */
+  const [reviewErrorFieldsByItem, setReviewErrorFieldsByItem] = useState<Record<number, Record<string, boolean>> | null>(null)
   /** หมายเหตุจาก review (ลงข้อมูลผิด) */
   const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
@@ -539,6 +554,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
   const [notesFocusedIndex, setNotesFocusedIndex] = useState<number | null>(null)
   /** index ของแถวที่ช่องไฟล์แนบกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
   const [fileAttachmentFocusedIndex, setFileAttachmentFocusedIndex] = useState<number | null>(null)
+  /** ref ช่องวันที่ เวลา นัดรับ (SHOP PICKUP) — คลิกที่ไหนของช่องก็เปิด picker ได้ */
+  const scheduledPickupInputRef = useRef<HTMLInputElement>(null)
 
   const [formData, setFormData] = useState({
     channel_code: '',
@@ -807,6 +824,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
   useEffect(() => {
     if (!order?.id || order?.status !== 'ลงข้อมูลผิด') {
       setReviewErrorFields(null)
+      setReviewErrorFieldsByItem(null)
       setReviewRemarks(null)
       return
     }
@@ -824,11 +842,39 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       if (error) {
         console.error('Error loading order review:', error)
         setReviewErrorFields(null)
+        setReviewErrorFieldsByItem(null)
         setReviewRemarks(null)
         return
       }
-      setReviewErrorFields((data?.error_fields as Record<string, boolean>) ?? null)
+      const raw = data?.error_fields as Record<string, unknown> | null
       setReviewRemarks(data?.rejection_reason ?? null)
+      if (!raw || typeof raw !== 'object') {
+        setReviewErrorFields(null)
+        setReviewErrorFieldsByItem(null)
+        return
+      }
+      const itemsArr = raw.items
+      if (Array.isArray(itemsArr)) {
+        const orderLevel: Record<string, boolean> = {}
+        const orderKeys = ['channel_name', 'customer_name', 'address']
+        orderKeys.forEach((k) => {
+          if (raw[k] === true) orderLevel[k] = true
+        })
+        setReviewErrorFields(Object.keys(orderLevel).length > 0 ? orderLevel : null)
+        const byItem: Record<number, Record<string, boolean>> = {}
+        itemsArr.forEach((entry, i) => {
+          if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+            const obj = entry as Record<string, boolean>
+            const filtered: Record<string, boolean> = {}
+            Object.keys(obj).forEach((k) => { if (obj[k] === true) filtered[k] = true })
+            if (Object.keys(filtered).length > 0) byItem[i] = filtered
+          }
+        })
+        setReviewErrorFieldsByItem(Object.keys(byItem).length > 0 ? byItem : null)
+      } else {
+        setReviewErrorFields(raw as Record<string, boolean>)
+        setReviewErrorFieldsByItem(null)
+      }
     })()
     return () => { cancelled = true }
   }, [order?.id, order?.status])
@@ -881,6 +927,31 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     })()
     return () => { cancelled = true }
   }, [])
+
+  /** เมื่อเปิด Modal เคลม: โหลดรายการบิลและ claim_type */
+  useEffect(() => {
+    if (!claimModalOpen) return
+    setClaimStep(1)
+    setSelectedClaimRefOrder(null)
+    setSelectedClaimType('')
+    setClaimFilterSearch('')
+    setClaimFilterChannel('')
+    setClaimOrdersLoading(true)
+    ;(async () => {
+      try {
+        const [ordersRes, typesRes] = await Promise.all([
+          supabase.from('or_orders').select('*').not('bill_no', 'is', null).order('created_at', { ascending: false }).limit(500),
+          supabase.from('claim_type').select('code, name').order('sort_order', { ascending: true }),
+        ])
+        if (ordersRes.data) setClaimOrders(ordersRes.data as Order[])
+        if (typesRes.data) setClaimTypes(typesRes.data as { code: string; name: string }[])
+      } catch (e) {
+        console.error('Error loading claim data:', e)
+      } finally {
+        setClaimOrdersLoading(false)
+      }
+    })()
+  }, [claimModalOpen])
 
   async function loadInitialData() {
     try {
@@ -1571,7 +1642,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
 
       const verifiedBy = user?.id || null
 
-      // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำเมื่อพบในออเดอร์อื่นที่สถานะ "นอกจาก" รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน (ปลอดภัยกว่า — สถานะใหม่ที่เพิ่มในอนาคตจะนับว่าสลิปถูกใช้โดยอัตโนมัติ)
+      // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำเมื่อพบในออเดอร์อื่นที่สถานะ "ไม่ใช่" ต่อไปนี้ (สถานะที่ไม่นับว่าซ้ำ: รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน)
       const SLIP_NOT_USED_STATUSES = ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน'] as const
       const isSlipUsedByOrder = (status: string | null | undefined) =>
         status != null && !SLIP_NOT_USED_STATUSES.includes(status as any)
@@ -2050,8 +2121,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         else if (displayTotal > orderAmount) failedAmountStatus = 'over'
         else if (displayTotal < orderAmount && displayTotal > 0) failedAmountStatus = 'under'
 
-        // เลขบัญชีตรง สาขาตรง แต่ยอดเกิน → แสดงปุ่ม "ยืนยัน โอนเงินเกิน" แทน modal ไม่สำเร็จ
-        if (displayTotal > orderAmount && allAccountNameMatch && allBankCodeMatch) {
+        // เลขบัญชีตรง สาขาตรง แต่ยอดเกิน และไม่มีสลิปซ้ำ → แสดงปุ่ม "ยืนยัน โอนเงินเกิน" แทน modal ไม่สำเร็จ
+        if (displayTotal > orderAmount && allAccountNameMatch && allBankCodeMatch && !duplicateChecks.some((d) => d.isDuplicate)) {
           const overpay = displayTotal - orderAmount
           const msg = errors.length === 0 && validationErrors.length === 0
             ? `เลขบัญชีและสาขาตรงกัน แต่ยอดสลิปเกิน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
@@ -2105,8 +2176,8 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         }
       } else if (amountForCheck > orderAmount) {
         amountStatus = 'over'
-        if (allAccountNameMatch && allBankCodeMatch) {
-          // เลขบัญชีและสาขาตรง แต่ยอดเกิน → แสดง popup ยืนยันโอนเงินเกิน (ยังไม่อัปเดต DB)
+        if (allAccountNameMatch && allBankCodeMatch && !duplicateChecks.some((d) => d.isDuplicate)) {
+          // เลขบัญชีและสาขาตรง แต่ยอดเกิน และไม่มีสลิปซ้ำ → แสดง popup ยืนยันโอนเงินเกิน (ยังไม่อัปเดต DB)
           const msg = errors.length === 0 && validationErrors.length === 0
             ? `เลขบัญชีและสาขาตรงกัน\n\nยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
             : `เลขบัญชีและสาขาตรงกัน แต่ยอดเกิน\n\n${validationErrors.length > 0 ? validationErrors.join('\n') + '\n\n' : ''}ยืนยันว่าลูกค้าโอนเกินและต้องมีการโอนคืนหรือไม่?`
@@ -2139,6 +2210,11 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
       }
       if (errors.length > 0) {
         statusMessage += `\n\nสลิปที่สำเร็จ: ${successfulVerifications.join(', ')}\nสลิปที่ล้มเหลว: ${errors.length} ใบ`
+      }
+
+      // หากมีสลิปซ้ำอย่างน้อย 1 ใบ ให้ตั้งสถานะบิลเป็น ตรวจสอบไม่ผ่าน
+      if (duplicateChecks.some((d) => d.isDuplicate)) {
+        newStatus = 'ตรวจสอบไม่ผ่าน'
       }
 
       const { error: updateError } = await supabase
@@ -2192,6 +2268,102 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
     return `${channelCode}${year}${month}${sequence.toString().padStart(4, '0')}`
   }
 
+  /** สร้างบิลเคลม: ดึงข้อมูลบิลอ้างอิง (ชื่อลูกค้า, ที่อยู่, รายการสินค้า) มาใส่บิลเคลม แล้วเปิดบิล */
+  async function handleClaimConfirm() {
+    if (!selectedClaimRefOrder?.bill_no || !selectedClaimRefOrder?.id || !selectedClaimType?.trim() || !onOpenOrder) return
+    setClaimConfirmSubmitting(true)
+    try {
+      const ref = selectedClaimRefOrder
+      const refBillNo = ref.bill_no
+      const claimBillNo = `REQ${refBillNo}`
+      const adminUser = user?.username ?? user?.email ?? ''
+
+      // ดึงรายการสินค้าจากบิลอ้างอิง
+      const { data: refItems, error: itemsErr } = await supabase
+        .from('or_order_items')
+        .select('*')
+        .eq('order_id', ref.id)
+        .order('created_at', { ascending: true })
+      if (itemsErr) throw itemsErr
+
+      // คัดลอกข้อมูลจากบิลอ้างอิง: ชื่อลูกค้า, ที่อยู่, billing_details, ยอด, รายการสินค้า
+      const orderData = {
+        channel_code: ref.channel_code,
+        customer_name: ref.customer_name || '',
+        customer_address: ref.customer_address || '',
+        channel_order_no: ref.channel_order_no ?? null,
+        recipient_name: ref.recipient_name ?? null,
+        scheduled_pickup_at: ref.scheduled_pickup_at ?? null,
+        price: ref.price ?? 0,
+        shipping_cost: ref.shipping_cost ?? 0,
+        discount: ref.discount ?? 0,
+        total_amount: ref.total_amount ?? 0,
+        payment_method: ref.payment_method ?? null,
+        promotion: ref.promotion ?? null,
+        payment_date: ref.payment_date ?? null,
+        payment_time: ref.payment_time ?? null,
+        status: 'รอลงข้อมูล' as const,
+        admin_user: adminUser,
+        entry_date: new Date().toISOString().slice(0, 10),
+        bill_no: claimBillNo,
+        claim_type: selectedClaimType.trim(),
+        claim_details: null,
+        billing_details: ref.billing_details ?? null,
+        packing_meta: null,
+        work_order_name: null,
+        shipped_by: null,
+        shipped_time: null,
+        tracking_number: ref.tracking_number ?? null,
+      }
+      const { data: newOrder, error } = await supabase
+        .from('or_orders')
+        .insert(orderData)
+        .select()
+        .single()
+      if (error) throw error
+      const newOrderId = (newOrder as { id: string }).id
+
+      // คัดลอกรายการสินค้าจากบิลอ้างอิงไปบิลเคลม (สร้าง item_uid ใหม่)
+      if (refItems && refItems.length > 0) {
+        const channelCode = ref.channel_code || 'REQ'
+        const itemsToInsert = refItems.map((item: Record<string, unknown>, index: number) => {
+          const timestamp = Date.now()
+          const randomStr = Math.random().toString(36).substring(2, 9)
+          const itemUid = `${channelCode}-${timestamp}-${index}-${randomStr}`
+          return {
+            order_id: newOrderId,
+            item_uid: itemUid,
+            product_id: item.product_id,
+            product_name: item.product_name ?? '',
+            quantity: item.quantity ?? 1,
+            unit_price: item.unit_price ?? 0,
+            ink_color: item.ink_color ?? null,
+            product_type: item.product_type ?? 'ชั้น1',
+            cartoon_pattern: item.cartoon_pattern ?? null,
+            line_pattern: item.line_pattern ?? null,
+            font: item.font ?? null,
+            line_1: item.line_1 ?? null,
+            line_2: item.line_2 ?? null,
+            line_3: item.line_3 ?? null,
+            no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+            notes: item.notes ?? null,
+            file_attachment: item.file_attachment ?? null,
+          }
+        })
+        const { error: itemsError } = await supabase.from('or_order_items').insert(itemsToInsert)
+        if (itemsError) throw itemsError
+      }
+
+      setClaimModalOpen(false)
+      onOpenOrder(newOrder as Order)
+    } catch (e: any) {
+      console.error('Error creating claim order:', e)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'สร้างบิลเคลมไม่สำเร็จ' })
+    } finally {
+      setClaimConfirmSubmitting(false)
+    }
+  }
+
   function addItem() {
     const lastItem = items.length > 0 ? items[items.length - 1] : null
     const newItem = lastItem
@@ -2233,33 +2405,49 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
         )}
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-bold">ข้อมูลลูกค้า</h3>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            {!formDisabled && (
+              <>
+                {!order?.bill_no && !preBillNo && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!formData.channel_code || formData.channel_code.trim() === '') {
+                        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทางก่อนสร้างเลขบิล' })
+                        return
+                      }
+                      const billNo = await generateBillNo(formData.channel_code)
+                      setPreBillNo(billNo)
+                    }}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+                  >
+                    สร้างบิล
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setClaimModalOpen(true)}
+                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600"
+                >
+                  เคลม
+                </button>
+              </>
+            )}
             <span className="font-bold text-gray-700">
               ผู้ลงออเดอร์: {order?.admin_user ?? user?.username ?? user?.email ?? '-'}
             </span>
             {(order?.bill_no || preBillNo) && (
-              <div className="text-right">
+              <div className="text-right flex items-center gap-2 justify-end">
                 <span className="text-sm text-gray-500">เลขบิล:</span>
-                <span className="ml-2 text-lg font-bold text-blue-600">
+                <span className="text-lg font-bold text-blue-600">
                   {order?.bill_no || preBillNo}
                 </span>
+                {(order?.claim_type != null || ((order?.bill_no || preBillNo) ?? '').toString().startsWith('REQ')) && (
+                  <span className="px-2 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
+                    เคลม
+                  </span>
+                )}
               </div>
-            )}
-            {!order?.bill_no && !preBillNo && !formDisabled && (
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!formData.channel_code || formData.channel_code.trim() === '') {
-                    setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทางก่อนสร้างเลขบิล' })
-                    return
-                  }
-                  const billNo = await generateBillNo(formData.channel_code)
-                  setPreBillNo(billNo)
-                }}
-                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-              >
-                สร้างบิล
-              </button>
             )}
           </div>
         </div>
@@ -2473,18 +2661,38 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             {formData.channel_code === 'SHOPP' && (
               <div>
                 <label className="block text-sm font-medium mb-1">วันที่ เวลา นัดรับ <span className="text-red-500">*</span></label>
-                <input
-                  type="datetime-local"
-                  value={formData.scheduled_pickup_at ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value
-                    setFormData((prev) => ({ ...prev, scheduled_pickup_at: v }))
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    if (formDisabled) return
+                    scheduledPickupInputRef.current?.showPicker?.()
+                    scheduledPickupInputRef.current?.focus()
                   }}
-                  step={60}
-                  required
-                  disabled={formDisabled}
-                  className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                />
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      if (formDisabled) return
+                      scheduledPickupInputRef.current?.showPicker?.()
+                      scheduledPickupInputRef.current?.focus()
+                    }
+                  }}
+                  className={`w-full px-3 py-2 border rounded-lg cursor-pointer ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
+                >
+                  <input
+                    ref={scheduledPickupInputRef}
+                    type="datetime-local"
+                    value={formData.scheduled_pickup_at ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setFormData((prev) => ({ ...prev, scheduled_pickup_at: v }))
+                    }}
+                    step={60}
+                    required
+                    disabled={formDisabled}
+                    className="w-full bg-transparent border-none outline-none cursor-pointer min-h-[1.5rem] [color-scheme:light]"
+                  />
+                </div>
                 {formData.scheduled_pickup_at && (() => {
                   const d = new Date(formData.scheduled_pickup_at)
                   if (isNaN(d.getTime())) return null
@@ -2622,7 +2830,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                           }
                         }}
                         placeholder="ค้นหาหรือเลือกสินค้า..."
-                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.product_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
                       <datalist id={`product-list-${index}`}>
@@ -2667,7 +2875,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.ink_color || ''}
                       onChange={(e) => updateItem(index, 'ink_color', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'ink_color')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.ink_color ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="">เลือกสี</option>
                       {inkTypes.map((ink) => (
@@ -2682,7 +2890,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.product_type || 'ชั้น1'}
                       onChange={(e) => updateItem(index, 'product_type', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'layer')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.layer ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['layer'] ?? reviewErrorFields?.layer) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="ชั้น1">ชั้น1</option>
                       <option value="ชั้น2">ชั้น2</option>
@@ -2707,7 +2915,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.line_pattern || ''}
                       onChange={(e) => updateItem(index, 'line_pattern', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_pattern')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_art ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_art'] ?? reviewErrorFields?.line_art) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                       placeholder="เส้น"
                     />
                   </td>
@@ -2716,7 +2924,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.font || ''}
                       onChange={(e) => updateItem(index, 'font', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'font')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.font ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="">ฟอนต์</option>
                       {fonts.map((font) => (
@@ -2744,7 +2952,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_1 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -2753,7 +2961,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.line_2 || ''}
                       onChange={(e) => updateItem(index, 'line_2', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_2') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_2 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -2762,7 +2970,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       value={item.line_3 || ''}
                       onChange={(e) => updateItem(index, 'line_3', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_3') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.line_3 ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -2772,7 +2980,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
                       min="1"
                       disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.quantity ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -2793,7 +3001,7 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
                       step="0.01"
                       placeholder="0.00"
                       disabled={formDisabled || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.unit_price ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? reviewErrorFields?.unit_price) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -3722,6 +3930,141 @@ export default function OrderForm({ order, onSave, onCancel, readOnly = false, v
             ตกลง
           </button>
         </div>
+      </div>
+    </Modal>
+
+    <Modal
+      open={claimModalOpen}
+      onClose={() => setClaimModalOpen(false)}
+      contentClassName="max-w-2xl max-h-[85vh] flex flex-col"
+      closeOnBackdropClick
+    >
+      <div className="p-5 flex flex-col flex-1 min-h-0">
+        <h3 className="text-lg font-bold mb-4">สร้างบิลเคลม</h3>
+        {claimStep === 1 && (
+          <>
+            <p className="text-sm text-gray-600 mb-3">#1 เลือกบิลอ้างอิงที่ต้องการนำไปเคลม</p>
+            <div className="flex gap-3 mb-3 flex-wrap">
+              <input
+                type="text"
+                placeholder="ค้นหาเลขบิล / ชื่อลูกค้า / เลขคำสั่งซื้อ"
+                value={claimFilterSearch}
+                onChange={(e) => setClaimFilterSearch(e.target.value)}
+                className="flex-1 min-w-[180px] px-3 py-2 border rounded-lg"
+              />
+              <select
+                value={claimFilterChannel}
+                onChange={(e) => setClaimFilterChannel(e.target.value)}
+                className="px-3 py-2 border rounded-lg"
+              >
+                <option value="">ทุกช่องทาง</option>
+                {channels.map((ch) => (
+                  <option key={ch.channel_code} value={ch.channel_code}>{ch.channel_name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="border rounded-lg overflow-auto flex-1 min-h-[200px] max-h-[320px]">
+              {claimOrdersLoading ? (
+                <div className="p-4 text-gray-500">กำลังโหลด...</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-100 sticky top-0">
+                    <tr>
+                      <th className="text-left p-2 w-10"></th>
+                      <th className="text-left p-2">เลขบิล</th>
+                      <th className="text-left p-2">ชื่อลูกค้า</th>
+                      <th className="text-left p-2">ช่องทาง</th>
+                      <th className="text-left p-2">สถานะ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {claimOrders
+                      .filter((o) => {
+                        const search = claimFilterSearch.trim().toLowerCase()
+                        const ch = claimFilterChannel.trim()
+                        if (ch && o.channel_code !== ch) return false
+                        if (!search) return true
+                        const bill = (o.bill_no || '').toLowerCase()
+                        const name = (o.customer_name || '').toLowerCase()
+                        const orderNo = (o.channel_order_no || '').toLowerCase()
+                        return bill.includes(search) || name.includes(search) || orderNo.includes(search)
+                      })
+                      .map((o) => (
+                        <tr
+                          key={o.id}
+                          className={`border-t cursor-pointer hover:bg-gray-50 ${selectedClaimRefOrder?.id === o.id ? 'bg-blue-50' : ''}`}
+                          onClick={() => setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)}
+                        >
+                          <td className="p-2">
+                            <input
+                              type="radio"
+                              checked={selectedClaimRefOrder?.id === o.id}
+                              onChange={() => setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)}
+                            />
+                          </td>
+                          <td className="p-2 font-medium">{o.bill_no}</td>
+                          <td className="p-2">{o.customer_name || '-'}</td>
+                          <td className="p-2">{channels.find((c) => c.channel_code === o.channel_code)?.channel_name ?? o.channel_code}</td>
+                          <td className="p-2">{o.status}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => selectedClaimRefOrder && setClaimStep(2)}
+                disabled={!selectedClaimRefOrder}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                ถัดไป
+              </button>
+            </div>
+          </>
+        )}
+        {claimStep === 2 && (
+          <>
+            <p className="text-sm text-gray-600 mb-2">#2 หัวข้อการเคลม (claim_type)</p>
+            {selectedClaimRefOrder && (
+              <p className="text-sm text-gray-700 mb-3">บิลอ้างอิง: <strong>{selectedClaimRefOrder.bill_no}</strong></p>
+            )}
+            <select
+              value={selectedClaimType}
+              onChange={(e) => setSelectedClaimType(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg mb-4"
+            >
+              <option value="">-- เลือกหัวข้อการเคลม --</option>
+              {claimTypes.map((ct) => (
+                <option key={ct.code} value={ct.code}>{ct.name}</option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setClaimStep(1)}
+                className="px-4 py-2 border rounded-lg hover:bg-gray-100"
+              >
+                ย้อนกลับ
+              </button>
+              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleClaimConfirm}
+                disabled={!selectedClaimType.trim() || claimConfirmSubmitting || !onOpenOrder}
+                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {claimConfirmSubmitting ? 'กำลังสร้าง...' : 'ยืนยันสร้างบิลเคลม'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
 

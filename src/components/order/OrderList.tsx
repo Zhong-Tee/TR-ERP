@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
+import Modal from '../ui/Modal'
 
 interface OrderListProps {
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
@@ -21,6 +22,9 @@ interface OrderListProps {
   refreshTrigger?: number
   /** แสดงเฉพาะบิลที่มีรายการโอนคืน (โอนเกิน) ที่ถูกปฏิเสธ — ไม่กรองตาม status */
   filterByRejectedOverpayRefund?: boolean
+  /** แสดงปุ่ม "ลบบิล" (สำหรับเมนูรอลงข้อมูล) */
+  showDeleteButton?: boolean
+  onDelete?: (order: Order) => Promise<void>
 }
 
 export default function OrderList({
@@ -36,10 +40,14 @@ export default function OrderList({
   onMoveToWaiting,
   refreshTrigger = 0,
   filterByRejectedOverpayRefund = false,
+  showDeleteButton = false,
+  onDelete,
 }: OrderListProps) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [movingOrderId, setMovingOrderId] = useState<string | null>(null)
+  const [deleteConfirmOrder, setDeleteConfirmOrder] = useState<Order | null>(null)
+  const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
 
   useEffect(() => {
     loadOrders()
@@ -233,6 +241,11 @@ export default function OrderList({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 mb-2 flex-wrap">
                 <strong className="text-blue-600 text-lg">{order.bill_no}</strong>
+                {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
+                  <span className="px-2 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
+                    เคลม
+                  </span>
+                )}
                 <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-sm">
                   {order.channel_code}
                 </span>
@@ -444,10 +457,66 @@ export default function OrderList({
                   {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
                 </button>
               )}
+              {showDeleteButton && onDelete && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setDeleteConfirmOrder(order)
+                  }}
+                  disabled={!!deletingOrderId}
+                  className="px-3 py-2 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg whitespace-nowrap"
+                >
+                  ลบบิล
+                </button>
+              )}
             </div>
           </div>
         </div>
       ))}
+      <Modal
+        open={!!deleteConfirmOrder}
+        onClose={() => { if (!deletingOrderId) setDeleteConfirmOrder(null) }}
+        contentClassName="max-w-md"
+      >
+        {deleteConfirmOrder && (
+          <div className="p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">ยืนยันลบบิล</h3>
+            <p className="text-gray-700 text-sm mb-4">
+              ต้องการลบบิล <strong>{deleteConfirmOrder.bill_no}</strong> และข้อมูลที่เกี่ยวข้อง (รวมถึงรูปสลิปใน Storage) ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOrder(null)}
+                disabled={!!deletingOrderId}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!onDelete || !deleteConfirmOrder) return
+                  setDeletingOrderId(deleteConfirmOrder.id)
+                  try {
+                    await onDelete(deleteConfirmOrder)
+                    setDeleteConfirmOrder(null)
+                  } catch (_) {
+                    // caller may show error
+                  } finally {
+                    setDeletingOrderId(null)
+                  }
+                }}
+                disabled={!!deletingOrderId}
+                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
+              >
+                {deletingOrderId ? 'กำลังลบ...' : 'ยืนยันลบ'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

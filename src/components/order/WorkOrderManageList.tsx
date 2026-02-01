@@ -209,7 +209,7 @@ export default function WorkOrderManageList({
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, tracking_number, channel_code, customer_address, status')
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type')
         .eq('work_order_name', workOrderName)
         .order('created_at', { ascending: false })
 
@@ -280,28 +280,32 @@ export default function WorkOrderManageList({
       const { error } = await supabase.from('or_orders').update(updates).in('id', ids)
       if (error) throw error
 
-      // เมื่อยกเลิกบิล — ถ้าไม่มีบิลเหลือในใบงานแล้ว ให้ลบใบงานนั้นด้วย
-      if (newStatus === 'ยกเลิก') {
-        const { data: remaining } = await supabase
-          .from('or_orders')
-          .select('id')
+      // เมื่อไม่มีบิลเหลือในใบงานแล้ว (ไม่ว่าย้ายไปรอลงข้อมูล / ตรวจสอบแล้ว / ยกเลิก) ให้ลบใบงานนั้นออก
+      const { data: remaining } = await supabase
+        .from('or_orders')
+        .select('id')
+        .eq('work_order_name', workOrderName)
+      if (remaining && remaining.length === 0) {
+        const { error: deleteWoError } = await supabase
+          .from('or_work_orders')
+          .delete()
           .eq('work_order_name', workOrderName)
-        if (remaining && remaining.length === 0) {
-          const { error: deleteError } = await supabase
-            .from('or_work_orders')
-            .delete()
-            .eq('work_order_name', workOrderName)
-          if (deleteError) {
-            console.error('Error deleting empty work order:', deleteError)
-            setMessageModal({ open: true, message: 'ยกเลิกบิลสำเร็จ แต่ลบใบงานไม่สำเร็จ: ' + deleteError.message })
-          } else {
-            await loadWorkOrders()
-          }
-          onRefresh?.()
-          return
+        if (deleteWoError) {
+          console.error('Error deleting empty work order:', deleteWoError)
+          setMessageModal({ open: true, message: 'ย้ายบิลสำเร็จ แต่ลบใบงานว่างไม่สำเร็จ: ' + deleteWoError.message })
+        } else {
+          await supabase.from('plan_jobs').delete().eq('name', workOrderName)
+          await loadWorkOrders()
         }
+        onRefresh?.()
+        return
       }
 
+      const newCount = remaining!.length
+      await supabase.from('or_work_orders').update({ order_count: newCount }).eq('work_order_name', workOrderName)
+      setWorkOrders((prev) =>
+        prev.map((wo) => (wo.work_order_name === workOrderName ? { ...wo, order_count: newCount } : wo))
+      )
       await loadOrdersForWo(workOrderName)
       clearBillSelection(workOrderName)
       onRefresh?.()
@@ -355,6 +359,7 @@ export default function WorkOrderManageList({
         .delete()
         .eq('work_order_name', workOrderName)
       if (deleteError) throw deleteError
+      await supabase.from('plan_jobs').delete().eq('name', workOrderName)
       await loadWorkOrders()
       onRefresh?.()
       setMessageModal({ open: true, message: `ยกเลิกใบงาน "${workOrderName}" เรียบร้อย` })
@@ -1088,12 +1093,12 @@ export default function WorkOrderManageList({
                           </button>
                         </div>
 
-                        {/* ตารางบิล: checkbox | เลขบิล + ชื่อลูกค้า | เลขพัสดุ (คลิกแก้ไข) */}
-                        <div className="bg-white rounded-lg border overflow-hidden">
-                          <table className="w-full text-sm">
+                        {/* ตารางบิล: ชื่อช่องทาง = or_orders.customer_name, ชื่อลูกค้า = or_orders.recipient_name */}
+                        <div className="bg-white rounded-lg border overflow-hidden overflow-x-auto">
+                          <table className="w-full text-sm min-w-[720px]">
                             <thead>
                               <tr className="bg-gray-100 border-b">
-                                <th className="w-10 p-2 text-left">
+                                <th className="w-10 p-3 text-left">
                                   <input
                                     type="checkbox"
                                     checked={selectedIds.size === orders.length && orders.length > 0}
@@ -1101,74 +1106,84 @@ export default function WorkOrderManageList({
                                     className="rounded border-gray-300"
                                   />
                                 </th>
-                                <th className="p-2 text-left font-medium">เลขบิล / ชื่อลูกค้า</th>
-                                <th className="p-2 text-left font-medium w-48">เลขพัสดุ</th>
+                                <th className="p-3 text-left font-medium min-w-[110px]">เลขบิล</th>
+                                <th className="p-3 text-left font-medium min-w-[120px]">ชื่อลูกค้า</th>
+                                <th className="p-3 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
+                                <th className="p-3 text-left font-medium min-w-[110px]">เลขคำสั่งซื้อ</th>
+                                <th className="p-3 pl-2 text-left font-medium w-56">เลขพัสดุ</th>
                               </tr>
                             </thead>
                             <tbody>
                               {orders.map((order) => (
-                                <tr key={order.id} className="border-b border-gray-100 hover:bg-gray-50">
-                                  <td className="p-2 align-middle">
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedIds.has(order.id)}
-                                      onChange={() => toggleBillSelect(wo.work_order_name, order.id)}
-                                      className="rounded border-gray-300"
-                                    />
-                                  </td>
-                                  <td className="p-2 align-middle">
-                                    <span className="text-blue-600 font-medium">{order.bill_no}</span>
-                                    <span className="text-gray-600 ml-4">{order.customer_name ?? '-'}</span>
-                                  </td>
-                                  <td className="p-2 align-middle">
-                                    {editingTrackingId === order.id ? (
-                                      <div className="flex items-center gap-1">
-                                        <input
-                                          type="text"
-                                          value={editingTrackingValue}
-                                          onChange={(e) => setEditingTrackingValue(e.target.value)}
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter') saveTrackingNumber(order.id)
-                                            if (e.key === 'Escape') setEditingTrackingId(null)
+                                  <tr key={order.id} className="border-b border-gray-100 hover:bg-gray-50">
+                                    <td className="p-3 align-middle">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedIds.has(order.id)}
+                                        onChange={() => toggleBillSelect(wo.work_order_name, order.id)}
+                                        className="rounded border-gray-300"
+                                      />
+                                    </td>
+                                    <td className="p-3 align-middle">
+                                      <span className="text-blue-600 font-medium">{order.bill_no ?? '-'}</span>
+                                      {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
+                                        <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
+                                          เคลม
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="p-3 align-middle text-gray-700">{order.recipient_name ?? '-'}</td>
+                                    <td className="p-3 align-middle text-gray-600">{order.customer_name ?? '-'}</td>
+                                    <td className="p-3 align-middle text-gray-600">{order.channel_order_no ?? '-'}</td>
+                                    <td className="p-3 pl-2 align-middle w-56">
+                                      {editingTrackingId === order.id ? (
+                                        <div className="flex items-center gap-1 w-full max-w-[17.5rem]">
+                                          <input
+                                            type="text"
+                                            value={editingTrackingValue}
+                                            onChange={(e) => setEditingTrackingValue(e.target.value)}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') saveTrackingNumber(order.id)
+                                              if (e.key === 'Escape') setEditingTrackingId(null)
+                                            }}
+                                            className="w-48 min-w-0 flex-1 max-w-[14rem] px-2 py-0.5 border rounded text-sm"
+                                            autoFocus
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => saveTrackingNumber(order.id)}
+                                            disabled={updating}
+                                            className="shrink-0 px-1.5 py-0.5 bg-blue-500 text-white rounded text-xs"
+                                          >
+                                            บันทึก
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingTrackingId(null)}
+                                            className="shrink-0 px-1.5 py-0.5 border rounded text-xs"
+                                          >
+                                            ยกเลิก
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingTrackingId(order.id)
+                                            setEditingTrackingValue(order.tracking_number || '')
                                           }}
-                                          className="flex-1 px-2 py-1 border rounded text-sm"
-                                          autoFocus
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() => saveTrackingNumber(order.id)}
-                                          disabled={updating}
-                                          className="px-2 py-1 bg-blue-500 text-white rounded text-xs"
+                                          className="flex items-center gap-0.5 text-left w-full min-w-0 px-1.5 py-0.5 rounded hover:bg-gray-100 text-gray-700 text-xs truncate"
                                         >
-                                          บันทึก
+                                          {order.tracking_number ? (
+                                            <span className="truncate">{order.tracking_number}</span>
+                                          ) : (
+                                            <span className="text-gray-400">ยังไม่มี</span>
+                                          )}
+                                          <span className="shrink-0 text-gray-400 text-xs">✎</span>
                                         </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => setEditingTrackingId(null)}
-                                          className="px-2 py-1 border rounded text-xs"
-                                        >
-                                          ยกเลิก
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setEditingTrackingId(order.id)
-                                          setEditingTrackingValue(order.tracking_number || '')
-                                        }}
-                                        className="flex items-center gap-1 text-left w-full px-2 py-1 rounded hover:bg-gray-100 text-gray-700"
-                                      >
-                                        {order.tracking_number ? (
-                                          <span>{order.tracking_number}</span>
-                                        ) : (
-                                          <span className="text-gray-400">ยังไม่มีเลขพัสดุ</span>
-                                        )}
-                                        <span className="text-gray-400 text-xs">✎</span>
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
+                                      )}
+                                    </td>
+                                  </tr>
                               ))}
                             </tbody>
                           </table>

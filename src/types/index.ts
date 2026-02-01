@@ -130,7 +130,7 @@ export interface WorkOrder {
   updated_at: string
 }
 
-// Product Types
+// Product Types (รูปสินค้าดึงจาก Bucket product-images ชื่อไฟล์ = product_code)
 export interface Product {
   id: string
   product_code: string
@@ -139,18 +139,20 @@ export interface Product {
   product_type: string | null
   rubber_code: string | null
   storage_location: string | null
-  image_url: string | null
+  /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket product-images ตาม product_code */
+  image_url?: string | null
   is_active: boolean
   created_at: string
   updated_at: string
 }
 
-// Cartoon Pattern Types
+// Cartoon Pattern Types (รูปลายการ์ตูนดึงจาก Bucket cartoon-patterns ชื่อไฟล์ = pattern_name)
 export interface CartoonPattern {
   id: string
   pattern_name: string
-  pattern_code: string
-  image_url: string | null
+  pattern_code?: string
+  /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket cartoon-patterns ตาม pattern_name */
+  image_url?: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -191,7 +193,41 @@ export interface QCRecord {
   line3: string | null
   qty: number
   remark: string | null
+  reject_duration?: number | null
   created_at: string
+}
+
+/** QC session item (in-memory during QC Operation) */
+export interface QCItem {
+  uid: string
+  product_code: string
+  product_name: string
+  bill_no: string
+  ink_color: string | null
+  font: string | null
+  floor: string
+  cartoon_name: string
+  line1: string
+  line2: string
+  line3: string
+  qty: number
+  remark: string
+  status: 'pass' | 'fail' | 'pending'
+  fail_reason?: string | null
+  check_time?: Date | null
+}
+
+export interface SettingsReason {
+  id: string
+  reason_text: string
+  created_at?: string
+}
+
+export interface InkType {
+  id: number
+  ink_name: string
+  hex_code?: string | null
+  created_at?: string
 }
 
 // Order Review Types (Admin QC)

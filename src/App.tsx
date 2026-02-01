@@ -10,6 +10,7 @@ import Account from './pages/Account'
 import QC from './pages/QC'
 import Packing from './pages/Packing'
 import WorkOrders from './pages/WorkOrders'
+import Plan from './pages/Plan'
 import Products from './pages/Products'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
@@ -90,6 +91,18 @@ function AppRoutes() {
             <Layout>
               <div className="p-6">
                 <WorkOrders />
+              </div>
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/plan"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'order_staff']}>
+            <Layout>
+              <div className="p-6">
+                <Plan />
               </div>
             </Layout>
           </ProtectedRoute>

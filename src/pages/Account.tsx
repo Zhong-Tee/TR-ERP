@@ -308,12 +308,12 @@ export default function Account() {
       const [taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_tax_invoice: true })
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_cash_bill: true })
           .order('created_at', { ascending: false }),
       ])
@@ -377,6 +377,7 @@ export default function Account() {
       })
       loadRefunds()
       loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
     } catch (error: any) {
       console.error('Error updating refund:', error)
       setRefundActionModal((prev) => ({ ...prev, submitting: false }))
@@ -390,12 +391,12 @@ export default function Account() {
       const [taxRes, cashRes, refundRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_tax_invoice: true })
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_cash_bill: true })
           .order('created_at', { ascending: false }),
         supabase
@@ -809,7 +810,12 @@ export default function Account() {
                           onClick={() => setViewOrderId(refund.order_id)}
                           className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
                         >
-                          <td className="px-4 py-3 font-medium text-gray-800">{(refund as any).or_orders?.bill_no || '–'}</td>
+                          <td className="px-4 py-3 font-medium text-gray-800">
+                          <span>{(refund as any).or_orders?.bill_no || '–'}</span>
+                          {((refund as any).or_orders?.bill_no || '').startsWith('REQ') && (
+                            <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                          )}
+                        </td>
                           <td className="px-4 py-3 text-gray-700">{(refund as any).or_orders?.customer_name || '–'}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
@@ -863,7 +869,12 @@ export default function Account() {
                             onClick={() => setViewOrderId(o.id)}
                             className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
                           >
-                            <td className="px-4 py-3 font-semibold text-sky-700">{o.bill_no}</td>
+                            <td className="px-4 py-3 font-semibold text-sky-700">
+                              <span>{o.bill_no}</span>
+                              {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
+                                <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                              )}
+                            </td>
                             <td className="px-4 py-3 text-gray-800">{o.customer_name || '–'}</td>
                             <td className="px-4 py-3 text-gray-700">{bd.tax_customer_name || '–'}</td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums">{bd.tax_id || '–'}</td>
@@ -913,7 +924,12 @@ export default function Account() {
                             onClick={() => setViewOrderId(o.id)}
                             className="border-b border-gray-100 hover:bg-emerald-50/50 transition-colors cursor-pointer"
                           >
-                            <td className="px-4 py-3 font-semibold text-sky-700">{o.bill_no}</td>
+                            <td className="px-4 py-3 font-semibold text-sky-700">
+                              <span>{o.bill_no}</span>
+                              {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
+                                <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                              )}
+                            </td>
                             <td className="px-4 py-3 text-gray-800">{o.customer_name || '–'}</td>
                             <td className="px-4 py-3 text-gray-700">{bd.tax_customer_name || '–'}</td>
                             <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</td>
@@ -972,7 +988,10 @@ export default function Account() {
                     className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
                   >
                     <td className="px-4 py-3 font-medium text-gray-800">
-                      {(refund as any).or_orders?.bill_no || '–'}
+                      <span>{(refund as any).or_orders?.bill_no || '–'}</span>
+                      {((refund as any).or_orders?.bill_no || '').startsWith('REQ') && (
+                        <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-gray-700">
                       {(refund as any).or_orders?.customer_name || '–'}
@@ -1058,7 +1077,12 @@ export default function Account() {
                       onClick={() => setViewOrderId(o.id)}
                       className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
                     >
-                      <td className="px-4 py-3 font-semibold text-sky-700">{o.bill_no}</td>
+                      <td className="px-4 py-3 font-semibold text-sky-700">
+                        <span>{o.bill_no}</span>
+                        {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
+                          <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <span className="text-gray-800">{o.customer_name || '–'}</span>
@@ -1183,7 +1207,12 @@ export default function Account() {
                       onClick={() => setViewOrderId(o.id)}
                       className="border-b border-gray-100 hover:bg-emerald-50/50 transition-colors cursor-pointer"
                     >
-                      <td className="px-4 py-3 font-semibold text-sky-700">{o.bill_no}</td>
+                      <td className="px-4 py-3 font-semibold text-sky-700">
+                        <span>{o.bill_no}</span>
+                        {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
+                          <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <span className="text-gray-800">{o.customer_name || '–'}</span>
@@ -1329,7 +1358,13 @@ export default function Account() {
               ) : viewOrder ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-3">
-                    <p><span className="font-medium text-gray-600">เลขบิล:</span> {viewOrder.bill_no}</p>
+                    <p className="flex items-center gap-2">
+                      <span className="font-medium text-gray-600">เลขบิล:</span>
+                      <span>{viewOrder.bill_no}</span>
+                      {((viewOrder as any).claim_type != null || (viewOrder.bill_no || '').startsWith('REQ')) && (
+                        <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                      )}
+                    </p>
                     <p><span className="font-medium text-gray-600">สถานะ:</span> {viewOrder.status}</p>
                     <p className="col-span-2"><span className="font-medium text-gray-600">ลูกค้า:</span> {viewOrder.customer_name}</p>
                     <p className="col-span-2"><span className="font-medium text-gray-600">ที่อยู่:</span> {viewOrder.customer_address || '–'}</p>

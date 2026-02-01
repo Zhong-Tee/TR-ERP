@@ -110,6 +110,42 @@ export default function Orders() {
     }
   }
 
+  /** ลบบิล (รอลงข้อมูล): ลบรูปใน bucket slip-images/slip{bill_no} แล้วลบ or_orders (cascade ลบ items, reviews, slips, refunds) */
+  async function handleDeleteOrder(order: Order) {
+    try {
+      const billNo = order.bill_no
+      if (billNo) {
+        const folderName = `slip${billNo}`
+        const { data: files, error: listError } = await supabase.storage
+          .from('slip-images')
+          .list(folderName, { limit: 200 })
+        if (!listError && files && files.length > 0) {
+          const filePaths = files
+            .filter((f) => f.name && !f.name.endsWith('/'))
+            .map((f) => `${folderName}/${f.name}`)
+          if (filePaths.length > 0) {
+            const { error: removeError } = await supabase.storage
+              .from('slip-images')
+              .remove(filePaths)
+            if (removeError) console.warn('ลบรูปสลิปไม่ครบ:', removeError)
+          }
+        }
+      }
+      const { error: deleteError } = await supabase
+        .from('or_orders')
+        .delete()
+        .eq('id', order.id)
+      if (deleteError) throw deleteError
+      if (selectedOrder?.id === order.id) setSelectedOrder(null)
+      refreshCounts()
+      setListRefreshKey((k) => k + 1)
+    } catch (err: any) {
+      console.error('Error deleting order:', err)
+      alert('เกิดข้อผิดพลาดในการลบบิล: ' + (err?.message || err))
+      throw err
+    }
+  }
+
   // โหลด channels จากตาราง
   useEffect(() => {
     async function loadChannels() {
@@ -243,6 +279,7 @@ export default function Orders() {
             order={selectedOrder}
             onSave={handleSave}
             onCancel={handleCancel}
+            onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
             readOnly={activeTab !== 'create'}
             viewOnly={activeTab === 'verified' || activeTab === 'cancelled' || activeTab === 'rejected-refund'}
           />
@@ -254,6 +291,9 @@ export default function Orders() {
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
             onCountChange={setWaitingCount}
+            showDeleteButton={true}
+            onDelete={handleDeleteOrder}
+            refreshTrigger={listRefreshKey}
           />
         ) : activeTab === 'complete' ? (
           <OrderList
@@ -325,7 +365,11 @@ export default function Orders() {
             refreshTrigger={listRefreshKey}
           />
         ) : (
-          <OrderForm onSave={handleSave} onCancel={handleCancel} />
+          <OrderForm
+            onSave={handleSave}
+            onCancel={handleCancel}
+            onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
+          />
         )}
       </div>
     </div>
