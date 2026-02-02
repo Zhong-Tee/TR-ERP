@@ -389,7 +389,7 @@ export default function QC() {
     if (status === 'pass') {
       if (qcState.sessionId) {
         try {
-          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass', check_time: new Date() }, qcUsername)
+          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass' }, qcUsername)
         } catch (e: any) {
           alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
           return
