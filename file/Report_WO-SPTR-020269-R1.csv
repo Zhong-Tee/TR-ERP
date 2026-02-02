@@ -1,0 +1,2 @@
+﻿Date,Time,Reject_Duration,Item_UID,Status,Retry,Fail_Reason,QC_By,product_name,product_code,Bill_No,cartoon_name,ink_color,font,floor,line1,line2,line3,remark
+2/2/2569,17:37:42,0s,SPTR26020001-1,pass,1,-,jakkrit,CTT คริสตัลแท็ก,110000006,SPTR26020001,A001,-,-,-,TEST,-,-,-

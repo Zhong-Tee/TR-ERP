@@ -107,7 +107,7 @@ export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
 
   const loadCounts = useCallback(async () => {
     try {
-      const [qcRes, accountRes] = await Promise.all([
+      const [qcRes, refundRes, taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
@@ -116,16 +116,32 @@ export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
           .from('ac_refunds')
           .select('id', { count: 'exact', head: true })
           .eq('status', 'pending'),
+        supabase
+          .from('or_orders')
+          .select('id, billing_details')
+          .contains('billing_details', { request_tax_invoice: true }),
+        supabase
+          .from('or_orders')
+          .select('id, billing_details')
+          .contains('billing_details', { request_cash_bill: true }),
       ])
+      const taxPending = ((taxRes.data || []) as { billing_details?: { account_confirmed_tax?: boolean } }[]).filter(
+        (o) => !o.billing_details?.account_confirmed_tax
+      ).length
+      const cashPending = ((cashRes.data || []) as { billing_details?: { account_confirmed_cash?: boolean } }[]).filter(
+        (o) => !o.billing_details?.account_confirmed_cash
+      ).length
+      const accountTotal = (refundRes.count ?? 0) + taxPending + cashPending
       setMenuCounts({
         'admin-qc': qcRes.count ?? 0,
-        account: accountRes.count ?? 0,
+        account: accountTotal,
       })
     } catch (e) {
       console.error('Sidebar loadCounts:', e)
     }
   }, [])
 
+  // โหลดครั้งแรก + Realtime (ถ้าเปิดใช้ใน Supabase)
   useEffect(() => {
     loadCounts()
     const channel = supabase
@@ -136,6 +152,16 @@ export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
     return () => {
       supabase.removeChannel(channel)
     }
+  }, [loadCounts])
+
+  // โพลทุก 30 วินาทีเมื่อแท็บเปิดอยู่ (fallback ให้ตัวเลขอัปเดตเรียลไทม์แม้ Realtime จะไม่ fire)
+  const POLL_INTERVAL_MS = 30_000
+  useEffect(() => {
+    if (document.visibilityState !== 'visible') return
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') loadCounts()
+    }, POLL_INTERVAL_MS)
+    return () => clearInterval(timer)
   }, [loadCounts])
 
   // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc หรือ account เพื่อให้ตัวเลขตรงกับหน้านั้น

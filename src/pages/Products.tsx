@@ -271,6 +271,28 @@ export default function Products() {
     XLSX.writeFile(wb, 'Template_สินค้า.xlsx')
   }
 
+  async function downloadProductsExcel() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('product_code, product_name, product_category, product_type, rubber_code, storage_location')
+        .eq('is_active', true)
+        .order('product_code', { ascending: true })
+      if (error) throw error
+      const headers = [...PRODUCT_TEMPLATE_HEADERS]
+      const rows = (data || []).map((p) =>
+        headers.map((h) => (p as Record<string, unknown>)[h] ?? '')
+      )
+      const wb = XLSX.utils.book_new()
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+      XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
+      XLSX.writeFile(wb, 'ข้อมูลสินค้าทั้งหมด.xlsx')
+    } catch (e: any) {
+      console.error(e)
+      alert('ดาวน์โหลดไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
   async function handleImport(file: File) {
     setImporting(true)
     try {
@@ -357,6 +379,13 @@ export default function Products() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold">จัดการสินค้า</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={downloadProductsExcel}
+            className="px-3 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm font-medium"
+          >
+            ดาวน์โหลด (Excel)
+          </button>
           <button
             type="button"
             onClick={downloadTemplate}

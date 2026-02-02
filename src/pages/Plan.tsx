@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
+import Modal from '../components/ui/Modal'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'dept' | 'jobs' | 'form' | 'set'
@@ -428,6 +429,15 @@ export default function Plan() {
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
   const [dashDropTarget, setDashDropTarget] = useState<{ id: string; above: boolean } | null>(null)
   const [expandedDeptJob, setExpandedDeptJob] = useState<string | null>(null) // 'dept_jobId' for ประวัติ
+  /** Modal ล้าง: ยืนยันล้างเท่านั้น (รหัสปลดล็อคใส่ด้านบน) */
+  const [clearStepModal, setClearStepModal] = useState<{
+    open: boolean
+    jobId: string | null
+    dept: string | null
+    procName: string
+    step: 'confirm' | 'result'
+    resultMessage: string
+  }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
 
   const load = useCallback(async () => {
     setDbStatus('กำลังโหลด...')
@@ -629,8 +639,7 @@ export default function Plan() {
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
-      if (!t) return
-      if (t.start && !window.confirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?')) return
+      if (t?.start && !window.confirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?')) return
       const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
       if (!tracks[dept]) tracks[dept] = {}
       if (!tracks[dept][proc]) tracks[dept][proc] = { start: null, end: null }
@@ -667,8 +676,7 @@ export default function Plan() {
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
-      if (!t) return
-      if (!t.start && !window.confirm('ยังไม่กดเริ่ม จะบันทึกเสร็จเลยหรือไม่?')) return
+      if (!t?.start && !window.confirm('ยังไม่กดเริ่ม จะบันทึกเสร็จเลยหรือไม่?')) return
       const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
       if (!tracks[dept]) tracks[dept] = {}
       if (!tracks[dept][proc]) tracks[dept][proc] = { start: null, end: null }
@@ -680,9 +688,10 @@ export default function Plan() {
   )
 
   const backStep = useCallback(
-    async (jobId: string, dept: string) => {
+    async (jobId: string, dept: string, opts?: { skipConfirm?: boolean }) => {
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
+      const skipConfirm = opts?.skipConfirm === true
       const procs = (settings.processes[dept] || []).map((p) => p.name)
       const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
       if (!tracks[dept]) tracks[dept] = {}
@@ -690,7 +699,7 @@ export default function Plan() {
       let currentIndex = procs.findIndex((p) => !tracks[dept][p]?.end)
       if (currentIndex === -1 && procs.length > 0) {
         const lastProc = procs[procs.length - 1]
-        if (!window.confirm(`ยกเลิกการเสร็จสิ้นของขั้นตอน "${lastProc}"?`)) return
+        if (!skipConfirm && !window.confirm(`ยกเลิกการเสร็จสิ้นของขั้นตอน "${lastProc}"?`)) return
         tracks[dept][lastProc] = tracks[dept][lastProc] || { start: null, end: null }
         tracks[dept][lastProc].end = null
         await updateJobField(jobId, updates)
@@ -699,7 +708,7 @@ export default function Plan() {
       const currentProc = procs[currentIndex]
       const t = tracks[dept][currentProc] || { start: null, end: null }
       if (t.start) {
-        if (!window.confirm(`ล้างเวลาเริ่มของขั้นตอน "${currentProc}"?`)) return
+        if (!skipConfirm && !window.confirm(`ล้างเวลาเริ่มของขั้นตอน "${currentProc}"?`)) return
         const isOnlyStartAction =
           Object.values(tracks[dept]).filter((p) => p?.start).length === 1 &&
           !Object.values(tracks[dept]).some((p) => p?.end)
@@ -711,7 +720,7 @@ export default function Plan() {
         tracks[dept][currentProc] = { ...t, start: null, end: null }
       } else if (currentIndex > 0) {
         const prevProc = procs[currentIndex - 1]
-        if (!window.confirm(`ย้อนกลับไปแก้ไขขั้นตอนก่อนหน้า "${prevProc}"?`)) return
+        if (!skipConfirm && !window.confirm(`ย้อนกลับไปแก้ไขขั้นตอนก่อนหน้า "${prevProc}"?`)) return
         if (tracks[dept][prevProc]) tracks[dept][prevProc].end = null
       }
       await updateJobField(jobId, updates)
@@ -1110,7 +1119,7 @@ export default function Plan() {
                   </div>
                   <div
                     className="grid gap-4"
-                    style={{ gridTemplateColumns: `repeat(${linesCount}, minmax(0, 1fr))` }}
+                    style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}
                   >
                     {Array.from({ length: linesCount }, (_, lineIdx) => (
                       <div key={lineIdx} className="rounded-xl border border-gray-200 bg-gray-50/50 p-3">
@@ -1165,48 +1174,51 @@ export default function Plan() {
                                     <div className="rounded-xl border border-green-200 bg-green-100 py-2 text-center text-sm font-bold text-green-800">
                                       ✓ เสร็จสมบูรณ์
                                     </div>
-                                    {unlocked && (
-                                      <button
-                                        type="button"
-                                        onClick={() => backStep(j.id, dept)}
-                                        className="mt-2 w-full rounded-lg border border-red-500 bg-red-500 py-2 text-sm font-medium text-white hover:bg-red-600"
-                                      >
-                                        ↺ แก้ไข/ย้อนขั้นตอน
-                                      </button>
-                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => backStep(j.id, dept)}
+                                      className="mt-2 w-full rounded-lg border border-red-500 bg-red-500 py-2 text-sm font-medium text-white hover:bg-red-600"
+                                    >
+                                      ↺ แก้ไข/ย้อนขั้นตอน
+                                    </button>
                                   </div>
                                 ) : currentProc ? (
                                   <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-3">
                                     <div className="grid grid-cols-[1fr_auto] gap-2">
-                                      {unlocked && (
-                                        <>
-                                          {!isStarted ? (
-                                            <button
-                                              type="button"
-                                              onClick={() => markStart(j.id, dept, currentProc)}
-                                              className="rounded-lg bg-blue-600 py-2.5 text-base font-bold text-white hover:bg-blue-700"
-                                            >
-                                              เริ่ม: {currentProc}
-                                            </button>
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              onClick={() => markEnd(j.id, dept, currentProc)}
-                                              className="rounded-lg bg-green-600 py-2.5 text-base font-bold text-white hover:bg-green-700"
-                                            >
-                                              เสร็จ: {currentProc}
-                                            </button>
-                                          )}
-                                          <button
-                                            type="button"
-                                            onClick={() => backStep(j.id, dept)}
-                                            disabled={!hasStartedFirstStep}
-                                            className="rounded-lg border border-red-500 bg-red-500 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-30 disabled:cursor-not-allowed"
-                                          >
-                                            ล้าง
-                                          </button>
-                                        </>
+                                      {!isStarted ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => markStart(j.id, dept, currentProc)}
+                                          className="rounded-lg bg-blue-600 py-2.5 text-base font-bold text-white hover:bg-blue-700"
+                                        >
+                                          เริ่ม: {currentProc}
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => markEnd(j.id, dept, currentProc)}
+                                          className="rounded-lg bg-green-600 py-2.5 text-base font-bold text-white hover:bg-green-700"
+                                        >
+                                          เสร็จ: {currentProc}
+                                        </button>
                                       )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setClearStepModal({
+                                            open: true,
+                                            jobId: j.id,
+                                            dept,
+                                            procName: currentProc,
+                                            step: 'confirm',
+                                            resultMessage: '',
+                                          })
+                                        }}
+                                        disabled={!hasStartedFirstStep || !unlocked}
+                                        className="rounded-lg border border-red-500 bg-red-500 py-2.5 px-4 text-base font-medium text-white hover:bg-red-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      >
+                                        ล้าง
+                                      </button>
                                     </div>
                                     <div className="mt-2 flex justify-between border-t border-dashed border-gray-300 pt-2 text-[11px] text-gray-600">
                                       <span>
@@ -1498,7 +1510,7 @@ export default function Plan() {
                               <Fragment key={d}>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 ${
-                                    status.key === 'done' ? 'bg-green-50' : status.key === 'progress' ? 'bg-blue-50' : ''
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0.5">
@@ -1521,16 +1533,40 @@ export default function Plan() {
                                     </select>
                                   </div>
                                 </td>
-                                <td className="p-2 text-center border-l border-gray-200 align-top">
+                                <td
+                                  className={`p-2 text-center border-l border-gray-200 align-top ${
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
+                                  }`}
+                                >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">
                                     <span className="text-gray-500">{me ? secToHHMM(me.start) : '-'}</span>
-                                    <span className="text-blue-600 font-semibold">{acts.actualStart !== '-' ? acts.actualStart : '\u00A0'}</span>
+                                    <span
+                                      className={
+                                        me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
+                                          ? 'text-red-600 font-semibold'
+                                          : 'text-blue-600 font-semibold'
+                                      }
+                                    >
+                                      {acts.actualStart !== '-' ? acts.actualStart : '\u00A0'}
+                                    </span>
                                   </div>
                                 </td>
-                                <td className="p-2 text-center border-l border-gray-200 align-top">
+                                <td
+                                  className={`p-2 text-center border-l border-gray-200 align-top ${
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
+                                  }`}
+                                >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">
                                     <span className="text-gray-500">{me ? secToHHMM(me.end) : '-'}</span>
-                                    <span className="text-blue-600 font-semibold">{acts.actualEnd !== '-' ? acts.actualEnd : '\u00A0'}</span>
+                                    <span
+                                      className={
+                                        me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
+                                          ? 'text-red-600 font-semibold'
+                                          : 'text-blue-600 font-semibold'
+                                      }
+                                    >
+                                      {acts.actualEnd !== '-' ? acts.actualEnd : '\u00A0'}
+                                    </span>
                                   </div>
                                 </td>
                               </Fragment>
@@ -2074,6 +2110,65 @@ export default function Plan() {
           </section>
         )
       })()}
+
+      {/* Modal ล้าง: แสดงเฉพาะยืนยันล้าง (รหัสปลดล็อคใส่ด้านบน) */}
+      <Modal
+        open={clearStepModal.open}
+        onClose={() => {
+          setClearStepModal((prev) => ({ ...prev, open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' }))
+        }}
+        contentClassName="max-w-md"
+        closeOnBackdropClick={false}
+      >
+        <div className="p-6">
+          {clearStepModal.step === 'confirm' ? (
+            <>
+              <h3 className="text-lg font-bold text-gray-800 mb-2">ล้างเวลาเริ่ม</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                ยืนยันล้างเวลาเริ่มของขั้นตอน &quot;{clearStepModal.procName}&quot;?
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setClearStepModal((prev) => ({ ...prev, open: false }))}
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!clearStepModal.jobId || !clearStepModal.dept) return
+                    try {
+                      await backStep(clearStepModal.jobId, clearStepModal.dept, { skipConfirm: true })
+                      setClearStepModal((prev) => ({ ...prev, step: 'result', resultMessage: 'ล้างเรียบร้อย' }))
+                    } catch (e: any) {
+                      setClearStepModal((prev) => ({ ...prev, step: 'result', resultMessage: 'เกิดข้อผิดพลาด: ' + (e?.message || e) }))
+                    }
+                  }}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                >
+                  ยืนยัน
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h3 className="text-lg font-bold text-gray-800 mb-2">ผลการดำเนินการ</h3>
+              <p className="text-sm text-gray-600 mb-4">{clearStepModal.resultMessage}</p>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setClearStepModal((prev) => ({ ...prev, open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' }))}
+                  className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-medium text-white hover:bg-gray-900"
+                >
+                  ปิด
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }

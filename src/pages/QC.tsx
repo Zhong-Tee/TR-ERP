@@ -1,9 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
-import type { QCItem, QCRecord, QCSession, SettingsReason, InkType, WorkOrder } from '../types'
+import type { QCItem, QCRecord, QCSession, SettingsReason, InkType } from '../types'
 import {
-  fetchWorkOrders,
+  fetchWorkOrdersWithProgress,
   fetchItemsByWorkOrder,
+  fetchOpenSessionForWo,
+  fetchRecordsForSession,
+  saveQcRecord,
   fetchSettingsReasons,
   fetchInkTypes,
   fetchRejectItems,
@@ -15,12 +18,11 @@ import {
   deleteReason,
   updateInkHex,
   getPublicUrl,
-  getSavedWorkOrderName,
   saveWorkOrderName,
-  getSessionBackup,
   setSessionBackup,
   clearSessionBackup,
 } from '../lib/qcApi'
+import type { WorkOrderWithProgress } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import Papa from 'papaparse'
@@ -66,14 +68,12 @@ export default function QC() {
   const [loading, setLoading] = useState(false)
 
   // QC Operation
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
-  const [selectedWoName, setSelectedWoName] = useState<string>('')
-  const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string }>({ step: 'select', startTime: null, filename: '' })
+  const [workOrdersWithProgress, setWorkOrdersWithProgress] = useState<WorkOrderWithProgress[]>([])
+  const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string; sessionId: string | null }>({ step: 'select', startTime: null, filename: '', sessionId: null })
   const [qcData, setQcData] = useState<{ items: QCItem[] }>({ items: [] })
   const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
   const [barcodeQuery, setBarcodeQuery] = useState('')
-  const [hasSavedSession, setHasSavedSession] = useState(false)
-  const [savedSessionInfo, setSavedSessionInfo] = useState<{ filename: string } | null>(null)
+  const [qcCategoryFilter, setQcCategoryFilter] = useState<string>('')
   const [productExt, setProductExt] = useState('.jpg')
   const [cartoonExt, setCartoonExt] = useState('.jpg')
   const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
@@ -101,12 +101,19 @@ export default function QC() {
   const [historySearch, setHistorySearch] = useState('')
   const [historyResults, setHistoryResults] = useState<QCRecord[]>([])
   const [historySearched, setHistorySearched] = useState(false)
+  const [currentHistoryRecord, setCurrentHistoryRecord] = useState<QCRecord | null>(null)
 
   // Settings
   const [reasons, setReasons] = useState<SettingsReason[]>([])
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
   const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink'>('reasons')
   const [newReason, setNewReason] = useState('')
+
+  // Fail reason Modal (แทน window.prompt)
+  const [failReasonModalOpen, setFailReasonModalOpen] = useState(false)
+  const [failReasonContext, setFailReasonContext] = useState<'qc' | 'reject'>('qc')
+  const [failReasonSelected, setFailReasonSelected] = useState<string | null>(null)
+  const [failReasonCustom, setFailReasonCustom] = useState('')
 
   const filteredMenus = MENUS.filter((m) => !m.adminOnly || isAdmin)
 
@@ -116,6 +123,20 @@ export default function QC() {
   const passedItems = qcData.items.filter((i) => i.status === 'pass').reduce((a, i) => a + (i.qty || 1), 0)
   const failedItems = qcData.items.filter((i) => i.status === 'fail').reduce((a, i) => a + (i.qty || 1), 0)
   const remainingItems = totalItems - passedItems - failedItems
+
+  const qcCategoryOptions = useMemo(() => {
+    const set = new Set<string>()
+    qcData.items.forEach((i) => {
+      const c = i.product_category?.trim() || ''
+      if (c) set.add(c)
+    })
+    return Array.from(set).sort()
+  }, [qcData.items])
+
+  const itemsToShow = useMemo(() => {
+    if (!qcCategoryFilter) return qcData.items
+    return qcData.items.filter((i) => (i.product_category?.trim() || '') === qcCategoryFilter)
+  }, [qcData.items, qcCategoryFilter])
 
   const productImageUrl = currentItem ? getPublicUrl('product-images', currentItem.product_code, productExt) : ''
   const cartoonImageUrl = currentItem ? getPublicUrl('cartoon-patterns', currentItem.cartoon_name, cartoonExt) : ''
@@ -130,11 +151,8 @@ export default function QC() {
 
   const loadWorkOrders = useCallback(async () => {
     try {
-      const list = await fetchWorkOrders()
-      setWorkOrders(list)
-      const saved = getSavedWorkOrderName()
-      if (saved && list.some((w) => w.work_order_name === saved)) setSelectedWoName(saved)
-      else if (list.length && !selectedWoName) setSelectedWoName(list[0].work_order_name)
+      const list = await fetchWorkOrdersWithProgress(true)
+      setWorkOrdersWithProgress(list)
     } catch (e) {
       console.error(e)
     }
@@ -162,11 +180,7 @@ export default function QC() {
   useEffect(() => {
     loadWorkOrders()
     loadSettings()
-    const backup = getSessionBackup()
-    if (backup?.qcState?.filename) {
-      setHasSavedSession(true)
-      setSavedSessionInfo({ filename: backup.qcState.filename })
-    }
+    clearSessionBackup()
     const t = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(t)
   }, [loadWorkOrders, loadSettings])
@@ -189,7 +203,7 @@ export default function QC() {
     if (qcState.step === 'working' && qcData.items.length > 0) {
       setSessionBackup(qcState, qcData)
     }
-  }, [qcState.step, qcState.startTime, qcState.filename, qcData.items])
+  }, [qcState.step, qcState.startTime, qcState.filename, qcState.sessionId, qcData.items])
 
   useEffect(() => {
     setImgErrors({ product: false, cartoon: false })
@@ -203,21 +217,57 @@ export default function QC() {
     }
   }, [currentItem])
 
-  async function handleLoadWo() {
-    if (!selectedWoName) return
+  async function handleLoadWo(woName: string) {
+    if (!woName) return
     setLoading(true)
+    setQcCategoryFilter('')
     try {
-      const items = await fetchItemsByWorkOrder(selectedWoName)
+      const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
         alert('ไม่พบรายการในใบงานนี้')
         setLoading(false)
         return
       }
-      saveWorkOrderName(selectedWoName)
+      saveWorkOrderName(woName)
+      const filename = `WO-${woName}`
+      let sessionId: string | null = null
+      let startTime: Date = new Date()
+
+      const openSession = await fetchOpenSessionForWo(woName)
+      if (openSession) {
+        sessionId = openSession.id
+        startTime = new Date(openSession.start_time)
+        const records = await fetchRecordsForSession(openSession.id)
+        const recordByUid: Record<string, (typeof records)[0]> = {}
+        records.forEach((r) => { recordByUid[r.item_uid] = r })
+        items.forEach((it) => {
+          const rec = recordByUid[it.uid]
+          if (rec) {
+            it.status = rec.status as 'pass' | 'fail' | 'pending'
+            it.fail_reason = rec.fail_reason ?? undefined
+            it.check_time = rec.created_at ? new Date(rec.created_at) : undefined
+          }
+        })
+      } else {
+        const { data: newSession, error: sessErr } = await supabase
+          .from('qc_sessions')
+          .insert({
+            username: qcUsername,
+            filename,
+            start_time: startTime.toISOString(),
+            end_time: null,
+            total_items: 0,
+            pass_count: 0,
+            fail_count: 0,
+          })
+          .select('id')
+          .single()
+        if (sessErr) throw sessErr
+        sessionId = newSession?.id ?? null
+      }
+
       setQcData({ items })
-      setQcState({ step: 'working', startTime: new Date(), filename: `WO-${selectedWoName}` })
-      setHasSavedSession(false)
-      setSavedSessionInfo(null)
+      setQcState({ step: 'working', startTime, filename, sessionId })
       const first = items.find((i) => i.status === 'pending') || items[0]
       setCurrentItem(first)
     } catch (e: any) {
@@ -231,12 +281,12 @@ export default function QC() {
     if (qcData.items.some((i) => i.status !== 'pending')) {
       if (!window.confirm('มีการตรวจแล้ว บันทึกเซสชันปัจจุบันไว้หรือทิ้ง แล้วสลับใบงาน?')) return
     }
-    setQcState({ step: 'select', startTime: null, filename: '' })
+    setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
     setQcData({ items: [] })
     setCurrentItem(null)
+    setQcCategoryFilter('')
     clearSessionBackup()
-    setHasSavedSession(false)
-    setSavedSessionInfo(null)
+    loadWorkOrders()
   }
 
   function handleScan() {
@@ -261,29 +311,43 @@ export default function QC() {
     if (next) setCurrentItem(next)
   }
 
-  async function markStatus(status: 'pass' | 'fail') {
-    if (!currentItem) return
-    let reason: string | null = null
-    if (status === 'fail') {
-      if (reasons.length === 0) {
-        const r = window.prompt('เหตุผล Fail (ถ้าไม่มีรายการใน Settings ให้กรอกตรงนี้):')
-        if (r == null) return
-        reason = r.trim() || null
-      } else {
-        const value = window.prompt(
-          'เลือกเหตุผล Fail (พิมพ์เลข):\n' + reasons.map((r, i) => `${i + 1}. ${r.reason_text}`).join('\n')
-        )
-        if (value == null) return
-        const num = parseInt(value, 10)
-        if (num >= 1 && num <= reasons.length) reason = reasons[num - 1].reason_text
-        else reason = value.trim() || null
-      }
+  function openFailReasonModal(context: 'qc' | 'reject') {
+    setFailReasonContext(context)
+    setFailReasonSelected(null)
+    setFailReasonCustom('')
+    setFailReasonModalOpen(true)
+  }
+
+  function closeFailReasonModal() {
+    setFailReasonModalOpen(false)
+    setFailReasonSelected(null)
+    setFailReasonCustom('')
+  }
+
+  function confirmFailReason() {
+    const reason = (failReasonSelected || failReasonCustom.trim()) || null
+    const needReason = reasons.length > 0 ? !!reason : true
+    if (needReason && !reason) return
+    closeFailReasonModal()
+    if (failReasonContext === 'qc') {
+      applyFailReasonQc(reason)
+    } else {
+      if (reason) applyFailReasonReject(reason)
+    }
+  }
+
+  async function applyFailReasonQc(reason: string | null) {
+    if (!currentItem || !qcState.sessionId) return
+    const updated = { ...currentItem, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() }
+    try {
+      await saveQcRecord(qcState.sessionId, updated, qcUsername)
+    } catch (e: any) {
+      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+      return
     }
     setQcData((prev) => ({
       items: prev.items.map((i) =>
-        i.uid === currentItem.uid
-          ? { ...i, status, fail_reason: reason ?? undefined, check_time: new Date() }
-          : i
+        i.uid === currentItem.uid ? { ...i, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() } : i
       ),
     }))
     const nextIdx = qcData.items.indexOf(currentItem) + 1
@@ -291,87 +355,94 @@ export default function QC() {
     setBarcodeQuery('')
   }
 
+  async function applyFailReasonReject(reason: string) {
+    if (!currentRejectItem) return
+    const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
+    const updates: Partial<QCRecord> = {
+      status: 'fail',
+      qc_by: qcUsername,
+      created_at: new Date().toISOString(),
+      reject_duration: durationSec,
+      fail_reason: reason,
+      retry_count: Math.min((currentRejectItem.retry_count || 1) + 1, 4),
+    }
+    setLoading(true)
+    try {
+      await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+      const updatedList = await fetchRejectItems()
+      setRejectData(updatedList)
+      const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === updates.retry_count)
+      const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
+      setCurrentRejectItem(next || nextAny || null)
+      if (next) setActiveRejectTab((next.retry_count || 1) as 1 | 2 | 3 | 4)
+      else if (nextAny) setActiveRejectTab((nextAny.retry_count || 1) as 1 | 2 | 3 | 4)
+      else setActiveRejectTab('queue')
+    } catch (e: any) {
+      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function markStatus(status: 'pass' | 'fail') {
+    if (!currentItem) return
+    if (status === 'pass') {
+      if (qcState.sessionId) {
+        try {
+          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass', check_time: new Date() }, qcUsername)
+        } catch (e: any) {
+          alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+          return
+        }
+      }
+      setQcData((prev) => ({
+        items: prev.items.map((i) =>
+          i.uid === currentItem.uid ? { ...i, status: 'pass', check_time: new Date() } : i
+        ),
+      }))
+      const nextIdx = qcData.items.indexOf(currentItem) + 1
+      if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
+      setBarcodeQuery('')
+    } else {
+      openFailReasonModal('qc')
+    }
+  }
+
   async function finishSession() {
     if (!window.confirm('บันทึกและจบงาน QC ใช่หรือไม่?')) return
+    if (!qcState.sessionId) {
+      alert('ไม่พบ session')
+      return
+    }
     setLoading(true)
     try {
       const endTime = new Date()
       const durationSeconds = (endTime.getTime() - (qcState.startTime?.getTime() || endTime.getTime())) / 1000
       const kpi = totalItems > 0 ? durationSeconds / totalItems : 0
-      const { data: session, error: sessErr } = await supabase
+      const { error: updateErr } = await supabase
         .from('qc_sessions')
-        .insert({
-          username: qcUsername,
-          filename: qcState.filename,
-          start_time: qcState.startTime?.toISOString(),
+        .update({
           end_time: endTime.toISOString(),
           total_items: totalItems,
           pass_count: passedItems,
           fail_count: failedItems,
           kpi_score: kpi,
         })
-        .select()
-        .single()
-      if (sessErr) throw sessErr
-      const records = qcData.items.map((i) => ({
-        session_id: session.id,
-        item_uid: i.uid,
-        qc_by: qcUsername,
-        status: i.status,
-        fail_reason: i.fail_reason ?? null,
-        is_rejected: i.status === 'fail',
-        retry_count: 1,
-        product_code: i.product_code,
-        product_name: i.product_name,
-        bill_no: i.bill_no,
-        ink_color: i.ink_color,
-        font: i.font,
-        floor: i.floor,
-        cartoon_name: i.cartoon_name,
-        line1: i.line1,
-        line2: i.line2,
-        line3: i.line3,
-        qty: i.qty,
-        remark: i.remark,
-        created_at: (i.check_time || endTime).toISOString(),
-      }))
-      await supabase.from('qc_records').insert(records)
+        .eq('id', qcState.sessionId)
+      if (updateErr) throw updateErr
       clearSessionBackup()
-      setQcState({ step: 'select', startTime: null, filename: '' })
+      setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
       setQcData({ items: [] })
       setCurrentItem(null)
-      setHasSavedSession(false)
-      setSavedSessionInfo(null)
+      setQcCategoryFilter('')
       alert('บันทึกเรียบร้อยแล้ว')
       loadRejectItems()
+      loadWorkOrders()
     } catch (e: any) {
       alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
     } finally {
       setLoading(false)
     }
-  }
-
-  function restoreSession() {
-    const backup = getSessionBackup()
-    if (!backup) return
-    setQcState({
-      step: (backup.qcState.step as QCStep) || 'working',
-      startTime: backup.qcState.startTime ? new Date(backup.qcState.startTime) : null,
-      filename: backup.qcState.filename || '',
-    })
-    setQcData({ items: backup.qcData.items || [] })
-    const first = (backup.qcData.items || []).find((i: QCItem) => i.status === 'pending') || backup.qcData.items?.[0]
-    setCurrentItem(first || null)
-    setHasSavedSession(false)
-    setSavedSessionInfo(null)
-    alert('กู้คืนข้อมูลสำเร็จ')
-  }
-
-  function clearBackup() {
-    if (!window.confirm('ล้างข้อมูลที่ค้างไว้และเริ่มใหม่?')) return
-    clearSessionBackup()
-    setHasSavedSession(false)
-    setSavedSessionInfo(null)
   }
 
   const filteredRejectItems =
@@ -404,47 +475,33 @@ export default function QC() {
 
   async function markRejectStatus(status: 'pass' | 'fail') {
     if (!currentRejectItem) return
-    const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
-    const updates: Partial<QCRecord> = {
-      status,
-      qc_by: qcUsername,
-      created_at: new Date().toISOString(),
-      reject_duration: durationSec,
-    }
     if (status === 'pass') {
-      updates.is_rejected = false
-    } else {
-      let reason: string | null = null
-      if (reasons.length > 0) {
-        const value = window.prompt(
-          'เหตุผล Fail ใหม่ (พิมพ์เลข):\n' + reasons.map((r, i) => `${i + 1}. ${r.reason_text}`).join('\n')
-        )
-        if (value == null) return
-        const num = parseInt(value, 10)
-        if (num >= 1 && num <= reasons.length) reason = reasons[num - 1].reason_text
-        else reason = value.trim() || null
-      } else {
-        reason = window.prompt('เหตุผล Fail:')?.trim() || null
+      const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
+      const updates: Partial<QCRecord> = {
+        status: 'pass',
+        is_rejected: false,
+        qc_by: qcUsername,
+        created_at: new Date().toISOString(),
+        reject_duration: durationSec,
       }
-      if (reason == null) return
-      updates.fail_reason = reason
-      updates.retry_count = Math.min((currentRejectItem.retry_count || 1) + 1, 4)
-    }
-    setLoading(true)
-    try {
-      await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
-      const updatedList = await fetchRejectItems()
-      setRejectData(updatedList)
-      const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (updates.retry_count ?? currentRejectItem.retry_count))
-      const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
-      setCurrentRejectItem(next || nextAny || null)
-      if (next) setActiveRejectTab((next.retry_count || 1) as 1 | 2 | 3 | 4)
-      else if (nextAny) setActiveRejectTab((nextAny.retry_count || 1) as 1 | 2 | 3 | 4)
-      else setActiveRejectTab('queue')
-    } catch (e: any) {
-      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
-    } finally {
-      setLoading(false)
+      setLoading(true)
+      try {
+        await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+        const updatedList = await fetchRejectItems()
+        setRejectData(updatedList)
+        const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (currentRejectItem.retry_count || 1))
+        const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
+        setCurrentRejectItem(next || nextAny || null)
+        if (next) setActiveRejectTab((next.retry_count || 1) as 1 | 2 | 3 | 4)
+        else if (nextAny) setActiveRejectTab((nextAny.retry_count || 1) as 1 | 2 | 3 | 4)
+        else setActiveRejectTab('queue')
+      } catch (e: any) {
+        alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
+      } finally {
+        setLoading(false)
+      }
+    } else {
+      openFailReasonModal('reject')
     }
   }
 
@@ -520,9 +577,11 @@ export default function QC() {
     if (!historySearch.trim()) return
     setLoading(true)
     setHistorySearched(true)
+    setCurrentHistoryRecord(null)
     try {
       const data = await searchHistoryByUid(historySearch.trim())
       setHistoryResults(data)
+      if (data.length > 0) setCurrentHistoryRecord(data[0])
       if (data.length === 0) alert('ไม่พบประวัติการตรวจสำหรับ UID นี้')
     } catch (e: any) {
       alert('ค้นหาไม่สำเร็จ: ' + (e?.message || e))
@@ -574,9 +633,9 @@ export default function QC() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col" onKeyDown={handleKeydown} tabIndex={0}>
+    <div className="h-full min-h-0 flex flex-col bg-gray-50 overflow-hidden" onKeyDown={handleKeydown} tabIndex={0}>
       {/* Tabs */}
-      <div className="bg-white border-b px-4 flex gap-2 flex-wrap">
+      <div className="shrink-0 bg-white border-b px-4 flex gap-2 flex-wrap">
         {filteredMenus.map((m) => (
           <button
             key={m.id}
@@ -593,59 +652,48 @@ export default function QC() {
         ))}
       </div>
 
-      <div className="flex-1 overflow-auto p-4">
+      <div className="flex-1 min-h-0 overflow-auto p-4 flex flex-col">
         {/* QC Operation */}
         {currentView === 'qc' && (
-          <div className="space-y-4">
+          <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
             {qcState.step === 'select' && (
-              <>
-                <div className="bg-white p-6 rounded-xl shadow-sm">
-                  <h2 className="text-xl font-bold mb-4">โหลดจากระบบ (Work Order)</h2>
-                  <div className="flex flex-wrap gap-4 items-end">
-                    <div className="min-w-[200px]">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">เลือกใบงาน</label>
-                      <select
-                        value={selectedWoName}
-                        onChange={(e) => {
-                          setSelectedWoName(e.target.value)
-                          saveWorkOrderName(e.target.value || null)
-                        }}
-                        className="w-full border rounded-lg px-3 py-2"
-                      >
-                        <option value="">-- เลือก Work Order --</option>
-                        {workOrders.map((wo) => (
-                          <option key={wo.id} value={wo.work_order_name}>
-                            {wo.work_order_name} ({wo.order_count} บิล)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <button
-                      onClick={handleLoadWo}
-                      disabled={loading || !selectedWoName}
-                      className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+              <div className="bg-white p-6 rounded-xl shadow-sm">
+                <h2 className="text-xl font-bold mb-4">โหลดจากระบบ (Work Order)</h2>
+                <p className="text-sm text-gray-500 mb-4">เลือกใบงาน</p>
+                <div className="space-y-3 max-w-2xl">
+                  {workOrdersWithProgress.length === 0 && (
+                    <p className="text-gray-500 py-4">ไม่มีใบงานที่ยังมีรายการรอ QC ในขณะนี้</p>
+                  )}
+                  {workOrdersWithProgress.map((wo) => (
+                    <div
+                      key={wo.id}
+                      className="flex items-center justify-between gap-4 p-4 rounded-xl border border-gray-200 bg-gray-50/50 hover:bg-gray-50"
                     >
-                      {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
-                    </button>
-                  </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-gray-900 truncate">{wo.work_order_name}</div>
+                        <div className="text-sm text-gray-600 mt-0.5">
+                          <span className="text-amber-600 font-medium">คงเหลือ {wo.remaining} รายการ</span>
+                          <span className="mx-1">/</span>
+                          <span>ทั้งหมด {wo.total_items} รายการ</span>
+                          <span className="ml-1 text-gray-500">({wo.order_count} บิล)</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleLoadWo(wo.work_order_name)}
+                        disabled={loading}
+                        className="shrink-0 px-5 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 font-medium"
+                      >
+                        {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
+                      </button>
+                    </div>
+                  ))}
                 </div>
-                {hasSavedSession && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex flex-wrap items-center gap-4">
-                    <span className="font-bold text-blue-900">พบข้อมูลการทำงานที่ค้างอยู่: {savedSessionInfo?.filename}</span>
-                    <button onClick={restoreSession} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
-                      กู้คืน
-                    </button>
-                    <button onClick={clearBackup} className="px-4 py-2 text-red-600 border border-red-200 rounded-lg hover:bg-red-50">
-                      ทิ้ง
-                    </button>
-                  </div>
-                )}
-              </>
+              </div>
             )}
 
             {qcState.step === 'working' && (
-              <>
-                <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex flex-col flex-1 min-h-0 bg-white -m-4 p-4 overflow-hidden">
+                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
                   <div className="flex gap-8">
                     <div className="text-center">
                       <div className="text-xs text-gray-500 uppercase">Total</div>
@@ -688,11 +736,28 @@ export default function QC() {
                   </div>
                 </div>
 
-                <div className="flex gap-4 flex-1 min-h-0">
-                  <div className="w-64 bg-white rounded-xl shadow-sm flex flex-col overflow-hidden">
-                    <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">Items List</div>
+                <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
+                  <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
+                    <div className="p-2 border-b space-y-2">
+                      <div className="text-xs font-bold text-gray-600 uppercase">Items List</div>
+                      {qcCategoryOptions.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-gray-500 whitespace-nowrap">หมวดหมู่สินค้า</label>
+                          <select
+                            value={qcCategoryFilter}
+                            onChange={(e) => setQcCategoryFilter(e.target.value)}
+                            className="flex-1 min-w-0 rounded border border-gray-200 px-2 py-1 text-xs"
+                          >
+                            <option value="">ทั้งหมด</option>
+                            {qcCategoryOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex-1 overflow-y-auto p-1 space-y-1">
-                      {qcData.items.map((item, index) => (
+                      {itemsToShow.map((item, index) => (
                         <div
                           key={item.uid}
                           id={'item-' + item.uid}
@@ -701,51 +766,68 @@ export default function QC() {
                             item === currentItem ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
                           }`}
                         >
-                          <div className="truncate">
+                          <div className="truncate min-w-0">
                             <span className="text-gray-400 font-bold">{index + 1}. </span>
                             <span className="font-medium uppercase">{item.uid}</span>
                             <br />
                             <span className="text-gray-500 text-[10px]">{item.product_name}</span>
                           </div>
-                          {item.status === 'pass' && <span className="text-green-500">✓</span>}
-                          {item.status === 'fail' && <span className="text-red-500">✗</span>}
-                          {item.status === 'pending' && <span className="text-gray-300">○</span>}
+                          {item.status === 'pass' && <span className="text-green-500 shrink-0">✓</span>}
+                          {item.status === 'fail' && <span className="text-red-500 shrink-0">✗</span>}
+                          {item.status === 'pending' && <span className="text-gray-300 shrink-0">○</span>}
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className="w-[420px] shrink-0 flex flex-col gap-2">
-                    <div className="h-48 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                  <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                    <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
                       {currentItem && !imgErrors.product && currentItem.product_code !== '0' ? (
-                        <img
-                          src={productImageUrl}
-                          alt="Product"
-                          className="object-contain max-h-full p-2"
-                          onError={() => setImgErrors((e) => ({ ...e, product: true }))}
-                        />
+                        <a
+                          href={productImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-full flex items-center justify-center cursor-pointer"
+                          title="คลิกเปิดรูปในแท็บใหม่"
+                        >
+                          <img
+                            src={productImageUrl}
+                            alt="Product"
+                            className="w-full h-full object-contain p-2"
+                            onError={() => setImgErrors((e) => ({ ...e, product: true }))}
+                          />
+                        </a>
                       ) : (
                         <div className="text-gray-400 text-sm">No Image (Product: {currentItem?.product_code || '-'})</div>
                       )}
                     </div>
-                    <div className="h-48 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
                       {currentItem && !imgErrors.cartoon && currentItem.cartoon_name !== '0' ? (
-                        <img
-                          src={cartoonImageUrl}
-                          alt="Pattern"
-                          className="object-contain max-h-full p-2"
-                          onError={() => setImgErrors((e) => ({ ...e, cartoon: true }))}
-                        />
+                        <a
+                          href={cartoonImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full h-full flex items-center justify-center cursor-pointer"
+                          title="คลิกเปิดรูปลายการ์ตูนในแท็บใหม่"
+                        >
+                          <img
+                            src={cartoonImageUrl}
+                            alt="Pattern"
+                            className="w-full h-full object-contain p-2"
+                            onError={() => setImgErrors((e) => ({ ...e, cartoon: true }))}
+                          />
+                        </a>
                       ) : (
                         <div className="text-gray-400 text-sm">No Pattern ({currentItem?.cartoon_name || '-'})</div>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex-1 bg-white rounded-xl shadow-sm p-4 overflow-auto min-w-0">
+                  <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
                     {currentItem ? (
                       <>
-                        <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                        <div className="flex-1 min-h-0 overflow-auto p-4">
+                          <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentItem.product_name}</h2>
                             <p className="text-xs text-gray-500">Bill: {currentItem.bill_no}</p>
@@ -788,42 +870,45 @@ export default function QC() {
                             </>
                           )}
                         </div>
-                        <div className="flex gap-4 pt-3 border-t">
-                          <button
-                            onClick={() => markStatus('fail')}
-                            className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
-                          >
-                            FAIL
-                          </button>
-                          <button onClick={() => markStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
-                            PASS
-                          </button>
                         </div>
-                        <div className="flex gap-4 pt-2">
-                          <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
-                            Prev
-                          </button>
-                          <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
-                            Next
-                          </button>
+                        <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                          <div className="flex gap-4">
+                            <button
+                              onClick={() => markStatus('fail')}
+                              className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
+                            >
+                              FAIL
+                            </button>
+                            <button onClick={() => markStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
+                              PASS
+                            </button>
+                          </div>
+                          <div className="flex gap-4">
+                            <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
+                              Prev
+                            </button>
+                            <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
+                              Next
+                            </button>
+                          </div>
                         </div>
                       </>
                     ) : (
-                      <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                      <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
                         <p className="text-lg">สแกน Barcode เพื่อเริ่ม</p>
                       </div>
                     )}
                   </div>
                 </div>
-              </>
+              </div>
             )}
           </div>
         )}
 
         {/* Reject */}
         {currentView === 'reject' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
+          <div className={activeRejectTab === 'queue' ? 'space-y-4' : 'flex flex-col flex-1 min-h-0 overflow-hidden'}>
+            <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
               <div className="flex gap-2 flex-wrap">
                 <span className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 text-red-600 font-bold">
                   Reject Pending: {rejectData.length}
@@ -921,100 +1006,133 @@ export default function QC() {
                 </table>
               </div>
             ) : (
-              <div className="flex gap-4">
-                <div className="w-64 bg-white rounded-xl shadow-sm flex flex-col overflow-hidden">
+              <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
+                <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
                   <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">Reject List (Step {activeRejectTab})</div>
                   <div className="flex-1 overflow-y-auto p-1 space-y-1">
-                    {filteredRejectItems.map((item) => (
+                    {filteredRejectItems.map((item, index) => (
                       <div
                         key={item.id}
                         onClick={() => setCurrentRejectItem(item)}
-                        className={`p-2 rounded border cursor-pointer text-xs ${
+                        className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
                           item === currentRejectItem ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500' : 'border-gray-100 hover:bg-gray-50'
                         }`}
                       >
-                        <div className="font-medium uppercase">{item.item_uid}</div>
-                        <div className="text-gray-500 text-[10px]">{item.product_name}</div>
+                        <div className="truncate min-w-0">
+                          <span className="text-gray-400 font-bold">{index + 1}. </span>
+                          <span className="font-medium uppercase">{item.item_uid}</span>
+                          <br />
+                          <span className="text-gray-500 text-[10px]">{item.product_name}</span>
+                        </div>
                       </div>
                     ))}
                     {filteredRejectItems.length === 0 && <div className="text-center py-8 text-gray-400 text-xs">No items</div>}
                   </div>
                 </div>
-                <div className="w-[420px] shrink-0 flex flex-col gap-2">
-                  <div className="h-48 bg-white rounded-xl border flex items-center justify-center">
+                <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
                     {currentRejectItem?.product_code && currentRejectItem.product_code !== '0' ? (
-                      <img src={rejectProductImageUrl} alt="Product" className="object-contain max-h-full p-2" />
+                      <a
+                        href={rejectProductImageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                        title="คลิกเปิดรูปในแท็บใหม่"
+                      >
+                        <img src={rejectProductImageUrl} alt="Product" className="w-full h-full object-contain p-2" />
+                      </a>
                     ) : (
-                      <span className="text-gray-400 text-sm">No Image</span>
+                      <span className="text-gray-400 text-sm">No Image (Product: {currentRejectItem?.product_code || '-'})</span>
                     )}
                   </div>
-                  <div className="h-48 bg-white rounded-xl border flex items-center justify-center">
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
                     {currentRejectItem?.cartoon_name && currentRejectItem.cartoon_name !== '0' ? (
-                      <img src={rejectCartoonImageUrl} alt="Pattern" className="object-contain max-h-full p-2" />
+                      <a
+                        href={rejectCartoonImageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                        title="คลิกเปิดรูปลายการ์ตูนในแท็บใหม่"
+                      >
+                        <img src={rejectCartoonImageUrl} alt="Pattern" className="w-full h-full object-contain p-2" />
+                      </a>
                     ) : (
-                      <span className="text-gray-400 text-sm">No Pattern</span>
+                      <span className="text-gray-400 text-sm">No Pattern ({currentRejectItem?.cartoon_name || '-'})</span>
                     )}
                   </div>
                 </div>
-                <div className="flex-1 bg-white rounded-xl shadow-sm p-4 overflow-auto">
+                <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
                   {currentRejectItem ? (
                     <>
-                      <div className="bg-red-50 p-3 rounded-lg border border-red-100 mb-3">
-                        <span className="text-xs font-bold text-red-500 uppercase">Previous Fail Reason</span>
-                        <p className="text-lg font-bold text-red-600">{currentRejectItem.fail_reason || '-'}</p>
-                      </div>
-                      <div className="border-b pb-3 mb-3">
-                        <h2 className="text-xl font-bold">{currentRejectItem.product_name}</h2>
-                        <p className="text-xs text-gray-500">Bill: {currentRejectItem.bill_no} | UID: {currentRejectItem.item_uid}</p>
-                      </div>
-                      <div className="bg-gray-50 p-3 rounded-lg mb-3">
-                        <div className="text-lg font-bold">{currentRejectItem.line1 || '-'}</div>
-                        <div className="text-lg font-bold">{currentRejectItem.line2 || '-'}</div>
-                        <div className="text-lg font-bold">{currentRejectItem.line3 || '-'}</div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 mb-3 text-sm">
-                        <div>
-                          <span className="text-gray-500">Ink: </span>
-                          <span className="font-bold" style={{ color: getInkColor(currentRejectItem.ink_color) }}>
-                            ■
-                          </span>{' '}
-                          {currentRejectItem.ink_color || '-'}
+                      <div className="flex-1 min-h-0 overflow-auto p-4">
+                        <div className="bg-red-50 p-3 rounded-lg border border-red-100 mb-3">
+                          <span className="text-xs font-bold text-red-500 uppercase">Previous Fail Reason</span>
+                          <p className="text-lg font-bold text-red-600">{currentRejectItem.fail_reason || '-'}</p>
                         </div>
-                        <div>
-                          <span className="text-gray-500">Font: </span>
-                          <span className="font-bold">{currentRejectItem.font || '-'}</span>
+                        <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-800 uppercase">{currentRejectItem.product_name}</h2>
+                            <p className="text-xs text-gray-500">Bill: {currentRejectItem.bill_no}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-400 uppercase">UID</div>
+                            <div className="text-xl font-bold text-amber-600 uppercase">{currentRejectItem.item_uid}</div>
+                          </div>
                         </div>
-                        <div>
-                          <span className="text-gray-500">Qty: </span>
-                          <span className="font-bold">{currentRejectItem.qty || 1} pcs</span>
+                        <div className="bg-gray-50 p-4 rounded-lg border mb-4">
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">Text Details</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line1 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line2 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800">{currentRejectItem.line3 || '-'}</div>
                         </div>
-                        <div>
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Ink Color</div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentRejectItem.ink_color) }} />
+                              <span className="font-bold truncate">{currentRejectItem.ink_color || '-'}</span>
+                            </div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Font</div>
+                            <div className="font-bold">{currentRejectItem.font || '-'}</div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Qty</div>
+                            <div className="text-2xl font-bold">{currentRejectItem.qty || 1} pcs</div>
+                          </div>
+                        </div>
+                        <div className="mb-2 text-sm">
                           <span className="text-gray-500">Floor: </span>
                           <span className="font-bold">{currentRejectItem.floor || '-'}</span>
                         </div>
                       </div>
-                      <div className="flex gap-4 pt-3 border-t">
-                        <button
-                          onClick={() => markRejectStatus('fail')}
-                          className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
-                        >
-                          FAIL (NEXT REJECT)
-                        </button>
-                        <button onClick={() => markRejectStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
-                          QC PASS
-                        </button>
-                      </div>
-                      <div className="flex gap-4 pt-2">
-                        <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
-                          Prev
-                        </button>
-                        <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
-                          Next
-                        </button>
+                      <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                        <div className="flex gap-4">
+                          <button
+                            onClick={() => markRejectStatus('fail')}
+                            className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
+                          >
+                            FAIL (NEXT REJECT)
+                          </button>
+                          <button onClick={() => markRejectStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
+                            QC PASS
+                          </button>
+                        </div>
+                        <div className="flex gap-4">
+                          <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
+                            Prev
+                          </button>
+                          <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
+                            Next
+                          </button>
+                        </div>
                       </div>
                     </>
                   ) : (
-                    <div className="flex items-center justify-center h-full text-gray-400">Select item to process</div>
+                    <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                      <p className="text-lg">Select item to process</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1119,20 +1237,20 @@ export default function QC() {
           </div>
         )}
 
-        {/* History Check */}
+        {/* History Check — layout เหมือน QC Operation */}
         {currentView === 'history' && (
-          <div className="bg-white rounded-xl shadow-sm p-6">
-            <h2 className="text-2xl font-bold mb-4">Item History Check</h2>
-            <div className="flex flex-wrap gap-2 mb-6">
+          <div className={historySearched && historyResults.length > 0 ? 'flex flex-col flex-1 min-h-0 overflow-hidden' : 'space-y-4'}>
+            <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
+              <h2 className="text-xl font-bold">Item History Check</h2>
               <input
                 type="text"
                 value={historySearch}
                 onChange={(e) => setHistorySearch(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && searchHistory()}
                 placeholder="สแกน Barcode หรือพิมพ์ UID"
-                className="border-2 border-amber-400 rounded-full pl-4 pr-4 py-2 flex-1 min-w-[200px]"
+                className="border-2 border-amber-400 rounded-lg px-4 py-2 flex-1 min-w-[200px]"
               />
-              <button onClick={searchHistory} className="px-5 py-2 bg-amber-500 text-white rounded-full font-bold">
+              <button onClick={searchHistory} disabled={loading} className="px-5 py-2 bg-amber-500 text-white rounded-lg font-bold disabled:opacity-50">
                 Search
               </button>
               <button
@@ -1140,70 +1258,180 @@ export default function QC() {
                   setHistorySearch('')
                   setHistoryResults([])
                   setHistorySearched(false)
+                  setCurrentHistoryRecord(null)
                 }}
-                className="px-5 py-2 bg-gray-200 rounded-full font-bold"
+                className="px-5 py-2 bg-gray-200 rounded-lg font-bold hover:bg-gray-300"
               >
                 Clear
               </button>
             </div>
             {historySearched && historyResults.length > 0 && (
-              <div className="space-y-6">
-                {historyResults.map((rec, idx) => (
-                  <div key={rec.id} className="bg-gray-50 rounded-2xl p-6 border-2 border-gray-100">
-                    <div className="flex flex-wrap justify-between items-start gap-4 border-b pb-4 mb-4">
-                      <div>
-                        <span className="text-gray-400 font-bold mr-2">#{idx + 1}</span>
-                        <span className="text-2xl font-black text-amber-600 font-mono">{rec.item_uid}</span>
-                        <div className="text-sm text-gray-400 mt-1">
-                          ตรวจเมื่อ: {formatDate(rec.created_at)} | โดย: {rec.qc_by}
+              <div className="flex gap-4 flex-1 min-h-0 mt-4 overflow-hidden">
+                <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
+                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">History List</div>
+                  <div className="flex-1 overflow-y-auto p-1 space-y-1">
+                    {historyResults.map((rec, index) => (
+                      <div
+                        key={rec.id}
+                        id={'history-item-' + rec.id}
+                        onClick={() => setCurrentHistoryRecord(rec)}
+                        className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
+                          currentHistoryRecord?.id === rec.id ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="truncate min-w-0">
+                          <span className="text-gray-400 font-bold">{index + 1}. </span>
+                          <span className="font-medium uppercase">{rec.item_uid}</span>
+                          <br />
+                          <span className="text-gray-500 text-[10px]">{rec.product_name || '-'}</span>
                         </div>
+                        {rec.status === 'pass' && <span className="text-green-500 shrink-0">✓</span>}
+                        {rec.status === 'fail' && <span className="text-red-500 shrink-0">✗</span>}
                       </div>
-                      <div className="flex gap-2 items-center">
-                        <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-lg text-sm font-bold">RETRY: {rec.retry_count || 1}</span>
-                        <span
-                          className={`px-6 py-2 rounded-xl font-bold text-xl ${
-                            rec.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
-                          }`}
-                        >
-                          {rec.status.toUpperCase()}
-                        </span>
-                      </div>
-                    </div>
-                    {rec.status === 'fail' && (
-                      <div className="text-red-600 font-bold text-lg italic mb-4">Reason: {rec.fail_reason || '-'}</div>
-                    )}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Product Name</label>
-                        <div className="font-bold">{rec.product_name || '-'}</div>
-                        <div className="text-gray-500">Code: {rec.product_code || '-'} | Bill: {rec.bill_no || '-'}</div>
-                      </div>
-                      <div className="bg-white p-4 rounded border">
-                        <label className="text-xs font-bold text-amber-600 uppercase">Text details</label>
-                        <div className="font-bold mt-1">
-                          {rec.line1 && <div>1: {rec.line1}</div>}
-                          {rec.line2 && <div>2: {rec.line2}</div>}
-                          {rec.line3 && <div>3: {rec.line3}</div>}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Ink Color</label>
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full border" style={{ backgroundColor: getInkColor(rec.ink_color) }} />
-                          {rec.ink_color || '-'}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-gray-500 uppercase">Font / Floor</label>
-                        <div>{rec.font || '-'} / {rec.floor || '-'}</div>
-                      </div>
-                    </div>
+                    ))}
                   </div>
-                ))}
+                </div>
+
+                <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentHistoryRecord && currentHistoryRecord.product_code && currentHistoryRecord.product_code !== '0' ? (
+                      <a
+                        href={getPublicUrl('product-images', currentHistoryRecord.product_code, '.jpg')}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                      >
+                        <img
+                          src={getPublicUrl('product-images', currentHistoryRecord.product_code, '.jpg')}
+                          alt="Product"
+                          className="w-full h-full object-contain p-2"
+                        />
+                      </a>
+                    ) : (
+                      <div className="text-gray-400 text-sm">No Image (Product: {currentHistoryRecord?.product_code || '-'})</div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
+                    {currentHistoryRecord && currentHistoryRecord.cartoon_name && currentHistoryRecord.cartoon_name !== '0' ? (
+                      <a
+                        href={getPublicUrl('cartoon-patterns', currentHistoryRecord.cartoon_name, '.jpg')}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full h-full flex items-center justify-center cursor-pointer"
+                      >
+                        <img
+                          src={getPublicUrl('cartoon-patterns', currentHistoryRecord.cartoon_name, '.jpg')}
+                          alt="Pattern"
+                          className="w-full h-full object-contain p-2"
+                        />
+                      </a>
+                    ) : (
+                      <div className="text-gray-400 text-sm">No Pattern ({currentHistoryRecord?.cartoon_name || '-'})</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-white rounded-xl shadow-sm border flex flex-col min-w-0 min-h-0 basis-0 overflow-hidden">
+                  {currentHistoryRecord ? (
+                    <>
+                      <div className="flex-1 min-h-0 overflow-auto p-4">
+                        <div className="border-b pb-3 mb-3 flex justify-between items-start">
+                          <div>
+                            <h2 className="text-xl font-bold text-gray-800 uppercase">{currentHistoryRecord.product_name || '-'}</h2>
+                            <p className="text-xs text-gray-500">Bill: {currentHistoryRecord.bill_no || '-'}</p>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-gray-400 uppercase">UID</div>
+                            <div className="text-xl font-bold text-amber-600 uppercase">{currentHistoryRecord.item_uid}</div>
+                          </div>
+                        </div>
+                        <div className="bg-gray-50 p-4 rounded-lg border mb-4">
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">Text Details</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line1 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line2 || '-'}</div>
+                          <div className="text-lg font-bold text-gray-800">{currentHistoryRecord.line3 || '-'}</div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Ink Color</div>
+                            <div className="flex items-center gap-2">
+                              <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentHistoryRecord.ink_color) }} />
+                              <span className="font-bold truncate">{currentHistoryRecord.ink_color || '-'}</span>
+                            </div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Font</div>
+                            <div className="font-bold">{currentHistoryRecord.font || '-'}</div>
+                          </div>
+                          <div className="bg-white p-2 rounded border">
+                            <div className="text-xs text-gray-400 uppercase">Qty</div>
+                            <div className="text-2xl font-bold">{currentHistoryRecord.qty || 1} pcs</div>
+                          </div>
+                        </div>
+                        <div className="mb-2 text-sm">
+                          <span className="text-gray-500">Floor: </span>
+                          <span className="font-bold">{currentHistoryRecord.floor || '-'}</span>
+                          {currentHistoryRecord.remark && (
+                            <>
+                              <span className="text-gray-500 ml-2">Remark: </span>
+                              <span className="font-medium">{currentHistoryRecord.remark}</span>
+                            </>
+                          )}
+                        </div>
+                        <div className="mt-4 pt-4 border-t space-y-2">
+                          <div className="text-xs text-gray-500">
+                            ตรวจเมื่อ: {formatDate(currentHistoryRecord.created_at)} | โดย: {currentHistoryRecord.qc_by}
+                            {currentHistoryRecord.retry_count != null && currentHistoryRecord.retry_count > 1 && (
+                              <span className="ml-2">RETRY: {currentHistoryRecord.retry_count}</span>
+                            )}
+                          </div>
+                          <div className="flex gap-2 items-center">
+                            <span
+                              className={`px-4 py-2 rounded-xl font-bold ${
+                                currentHistoryRecord.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                              }`}
+                            >
+                              {currentHistoryRecord.status.toUpperCase()}
+                            </span>
+                            {currentHistoryRecord.status === 'fail' && currentHistoryRecord.fail_reason && (
+                              <span className="text-red-600 font-medium">Reason: {currentHistoryRecord.fail_reason}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 flex gap-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idx = historyResults.indexOf(currentHistoryRecord)
+                            if (idx > 0) setCurrentHistoryRecord(historyResults[idx - 1])
+                          }}
+                          className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold"
+                        >
+                          Prev
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const idx = historyResults.indexOf(currentHistoryRecord)
+                            if (idx >= 0 && idx < historyResults.length - 1) setCurrentHistoryRecord(historyResults[idx + 1])
+                          }}
+                          className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
+                      <p className="text-lg">เลือกรายการจากรายการด้านซ้าย</p>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {historySearched && historyResults.length === 0 && (
-              <div className="text-center py-12 text-gray-500">ไม่พบประวัติการตรวจสำหรับ UID นี้</div>
+              <div className="bg-white rounded-xl shadow-sm p-8 text-center text-gray-500">ไม่พบประวัติการตรวจสำหรับ UID นี้</div>
             )}
           </div>
         )}
@@ -1283,6 +1511,85 @@ export default function QC() {
           </div>
         )}
       </div>
+
+      {/* Fail reason Modal — เลือกเหตุผล Fail เป็นตัวเลือก */}
+      <Modal
+        open={failReasonModalOpen}
+        onClose={closeFailReasonModal}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
+          เลือกเหตุผล Fail
+        </div>
+        <div className="p-4 space-y-3">
+          {reasons.length > 0 ? (
+            <>
+              <p className="text-sm text-gray-600 mb-2">เลือกเหตุผลจากรายการด้านล่าง</p>
+              <div className="space-y-1 max-h-64 overflow-y-auto">
+                {reasons.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => {
+                      setFailReasonSelected(r.reason_text)
+                      setFailReasonCustom('')
+                    }}
+                    className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
+                      failReasonSelected === r.reason_text
+                        ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {r.reason_text}
+                  </button>
+                ))}
+              </div>
+              <div className="pt-2">
+                <label className="block text-sm text-gray-600 mb-1">หรือระบุเหตุผลอื่น</label>
+                <input
+                  type="text"
+                  value={failReasonCustom}
+                  onChange={(e) => {
+                    setFailReasonCustom(e.target.value)
+                    if (e.target.value.trim()) setFailReasonSelected(null)
+                  }}
+                  placeholder="พิมพ์เหตุผลอื่น (ถ้ามี)"
+                  className="w-full border rounded-lg px-3 py-2"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-gray-600 mb-2">กรอกเหตุผล Fail</p>
+              <input
+                type="text"
+                value={failReasonCustom}
+                onChange={(e) => setFailReasonCustom(e.target.value)}
+                placeholder="เหตุผล Fail (ถ้าไม่มีรายการใน Settings ให้กรอกตรงนี้)"
+                className="w-full border rounded-lg px-3 py-2"
+              />
+            </>
+          )}
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={closeFailReasonModal}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmFailReason}
+            disabled={reasons.length > 0 ? !failReasonSelected && !failReasonCustom.trim() : !failReasonCustom.trim()}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
 
       {/* Session detail modal */}
       <Modal open={showSessionModal} onClose={() => setShowSessionModal(false)} contentClassName="max-w-6xl max-h-[90vh] flex flex-col">

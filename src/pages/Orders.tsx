@@ -203,11 +203,18 @@ export default function Orders() {
   }, [searchTerm, channelFilter])
 
   return (
-    <div className="min-h-screen bg-gray-50 w-full">
-      {/* Navigation Tabs — เลื่อนแนวนอนได้ ไม่ล้นเข้าเมนูซ้าย */}
-      <div className="bg-white border-b border-gray-200 sticky top-16 z-40 min-w-0">
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto">
-          <nav className="flex space-x-8 flex-nowrap min-w-max" aria-label="Tabs">
+    <div
+      className="min-h-screen bg-gray-50 w-full"
+      style={{ ['--orders-submenu-height' as string]: '10rem' } as React.CSSProperties}
+    >
+      {/* หัวเมนูย่อย — ล็อกอยู่ด้านบนสุด (fixed) ไม่เลื่อนทะลุ */}
+      <div
+        className="fixed top-16 z-50 bg-white border-b border-gray-200 shadow-md min-w-0 right-4"
+        style={{ left: 'var(--content-offset-left, 16rem)' }}
+      >
+        {/* Navigation Tabs */}
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <nav className="flex gap-1 sm:gap-4 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
@@ -226,10 +233,10 @@ export default function Orders() {
                   setActiveTab(tab.id as Tab)
                   setSelectedOrder(null)
                 }}
-                className={`py-4 px-1 border-b-2 font-medium text-sm whitespace-nowrap flex-shrink-0 ${
+                className={`py-2.5 px-3 sm:px-4 rounded-t-lg border-b-2 font-medium text-sm whitespace-nowrap flex-shrink-0 transition-colors ${
                   activeTab === tab.id
-                    ? 'border-blue-500 ' + ('labelColor' in tab ? tab.labelColor : 'text-blue-600')
-                    : 'border-transparent ' + ('labelColor' in tab ? tab.labelColor : 'text-gray-500') + ' hover:text-gray-700 hover:border-gray-300'
+                    ? 'border-blue-500 bg-blue-50/50 ' + ('labelColor' in tab ? tab.labelColor : 'text-blue-600')
+                    : 'border-transparent ' + ('labelColor' in tab ? tab.labelColor : 'text-gray-500') + ' hover:text-gray-700 hover:bg-gray-50 hover:border-gray-300'
                 }`}
               >
                 {'count' in tab && tab.count !== undefined && 'countColor' in tab
@@ -243,37 +250,41 @@ export default function Orders() {
             ))}
           </nav>
         </div>
+
+        {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
+        {activeTab !== 'create' && (
+          <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-gray-50/80 border-t border-gray-100">
+            <div className="flex flex-wrap gap-3">
+              <input
+                type="text"
+                placeholder="ค้นหา..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="flex-1 min-w-[160px] px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+              />
+              <select
+                value={channelFilter}
+                onChange={(e) => setChannelFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="">ทั้งหมด</option>
+                {channels.map((ch) => (
+                  <option key={ch.channel_code} value={ch.channel_code}>
+                    {ch.channel_name || ch.channel_code}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Search and Filter - Hidden on Create Tab */}
-      {activeTab !== 'create' && (
-        <div className="bg-white border-b border-gray-200 sticky top-[73px] z-30">
-          <div className="w-full px-4 sm:px-6 lg:px-8 py-4 flex gap-4">
-            <input
-              type="text"
-              placeholder="ค้นหา..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <select
-              value={channelFilter}
-              onChange={(e) => setChannelFilter(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">ทั้งหมด</option>
-              {channels.map((ch) => (
-                <option key={ch.channel_code} value={ch.channel_code}>
-                  {ch.channel_name || ch.channel_code}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      )}
-
-      {/* Content Area */}
-      <div className="w-full px-4 sm:px-6 lg:px-8 py-8">
+      {/* ส่วนเนื้อหาทุกเมนู — เริ่มต้นใต้เมนูย่อย (แท็บสร้างไม่มีแถบค้นหา ใช้ 7rem, แท็บอื่นมีแถบค้นหา ใช้ 10rem) */}
+      <main
+        className="w-full px-4 sm:px-6 lg:px-8 pb-6 min-h-0"
+        style={{ paddingTop: activeTab === 'create' ? '7rem' : '10rem' }}
+        aria-label="เนื้อหาออเดอร์"
+      >
         {selectedOrder ? (
           <OrderForm
             order={selectedOrder}
@@ -371,7 +382,7 @@ export default function Orders() {
             onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
           />
         )}
-      </div>
+      </main>
     </div>
   )
 }

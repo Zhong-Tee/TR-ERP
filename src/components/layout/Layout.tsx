@@ -21,11 +21,14 @@ export default function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
+    <div className="flex h-screen min-h-0 bg-gray-100 overflow-hidden">
       <Sidebar isOpen={sidebarOpen} onToggle={toggleSidebar} />
-      <div className={`flex-1 min-w-0 transition-all duration-300 bg-white ${sidebarOpen ? 'ml-64' : 'ml-20'}`}>
+      <div
+        className={`flex-1 min-w-0 min-h-0 flex flex-col transition-all duration-300 bg-white ${sidebarOpen ? 'ml-64' : 'ml-20'}`}
+        style={{ ['--content-offset-left' as string]: sidebarOpen ? '16rem' : '5rem' } as React.CSSProperties}
+      >
         <TopBar sidebarOpen={sidebarOpen} />
-        <main className="mt-16 p-6 bg-white">{children}</main>
+        <main className="flex-1 min-h-0 mt-16 overflow-auto flex flex-col p-6 bg-white">{children}</main>
       </div>
     </div>
   )

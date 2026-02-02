@@ -205,6 +205,26 @@ export default function CartoonPatterns() {
     XLSX.writeFile(wb, 'Template_ลายการ์ตูน.xlsx')
   }
 
+  async function downloadPatternsExcel() {
+    try {
+      const { data, error } = await supabase
+        .from('cp_cartoon_patterns')
+        .select('pattern_name')
+        .eq('is_active', true)
+        .order('pattern_name', { ascending: true })
+      if (error) throw error
+      const headers = ['pattern_name']
+      const rows = (data || []).map((p) => [p.pattern_name ?? ''])
+      const wb = XLSX.utils.book_new()
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+      XLSX.utils.book_append_sheet(wb, ws, 'ลายการ์ตูน')
+      XLSX.writeFile(wb, 'ข้อมูลลายการ์ตูนทั้งหมด.xlsx')
+    } catch (e: any) {
+      console.error(e)
+      alert('ดาวน์โหลดไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
   async function handleImport(file: File) {
     setImporting(true)
     try {
@@ -271,6 +291,13 @@ export default function CartoonPatterns() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold">จัดการลายการ์ตูน</h1>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={downloadPatternsExcel}
+            className="px-3 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm font-medium"
+          >
+            ดาวน์โหลด (Excel)
+          </button>
           <button
             type="button"
             onClick={downloadTemplate}

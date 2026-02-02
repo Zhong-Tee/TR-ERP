@@ -134,6 +134,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(true)
   const [updating, setUpdating] = useState(false)
+  const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [channelFilter, setChannelFilter] = useState<string>('')
   const [productImageMap, setProductImageMap] = useState<Record<string, { product_code?: string; product_name?: string }>>({})
   const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string }>>({})
   /** ระดับบิล: ชื่อช่องทาง, ชื่อลูกค้า, ที่อยู่ */
@@ -156,6 +158,13 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
   useEffect(() => {
     loadOrders()
+  }, [channelFilter])
+
+  useEffect(() => {
+    ;(async () => {
+      const { data } = await supabase.from('channels').select('channel_code, channel_name').order('channel_code')
+      if (data) setChannels(data)
+    })()
   }, [])
 
   // โหลด pr_category_field_settings ครั้งเดียว (เหมือน OrderForm)
@@ -276,18 +285,25 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   async function loadOrders(silent = false): Promise<Order[]> {
     if (!silent) setLoading(true)
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('or_orders')
         .select('*, or_order_items(*)')
         .eq('status', 'ตรวจสอบแล้ว')
         .order('created_at', { ascending: false })
+      if (channelFilter && channelFilter.trim() !== '') {
+        query = query.eq('channel_code', channelFilter.trim())
+      }
+      const { data, error } = await query
 
       if (error) throw error
       const list = data || []
       setOrders(list)
-      // Auto-select first order if available (เฉพาะตอนโหลดครั้งแรก)
-      if (list.length > 0 && !selectedOrder) {
+      // เลือกบิลแรกถ้ายังไม่มี หรือถ้าบิลที่เลือกไม่อยู่ในรายการที่กรองแล้ว
+      const stillInList = selectedOrder && list.some((o: Order) => o.id === selectedOrder.id)
+      if (list.length > 0 && (!selectedOrder || !stillInList)) {
         setSelectedOrder(list[0])
+      } else if (list.length === 0) {
+        setSelectedOrder(null)
       }
       return list
     } catch (error: any) {
@@ -418,9 +434,25 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-200px)] text-[12pt] min-h-0">
       {/* การ์ดซ้าย - รายการบิล */}
       <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
-        <div className="p-4 border-b bg-gray-50 shrink-0">
+        <div className="p-4 border-b bg-gray-50 shrink-0 space-y-3">
           <h2 className="text-lg font-bold">รายการบิล</h2>
-          <p className="text-gray-600 mt-1 text-sm">{orders.length} รายการ</p>
+          <div>
+            <label htmlFor="admin-qc-channel-filter" className="block text-sm font-medium text-gray-700 mb-1">ช่องทาง</label>
+            <select
+              id="admin-qc-channel-filter"
+              value={channelFilter}
+              onChange={(e) => setChannelFilter(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+            >
+              <option value="">ทั้งหมด</option>
+              {channels.map((ch) => (
+                <option key={ch.channel_code} value={ch.channel_code}>
+                  {ch.channel_name || ch.channel_code}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-gray-600 text-sm">{orders.length} รายการ</p>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
           {orders.length === 0 ? (

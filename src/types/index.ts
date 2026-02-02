@@ -202,6 +202,7 @@ export interface QCItem {
   uid: string
   product_code: string
   product_name: string
+  product_category?: string | null
   bill_no: string
   ink_color: string | null
   font: string | null

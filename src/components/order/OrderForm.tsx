@@ -10,12 +10,17 @@ import Modal from '../ui/Modal'
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
   billNo,
+  orderId,
   onSlipsUploaded,
+  onBindSlipPaths,
   existingSlips = [],
   readOnly = false,
 }: {
   billNo?: string | null
+  orderId?: string | null
   onSlipsUploaded?: (slipStoragePaths: string[]) => void
+  /** หลังอัปโหลดสำเร็จ: ผูก path กับ order ใน DB (ac_verified_slips) เพื่อให้เปิดบิลกลับมาเห็นรูป */
+  onBindSlipPaths?: (orderId: string, paths: string[]) => void
   existingSlips?: string[]
   readOnly?: boolean
 }) {
@@ -137,6 +142,11 @@ function SlipUploadSimple({
       // อัพเดตรายการสลิปที่อัพโหลดแล้ว (รวมกับรายการเดิม)
       const updatedSlipPaths = [...uploadedSlipPaths, ...storagePaths]
       setUploadedSlipPaths(updatedSlipPaths)
+      
+      // ผูก path กับ order ใน DB เพื่อเปิดบิลกลับมาเห็นรูป
+      if (orderId && onBindSlipPaths && storagePaths.length > 0) {
+        onBindSlipPaths(orderId, storagePaths)
+      }
       
       // Cleanup preview URLs
       previewUrls.forEach(url => URL.revokeObjectURL(url))
@@ -503,7 +513,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
   const [channelCodesWithSlipVerification, setChannelCodesWithSlipVerification] = useState<Set<string>>(new Set())
-  const [preBillNo, setPreBillNo] = useState<string | null>(null)
+  const [creatingBill, setCreatingBill] = useState(false)
   const [verificationModal, setVerificationModal] = useState<{
     type: VerificationResultType
     accountMatch: boolean | null
@@ -628,9 +638,25 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
   }
 
-  /** โหลด path สลิปจาก storage; ถ้าระบุ orderId จะตัด path ที่ถูกลบแล้ว (ac_verified_slips.is_deleted) ออก */
+  /** โหลด path สลิป: ถ้ามี orderId โหลดจาก ac_verified_slips (ผูกกับออเดอร์) ก่อน; ไม่มีหรือว่างจึง list โฟลเดอร์ */
   async function loadSlipImages(billNo: string, orderId?: string): Promise<string[]> {
     try {
+      if (orderId) {
+        const { data: rows, error: dbError } = await supabase
+          .from('ac_verified_slips')
+          .select('slip_storage_path')
+          .eq('order_id', orderId)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: true })
+        if (!dbError && rows && rows.length > 0) {
+          const paths = (rows as { slip_storage_path?: string | null }[])
+            .map(r => r.slip_storage_path)
+            .filter((p): p is string => Boolean(p))
+          setUploadedSlipPaths(paths)
+          return paths
+        }
+      }
+
       const folderName = `slip${billNo}`
       const { data: files, error } = await supabase.storage
         .from('slip-images')
@@ -647,13 +673,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         return []
       }
 
-      // Convert to storage paths (bucket/path/to/file)
       let storagePaths = files
         .filter(file => file.name && !file.name.endsWith('/'))
         .map(file => `slip-images/${folderName}/${file.name}`)
         .sort()
 
-      // ตอนโหลดออเดอร์: ตัด path ที่มีใน ac_verified_slips ที่ is_deleted = true ออก (ใช้เฉพาะการอัพปัจจุบัน)
       if (orderId) {
         const { data: deletedRows } = await supabase
           .from('ac_verified_slips')
@@ -712,7 +736,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     loadBankSettings()
     async function loadOrderData() {
       if (order) {
-        setPreBillNo(order.bill_no || null)
         const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
         const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
         const customerAddress = hasAddressParts
@@ -814,7 +837,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       } else {
         setItems([{ product_type: 'ชั้น1' }])
         setUploadedSlipPaths([])
-        setPreBillNo(null)
       }
     }
     loadOrderData()
@@ -940,7 +962,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     ;(async () => {
       try {
         const [ordersRes, typesRes] = await Promise.all([
-          supabase.from('or_orders').select('*').not('bill_no', 'is', null).order('created_at', { ascending: false }).limit(500),
+          supabase.from('or_orders').select('*').not('bill_no', 'is', null).eq('status', 'จัดส่งแล้ว').order('created_at', { ascending: false }).limit(500),
           supabase.from('claim_type').select('code, name').order('sort_order', { ascending: true }),
         ])
         if (ordersRes.data) setClaimOrders(ordersRes.data as Order[])
@@ -1313,8 +1335,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         orderId = order.id
         currentBillNo = order.bill_no || null
       } else {
-        // Use pre-generated bill number if available
-        const billNo = preBillNo || await generateBillNo(formData.channel_code)
+        // New order (no Create Bill yet): generate bill_no and insert
+        const billNo = await generateBillNo(formData.channel_code)
         const { data, error } = await supabase
           .from('or_orders')
           .insert({ ...orderData, bill_no: billNo })
@@ -1355,10 +1377,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             return true
           })
           .map((item, index) => {
-            // สร้าง item_uid ที่ไม่ซ้ำกัน โดยใช้ timestamp + index + random
-            const timestamp = Date.now()
-            const randomStr = Math.random().toString(36).substring(2, 9)
-            const itemUid = `${formData.channel_code}-${timestamp}-${index}-${randomStr}`
+            // ตั้งชื่อ item_uid เป็น bill_no-1, bill_no-2, ... ตามลำดับรายการ
+            const itemUid = currentBillNo ? `${currentBillNo}-${index + 1}` : `${formData.channel_code}-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`
             
             return {
               order_id: orderId,
@@ -1930,26 +1950,24 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       } : null))
 
       // Insert or Update ALL slips (regardless of validation result)
-      // Handle duplicate slip_image_url (unique constraint) by checking and updating existing records
+      // Match existing by slip_storage_path (so "upload only" rows get updated with verification result)
       if (slipsToInsert.length > 0) {
-        const slipUrls = slipsToInsert.map((s: any) => s.slip_image_url).filter(Boolean)
-        
-        if (slipUrls.length > 0) {
-          // Check existing records for this order
-          const { data: existingSlips, error: checkError } = await supabase
+        const storagePaths = slipsToInsert.map((s: any) => s.slip_storage_path).filter(Boolean)
+        const existingByPath: Record<string, { id: string; slip_image_url: string }> = {}
+        if (storagePaths.length > 0) {
+          const { data: existingByStorage, error: checkErr } = await supabase
             .from('ac_verified_slips')
-            .select('id, slip_image_url, order_id')
-            .in('slip_image_url', slipUrls)
+            .select('id, slip_image_url, slip_storage_path')
             .eq('order_id', orderId)
-
-          if (checkError) {
-            console.error('[Verify Slips] Error checking existing slips:', checkError)
+            .in('slip_storage_path', storagePaths)
+          if (!checkErr && existingByStorage) {
+            existingByStorage.forEach((r: any) => {
+              if (r.slip_storage_path) existingByPath[r.slip_storage_path] = { id: r.id, slip_image_url: r.slip_image_url }
+            })
           }
-
-          // Separate into inserts and updates based on existing records for THIS order
-          const existingUrlsForThisOrder = new Set(existingSlips?.map((s: any) => s.slip_image_url) || [])
-          const toInsert = slipsToInsert.filter((s: any) => !existingUrlsForThisOrder.has(s.slip_image_url))
-          const toUpdate = slipsToInsert.filter((s: any) => existingUrlsForThisOrder.has(s.slip_image_url))
+        }
+        const toInsert = slipsToInsert.filter((s: any) => !s.slip_storage_path || !existingByPath[s.slip_storage_path])
+        const toUpdate = slipsToInsert.filter((s: any) => s.slip_storage_path && existingByPath[s.slip_storage_path])
 
           // Insert new records (handle duplicate key errors gracefully)
           if (toInsert.length > 0) {
@@ -2047,44 +2065,44 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             }
           }
 
-          // Update existing records for this order
+          // Update existing records (e.g. "upload only" rows matched by slip_storage_path)
           if (toUpdate.length > 0) {
             console.log('[Verify Slips] Updating', toUpdate.length, 'existing verified slips for this order')
-            
+            const updatePayload = (slip: any) => ({
+              slip_image_url: slip.slip_image_url,
+              slip_storage_path: slip.slip_storage_path ?? null,
+              verified_amount: slip.verified_amount,
+              verified_by: slip.verified_by,
+              easyslip_response: slip.easyslip_response,
+              easyslip_trans_ref: slip.easyslip_trans_ref,
+              easyslip_date: slip.easyslip_date,
+              easyslip_receiver_bank_id: slip.easyslip_receiver_bank_id,
+              easyslip_receiver_account: slip.easyslip_receiver_account,
+              is_validated: slip.is_validated,
+              validation_status: slip.validation_status,
+              validation_errors: slip.validation_errors,
+              expected_amount: slip.expected_amount,
+              expected_bank_account: slip.expected_bank_account,
+              expected_bank_code: slip.expected_bank_code,
+              account_name_match: slip.account_name_match,
+              bank_code_match: slip.bank_code_match,
+              amount_match: slip.amount_match,
+            })
             for (const slip of toUpdate) {
-              if (!slip) continue
+              if (!slip?.slip_storage_path) continue
+              const existing = existingByPath[slip.slip_storage_path]
+              if (!existing) continue
               const { error: updateError } = await supabase
                 .from('ac_verified_slips')
-                .update({
-                  slip_storage_path: slip.slip_storage_path ?? null,
-                  verified_amount: slip.verified_amount,
-                  verified_by: slip.verified_by,
-                  easyslip_response: slip.easyslip_response,
-                  easyslip_trans_ref: slip.easyslip_trans_ref,
-                  easyslip_date: slip.easyslip_date,
-                  easyslip_receiver_bank_id: slip.easyslip_receiver_bank_id,
-                  easyslip_receiver_account: slip.easyslip_receiver_account,
-                  is_validated: slip.is_validated,
-                  validation_status: slip.validation_status,
-                  validation_errors: slip.validation_errors,
-                  expected_amount: slip.expected_amount,
-                  expected_bank_account: slip.expected_bank_account,
-                  expected_bank_code: slip.expected_bank_code,
-                  account_name_match: slip.account_name_match,
-                  bank_code_match: slip.bank_code_match,
-                  amount_match: slip.amount_match,
-                })
-                .eq('slip_image_url', slip.slip_image_url)
-                .eq('order_id', orderId)
+                .update(updatePayload(slip))
+                .eq('id', existing.id)
 
               if (updateError) {
-                console.error('[Verify Slips] Error updating verified slip:', updateError, 'for slip:', slip.slip_image_url)
+                console.error('[Verify Slips] Error updating verified slip:', updateError, 'for path:', slip.slip_storage_path)
               }
             }
-            
             console.log('[Verify Slips] Successfully updated verified slips:', toUpdate.length, 'records')
           }
-        }
       } else {
         console.log('[Verify Slips] No slips to insert (no EasySlip response received)')
       }
@@ -2323,13 +2341,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       if (error) throw error
       const newOrderId = (newOrder as { id: string }).id
 
-      // คัดลอกรายการสินค้าจากบิลอ้างอิงไปบิลเคลม (สร้าง item_uid ใหม่)
+      // คัดลอกรายการสินค้าจากบิลอ้างอิงไปบิลเคลม (สร้าง item_uid เป็น bill_no-1, bill_no-2, ...)
       if (refItems && refItems.length > 0) {
-        const channelCode = ref.channel_code || 'REQ'
         const itemsToInsert = refItems.map((item: Record<string, unknown>, index: number) => {
-          const timestamp = Date.now()
-          const randomStr = Math.random().toString(36).substring(2, 9)
-          const itemUid = `${channelCode}-${timestamp}-${index}-${randomStr}`
+          const itemUid = `${claimBillNo}-${index + 1}`
           return {
             order_id: newOrderId,
             item_uid: itemUid,
@@ -2366,16 +2381,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   function addItem() {
     const lastItem = items.length > 0 ? items[items.length - 1] : null
-    const newItem = lastItem
-      ? { ...lastItem }
-      : { product_type: 'ชั้น1' }
+    // Copy เฉพาะชื่อสินค้า + product_id เพื่อรักษากฏตั้งค่าสินค้า (ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่); คอลัมน์อื่นไม่ copy
+    const newItem: Partial<OrderItem> =
+      lastItem?.product_name || lastItem?.product_id
+        ? {
+            product_type: 'ชั้น1',
+            product_name: lastItem?.product_name ?? '',
+            product_id: lastItem?.product_id ?? undefined,
+          }
+        : { product_type: 'ชั้น1' }
     setItems([...items, newItem])
 
-    if (items.length > 0 && lastItem?.product_name) {
-      setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem.product_name })
-    } else {
-      setProductSearchTerm({ ...productSearchTerm, [items.length]: '' })
-    }
+    setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem?.product_name ?? '' })
   }
 
   function removeItem(index: number) {
@@ -2408,20 +2425,43 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           <div className="flex items-center gap-3 flex-wrap">
             {!formDisabled && (
               <>
-                {!order?.bill_no && !preBillNo && (
+                {!order?.bill_no && (
                   <button
                     type="button"
+                    disabled={creatingBill}
                     onClick={async () => {
                       if (!formData.channel_code || formData.channel_code.trim() === '') {
                         setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทางก่อนสร้างเลขบิล' })
                         return
                       }
-                      const billNo = await generateBillNo(formData.channel_code)
-                      setPreBillNo(billNo)
+                      setCreatingBill(true)
+                      try {
+                        const billNo = await generateBillNo(formData.channel_code)
+                        const adminUser = user?.username ?? user?.email ?? ''
+                        const { data: newOrder, error } = await supabase
+                          .from('or_orders')
+                          .insert({
+                            channel_code: formData.channel_code.trim(),
+                            bill_no: billNo,
+                            status: 'รอลงข้อมูล',
+                            customer_name: formData.customer_name?.trim() || '',
+                            customer_address: formData.customer_address?.trim() || '',
+                            admin_user: adminUser,
+                            entry_date: new Date().toISOString().slice(0, 10),
+                          })
+                          .select()
+                          .single()
+                        if (error) throw error
+                        if (onOpenOrder) onOpenOrder(newOrder as Order)
+                      } catch (e: any) {
+                        setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'สร้างบิลไม่สำเร็จ' })
+                      } finally {
+                        setCreatingBill(false)
+                      }
                     }}
-                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
                   >
-                    สร้างบิล
+                    {creatingBill ? 'กำลังสร้าง...' : 'สร้างบิล'}
                   </button>
                 )}
                 <button
@@ -2436,13 +2476,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             <span className="font-bold text-gray-700">
               ผู้ลงออเดอร์: {order?.admin_user ?? user?.username ?? user?.email ?? '-'}
             </span>
-            {(order?.bill_no || preBillNo) && (
+            {order?.bill_no && (
               <div className="text-right flex items-center gap-2 justify-end">
                 <span className="text-sm text-gray-500">เลขบิล:</span>
                 <span className="text-lg font-bold text-blue-600">
-                  {order?.bill_no || preBillNo}
+                  {order.bill_no}
                 </span>
-                {(order?.claim_type != null || ((order?.bill_no || preBillNo) ?? '').toString().startsWith('REQ')) && (
+                {(order.claim_type != null || order.bill_no.toString().startsWith('REQ')) && (
                   <span className="px-2 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
                     เคลม
                   </span>
@@ -2457,10 +2497,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             <select
               value={formData.channel_code}
               onChange={(e) => setFormData({ ...formData, channel_code: e.target.value })}
-              disabled={formDisabled || !!order?.bill_no || !!preBillNo}
+              disabled={formDisabled || !!order?.bill_no}
               required
               className={`w-full px-3 py-2 border rounded-lg ${
-                (formDisabled || !!order?.bill_no || !!preBillNo) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                (formDisabled || !!order?.bill_no) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
               }`}
             >
               <option value="">-- เลือกช่องทาง --</option>
@@ -3117,11 +3157,33 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <>
                     <h4 className="font-semibold mb-3 text-lg">อัพโหลดสลิปโอนเงิน</h4>
                     <SlipUploadSimple
-                      billNo={order?.bill_no || preBillNo || null}
+                      billNo={order?.bill_no || null}
+                      orderId={order?.id || null}
                       existingSlips={uploadedSlipPaths}
                       readOnly={formData.payment_method !== 'โอน' || formDisabled}
                       onSlipsUploaded={(slipStoragePaths) => {
                         setUploadedSlipPaths(slipStoragePaths)
+                      }}
+                      onBindSlipPaths={async (orderId, paths) => {
+                        try {
+                          const { data: existing } = await supabase
+                            .from('ac_verified_slips')
+                            .select('slip_storage_path')
+                            .eq('order_id', orderId)
+                            .eq('is_deleted', false)
+                          const existingSet = new Set((existing || []).map((r: { slip_storage_path?: string | null }) => r.slip_storage_path).filter(Boolean))
+                          for (const path of paths) {
+                            if (existingSet.has(path)) continue
+                            await supabase.from('ac_verified_slips').insert({
+                              order_id: orderId,
+                              slip_image_url: path,
+                              slip_storage_path: path,
+                              verified_amount: 0,
+                            })
+                          }
+                        } catch (e) {
+                          console.error('Bind slip paths:', e)
+                        }
                       }}
                     />
                   </>

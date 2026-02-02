@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
@@ -20,6 +20,8 @@ type VerifiedSlipRow = {
   easyslip_response: Record<string, unknown> | null
   easyslip_receiver_account: string | null
   validation_status: string | null
+  validation_errors: string[] | null
+  expected_amount: number | null
   is_deleted: boolean | null
   deletion_reason: string | null
   or_orders: { channel_code: string | null; admin_user: string | null } | null
@@ -74,6 +76,22 @@ function getReceiverName(res: Record<string, unknown> | null, fallbackAccount: s
   return fallbackAccount || '–'
 }
 
+/** คืนค่าสถานะยอดสำหรับแถวสลิป: ซ้ำ, โอนเกิน, ยอดไม่พอ (หลายค่าแยกด้วย comma) */
+function getTagLogic(row: VerifiedSlipRow): string {
+  const tags: string[] = []
+  const errs = row.validation_errors
+  if (errs && Array.isArray(errs) && errs.some((e: string) => e.includes('สลิปซ้ำ') || e.includes('ซ้ำ'))) {
+    tags.push('ซ้ำ')
+  }
+  const expected = row.expected_amount != null ? Number(row.expected_amount) : null
+  const verified = Number(row.verified_amount)
+  if (expected != null) {
+    if (verified > expected) tags.push('โอนเกิน')
+    else if (verified < expected) tags.push('ยอดไม่พอ')
+  }
+  return tags.length > 0 ? tags.join(', ') : '–'
+}
+
 export default function Account() {
   const { user } = useAuthContext()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
@@ -125,6 +143,10 @@ export default function Account() {
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
   const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
+  /** ตัวกรองรายการตรวจสลิป */
+  const [slipFilterOrderTaker, setSlipFilterOrderTaker] = useState<string>('')
+  const [slipFilterChannel, setSlipFilterChannel] = useState<string>('')
+  const [slipFilterDate, setSlipFilterDate] = useState<string>('')
 
   function copyToClipboard(text: string) {
     if (!text) return
@@ -164,7 +186,7 @@ export default function Account() {
     try {
       const { data: slipsData, error: slipsError } = await supabase
         .from('ac_verified_slips')
-        .select('id, order_id, verified_amount, verified_at, easyslip_date, easyslip_response, easyslip_receiver_account, validation_status, is_deleted, deletion_reason')
+        .select('id, order_id, verified_amount, verified_at, easyslip_date, easyslip_response, easyslip_receiver_account, validation_status, validation_errors, expected_amount, is_deleted, deletion_reason')
         .order('created_at', { ascending: false })
         .limit(2000)
       if (slipsError) throw slipsError
@@ -198,6 +220,49 @@ export default function Account() {
   useEffect(() => {
     if (accountSection === 'slip-verification') loadVerifiedSlipsList()
   }, [accountSection])
+
+  /** รายการตรวจสลิปหลังกรอง (ผู้ลงออเดอร์, ช่องทาง, วันที่) */
+  const filteredSlipsList = useMemo(() => {
+    let list = verifiedSlipsList
+    if (slipFilterOrderTaker.trim()) {
+      const q = slipFilterOrderTaker.trim().toLowerCase()
+      list = list.filter((r) => (r.or_orders?.admin_user ?? '').toLowerCase().includes(q))
+    }
+    if (slipFilterChannel.trim()) {
+      const q = slipFilterChannel.trim().toLowerCase()
+      list = list.filter((r) => (r.or_orders?.channel_code ?? '').toLowerCase().includes(q))
+    }
+    if (slipFilterDate) {
+      list = list.filter((r) => {
+        const dt = r.easyslip_date || r.verified_at || ''
+        if (!dt) return false
+        const d = new Date(dt)
+        const y = d.getFullYear()
+        const m = String(d.getMonth() + 1).padStart(2, '0')
+        const day = String(d.getDate()).padStart(2, '0')
+        return `${y}-${m}-${day}` === slipFilterDate
+      })
+    }
+    return list
+  }, [verifiedSlipsList, slipFilterOrderTaker, slipFilterChannel, slipFilterDate])
+
+  /** ค่าที่ใช้ใน dropdown ตัวกรอง (ผู้ลงออเดอร์, ช่องทาง) */
+  const slipFilterOrderTakerOptions = useMemo(() => {
+    const set = new Set<string>()
+    verifiedSlipsList.forEach((r) => {
+      const v = r.or_orders?.admin_user ?? ''
+      if (v) set.add(v)
+    })
+    return Array.from(set).sort()
+  }, [verifiedSlipsList])
+  const slipFilterChannelOptions = useMemo(() => {
+    const set = new Set<string>()
+    verifiedSlipsList.forEach((r) => {
+      const v = r.or_orders?.channel_code ?? ''
+      if (v) set.add(v)
+    })
+    return Array.from(set).sort()
+  }, [verifiedSlipsList])
 
   async function openSlipPopup(orderId: string, billNo: string) {
     setSlipPopupOrderId(orderId)
@@ -254,6 +319,47 @@ export default function Account() {
     loadEasySlipQuota()
     loadBillingRequests()
     loadHistory()
+  }, [])
+
+  // เรียลไทม์: Realtime เมื่อ or_orders / ac_refunds เปลี่ยน
+  useEffect(() => {
+    const channel = supabase
+      .channel('account-counts-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadBillingRequests()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => {
+        loadRefunds()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  // เรียลไทม์: โพลทุก 30 วินาทีเมื่ออยู่ที่ Dashboard และแท็บเปิดอยู่
+  useEffect(() => {
+    if (accountSection !== 'dashboard') return
+    const POLL_MS = 30_000
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadRefunds()
+        loadBillingRequests()
+      }
+    }, POLL_MS)
+    return () => clearInterval(t)
+  }, [accountSection])
+
+  // อัปเดตตัวเลขเมื่อกลับมาเปิดแท็บ
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadRefunds()
+        loadBillingRequests()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
   async function loadRefunds() {
@@ -475,6 +581,7 @@ export default function Account() {
       })
       await loadBillingRequests()
       await loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
     } catch (error: any) {
       console.error(isTax ? 'Error confirming tax invoice:' : 'Error confirming cash bill:', error)
       setBillingConfirmModal({ open: false, order: null, type: null, submitting: false })
@@ -540,8 +647,8 @@ export default function Account() {
             <button
               type="button"
               onClick={() => {
-                const headers = ['วันที่โอน', 'เวลาโอน', 'ชื่อบัญชีผู้โอน', 'เลขบัญชี', 'ชื่อบัญชีผู้รับโอน', 'ช่องทางขาย', 'ผู้ขาย', 'ยอดเงิน', 'ผลการตรวจสลิป', 'สถานะสลิป', 'เหตุผลการลบ']
-                const rows = verifiedSlipsList.map((row) => {
+                const headers = ['วันที่โอน', 'เวลาโอน', 'ชื่อบัญชีผู้โอน', 'เลขบัญชี', 'ชื่อบัญชีผู้รับโอน', 'ช่องทางขาย', 'ผู้ขาย', 'ยอดเงิน', 'สถานะยอด', 'ผลตรวจ', 'สถานะสลิป', 'เหตุผลการลบ']
+                const rows = filteredSlipsList.map((row) => {
                   const dt = row.easyslip_date || row.verified_at || ''
                   let dateStr = '–'
                   let timeStr = '–'
@@ -560,6 +667,7 @@ export default function Account() {
                     row.or_orders?.channel_code ?? '–',
                     row.or_orders?.admin_user ?? '–',
                     row.verified_amount,
+                    getTagLogic(row),
                     row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–',
                     row.is_deleted ? 'ลบ' : 'ปกติ',
                     row.deletion_reason ?? '–',
@@ -570,11 +678,58 @@ export default function Account() {
                 XLSX.utils.book_append_sheet(wb, ws, 'รายการตรวจสลิป')
                 XLSX.writeFile(wb, 'รายการตรวจสลิป.xlsx')
               }}
-              disabled={verifiedSlipsLoading || verifiedSlipsList.length === 0}
+              disabled={verifiedSlipsLoading || filteredSlipsList.length === 0}
               className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               ดาวน์โหลด Excel
             </button>
+          </div>
+          {/* ตัวกรอง: ผู้ลงออเดอร์, ช่องทาง, วันที่ */}
+          <div className="px-6 py-3 border-b border-gray-100 bg-gray-50/30 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">ผู้ลงออเดอร์</span>
+              <select
+                value={slipFilterOrderTaker}
+                onChange={(e) => setSlipFilterOrderTaker(e.target.value)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm min-w-[120px] bg-white"
+              >
+                <option value="">ทั้งหมด</option>
+                {slipFilterOrderTakerOptions.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">ช่องทาง</span>
+              <select
+                value={slipFilterChannel}
+                onChange={(e) => setSlipFilterChannel(e.target.value)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm min-w-[120px] bg-white"
+              >
+                <option value="">ทั้งหมด</option>
+                {slipFilterChannelOptions.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <span className="whitespace-nowrap">วันที่</span>
+              <input
+                type="date"
+                value={slipFilterDate}
+                onChange={(e) => setSlipFilterDate(e.target.value)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm bg-white"
+              />
+            </label>
+            {(slipFilterOrderTaker || slipFilterChannel || slipFilterDate) && (
+              <button
+                type="button"
+                onClick={() => { setSlipFilterOrderTaker(''); setSlipFilterChannel(''); setSlipFilterDate('') }}
+                className="text-sm text-blue-600 hover:underline"
+              >
+                ล้างตัวกรอง
+              </button>
+            )}
           </div>
           {verifiedSlipsLoading ? (
             <div className="flex justify-center items-center py-14">
@@ -593,20 +748,21 @@ export default function Account() {
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ช่องทางขาย</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผู้ขาย</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ยอดเงิน</th>
-                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผลการตรวจสลิป</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะยอด</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผลตรวจ</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะสลิป</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700">เหตุผลการลบ</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {verifiedSlipsList.length === 0 ? (
+                  {filteredSlipsList.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-4 py-12 text-center text-gray-500">
+                      <td colSpan={12} className="px-4 py-12 text-center text-gray-500">
                         ไม่พบรายการตรวจสลิป
                       </td>
                     </tr>
                   ) : (
-                    verifiedSlipsList.map((row) => {
+                    filteredSlipsList.map((row) => {
                       const dt = row.easyslip_date || row.verified_at || ''
                       let dateStr = '–'
                       let timeStr = '–'
@@ -626,6 +782,7 @@ export default function Account() {
                           <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{row.or_orders?.channel_code ?? '–'}</td>
                           <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{row.or_orders?.admin_user ?? '–'}</td>
                           <td className="px-4 py-3 text-center font-medium text-gray-800 tabular-nums">฿{Number(row.verified_amount).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{getTagLogic(row)}</td>
                           <td className="px-4 py-3 text-center">
                             <span className={row.validation_status === 'passed' ? 'text-emerald-600' : row.validation_status === 'failed' ? 'text-red-600' : 'text-gray-500'}>
                               {row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–'}
@@ -718,28 +875,37 @@ export default function Account() {
         </button>
       </section>
 
-      {/* แถบเมนูย่อย */}
+      {/* แถบเมนูย่อย — แสดงตัวเลขแบบเรียลไทม์ */}
       <nav className="flex gap-1 p-1 bg-gray-100 rounded-xl w-fit">
         <button
           type="button"
           onClick={() => setActiveTab('refunds')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors ${activeTab === 'refunds' ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
         >
           รายการโอนคืน
+          <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-amber-100 text-amber-800">
+            {loading ? '–' : pendingRefunds.length}
+          </span>
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('tax-invoice')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors ${activeTab === 'tax-invoice' ? 'bg-white text-sky-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'tax-invoice' ? 'bg-white text-sky-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
         >
           ขอใบกำกับภาษี
+          <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-sky-100 text-sky-800">
+            {billingLoading ? '–' : taxInvoiceOrders.length}
+          </span>
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('cash-bill')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors ${activeTab === 'cash-bill' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'cash-bill' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
         >
           ขอบิลเงินสด
+          <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
+            {billingLoading ? '–' : cashBillOrders.length}
+          </span>
         </button>
         <button
           type="button"
