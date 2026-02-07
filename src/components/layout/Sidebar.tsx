@@ -49,6 +49,13 @@ const menuItems: MenuItem[] = [
     roles: ['superadmin', 'admin', 'order_staff'],
   },
   {
+    key: 'wms',
+    label: 'จัดสินค้า',
+    icon: '🏬',
+    path: '/wms',
+    roles: ['superadmin', 'admin', 'store', 'production', 'manager', 'picker'],
+  },
+  {
     key: 'qc',
     label: 'QC',
     icon: '🔍',
@@ -60,6 +67,13 @@ const menuItems: MenuItem[] = [
     label: 'จัดของ',
     icon: '📦',
     path: '/packing',
+    roles: ['superadmin', 'admin', 'packing_staff'],
+  },
+  {
+    key: 'transport',
+    label: 'ทวนสอบขนส่ง',
+    icon: '🚚',
+    path: '/transport',
     roles: ['superadmin', 'admin', 'packing_staff'],
   },
   {

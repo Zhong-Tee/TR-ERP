@@ -6,6 +6,8 @@ import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../l
 import { parseAddressText, type SubDistrictOption } from '../../lib/thaiAddress'
 import VerificationResultModal, { type AmountStatus, type VerificationResultType } from './VerificationResultModal'
 import Modal from '../ui/Modal'
+import * as XLSX from 'xlsx'
+import * as Papa from 'papaparse'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -483,12 +485,48 @@ interface OrderFormProps {
   viewOnly?: boolean
 }
 
+type ImportedOrderItem = {
+  product_id: string | null
+  product_name: string
+  quantity: number
+  unit_price?: number
+  ink_color?: string
+  product_type?: string
+  cartoon_pattern?: string
+  line_pattern?: string
+  font?: string
+  line_1?: string
+  line_2?: string
+  line_3?: string
+  notes?: string
+  file_attachment?: string
+}
+
+type ImportedOrder = {
+  bill_no?: string
+  channel_code: string
+  channel_order_no?: string | null
+  customer_name: string
+  customer_address: string
+  price: number
+  shipping_cost: number
+  discount: number
+  total_amount: number
+  payment_method: string | null
+  promotion?: string | null
+  payment_date?: string | null
+  payment_time?: string | null
+  items: ImportedOrderItem[]
+}
+
 /** ช่องทางที่บล็อกที่อยู่ลูกค้า (SHOP PICKUP=SHOPP บล็อกที่อยู่ ปิดเลขพัสดุ; SHOP SHIPPING=SHOP แสดงที่อยู่+ชื่อช่องทาง ปิดเลขพัสดุ) */
 const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 /** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" (SHOP + SHOPP) */
 const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
 /** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
 const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
+/** ช่องทางที่ให้กรอกราคาเอง (ช่องทางชำระเงิน) */
+const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
 const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
 /** ช่องทางที่เมื่อบันทึก "ข้อมูลครบ" ให้เคลื่อนสถานะไปที่ "ตรวจสอบแล้ว" โดยตรง (ไม่ต้องรอตรวจสลิป) */
@@ -500,7 +538,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
-  const [_cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
+  const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
@@ -509,6 +547,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
+  const [patternSearchTerm, setPatternSearchTerm] = useState<{ [key: number]: string }>({})
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
@@ -541,12 +580,21 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     title: '',
     message: '',
   })
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importTab, setImportTab] = useState<'smart' | 'wy'>('smart')
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importSummary, setImportSummary] = useState<string | null>(null)
+  const [wyFile, setWyFile] = useState<File | null>(null)
+  const [wyStatus, setWyStatus] = useState('')
   /** Modal เคลม: step 1 เลือกบิลอ้างอิง, step 2 เลือกหัวข้อเคลม + ยืนยัน */
   const [claimModalOpen, setClaimModalOpen] = useState(false)
   const [claimStep, setClaimStep] = useState<1 | 2>(1)
   const [claimOrders, setClaimOrders] = useState<Order[]>([])
   const [claimOrdersLoading, setClaimOrdersLoading] = useState(false)
   const [claimFilterSearch, setClaimFilterSearch] = useState('')
+  const undoStackRef = useRef<Array<{ formData: typeof formData; items: Partial<OrderItem>[] }>>([])
+  const undoingRef = useRef(false)
   const [claimFilterChannel, setClaimFilterChannel] = useState('')
   const [selectedClaimRefOrder, setSelectedClaimRefOrder] = useState<Order | null>(null)
   const [claimTypes, setClaimTypes] = useState<{ code: string; name: string }[]>([])
@@ -1062,29 +1110,69 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return total
   }
 
+  const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
+
   // คำนวณยอดสุทธิ
   function calculateTotal() {
     const itemsTotal = calculateItemsTotal()
+    const basePrice = isManualPriceChannel ? (formData.price || 0) : itemsTotal
     let subtotal: number
     
     // หากมีการกดปุ่มขอใบกำกับภาษี ยอดสุทธิจะใช้ยอดเงินที่ต้องชำระ (รวมภาษีแล้ว)
     if (showTaxInvoice) {
       // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
-      subtotal = itemsTotal * 1.07
+      subtotal = basePrice * 1.07
     } else {
       // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
-      subtotal = itemsTotal + formData.shipping_cost - formData.discount
+      subtotal = basePrice + formData.shipping_cost - formData.discount
     }
     
     // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
     subtotal = Math.round(subtotal * 100) / 100
     
-    setFormData(prev => ({ ...prev, price: itemsTotal, total_amount: subtotal }))
+    setFormData(prev => ({
+      ...prev,
+      price: isManualPriceChannel ? (prev.price || 0) : itemsTotal,
+      total_amount: subtotal
+    }))
   }
 
   useEffect(() => {
     calculateTotal()
-  }, [items, formData.shipping_cost, formData.discount, showTaxInvoice])
+  }, [items, formData.shipping_cost, formData.discount, showTaxInvoice, formData.price, formData.channel_code])
+
+  useEffect(() => {
+    if (undoingRef.current) return
+    const snapshot = {
+      formData: { ...formData },
+      items: items.map((item) => ({ ...item })),
+    }
+    undoStackRef.current.push(snapshot)
+    if (undoStackRef.current.length > 50) {
+      undoStackRef.current.shift()
+    }
+  }, [formData, items])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.key.toLowerCase() !== 'z') return
+      const target = event.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return
+      }
+      const prev = undoStackRef.current.pop()
+      if (!prev) return
+      event.preventDefault()
+      undoingRef.current = true
+      setFormData(prev.formData)
+      setItems(prev.items)
+      window.setTimeout(() => {
+        undoingRef.current = false
+      }, 0)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -1117,6 +1205,23 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     if (formData.channel_code === 'SHOPP') {
       if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
         setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
+        return
+      }
+    }
+
+    if (formData.tracking_number && formData.tracking_number.trim()) {
+      const { data: dup, error } = await supabase
+        .from('or_orders')
+        .select('id')
+        .eq('tracking_number', formData.tracking_number.trim())
+        .neq('id', order?.id || '00000000-0000-0000-0000-000000000000')
+        .limit(1)
+      if (error) {
+        setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: error.message })
+        return
+      }
+      if (dup && dup.length > 0) {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'เลขพัสดุซ้ำกับรายการในระบบ' })
         return
       }
     }
@@ -1196,15 +1301,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
 
     // ตรวจสอบว่ารายการสินค้าทุกรายการมีราคา/หน่วยหรือไม่
-    const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
-    if (itemsWithoutPrice.length > 0) {
-      const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-      setMessageModal({
-        open: true,
-        title: 'แจ้งเตือน',
-        message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
-      })
-      return
+    if (!isManualPriceChannel) {
+      const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
+      if (itemsWithoutPrice.length > 0) {
+        const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
+        setMessageModal({
+          open: true,
+          title: 'แจ้งเตือน',
+          message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
+        })
+        return
+      }
     }
 
       await handleSubmitInternal(items, 'รอลงข้อมูล')
@@ -1219,14 +1326,16 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
     setLoading(true)
     try {
-      // คำนวณราคารวมจากรายการสินค้า
-      const calculatedPrice = itemsToSave
-        .filter(item => item.product_id)
-        .reduce((sum, item) => {
-          const quantity = item.quantity || 1
-          const unitPrice = item.unit_price || 0
-          return sum + (quantity * unitPrice)
-        }, 0)
+      // คำนวณราคารวมจากรายการสินค้า หรือใช้ราคาที่กรอกเอง
+      const calculatedPrice = isManualPriceChannel
+        ? (formData.price || 0)
+        : itemsToSave
+            .filter(item => item.product_id)
+            .reduce((sum, item) => {
+              const quantity = item.quantity || 1
+              const unitPrice = item.unit_price || 0
+              return sum + (quantity * unitPrice)
+            }, 0)
       
       // คำนวณยอดสุทธิ (เหมือนกับ calculateTotal)
       let calculatedTotal: number
@@ -2286,6 +2395,635 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return `${channelCode}${year}${month}${sequence.toString().padStart(4, '0')}`
   }
 
+  const parseNumber = (value: unknown) => {
+    if (value == null) return 0
+    const n = parseFloat(String(value).replace(/,/g, ''))
+    return Number.isFinite(n) ? n : 0
+  }
+
+  const parseTimeString = (value: unknown) => {
+    if (!value) return null
+    const s = String(value).trim()
+    if (!s) return null
+    return s.length >= 5 ? s.substring(0, 5) : s
+  }
+
+  const toDateString = (d: Date | null) => (d && !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : null)
+
+  const excelDateToJSDate = (serial: unknown) => {
+    if (typeof serial !== 'number' || isNaN(serial)) return null
+    const utcDays = Math.floor(serial - 25569)
+    const utcValue = utcDays * 86400
+    const dateInfo = new Date(utcValue * 1000)
+    const fractionalDay = serial - Math.floor(serial) + 0.0000001
+    let totalSeconds = Math.floor(86400 * fractionalDay)
+    const seconds = totalSeconds % 60
+    totalSeconds -= seconds
+    const hours = Math.floor(totalSeconds / (60 * 60))
+    const minutes = Math.floor(totalSeconds / 60) % 60
+    return new Date(dateInfo.getFullYear(), dateInfo.getMonth(), dateInfo.getDate(), hours, minutes, seconds)
+  }
+
+  const findHeader = (headers: string[], possibleNames: string[]) => {
+    const lowerCaseNames = possibleNames.map((name) => name.toLowerCase().trim())
+    for (const header of headers) {
+      if (header && lowerCaseNames.includes(header.toLowerCase().trim())) return header
+    }
+    return null
+  }
+
+  const downloadStandardOrderTemplate = () => {
+    const headers = [
+      'ช่องทาง',
+      'ชื่อลูกค้า',
+      'ที่อยู่ลูกค้า',
+      'ราคา',
+      'ค่าส่ง',
+      'ส่วนลด',
+      'วิธีการชำระ',
+      'ชื่อโปรโมชั่น',
+      'วันที่ชำระ',
+      'เวลาที่ชำระ',
+      'ชื่อสินค้า',
+      'สีหมึก',
+      'ชั้นที่',
+      'ลายการ์ตูน',
+      'ลายเส้น',
+      'ฟอนต์',
+      'บรรทัด 1',
+      'บรรทัด 2',
+      'บรรทัด 3',
+      'จำนวน',
+      'หมายเหตุ',
+      'ไฟล์แนบ',
+    ]
+    const sampleData = [
+      [
+        'SP',
+        'สมชาย ใจดี',
+        '123/45 ถ.สุขุมวิท พระโขนง คลองเตย กทม. 10110',
+        300,
+        30,
+        0,
+        'โอน',
+        'โปร 9.9',
+        '2025-10-15',
+        '10:30',
+        'ป้ายชื่อรีดติด',
+        'ดำ',
+        '1',
+        'กระต่าย',
+        'เส้นปกติ',
+        'TH01',
+        'ด.ช. รักเรียน',
+        'ชั้น ป.1',
+        '',
+        2,
+        'ไม่มี',
+        '',
+      ],
+    ]
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...sampleData])
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'OrderTemplate')
+    XLSX.writeFile(workbook, 'TRKids_Multi_Order_Template_Simple.xlsx')
+  }
+
+  const downloadPgtrTemplate = () => {
+    const headers = [
+      '#',
+      'วันที่สั่งซื้อ',
+      'เวลา',
+      'หลักฐานการโอน',
+      'ราคาก่อนส่วนลด',
+      'ค่าขนส่ง',
+      'coupon',
+      'ส่วนลด admin',
+      'ยอดสุทธิ',
+      'ตัวแทน',
+      'แอดมิน',
+      'ช่องทางการสั่งซื้อ',
+      'เลขออร์เดอร์',
+      'ชื่อสินค้า',
+      'รหัสสินค้า',
+      'ฟอนต์',
+      'รหัสรูปแบบ',
+      'Underline',
+      'Ink',
+      'สี',
+      'Label1',
+      'Label2',
+      'Label3',
+      'จำนวน',
+      'comment',
+      'remark',
+      'ชื่อสกุลผู้รับ',
+      'โทรศัพท์',
+      'อีเมล',
+      'จังหวัด',
+      'เขตอำเภอ',
+      'ตำบลปลายทาง',
+      'รหัสไปษณีย์',
+      'ที่อยู่ผู้รับ',
+      'ที่อยู่เต็ม',
+    ]
+    const worksheet = XLSX.utils.aoa_to_sheet([headers])
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'PGTR_Template')
+    XLSX.writeFile(workbook, 'TRKids_PGTR_Order_Template.xlsx')
+  }
+
+  const downloadWyTemplate = () => {
+    const headers = [
+      'เลขบิล',
+      'ชื่อลูกค้า',
+      'รหัสลูกค้า',
+      'วันที่สั่งซื้อ',
+      'เลขอ้างอิงชำระ',
+      'รหัส',
+      'สินค้า',
+      'บรรทัด1',
+      'บรรทัด2',
+      'font',
+      'จำนวน',
+      'ราคา',
+      'โค้ดส่วนลด',
+      'ส่วนลด',
+      'ราคาก่อนลด',
+      'ราคาหลังลด',
+      'ค่าส่ง',
+      'ยอดสุทธิ',
+      'หมายเหตุ',
+      'เลขพัสดุ',
+      'ชื่อ',
+      'นามสกุล',
+      'เบอร์โทร',
+      'ที่อยู่',
+      'แขวง/ตำบล',
+      'เขต/อำเภอ',
+      'จังหวัด',
+      'เลขไปษณีย์',
+      'ชื่อที่อยู่-เบอร์โทรผู้รับ',
+    ]
+    const worksheet = XLSX.utils.aoa_to_sheet([headers])
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'WY_Template')
+    XLSX.writeFile(workbook, 'TRKids_WY_Order_Template.xlsx')
+  }
+
+  const checkImportedOrderCompleteness = (order: ImportedOrder) => {
+    if (!order.customer_name || !order.customer_address) return false
+    if (order.channel_code !== 'CLAIM' && order.channel_code !== 'INFU') {
+      if (order.total_amount <= 0 || !order.payment_method) return false
+    }
+    if (!order.items || order.items.length === 0) return false
+    for (const item of order.items) {
+      if (!item.product_id) return false
+    }
+    return true
+  }
+
+  const applyStampInkLogicToOrderObject = (order: ImportedOrder) => {
+    const originalItems = [...order.items]
+    originalItems.forEach((item) => {
+      const product = products.find((p) => p.id === item.product_id)
+      if (!product || !product.product_category || !product.product_category.toUpperCase().includes('STAMP')) return
+      const inkColor = item.ink_color || ''
+      const targetColors = { เขียว: 'เขียว', ดำ: 'ดำ', แดง: 'แดง', น้ำเงิน: 'น้ำเงิน' }
+      const matchedColor = Object.keys(targetColors).find(
+        (c) => inkColor.includes(c) && inkColor.includes('พลาสติก')
+      )
+      if (!matchedColor) return
+      const inkProductName = `หมึกแฟลชพลาสติก 5 ml. (${matchedColor})`
+      const inkProductToAdd = products.find((p) => p.product_name === inkProductName)
+      if (!inkProductToAdd) return
+      if (!order.items.some((existing) => existing.product_id === inkProductToAdd.id)) {
+        order.items.push({
+          product_id: inkProductToAdd.id,
+          product_name: inkProductToAdd.product_name,
+          quantity: 1,
+          ink_color: '',
+          product_type: '',
+          cartoon_pattern: '',
+          line_pattern: '',
+          font: '',
+          line_1: '',
+          line_2: '',
+          line_3: '',
+          notes: 'สินค้าแถม',
+          file_attachment: '',
+        })
+      }
+    })
+  }
+
+  const parseStandardRows = (rows: unknown[][]) => {
+    const processed: ImportedOrder[] = []
+    let current: ImportedOrder | null = null
+    for (let i = 1; i < rows.length; i += 1) {
+      const r = rows[i] || []
+      if (r.every((c) => String(c ?? '').trim() === '')) continue
+      if (String(r[0] ?? '').trim() && String(r[1] ?? '').trim()) {
+        const price = parseNumber(r[3])
+        const shippingCost = parseNumber(r[4])
+        const discount = parseNumber(r[5])
+        current = {
+          channel_code: String(r[0] || '').trim(),
+          customer_name: String(r[1] || '').trim(),
+          customer_address: String(r[2] || '').trim(),
+          price,
+          shipping_cost: shippingCost,
+          discount,
+          total_amount: price + shippingCost - discount,
+          payment_method: String(r[6] || '').trim() || null,
+          promotion: String(r[7] || '').trim() || null,
+          payment_date: r[8] ? String(r[8]).trim() : null,
+          payment_time: parseTimeString(r[9]),
+          items: [],
+        }
+        processed.push(current)
+      }
+      if (String(r[10] || '').trim() && current) {
+        const lookup = String(r[10] || '').trim().toLowerCase()
+        const p = products.find(
+          (x) =>
+            ((x.product_code || '').toLowerCase() === lookup ||
+              (x.product_name || '').toLowerCase().includes(lookup)) &&
+            !String(x.product_code || '').startsWith('22')
+        )
+        current.items.push({
+          product_id: p ? p.id : null,
+          product_name: p ? p.product_name : String(r[10] || ''),
+          ink_color: String(r[11] || ''),
+          product_type: String(r[12] || ''),
+          cartoon_pattern: String(r[13] || ''),
+          line_pattern: String(r[14] || ''),
+          font: String(r[15] || ''),
+          line_1: String(r[16] || ''),
+          line_2: String(r[17] || ''),
+          line_3: String(r[18] || ''),
+          quantity: parseInt(String(r[19] || '1'), 10) || 1,
+          notes: String(r[20] || ''),
+          file_attachment: String(r[21] || ''),
+        })
+      }
+    }
+    return processed
+  }
+
+  const parsePgtrJson = (json: Record<string, any>[]) => {
+    const map = new Map<string, ImportedOrder>()
+    const headers = Object.keys(json[0] || {})
+    const orderH = findHeader(headers, ['เลขออร์เดอร์', 'เลขที่ออเดอร์', 'Order Number'])
+    json.forEach((r) => {
+      const rawB = String((orderH ? r[orderH] : r['เลขออร์เดอร์']) || '').trim()
+      if (!rawB) return
+      let billNo = rawB
+      const lastDash = rawB.lastIndexOf('-')
+      if (lastDash > 0 && !isNaN(Number(rawB.substring(lastDash + 1)))) {
+        billNo = rawB.substring(0, lastDash)
+      }
+      if (!map.has(billNo)) {
+        const pVal = parseNumber(r['ราคาก่อนส่วนลด'])
+        const sVal = parseNumber(r['ค่าขนส่ง'])
+        const dVal = parseNumber(r['ส่วนลด admin'])
+        let pDate: string | null = null
+        let pTime: string | null = null
+        const rawDate = r['วันที่สั่งซื้อ']
+        if (rawDate) {
+          const dObj = typeof rawDate === 'number' ? excelDateToJSDate(rawDate) : new Date(rawDate)
+          pDate = toDateString(dObj)
+          if (dObj && dObj.getHours() + dObj.getMinutes() > 0) {
+            pTime = `${String(dObj.getHours()).padStart(2, '0')}:${String(dObj.getMinutes()).padStart(2, '0')}`
+          }
+        }
+        if (r['เวลา']) pTime = parseTimeString(r['เวลา'])
+        map.set(billNo, {
+          bill_no: billNo,
+          channel_code: 'PGTR',
+          channel_order_no: billNo,
+          customer_name: String(r['ชื่อสกุลผู้รับ'] || ''),
+          customer_address: String(r['ที่อยู่เต็ม'] || ''),
+          price: pVal,
+          shipping_cost: sVal,
+          discount: dVal,
+          total_amount: pVal + sVal - dVal,
+          payment_method: 'โอน',
+          payment_date: pDate,
+          payment_time: pTime,
+          items: [],
+        })
+      }
+      const curr = map.get(billNo)
+      if (!curr) return
+      const pCode = String(r['รหัสสินค้า'] || '').split('-')[0]
+      const p = products.find((x) => x.product_code === pCode && !String(x.product_code || '').startsWith('22'))
+      curr.items.push({
+        product_id: p ? p.id : null,
+        product_name: p ? p.product_name : String(r['ชื่อสินค้า'] || 'รหัสไม่ตรง'),
+        ink_color: String(r['Ink'] || r['สี'] || '').trim(),
+        cartoon_pattern: p && (p.product_category || '').toUpperCase().includes('UV') ? String(r['ชื่อสินค้า'] || '') : '',
+        line_pattern: String(r['Underline'] || ''),
+        font: String(r['ฟอนต์'] || r['font'] || ''),
+        line_1: String(r['Label1'] || ''),
+        line_2: String(r['Label2'] || ''),
+        line_3: String(r['Label3'] || ''),
+        quantity: parseInt(String(r['จำนวน'] || '1'), 10) || 1,
+        notes: String(r['comment'] || r['remark'] || ''),
+      })
+    })
+    return Array.from(map.values())
+  }
+
+  const parseWyJson = (json: Record<string, any>[]) => {
+    const map = new Map<string, ImportedOrder>()
+    json.forEach((r) => {
+      const billNo = String(r['เลขบิล'] || '').trim()
+      if (!billNo) return
+      if (!map.has(billNo)) {
+        let pDate: string | null = null
+        let pTime: string | null = null
+        const rawDate = r['วันที่สั่งซื้อ']
+        if (rawDate) {
+          const dObj = typeof rawDate === 'number' ? excelDateToJSDate(rawDate) : new Date(rawDate)
+          pDate = toDateString(dObj)
+          if (dObj && dObj.getHours() + dObj.getMinutes() > 0) {
+            pTime = `${String(dObj.getHours()).padStart(2, '0')}:${String(dObj.getMinutes()).padStart(2, '0')}`
+          }
+        }
+        if (r['เวลา']) pTime = parseTimeString(r['เวลา'])
+        map.set(billNo, {
+          bill_no: billNo,
+          channel_code: 'WY',
+          channel_order_no: billNo,
+          customer_name: String(r['ชื่อลูกค้า'] || ''),
+          customer_address: String(r['ชื่อที่อยู่-เบอร์โทรผู้รับ'] || r['ที่อยู่'] || r['เลขพัสดุ'] || ''),
+          price: parseNumber(r['ราคา']),
+          shipping_cost: parseNumber(r['ค่าส่ง']),
+          discount: parseNumber(r['ส่วนลด']),
+          total_amount: parseNumber(r['ยอดสุทธิ']),
+          payment_method: 'โอน',
+          payment_date: pDate,
+          payment_time: pTime,
+          items: [],
+        })
+      }
+      const curr = map.get(billNo)
+      if (!curr) return
+      const p = products.find(
+        (x) => String(x.product_name || '').trim() === String(r['รหัส'] || '').trim() && String(x.product_code || '').startsWith('22')
+      )
+      curr.items.push({
+        product_id: p ? p.id : null,
+        product_name: p ? p.product_name : String(r['สินค้า'] || 'รหัสไม่ตรง'),
+        cartoon_pattern: '',
+        line_pattern: '',
+        line_1: String(r['บรรทัด1'] || ''),
+        line_2: String(r['บรรทัด2'] || ''),
+        line_3: '',
+        font: String(r['font'] || ''),
+        quantity: parseInt(String(r['จำนวน'] || '1'), 10) || 1,
+        notes: String(r['หมายเหตุ'] || ''),
+      })
+    })
+    return Array.from(map.values())
+  }
+
+  async function processAndSaveImportedOrders(ordersToImport: ImportedOrder[], useProvidedBillNo = false) {
+    if (!user) {
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเข้าสู่ระบบก่อนนำเข้าออเดอร์' })
+      setImportBusy(false)
+      return
+    }
+    if (ordersToImport.length === 0) {
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'ไม่พบข้อมูลออเดอร์ในไฟล์' })
+      setImportBusy(false)
+      return
+    }
+    setImportBusy(true)
+    setImportSummary(null)
+    const adminUser = user.username || user.email || ''
+    const todayStr = new Date().toISOString().slice(0, 10)
+    let successCount = 0
+    let waitingCount = 0
+    let skippedCount = 0
+    let errorCount = 0
+    const errorLines: string[] = []
+    let existingBillNos = new Set<string>()
+    if (useProvidedBillNo) {
+      const billNos = ordersToImport.map((o) => o.bill_no).filter(Boolean) as string[]
+      if (billNos.length > 0) {
+        const { data } = await supabase.from('or_orders').select('bill_no').in('bill_no', billNos)
+        existingBillNos = new Set((data || []).map((d: { bill_no: string }) => d.bill_no))
+      }
+    }
+
+    for (const order of ordersToImport) {
+      try {
+        const billNo = useProvidedBillNo ? (order.bill_no || '') : await generateBillNo(order.channel_code)
+        if (!billNo) {
+          errorCount += 1
+          errorLines.push('ไม่พบเลขบิลสำหรับออเดอร์ในไฟล์')
+          continue
+        }
+        if (existingBillNos.has(billNo)) {
+          skippedCount += 1
+          continue
+        }
+        const isComplete = checkImportedOrderCompleteness(order)
+        if (!isComplete) waitingCount += 1
+        const orderData = {
+          channel_code: order.channel_code,
+          customer_name: order.customer_name || '',
+          customer_address: order.customer_address || '',
+          channel_order_no: order.channel_order_no ?? null,
+          price: order.price || 0,
+          shipping_cost: order.shipping_cost || 0,
+          discount: order.discount || 0,
+          total_amount: order.total_amount || 0,
+          payment_method: order.payment_method || null,
+          promotion: order.promotion || null,
+          payment_date: order.payment_date || null,
+          payment_time: order.payment_time || null,
+          status: isComplete ? 'ลงข้อมูลเสร็จสิ้น' : 'รอลงข้อมูล',
+          admin_user: adminUser,
+          entry_date: todayStr,
+        }
+        const { data: inserted, error: insertErr } = await supabase
+          .from('or_orders')
+          .insert({ ...orderData, bill_no: billNo })
+          .select()
+          .single()
+        if (insertErr || !inserted?.id) {
+          errorCount += 1
+          errorLines.push(`${billNo}: ${insertErr?.message || 'ไม่สามารถบันทึกออเดอร์ได้'}`)
+          continue
+        }
+        const orderId = inserted.id
+        applyStampInkLogicToOrderObject(order)
+        const itemsToInsert = order.items
+          .filter((item) => !!item.product_id)
+          .map((item, index) => ({
+            order_id: orderId,
+            item_uid: `${billNo}-${index + 1}`,
+            product_id: item.product_id!,
+            product_name: item.product_name || '',
+            quantity: item.quantity || 1,
+            unit_price: item.unit_price || 0,
+            ink_color: item.ink_color || null,
+            product_type: item.product_type || 'ชั้น1',
+            cartoon_pattern: item.cartoon_pattern || null,
+            line_pattern: item.line_pattern || null,
+            font: item.font || null,
+            line_1: item.line_1 || null,
+            line_2: item.line_2 || null,
+            line_3: item.line_3 || null,
+            notes: item.notes || null,
+            file_attachment: item.file_attachment || null,
+          }))
+        if (itemsToInsert.length === 0) {
+          errorCount += 1
+          errorLines.push(`${billNo}: ไม่มีรายการสินค้าที่จับคู่สินค้าได้`)
+          continue
+        }
+        const { error: itemsErr } = await supabase.from('or_order_items').insert(itemsToInsert)
+        if (itemsErr) {
+          errorCount += 1
+          errorLines.push(`${billNo}: ${itemsErr.message}`)
+          continue
+        }
+        successCount += 1
+      } catch (err: any) {
+        errorCount += 1
+        errorLines.push(err?.message || 'เกิดข้อผิดพลาดในการนำเข้า')
+      }
+    }
+    const summaryLines = [
+      'นำเข้าเสร็จสิ้น',
+      `สำเร็จ: ${successCount}`,
+      `รอลงข้อมูล: ${waitingCount}`,
+      `ข้าม (บิลซ้ำ): ${skippedCount}`,
+      `ผิดพลาด: ${errorCount}`,
+    ]
+    if (errorLines.length > 0) {
+      summaryLines.push('', 'ตัวอย่างข้อผิดพลาด:', ...errorLines.slice(0, 5))
+    }
+    setImportSummary(summaryLines.join('\n'))
+    setImportBusy(false)
+  }
+
+  async function handleSmartImport(file: File) {
+    if (!file) return
+    if (products.length === 0) {
+      setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: 'ยังโหลดรายการสินค้าไม่เสร็จ กรุณาลองอีกครั้ง' })
+      return
+    }
+    setImportBusy(true)
+    setImportSummary(null)
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      try {
+        const buf = e.target?.result
+        if (!buf) throw new Error('ไม่สามารถอ่านไฟล์ได้')
+        const workbook = XLSX.read(new Uint8Array(buf as ArrayBuffer), { type: 'array', cellDates: true })
+        const sheet = workbook.Sheets[workbook.SheetNames[0]]
+        const json = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { raw: false, defval: '' })
+        if (json.length === 0) throw new Error('ไฟล์ไม่มีข้อมูล')
+        const headers = Object.keys(json[0])
+        const orderH = findHeader(headers, ['เลขออร์เดอร์', 'เลขที่ออเดอร์', 'Order Number'])
+        if (orderH) {
+          const parsed = parsePgtrJson(json)
+          await processAndSaveImportedOrders(parsed, true)
+        } else if (headers.includes('เลขบิล') && String(json[0]['เลขบิล']).toUpperCase().startsWith('WY')) {
+          const parsed = parseWyJson(json)
+          await processAndSaveImportedOrders(parsed, true)
+        } else {
+          const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][]
+          const parsed = parseStandardRows(rows)
+          await processAndSaveImportedOrders(parsed, false)
+        }
+      } catch (err: any) {
+        setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: err?.message || String(err) })
+        setImportBusy(false)
+      }
+    }
+    reader.readAsArrayBuffer(file)
+  }
+
+  const repairWyCsvContent = (content: string) => {
+    const allLines = content.split(/\r?\n/).filter((line) => line.trim() !== '')
+    if (allLines.length === 0) return ''
+    const processedLines: string[] = []
+    const headerLine = allLines[0]
+    processedLines.push(headerLine)
+    for (let i = 1; i < allLines.length; i += 1) {
+      const currentLine = allLines[i]
+      if (currentLine.startsWith('WY')) {
+        processedLines.push(currentLine)
+      } else if (processedLines.length > 1) {
+        processedLines[processedLines.length - 1] += `, ${currentLine}`
+      }
+    }
+    return processedLines.join('\n')
+  }
+
+  type PapaParseResult<T> = { data?: T[] }
+  type PapaParseConfig<T> = {
+    delimiter?: string
+    header?: boolean
+    skipEmptyLines?: boolean
+    transformHeader?: (h: string) => string
+    complete?: (results: PapaParseResult<T>) => void | Promise<void>
+  }
+  const papaParse = (Papa as unknown as { parse: (input: string, config: PapaParseConfig<Record<string, string>>) => void }).parse
+
+  async function handleWyConvert(file: File) {
+    if (!file) return
+    if (products.length === 0) {
+      setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: 'ยังโหลดรายการสินค้าไม่เสร็จ กรุณาลองอีกครั้ง' })
+      return
+    }
+    setWyStatus('กำลังประมวลผลไฟล์...')
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const content = String(e.target?.result || '')
+        const repaired = repairWyCsvContent(content)
+        papaParse(repaired, {
+          delimiter: '\t',
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: (h: string) => h.trim(),
+          complete: async (results: PapaParseResult<Record<string, string>>) => {
+            const finalData = (results.data || [])
+              .filter((row: Record<string, string>) => row['เลขบิล'] && row['เลขบิล'] !== 'เลขบิล')
+              .map((row: Record<string, string>) => {
+                const newRow: Record<string, string> = {}
+                Object.keys(row || {}).forEach((key) => {
+                  let value = row[key]?.toString() ?? ''
+                  value = value.trim()
+                  if (value.startsWith("'")) value = value.substring(1)
+                  newRow[key.trim()] = value
+                })
+                return newRow
+              })
+            if (finalData.length > 0) {
+              setWyStatus(`แปลงสำเร็จ! กำลังนำเข้า ${finalData.length} แถว...`)
+              const parsed = parseWyJson(finalData)
+              await processAndSaveImportedOrders(parsed, true)
+              setWyStatus(`นำเข้าเสร็จสิ้น ${finalData.length} แถว`)
+            } else {
+              setWyStatus('ไม่พบข้อมูลที่สามารถแสดงผลได้ในไฟล์')
+            }
+          },
+        })
+      } catch (err: any) {
+        setWyStatus(err?.message || 'เกิดข้อผิดพลาดในการอ่านไฟล์')
+      }
+    }
+    reader.readAsText(file, 'UTF-8')
+  }
+
   /** สร้างบิลเคลม: ดึงข้อมูลบิลอ้างอิง (ชื่อลูกค้า, ที่อยู่, รายการสินค้า) มาใส่บิลเคลม แล้วเปิดบิล */
   async function handleClaimConfirm() {
     if (!selectedClaimRefOrder?.bill_no || !selectedClaimRefOrder?.id || !selectedClaimType?.trim() || !onOpenOrder) return
@@ -2395,6 +3133,79 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem?.product_name ?? '' })
   }
 
+  const CONDO_PRODUCTS = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
+
+  function isCondoProduct(name?: string | null) {
+    if (!name) return false
+    return CONDO_PRODUCTS.includes(name.trim())
+  }
+
+  function normalizeProductName(value?: string | null) {
+    return (value || '').toLowerCase().trim().replace(/\s+/g, ' ')
+  }
+
+  function findMatchedProduct(inputValue: string) {
+    const search = normalizeProductName(inputValue)
+    if (!search) return null
+    return (
+      products.find((p) => normalizeProductName(p.product_name) === search) ||
+      products.find((p) => normalizeProductName(p.product_code || '') === search) ||
+      null
+    )
+  }
+
+  function ensureCondoRows(index: number, product: Product) {
+    const layers = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
+    let inserted = 0
+
+    setItems((prev) => {
+      const next = [...prev]
+      next[index] = {
+        ...next[index],
+        product_id: product.id,
+        product_name: product.product_name,
+        product_type: layers[0],
+      }
+
+      const already = layers.slice(1).every((layer, offset) => {
+        const row = next[index + 1 + offset]
+        return (
+          row &&
+          (String(row.product_id || '') === String(product.id) || row.product_name === product.product_name) &&
+          (row.product_type || 'ชั้น1') === layer
+        )
+      })
+
+      if (already) return next
+      const newRows = layers.slice(1).map((layer) => ({
+        product_id: product.id,
+        product_name: product.product_name,
+        product_type: layer,
+      }))
+      inserted = newRows.length
+      next.splice(index + 1, 0, ...newRows)
+      return next
+    })
+
+    if (inserted > 0) {
+      setProductSearchTerm((prev) => {
+        const next: { [key: number]: string } = {}
+        Object.keys(prev).forEach((key) => {
+          const i = Number(key)
+          if (Number.isNaN(i)) return
+          next[i > index ? i + inserted : i] = prev[i]
+        })
+        next[index] = product.product_name
+        for (let i = 1; i <= inserted; i += 1) {
+          next[index + i] = product.product_name
+        }
+        return next
+      })
+    } else {
+      setProductSearchTerm((prev) => ({ ...prev, [index]: product.product_name }))
+    }
+  }
+
   function removeItem(index: number) {
     setItems(items.filter((_, i) => i !== index))
   }
@@ -2405,6 +3216,57 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       newItems[index] = { ...newItems[index], [field]: value }
       return newItems
     })
+  }
+
+  function updateItemFields(index: number, fields: Partial<OrderItem>) {
+    setItems((prev) => {
+      const newItems = [...prev]
+      newItems[index] = { ...newItems[index], ...fields }
+      return newItems
+    })
+  }
+
+  function getProductCategoryForItem(item: Partial<OrderItem>) {
+    if (!item.product_id) return null
+    const product = products.find((p) => p.id === item.product_id)
+    return product?.product_category?.trim() || null
+  }
+
+  function getPatternByName(name: string) {
+    const search = name.trim().toLowerCase()
+    return cartoonPatterns.find((p) => p.pattern_name?.trim().toLowerCase() === search) || null
+  }
+
+  function getLineCountForPattern(name: string | null | undefined) {
+    if (!name) return null
+    const pattern = getPatternByName(name)
+    return pattern?.line_count ?? null
+  }
+
+  function applyLineCountToItem(index: number, lineCount: number | null) {
+    if (!lineCount) return
+    const updates: Partial<OrderItem> = {}
+    if (lineCount <= 1) {
+      updates.line_2 = ''
+      updates.line_3 = ''
+    } else if (lineCount === 2) {
+      updates.line_3 = ''
+    }
+    if (Object.keys(updates).length > 0) {
+      updateItemFields(index, updates)
+    }
+  }
+
+  function getFilteredPatterns(category: string | null, searchTerm: string) {
+    const searchLower = searchTerm.trim().toLowerCase()
+    let list = cartoonPatterns
+    if (category) {
+      list = list.filter((p) => (p.product_category || '').trim() === category)
+    }
+    if (searchLower) {
+      list = list.filter((p) => (p.pattern_name || '').toLowerCase().includes(searchLower))
+    }
+    return list.slice().sort((a, b) => (a.pattern_name || '').localeCompare(b.pattern_name || ''))
   }
 
   /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
@@ -2782,15 +3644,65 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
       {/* ขยายเต็มความกว้างของพื้นที่เนื้อหา (ไม่กระทบเมนูซ้าย) */}
       <div className="-mx-4 sm:-mx-6 lg:-mx-8 bg-white px-4 sm:px-6 lg:px-8 py-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'visible' }}>
-        <h3 className="text-xl font-bold mb-4">รายการสินค้า</h3>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <h3 className="text-xl font-bold mr-auto">รายการสินค้า</h3>
+          <button
+            type="button"
+            onClick={downloadStandardOrderTemplate}
+            disabled={formDisabled}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-teal-600 text-white hover:bg-teal-700'}`}
+          >
+            Template (Standard)
+          </button>
+          <button
+            type="button"
+            onClick={downloadPgtrTemplate}
+            disabled={formDisabled}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-teal-600 text-white hover:bg-teal-700'}`}
+          >
+            Template (PGTR)
+          </button>
+          <button
+            type="button"
+            onClick={downloadWyTemplate}
+            disabled={formDisabled}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-teal-600 text-white hover:bg-teal-700'}`}
+          >
+            Template (WY)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (formDisabled) return
+              if (!order?.bill_no) {
+                setMessageModal({
+                  open: true,
+                  title: 'แจ้งเตือน',
+                  message: 'กรุณาสร้างบิลก่อนจึงจะสามารถ Import Order from File ได้',
+                })
+                return
+              }
+              setImportTab('smart')
+              setImportFile(null)
+              setImportSummary(null)
+              setWyFile(null)
+              setWyStatus('')
+              setImportModalOpen(true)
+            }}
+            disabled={formDisabled}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
+          >
+            Import Orders from File
+          </button>
+        </div>
         <div className="overflow-x-auto" style={{ overflowY: 'visible' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
             <thead>
               <tr className="bg-gray-100">
-                <th className="border p-1.5">ชื่อสินค้า</th>
+                <th className="border p-1.5 ">ชื่อสินค้า</th>
                 <th className="border p-1.5 w-28">สีหมึก</th>
-                <th className="border p-1.5 w-18">ชั้น</th>
-                <th className="border p-1.5 w-16">ลาย</th>
+                <th className="border p-1.5 w-28 min-w-[7rem]">ชั้น</th>
+                <th className="border p-1.5 w-20">ลาย</th>
                 <th className="border p-1.5 w-16">เส้น</th>
                 <th className="border p-1.5 w-20">ฟอนต์</th>
                 <th className="border p-1.5 text-center w-16 leading-tight">
@@ -2808,7 +3720,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               </tr>
             </thead>
             <tbody>
-              {items.map((item, index) => (
+              {items.map((item, index) => {
+                const productCategory = getProductCategoryForItem(item)
+                const patternInputValue =
+                  patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
+                const lineLimit = getLineCountForPattern(item.cartoon_pattern)
+                return (
                 <tr key={index}>
                   <td className="border p-1.5">
                     <div className="relative">
@@ -2822,16 +3739,16 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
                           
                           // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ (ชื่อสินค้าหรือรหัสสินค้า)
-                          const matchedProduct = products.find(
-                            p =>
-                              p.product_name.toLowerCase().trim() === searchTerm.toLowerCase().trim() ||
-                              (p.product_code && p.product_code.toLowerCase().trim() === searchTerm.toLowerCase().trim())
-                          )
+                          const matchedProduct = findMatchedProduct(searchTerm)
                           
                           if (matchedProduct) {
-                            updateItem(index, 'product_id', matchedProduct.id)
-                            updateItem(index, 'product_name', matchedProduct.product_name)
-                            setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+                            if (isCondoProduct(matchedProduct.product_name)) {
+                              ensureCondoRows(index, matchedProduct)
+                            } else {
+                              updateItem(index, 'product_id', matchedProduct.id)
+                              updateItem(index, 'product_name', matchedProduct.product_name)
+                              setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+                            }
                           } else if (searchTerm === '') {
                             // ถ้าล้างค่า ให้ล้าง product_id ด้วย
                             updateItem(index, 'product_id', undefined)
@@ -2850,17 +3767,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           }
                           
                           // ค้นหาสินค้าที่ตรงกับค่าที่พิมพ์ (ชื่อสินค้าหรือรหัสสินค้า)
-                          const matchedProduct = products.find(
-                            p =>
-                              p.product_name.toLowerCase().trim() === inputValue.toLowerCase().trim() ||
-                              (p.product_code && p.product_code.toLowerCase().trim() === inputValue.toLowerCase().trim())
-                          )
+                          const matchedProduct = findMatchedProduct(inputValue)
                           
                           if (matchedProduct) {
                             // อัพเดตให้ตรงกับสินค้าที่เลือก
-                            updateItem(index, 'product_id', matchedProduct.id)
-                            updateItem(index, 'product_name', matchedProduct.product_name)
-                            setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+                            if (isCondoProduct(matchedProduct.product_name)) {
+                              ensureCondoRows(index, matchedProduct)
+                            } else {
+                              updateItem(index, 'product_id', matchedProduct.id)
+                              updateItem(index, 'product_name', matchedProduct.product_name)
+                              setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+                            }
                           } else if (item.product_id) {
                             // ถ้าไม่ตรงกับสินค้าใดๆ แต่มี product_id อยู่แล้ว ให้ใช้ชื่อสินค้าที่เลือกไว้
                             setProductSearchTerm({ ...productSearchTerm, [index]: item.product_name || '' })
@@ -2930,7 +3847,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       value={item.product_type || 'ชั้น1'}
                       onChange={(e) => updateItem(index, 'product_type', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'layer')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['layer'] ?? reviewErrorFields?.layer) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-[90px] ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['layer'] ?? reviewErrorFields?.layer) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
                       <option value="ชั้น1">ชั้น1</option>
                       <option value="ชั้น2">ชั้น2</option>
@@ -2940,14 +3857,55 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     </select>
                   </td>
                   <td className="border p-1.5">
-                    <input
-                      type="text"
-                      value={item.cartoon_pattern || ''}
-                      onChange={(e) => updateItem(index, 'cartoon_pattern', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                      placeholder="ลาย"
-                    />
+                    <div className="relative">
+                      <input
+                        type="text"
+                        list={`pattern-list-${index}`}
+                        value={patternInputValue}
+                        onChange={(e) => {
+                          const nextValue = e.target.value
+                          setPatternSearchTerm({ ...patternSearchTerm, [index]: nextValue })
+                          if (nextValue.trim() === '') {
+                            updateItem(index, 'cartoon_pattern', '')
+                            return
+                          }
+                          const matchedPattern = getPatternByName(nextValue)
+                          if (matchedPattern) {
+                            updateItem(index, 'cartoon_pattern', matchedPattern.pattern_name)
+                            setPatternSearchTerm({ ...patternSearchTerm, [index]: matchedPattern.pattern_name })
+                            applyLineCountToItem(index, matchedPattern.line_count ?? null)
+                          }
+                        }}
+                        onBlur={(e) => {
+                          const inputValue = e.target.value.trim()
+                          if (!inputValue) {
+                            if (!item.cartoon_pattern) {
+                              setPatternSearchTerm({ ...patternSearchTerm, [index]: '' })
+                            }
+                            return
+                          }
+                          const matchedPattern = getPatternByName(inputValue)
+                          if (matchedPattern) {
+                            updateItem(index, 'cartoon_pattern', matchedPattern.pattern_name)
+                            setPatternSearchTerm({ ...patternSearchTerm, [index]: matchedPattern.pattern_name })
+                            applyLineCountToItem(index, matchedPattern.line_count ?? null)
+                          } else if (item.cartoon_pattern) {
+                            setPatternSearchTerm({ ...patternSearchTerm, [index]: item.cartoon_pattern || '' })
+                          } else {
+                            setPatternSearchTerm({ ...patternSearchTerm, [index]: '' })
+                          }
+                        }}
+                        disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                        placeholder="ค้นหาหรือเลือกลาย..."
+                        autoComplete="off"
+                      />
+                      <datalist id={`pattern-list-${index}`}>
+                        {getFilteredPatterns(productCategory, patternInputValue).map((p) => (
+                          <option key={p.id} value={p.pattern_name} />
+                        ))}
+                      </datalist>
+                    </div>
                   </td>
                   <td className="border p-1.5">
                     <input
@@ -2992,7 +3950,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -3000,8 +3958,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       type="text"
                       value={item.line_2 || ''}
                       onChange={(e) => updateItem(index, 'line_2', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_2') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={
+                        formDisabled ||
+                        !isFieldEnabled(index, 'line_2') ||
+                        !!(item as { no_name_line?: boolean }).no_name_line ||
+                        (!!lineLimit && lineLimit < 2)
+                      }
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${
+                        (formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line || (!!lineLimit && lineLimit < 2))
+                          ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
+                          : ''
+                      } ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -3009,8 +3976,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       type="text"
                       value={item.line_3 || ''}
                       onChange={(e) => updateItem(index, 'line_3', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_3') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={
+                        formDisabled ||
+                        !isFieldEnabled(index, 'line_3') ||
+                        !!(item as { no_name_line?: boolean }).no_name_line ||
+                        (!!lineLimit && lineLimit < 3)
+                      }
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${
+                        (formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line || (!!lineLimit && lineLimit < 3))
+                          ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
+                          : ''
+                      } ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -3129,7 +4105,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     )}
                   </td>
                 </tr>
-              ))}
+              )
+              })}
             </tbody>
           </table>
         </div>
@@ -3210,12 +4187,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             <div>
               <label className="block text-sm font-medium mb-1">ราคา</label>
               <input
-                type="text"
-                value={calculateItemsTotal().toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                readOnly
-                className="w-full px-3 py-2 border rounded-lg bg-gray-100 font-semibold"
+                type="number"
+                value={formData.price || ''}
+                onChange={(e) => setFormData({ ...formData, price: parseFloat(e.target.value) || 0 })}
+                readOnly={!isManualPriceChannel}
+                step="0.01"
+                className={`w-full px-3 py-2 border rounded-lg font-semibold ${
+                  isManualPriceChannel ? '' : 'bg-gray-100 text-gray-500'
+                }`}
               />
-              <p className="text-xs text-gray-500 mt-1">คำนวณจากรายการสินค้า</p>
+              <p className="text-xs text-gray-500 mt-1">
+                {isManualPriceChannel ? 'กรอกยอดเองสำหรับช่องทางที่รองรับ' : 'คำนวณจากรายการสินค้า'}
+              </p>
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
@@ -3615,6 +4598,23 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 }
               }
 
+              if (formData.tracking_number && formData.tracking_number.trim()) {
+                const { data: dup, error } = await supabase
+                  .from('or_orders')
+                  .select('id')
+                  .eq('tracking_number', formData.tracking_number.trim())
+                  .neq('id', order?.id || '00000000-0000-0000-0000-000000000000')
+                  .limit(1)
+                if (error) {
+                  setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: error.message })
+                  return
+                }
+                if (dup && dup.length > 0) {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'เลขพัสดุซ้ำกับรายการในระบบ' })
+                  return
+                }
+              }
+
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
               const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
               const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
@@ -3672,15 +4672,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               }
 
               // ตรวจสอบว่ารายการสินค้ามีราคา/หน่วยหรือไม่
-              const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
-              if (itemsWithoutPrice.length > 0) {
-                const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-                setMessageModal({
-                  open: true,
-                  title: 'แจ้งเตือน',
-                  message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
-                })
-                return
+              if (!isManualPriceChannel) {
+                const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
+                if (itemsWithoutPrice.length > 0) {
+                  const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
+                  setMessageModal({
+                    open: true,
+                    title: 'แจ้งเตือน',
+                    message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
+                  })
+                  return
+                }
               }
 
               // ตรวจสอบสลิปโอน — ช่องทาง SHOP PICKUP / SHOP SHIPPING บังคับอัพโหลดสลิปก่อนกด บันทึก(ข้อมูลครบ)
@@ -3973,6 +4975,112 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         confirmingOverpay={confirmingOverpay}
       />
     )}
+
+    <Modal
+      open={importModalOpen}
+      onClose={() => {
+        if (!importBusy) setImportModalOpen(false)
+      }}
+      contentClassName="max-w-2xl"
+      closeOnBackdropClick={!importBusy}
+    >
+      <div className="p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-bold">Import Orders from File</h3>
+          <button
+            type="button"
+            onClick={() => {
+              if (!importBusy) setImportModalOpen(false)
+            }}
+            className="text-gray-500 hover:text-red-500 text-xl"
+          >
+            ×
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setImportTab('smart')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+              importTab === 'smart' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            Smart Import
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportTab('wy')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
+              importTab === 'wy' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            WY CSV → Excel
+          </button>
+        </div>
+        {importTab === 'smart' ? (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600">
+              รองรับ Standard / PGTR / WY อัตโนมัติ (Excel หรือ CSV)
+            </p>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setImportFile(file)
+                setImportSummary(null)
+              }}
+              className="block w-full text-sm"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => importFile && handleSmartImport(importFile)}
+                disabled={!importFile || importBusy}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              >
+                {importBusy ? 'กำลังนำเข้า...' : 'นำเข้า'}
+              </button>
+              {importFile && (
+                <span className="text-xs text-gray-500">
+                  ไฟล์: {importFile.name}
+                </span>
+              )}
+            </div>
+            {importSummary && (
+              <div className="bg-gray-50 border rounded-lg p-3 text-sm whitespace-pre-line text-gray-700">
+                {importSummary}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600">
+              แปลงไฟล์ CSV ของ WY แล้วนำเข้าอัตโนมัติ
+            </p>
+            <input
+              type="file"
+              accept=".csv,.tsv,text/csv,text/tab-separated-values"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setWyFile(file)
+                setWyStatus('')
+                if (file) handleWyConvert(file)
+              }}
+              className="block w-full text-sm"
+            />
+            {wyFile && (
+              <span className="text-xs text-gray-500">
+                ไฟล์: {wyFile.name}
+              </span>
+            )}
+            {wyStatus && (
+              <div className="text-sm text-gray-700">{wyStatus}</div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
 
     {/* Modal แจ้งเตือนทั่วไป (แทน alert เช่น กรุณาอัพโหลดสลิปโอนเงิน) */}
     <Modal

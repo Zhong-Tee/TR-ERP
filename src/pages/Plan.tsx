@@ -131,6 +131,12 @@ const fmtLocalHHMM = (iso: string) => {
 const fmtCutTime = (t: string | null | undefined) =>
   t && t.length >= 5 ? t.substring(0, 5) : t || '-'
 
+const toISODateTime = (dateStr: string, timeStr: string): string => {
+  const safeTime = timeStr && timeStr.length === 5 ? timeStr : '00:00'
+  const d = new Date(`${dateStr}T${safeTime}:00`)
+  return d.toISOString()
+}
+
 function getEffectiveQty(job: PlanJob, dept: string, _settings: PlanSettingsData): number {
   if (dept === 'เบิก') {
     return (Number(job.qty?.['STAMP']) || 0) + (Number(job.qty?.['LASER']) || 0)
@@ -411,6 +417,12 @@ export default function Plan() {
   const [passInput, setPassInput] = useState('')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
   const [editingJobId, setEditingJobId] = useState<string | null>(null)
+  const [dashEdit, setDashEdit] = useState<{
+    jobId: string
+    dept: string
+    field: 'planStart' | 'actualStart' | 'actualEnd'
+    value: string
+  } | null>(null)
 
   // Form state
   const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -438,6 +450,14 @@ export default function Plan() {
     step: 'confirm' | 'result'
     resultMessage: string
   }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
+
+  const selectableDepts = settings.departments.filter((d) => !['เบิก', 'QC', 'PACK'].includes(d))
+
+  useEffect(() => {
+    if (depFilter !== 'ALL' && depFilter && !selectableDepts.includes(depFilter)) {
+      setDepFilter('ALL')
+    }
+  }, [depFilter, selectableDepts])
 
   const load = useCallback(async () => {
     setDbStatus('กำลังโหลด...')
@@ -633,6 +653,56 @@ export default function Plan() {
       setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     }
   }, [])
+
+  const startDashEdit = useCallback(
+    (jobId: string, dept: string, field: 'planStart' | 'actualStart' | 'actualEnd', value: string) => {
+      if (!unlocked) return
+      const cleaned = value === '-' || value === '--:--' ? '' : value
+      setDashEdit({ jobId, dept, field, value: cleaned })
+    },
+    [unlocked]
+  )
+
+  const saveDashEdit = useCallback(
+    async (job: PlanJob, dept: string, field: 'planStart' | 'actualStart' | 'actualEnd') => {
+      if (!dashEdit) return
+      const raw = dashEdit.value.trim()
+      setDashEdit(null)
+      if (raw && !/^\d{2}:\d{2}$/.test(raw)) {
+        alert('รูปแบบเวลาไม่ถูกต้อง (HH:MM)')
+        return
+      }
+      if (field === 'planStart') {
+        const manual = { ...(job.manual_plan_starts || {}) }
+        if (raw) manual[dept] = raw
+        else delete manual[dept]
+        const locked = { ...(job.locked_plans || {}) }
+        delete locked[dept]
+        await updateJobField(job.id, { manual_plan_starts: manual, locked_plans: locked })
+        return
+      }
+
+      const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
+      if (!tracks[dept]) tracks[dept] = {}
+      const procs = (settings.processes[dept] || []).map((p) => p.name)
+      const iso = raw ? toISODateTime(job.date, raw) : null
+      procs.forEach((p) => {
+        if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+        if (field === 'actualStart') {
+          tracks[dept][p].start = iso
+        } else {
+          tracks[dept][p].end = iso
+          if (iso && !tracks[dept][p].start) tracks[dept][p].start = iso
+        }
+        if (!iso) {
+          if (field === 'actualStart') tracks[dept][p].start = null
+          else tracks[dept][p].end = null
+        }
+      })
+      await updateJobField(job.id, { tracks })
+    },
+    [dashEdit, settings.processes, updateJobField]
+  )
 
   const markStart = useCallback(
     async (jobId: string, dept: string, proc: string) => {
@@ -1073,7 +1143,7 @@ export default function Plan() {
                   className="w-52 rounded-lg border border-gray-300 px-3 py-2"
                 >
                   <option value="ALL">-- เลือกแผนก --</option>
-                  {settings.departments.map((d) => (
+                  {selectableDepts.map((d) => (
                     <option key={d} value={d}>
                       {d}
                     </option>
@@ -1510,7 +1580,7 @@ export default function Plan() {
                               <Fragment key={d}>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0.5">
@@ -1535,38 +1605,93 @@ export default function Plan() {
                                 </td>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 align-top ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">
-                                    <span className="text-gray-500">{me ? secToHHMM(me.start) : '-'}</span>
-                                    <span
-                                      className={
-                                        me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
-                                          ? 'text-red-600 font-semibold'
-                                          : 'text-blue-600 font-semibold'
-                                      }
-                                    >
-                                      {acts.actualStart !== '-' ? acts.actualStart : '\u00A0'}
-                                    </span>
+                                    {dashEdit?.jobId === j.id && dashEdit?.dept === d && dashEdit?.field === 'planStart' ? (
+                                      <input
+                                        type="time"
+                                        value={dashEdit.value}
+                                        onChange={(e) => setDashEdit((prev) => prev ? { ...prev, value: e.target.value } : prev)}
+                                        onBlur={() => saveDashEdit(j, d, 'planStart')}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveDashEdit(j, d, 'planStart')
+                                          if (e.key === 'Escape') setDashEdit(null)
+                                        }}
+                                        autoFocus
+                                        className="w-[84px] border border-gray-300 rounded px-1 py-0.5 text-[11px] text-center"
+                                      />
+                                    ) : (
+                                      <span
+                                        onDoubleClick={() => startDashEdit(j.id, d, 'planStart', me ? secToHHMM(me.start) : '')}
+                                        className={`text-gray-500 ${unlocked ? 'cursor-pointer' : ''}`}
+                                        title={unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเริ่ม (แผน)' : undefined}
+                                      >
+                                        {me ? secToHHMM(me.start) : '-'}
+                                      </span>
+                                    )}
+                                    {dashEdit?.jobId === j.id && dashEdit?.dept === d && dashEdit?.field === 'actualStart' ? (
+                                      <input
+                                        type="time"
+                                        value={dashEdit.value}
+                                        onChange={(e) => setDashEdit((prev) => prev ? { ...prev, value: e.target.value } : prev)}
+                                        onBlur={() => saveDashEdit(j, d, 'actualStart')}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveDashEdit(j, d, 'actualStart')
+                                          if (e.key === 'Escape') setDashEdit(null)
+                                        }}
+                                        autoFocus
+                                        className="w-[84px] border border-gray-300 rounded px-1 py-0.5 text-[11px] text-center"
+                                      />
+                                    ) : (
+                                      <span
+                                        onDoubleClick={() => startDashEdit(j.id, d, 'actualStart', acts.actualStart !== '-' ? acts.actualStart : '')}
+                                        className={
+                                          (me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
+                                            ? 'text-red-600 font-semibold'
+                                            : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                        }
+                                        title={unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเริ่มจริง' : undefined}
+                                      >
+                                        {acts.actualStart !== '-' ? acts.actualStart : '\u00A0'}
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 align-top ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-green-50'
+                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">
                                     <span className="text-gray-500">{me ? secToHHMM(me.end) : '-'}</span>
-                                    <span
-                                      className={
-                                        me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
-                                          ? 'text-red-600 font-semibold'
-                                          : 'text-blue-600 font-semibold'
-                                      }
-                                    >
-                                      {acts.actualEnd !== '-' ? acts.actualEnd : '\u00A0'}
-                                    </span>
+                                    {dashEdit?.jobId === j.id && dashEdit?.dept === d && dashEdit?.field === 'actualEnd' ? (
+                                      <input
+                                        type="time"
+                                        value={dashEdit.value}
+                                        onChange={(e) => setDashEdit((prev) => prev ? { ...prev, value: e.target.value } : prev)}
+                                        onBlur={() => saveDashEdit(j, d, 'actualEnd')}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveDashEdit(j, d, 'actualEnd')
+                                          if (e.key === 'Escape') setDashEdit(null)
+                                        }}
+                                        autoFocus
+                                        className="w-[84px] border border-gray-300 rounded px-1 py-0.5 text-[11px] text-center"
+                                      />
+                                    ) : (
+                                      <span
+                                        onDoubleClick={() => startDashEdit(j.id, d, 'actualEnd', acts.actualEnd !== '-' ? acts.actualEnd : '')}
+                                        className={
+                                          (me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
+                                            ? 'text-red-600 font-semibold'
+                                            : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                        }
+                                        title={unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเสร็จจริง' : undefined}
+                                      >
+                                        {acts.actualEnd !== '-' ? acts.actualEnd : '\u00A0'}
+                                      </span>
+                                    )}
                                   </div>
                                 </td>
                               </Fragment>

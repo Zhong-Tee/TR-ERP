@@ -28,7 +28,7 @@ export default function Layout({ children }: LayoutProps) {
         style={{ ['--content-offset-left' as string]: sidebarOpen ? '16rem' : '5rem' } as React.CSSProperties}
       >
         <TopBar sidebarOpen={sidebarOpen} />
-        <main className="flex-1 min-h-0 mt-16 overflow-auto flex flex-col p-6 bg-white">{children}</main>
+        <main className="flex-1 min-h-0 mt-16 overflow-auto flex flex-col px-6 pb-6 pt-2 bg-white">{children}</main>
       </div>
     </div>
   )

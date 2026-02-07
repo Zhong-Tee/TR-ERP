@@ -95,6 +95,42 @@ export default function QC() {
     user: '',
   })
   const [showSessionModal, setShowSessionModal] = useState(false)
+  const [finishConfirmOpen, setFinishConfirmOpen] = useState(false)
+
+  const ensurePlanDeptStart = useCallback(async (workOrderName: string) => {
+    if (!workOrderName) return
+    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
+    if (error || !data) return
+    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
+    const dept = 'QC'
+    const procNames = ['ตรวจสอบความถูกต้อง']
+    tracks[dept] = tracks[dept] || {}
+    procNames.forEach((p) => {
+      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+    })
+    const firstProc = procNames[0]
+    if (tracks[dept][firstProc]?.start) return
+    tracks[dept][firstProc].start = new Date().toISOString()
+    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+  }, [])
+
+  const ensurePlanDeptEnd = useCallback(async (workOrderName: string) => {
+    if (!workOrderName) return
+    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
+    if (error || !data) return
+    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
+    const dept = 'QC'
+    const procNames = ['ตรวจสอบความถูกต้อง']
+    tracks[dept] = tracks[dept] || {}
+    const now = new Date().toISOString()
+    procNames.forEach((p) => {
+      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+      if (!tracks[dept][p].start) tracks[dept][p].start = now
+      tracks[dept][p].end = now
+    })
+    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+  }, [])
+  const [switchJobConfirmOpen, setSwitchJobConfirmOpen] = useState(false)
   const [sessionItems, setSessionItems] = useState<QCRecord[]>([])
 
   // History
@@ -108,12 +144,12 @@ export default function QC() {
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
   const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink'>('reasons')
   const [newReason, setNewReason] = useState('')
+  const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
 
   // Fail reason Modal (แทน window.prompt)
   const [failReasonModalOpen, setFailReasonModalOpen] = useState(false)
   const [failReasonContext, setFailReasonContext] = useState<'qc' | 'reject'>('qc')
   const [failReasonSelected, setFailReasonSelected] = useState<string | null>(null)
-  const [failReasonCustom, setFailReasonCustom] = useState('')
 
   const filteredMenus = MENUS.filter((m) => !m.adminOnly || isAdmin)
 
@@ -222,6 +258,7 @@ export default function QC() {
     setLoading(true)
     setQcCategoryFilter('')
     try {
+      await ensurePlanDeptStart(woName)
       const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
         alert('ไม่พบรายการในใบงานนี้')
@@ -279,8 +316,13 @@ export default function QC() {
 
   function handleSwitchJob() {
     if (qcData.items.some((i) => i.status !== 'pending')) {
-      if (!window.confirm('มีการตรวจแล้ว บันทึกเซสชันปัจจุบันไว้หรือทิ้ง แล้วสลับใบงาน?')) return
+      setSwitchJobConfirmOpen(true)
+      return
     }
+    proceedSwitchJob()
+  }
+
+  function proceedSwitchJob() {
     setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
     setQcData({ items: [] })
     setCurrentItem(null)
@@ -314,20 +356,17 @@ export default function QC() {
   function openFailReasonModal(context: 'qc' | 'reject') {
     setFailReasonContext(context)
     setFailReasonSelected(null)
-    setFailReasonCustom('')
     setFailReasonModalOpen(true)
   }
 
   function closeFailReasonModal() {
     setFailReasonModalOpen(false)
     setFailReasonSelected(null)
-    setFailReasonCustom('')
   }
 
   function confirmFailReason() {
-    const reason = (failReasonSelected || failReasonCustom.trim()) || null
-    const needReason = reasons.length > 0 ? !!reason : true
-    if (needReason && !reason) return
+    const reason = failReasonSelected || null
+    if (!reason) return
     closeFailReasonModal()
     if (failReasonContext === 'qc') {
       applyFailReasonQc(reason)
@@ -409,7 +448,6 @@ export default function QC() {
   }
 
   async function finishSession() {
-    if (!window.confirm('บันทึกและจบงาน QC ใช่หรือไม่?')) return
     if (!qcState.sessionId) {
       alert('ไม่พบ session')
       return
@@ -430,12 +468,17 @@ export default function QC() {
         })
         .eq('id', qcState.sessionId)
       if (updateErr) throw updateErr
+      if (totalItems > 0 && passedItems === totalItems && failedItems === 0) {
+        const woName = qcState.filename?.startsWith('WO-') ? qcState.filename.slice(3) : ''
+        if (woName) {
+          await ensurePlanDeptEnd(woName)
+        }
+      }
       clearSessionBackup()
       setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
       setQcData({ items: [] })
       setCurrentItem(null)
       setQcCategoryFilter('')
-      alert('บันทึกเรียบร้อยแล้ว')
       loadRejectItems()
       loadWorkOrders()
     } catch (e: any) {
@@ -443,6 +486,11 @@ export default function QC() {
     } finally {
       setLoading(false)
     }
+  }
+
+  async function handleConfirmFinishSession() {
+    setFinishConfirmOpen(false)
+    await finishSession()
   }
 
   const filteredRejectItems =
@@ -593,8 +641,9 @@ export default function QC() {
   async function handleAddReason() {
     if (!newReason.trim()) return
     try {
-      await addReason(newReason.trim())
+      await addReason(newReason.trim(), newReasonType)
       setNewReason('')
+      setNewReasonType('Man')
       await loadSettings()
     } catch (e: any) {
       alert('เพิ่มไม่สำเร็จ: ' + (e?.message || e))
@@ -726,7 +775,7 @@ export default function QC() {
                       ค้นหา
                     </button>
                     {remainingItems === 0 && (
-                      <button onClick={finishSession} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
+                      <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
                         FINISH JOB
                       </button>
                     )}
@@ -1456,7 +1505,7 @@ export default function QC() {
             </div>
             {settingsTab === 'reasons' && (
               <div>
-                <div className="flex gap-2 mb-4">
+                <div className="flex gap-2 mb-4 flex-wrap">
                   <input
                     type="text"
                     value={newReason}
@@ -1464,6 +1513,16 @@ export default function QC() {
                     placeholder="เหตุผล Fail ใหม่"
                     className="border rounded px-3 py-2 flex-1"
                   />
+                  <select
+                    value={newReasonType}
+                    onChange={(e) => setNewReasonType(e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
+                    className="border rounded px-3 py-2 bg-white"
+                  >
+                    <option value="Man">Man</option>
+                    <option value="Machine">Machine</option>
+                    <option value="Material">Material</option>
+                    <option value="Method">Method</option>
+                  </select>
                   <button onClick={handleAddReason} className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold">
                     ADD
                   </button>
@@ -1471,7 +1530,14 @@ export default function QC() {
                 <ul className="divide-y border rounded-xl overflow-hidden">
                   {reasons.map((r) => (
                     <li key={r.id} className="py-3 px-4 flex justify-between items-center bg-white hover:bg-gray-50">
-                      <span className="font-bold">{r.reason_text}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold">{r.reason_text}</span>
+                        {r.fail_type && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">
+                            {r.fail_type}
+                          </span>
+                        )}
+                      </div>
                       <button onClick={() => handleDeleteReason(r.id)} className="text-red-500 hover:text-red-700">
                         ลบ
                       </button>
@@ -1512,6 +1578,69 @@ export default function QC() {
         )}
       </div>
 
+      {/* Finish confirm Modal */}
+      <Modal
+        open={finishConfirmOpen}
+        onClose={() => setFinishConfirmOpen(false)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
+          บันทึกและจบงาน QC
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          ยืนยันการบันทึกผลและจบงาน QC ใช่หรือไม่?
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setFinishConfirmOpen(false)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirmFinishSession}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Switch job confirm Modal */}
+      <Modal
+        open={switchJobConfirmOpen}
+        onClose={() => setSwitchJobConfirmOpen(false)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
+          สลับใบงาน
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          มีการตรวจแล้ว บันทึกเซสชันปัจจุบันไว้หรือทิ้ง แล้วสลับใบงาน?
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setSwitchJobConfirmOpen(false)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSwitchJobConfirmOpen(false)
+              proceedSwitchJob()
+            }}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
       {/* Fail reason Modal — เลือกเหตุผล Fail เป็นตัวเลือก */}
       <Modal
         open={failReasonModalOpen}
@@ -1545,31 +1674,9 @@ export default function QC() {
                   </button>
                 ))}
               </div>
-              <div className="pt-2">
-                <label className="block text-sm text-gray-600 mb-1">หรือระบุเหตุผลอื่น</label>
-                <input
-                  type="text"
-                  value={failReasonCustom}
-                  onChange={(e) => {
-                    setFailReasonCustom(e.target.value)
-                    if (e.target.value.trim()) setFailReasonSelected(null)
-                  }}
-                  placeholder="พิมพ์เหตุผลอื่น (ถ้ามี)"
-                  className="w-full border rounded-lg px-3 py-2"
-                />
-              </div>
             </>
           ) : (
-            <>
-              <p className="text-sm text-gray-600 mb-2">กรอกเหตุผล Fail</p>
-              <input
-                type="text"
-                value={failReasonCustom}
-                onChange={(e) => setFailReasonCustom(e.target.value)}
-                placeholder="เหตุผล Fail (ถ้าไม่มีรายการใน Settings ให้กรอกตรงนี้)"
-                className="w-full border rounded-lg px-3 py-2"
-              />
-            </>
+            <p className="text-sm text-gray-600">ยังไม่มีเหตุผลใน Settings กรุณาเพิ่มก่อนใช้งาน</p>
           )}
         </div>
         <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
@@ -1583,7 +1690,7 @@ export default function QC() {
           <button
             type="button"
             onClick={confirmFailReason}
-            disabled={reasons.length > 0 ? !failReasonSelected && !failReasonCustom.trim() : !failReasonCustom.trim()}
+            disabled={!failReasonSelected}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >
             ตกลง

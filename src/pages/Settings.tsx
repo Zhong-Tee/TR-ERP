@@ -10,7 +10,7 @@ export default function Settings() {
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'users' | 'banks' | 'product-settings' | 'order-status'>('users')
+  const [activeTab, setActiveTab] = useState<'users' | 'role-settings' | 'banks' | 'product-settings' | 'order-status'>('users')
   const [fixingStatus, setFixingStatus] = useState(false)
   const [statusFixResult, setStatusFixResult] = useState<{
     success: boolean
@@ -85,6 +85,8 @@ export default function Settings() {
   const [productCategories, setProductCategories] = useState<string[]>([])
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<ProductFieldKey, boolean>>>({})
   const [savingProductSettings, setSavingProductSettings] = useState(false)
+  const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
+  const [savingRoleMenus, setSavingRoleMenus] = useState(false)
 
   useEffect(() => {
     loadUsers()
@@ -96,6 +98,9 @@ export default function Settings() {
     if (activeTab === 'product-settings') {
       loadProductCategories()
       loadCategoryFieldSettings()
+    }
+    if (activeTab === 'role-settings') {
+      loadRoleMenus()
     }
   }, [activeTab])
 
@@ -195,6 +200,80 @@ export default function Settings() {
     } catch (error: any) {
       console.error('Error updating user role:', error)
       alert('เกิดข้อผิดพลาด: ' + error.message)
+    }
+  }
+
+  const MENU_ROLE_OPTIONS = [
+    { key: 'orders', label: 'ออเดอร์' },
+    { key: 'admin-qc', label: 'รอตรวจคำสั่งซื้อ' },
+    { key: 'account', label: 'บัญชี' },
+    { key: 'export', label: 'ใบงาน' },
+    { key: 'plan', label: 'Plan' },
+    { key: 'wms', label: 'จัดสินค้า' },
+    { key: 'qc', label: 'QC' },
+    { key: 'packing', label: 'จัดของ' },
+    { key: 'transport', label: 'ทวนสอบขนส่ง' },
+    { key: 'products', label: 'สินค้า' },
+    { key: 'cartoon-patterns', label: 'ลายการ์ตูน' },
+    { key: 'sales-reports', label: 'รายงานยอดขาย' },
+    { key: 'settings', label: 'ตั้งค่า' },
+  ] as const
+
+  async function loadRoleMenus() {
+    try {
+      const { data, error } = await supabase
+        .from('st_user_menus')
+        .select('role, menu_key, has_access')
+      if (error) throw error
+      const map: Record<string, Record<string, boolean>> = {}
+      roles.forEach((role) => {
+        map[role] = {}
+        MENU_ROLE_OPTIONS.forEach((menu) => {
+          map[role][menu.key] = true
+        })
+      })
+      ;(data || []).forEach((row: any) => {
+        if (!map[row.role]) map[row.role] = {}
+        map[row.role][row.menu_key] = row.has_access !== false
+      })
+      setRoleMenus(map)
+    } catch (error: any) {
+      console.error('Error loading role menus:', error)
+    }
+  }
+
+  async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
+    setRoleMenus((prev) => ({
+      ...prev,
+      [role]: {
+        ...(prev[role] || {}),
+        [menuKey]: checked,
+      },
+    }))
+  }
+
+  async function saveRoleMenus() {
+    setSavingRoleMenus(true)
+    try {
+      const payload: Array<{ role: string; menu_key: string; menu_name: string; has_access: boolean }> = []
+      Object.entries(roleMenus).forEach(([role, menus]) => {
+        MENU_ROLE_OPTIONS.forEach((menu) => {
+          payload.push({
+            role,
+            menu_key: menu.key,
+            menu_name: menu.label,
+            has_access: menus?.[menu.key] ?? false,
+          })
+        })
+      })
+      const { error } = await supabase.from('st_user_menus').upsert(payload, { onConflict: 'role,menu_key' })
+      if (error) throw error
+      alert('บันทึกการตั้งค่า Role สำเร็จ')
+    } catch (error: any) {
+      console.error('Error saving role menus:', error)
+      alert('เกิดข้อผิดพลาด: ' + error.message)
+    } finally {
+      setSavingRoleMenus(false)
     }
   }
 
@@ -718,6 +797,10 @@ export default function Settings() {
     'packing_staff',
     'account_staff',
     'viewer',
+    'store',
+    'production',
+    'manager',
+    'picker',
   ]
 
   return (
@@ -906,6 +989,16 @@ export default function Settings() {
             จัดการสิทธิ์ผู้ใช้
           </button>
           <button
+            onClick={() => setActiveTab('role-settings')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'role-settings'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            ตั้งค่า Role
+          </button>
+          <button
             onClick={() => setActiveTab('banks')}
             className={`py-4 px-1 border-b-2 font-medium text-sm ${
               activeTab === 'banks'
@@ -954,13 +1047,13 @@ export default function Settings() {
                   <th className="p-3 text-left">อีเมล</th>
                   <th className="p-3 text-left">Username</th>
                   <th className="p-3 text-left">Role</th>
-                  <th className="p-3 text-left">การจัดการ</th>
+                  <th className="p-3 text-left"></th>
                 </tr>
               </thead>
               <tbody>
                 {users.map((user) => (
                   <tr key={user.id} className="border-t">
-                    <td className="p-3">{user.email}</td>
+                    <td className="p-3">{user.email || '-'}</td>
                     <td className="p-3">{user.username || '-'}</td>
                     <td className="p-3">
                       <select
@@ -975,17 +1068,57 @@ export default function Settings() {
                         ))}
                       </select>
                     </td>
-                    <td className="p-3">
-                      <button className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
-                        แก้ไข
-                      </button>
-                    </td>
+                    <td className="p-3"></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        </div>
+      )}
+
+      {activeTab === 'role-settings' && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
+            <button
+              onClick={saveRoleMenus}
+              disabled={savingRoleMenus}
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            >
+              {savingRoleMenus ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full border">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-3 text-left">Role</th>
+                  {MENU_ROLE_OPTIONS.map((menu) => (
+                    <th key={menu.key} className="p-3 text-center text-sm">{menu.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {roles.map((role) => (
+                  <tr key={role} className="border-t">
+                    <td className="p-3 font-medium">{role}</td>
+                    {MENU_ROLE_OPTIONS.map((menu) => (
+                      <td key={menu.key} className="p-3 text-center">
+                        <input
+                          type="checkbox"
+                          className="rounded border-gray-300"
+                          checked={roleMenus?.[role]?.[menu.key] ?? false}
+                          onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

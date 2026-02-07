@@ -245,7 +245,7 @@ export async function saveQcRecord(
 export async function fetchSettingsReasons() {
   const { data, error } = await supabase
     .from('settings_reasons')
-    .select('id, reason_text, created_at')
+    .select('id, reason_text, fail_type, created_at')
     .order('reason_text')
   if (error) throw error
   return data || []
@@ -374,8 +374,8 @@ export async function fetchReportUsers(): Promise<{ id: string; username: string
 }
 
 /** Settings: add reason. */
-export async function addReason(reasonText: string) {
-  const { error } = await supabase.from('settings_reasons').insert({ reason_text: reasonText })
+export async function addReason(reasonText: string, failType: string) {
+  const { error } = await supabase.from('settings_reasons').insert({ reason_text: reasonText, fail_type: failType })
   if (error) throw error
 }
 

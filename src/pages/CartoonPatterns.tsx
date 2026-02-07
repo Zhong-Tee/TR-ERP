@@ -41,7 +41,7 @@ async function uploadImageToBucket(file: File): Promise<void> {
   if (error) throw error
 }
 
-const PATTERN_TEMPLATE_HEADERS = ['pattern_name'] as const
+const PATTERN_TEMPLATE_HEADERS = ['pattern_name', 'product_category', 'line_count'] as const
 
 export default function CartoonPatterns() {
   const [patterns, setPatterns] = useState<CartoonPattern[]>([])
@@ -51,6 +51,8 @@ export default function CartoonPatterns() {
   const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null)
   const [editingPattern, setEditingPattern] = useState<CartoonPattern | null>(null)
   const [formPatternName, setFormPatternName] = useState('')
+  const [formPatternCategory, setFormPatternCategory] = useState('')
+  const [formLineCount, setFormLineCount] = useState<number | ''>('')
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [patternToDelete, setPatternToDelete] = useState<CartoonPattern | null>(null)
@@ -58,6 +60,9 @@ export default function CartoonPatterns() {
   const [uploadPreview, setUploadPreview] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
   const [uploadingImages, setUploadingImages] = useState(false)
+  const [productCategories, setProductCategories] = useState<string[]>([])
+  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, { line_1?: boolean; line_2?: boolean; line_3?: boolean }>>({})
+  const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string>>({})
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const uploadImagesInputRef = useRef<HTMLInputElement>(null)
@@ -74,6 +79,69 @@ export default function CartoonPatterns() {
   useEffect(() => {
     loadPatterns()
   }, [appliedSearch])
+
+  useEffect(() => {
+    loadProductCategories()
+    loadCategoryFieldSettings()
+  }, [])
+
+  async function loadProductCategories() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('product_category')
+        .eq('is_active', true)
+        .not('product_category', 'is', null)
+      if (error) throw error
+      const categories = Array.from(
+        new Set(
+          (data || [])
+            .map((r: { product_category: string | null }) => r.product_category)
+            .filter((c): c is string => !!c && String(c).trim() !== '')
+        )
+      ).sort((a, b) => a.localeCompare(b))
+      setProductCategories(categories)
+    } catch (error: any) {
+      console.error('Error loading product categories:', error)
+      setProductCategories([])
+    }
+  }
+
+  async function loadCategoryFieldSettings() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_category_field_settings')
+        .select('category, line_1, line_2, line_3')
+      if (error) throw error
+      const map: Record<string, { line_1?: boolean; line_2?: boolean; line_3?: boolean }> = {}
+      ;(data || []).forEach((row: any) => {
+        map[row.category] = {
+          line_1: row.line_1 ?? true,
+          line_2: row.line_2 ?? true,
+          line_3: row.line_3 ?? true,
+        }
+      })
+      setCategoryFieldSettings(map)
+    } catch (error: any) {
+      console.error('Error loading category field settings:', error)
+      setCategoryFieldSettings({})
+    }
+  }
+
+  function getDefaultLineCountForCategory(category: string) {
+    if (!category) return 3
+    const settings = categoryFieldSettings[category]
+    if (!settings) return 3
+    const count = [settings.line_1, settings.line_2, settings.line_3].filter((v) => v).length
+    return Math.min(3, Math.max(1, count || 1))
+  }
+
+  function normalizeLineCount(value: number | null | undefined) {
+    if (value == null) return null
+    const n = Math.round(Number(value))
+    if (!Number.isFinite(n)) return null
+    return Math.min(3, Math.max(1, n))
+  }
 
   async function loadPatterns() {
     setLoading(true)
@@ -102,6 +170,8 @@ export default function CartoonPatterns() {
 
   function openAdd() {
     setFormPatternName('')
+    setFormPatternCategory('')
+    setFormLineCount('')
     setEditingPattern(null)
     setUploadFile(null)
     setUploadPreview(null)
@@ -111,6 +181,8 @@ export default function CartoonPatterns() {
   function openEdit(pattern: CartoonPattern) {
     setEditingPattern(pattern)
     setFormPatternName(pattern.pattern_name)
+    setFormPatternCategory(pattern.product_category ?? '')
+    setFormLineCount(pattern.line_count ?? '')
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('edit')
@@ -121,6 +193,8 @@ export default function CartoonPatterns() {
     setModalMode(null)
     setEditingPattern(null)
     setFormPatternName('')
+    setFormPatternCategory('')
+    setFormLineCount('')
     setUploadFile(null)
     setUploadPreview(null)
   }
@@ -146,10 +220,16 @@ export default function CartoonPatterns() {
       if (uploadFile) {
         await uploadPatternImage(uploadFile, name)
       }
+      const nextCategory = formPatternCategory || null
+      const baseLineCount =
+        formLineCount === '' ? getDefaultLineCountForCategory(formPatternCategory) : Number(formLineCount)
+      const nextLineCount = normalizeLineCount(baseLineCount)
 
       if (modalMode === 'add') {
         const { error } = await supabase.from('cp_cartoon_patterns').insert({
           pattern_name: name,
+          product_category: nextCategory,
+          line_count: nextLineCount,
           is_active: true,
         })
         if (error) throw error
@@ -157,7 +237,11 @@ export default function CartoonPatterns() {
       } else if (modalMode === 'edit' && editingPattern) {
         const { error } = await supabase
           .from('cp_cartoon_patterns')
-          .update({ pattern_name: name })
+          .update({
+            pattern_name: name,
+            product_category: nextCategory,
+            line_count: nextLineCount,
+          })
           .eq('id', editingPattern.id)
         if (error) throw error
         alert('แก้ไขลายการ์ตูนเรียบร้อย')
@@ -198,7 +282,7 @@ export default function CartoonPatterns() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PATTERN_TEMPLATE_HEADERS as unknown as string[],
-      ['ลายตัวอย่าง'],
+      ['ลายตัวอย่าง', 'ตัวอย่างหมวดหมู่', 3],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'ลายการ์ตูน')
@@ -209,12 +293,12 @@ export default function CartoonPatterns() {
     try {
       const { data, error } = await supabase
         .from('cp_cartoon_patterns')
-        .select('pattern_name')
+        .select('pattern_name, product_category, line_count')
         .eq('is_active', true)
         .order('pattern_name', { ascending: true })
       if (error) throw error
-      const headers = ['pattern_name']
-      const rows = (data || []).map((p) => [p.pattern_name ?? ''])
+      const headers = ['pattern_name', 'product_category', 'line_count']
+      const rows = (data || []).map((p: any) => [p.pattern_name ?? '', p.product_category ?? '', p.line_count ?? ''])
       const wb = XLSX.utils.book_new()
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
       XLSX.utils.book_append_sheet(wb, ws, 'ลายการ์ตูน')
@@ -236,12 +320,22 @@ export default function CartoonPatterns() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
-      const toInsert: Array<{ pattern_name: string; is_active: boolean }> = []
+      const toInsert: Array<{ pattern_name: string; product_category?: string | null; line_count?: number | null; is_active: boolean }> = []
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i]
         const name = String(row.pattern_name ?? '').trim()
         if (!name) continue
-        toInsert.push({ pattern_name: name, is_active: true })
+        const category = String(row.product_category ?? '').trim()
+        const rawLineCount = row.line_count != null && row.line_count !== '' ? Number(row.line_count) : null
+        const lineCount = normalizeLineCount(
+          rawLineCount != null ? rawLineCount : category ? getDefaultLineCountForCategory(category) : null
+        )
+        toInsert.push({
+          pattern_name: name,
+          product_category: category || null,
+          line_count: lineCount,
+          is_active: true,
+        })
       }
       if (!toInsert.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี pattern_name)')
 
@@ -255,6 +349,29 @@ export default function CartoonPatterns() {
     } finally {
       setImporting(false)
       importInputRef.current && (importInputRef.current.value = '')
+    }
+  }
+
+  async function updatePatternInline(patternId: string, changes: Partial<CartoonPattern>) {
+    try {
+      const payload: Record<string, any> = { updated_at: new Date().toISOString() }
+      if (Object.prototype.hasOwnProperty.call(changes, 'product_category')) {
+        payload.product_category = changes.product_category ?? null
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, 'line_count')) {
+        payload.line_count = normalizeLineCount(changes.line_count ?? null)
+      }
+      const { error } = await supabase
+        .from('cp_cartoon_patterns')
+        .update(payload)
+        .eq('id', patternId)
+      if (error) throw error
+      setPatterns((prev) =>
+        prev.map((p) => (p.id === patternId ? { ...p, ...changes } : p))
+      )
+    } catch (error: any) {
+      console.error('Error updating pattern:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     }
   }
 
@@ -376,6 +493,8 @@ export default function CartoonPatterns() {
                 <tr>
                   <th className="p-3 text-left">รูป</th>
                   <th className="p-3 text-left">ชื่อลายการ์ตูน</th>
+                  <th className="p-3 text-left">หมวดหมู่สินค้า</th>
+                  <th className="p-3 text-left">จำนวนบรรทัด</th>
                   <th className="p-3 text-right">การจัดการ</th>
                 </tr>
               </thead>
@@ -386,6 +505,73 @@ export default function CartoonPatterns() {
                       <PatternImage patternName={pattern.pattern_name} name={pattern.pattern_name} />
                     </td>
                     <td className="p-3 font-medium">{pattern.pattern_name}</td>
+                    <td className="p-3">
+                      <input
+                        type="text"
+                        list="cartoon-category-options"
+                        value={categoryDrafts[pattern.id] ?? pattern.product_category ?? ''}
+                        onChange={(e) => {
+                          const next = e.target.value
+                          setCategoryDrafts((prev) => ({ ...prev, [pattern.id]: next }))
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur()
+                          }
+                          if (e.key === 'Escape') {
+                            setCategoryDrafts((prev) => {
+                              const next = { ...prev }
+                              delete next[pattern.id]
+                              return next
+                            })
+                            e.currentTarget.blur()
+                          }
+                        }}
+                        onBlur={(e) => {
+                          const nextCategory = e.target.value.trim()
+                          const current = pattern.product_category ?? ''
+                          if (nextCategory === current) {
+                            setCategoryDrafts((prev) => {
+                              const next = { ...prev }
+                              delete next[pattern.id]
+                              return next
+                            })
+                            return
+                          }
+                          const nextLineCount = getDefaultLineCountForCategory(nextCategory)
+                          updatePatternInline(pattern.id, {
+                            product_category: nextCategory || null,
+                            line_count: nextLineCount,
+                          })
+                          setCategoryDrafts((prev) => {
+                            const next = { ...prev }
+                            delete next[pattern.id]
+                            return next
+                          })
+                        }}
+                        className="w-full px-2 py-1 border rounded text-sm"
+                        placeholder="-- เลือกหมวดหมู่ --"
+                      />
+                    </td>
+                    <td className="p-3">
+                      <select
+                        value={
+                          normalizeLineCount(pattern.line_count ?? null) ??
+                          getDefaultLineCountForCategory(pattern.product_category ?? '')
+                        }
+                        onChange={(e) => {
+                          const next = normalizeLineCount(Number(e.target.value)) || 1
+                          updatePatternInline(pattern.id, { line_count: next })
+                        }}
+                        className="w-20 px-2 py-1 border rounded text-sm"
+                      >
+                        {[1, 2, 3].map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
                     <td className="p-3 text-right">
                       <div className="flex gap-2 justify-end">
                         <button
@@ -413,6 +599,12 @@ export default function CartoonPatterns() {
         )}
       </div>
 
+      <datalist id="cartoon-category-options">
+        {productCategories.map((cat) => (
+          <option key={cat} value={cat} />
+        ))}
+      </datalist>
+
       <Modal
         open={modalMode !== null}
         onClose={closeModal}
@@ -437,6 +629,41 @@ export default function CartoonPatterns() {
               {modalMode === 'edit' && (
                 <p className="text-xs text-gray-500 mt-1">ไม่สามารถแก้ไขชื่อลายการ์ตูนได้ (ใช้เป็นชื่อไฟล์รูป)</p>
               )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">หมวดหมู่สินค้า</label>
+              <select
+                value={formPatternCategory}
+                onChange={(e) => {
+                  const nextCategory = e.target.value
+                  setFormPatternCategory(nextCategory)
+                  const nextLineCount = getDefaultLineCountForCategory(nextCategory)
+                  setFormLineCount(nextLineCount)
+                }}
+                className="w-full px-3 py-2 border rounded-lg"
+              >
+                <option value="">-- เลือกหมวดหมู่ --</option>
+                {productCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">จำนวนบรรทัด</label>
+              <select
+                value={formLineCount === '' ? '' : Number(formLineCount)}
+                onChange={(e) => setFormLineCount(Number(e.target.value))}
+                className="w-full px-3 py-2 border rounded-lg"
+              >
+                <option value="">-- เลือกจำนวนบรรทัด --</option>
+                {[1, 2, 3].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">รูปลายการ์ตูน</label>
@@ -525,10 +752,8 @@ export default function CartoonPatterns() {
 }
 
 function PatternImage({ patternName, name }: { patternName: string; name: string }) {
-  const [failed, setFailed] = useState(false)
   const url = getPatternImageUrl(patternName)
-  const displayUrl = url && !failed ? url : ''
-  if (!displayUrl) {
+  if (!url) {
     return (
       <div className="w-16 h-16 bg-gray-200 rounded flex items-center justify-center text-gray-400 text-xs">
         ไม่มีรูป
@@ -537,17 +762,23 @@ function PatternImage({ patternName, name }: { patternName: string; name: string
   }
   return (
     <a
-      href={displayUrl}
+      href={url}
       target="_blank"
       rel="noopener noreferrer"
       className="block w-16 h-16 rounded overflow-hidden hover:ring-2 hover:ring-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
       title="คลิกเพื่อเปิดรูปในแท็บใหม่"
     >
       <img
-        src={displayUrl}
+        src={url}
         alt={name}
         className="w-16 h-16 object-cover"
-        onError={() => setFailed(true)}
+        loading="lazy"
+        decoding="async"
+        onError={(e) => {
+          const target = e.target as HTMLImageElement
+          target.onerror = null
+          target.src = 'https://placehold.co/64x64?text=NO+IMG'
+        }}
       />
     </a>
   )

@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import Login from './components/auth/Login'
 import Layout from './components/layout/Layout'
@@ -9,8 +9,10 @@ import AdminQC from './pages/AdminQC'
 import Account from './pages/Account'
 import QC from './pages/QC'
 import Packing from './pages/Packing'
+import TransportVerification from './pages/TransportVerification'
 import WorkOrders from './pages/WorkOrders'
 import Plan from './pages/Plan'
+import Wms from './pages/Wms'
 import Products from './pages/Products'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
@@ -18,6 +20,7 @@ import Settings from './pages/Settings'
 
 function AppRoutes() {
   const { user, loading } = useAuthContext()
+  const location = useLocation()
 
   // Debug
   console.log('AppRoutes - loading:', loading, 'user:', user)
@@ -37,6 +40,12 @@ function AppRoutes() {
     console.log('No user found, showing login page')
     // onLoginSuccess จะไม่ถูกเรียกแล้ว เพราะ onAuthStateChange จะจัดการให้
     return <Login onLoginSuccess={() => {}} />
+  }
+
+  const isWmsMobileRole = user ? ['picker', 'manager', 'production'].includes(user.role) : false
+
+  if (user && isWmsMobileRole && location.pathname !== '/wms') {
+    return <Navigate to="/wms" replace />
   }
 
   return (
@@ -109,6 +118,20 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/wms"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'production', 'manager', 'picker']}>
+            {isWmsMobileRole ? (
+              <Wms />
+            ) : (
+              <Layout>
+                <Wms />
+              </Layout>
+            )}
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/qc"
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'qc_staff']}>
@@ -124,6 +147,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'packing_staff']}>
             <Layout>
               <Packing />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/transport"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'packing_staff']}>
+            <Layout>
+              <TransportVerification />
             </Layout>
           </ProtectedRoute>
         }

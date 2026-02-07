@@ -556,7 +556,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   <div className="mt-6">
                     <h3 className="text-lg font-semibold mb-3">รายการสินค้า</h3>
                     <div className="space-y-3">
-                      {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).map((item: any) => {
+                      {(() => {
+                        const orderItems: any[] =
+                          (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
+                        const { itemLevel } = getOrderLevelAndItemLevelErrorFields(
+                          selectedOrder,
+                          categoryFieldSettings,
+                          productCategoryByProductId
+                        )
+                        const itemLevelKeys = new Set(itemLevel.map((field) => field.key))
+
+                        return orderItems.map((item: any) => {
                         const product = productImageMap[item.product_id] || null
                         const productImageUrl = product?.product_code
                           ? getPublicUrl(PRODUCT_IMAGES_BUCKET, product.product_code, '.jpg')
@@ -569,6 +579,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
                         const unitPrice = Number(item.unit_price || 0)
                         const qty = Number(item.quantity || 0)
+                        const detailRows: Array<{ key: ErrorFieldKey; label: string; value: string }> = [
+                          { key: 'ink_color', label: 'สีหมึก', value: item.ink_color || '-' },
+                          { key: 'layer', label: 'ชั้น', value: item.product_type || '-' },
+                          { key: 'line_art', label: 'ลายเส้น', value: item.line_pattern || '-' },
+                          { key: 'font', label: 'ฟอนต์', value: item.font || '-' },
+                          { key: 'line_1', label: 'บรรทัด 1', value: item.line_1 || '-' },
+                          { key: 'line_2', label: 'บรรทัด 2', value: item.line_2 || '-' },
+                          { key: 'line_3', label: 'บรรทัด 3', value: item.line_3 || '-' },
+                        ].filter((row) => itemLevelKeys.has(row.key))
+                        const showQuantity = itemLevelKeys.has('quantity')
+                        const showUnitPrice = itemLevelKeys.has('unit_price')
 
                         return (
                           <div key={item.id} className="border rounded-lg p-3">
@@ -619,56 +640,32 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                       </div>
                                     )}
                                     {/* Extra item details for checking */}
-                                    <div className="mt-3 space-y-1 text-gray-700">
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">สีหมึก</div>
-                                        <div className="flex-1">{item.ink_color || '-'}</div>
+                                    {detailRows.length > 0 && (
+                                      <div className="mt-3 space-y-1 text-gray-700">
+                                        {detailRows.map((row) => (
+                                          <div key={row.key} className="flex gap-3">
+                                            <div className="w-24 text-gray-600 font-medium">{row.label}</div>
+                                            <div className="flex-1">{row.value}</div>
+                                          </div>
+                                        ))}
                                       </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">ชั้น</div>
-                                        <div className="flex-1">{item.product_type || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">ลายเส้น</div>
-                                        <div className="flex-1">{item.line_pattern || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">ฟอนต์</div>
-                                        <div className="flex-1">{item.font || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">ชื่อ ไม่รับชื่อ</div>
-                                        <div className="flex-1">{item.no_name_line ? '✓' : '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 1</div>
-                                        <div className="flex-1">{item.line_1 || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 2</div>
-                                        <div className="flex-1">{item.line_2 || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">บรรทัด 3</div>
-                                        <div className="flex-1">{item.line_3 || '-'}</div>
-                                      </div>
-                                      <div className="flex gap-3">
-                                        <div className="w-24 text-gray-600 font-medium">หมายเหตุ</div>
-                                        <div className="flex-1">{item.no_name_line ? ('ไม่รับชื่อ' + (item.notes ? ' ' + item.notes : '')) : (item.notes || '-')}</div>
-                                      </div>
-                                    </div>
+                                    )}
                                   </div>
 
                                   <div className="text-right shrink-0">
-                                    <div className="text-gray-700">
-                                      จำนวน: <span className="font-semibold">{qty || '-'}</span>
-                                    </div>
-                                    <div className="text-gray-700 mt-1">
-                                      ราคา/หน่วย:{' '}
-                                      <span className="font-semibold">
-                                        {unitPrice ? `฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
-                                      </span>
-                                    </div>
+                                    {showQuantity && (
+                                      <div className="text-gray-700">
+                                        จำนวน: <span className="font-semibold">{qty || '-'}</span>
+                                      </div>
+                                    )}
+                                    {showUnitPrice && (
+                                      <div className="text-gray-700 mt-1">
+                                        ราคา/หน่วย:{' '}
+                                        <span className="font-semibold">
+                                          {unitPrice ? `฿${unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                                        </span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                                 {/* Pattern lookup info (optional) */}
@@ -689,7 +686,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                             </div>
                           </div>
                         )
-                      })}
+                      })
+                      })()}
                     </div>
                   </div>
                 )}

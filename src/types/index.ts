@@ -16,6 +16,10 @@ export type UserRole =
   | 'packing_staff' 
   | 'account_staff' 
   | 'viewer'
+  | 'store'
+  | 'production'
+  | 'manager'
+  | 'picker'
 
 // Order Types
 export type OrderStatus = 
@@ -62,6 +66,13 @@ export interface Order {
   claim_details: string | null
   billing_details: BillingDetails | null
   packing_meta: PackingMeta | null
+  transport_meta?: {
+    verified?: boolean
+    verified_at?: string
+    verified_by?: string
+    carrier?: string
+    parcel_type?: string
+  } | null
   created_at: string
   updated_at: string
   order_items?: OrderItem[]
@@ -88,6 +99,7 @@ export interface OrderItem {
   notes: string | null
   file_attachment: string | null
   packing_status: string | null
+  item_scan_time?: string | null
   created_at: string
 }
 
@@ -118,6 +130,19 @@ export interface TaxItem {
 export interface PackingMeta {
   parcelScanned: boolean
   scanTime?: string
+  scannedBy?: string
+}
+
+export interface PackingVideo {
+  id: string
+  order_id: string | null
+  work_order_name: string | null
+  tracking_number: string | null
+  storage_path: string
+  duration_seconds: number | null
+  recorded_by: string | null
+  recorded_at: string | null
+  created_at: string
 }
 
 // Work Order Types
@@ -151,6 +176,8 @@ export interface CartoonPattern {
   id: string
   pattern_name: string
   pattern_code?: string
+  product_category?: string | null
+  line_count?: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket cartoon-patterns ตาม pattern_name */
   image_url?: string | null
   is_active: boolean
@@ -221,6 +248,7 @@ export interface QCItem {
 export interface SettingsReason {
   id: string
   reason_text: string
+  fail_type?: 'Man' | 'Machine' | 'Material' | 'Method' | string
   created_at?: string
 }
 

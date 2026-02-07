@@ -1,4 +1,5 @@
 import { useAuthContext } from '../../contexts/AuthContext'
+import { useLocation } from 'react-router-dom'
 
 interface TopBarProps {
   sidebarOpen: boolean
@@ -6,6 +7,15 @@ interface TopBarProps {
 
 export default function TopBar({ sidebarOpen }: TopBarProps) {
   const { user, signOut } = useAuthContext()
+  const location = useLocation()
+
+  const pageTitle = location.pathname.startsWith('/packing')
+    ? 'จัดของ'
+    : location.pathname.startsWith('/transport')
+      ? 'ทวนสอบขนส่ง'
+      : location.pathname.startsWith('/wms')
+        ? 'จัดสินค้า'
+        : ''
 
   const handleLogout = async () => {
     if (confirm('ต้องการออกจากระบบหรือไม่?')) {
@@ -21,6 +31,9 @@ export default function TopBar({ sidebarOpen }: TopBarProps) {
     >
       <div className="flex items-center gap-4">
         <h2 className="text-xl font-semibold">TR-ERP System</h2>
+        {pageTitle && (
+          <span className="text-base font-medium text-green-100">• {pageTitle}</span>
+        )}
       </div>
 
       <div className="flex items-center gap-4">

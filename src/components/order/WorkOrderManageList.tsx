@@ -168,9 +168,24 @@ export default function WorkOrderManageList({
           .from('or_orders')
           .select('work_order_name')
           .not('work_order_name', 'is', null)
+          .neq('status', 'จัดส่งแล้ว')
           .or(`bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%`)
         const woNames = new Set((orderMatch || []).map((r: { work_order_name: string }) => r.work_order_name))
         list = list.filter((w) => woNames.has(w.work_order_name))
+      }
+
+      if (list.length > 0) {
+        const { data: activeOrders } = await supabase
+          .from('or_orders')
+          .select('work_order_name')
+          .not('work_order_name', 'is', null)
+          .neq('status', 'จัดส่งแล้ว')
+          .in(
+            'work_order_name',
+            list.map((w) => w.work_order_name)
+          )
+        const activeSet = new Set((activeOrders || []).map((r: { work_order_name: string }) => r.work_order_name))
+        list = list.filter((w) => activeSet.has(w.work_order_name))
       }
       setWorkOrders(list)
       setOrdersByWo({})
@@ -211,6 +226,7 @@ export default function WorkOrderManageList({
         .from('or_orders')
         .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type')
         .eq('work_order_name', workOrderName)
+        .neq('status', 'จัดส่งแล้ว')
         .order('created_at', { ascending: false })
 
       if (error) throw error

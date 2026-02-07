@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { UserRole } from '../types'
@@ -11,7 +12,18 @@ export default function ProtectedRoute({
   children,
   allowedRoles,
 }: ProtectedRouteProps) {
-  const { user, loading } = useAuthContext()
+  const { user, loading, signOut } = useAuthContext()
+  const [forceLogin, setForceLogin] = useState(false)
+
+  useEffect(() => {
+    if (loading || !user || !allowedRoles) return
+    if (!allowedRoles.includes(user.role)) {
+      setForceLogin(true)
+      signOut().catch((error) => {
+        console.error('Sign out failed after unauthorized access:', error)
+      })
+    }
+  }, [loading, user, allowedRoles, signOut])
 
   if (loading) {
     return (
@@ -28,19 +40,14 @@ export default function ProtectedRoute({
     return <Navigate to="/login" replace />
   }
 
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-red-600 mb-4">
-            ไม่มีสิทธิ์เข้าถึง
-          </h1>
-          <p className="text-gray-600">
-            คุณไม่มีสิทธิ์เข้าถึงหน้านี้ กรุณาติดต่อผู้ดูแลระบบ
-          </p>
-        </div>
-      </div>
-    )
+  if (forceLogin) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (allowedRoles) {
+    if (!allowedRoles.includes(user.role)) {
+      return <Navigate to="/login" replace />
+    }
   }
 
   return <>{children}</>

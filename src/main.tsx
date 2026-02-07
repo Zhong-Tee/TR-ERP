@@ -17,3 +17,11 @@ createRoot(rootElement).render(
     </ErrorBoundary>
   </StrictMode>,
 )
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw-upload.js').catch((err) => {
+      console.error('Service Worker registration failed:', err)
+    })
+  })
+}
