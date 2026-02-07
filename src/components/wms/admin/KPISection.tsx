@@ -63,7 +63,8 @@ export default function KPISection() {
         const currentStart = new Date(ot.created_at)
         const currentEnd = ot.end_time ? new Date(ot.end_time) : null
         if (currentStart < timeMap[ot.order_id].start) timeMap[ot.order_id].start = currentStart
-        if (currentEnd && (!timeMap[ot.order_id].end || currentEnd > timeMap[ot.order_id].end)) {
+        const existingEnd = timeMap[ot.order_id].end
+        if (currentEnd && (!existingEnd || currentEnd > existingEnd)) {
           timeMap[ot.order_id].end = currentEnd
         }
       })

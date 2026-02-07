@@ -564,7 +564,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           categoryFieldSettings,
                           productCategoryByProductId
                         )
-                        const itemLevelKeys = new Set(itemLevel.map((field) => field.key))
+                        const itemLevelKeys = new Set<ErrorFieldKey>(itemLevel.map((field) => field.key))
 
                         return orderItems.map((item: any) => {
                         const product = productImageMap[item.product_id] || null
@@ -580,13 +580,13 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                         const unitPrice = Number(item.unit_price || 0)
                         const qty = Number(item.quantity || 0)
                         const detailRows: Array<{ key: ErrorFieldKey; label: string; value: string }> = [
-                          { key: 'ink_color', label: 'สีหมึก', value: item.ink_color || '-' },
-                          { key: 'layer', label: 'ชั้น', value: item.product_type || '-' },
-                          { key: 'line_art', label: 'ลายเส้น', value: item.line_pattern || '-' },
-                          { key: 'font', label: 'ฟอนต์', value: item.font || '-' },
-                          { key: 'line_1', label: 'บรรทัด 1', value: item.line_1 || '-' },
-                          { key: 'line_2', label: 'บรรทัด 2', value: item.line_2 || '-' },
-                          { key: 'line_3', label: 'บรรทัด 3', value: item.line_3 || '-' },
+                          { key: 'ink_color' as ErrorFieldKey, label: 'สีหมึก', value: item.ink_color || '-' },
+                          { key: 'layer' as ErrorFieldKey, label: 'ชั้น', value: item.product_type || '-' },
+                          { key: 'line_art' as ErrorFieldKey, label: 'ลายเส้น', value: item.line_pattern || '-' },
+                          { key: 'font' as ErrorFieldKey, label: 'ฟอนต์', value: item.font || '-' },
+                          { key: 'line_1' as ErrorFieldKey, label: 'บรรทัด 1', value: item.line_1 || '-' },
+                          { key: 'line_2' as ErrorFieldKey, label: 'บรรทัด 2', value: item.line_2 || '-' },
+                          { key: 'line_3' as ErrorFieldKey, label: 'บรรทัด 3', value: item.line_3 || '-' },
                         ].filter((row) => itemLevelKeys.has(row.key))
                         const showQuantity = itemLevelKeys.has('quantity')
                         const showUnitPrice = itemLevelKeys.has('unit_price')

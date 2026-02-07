@@ -1662,7 +1662,6 @@ export default function QC() {
                     type="button"
                     onClick={() => {
                       setFailReasonSelected(r.reason_text)
-                      setFailReasonCustom('')
                     }}
                     className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
                       failReasonSelected === r.reason_text

@@ -247,12 +247,12 @@ export default function Packing() {
   async function loadFolderFromSettings() {
     const handle = await getFolderHandle()
     if (!handle) return
-    const perm = await handle.queryPermission({ mode: 'readwrite' })
+    const perm = await (handle as any).queryPermission?.({ mode: 'readwrite' })
     if (perm === 'granted') {
       setFolderHandleState(handle)
       return
     }
-    const req = await handle.requestPermission({ mode: 'readwrite' })
+    const req = await (handle as any).requestPermission?.({ mode: 'readwrite' })
     if (req === 'granted') {
       setFolderHandleState(handle)
     }
@@ -1034,10 +1034,11 @@ export default function Packing() {
       await refreshQueue()
       if ('serviceWorker' in navigator) {
         const reg = await navigator.serviceWorker.ready
-        if ('sync' in reg) {
-          await reg.sync.register('packing-upload')
+        const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+        if (regAny.sync?.register) {
+          await regAny.sync.register('packing-upload')
         }
-        reg.active?.postMessage({ type: 'sync-now' })
+        regAny.active?.postMessage({ type: 'sync-now' })
       }
     } catch (error: any) {
       setRecordingState({ status: 'error', tracking: trackingNumber, error: error.message })
@@ -1282,10 +1283,11 @@ export default function Packing() {
                               await refreshQueue()
                               if ('serviceWorker' in navigator) {
                                 const reg = await navigator.serviceWorker.ready
-                                if ('sync' in reg) {
-                                  await reg.sync.register('packing-upload')
+                                const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+                                if (regAny.sync?.register) {
+                                  await regAny.sync.register('packing-upload')
                                 }
-                                reg.active?.postMessage({ type: 'sync-now' })
+                                regAny.active?.postMessage({ type: 'sync-now' })
                               }
                             }}
                           >

@@ -114,7 +114,9 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
       setError(errorMsg)
       setIsScanning(false)
       if (html5QrCodeRef.current) {
-        html5QrCodeRef.current.clear().catch(() => {})
+        try {
+          html5QrCodeRef.current.clear()
+        } catch {}
       }
     }
   }

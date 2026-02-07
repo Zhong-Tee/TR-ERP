@@ -2,25 +2,20 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useWmsModal } from '../useWmsModal'
 
-type UserRow = { id: string; username: string | null; role: string }
 type TopicRow = { id: string; topic_name: string }
 
 export default function SettingsSection() {
-  const [users, setUsers] = useState<UserRow[]>([])
   const [topics, setTopics] = useState<TopicRow[]>([])
   const [requisitionTopics, setRequisitionTopics] = useState<TopicRow[]>([])
   const [newTopic, setNewTopic] = useState('')
   const [newRequisitionTopic, setNewRequisitionTopic] = useState('')
-  const { showMessage, MessageModal } = useWmsModal()
+  const { MessageModal } = useWmsModal()
 
   useEffect(() => {
     loadSettings()
   }, [])
 
   const loadSettings = async () => {
-    const { data: usersData } = await supabase.from('us_users').select('*').order('username')
-    if (usersData) setUsers(usersData as UserRow[])
-
     const { data: topicsData } = await supabase
       .from('wms_notification_topics')
       .select('*')

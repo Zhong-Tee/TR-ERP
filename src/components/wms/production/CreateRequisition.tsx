@@ -171,7 +171,7 @@ export default function CreateRequisition() {
     if (!ok) return
 
     try {
-      const { data: reqData, error: reqError } = await supabase
+      const { error: reqError } = await supabase
         .from('wms_requisitions')
         .insert([
           {
