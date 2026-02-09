@@ -120,7 +120,7 @@ export default function PurchasePO() {
       .select('id, po_id, product_id, qty, unit_price, note, pr_products(product_code, product_name)')
       .eq('po_id', po.id)
     if (!error) {
-      setViewItems((data || []) as InventoryPOItem[])
+      setViewItems((data || []) as unknown as InventoryPOItem[])
     }
   }
 

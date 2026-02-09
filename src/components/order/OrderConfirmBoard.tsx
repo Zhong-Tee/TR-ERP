@@ -303,7 +303,7 @@ export default function OrderConfirmBoard() {
                       {column.actionTargetStatus && column.actionLabel && (
                         <button
                           type="button"
-                          onClick={() => openStatusModal(order, column.actionTargetStatus as OrderStatus, column.actionLabel)}
+                          onClick={() => openStatusModal(order, column.actionTargetStatus as OrderStatus, column.actionLabel as string)}
                           className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
                         >
                           {column.actionLabel}

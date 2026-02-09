@@ -202,7 +202,7 @@ export default function WarehouseAudit() {
       .select('id, audit_id, product_id, system_qty, counted_qty, variance, pr_products(product_code, product_name)')
       .eq('audit_id', audit.id)
     if (!error) {
-      setViewItems((data || []) as InventoryAuditItem[])
+      setViewItems((data || []) as unknown as InventoryAuditItem[])
     }
   }
 

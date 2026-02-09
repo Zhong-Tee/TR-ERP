@@ -113,7 +113,7 @@ export default function PurchaseGR() {
       .select('id, gr_id, product_id, qty_received, pr_products(product_code, product_name)')
       .eq('gr_id', gr.id)
     if (!error) {
-      setViewItems((data || []) as InventoryGRItem[])
+      setViewItems((data || []) as unknown as InventoryGRItem[])
     }
   }
 

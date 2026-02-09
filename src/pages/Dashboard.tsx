@@ -44,16 +44,6 @@ function formatCurrency(n: number) {
   return '฿' + n.toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 }
 
-function formatDate(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' })
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso)
-  return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false })
-}
-
 export default function Dashboard() {
   const [orders, setOrders] = useState<OrderRow[]>([])
   const [products, setProducts] = useState<{ id: string; product_category: string | null }[]>([])

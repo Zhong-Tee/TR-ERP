@@ -186,7 +186,7 @@ export default function WarehouseReturns() {
       .select('id, return_id, product_id, qty, pr_products(product_code, product_name)')
       .eq('return_id', ret.id)
     if (!error) {
-      setViewItems((data || []) as InventoryReturnItem[])
+      setViewItems((data || []) as unknown as InventoryReturnItem[])
     }
   }
 

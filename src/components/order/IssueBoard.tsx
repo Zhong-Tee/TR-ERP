@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
-import { Issue, IssueMessage, IssueType, Order, IssueRead } from '../../types'
+import { Issue, IssueMessage, IssueType, Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderForm from './OrderForm'
@@ -32,8 +32,8 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   const [chatSending, setChatSending] = useState(false)
   const [enterToSend, setEnterToSend] = useState(false)
   const [activeTab, setActiveTab] = useState<'on' | 'close'>('on')
-  const [newIssueCount, setNewIssueCount] = useState(0)
-  const [newChatCount, setNewChatCount] = useState(0)
+  const [, setNewIssueCount] = useState(0)
+  const [, setNewChatCount] = useState(0)
   const [detailIssue, setDetailIssue] = useState<IssueWithOrder | null>(null)
   const [updatingIssue, setUpdatingIssue] = useState(false)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
@@ -136,7 +136,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
           .from('or_orders')
           .select('id, bill_no, customer_name, channel_code, work_order_name, admin_user')
           .in('id', orderIds)
-        orderMap = new Map((orders || []).map((o: Order) => [o.id, o]))
+        orderMap = new Map((orders || []).map((o: any) => [o.id, o as Order]))
       }
       const creatorIds = Array.from(new Set(list.map((i) => i.created_by))).filter(Boolean)
       let creatorMap = new Map<string, string>()
@@ -188,7 +188,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         supabase.from('or_issue_messages').select('issue_id, created_at').in('issue_id', issueIds),
       ])
       const readMap = new Map(
-        (reads || []).map((r: IssueRead) => [r.issue_id, new Date(r.last_read_at).getTime()])
+        (reads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
       )
       const counts: Record<string, number> = {}
       ;(messages || []).forEach((m: { issue_id: string; created_at: string }) => {

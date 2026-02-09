@@ -13,8 +13,8 @@ export default function Settings() {
   const [activeTab, setActiveTab] = useState<
     'users' | 'role-settings' | 'banks' | 'product-settings' | 'chat-history' | 'issue-types' | 'easyslip'
   >('users')
-  const [fixingStatus, setFixingStatus] = useState(false)
-  const [statusFixResult, setStatusFixResult] = useState<{
+  const [, setFixingStatus] = useState(false)
+  const [, setStatusFixResult] = useState<{
     success: boolean
     message: string
     details?: any
@@ -755,6 +755,7 @@ export default function Settings() {
     }
   }
 
+  // @ts-ignore TS6133 - kept for future use
   async function fixOrderStatuses() {
     if (!confirm('ต้องการตรวจสอบและแก้ไขสถานะบิลทั้งหมดให้ถูกต้องตามข้อมูลในตารางหรือไม่?\n\nการดำเนินการนี้อาจใช้เวลาสักครู่')) {
       return

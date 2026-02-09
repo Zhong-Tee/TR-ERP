@@ -217,7 +217,7 @@ export default function WarehouseAdjust() {
       .select('id, adjustment_id, product_id, qty_delta, pr_products(product_code, product_name)')
       .eq('adjustment_id', adjustment.id)
     if (!error) {
-      setViewItems((data || []) as InventoryAdjustmentItem[])
+      setViewItems((data || []) as unknown as InventoryAdjustmentItem[])
     }
   }
 
