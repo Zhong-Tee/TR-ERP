@@ -283,31 +283,28 @@ export default function TransportVerification() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between bg-white rounded-xl border border-gray-200 px-4 py-3">
-        <h2 className="text-base font-semibold flex items-center gap-2">
-          <span className="text-lg">🚚</span> ทวนสอบขนส่ง
-        </h2>
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-gray-500">วันที่:</span>
+      <div className="flex items-center justify-end bg-white rounded-xl border border-gray-200 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-gray-500 font-semibold">วันที่:</span>
           <input
             type="date"
             value={dateFilter}
             onChange={(e) => setDateFilter(e.target.value)}
-            className="border border-gray-200 rounded-md px-2 py-1 text-blue-600 font-semibold"
+            className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
           />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
         <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
-          <div className="flex flex-wrap justify-center gap-2 mb-4">
+          <div className="flex flex-wrap justify-center gap-2 mb-3">
             {PARCEL_TYPES.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setActiveParcelType(p)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
-                  activeParcelType === p ? 'bg-green-500 text-white border-green-500' : 'bg-white text-gray-600 border-gray-200'
+                className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                  activeParcelType === p ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                 }`}
               >
                 {p === 'กล่อง' ? '📦' : p === 'ซองกระดาษ' ? '📄' : p === 'ซองบับเบิล' ? '🫧' : '🛍️'} {p.replace('ซอง', '').trim() || 'ซอง'}
@@ -315,7 +312,7 @@ export default function TransportVerification() {
             ))}
           </div>
           <div className="mb-3">
-            <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${
+            <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-sm font-bold ${
               activeCarrier ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'bg-red-50 text-red-600 border border-red-200'
             }`}>
               {activeCarrier ? `ตรวจขนส่ง: ${activeCarrier}` : '⚠️ ต้องเลือกขนส่งก่อน!'}
@@ -327,11 +324,13 @@ export default function TransportVerification() {
             value={scanValue}
             onChange={(e) => setScanValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+            onFocus={(e) => e.target.placeholder = ''}
+            onBlur={(e) => e.target.placeholder = 'ยิงบาร์โค้ดเลขพัสดุ...'}
             disabled={!activeCarrier}
             placeholder="ยิงบาร์โค้ดเลขพัสดุ..."
-            className="w-full text-center text-2xl font-semibold border-2 border-blue-500 rounded-xl px-3 py-3 disabled:bg-gray-100 disabled:border-gray-300"
+            className="w-full text-center text-2xl font-semibold border-2 border-blue-500 rounded-xl px-3 py-4 disabled:bg-gray-100 disabled:border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
-          <p className={`mt-3 font-bold min-h-[24px] ${statusMsg.type === 'success' ? 'text-green-600' : statusMsg.type === 'error' ? 'text-red-600' : ''}`}>
+          <p className={`mt-2 font-bold min-h-[20px] text-sm ${statusMsg.type === 'success' ? 'text-green-600' : statusMsg.type === 'error' ? 'text-red-600' : ''}`}>
             {statusMsg.text}
           </p>
         </div>
@@ -351,7 +350,7 @@ export default function TransportVerification() {
             type="button"
             onClick={exportCsv}
             disabled={!activeCarrier}
-            className="w-full px-4 py-3 rounded-lg font-semibold text-base bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+            className="w-full px-4 py-4 rounded-xl font-bold text-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 transition-colors"
           >
             📥 ดาวน์โหลดไฟล์สรุป (CSV)
           </button>
@@ -368,8 +367,8 @@ export default function TransportVerification() {
               key={carrier}
               type="button"
               onClick={() => setActiveCarrier(carrier)}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold border ${
-                activeCarrier === carrier ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200'
+              className={`px-4 py-2 rounded-xl text-sm font-semibold border ${
+                activeCarrier === carrier ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
               }`}
             >
               {carrier} ({cCount})
@@ -380,14 +379,14 @@ export default function TransportVerification() {
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-3 text-left w-[10%]">เวลา</th>
-              <th className="p-3 text-left w-[15%]">เลขบิล</th>
-              <th className="p-3 text-left w-[20%]">เลขพัสดุ</th>
-              <th className="p-3 text-left w-[15%]">ประเภท</th>
-              <th className="p-3 text-left">ลูกค้า</th>
-              <th className="p-3 text-center w-[15%]">สถานะ</th>
+          <thead>
+            <tr className="bg-blue-600 text-white">
+              <th className="p-3 text-left font-semibold w-[10%] rounded-tl-xl">เวลา</th>
+              <th className="p-3 text-left font-semibold w-[15%]">เลขบิล</th>
+              <th className="p-3 text-left font-semibold w-[20%]">เลขพัสดุ</th>
+              <th className="p-3 text-left font-semibold w-[15%]">ประเภท</th>
+              <th className="p-3 text-left font-semibold">ลูกค้า</th>
+              <th className="p-3 text-center font-semibold w-[15%] rounded-tr-xl">สถานะ</th>
             </tr>
           </thead>
           <tbody>
@@ -407,7 +406,7 @@ export default function TransportVerification() {
               displayOrders.map((o) => {
                 const isV = o.transport_meta?.verified && o.transport_meta?.verified_at?.substring(0, 10) === dateFilter
                 return (
-                  <tr key={o.id} className={isV ? 'bg-green-50' : ''}>
+                  <tr key={o.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${isV ? 'bg-green-50' : ''}`}>
                     <td className="p-3 text-gray-500">{isV ? formatTime(o.transport_meta?.verified_at) : '-'}</td>
                     <td className="p-3 font-semibold">{o.bill_no}</td>
                     <td className="p-3 font-mono">{o.tracking_number}</td>
@@ -442,20 +441,20 @@ export default function TransportVerification() {
             type="button"
             onClick={exportSummaryPng}
             disabled={exportingPng}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             📸 บันทึกเป็นภาพ (PNG)
           </button>
         </div>
         <table className="w-full text-sm">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-2 text-left">ช่องทาง</th>
-              <th className="p-2 text-center">📦 กล่อง</th>
-              <th className="p-2 text-center">📄 ซอง</th>
-              <th className="p-2 text-center">🫧 บับเบิล</th>
-              <th className="p-2 text-center">🛍️ ถุง</th>
-              <th className="p-2 text-center bg-blue-50 font-bold">รวม</th>
+          <thead>
+            <tr className="bg-blue-600 text-white">
+              <th className="p-3 text-left font-semibold rounded-tl-xl">ช่องทาง</th>
+              <th className="p-3 text-center font-semibold">📦 กล่อง</th>
+              <th className="p-3 text-center font-semibold">📄 ซอง</th>
+              <th className="p-3 text-center font-semibold">🫧 บับเบิล</th>
+              <th className="p-3 text-center font-semibold">🛍️ ถุง</th>
+              <th className="p-3 text-center font-bold rounded-tr-xl">รวม</th>
             </tr>
           </thead>
           <tbody>

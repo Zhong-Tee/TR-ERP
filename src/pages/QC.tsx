@@ -682,26 +682,30 @@ export default function QC() {
   }
 
   return (
-    <div className="h-full min-h-0 flex flex-col bg-gray-50 overflow-hidden" onKeyDown={handleKeydown} tabIndex={0}>
-      {/* Tabs */}
-      <div className="shrink-0 bg-white border-b px-4 flex gap-2 flex-wrap">
-        {filteredMenus.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => setCurrentView(m.id)}
-            className={`px-4 py-3 font-medium border-b-2 transition-colors ${
-              currentView === m.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'
-            }`}
-          >
-            {m.label}
-            {m.id === 'reject' && rejectData.length > 0 && (
-              <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{rejectData.length}</span>
-            )}
-          </button>
-        ))}
+    <div className="w-full" onKeyDown={handleKeydown} tabIndex={0}>
+      {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+            {filteredMenus.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setCurrentView(m.id)}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  currentView === m.id ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {m.label}
+                {m.id === 'reject' && rejectData.length > 0 && (
+                  <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{rejectData.length}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+        </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto p-4 flex flex-col">
+      <div className="pt-4 flex flex-col min-h-[calc(100vh-12rem)]">
         {/* QC Operation */}
         {currentView === 'qc' && (
           <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
@@ -721,7 +725,7 @@ export default function QC() {
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-gray-900 truncate">{wo.work_order_name}</div>
                         <div className="text-sm text-gray-600 mt-0.5">
-                          <span className="text-amber-600 font-medium">คงเหลือ {wo.remaining} รายการ</span>
+                          <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining} รายการ</span>
                           <span className="mx-1">/</span>
                           <span>ทั้งหมด {wo.total_items} รายการ</span>
                           <span className="ml-1 text-gray-500">({wo.order_count} บิล)</span>
@@ -757,8 +761,8 @@ export default function QC() {
                       <div className="text-2xl font-bold text-red-600">{failedItems}</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-xs text-amber-600 uppercase">Left</div>
-                      <div className="text-2xl font-bold text-amber-600">{remainingItems}</div>
+                      <div className="text-xs text-blue-600 uppercase">Left</div>
+                      <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
                     </div>
                   </div>
                   <div className="flex gap-2 items-center">
@@ -779,7 +783,7 @@ export default function QC() {
                         FINISH JOB
                       </button>
                     )}
-                    <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-amber-500 text-amber-600 rounded-lg hover:bg-amber-50">
+                    <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
                       สลับใบงาน
                     </button>
                   </div>
@@ -883,7 +887,7 @@ export default function QC() {
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
-                            <div className="text-xl font-bold text-amber-600 uppercase">{currentItem.uid}</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentItem.uid}</div>
                           </div>
                         </div>
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
@@ -936,7 +940,7 @@ export default function QC() {
                             <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
                               Prev
                             </button>
-                            <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
+                            <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
                               Next
                             </button>
                           </div>
@@ -967,7 +971,7 @@ export default function QC() {
                     key={String(tab)}
                     onClick={() => setActiveRejectTab(tab)}
                     className={`px-4 py-2 rounded-lg font-bold text-sm ${
-                      activeRejectTab === tab ? 'bg-amber-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      activeRejectTab === tab ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     }`}
                   >
                     {tab === 'queue' ? 'QUEUE' : `REJECT ${tab}`}
@@ -984,9 +988,9 @@ export default function QC() {
                   onChange={(e) => setRejectSearchQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleRejectScan()}
                   placeholder="สแกนหรือพิมพ์ UID"
-                  className="border-2 border-amber-400 rounded-full pl-4 pr-4 py-2 w-64"
+                  className="border-2 border-blue-400 rounded-full pl-4 pr-4 py-2 w-64 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
                 />
-                <button onClick={handleRejectScan} className="px-4 py-2 bg-amber-500 text-white rounded-full font-bold">
+                <button onClick={handleRejectScan} className="px-4 py-2 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
                   Search
                 </button>
                 <button onClick={() => setRejectSearchQuery('')} className="px-4 py-2 bg-gray-200 rounded-full font-bold">
@@ -1019,14 +1023,14 @@ export default function QC() {
                           setActiveRejectTab((item.retry_count || 1) as 1 | 2 | 3 | 4)
                           setCurrentRejectItem(item)
                         }}
-                        className="border-b hover:bg-amber-50 cursor-pointer"
+                        className="border-b hover:bg-blue-50 cursor-pointer"
                       >
                         <td className="px-3 py-3 font-bold text-gray-400">{idx + 1}</td>
-                        <td className="px-3 py-3 font-bold text-amber-600">{item.qc_by}</td>
+                        <td className="px-3 py-3 font-bold text-blue-600">{item.qc_by}</td>
                         <td className="px-3 py-3">
                           <div className="font-bold">{item.product_name || '-'}</div>
                           <div className="text-gray-500 text-xs">Bill: {item.bill_no || '-'}</div>
-                          <div className="text-amber-600 font-mono text-xs">{item.item_uid}</div>
+                          <div className="text-blue-600 font-mono text-xs">{item.item_uid}</div>
                         </td>
                         <td className="px-3 py-3 text-xs">
                           {item.line1 && <div>1: {item.line1}</div>}
@@ -1064,7 +1068,7 @@ export default function QC() {
                         key={item.id}
                         onClick={() => setCurrentRejectItem(item)}
                         className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
-                          item === currentRejectItem ? 'border-amber-500 bg-amber-50 ring-1 ring-amber-500' : 'border-gray-100 hover:bg-gray-50'
+                          item === currentRejectItem ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
                         }`}
                       >
                         <div className="truncate min-w-0">
@@ -1125,7 +1129,7 @@ export default function QC() {
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
-                            <div className="text-xl font-bold text-amber-600 uppercase">{currentRejectItem.item_uid}</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentRejectItem.item_uid}</div>
                           </div>
                         </div>
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
@@ -1172,7 +1176,7 @@ export default function QC() {
                           <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
                             Prev
                           </button>
-                          <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold">
+                          <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
                             Next
                           </button>
                         </div>
@@ -1254,7 +1258,7 @@ export default function QC() {
                       className="border-b hover:bg-blue-50 cursor-pointer"
                     >
                       <td className="px-4 py-3 text-center">{formatDate(s.start_time)}</td>
-                      <td className="px-4 py-3 text-center font-bold text-amber-600">{formatDate(s.end_time)}</td>
+                      <td className="px-4 py-3 text-center font-bold text-blue-600">{formatDate(s.end_time)}</td>
                       <td className="px-4 py-3 font-bold">{s.username}</td>
                       <td className="px-4 py-3 truncate max-w-[200px] italic">{s.filename}</td>
                       <td className="px-4 py-3 text-center font-bold">{s.total_items}</td>
@@ -1266,7 +1270,7 @@ export default function QC() {
                       <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                         <button
                           onClick={() => downloadReportCsv(s)}
-                          className="text-amber-600 hover:text-amber-800 font-bold uppercase text-xs"
+                          className="text-blue-600 hover:text-blue-800 font-bold uppercase text-xs"
                         >
                           CSV
                         </button>
@@ -1297,9 +1301,9 @@ export default function QC() {
                 onChange={(e) => setHistorySearch(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && searchHistory()}
                 placeholder="สแกน Barcode หรือพิมพ์ UID"
-                className="border-2 border-amber-400 rounded-lg px-4 py-2 flex-1 min-w-[200px]"
+                className="border-2 border-blue-400 rounded-lg px-4 py-2 flex-1 min-w-[200px]"
               />
-              <button onClick={searchHistory} disabled={loading} className="px-5 py-2 bg-amber-500 text-white rounded-lg font-bold disabled:opacity-50">
+              <button onClick={searchHistory} disabled={loading} className="px-5 py-2 bg-blue-600 text-white rounded-lg font-bold disabled:opacity-50">
                 Search
               </button>
               <button
@@ -1391,7 +1395,7 @@ export default function QC() {
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
-                            <div className="text-xl font-bold text-amber-600 uppercase">{currentHistoryRecord.item_uid}</div>
+                            <div className="text-xl font-bold text-blue-600 uppercase">{currentHistoryRecord.item_uid}</div>
                           </div>
                         </div>
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
@@ -1465,7 +1469,7 @@ export default function QC() {
                             const idx = historyResults.indexOf(currentHistoryRecord)
                             if (idx >= 0 && idx < historyResults.length - 1) setCurrentHistoryRecord(historyResults[idx + 1])
                           }}
-                          className="flex-1 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 font-bold"
+                          className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold"
                         >
                           Next
                         </button>
@@ -1492,13 +1496,13 @@ export default function QC() {
             <div className="flex border-b mb-6">
               <button
                 onClick={() => setSettingsTab('reasons')}
-                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'reasons' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500'}`}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'reasons' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
               >
                 Reasons
               </button>
               <button
                 onClick={() => setSettingsTab('ink')}
-                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'ink' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500'}`}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'ink' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
               >
                 Ink
               </button>
@@ -1727,7 +1731,7 @@ export default function QC() {
                   <td className="px-3 py-2 text-center font-bold text-gray-400">{idx + 1}</td>
                   <td className="px-3 py-2 text-center whitespace-nowrap">{formatTime(item.created_at)}</td>
                   <td className="px-3 py-2 text-center font-bold">{item.reject_duration ? formatDuration(item.reject_duration) : '-'}</td>
-                  <td className="px-3 py-2 font-mono font-bold text-amber-600">{item.item_uid}</td>
+                  <td className="px-3 py-2 font-mono font-bold text-blue-600">{item.item_uid}</td>
                   <td className="px-3 py-2 text-center">
                     <span className={`px-2 py-0.5 rounded text-xs font-bold ${item.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
                       {item.status}
@@ -1736,7 +1740,7 @@ export default function QC() {
                   <td className="px-3 py-2 text-center font-bold">{item.retry_count || 1}</td>
                   <td className="px-3 py-2">
                     <div className="font-bold">{item.product_name || '-'}</div>
-                    <div className="text-xs text-amber-600">Bill: {item.bill_no || '-'}</div>
+                    <div className="text-xs text-blue-600">Bill: {item.bill_no || '-'}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">
                     {item.line1 && <div>1: {item.line1}</div>}

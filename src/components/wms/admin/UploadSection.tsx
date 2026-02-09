@@ -114,7 +114,6 @@ export default function UploadSection() {
   return (
     <>
       <section>
-        <h2 className="text-3xl font-black mb-6">จัดสินค้า</h2>
         <div className="bg-white p-6 rounded-2xl shadow-sm border overflow-hidden">
           <div className="flex justify-between items-center mb-6 pb-4 border-b flex-wrap gap-2">
             <h3 className="font-bold text-slate-800">Dashboard รายการใบงาน</h3>

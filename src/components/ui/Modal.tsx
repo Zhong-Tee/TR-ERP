@@ -38,7 +38,7 @@ export default function Modal({
       aria-hidden={!open}
     >
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-surface-900/30 backdrop-blur-sm"
         aria-hidden
         onClick={closeOnBackdropClick ? onClose : undefined}
       />
@@ -46,7 +46,7 @@ export default function Modal({
         role={role}
         aria-modal={ariaModal}
         aria-labelledby={ariaLabelledby}
-        className={`relative flex flex-col w-full rounded-2xl bg-white shadow-xl overflow-hidden ${contentClassName}`}
+        className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 max-h-[calc(100vh-2rem)] overflow-y-auto ${contentClassName}`}
         onClick={closeOnBackdropClick ? (e) => e.stopPropagation() : undefined}
       >
         {children}

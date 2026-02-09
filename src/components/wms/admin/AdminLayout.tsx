@@ -21,72 +21,44 @@ const MENU_KEYS = {
 
 export default function AdminLayout() {
   const { user } = useAuthContext()
-  const [activeMenu, setActiveMenu] = useState(MENU_KEYS.UPLOAD)
+  const [activeMenu, setActiveMenu] = useState(MENU_KEYS.NEW_ORDERS)
   const { MessageModal, ConfirmModal } = useWmsModal()
 
+  const menuItems = [
+    { key: MENU_KEYS.NEW_ORDERS, label: 'ใบงานใหม่' },
+    { key: MENU_KEYS.UPLOAD, label: 'รายการใบงาน' },
+    { key: MENU_KEYS.REVIEW, label: 'ตรวจสินค้า' },
+    { key: MENU_KEYS.KPI, label: 'KPI' },
+    { key: MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
+    { key: MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
+    ...(user?.role !== 'store' ? [{ key: MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
+  ]
+
   return (
-    <div className="flex min-h-[calc(100vh-6rem)] flex-col gap-4">
-      <div className="bg-white rounded-2xl shadow-sm border px-4 py-3 flex flex-wrap gap-2 items-center">
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.NEW_ORDERS)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.NEW_ORDERS ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          ใบงานใหม่
-        </button>
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.UPLOAD)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.UPLOAD ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          จัดสินค้า
-        </button>
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.REVIEW)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.REVIEW ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          ตรวจสินค้า
-        </button>
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.KPI)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.KPI ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          KPI
-        </button>
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.REQUISITION)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.REQUISITION ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          รายการเบิก
-        </button>
-        <button
-          onClick={() => setActiveMenu(MENU_KEYS.NOTIF)}
-          className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-            activeMenu === MENU_KEYS.NOTIF ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          แจ้งเตือน
-        </button>
-        {user?.role !== 'store' && (
-          <button
-            onClick={() => setActiveMenu(MENU_KEYS.SETTINGS)}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition ${
-              activeMenu === MENU_KEYS.SETTINGS ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            ตั้งค่า
-          </button>
-        )}
+    <div className="w-full">
+      {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+            {menuItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setActiveMenu(item.key)}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  activeMenu === item.key
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </div>
       </div>
-      <main className="flex-1 overflow-y-auto p-6 bg-gray-50 rounded-2xl">
+
+      <div className="pt-4">
         {activeMenu === MENU_KEYS.UPLOAD && <UploadSection />}
         {activeMenu === MENU_KEYS.NEW_ORDERS && <NewOrdersSection />}
         {activeMenu === MENU_KEYS.REVIEW && <ReviewSection />}
@@ -94,7 +66,7 @@ export default function AdminLayout() {
         {activeMenu === MENU_KEYS.REQUISITION && <RequisitionDashboard />}
         {activeMenu === MENU_KEYS.NOTIF && <NotificationSection />}
         {activeMenu === MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
-      </main>
+      </div>
       {MessageModal}
       {ConfirmModal}
     </div>

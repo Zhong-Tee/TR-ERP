@@ -616,26 +616,24 @@ export default function Account() {
 
   return (
     <div className="space-y-8">
-      <header className="border-b border-gray-200 pb-4">
-        <h1 className="text-2xl font-bold text-gray-800">บัญชี</h1>
-        <p className="text-sm text-gray-500 mt-1">จัดการโอนคืน คำขอใบกำกับภาษี และบิลเงินสด</p>
-        <nav className="mt-4 flex gap-2 flex-wrap">
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 overflow-x-auto">
           <button
             type="button"
             onClick={() => setAccountSection('dashboard')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${accountSection === 'dashboard' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'dashboard' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
           >
             Dashboard
           </button>
           <button
             type="button"
             onClick={() => setAccountSection('slip-verification')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${accountSection === 'slip-verification' ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'slip-verification' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
           >
             รายการการตรวจสลิป
           </button>
         </nav>
-      </header>
+      </div>
 
       {accountSection === 'slip-verification' ? (
         <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -876,11 +874,11 @@ export default function Account() {
       </section>
 
       {/* แถบเมนูย่อย — แสดงตัวเลขแบบเรียลไทม์ */}
-      <nav className="flex gap-1 p-1 bg-gray-100 rounded-xl w-fit">
+      <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max border-b border-surface-200 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('refunds')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการโอนคืน
           <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-amber-100 text-amber-800">
@@ -890,7 +888,7 @@ export default function Account() {
         <button
           type="button"
           onClick={() => setActiveTab('tax-invoice')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'tax-invoice' ? 'bg-white text-sky-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'tax-invoice' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           ขอใบกำกับภาษี
           <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-sky-100 text-sky-800">
@@ -900,7 +898,7 @@ export default function Account() {
         <button
           type="button"
           onClick={() => setActiveTab('cash-bill')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors flex items-center gap-2 ${activeTab === 'cash-bill' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'cash-bill' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           ขอบิลเงินสด
           <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
@@ -910,7 +908,7 @@ export default function Account() {
         <button
           type="button"
           onClick={() => setActiveTab('approvals')}
-          className={`px-5 py-2.5 rounded-lg text-base font-medium transition-colors ${activeTab === 'approvals' ? 'bg-white text-violet-700 shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}
+          className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${activeTab === 'approvals' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการอนุมัติ
         </button>

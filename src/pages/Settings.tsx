@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import type { User, BankSetting } from '../types'
+import type { User, BankSetting, OrderChatLog, IssueType } from '../types'
 import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
@@ -10,7 +10,9 @@ export default function Settings() {
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'users' | 'role-settings' | 'banks' | 'product-settings' | 'order-status'>('users')
+  const [activeTab, setActiveTab] = useState<
+    'users' | 'role-settings' | 'banks' | 'product-settings' | 'chat-history' | 'issue-types' | 'easyslip'
+  >('users')
   const [fixingStatus, setFixingStatus] = useState(false)
   const [statusFixResult, setStatusFixResult] = useState<{
     success: boolean
@@ -87,6 +89,15 @@ export default function Settings() {
   const [savingProductSettings, setSavingProductSettings] = useState(false)
   const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
+  const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatFromDate, setChatFromDate] = useState('')
+  const [chatToDate, setChatToDate] = useState('')
+  const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
+  const [issueTypeName, setIssueTypeName] = useState('')
+  const [issueTypeColor, setIssueTypeColor] = useState('#3B82F6')
+  const [issueTypeSaving, setIssueTypeSaving] = useState(false)
+  const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
 
   useEffect(() => {
     loadUsers()
@@ -101,6 +112,12 @@ export default function Settings() {
     }
     if (activeTab === 'role-settings') {
       loadRoleMenus()
+    }
+    if (activeTab === 'chat-history') {
+      loadChatLogs()
+    }
+    if (activeTab === 'issue-types') {
+      loadIssueTypes()
     }
   }, [activeTab])
 
@@ -239,6 +256,110 @@ export default function Settings() {
       setRoleMenus(map)
     } catch (error: any) {
       console.error('Error loading role menus:', error)
+    }
+  }
+
+  async function loadChatLogs() {
+    setChatLoading(true)
+    try {
+      let query = supabase
+        .from('or_order_chat_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (chatFromDate) {
+        query = query.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
+      }
+      if (chatToDate) {
+        query = query.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      }
+
+      const { data, error } = await query.limit(500)
+      if (error) throw error
+      setChatLogs((data || []) as OrderChatLog[])
+    } catch (error: any) {
+      console.error('Error loading chat logs:', error)
+      alert('เกิดข้อผิดพลาดในการโหลดประวัติแชท: ' + error.message)
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  async function deleteChatLog(id: string) {
+    if (!confirm('ต้องการลบข้อความนี้หรือไม่?')) return
+    try {
+      const { error } = await supabase
+        .from('or_order_chat_logs')
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      setChatLogs((prev) => prev.filter((log) => log.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting chat log:', error)
+      alert('เกิดข้อผิดพลาดในการลบ: ' + error.message)
+    }
+  }
+
+  async function loadIssueTypes() {
+    try {
+      const { data, error } = await supabase
+        .from('or_issue_types')
+        .select('*')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setIssueTypes((data || []) as IssueType[])
+    } catch (error: any) {
+      console.error('Error loading issue types:', error)
+      alert('เกิดข้อผิดพลาดในการโหลดประเภท Issue: ' + error.message)
+    }
+  }
+
+  async function saveIssueType() {
+    if (!issueTypeName.trim()) {
+      alert('กรุณากรอกชื่อประเภท')
+      return
+    }
+    setIssueTypeSaving(true)
+    try {
+      const payload = {
+        name: issueTypeName.trim(),
+        color: issueTypeColor || '#3B82F6',
+        is_active: true,
+      }
+      if (issueTypeEditingId) {
+        const { error } = await supabase
+          .from('or_issue_types')
+          .update(payload)
+          .eq('id', issueTypeEditingId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('or_issue_types').insert(payload)
+        if (error) throw error
+      }
+      setIssueTypeName('')
+      setIssueTypeColor('#3B82F6')
+      setIssueTypeEditingId(null)
+      loadIssueTypes()
+    } catch (error: any) {
+      console.error('Error saving issue type:', error)
+      alert('เกิดข้อผิดพลาด: ' + error.message)
+    } finally {
+      setIssueTypeSaving(false)
+    }
+  }
+
+  async function deleteIssueType(id: string) {
+    if (!confirm('ต้องการลบประเภท Issue นี้หรือไม่?')) return
+    try {
+      const { error } = await supabase
+        .from('or_issue_types')
+        .delete()
+        .eq('id', id)
+      if (error) throw error
+      setIssueTypes((prev) => prev.filter((t) => t.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting issue type:', error)
+      alert('เกิดข้อผิดพลาด: ' + error.message)
     }
   }
 
@@ -805,231 +926,205 @@ export default function Settings() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold">ตั้งค่า</h1>
-
-      {/* Test EasySlip Connection Section */}
-      <div className="bg-white p-4 rounded-lg shadow mb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold mb-1">ทดสอบการเชื่อมต่อ EasySlip API</h2>
-            <p className="text-sm text-gray-600">ตรวจสอบว่า Edge Function และ EasySlip API ทำงานได้ปกติ</p>
-          </div>
-          <button
-            onClick={testConnection}
-            disabled={testingConnection}
-            className={`px-4 py-2 rounded-lg font-medium ${
-              testingConnection
-                ? 'bg-gray-400 text-white cursor-not-allowed'
-                : 'bg-green-500 text-white hover:bg-green-600'
-            }`}
-          >
-            {testingConnection ? 'กำลังทดสอบ...' : 'ทดสอบการเชื่อมต่อ'}
-          </button>
+      {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+            {([
+              { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
+              { key: 'role-settings', label: 'ตั้งค่า Role' },
+              { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
+              { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
+              { key: 'issue-types', label: 'ประเภท Issue' },
+              { key: 'chat-history', label: 'ประวัติแชท' },
+              { key: 'easyslip', label: 'API EasySlip' },
+            ] as { key: typeof activeTab; label: string }[]).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                  activeTab === tab.key
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-blue-600'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
         </div>
-        
-        {connectionTestResult && (
-          <div className={`mt-4 p-4 rounded-lg ${
-            connectionTestResult.success
-              ? 'bg-green-50 border border-green-200'
-              : 'bg-red-50 border border-red-200'
-          }`}>
-            <div className={`font-semibold mb-2 ${
-              connectionTestResult.success ? 'text-green-800' : 'text-red-800'
-            }`}>
-              {connectionTestResult.success ? '✅' : '❌'} {connectionTestResult.message}
+      </div>
+
+      {/* API EasySlip Tab */}
+      {activeTab === 'easyslip' && (
+        <div className="space-y-6">
+          {/* Test EasySlip Connection Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold mb-1">ทดสอบการเชื่อมต่อ EasySlip API</h2>
+                <p className="text-sm text-gray-600">ตรวจสอบว่า Edge Function และ EasySlip API ทำงานได้ปกติ</p>
+              </div>
+              <button
+                onClick={testConnection}
+                disabled={testingConnection}
+                className={`px-4 py-2 rounded-xl font-semibold ${
+                  testingConnection
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                }`}
+              >
+                {testingConnection ? 'กำลังทดสอบ...' : 'ทดสอบการเชื่อมต่อ'}
+              </button>
             </div>
-            {connectionTestResult.details && (
-              <div className="mt-2 text-sm text-gray-700 space-y-1">
-                <div>Edge Function: {connectionTestResult.details.edgeFunctionReachable ? '✅ เข้าถึงได้' : '❌ ไม่สามารถเข้าถึงได้'}</div>
-                <div>Secrets ตั้งค่าแล้ว: {connectionTestResult.details.secretsConfigured ? '✅ ตั้งค่าแล้ว' : '❌ ยังไม่ได้ตั้งค่า'}</div>
-                <div>EasySlip API: {connectionTestResult.details.easyslipApiReachable ? '✅ เชื่อมต่อได้' : '❌ ไม่สามารถเชื่อมต่อได้'}</div>
-                {connectionTestResult.details.error && (
-                  <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
-                    <div className="text-red-800 font-semibold mb-1">Error Details:</div>
-                    <div className="text-red-700 text-sm whitespace-pre-line">{connectionTestResult.details.error}</div>
-                    {connectionTestResult.details.error.includes('404') && (
-                      <div className="mt-2 text-xs text-red-600">
-                        <strong>หมายเหตุ:</strong> Error 404 จาก EasySlip API อาจเกิดจาก:
-                        <ul className="list-disc list-inside mt-1">
-                          <li>API endpoint ไม่ถูกต้อง</li>
-                          <li>Test payload ไม่ถูกต้อง (ใช้ 'test' แทน base64 image จริง)</li>
-                          <li>EasySlip service ยังไม่ได้เปิดใช้งาน</li>
+            
+            {connectionTestResult && (
+              <div className={`mt-4 p-4 rounded-lg ${
+                connectionTestResult.success
+                  ? 'bg-green-50 border border-green-200'
+                  : 'bg-red-50 border border-red-200'
+              }`}>
+                <div className={`font-semibold mb-2 ${
+                  connectionTestResult.success ? 'text-green-800' : 'text-red-800'
+                }`}>
+                  {connectionTestResult.success ? '✅' : '❌'} {connectionTestResult.message}
+                </div>
+                {connectionTestResult.details && (
+                  <div className="mt-2 text-sm text-gray-700 space-y-1">
+                    <div>Edge Function: {connectionTestResult.details.edgeFunctionReachable ? '✅ เข้าถึงได้' : '❌ ไม่สามารถเข้าถึงได้'}</div>
+                    <div>Secrets ตั้งค่าแล้ว: {connectionTestResult.details.secretsConfigured ? '✅ ตั้งค่าแล้ว' : '❌ ยังไม่ได้ตั้งค่า'}</div>
+                    <div>EasySlip API: {connectionTestResult.details.easyslipApiReachable ? '✅ เชื่อมต่อได้' : '❌ ไม่สามารถเชื่อมต่อได้'}</div>
+                    {connectionTestResult.details.error && (
+                      <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
+                        <div className="text-red-800 font-semibold mb-1">Error Details:</div>
+                        <div className="text-red-700 text-sm whitespace-pre-line">{connectionTestResult.details.error}</div>
+                        {connectionTestResult.details.error.includes('404') && (
+                          <div className="mt-2 text-xs text-red-600">
+                            <strong>หมายเหตุ:</strong> Error 404 จาก EasySlip API อาจเกิดจาก:
+                            <ul className="list-disc list-inside mt-1">
+                              <li>API endpoint ไม่ถูกต้อง</li>
+                              <li>Test payload ไม่ถูกต้อง (ใช้ 'test' แทน base64 image จริง)</li>
+                              <li>EasySlip service ยังไม่ได้เปิดใช้งาน</li>
+                            </ul>
+                            <div className="mt-2">
+                              <strong>แนะนำ:</strong> ลองทดสอบด้วยรูปภาพจริงในส่วน "ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง" ด้านล่าง
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!connectionTestResult.success && connectionTestResult.details.easyslipApiReachable === false && (
+                      <div className="mt-3 p-3 bg-yellow-50 rounded border border-yellow-200">
+                        <div className="text-yellow-800 font-semibold mb-2">วิธีแก้ไข:</div>
+                        <ul className="text-yellow-700 text-sm space-y-1 list-disc list-inside">
+                          <li>ตรวจสอบว่า EasySlip service เปิดใช้งานแล้ว (ไปที่ https://developer.easyslip.com)</li>
+                          <li>ตรวจสอบว่า EASYSLIP_API_KEY ถูกต้อง (ใน Supabase Dashboard → Settings → Edge Functions → Secrets)</li>
+                          <li>ตรวจสอบ Logs ใน Supabase Dashboard → Edge Functions → verify-slip → Logs</li>
+                          <li>ตรวจสอบว่า Package/Plan ยังใช้งานได้</li>
                         </ul>
-                        <div className="mt-2">
-                          <strong>แนะนำ:</strong> ลองทดสอบด้วยรูปภาพจริงในส่วน "ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง" ด้านล่าง
-                        </div>
                       </div>
                     )}
                   </div>
                 )}
-                {!connectionTestResult.success && connectionTestResult.details.easyslipApiReachable === false && (
-                  <div className="mt-3 p-3 bg-yellow-50 rounded border border-yellow-200">
-                    <div className="text-yellow-800 font-semibold mb-2">วิธีแก้ไข:</div>
-                    <ul className="text-yellow-700 text-sm space-y-1 list-disc list-inside">
-                      <li>ตรวจสอบว่า EasySlip service เปิดใช้งานแล้ว (ไปที่ https://developer.easyslip.com)</li>
-                      <li>ตรวจสอบว่า EASYSLIP_API_KEY ถูกต้อง (ใน Supabase Dashboard → Settings → Edge Functions → Secrets)</li>
-                      <li>ตรวจสอบ Logs ใน Supabase Dashboard → Edge Functions → verify-slip → Logs</li>
-                      <li>ตรวจสอบว่า Package/Plan ยังใช้งานได้</li>
-                    </ul>
+              </div>
+            )}
+          </div>
+
+          {/* Test with Image Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <div>
+              <h2 className="text-lg font-semibold mb-1">ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง</h2>
+              <p className="text-sm text-gray-600 mb-4">อัปโหลดรูปสลิปเพื่อทดสอบการตรวจสอบจริง</p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  เลือกรูปสลิป
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageSelect}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {imagePreview && (
+                  <div className="mt-4">
+                    <p className="text-sm text-gray-600 mb-2">ตัวอย่างรูป:</p>
+                    <img
+                      src={imagePreview}
+                      alt="Preview"
+                      className="max-w-xs border border-gray-300 rounded-lg"
+                    />
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        )}
-      </div>
 
-      {/* Test with Image Section */}
-      <div className="bg-white p-4 rounded-lg shadow mb-4">
-        <div>
-          <h2 className="text-lg font-semibold mb-1">ทดสอบการตรวจสอบสลิปด้วยรูปภาพจริง</h2>
-          <p className="text-sm text-gray-600 mb-4">อัปโหลดรูปสลิปเพื่อทดสอบการตรวจสอบจริง</p>
-        </div>
+              <button
+                onClick={testWithImage}
+                disabled={testingWithImage || !selectedImage}
+                className={`px-4 py-2 rounded-xl font-semibold ${
+                  testingWithImage || !selectedImage
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                {testingWithImage ? 'กำลังทดสอบ...' : 'ทดสอบการตรวจสอบสลิป'}
+              </button>
 
-        <div className="space-y-4">
-          {/* Image Upload */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              เลือกรูปสลิป
-            </label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageSelect}
-              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-            />
-            {imagePreview && (
-              <div className="mt-4">
-                <p className="text-sm text-gray-600 mb-2">ตัวอย่างรูป:</p>
-                <img
-                  src={imagePreview}
-                  alt="Preview"
-                  className="max-w-xs border border-gray-300 rounded-lg"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Test Button */}
-          <button
-            onClick={testWithImage}
-            disabled={testingWithImage || !selectedImage}
-            className={`px-4 py-2 rounded-lg font-medium ${
-              testingWithImage || !selectedImage
-                ? 'bg-gray-400 text-white cursor-not-allowed'
-                : 'bg-blue-500 text-white hover:bg-blue-600'
-            }`}
-          >
-            {testingWithImage ? 'กำลังทดสอบ...' : 'ทดสอบการตรวจสอบสลิป'}
-          </button>
-
-          {/* Test Result */}
-          {testImageResult && (
-            <div className={`mt-4 p-4 rounded-lg ${
-              testImageResult.success
-                ? 'bg-green-50 border border-green-200'
-                : 'bg-red-50 border border-red-200'
-            }`}>
-              <div className={`font-semibold mb-2 ${
-                testImageResult.success ? 'text-green-800' : 'text-red-800'
-              }`}>
-                {testImageResult.success ? '✅' : '❌'} {testImageResult.message}
-              </div>
-              
-              {testImageResult.success && testImageResult.data && (
-                <div className="mt-3 text-sm text-gray-700 space-y-2">
-                  {testImageResult.amount !== undefined && (
-                    <div className="font-semibold text-lg text-green-700">
-                      ยอดเงิน: {testImageResult.amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+              {testImageResult && (
+                <div className={`mt-4 p-4 rounded-lg ${
+                  testImageResult.success
+                    ? 'bg-green-50 border border-green-200'
+                    : 'bg-red-50 border border-red-200'
+                }`}>
+                  <div className={`font-semibold mb-2 ${
+                    testImageResult.success ? 'text-green-800' : 'text-red-800'
+                  }`}>
+                    {testImageResult.success ? '✅' : '❌'} {testImageResult.message}
+                  </div>
+                  
+                  {testImageResult.success && testImageResult.data && (
+                    <div className="mt-3 text-sm text-gray-700 space-y-2">
+                      {testImageResult.amount !== undefined && (
+                        <div className="font-semibold text-lg text-green-700">
+                          ยอดเงิน: {testImageResult.amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+                        </div>
+                      )}
+                      {testImageResult.transRef && (
+                        <div>เลขที่อ้างอิง: {testImageResult.transRef}</div>
+                      )}
+                      {testImageResult.date && (
+                        <div>วันที่: {new Date(testImageResult.date).toLocaleString('th-TH')}</div>
+                      )}
+                      {testImageResult.receiverBank && (
+                        <div>
+                          ธนาคารผู้รับ: {testImageResult.receiverBank.name || testImageResult.receiverBank.short} 
+                          {testImageResult.receiverBank.id && ` (${testImageResult.receiverBank.id})`}
+                        </div>
+                      )}
+                      {testImageResult.receiverAccount?.bank?.account && (
+                        <div>เลขบัญชีผู้รับ: {testImageResult.receiverAccount.bank.account}</div>
+                      )}
+                      {testImageResult.receiverAccount?.name?.th && (
+                        <div>ชื่อผู้รับ: {testImageResult.receiverAccount.name.th}</div>
+                      )}
                     </div>
                   )}
-                  {testImageResult.transRef && (
-                    <div>เลขที่อ้างอิง: {testImageResult.transRef}</div>
-                  )}
-                  {testImageResult.date && (
-                    <div>วันที่: {new Date(testImageResult.date).toLocaleString('th-TH')}</div>
-                  )}
-                  {testImageResult.receiverBank && (
-                    <div>
-                      ธนาคารผู้รับ: {testImageResult.receiverBank.name || testImageResult.receiverBank.short} 
-                      {testImageResult.receiverBank.id && ` (${testImageResult.receiverBank.id})`}
+
+                  {testImageResult.error && (
+                    <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
+                      <div className="text-red-800 font-semibold mb-1">Error Details:</div>
+                      <div className="text-red-700 text-sm whitespace-pre-line">{testImageResult.error}</div>
                     </div>
                   )}
-                  {testImageResult.receiverAccount?.bank?.account && (
-                    <div>เลขบัญชีผู้รับ: {testImageResult.receiverAccount.bank.account}</div>
-                  )}
-                  {testImageResult.receiverAccount?.name?.th && (
-                    <div>ชื่อผู้รับ: {testImageResult.receiverAccount.name.th}</div>
-                  )}
-                </div>
-              )}
-
-              {testImageResult.error && (
-                <div className="mt-2 p-3 bg-red-100 rounded border border-red-300">
-                  <div className="text-red-800 font-semibold mb-1">Error Details:</div>
-                  <div className="text-red-700 text-sm whitespace-pre-line">{testImageResult.error}</div>
                 </div>
               )}
             </div>
-          )}
+          </div>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-white border-b border-gray-200">
-        <nav className="flex space-x-8">
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'users'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            จัดการสิทธิ์ผู้ใช้
-          </button>
-          <button
-            onClick={() => setActiveTab('role-settings')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'role-settings'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            ตั้งค่า Role
-          </button>
-          <button
-            onClick={() => setActiveTab('banks')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'banks'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            ตั้งค่าข้อมูลธนาคาร
-          </button>
-          <button
-            onClick={() => setActiveTab('product-settings')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'product-settings'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            ตั้งค่าสินค้า
-          </button>
-          <button
-            onClick={() => setActiveTab('order-status')}
-            className={`py-4 px-1 border-b-2 font-medium text-sm ${
-              activeTab === 'order-status'
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-          >
-            แก้ไขสถานะบิล
-          </button>
-        </nav>
-      </div>
+      )}
 
       {/* Users Tab */}
       {activeTab === 'users' && (
@@ -1042,17 +1137,17 @@ export default function Settings() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">อีเมล</th>
-                  <th className="p-3 text-left">Username</th>
-                  <th className="p-3 text-left">Role</th>
-                  <th className="p-3 text-left"></th>
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-3 text-left font-semibold rounded-tl-xl">อีเมล</th>
+                  <th className="p-3 text-left font-semibold">Username</th>
+                  <th className="p-3 text-left font-semibold">Role</th>
+                  <th className="p-3 text-left font-semibold rounded-tr-xl"></th>
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
-                  <tr key={user.id} className="border-t">
+                {users.map((user, idx) => (
+                  <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3">{user.email || '-'}</td>
                     <td className="p-3">{user.username || '-'}</td>
                     <td className="p-3">
@@ -1092,17 +1187,17 @@ export default function Settings() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full border">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">Role</th>
-                  {MENU_ROLE_OPTIONS.map((menu) => (
-                    <th key={menu.key} className="p-3 text-center text-sm">{menu.label}</th>
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-3 text-left font-semibold rounded-tl-xl">Role</th>
+                  {MENU_ROLE_OPTIONS.map((menu, i) => (
+                    <th key={menu.key} className={`p-3 text-center text-sm font-semibold ${i === MENU_ROLE_OPTIONS.length - 1 ? 'rounded-tr-xl' : ''}`}>{menu.label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {roles.map((role) => (
-                  <tr key={role} className="border-t">
+                {roles.map((role, idx) => (
+                  <tr key={role} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3 font-medium">{role}</td>
                     {MENU_ROLE_OPTIONS.map((menu) => (
                       <td key={menu.key} className="p-3 text-center">
@@ -1143,20 +1238,20 @@ export default function Settings() {
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th className="p-3 text-left">ชื่อบัญชี</th>
-                      <th className="p-3 text-left">เลขบัญชี</th>
-                      <th className="p-3 text-left">รหัสธนาคาร</th>
-                      <th className="p-3 text-left">ชื่อธนาคาร</th>
-                      <th className="p-3 text-left">ช่องทางการขาย</th>
-                      <th className="p-3 text-left">สถานะ</th>
-                      <th className="p-3 text-left">การจัดการ</th>
+                  <thead>
+                    <tr className="bg-blue-600 text-white">
+                      <th className="p-3 text-left font-semibold rounded-tl-xl">ชื่อบัญชี</th>
+                      <th className="p-3 text-left font-semibold">เลขบัญชี</th>
+                      <th className="p-3 text-left font-semibold">รหัสธนาคาร</th>
+                      <th className="p-3 text-left font-semibold">ชื่อธนาคาร</th>
+                      <th className="p-3 text-left font-semibold">ช่องทางการขาย</th>
+                      <th className="p-3 text-left font-semibold">สถานะ</th>
+                      <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {bankSettings.map((bank) => (
-                      <tr key={bank.id} className="border-t">
+                    {bankSettings.map((bank, idx) => (
+                      <tr key={bank.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                         <td className="p-3">{bank.account_name || '-'}</td>
                         <td className="p-3">{bank.account_number}</td>
                         <td className="p-3">{bank.bank_code}</td>
@@ -1381,9 +1476,6 @@ export default function Settings() {
               {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
           </div>
-          <p className="text-gray-600 text-sm mb-4">
-            ติ๊กรายการที่อนุญาตให้กรอกได้สำหรับแต่ละหมวดหมู่ หากไม่ได้ติ๊ก ฟิลด์นั้นจะกรอกไม่ได้ในฟอร์มสร้าง/แก้ไขออเดอร์
-          </p>
           {productCategories.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
@@ -1392,21 +1484,21 @@ export default function Settings() {
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="bg-gray-100 border-b">
-                    <th className="p-3 text-left border font-medium whitespace-nowrap">ชื่อหมวดหมู่สินค้า</th>
-                    {PRODUCT_FIELD_KEYS.map(({ key, label }) => (
-                      <th key={key} className="p-2 text-center border font-medium text-sm whitespace-nowrap">
+                  <tr className="bg-blue-600 text-white">
+                    <th className="p-3 text-left font-semibold whitespace-nowrap rounded-tl-xl">ชื่อหมวดหมู่สินค้า</th>
+                    {PRODUCT_FIELD_KEYS.map(({ key, label }, i) => (
+                      <th key={key} className={`p-2 text-center font-semibold text-sm whitespace-nowrap ${i === PRODUCT_FIELD_KEYS.length - 1 ? 'rounded-tr-xl' : ''}`}>
                         {label}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {productCategories.map((category) => (
-                    <tr key={category} className="border-b hover:bg-gray-50">
-                      <td className="p-3 border font-medium whitespace-nowrap">{category}</td>
+                  {productCategories.map((category, idx) => (
+                    <tr key={category} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 border-r border-gray-200 font-semibold whitespace-nowrap">{category}</td>
                       {PRODUCT_FIELD_KEYS.map(({ key }) => (
-                        <td key={key} className="p-2 text-center border">
+                        <td key={key} className="p-2 text-center border-r border-gray-200">
                           <input
                             type="checkbox"
                             checked={getCategoryFields(category)[key]}
@@ -1424,120 +1516,179 @@ export default function Settings() {
         </div>
       )}
 
-      {/* Order Status Fix Tab */}
-      {activeTab === 'order-status' && (
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-bold mb-4">แก้ไขสถานะบิลให้ถูกต้อง</h2>
-          <p className="text-gray-600 mb-4">
-            ฟังก์ชันนี้จะตรวจสอบสถานะของบิลทั้งหมดและแก้ไขให้ถูกต้องตามข้อมูลในตาราง ac_verified_slips
-          </p>
-          <p className="text-sm text-gray-500 mb-6">
-            <strong>วิธีการทำงาน:</strong>
-            <br />
-            • ตรวจสอบบิลที่มี slip verification records
-            <br />
-            • เปรียบเทียบสถานะปัจจุบันกับสถานะที่ควรเป็น
-            <br />
-            • แก้ไขสถานะให้ถูกต้อง (ตรวจสอบแล้ว / ตรวจสอบไม่ผ่าน)
-          </p>
-
-          <button
-            onClick={fixOrderStatuses}
-            disabled={fixingStatus}
-            className={`px-6 py-3 rounded-lg font-medium ${
-              fixingStatus
-                ? 'bg-gray-400 text-white cursor-not-allowed'
-                : 'bg-blue-500 text-white hover:bg-blue-600'
-            }`}
-          >
-            {fixingStatus ? 'กำลังตรวจสอบและแก้ไข...' : 'เริ่มตรวจสอบและแก้ไขสถานะบิล'}
-          </button>
-
-          {statusFixResult && (
-            <div className={`mt-6 p-4 rounded-lg ${
-              statusFixResult.success
-                ? 'bg-green-50 border border-green-200'
-                : 'bg-red-50 border border-red-200'
-            }`}>
-              <div className={`font-semibold mb-2 ${
-                statusFixResult.success ? 'text-green-800' : 'text-red-800'
-              }`}>
-                {statusFixResult.success ? '✅' : '❌'} {statusFixResult.message}
-              </div>
-              
-              {statusFixResult.details && (
-                <div className="mt-4 text-sm text-gray-700 space-y-2">
-                  <div>ตรวจสอบบิลทั้งหมด: {statusFixResult.details.totalChecked} รายการ</div>
-                  <div>บิลที่ต้องแก้ไข: {statusFixResult.details.needsUpdate} รายการ</div>
-                  <div>แก้ไขสำเร็จ: {statusFixResult.details.successCount} รายการ</div>
-                  {statusFixResult.details.errorCount > 0 && (
-                    <div className="text-red-600">เกิดข้อผิดพลาด: {statusFixResult.details.errorCount} รายการ</div>
-                  )}
-
-                  {statusFixResult.details.updates && statusFixResult.details.updates.length > 0 && (
-                    <div className="mt-4">
-                      <div className="font-semibold mb-2">รายการที่แก้ไข:</div>
-                      <div className="max-h-60 overflow-y-auto border rounded p-3 bg-gray-50">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b">
-                              <th className="text-left p-2">เลขบิล</th>
-                              <th className="text-left p-2">สถานะเดิม</th>
-                              <th className="text-left p-2">สถานะใหม่</th>
-                              <th className="text-left p-2">เหตุผล</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {statusFixResult.details.updates.map((update: any, idx: number) => (
-                              <tr key={idx} className="border-b">
-                                <td className="p-2 font-medium">{update.bill_no}</td>
-                                <td className="p-2">
-                                  <span className="px-2 py-1 bg-gray-200 rounded text-xs">
-                                    {update.currentStatus}
-                                  </span>
-                                </td>
-                                <td className="p-2">
-                                  <span className={`px-2 py-1 rounded text-xs ${
-                                    update.newStatus === 'ตรวจสอบแล้ว'
-                                      ? 'bg-green-200 text-green-800'
-                                      : 'bg-red-200 text-red-800'
-                                  }`}>
-                                    {update.newStatus}
-                                  </span>
-                                </td>
-                                <td className="p-2 text-xs">{update.reason}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {statusFixResult.details.updates.length >= 20 && (
-                          <p className="text-xs text-gray-500 mt-2">
-                            แสดง 20 รายการแรก (มีทั้งหมด {statusFixResult.details.needsUpdate} รายการ)
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {statusFixResult.details.errors && statusFixResult.details.errors.length > 0 && (
-                    <div className="mt-4">
-                      <div className="font-semibold mb-2 text-red-800">ข้อผิดพลาด:</div>
-                      <div className="max-h-40 overflow-y-auto border border-red-300 rounded p-3 bg-red-50">
-                        <ul className="list-disc list-inside space-y-1 text-xs text-red-700">
-                          {statusFixResult.details.errors.map((error: string, idx: number) => (
-                            <li key={idx}>{error}</li>
-                          ))}
-                        </ul>
-                        {statusFixResult.details.errors.length >= 10 && (
-                          <p className="text-xs text-red-600 mt-2">
-                            แสดง 10 errors แรก
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+      {activeTab === 'issue-types' && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">ประเภท Issue</h2>
+            <button
+              onClick={saveIssueType}
+              disabled={issueTypeSaving}
+              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            >
+              {issueTypeSaving ? 'กำลังบันทึก...' : issueTypeEditingId ? 'บันทึกการแก้ไข' : 'เพิ่มประเภท'}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ชื่อประเภท</label>
+              <input
+                value={issueTypeName}
+                onChange={(e) => setIssueTypeName(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+                placeholder="เช่น ด่วน, ด่วนมาก"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สี</label>
+              <input
+                type="color"
+                value={issueTypeColor}
+                onChange={(e) => setIssueTypeColor(e.target.value)}
+                className="h-10 w-20 border rounded-lg p-1 bg-white"
+              />
+            </div>
+            <div className="flex items-end">
+              {issueTypeEditingId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIssueTypeEditingId(null)
+                    setIssueTypeName('')
+                    setIssueTypeColor('#3B82F6')
+                  }}
+                  className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  ยกเลิกการแก้ไข
+                </button>
               )}
+            </div>
+          </div>
+
+          {issueTypes.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">ยังไม่มีประเภท Issue</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-blue-600 text-white">
+                    <th className="p-3 text-left font-semibold rounded-tl-xl">ชื่อประเภท</th>
+                    <th className="p-3 text-left font-semibold">สี</th>
+                    <th className="p-3 text-left font-semibold">สถานะ</th>
+                    <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {issueTypes.map((t, idx) => (
+                    <tr key={t.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 font-medium">{t.name}</td>
+                      <td className="p-3">
+                        <span
+                          className="inline-flex items-center gap-2 px-2 py-1 rounded border"
+                          style={{ borderColor: t.color, color: t.color }}
+                        >
+                          <span className="inline-block w-3 h-3 rounded-full" style={{ background: t.color }} />
+                          {t.color}
+                        </span>
+                      </td>
+                      <td className="p-3">{t.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}</td>
+                      <td className="p-3 space-x-2">
+                        <button
+                          onClick={() => {
+                            setIssueTypeEditingId(t.id)
+                            setIssueTypeName(t.name)
+                            setIssueTypeColor(t.color || '#3B82F6')
+                          }}
+                          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-xs"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          onClick={() => deleteIssueType(t.id)}
+                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs"
+                        >
+                          ลบ
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'chat-history' && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">จากวันที่</label>
+              <input
+                type="date"
+                value={chatFromDate}
+                onChange={(e) => setChatFromDate(e.target.value)}
+                className="px-3 py-2 border rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ถึงวันที่</label>
+              <input
+                type="date"
+                value={chatToDate}
+                onChange={(e) => setChatToDate(e.target.value)}
+                className="px-3 py-2 border rounded-lg"
+              />
+            </div>
+            <button
+              onClick={loadChatLogs}
+              disabled={chatLoading}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+            >
+              {chatLoading ? 'กำลังโหลด...' : 'กรองข้อมูล'}
+            </button>
+          </div>
+
+          {chatLoading ? (
+            <div className="flex justify-center items-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+            </div>
+          ) : chatLogs.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">ไม่พบประวัติแชท</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-blue-600 text-white">
+                    <th className="p-3 text-left font-semibold rounded-tl-xl">วันที่เวลา</th>
+                    <th className="p-3 text-left font-semibold">เลขบิล</th>
+                    <th className="p-3 text-left font-semibold">ผู้ส่ง</th>
+                    <th className="p-3 text-left font-semibold">ข้อความ</th>
+                    <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chatLogs.map((log, idx) => (
+                    <tr key={log.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 whitespace-nowrap">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                      <td className="p-3 font-medium">{log.bill_no}</td>
+                      <td className="p-3">{log.sender_name}</td>
+                      <td className="p-3 max-w-[420px]">
+                        <div className="truncate" title={log.message}>
+                          {log.message}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <button
+                          onClick={() => deleteChatLog(log.id)}
+                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs"
+                        >
+                          ลบ
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

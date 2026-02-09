@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css');
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
 
 body {
   margin: 0;
@@ -11,6 +12,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: #f7fafc;
+  color: #1e293b;
 }
 
 code {
@@ -19,9 +22,9 @@ code {
 }
 
 .sidebar-item-active {
-  background-color: #374151;
+  background-color: #dbeafe;
   border-left: 4px solid #3b82f6;
-  color: white;
+  color: #1e3a8a;
 }
 
 .menu-link {
@@ -30,7 +33,7 @@ code {
 }
 
 .menu-link:hover {
-  background-color: #4b5563;
+  background-color: #eff6ff;
 }
 
 .inspect-tab {
@@ -41,17 +44,22 @@ code {
 
 .inspect-tab-active {
   border-bottom: 3px solid #3b82f6;
-  color: #3b82f6;
-  font-weight: 900;
+  color: #1e3a8a;
+  font-weight: 700;
 }
 
 .tab-active {
-  background-color: #2563eb !important;
-  color: white !important;
+  background-color: #bfdbfe !important;
+  color: #1e3a8a !important;
 }
 
 .inspect-tab-correct-active {
   border-bottom: 3px solid #10b981;
-  color: #10b981;
-  font-weight: 900;
+  color: #065f46;
+  font-weight: 700;
+}
+
+/* Hide scrollbar but keep scroll functionality */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }

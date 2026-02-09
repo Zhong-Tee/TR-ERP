@@ -405,24 +405,22 @@ export default function CartoonPatterns() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-3xl font-bold">จัดการลายการ์ตูน</h1>
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 mt-2">
           <button
             type="button"
             onClick={downloadPatternsExcel}
-            className="px-3 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm font-medium"
+            className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold"
           >
             ดาวน์โหลด (Excel)
           </button>
           <button
             type="button"
             onClick={downloadTemplate}
-            className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm"
+            className="px-3 py-2 rounded-xl bg-gray-500 text-white hover:bg-gray-600 text-sm font-semibold"
           >
             Download Template
           </button>
-          <label className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm cursor-pointer disabled:opacity-50 inline-block">
+          <label className="px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold cursor-pointer inline-block">
             {importing ? 'กำลังนำเข้า...' : 'Import ลายการ์ตูน'}
             <input
               ref={importInputRef}
@@ -437,7 +435,7 @@ export default function CartoonPatterns() {
               }}
             />
           </label>
-          <label className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm cursor-pointer disabled:opacity-50 inline-block">
+          <label className="px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 text-sm font-semibold cursor-pointer inline-block">
             {uploadingImages ? 'กำลังอัปโหลด...' : 'อัปโหลดรูป'}
             <input
               ref={uploadImagesInputRef}
@@ -456,11 +454,10 @@ export default function CartoonPatterns() {
           <button
             type="button"
             onClick={openAdd}
-            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 font-semibold"
           >
             + เพิ่มลายการ์ตูน
           </button>
-        </div>
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">
@@ -489,18 +486,18 @@ export default function CartoonPatterns() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">รูป</th>
-                  <th className="p-3 text-left">ชื่อลายการ์ตูน</th>
-                  <th className="p-3 text-left">หมวดหมู่สินค้า</th>
-                  <th className="p-3 text-left">จำนวนบรรทัด</th>
-                  <th className="p-3 text-right">การจัดการ</th>
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-3 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="p-3 text-left font-semibold">ชื่อลายการ์ตูน</th>
+                  <th className="p-3 text-left font-semibold">หมวดหมู่สินค้า</th>
+                  <th className="p-3 text-left font-semibold">จำนวนบรรทัด</th>
+                  <th className="p-3 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {patterns.map((pattern) => (
-                  <tr key={pattern.id} className="border-t">
+                {patterns.map((pattern, idx) => (
+                  <tr key={pattern.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3">
                       <PatternImage patternName={pattern.pattern_name} name={pattern.pattern_name} />
                     </td>
@@ -577,7 +574,7 @@ export default function CartoonPatterns() {
                         <button
                           type="button"
                           onClick={() => openEdit(pattern)}
-                          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
                         >
                           แก้ไข
                         </button>
@@ -585,7 +582,7 @@ export default function CartoonPatterns() {
                           type="button"
                           onClick={() => openDeleteConfirm(pattern)}
                           disabled={deletingId === pattern.id}
-                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm disabled:opacity-50"
+                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
                         >
                           {deletingId === pattern.id ? 'กำลังลบ...' : 'ลบ'}
                         </button>

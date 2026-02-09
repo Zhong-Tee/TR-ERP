@@ -38,17 +38,23 @@ export default function WorkOrderSelectionList({
       let query = supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no')
-        .eq('status', 'ใบสั่งงาน')
         .is('work_order_name', null)
         .order('created_at', { ascending: false })
+
+      if (channelFilter) {
+        query = query
+          .eq('channel_code', channelFilter)
+          .eq('status', channelFilter === 'PUMP' ? 'คอนเฟิร์มแล้ว' : 'ใบสั่งงาน')
+      } else {
+        query = query.or(
+          'and(channel_code.eq.PUMP,status.eq.คอนเฟิร์มแล้ว),and(channel_code.neq.PUMP,status.eq.ใบสั่งงาน)'
+        )
+      }
 
       if (searchTerm) {
         query = query.or(
           `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,admin_user.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%,channel_order_no.ilike.%${searchTerm}%,recipient_name.ilike.%${searchTerm}%`
         )
-      }
-      if (channelFilter) {
-        query = query.eq('channel_code', channelFilter)
       }
 
       const { data, error } = await query.limit(500)

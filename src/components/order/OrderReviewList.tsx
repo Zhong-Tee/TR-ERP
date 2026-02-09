@@ -289,6 +289,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         .from('or_orders')
         .select('*, or_order_items(*)')
         .eq('status', 'ตรวจสอบแล้ว')
+        .neq('channel_code', 'PUMP')
         .order('created_at', { ascending: false })
       if (channelFilter && channelFilter.trim() !== '') {
         query = query.eq('channel_code', channelFilter.trim())
@@ -320,9 +321,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
     setUpdating(true)
     try {
+      const nextStatus = selectedOrder.channel_code === 'PUMP' ? 'รอคอนเฟิร์ม' : 'ใบสั่งงาน'
       const { error } = await supabase
         .from('or_orders')
-        .update({ status: 'ใบสั่งงาน' })
+        .update({ status: nextStatus })
         .eq('id', selectedOrder.id)
 
       if (error) throw error
@@ -435,7 +437,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       {/* การ์ดซ้าย - รายการบิล */}
       <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
         <div className="p-4 border-b bg-gray-50 shrink-0 space-y-3">
-          <h2 className="text-lg font-bold">รายการบิล</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold">รายการบิล</h2>
+            <span className="text-gray-600 text-sm">{orders.length} รายการ</span>
+          </div>
           <div>
             <label htmlFor="admin-qc-channel-filter" className="block text-sm font-medium text-gray-700 mb-1">ช่องทาง</label>
             <select
@@ -452,7 +457,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               ))}
             </select>
           </div>
-          <p className="text-gray-600 text-sm">{orders.length} รายการ</p>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
           {orders.length === 0 ? (

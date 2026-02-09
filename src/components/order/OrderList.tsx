@@ -25,6 +25,9 @@ interface OrderListProps {
   /** แสดงปุ่ม "ลบบิล" (สำหรับเมนูรอลงข้อมูล) */
   showDeleteButton?: boolean
   onDelete?: (order: Order) => Promise<void>
+  /** กรองวันที่สร้าง (สำหรับเมนูจัดส่งแล้ว) */
+  dateFrom?: string
+  dateTo?: string
 }
 
 export default function OrderList({
@@ -42,6 +45,8 @@ export default function OrderList({
   filterByRejectedOverpayRefund = false,
   showDeleteButton = false,
   onDelete,
+  dateFrom = '',
+  dateTo = '',
 }: OrderListProps) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -51,7 +56,7 @@ export default function OrderList({
 
   useEffect(() => {
     loadOrders()
-  }, [status, searchTerm, channelFilter, verifiedOnly, refreshTrigger, filterByRejectedOverpayRefund])
+  }, [status, searchTerm, channelFilter, verifiedOnly, refreshTrigger, filterByRejectedOverpayRefund, dateFrom, dateTo])
 
   async function loadOrders() {
     setLoading(true)
@@ -110,6 +115,12 @@ export default function OrderList({
 
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
+        }
+        if (dateFrom) {
+          query = query.gte('created_at', `${dateFrom}T00:00:00.000Z`)
+        }
+        if (dateTo) {
+          query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
         }
 
         const { data, error } = await query.limit(100)
@@ -214,14 +225,14 @@ export default function OrderList({
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-300"></div>
       </div>
     )
   }
 
   if (orders.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-500">
+      <div className="text-center py-12 text-surface-500">
         ไม่พบข้อมูลออเดอร์
       </div>
     )
@@ -233,39 +244,39 @@ export default function OrderList({
         <div
           key={order.id}
           onClick={disableOrderClick ? undefined : () => onOrderClick(order)}
-          className={`bg-white p-4 rounded-lg border border-gray-200 transition-all ${
-            disableOrderClick ? 'cursor-default' : 'hover:border-blue-500 hover:shadow-md cursor-pointer'
+          className={`bg-gray-100 p-5 rounded-2xl border border-gray-200 transition-all ${
+            disableOrderClick ? 'cursor-default' : 'hover:border-primary-300 hover:shadow-soft cursor-pointer'
           }`}
         >
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 mb-2 flex-wrap">
-                <strong className="text-blue-600 text-lg">{order.bill_no}</strong>
+                <strong className="text-primary-700 text-xl">{order.bill_no}</strong>
                 {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
-                  <span className="px-2 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
+                  <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-accent-200 text-surface-900 border border-accent-300">
                     เคลม
                   </span>
                 )}
-                <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-sm">
+                <span className="px-2.5 py-1 bg-surface-100 text-surface-700 rounded-full text-sm font-semibold">
                   {order.channel_code}
                 </span>
                 <span
-                  className={`px-2 py-1 rounded text-sm ${
+                  className={`px-2.5 py-1 rounded-full text-sm font-semibold ${
                     order.status === 'ลงข้อมูลเสร็จสิ้น'
-                      ? 'bg-green-100 text-green-700'
+                      ? 'bg-secondary-200 text-secondary-900'
                       : order.status === 'รอลงข้อมูล'
-                      ? 'bg-yellow-100 text-yellow-700'
+                      ? 'bg-accent-200 text-surface-900'
                       : order.status === 'รอตรวจคำสั่งซื้อ'
-                      ? 'bg-orange-100 text-orange-700'
+                      ? 'bg-accent-200 text-surface-900'
                       : order.status === 'ตรวจสอบแล้ว'
                       ? (order as any).has_overpay_refund
-                        ? 'bg-amber-100 text-amber-800'
-                        : 'bg-blue-100 text-blue-700'
+                        ? 'bg-accent-200 text-surface-900'
+                        : 'bg-primary-100 text-primary-900'
                       : order.status === 'ลงข้อมูลผิด'
-                      ? 'bg-red-100 text-red-700'
+                      ? 'bg-accent-200 text-surface-900'
                       : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-gray-100 text-gray-700'
+                      ? 'bg-accent-200 text-surface-900'
+                      : 'bg-surface-100 text-surface-700'
                   }`}
                 >
                   {order.status === 'ตรวจสอบแล้ว' && (order as any).has_overpay_refund
@@ -273,7 +284,7 @@ export default function OrderList({
                     : order.status}
                 </span>
                 {(order as any).has_rejected_overpay_refund && (
-                  <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-sm">
+                  <span className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold">
                     ปฏิเสธโอนคืน
                   </span>
                 )}
@@ -281,12 +292,12 @@ export default function OrderList({
                 {order.billing_details && (
                   <>
                     {order.billing_details.request_tax_invoice && (
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-sm">
+                      <span className="px-2.5 py-1 bg-primary-100 text-primary-900 rounded-full text-sm font-semibold">
                         ขอใบกำกับภาษี
                       </span>
                     )}
                     {order.billing_details.request_cash_bill && (
-                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-sm">
+                      <span className="px-2.5 py-1 bg-secondary-200 text-secondary-900 rounded-full text-sm font-semibold">
                         ขอบิลเงินสด
                       </span>
                     )}
@@ -350,22 +361,22 @@ export default function OrderList({
                             <>
                               {/* แสดงหมายเลขสลิป (เฉพาะเมื่อมีหลายใบ) */}
                               {isMultipleSlips && (
-                                <span className="px-2 py-1 bg-gray-200 text-gray-800 rounded text-sm font-semibold border border-gray-300">
+                                <span className="px-2.5 py-1 bg-surface-200 text-surface-800 rounded-full text-sm font-semibold border border-surface-300">
                                   ใบที่ {slipNumber}
                                 </span>
                               )}
                               {isDuplicate && (
-                                <span className="px-2 py-1 bg-orange-100 text-orange-700 rounded text-sm">
+                                <span className="px-2.5 py-1 bg-accent-200 text-surface-900 rounded-full text-sm font-semibold">
                                   สลิปซ้ำ
                                 </span>
                               )}
                               {/* แสดงสถานะแต่ละรายการพร้อมหมายเลขสลิป */}
-                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
                                 slip.account_name_match !== null
                                   ? (slip.account_name_match 
-                                      ? 'bg-green-100 text-green-700' 
-                                      : 'bg-red-100 text-red-700')
-                                  : 'bg-gray-100 text-gray-600'
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
                               }`} title={`สลิปที่ ${slipNumber}: ชื่อบัญชี ${slip.account_name_match === null ? 'ไม่ระบุ' : (slip.account_name_match ? 'ตรง' : 'ไม่ตรง')}`}>
                                 {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
                                 <span>ชื่อบัญชี</span>
@@ -373,12 +384,12 @@ export default function OrderList({
                                   <span>{slip.account_name_match ? '✓' : '✗'}</span>
                                 )}
                               </span>
-                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
                                 slip.bank_code_match !== null
                                   ? (slip.bank_code_match 
-                                      ? 'bg-green-100 text-green-700' 
-                                      : 'bg-red-100 text-red-700')
-                                  : 'bg-gray-100 text-gray-600'
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
                               }`} title={`สลิปที่ ${slipNumber}: สาขา ${slip.bank_code_match === null ? 'ไม่ระบุ' : (slip.bank_code_match ? 'ตรง' : 'ไม่ตรง')}`}>
                                 {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
                                 <span>สาขา</span>
@@ -386,12 +397,12 @@ export default function OrderList({
                                   <span>{slip.bank_code_match ? '✓' : '✗'}</span>
                                 )}
                               </span>
-                              <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold ${
                                 amountMatchForDisplay !== null
                                   ? (amountMatchForDisplay 
-                                      ? 'bg-green-100 text-green-700' 
-                                      : 'bg-red-100 text-red-700')
-                                  : 'bg-gray-100 text-gray-600'
+                                      ? 'bg-secondary-200 text-secondary-900' 
+                                      : 'bg-accent-200 text-surface-900')
+                                  : 'bg-surface-100 text-surface-600'
                               }`} title={amountMatchTitle}>
                                 {isMultipleSlips && <span className="font-bold">[{slipNumber}]</span>}
                                 <span>{amountLabel}</span>
@@ -407,7 +418,7 @@ export default function OrderList({
                   </>
                 )}
               </div>
-              <div className="text-sm text-gray-600 min-w-0">
+              <div className="text-base text-surface-600 min-w-0">
                 <p className="mb-1">
                   <span className="font-medium">ลูกค้า:</span> {order.customer_name}
                 </p>
@@ -424,17 +435,17 @@ export default function OrderList({
             <div className="flex items-center gap-3 shrink-0">
               <div className="text-right">
                 <div
-                  className={`text-lg font-bold ${
+                  className={`text-xl font-bold ${
                     order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
-                      ? 'text-red-600'
+                      ? 'text-accent-500'
                       : order.status === 'ตรวจสอบแล้ว'
-                      ? 'text-green-600'
-                      : 'text-gray-700'
+                      ? 'text-secondary-700'
+                      : 'text-surface-700'
                   }`}
                 >
                   ฿{order.total_amount.toLocaleString()}
                 </div>
-                <div className="text-xs text-gray-500 mt-0.5">
+                <div className="text-sm text-surface-500 mt-0.5">
                   {formatDateTime(order.created_at)}
                 </div>
               </div>
@@ -452,7 +463,7 @@ export default function OrderList({
                     }
                   }}
                   disabled={movingOrderId === order.id}
-                  className="px-3 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg whitespace-nowrap"
+                  className="px-3 py-2.5 bg-accent-200 hover:bg-accent-300 disabled:opacity-50 text-surface-900 text-sm font-semibold rounded-xl whitespace-nowrap"
                 >
                   {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
                 </button>
@@ -465,7 +476,7 @@ export default function OrderList({
                     setDeleteConfirmOrder(order)
                   }}
                   disabled={!!deletingOrderId}
-                  className="px-3 py-2 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg whitespace-nowrap"
+                  className="px-3 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl whitespace-nowrap"
                 >
                   ลบบิล
                 </button>
@@ -481,8 +492,8 @@ export default function OrderList({
       >
         {deleteConfirmOrder && (
           <div className="p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">ยืนยันลบบิล</h3>
-            <p className="text-gray-700 text-sm mb-4">
+            <h3 className="text-2xl font-semibold text-surface-900 mb-2">ยืนยันลบบิล</h3>
+            <p className="text-surface-700 text-base mb-4">
               ต้องการลบบิล <strong>{deleteConfirmOrder.bill_no}</strong> และข้อมูลที่เกี่ยวข้อง (รวมถึงรูปสลิปใน Storage) ใช่หรือไม่? การดำเนินการนี้ไม่สามารถย้อนกลับได้
             </p>
             <div className="flex justify-end gap-2">
@@ -490,7 +501,7 @@ export default function OrderList({
                 type="button"
                 onClick={() => setDeleteConfirmOrder(null)}
                 disabled={!!deletingOrderId}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100 disabled:opacity-50"
               >
                 ยกเลิก
               </button>
@@ -509,7 +520,7 @@ export default function OrderList({
                   }
                 }}
                 disabled={!!deletingOrderId}
-                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
+                className="px-4 py-2 bg-accent-200 text-surface-900 rounded-xl hover:bg-accent-300 disabled:opacity-50 font-semibold"
               >
                 {deletingOrderId ? 'กำลังลบ...' : 'ยืนยันลบ'}
               </button>

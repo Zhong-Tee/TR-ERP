@@ -1230,7 +1230,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     const composedAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
     const hasAddress = (formData.customer_address?.trim() || composedAddress) !== ''
     if (!isAddressBlocked && !hasAddress) {
-      alert('กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill')
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill' })
       return
     }
 
@@ -3643,7 +3643,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       </div>
 
       {/* ขยายเต็มความกว้างของพื้นที่เนื้อหา (ไม่กระทบเมนูซ้าย) */}
-      <div className="-mx-4 sm:-mx-6 lg:-mx-8 bg-white px-4 sm:px-6 lg:px-8 py-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'visible' }}>
+      <div className="-mx-4 sm:-mx-6 lg:-mx-8 bg-white px-4 sm:px-6 lg:px-8 py-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'hidden' }}>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <h3 className="text-xl font-bold mr-auto">รายการสินค้า</h3>
           <button
@@ -3695,7 +3695,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             Import Orders from File
           </button>
         </div>
-        <div className="overflow-x-auto" style={{ overflowY: 'visible' }}>
+        <div className="overflow-x-auto" style={{ overflowY: 'hidden' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
             <thead>
               <tr className="bg-gray-100">
@@ -4619,7 +4619,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
               const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
               if (!isAddressBlockedSave && !hasAddressSave) {
-                alert('กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill')
+                setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill' })
                 return
               }
 

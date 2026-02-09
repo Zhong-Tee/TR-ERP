@@ -30,6 +30,8 @@ export type OrderStatus =
   | 'ตรวจสอบไม่ผ่าน'
   | 'ตรวจสอบไม่สำเร็จ'
   | 'ตรวจสอบแล้ว'
+  | 'รอคอนเฟิร์ม'
+  | 'คอนเฟิร์มแล้ว'
   | 'ใบสั่งงาน'
   | 'ใบงานกำลังผลิต'
   | 'จัดส่งแล้ว'
@@ -64,6 +66,7 @@ export interface Order {
   tracking_number: string | null
   claim_type: string | null
   claim_details: string | null
+  confirm_note?: string | null
   billing_details: BillingDetails | null
   packing_meta: PackingMeta | null
   transport_meta?: {
@@ -145,6 +148,52 @@ export interface PackingVideo {
   created_at: string
 }
 
+export interface OrderChatLog {
+  id: string
+  order_id: string
+  bill_no: string
+  sender_id: string
+  sender_name: string
+  message: string
+  created_at: string
+}
+
+export interface IssueType {
+  id: string
+  name: string
+  color: string
+  is_active: boolean
+  created_at: string
+}
+
+export interface Issue {
+  id: string
+  order_id: string
+  work_order_name?: string | null
+  type_id?: string | null
+  title: string
+  status: 'On' | 'Close'
+  created_by: string
+  created_at: string
+  closed_at?: string | null
+}
+
+export interface IssueMessage {
+  id: string
+  issue_id: string
+  sender_id: string
+  sender_name: string
+  message: string
+  source_scope?: 'orders' | 'plan'
+  created_at: string
+}
+
+export interface IssueRead {
+  issue_id: string
+  user_id: string
+  last_read_at: string
+}
+
 // Work Order Types
 export interface WorkOrder {
   id: string
@@ -160,6 +209,9 @@ export interface Product {
   id: string
   product_code: string
   product_name: string
+  seller_name: string | null
+  product_name_cn: string | null
+  order_point: string | null
   product_category: string | null
   product_type: string | null
   rubber_code: string | null
@@ -169,6 +221,155 @@ export interface Product {
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+export interface StockBalance {
+  id: string
+  product_id: string
+  on_hand: number
+  reserved: number
+  safety_stock: number
+  created_at: string
+  updated_at: string
+}
+
+export interface StockMovement {
+  id: string
+  product_id: string
+  movement_type: string
+  qty: number
+  ref_type?: string | null
+  ref_id?: string | null
+  note?: string | null
+  created_by?: string | null
+  created_at: string
+}
+
+export interface InventoryPR {
+  id: string
+  pr_no: string
+  status: string
+  requested_by?: string | null
+  requested_at?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  note?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryPRItem {
+  id: string
+  pr_id: string
+  product_id: string
+  qty: number
+  note?: string | null
+  created_at: string
+}
+
+export interface InventoryPO {
+  id: string
+  po_no: string
+  pr_id?: string | null
+  status: string
+  ordered_by?: string | null
+  ordered_at?: string | null
+  note?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryPOItem {
+  id: string
+  po_id: string
+  product_id: string
+  qty: number
+  unit_price?: number | null
+  note?: string | null
+  created_at: string
+}
+
+export interface InventoryGR {
+  id: string
+  gr_no: string
+  po_id?: string | null
+  status: string
+  received_by?: string | null
+  received_at?: string | null
+  note?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InventoryGRItem {
+  id: string
+  gr_id: string
+  product_id: string
+  qty_received: number
+  created_at: string
+}
+
+export interface InventoryAudit {
+  id: string
+  audit_no: string
+  status: string
+  created_by?: string | null
+  created_at: string
+  completed_at?: string | null
+  accuracy_percent?: number | null
+  total_items?: number | null
+  total_variance?: number | null
+  note?: string | null
+}
+
+export interface InventoryAuditItem {
+  id: string
+  audit_id: string
+  product_id: string
+  system_qty: number
+  counted_qty: number
+  variance: number
+  created_at: string
+}
+
+export interface InventoryAdjustment {
+  id: string
+  adjust_no: string
+  status: string
+  created_by?: string | null
+  created_at: string
+  approved_by?: string | null
+  approved_at?: string | null
+  note?: string | null
+}
+
+export interface InventoryAdjustmentItem {
+  id: string
+  adjustment_id: string
+  product_id: string
+  qty_delta: number
+  created_at: string
+}
+
+export interface InventoryReturn {
+  id: string
+  return_no: string
+  ref_bill_no?: string | null
+  reason?: string | null
+  status: string
+  created_by?: string | null
+  created_at: string
+  received_by?: string | null
+  received_at?: string | null
+  note?: string | null
+}
+
+export interface InventoryReturnItem {
+  id: string
+  return_id: string
+  product_id: string
+  qty: number
+  created_at: string
 }
 
 // Cartoon Pattern Types (รูปลายการ์ตูนดึงจาก Bucket cartoon-patterns ชื่อไฟล์ = pattern_name)

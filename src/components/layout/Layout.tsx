@@ -21,14 +21,19 @@ export default function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex h-screen min-h-0 bg-gray-100 overflow-hidden">
+    <div className="flex h-screen min-h-0 bg-gradient-to-br from-primary-50 via-secondary-50 to-accent-50 overflow-hidden">
       <Sidebar isOpen={sidebarOpen} onToggle={toggleSidebar} />
       <div
-        className={`flex-1 min-w-0 min-h-0 flex flex-col transition-all duration-300 bg-white ${sidebarOpen ? 'ml-64' : 'ml-20'}`}
+        className={`flex-1 min-w-0 min-h-0 flex flex-col transition-all duration-300 bg-transparent ${sidebarOpen ? 'ml-64' : 'ml-20'}`}
         style={{ ['--content-offset-left' as string]: sidebarOpen ? '16rem' : '5rem' } as React.CSSProperties}
       >
-        <TopBar sidebarOpen={sidebarOpen} />
-        <main className="flex-1 min-h-0 mt-16 overflow-auto flex flex-col px-6 pb-6 pt-2 bg-white">{children}</main>
+        <TopBar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
+        <main
+          className="flex-1 min-h-0 overflow-auto flex flex-col px-6 pb-6 bg-transparent relative z-0"
+          style={{ paddingTop: 'calc(4rem + var(--subnav-height, 0rem))' }}
+        >
+          {children}
+        </main>
       </div>
     </div>
   )

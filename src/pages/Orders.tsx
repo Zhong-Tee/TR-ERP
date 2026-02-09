@@ -3,10 +3,24 @@ import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
+import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
+import IssueBoard from '../components/order/IssueBoard'
 import { Order } from '../types'
 import { supabase } from '../lib/supabase'
 
-type Tab = 'create' | 'waiting' | 'complete' | 'verified' | 'work-orders' | 'work-orders-manage' | 'data-error' | 'shipped' | 'cancelled' | 'rejected-refund'
+type Tab =
+  | 'create'
+  | 'waiting'
+  | 'complete'
+  | 'verified'
+  | 'confirm'
+  | 'issue'
+  | 'work-orders'
+  | 'work-orders-manage'
+  | 'data-error'
+  | 'shipped'
+  | 'cancelled'
+  | 'rejected-refund'
 
 export default function Orders() {
   const [activeTab, setActiveTab] = useState<Tab>('create')
@@ -19,8 +33,15 @@ export default function Orders() {
   const [dataErrorCount, setDataErrorCount] = useState(0)
   const [cancelledCount, setCancelledCount] = useState(0)
   const [rejectedRefundCount, setRejectedRefundCount] = useState(0)
+  const [confirmCount, setConfirmCount] = useState(0)
+  const [workOrdersCount, setWorkOrdersCount] = useState(0)
+  const [workOrdersManageCount, setWorkOrdersManageCount] = useState(0)
+  const [shippedCount, setShippedCount] = useState(0)
+  const [issueCount, setIssueCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
+  const [shippedDateFrom, setShippedDateFrom] = useState('')
+  const [shippedDateTo, setShippedDateTo] = useState('')
 
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)
@@ -72,6 +93,62 @@ export default function Orders() {
         .select('id', { count: 'exact', head: true })
         .eq('status', 'ยกเลิก')
 
+      // Load shipped count
+      const { count: shippedCount } = await supabase
+        .from('or_orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'จัดส่งแล้ว')
+
+      // Load confirm count (Order ใหม่ + รอคอนเฟิร์มแบบ) เฉพาะ PUMP ที่มีสลิปตรวจสอบ
+      const { data: slipRows } = await supabase
+        .from('ac_verified_slips')
+        .select('order_id')
+        .eq('is_deleted', false)
+      const slipOrderIds = [...new Set((slipRows || []).map((r: any) => r.order_id).filter(Boolean))]
+      let confirmCountTotal = 0
+      if (slipOrderIds.length > 0) {
+        const { count: newCount } = await supabase
+          .from('or_orders')
+          .select('id', { count: 'exact', head: true })
+          .in('id', slipOrderIds)
+          .eq('channel_code', 'PUMP')
+          .eq('status', 'ตรวจสอบแล้ว')
+        const { count: waitingConfirmCount } = await supabase
+          .from('or_orders')
+          .select('id', { count: 'exact', head: true })
+          .in('id', slipOrderIds)
+          .eq('channel_code', 'PUMP')
+          .eq('status', 'รอคอนเฟิร์ม')
+        confirmCountTotal = (newCount ?? 0) + (waitingConfirmCount ?? 0)
+      }
+
+      // Load work orders count (ใบสั่งงาน)
+      const { count: workOrdersPumpCount } = await supabase
+        .from('or_orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('channel_code', 'PUMP')
+        .eq('status', 'คอนเฟิร์มแล้ว')
+        .is('work_order_name', null)
+      const { count: workOrdersOtherCount } = await supabase
+        .from('or_orders')
+        .select('id', { count: 'exact', head: true })
+        .neq('channel_code', 'PUMP')
+        .eq('status', 'ใบสั่งงาน')
+        .is('work_order_name', null)
+      const workOrdersTotal = (workOrdersPumpCount ?? 0) + (workOrdersOtherCount ?? 0)
+
+      // Load work orders manage count (จำนวนใบงานทั้งหมด)
+      const { count: workOrdersManageCount } = await supabase
+        .from('or_work_orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'กำลังผลิต')
+
+      // Load issue count (On)
+      const { count: issueCount } = await supabase
+        .from('or_issues')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'On')
+
       // Load count of orders that have rejected overpay refund (ปฏิเสธโอนคืน)
       const { data: rejectedRefundRows } = await supabase
         .from('ac_refunds')
@@ -86,6 +163,11 @@ export default function Orders() {
       setVerifiedCount(verifiedCount || 0)
       setDataErrorCount(dataErrorCount || 0)
       setCancelledCount(cancelledCount || 0)
+      setConfirmCount(confirmCountTotal)
+      setWorkOrdersCount(workOrdersTotal)
+      setWorkOrdersManageCount(workOrdersManageCount || 0)
+      setShippedCount(shippedCount || 0)
+      setIssueCount(issueCount || 0)
     } catch (error) {
       console.error('Error refreshing counts:', error)
     }
@@ -169,21 +251,7 @@ export default function Orders() {
   useEffect(() => {
     async function loadCounts() {
       try {
-        const [rWaiting, rComplete, rVerified, rDataError, rCancelled, rRejectedRefund] = await Promise.all([
-          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล'),
-          supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']),
-          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว'),
-          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ลงข้อมูลผิด'),
-          supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ยกเลิก'),
-          supabase.from('ac_refunds').select('order_id').ilike('reason', '%โอนเกิน%').eq('status', 'rejected'),
-        ])
-        const rejectedOrderIds = [...new Set((rRejectedRefund.data || []).map((r: any) => r.order_id).filter(Boolean))]
-        setWaitingCount(rWaiting.count ?? 0)
-        setCompleteCount(rComplete.count ?? 0)
-        setVerifiedCount(rVerified.count ?? 0)
-        setDataErrorCount(rDataError.count ?? 0)
-        setCancelledCount(rCancelled.count ?? 0)
-        setRejectedRefundCount(rejectedOrderIds.length)
+        await refreshCounts()
       } catch (error) {
         console.error('Error loading counts:', error)
       }
@@ -195,6 +263,7 @@ export default function Orders() {
       .channel('orders-count-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
       .subscribe()
 
     return () => {
@@ -204,28 +273,28 @@ export default function Orders() {
 
   return (
     <div
-      className="min-h-screen bg-gray-50 w-full"
-      style={{ ['--orders-submenu-height' as string]: '10rem' } as React.CSSProperties}
+      className="w-full"
     >
-      {/* หัวเมนูย่อย — ล็อกอยู่ด้านบนสุด (fixed) ไม่เลื่อนทะลุ */}
+      {/* หัวเมนูย่อย — sticky ภายใน scroll container ไม่ทะลุ */}
       <div
-        className="fixed top-16 z-50 bg-white border-b border-gray-200 shadow-md min-w-0 right-4"
-        style={{ left: 'var(--content-offset-left, 16rem)' }}
+        className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6"
       >
         {/* Navigation Tabs */}
         <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
-          <nav className="flex gap-1 sm:gap-4 flex-nowrap min-w-max py-3" aria-label="Tabs">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
               { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
-              { id: 'work-orders', label: 'ใบสั่งงาน' },
-              { id: 'work-orders-manage', label: 'จัดการใบงาน' },
-              { id: 'shipped', label: 'จัดส่งแล้ว' },
+              { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
+              { id: 'work-orders', label: 'ใบสั่งงาน', count: workOrdersCount, countColor: 'text-blue-600' },
+              { id: 'work-orders-manage', label: 'จัดการใบงาน', count: workOrdersManageCount, countColor: 'text-blue-600' },
+              { id: 'shipped', label: 'จัดส่งแล้ว', count: shippedCount, countColor: 'text-blue-600' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'rejected-refund', label: 'ปฏิเสธโอนคืน', count: rejectedRefundCount, countColor: 'text-red-600', labelColor: 'text-red-600' },
+              { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -233,10 +302,10 @@ export default function Orders() {
                   setActiveTab(tab.id as Tab)
                   setSelectedOrder(null)
                 }}
-                className={`py-2.5 px-3 sm:px-4 rounded-t-lg border-b-2 font-medium text-sm whitespace-nowrap flex-shrink-0 transition-colors ${
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
                   activeTab === tab.id
-                    ? 'border-blue-500 bg-blue-50/50 ' + ('labelColor' in tab ? tab.labelColor : 'text-blue-600')
-                    : 'border-transparent ' + ('labelColor' in tab ? tab.labelColor : 'text-gray-500') + ' hover:text-gray-700 hover:bg-gray-50 hover:border-gray-300'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-blue-600'
                 }`}
               >
                 {'count' in tab && tab.count !== undefined && 'countColor' in tab
@@ -252,20 +321,20 @@ export default function Orders() {
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'create' && (
-          <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-gray-50/80 border-t border-gray-100">
+        {activeTab !== 'create' && activeTab !== 'confirm' && (
+          <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <input
                 type="text"
                 placeholder="ค้นหา..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="flex-1 min-w-[160px] px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                className="flex-1 min-w-[200px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-300 bg-surface-50 text-base"
               />
               <select
                 value={channelFilter}
                 onChange={(e) => setChannelFilter(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
               >
                 <option value="">ทั้งหมด</option>
                 {channels.map((ch) => (
@@ -274,15 +343,30 @@ export default function Orders() {
                   </option>
                 ))}
               </select>
+              {activeTab === 'shipped' && (
+                <>
+                  <input
+                    type="date"
+                    value={shippedDateFrom}
+                    onChange={(e) => setShippedDateFrom(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                  <input
+                    type="date"
+                    value={shippedDateTo}
+                    onChange={(e) => setShippedDateTo(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                </>
+              )}
             </div>
           </div>
         )}
       </div>
 
-      {/* ส่วนเนื้อหาทุกเมนู — เริ่มต้นใต้เมนูย่อย (แท็บสร้างไม่มีแถบค้นหา ใช้ 7rem, แท็บอื่นมีแถบค้นหา ใช้ 10rem) */}
+      {/* ส่วนเนื้อหาทุกเมนู — อยู่ใต้ sticky เมนูย่อยปกติ */}
       <main
-        className="w-full px-4 sm:px-6 lg:px-8 pb-6 min-h-0"
-        style={{ paddingTop: activeTab === 'create' ? '7rem' : '10rem' }}
+        className="w-full pb-6 min-h-0 pt-4"
         aria-label="เนื้อหาออเดอร์"
       >
         {selectedOrder ? (
@@ -327,6 +411,10 @@ export default function Orders() {
             onMoveToWaiting={handleMoveToWaiting}
             refreshTrigger={listRefreshKey}
           />
+        ) : activeTab === 'confirm' ? (
+          <OrderConfirmBoard />
+        ) : activeTab === 'issue' ? (
+          <IssueBoard scope="orders" onOpenCountChange={setIssueCount} />
         ) : activeTab === 'work-orders' ? (
           <WorkOrderSelectionList
             searchTerm={searchTerm}
@@ -354,6 +442,8 @@ export default function Orders() {
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
+            dateFrom={shippedDateFrom}
+            dateTo={shippedDateTo}
           />
         ) : activeTab === 'cancelled' ? (
           <OrderList

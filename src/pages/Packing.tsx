@@ -1072,41 +1072,39 @@ export default function Packing() {
   }
 
   return (
-    <div className="space-y-4 flex flex-col min-h-0 h-full flex-1">
+    <div className="w-full flex flex-col min-h-0 h-full flex-1">
 
       {view === 'selection' ? (
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-bold mb-4">เลือกใบงาน</h2>
-          <div className="flex flex-wrap gap-2 mb-4">
-            <button
-              className={`px-3 py-2 rounded-full text-sm font-medium border ${
-                selectionTab === 'new' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-gray-300'
-              }`}
-              onClick={() => setSelectionTab('new')}
-            >
-              ใบงานใหม่
-              <span className="ml-2 rounded-full bg-white/20 px-2 py-0.5 text-xs">
-                {newWorkOrders.length}
-              </span>
-            </button>
-            <button
-              className={`px-3 py-2 rounded-full text-sm font-medium border ${
-                selectionTab === 'shipped' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-gray-300'
-              }`}
-              onClick={() => setSelectionTab('shipped')}
-            >
-              จัดส่งแล้ว
-            </button>
-            <button
-              className={`px-3 py-2 rounded-full text-sm font-medium border ${
-                selectionTab === 'queue' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-gray-300'
-              }`}
-              onClick={() => setSelectionTab('queue')}
-            >
-              คิวอัปโหลด
-            </button>
+        <>
+        {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
+        <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+          <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+            <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+              {([
+                { key: 'new' as const, label: 'ใบงานใหม่', count: newWorkOrders.length },
+                { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
+                { key: 'queue' as const, label: 'คิวอัปโหลด' },
+              ]).map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setSelectionTab(tab.key)}
+                  className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                    selectionTab === tab.key
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-blue-600'
+                  }`}
+                >
+                  {tab.label}
+                  {'count' in tab && tab.count !== undefined && (
+                    <span className="ml-1.5 text-blue-600 font-semibold">({tab.count})</span>
+                  )}
+                </button>
+              ))}
+            </nav>
           </div>
+        </div>
 
+        <div className="pt-4">
           {selectionTab === 'new' ? (
             newWorkOrders.length === 0 ? (
               <div className="text-center py-12 text-gray-500">ไม่พบใบงานใหม่</div>
@@ -1123,8 +1121,8 @@ export default function Packing() {
                   return (
                     <button
                       key={wo.id}
-                      className={`p-4 border rounded-lg text-left hover:bg-gray-50 transition-colors ${
-                        !hasTracking ? 'bg-yellow-50 border-yellow-200' : ''
+                      className={`p-4 border rounded-lg text-left transition-colors ${
+                        !hasTracking ? 'bg-yellow-50 border-yellow-200 hover:bg-yellow-100' : 'bg-gray-100 border-gray-200 hover:bg-gray-200'
                       }`}
                       onClick={() => {
                         handleSelectNewWorkOrder(wo.work_order_name, hasTracking)
@@ -1196,33 +1194,9 @@ export default function Packing() {
                   {shippedWorkOrders.map((wo) => (
                     <button
                       key={wo.work_order_name}
-                      className="p-4 border rounded-lg bg-gray-50 text-left hover:bg-gray-100 transition-colors"
+                      className="p-4 border rounded-lg bg-gray-100 border-gray-200 text-left hover:bg-gray-200 transition-colors"
                       onClick={() => {
-                        const name = wo.work_order_name
-                        const rows = shippedOrders.filter((row) => row.work_order_name === name)
-                        const latest = rows.reduce<string | null>((acc, row) => {
-                          if (!row.shipped_time) return acc
-                          if (!acc || row.shipped_time > acc) return row.shipped_time
-                          return acc
-                        }, null)
-                        const firstPacker = rows.find((r) => r.shipped_by)?.shipped_by || ''
-                        let shippedDate = ''
-                        let shippedTime = ''
-                        if (latest) {
-                          const d = new Date(latest)
-                          const yyyy = d.getFullYear()
-                          const mm = String(d.getMonth() + 1).padStart(2, '0')
-                          const dd = String(d.getDate()).padStart(2, '0')
-                          shippedDate = `${yyyy}-${mm}-${dd}`
-                          shippedTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-                        }
-                        setShippedEdit({
-                          open: true,
-                          workOrderName: name,
-                          shippedBy: firstPacker,
-                          shippedDate,
-                          shippedTime
-                        })
+                        loadPackingData(wo.work_order_name)
                       }}
                     >
                       <div className="text-lg font-semibold">✅ {wo.work_order_name}</div>
@@ -1296,7 +1270,7 @@ export default function Packing() {
                         )}
                         {item.status === 'success' && (
                           <button
-                            className="px-3 py-1 text-sm bg-gray-200 rounded hover:bg-gray-300"
+                            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
                             onClick={async () => {
                               await deleteQueueItem(item.id)
                               await refreshQueue()
@@ -1313,6 +1287,7 @@ export default function Packing() {
             </div>
           )}
         </div>
+        </>
       ) : (
         <div className="space-y-4 flex-1 min-h-0 h-full">
           {isLoadingOrders && (

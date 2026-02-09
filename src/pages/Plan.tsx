@@ -6,9 +6,10 @@ import { useState, useEffect, useCallback, Fragment } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
+import IssueBoard from '../components/order/IssueBoard'
 
 // --- Types (จาก plan.html) ---
-type ViewKey = 'dash' | 'dept' | 'jobs' | 'form' | 'set'
+type ViewKey = 'dash' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
 
 interface ProcessStep {
   name: string
@@ -128,8 +129,22 @@ const fmtLocalHHMM = (iso: string) => {
   const d = new Date(iso)
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
-const fmtCutTime = (t: string | null | undefined) =>
-  t && t.length >= 5 ? t.substring(0, 5) : t || '-'
+const fmtCutTime = (t: string | null | undefined) => {
+  if (!t) return '-'
+  const raw = String(t).trim()
+  // Handle 12-hour format like "1:05 PM" or "01:05 pm"
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])$/)
+  if (match) {
+    let h = Number(match[1])
+    const m = Number(match[2])
+    const isPm = match[3].toLowerCase() === 'pm'
+    if (isPm && h < 12) h += 12
+    if (!isPm && h === 12) h = 0
+    return `${pad(h)}:${pad(m)}`
+  }
+  // Default: take HH:MM from 24h strings
+  return raw.length >= 5 ? raw.substring(0, 5) : raw
+}
 
 const toISODateTime = (dateStr: string, timeStr: string): string => {
   const safeTime = timeStr && timeStr.length === 5 ? timeStr : '00:00'
@@ -416,6 +431,8 @@ export default function Plan() {
   const [unlocked, setUnlocked] = useState(false)
   const [passInput, setPassInput] = useState('')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
+  const [issueOpenCount, setIssueOpenCount] = useState(0)
+  const [issueWorkOrders, setIssueWorkOrders] = useState<Array<{ work_order_name: string }>>([])
   const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [dashEdit, setDashEdit] = useState<{
     jobId: string
@@ -481,6 +498,21 @@ export default function Plan() {
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('or_work_orders')
+          .select('work_order_name')
+          .order('created_at', { ascending: false })
+        if (error) throw error
+        setIssueWorkOrders((data || []) as Array<{ work_order_name: string }>)
+      } catch (error) {
+        console.error('Error loading work orders for issues:', error)
+      }
+    })()
   }, [])
 
   useEffect(() => {
@@ -855,63 +887,71 @@ export default function Plan() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">แผนผลิต (Production Planner)</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-            {(
-              [
-                ['dash', 'Dashboard (Master Plan)'],
-                ['dept', 'หน้าแผนก (คิวงาน)'],
-                ['jobs', 'ใบงานทั้งหมด'],
-                ['form', 'สร้าง/แก้ไขใบงาน'],
-                ['set', 'ตั้งค่า'],
-              ] as [ViewKey, string][]
-            ).map(([key, label]) => (
+    <div className="w-full">
+      {/* เมนูย่อย — fixed ชิด TopBar เต็มซ้ายขวา (สไตล์เดียวกับออเดอร์) */}
+      <div
+        className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft transition-all duration-300"
+        style={{ left: 'var(--content-offset-left, 16rem)' }}
+      >
+        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <div className="flex items-center justify-between gap-4">
+            <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+              {(
+                [
+                  ['dash', 'Dashboard (Master Plan)'],
+                  ['dept', 'หน้าแผนก (คิวงาน)'],
+                  ['jobs', 'ใบงานทั้งหมด'],
+                  ['form', 'สร้าง/แก้ไขใบงาน'],
+                  ['set', 'ตั้งค่า'],
+                  ['issue', `Issue (${issueOpenCount})`],
+                ] as [ViewKey, string][]
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setCurrentView(key)}
+                  className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                    currentView === key
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-blue-600'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <input
+                type="password"
+                value={passInput}
+                onChange={(e) => setPassInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
+                placeholder="รหัสผ่าน"
+                className="w-28 rounded-xl border border-gray-300 px-3 py-2 text-sm"
+                style={{ display: unlocked ? 'none' : undefined }}
+              />
               <button
-                key={key}
                 type="button"
-                onClick={() => setCurrentView(key)}
-                className={`flex-1 min-w-[200px] px-3 py-2 text-sm font-medium border-l first:border-l-0 border-gray-300 text-center whitespace-nowrap ${
-                  currentView === key ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'
+                onClick={handleUnlock}
+                className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                  unlocked ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'
                 }`}
               >
-                {label}
+                {unlocked ? 'ล็อคระบบ' : 'ปลดล็อก'}
               </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="password"
-              value={passInput}
-              onChange={(e) => setPassInput(e.target.value)}
-              placeholder="รหัสผ่าน"
-              className="w-24 rounded-lg border border-gray-300 px-2 py-1 text-sm"
-              style={{ display: unlocked ? 'none' : undefined }}
-            />
-            <button
-              type="button"
-              onClick={handleUnlock}
-              className={`rounded-lg px-3 py-1 text-sm font-medium ${
-                unlocked ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'
-              }`}
-            >
-              {unlocked ? 'ล็อคระบบ' : 'ปลดล็อก'}
-            </button>
-            <span
-              className={`rounded-full px-3 py-1 text-sm font-medium ${
-                unlocked ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'
-              }`}
-            >
-              {unlocked ? '🔓 ปลดล็อคแล้ว' : '🔒 ล็อคอยู่'}
-            </span>
+              <span
+                className={`rounded-full px-3 py-2 text-sm font-semibold ${
+                  unlocked ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'
+                }`}
+              >
+                {unlocked ? '🔓 ปลดล็อคแล้ว' : '🔒 ล็อคอยู่'}
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
+      <div className="pt-16 space-y-4">
       {/* View: Form สร้าง/แก้ไขใบงาน */}
       {currentView === 'form' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -1055,34 +1095,46 @@ export default function Plan() {
             </div>
             <div className="overflow-x-auto max-h-[520px] rounded-xl border border-gray-200">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 sticky top-0">
+                <thead className="bg-blue-600 text-white sticky top-0">
                   <tr>
-                    <th className="p-2 text-left font-medium min-w-[100px]">วันที่</th>
-                    <th className="p-2 text-left font-medium min-w-[80px]">เวลาตัด</th>
-                    <th className="p-2 text-left font-medium min-w-[180px]">จำนวนต่อแผนก</th>
-                    <th className="p-2 text-left font-medium min-w-[140px]">ชื่อใบงาน</th>
-                    <th className="p-2 text-left font-medium min-w-[120px]">จัดการ</th>
+                    <th className="p-3 text-left font-semibold min-w-[100px]">วันที่</th>
+                    <th className="p-3 text-left font-semibold min-w-[80px]">เวลาตัด</th>
+                    <th className="p-3 text-left font-semibold min-w-[180px]">จำนวนต่อแผนก</th>
+                    <th className="p-3 text-left font-semibold min-w-[140px]">ชื่อใบงาน</th>
+                    <th className="p-3 text-left font-semibold min-w-[120px]">จัดการ</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredJobs.map((j) => (
-                    <tr key={j.id} className="border-t border-gray-100 hover:bg-gray-50">
-                      <td className="p-2">{j.date}</td>
-                      <td className="p-2">{fmtCutTime(j.cut)}</td>
-                      <td className="p-2">
-                        <div className="flex flex-wrap gap-1">
+                  {filteredJobs.map((j, idx) => {
+                    const deptColorMap: Record<string, string> = {
+                      PACK: 'bg-blue-100 text-blue-700 border-blue-300',
+                      STAMP: 'bg-purple-100 text-purple-700 border-purple-300',
+                      SEW: 'bg-pink-100 text-pink-700 border-pink-300',
+                      CUT: 'bg-orange-100 text-orange-700 border-orange-300',
+                      PRINT: 'bg-green-100 text-green-700 border-green-300',
+                      HEAT: 'bg-red-100 text-red-700 border-red-300',
+                      EMB: 'bg-yellow-100 text-yellow-700 border-yellow-300',
+                      FOLD: 'bg-teal-100 text-teal-700 border-teal-300',
+                    }
+                    return (
+                    <tr key={j.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3">{j.date}</td>
+                      <td className="p-3">{fmtCutTime(j.cut)}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1.5">
                           {settings.departments.map((d) => {
                             const q = j.qty?.[d] || 0
+                            const colorClass = deptColorMap[d.toUpperCase()] || 'bg-gray-100 text-gray-700 border-gray-300'
                             return q > 0 ? (
-                              <span key={d} className="rounded-full border border-gray-300 bg-gray-50 px-2 py-0.5 text-xs">
+                              <span key={d} className={`rounded-full border px-2.5 py-1 text-xs font-bold ${colorClass}`}>
                                 {d}: {q}
                               </span>
                             ) : null
                           })}
                         </div>
                       </td>
-                      <td className="p-2 font-medium">{j.name}</td>
-                      <td className="p-2">
+                      <td className="p-3 font-semibold">{j.name}</td>
+                      <td className="p-3">
                         <button
                           type="button"
                           onClick={() => {
@@ -1094,7 +1146,7 @@ export default function Plan() {
                             setCurrentView('form')
                           }}
                           disabled={!unlocked}
-                          className="rounded bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-200 disabled:opacity-50 mr-1"
+                          className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 mr-1.5"
                         >
                           แก้ไข
                         </button>
@@ -1102,19 +1154,28 @@ export default function Plan() {
                           type="button"
                           onClick={() => deleteJob(j)}
                           disabled={!unlocked}
-                          className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
+                          className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
                         >
                           ลบ
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
             {filteredJobs.length === 0 && (
               <p className="text-center text-gray-500 py-8">ไม่มีใบงานตามตัวกรอง</p>
             )}
+          </div>
+        </section>
+      )}
+
+      {currentView === 'issue' && (
+        <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="p-4">
+            <IssueBoard scope="plan" workOrders={issueWorkOrders} onOpenCountChange={setIssueOpenCount} />
           </div>
         </section>
       )}
@@ -1772,7 +1833,7 @@ export default function Plan() {
                               saveSettings(next)
                             }
                           }}
-                          className="rounded border border-gray-300 px-2 py-1 text-sm disabled:opacity-50"
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-50"
                         >
                           ↑
                         </button>
@@ -1789,7 +1850,7 @@ export default function Plan() {
                               saveSettings(next)
                             }
                           }}
-                          className="rounded border border-gray-300 px-2 py-1 text-sm disabled:opacity-50"
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-50"
                         >
                           ↓
                         </button>
@@ -1808,7 +1869,7 @@ export default function Plan() {
                             setSettings(next)
                             saveSettings(next)
                           }}
-                          className="rounded bg-red-100 px-2 py-1 text-sm text-red-700 disabled:opacity-50"
+                          className="rounded-lg bg-red-600 px-2 py-1 text-sm text-white hover:bg-red-700 font-semibold disabled:opacity-50"
                         >
                           ลบ
                         </button>
@@ -1827,7 +1888,7 @@ export default function Plan() {
                       setSettings(withBaseline)
                       saveSettings(withBaseline)
                     }}
-                    className="mt-2 rounded border border-gray-300 px-2 py-1 text-sm disabled:opacity-50"
+                    className="mt-2 rounded-lg bg-blue-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                   >
                     + เพิ่มแผนก
                   </button>
@@ -1957,7 +2018,7 @@ export default function Plan() {
                             setSettings(next)
                             saveSettings(next)
                           }}
-                          className="rounded border border-gray-300 px-2 py-1 text-sm disabled:opacity-50"
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-50"
                         >↑</button>
                         <button
                           type="button"
@@ -1971,7 +2032,7 @@ export default function Plan() {
                             setSettings(next)
                             saveSettings(next)
                           }}
-                          className="rounded border border-gray-300 px-2 py-1 text-sm disabled:opacity-50"
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-50"
                         >↓</button>
                         <button
                           type="button"
@@ -1984,7 +2045,7 @@ export default function Plan() {
                             setSettings(next)
                             saveSettings(next)
                           }}
-                          className="rounded bg-red-100 px-2 py-1 text-sm text-red-700 disabled:opacity-50"
+                          className="rounded-lg bg-red-600 px-2 py-1 text-sm text-white hover:bg-red-700 font-semibold disabled:opacity-50"
                         >ลบ</button>
                       </div>
                     </div>
@@ -2003,7 +2064,7 @@ export default function Plan() {
                     setSettings(next)
                     saveSettings(next)
                   }}
-                  className="rounded border border-blue-500 bg-blue-50 text-blue-700 px-2 py-1 text-sm disabled:opacity-50"
+                  className="rounded-lg bg-blue-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                 >
                   + เพิ่มขั้นตอน
                 </button>
@@ -2094,7 +2155,7 @@ export default function Plan() {
                             setSettings(next)
                             saveSettings(next)
                           }}
-                          className="rounded bg-red-100 px-2 py-1 text-sm text-red-700 disabled:opacity-50"
+                          className="rounded-lg bg-red-600 px-2 py-1 text-sm text-white hover:bg-red-700 font-semibold disabled:opacity-50"
                         >ลบ</button>
                       </div>
                     ))}
@@ -2110,7 +2171,7 @@ export default function Plan() {
                       setSettings(next)
                       saveSettings(next)
                     }}
-                    className="mt-2 rounded border border-blue-500 bg-blue-50 text-blue-700 px-2 py-1 text-sm disabled:opacity-50"
+                    className="mt-2 rounded-lg bg-blue-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                   >
                     + เพิ่มเวลาพัก
                   </button>
@@ -2142,11 +2203,11 @@ export default function Plan() {
                       })
                       XLSX.writeFile(wb, 'Plan_Settings.xlsx')
                     }}
-                    className="rounded border border-gray-400 bg-gray-100 px-3 py-1.5 text-sm disabled:opacity-50"
+                    className="rounded-xl bg-green-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
                   >
                     Export Settings (.xlsx)
                   </button>
-                  <label className="rounded border border-gray-400 bg-gray-100 px-3 py-1.5 text-sm cursor-pointer disabled:opacity-50 inline-block">
+                  <label className="rounded-xl bg-purple-600 text-white px-3 py-1.5 text-sm font-semibold cursor-pointer hover:bg-purple-700 disabled:opacity-50 inline-block">
                     Import Settings (.xlsx)
                     <input
                       type="file"
@@ -2294,6 +2355,7 @@ export default function Plan() {
           )}
         </div>
       </Modal>
+      </div>
     </div>
   )
 }

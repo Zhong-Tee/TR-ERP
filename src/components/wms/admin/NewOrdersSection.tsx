@@ -163,7 +163,7 @@ export default function NewOrdersSection() {
         {workOrders.map((wo) => (
           <button
             key={wo.id}
-            className="p-4 border rounded-lg text-left hover:bg-gray-50 transition-colors bg-white"
+            className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
             onClick={() => openAssignPicker(wo.work_order_name)}
           >
             <div className="flex items-center justify-between">

@@ -1,0 +1,2 @@
+ALTER TABLE or_orders
+ADD COLUMN IF NOT EXISTS confirm_note TEXT;

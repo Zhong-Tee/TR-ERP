@@ -42,19 +42,14 @@ export default function AdminQC() {
     window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
   }
 
+  // ส่งจำนวนไปให้ TopBar แสดงผ่าน custom event
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('topbar-menu-count', { detail: { count } }))
+  }, [count])
+
   return (
-    <div className="min-h-screen bg-gray-50 w-full">
-      <div className="w-full px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-3xl font-bold">
-            รอตรวจคำสั่งซื้อ
-            <span className="ml-3 text-2xl font-semibold text-amber-600 tabular-nums">
-              ({count})
-            </span>
-          </h1>
-        </div>
-        <OrderReviewList onStatusUpdate={refreshCounts} />
-      </div>
+    <div className="w-full">
+      <OrderReviewList onStatusUpdate={refreshCounts} />
     </div>
   )
 }

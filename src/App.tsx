@@ -17,6 +17,14 @@ import Products from './pages/Products'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
 import Settings from './pages/Settings'
+import Warehouse from './pages/Warehouse'
+import WarehouseAudit from './pages/WarehouseAudit'
+import WarehouseAdjust from './pages/WarehouseAdjust'
+import WarehouseReturns from './pages/WarehouseReturns'
+import PurchasePR from './pages/PurchasePR'
+import PurchasePO from './pages/PurchasePO'
+import PurchaseGR from './pages/PurchaseGR'
+import DashboardPage from './pages/Dashboard'
 
 function AppRoutes() {
   const { user, loading } = useAuthContext()
@@ -42,7 +50,7 @@ function AppRoutes() {
     return <Login onLoginSuccess={() => {}} />
   }
 
-  const isWmsMobileRole = user ? ['picker', 'manager', 'production'].includes(user.role) : false
+  const isWmsMobileRole = user ? ['picker', 'production'].includes(user.role) : false
 
   if (user && isWmsMobileRole && location.pathname !== '/wms') {
     return <Navigate to="/wms" replace />
@@ -52,13 +60,14 @@ function AppRoutes() {
     <Routes>
       <Route
         path="/"
+        element={<Navigate to="/dashboard" replace />}
+      />
+      <Route
+        path="/dashboard"
         element={
           <ProtectedRoute>
             <Layout>
-              <div className="p-6">
-                <h1 className="text-3xl font-bold mb-4">Dashboard</h1>
-                <p className="text-gray-600">ยินดีต้อนรับสู่ระบบ TR-ERP</p>
-              </div>
+              <DashboardPage />
             </Layout>
           </ProtectedRoute>
         }
@@ -167,6 +176,76 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'order_staff']}>
             <Layout>
               <Products />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <Warehouse />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <WarehouseAudit />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/adjust"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <WarehouseAdjust />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/returns"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <WarehouseReturns />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/pr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <PurchasePR />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/po"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <PurchasePO />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/gr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store', 'manager']}>
+            <Layout>
+              <PurchaseGR />
             </Layout>
           </ProtectedRoute>
         }

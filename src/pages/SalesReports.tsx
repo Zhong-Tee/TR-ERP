@@ -59,9 +59,7 @@ export default function SalesReports() {
   const totalQuantity = salesData.reduce((sum, item) => sum + item.quantity, 0)
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-bold">รายงานยอดขาย</h1>
-
+    <div className="space-y-6 mt-4">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-lg shadow">
           <h3 className="text-lg font-medium text-gray-600 mb-2">ยอดขายรวม</h3>
@@ -92,18 +90,18 @@ export default function SalesReports() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">สินค้า</th>
-                  <th className="p-3 text-left">จำนวน</th>
-                  <th className="p-3 text-left">ยอดขาย</th>
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-3 text-left font-semibold rounded-tl-xl">สินค้า</th>
+                  <th className="p-3 text-left font-semibold">จำนวน</th>
+                  <th className="p-3 text-left font-semibold rounded-tr-xl">ยอดขาย</th>
                 </tr>
               </thead>
               <tbody>
                 {salesData
                   .sort((a, b) => b.revenue - a.revenue)
                   .map((item, index) => (
-                    <tr key={index} className="border-t">
+                    <tr key={index} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3 font-medium">{item.name}</td>
                       <td className="p-3">{item.quantity.toLocaleString()}</td>
                       <td className="p-3 font-bold text-green-600">

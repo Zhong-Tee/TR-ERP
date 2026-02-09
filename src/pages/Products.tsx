@@ -17,6 +17,9 @@ function getProductImageUrl(productCode: string | null | undefined, ext: string 
 const PRODUCT_TEMPLATE_HEADERS = [
   'product_code',
   'product_name',
+  'seller_name',
+  'product_name_cn',
+  'order_point',
   'product_category',
   'product_type',
   'rubber_code',
@@ -54,6 +57,9 @@ async function uploadImageToBucket(file: File): Promise<void> {
 const emptyForm = () => ({
   product_code: '',
   product_name: '',
+  seller_name: '',
+  product_name_cn: '',
+  order_point: '',
   product_category: '',
   product_type: '',
   rubber_code: '',
@@ -159,6 +165,9 @@ export default function Products() {
     setForm({
       product_code: product.product_code,
       product_name: product.product_name,
+      seller_name: product.seller_name || '',
+      product_name_cn: product.product_name_cn || '',
+      order_point: product.order_point || '',
       product_category: product.product_category || '',
       product_type: product.product_type || '',
       rubber_code: product.rubber_code || '',
@@ -204,6 +213,9 @@ export default function Products() {
         const { error } = await supabase.from('pr_products').insert({
           product_code: code,
           product_name: name,
+          seller_name: form.seller_name.trim() || null,
+          product_name_cn: form.product_name_cn.trim() || null,
+          order_point: form.order_point.trim() || null,
           product_category: form.product_category.trim() || null,
           product_type: form.product_type.trim() || null,
           rubber_code: form.rubber_code.trim() || null,
@@ -218,6 +230,9 @@ export default function Products() {
           .update({
             product_code: code,
             product_name: name,
+            seller_name: form.seller_name.trim() || null,
+            product_name_cn: form.product_name_cn.trim() || null,
+            order_point: form.order_point.trim() || null,
             product_category: form.product_category.trim() || null,
             product_type: form.product_type.trim() || null,
             rubber_code: form.rubber_code.trim() || null,
@@ -264,7 +279,7 @@ export default function Products() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PRODUCT_TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'หมวดA', 'ประเภท1', 'R001', 'A-1'],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'ประเภท1', 'R001', 'A-1'],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -275,7 +290,9 @@ export default function Products() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, product_category, product_type, rubber_code, storage_location')
+        .select(
+          'product_code, product_name, seller_name, product_name_cn, order_point, product_category, product_type, rubber_code, storage_location'
+        )
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -307,6 +324,9 @@ export default function Products() {
       const toInsert: Array<{
         product_code: string
         product_name: string
+        seller_name: string | null
+        product_name_cn: string | null
+        order_point: string | null
         product_category: string | null
         product_type: string | null
         rubber_code: string | null
@@ -321,6 +341,9 @@ export default function Products() {
         toInsert.push({
           product_code: code,
           product_name: name,
+          seller_name: (row.seller_name != null && String(row.seller_name).trim()) || null,
+          product_name_cn: (row.product_name_cn != null && String(row.product_name_cn).trim()) || null,
+          order_point: (row.order_point != null && String(row.order_point).trim()) || null,
           product_category: (row.product_category != null && String(row.product_category).trim()) || null,
           product_type: (row.product_type != null && String(row.product_type).trim()) || null,
           rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
@@ -376,24 +399,22 @@ export default function Products() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-3xl font-bold">จัดการสินค้า</h1>
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 mt-2">
           <button
             type="button"
             onClick={downloadProductsExcel}
-            className="px-3 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700 text-sm font-medium"
+            className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold"
           >
             ดาวน์โหลด (Excel)
           </button>
           <button
             type="button"
             onClick={downloadTemplate}
-            className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm"
+            className="px-3 py-2 rounded-xl bg-gray-500 text-white hover:bg-gray-600 text-sm font-semibold"
           >
             Download Template
           </button>
-          <label className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm cursor-pointer disabled:opacity-50 inline-block">
+          <label className="px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold cursor-pointer inline-block">
             {importing ? 'กำลังนำเข้า...' : 'Import สินค้า'}
             <input
               ref={importInputRef}
@@ -408,7 +429,7 @@ export default function Products() {
               }}
             />
           </label>
-          <label className="px-3 py-2 border border-gray-400 rounded hover:bg-gray-50 text-sm cursor-pointer disabled:opacity-50 inline-block">
+          <label className="px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 text-sm font-semibold cursor-pointer inline-block">
             {uploadingImages ? 'กำลังอัปโหลด...' : 'อัปโหลดรูป'}
             <input
               ref={uploadImagesInputRef}
@@ -427,14 +448,13 @@ export default function Products() {
           <button
             type="button"
             onClick={openAdd}
-            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-white"
+            className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 font-semibold"
           >
             + เพิ่มสินค้า
           </button>
-        </div>
       </div>
 
-      <div className="bg-white p-6 rounded-lg shadow">
+      <div className="bg-surface-50 p-6 rounded-2xl shadow-soft border border-surface-200">
         <div className="flex flex-wrap gap-4 mb-4">
           <div className="flex-1 min-w-[200px]">
             <label htmlFor="products-search" className="sr-only">ค้นหาสินค้า</label>
@@ -446,7 +466,7 @@ export default function Products() {
               placeholder="ค้นหารหัสสินค้าหรือชื่อสินค้า..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             />
           </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
@@ -455,7 +475,7 @@ export default function Products() {
               id="products-category"
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             >
               <option value="">ทั้งหมด</option>
               {categories.map((c) => (
@@ -475,38 +495,44 @@ export default function Products() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-100">
-                <tr>
-                  <th className="p-3 text-left">รูป</th>
-                  <th className="p-3 text-left">รหัสสินค้า</th>
-                  <th className="p-3 text-left">ชื่อสินค้า</th>
-                  <th className="p-3 text-left">จุดจัดเก็บ</th>
-                  <th className="p-3 text-left">รหัสหน้ายาง</th>
-                  <th className="p-3 text-left">หมวดหมู่</th>
-                  <th className="p-3 text-right">การจัดการ</th>
+            <table className="w-full text-base">
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="p-4 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="p-4 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="p-4 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="p-4 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="p-4 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="p-4 text-left font-semibold">จุดสั่งซื้อ</th>
+                  <th className="p-4 text-left font-semibold">จุดจัดเก็บ</th>
+                  <th className="p-4 text-left font-semibold">รหัสหน้ายาง</th>
+                  <th className="p-4 text-left font-semibold">หมวดหมู่</th>
+                  <th className="p-4 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {products.map((product) => (
-                  <tr key={product.id} className="border-t">
-                    <td className="p-3">
+                {products.map((product, idx) => (
+                  <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="p-4">
                       <ProductImage
                         code={product.product_code}
                         name={product.product_name}
                       />
                     </td>
-                    <td className="p-3 font-medium">{product.product_code}</td>
-                    <td className="p-3">{product.product_name}</td>
-                    <td className="p-3">{product.storage_location || '-'}</td>
-                    <td className="p-3">{product.rubber_code || '-'}</td>
-                    <td className="p-3">{product.product_category || '-'}</td>
-                    <td className="p-3 text-right">
+                    <td className="p-4 font-semibold text-surface-900">{product.product_code}</td>
+                    <td className="p-4 text-surface-800">{product.product_name}</td>
+                    <td className="p-4 text-surface-700">{product.seller_name || '-'}</td>
+                    <td className="p-4 text-surface-700">{product.product_name_cn || '-'}</td>
+                    <td className="p-4 text-surface-700">{product.order_point || '-'}</td>
+                    <td className="p-4 text-surface-700">{product.storage_location || '-'}</td>
+                    <td className="p-4 text-surface-700">{product.rubber_code || '-'}</td>
+                    <td className="p-4 text-surface-700">{product.product_category || '-'}</td>
+                    <td className="p-4 text-right">
                       <div className="flex gap-2 justify-end">
                         <button
                           type="button"
                           onClick={() => openEdit(product)}
-                          className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
                         >
                           แก้ไข
                         </button>
@@ -514,7 +540,7 @@ export default function Products() {
                           type="button"
                           onClick={() => openDeleteConfirm(product)}
                           disabled={deletingId === product.id}
-                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm disabled:opacity-50"
+                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
                         >
                           {deletingId === product.id ? 'กำลังลบ...' : 'ลบ'}
                         </button>
@@ -535,77 +561,107 @@ export default function Products() {
         contentClassName="max-w-lg"
       >
         <div className="p-6">
-          <h2 className="text-xl font-bold mb-4">
+          <h2 className="text-2xl font-semibold mb-4">
             {modalMode === 'add' ? 'เพิ่มสินค้า' : 'แก้ไขสินค้า'}
           </h2>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">รหัสสินค้า *</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสสินค้า *</label>
               <input
                 type="text"
                 value={form.product_code}
                 onChange={(e) => setForm((f) => ({ ...f, product_code: e.target.value }))}
                 placeholder="รหัสสินค้า"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
                 readOnly={modalMode === 'edit'}
               />
               {modalMode === 'edit' && (
-                <p className="text-xs text-gray-500 mt-1">ไม่สามารถแก้ไขรหัสสินค้าได้</p>
+                <p className="text-xs text-surface-500 mt-1">ไม่สามารถแก้ไขรหัสสินค้าได้</p>
               )}
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ชื่อสินค้า *</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อสินค้า *</label>
               <input
                 type="text"
                 value={form.product_name}
                 onChange={(e) => setForm((f) => ({ ...f, product_name: e.target.value }))}
                 placeholder="ชื่อสินค้า"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">จุดจัดเก็บ</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อผู้ขาย</label>
+              <input
+                type="text"
+                value={form.seller_name}
+                onChange={(e) => setForm((f) => ({ ...f, seller_name: e.target.value }))}
+                placeholder="ชื่อผู้ขาย"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชื่อภาษาจีน</label>
+              <input
+                type="text"
+                value={form.product_name_cn}
+                onChange={(e) => setForm((f) => ({ ...f, product_name_cn: e.target.value }))}
+                placeholder="ชื่อภาษาจีน"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดสั่งซื้อ</label>
+              <input
+                type="text"
+                value={form.order_point}
+                onChange={(e) => setForm((f) => ({ ...f, order_point: e.target.value }))}
+                placeholder="จุดสั่งซื้อ"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดจัดเก็บ</label>
               <input
                 type="text"
                 value={form.storage_location}
                 onChange={(e) => setForm((f) => ({ ...f, storage_location: e.target.value }))}
                 placeholder="จุดจัดเก็บ"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">หมวดหมู่</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">หมวดหมู่</label>
               <input
                 type="text"
                 value={form.product_category}
                 onChange={(e) => setForm((f) => ({ ...f, product_category: e.target.value }))}
                 placeholder="หมวดหมู่สินค้า"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ประเภทสินค้า</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ประเภทสินค้า</label>
               <input
                 type="text"
                 value={form.product_type}
                 onChange={(e) => setForm((f) => ({ ...f, product_type: e.target.value }))}
                 placeholder="ประเภท"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">รหัสหน้ายาง</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสหน้ายาง</label>
               <input
                 type="text"
                 value={form.rubber_code}
                 onChange={(e) => setForm((f) => ({ ...f, rubber_code: e.target.value }))}
                 placeholder="รหัสหน้ายาง"
-                className="w-full px-3 py-2 border rounded-lg"
+                className="w-full px-3 py-2.5 border border-surface-300 rounded-xl text-base"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">รูปสินค้า</label>
-              <p className="text-xs text-gray-500 mb-1">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">รูปสินค้า</label>
+              <p className="text-xs text-surface-500 mb-1">
                 อัปโหลดรูปจะเก็บใน Bucket {BUCKET_PRODUCT_IMAGES} ชื่อไฟล์ = รหัสสินค้า
                 {modalMode === 'edit' && ' — อัปโหลดรูปใหม่จะแทนที่รูปเก่า'}
               </p>
@@ -613,11 +669,11 @@ export default function Products() {
                 type="file"
                 accept="image/*"
                 onChange={onFileChange}
-                className="w-full text-sm text-gray-600 file:mr-2 file:py-2 file:px-3 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                className="w-full text-sm text-surface-600 file:mr-2 file:py-2 file:px-3 file:rounded file:border-0 file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
               />
               {(uploadPreview || (form.product_code.trim() && !uploadFile)) && (
                 <div className="mt-2">
-                  <span className="text-xs text-gray-500 block mb-1">พรีวิว</span>
+                  <span className="text-xs text-surface-500 block mb-1">พรีวิว</span>
                   {uploadPreview ? (
                     <img
                       src={uploadPreview}
@@ -635,7 +691,7 @@ export default function Products() {
             <button
               type="button"
               onClick={closeModal}
-              className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+              className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100"
             >
               ยกเลิก
             </button>
@@ -643,7 +699,7 @@ export default function Products() {
               type="button"
               onClick={handleSave}
               disabled={saving}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
+              className="px-4 py-2 bg-primary-200 text-primary-900 rounded-xl hover:bg-primary-300 disabled:opacity-50 font-semibold"
             >
               {saving ? 'กำลังบันทึก...' : modalMode === 'add' ? 'เพิ่มสินค้า' : 'บันทึก'}
             </button>
@@ -658,19 +714,19 @@ export default function Products() {
         contentClassName="max-w-md"
       >
         <div className="p-6">
-          <h2 className="text-xl font-bold mb-3 text-gray-800">ยืนยันปิดการใช้งานสินค้า</h2>
+          <h2 className="text-2xl font-semibold mb-3 text-surface-900">ยืนยันปิดการใช้งานสินค้า</h2>
           {productToDelete && (
-            <p className="text-gray-600 mb-4">
+            <p className="text-surface-700 mb-4">
               ต้องการปิดการใช้งานสินค้า <strong>"{productToDelete.product_name}"</strong> (รหัส {productToDelete.product_code}) ใช่หรือไม่?
               <br />
-              <span className="text-sm text-gray-500">สินค้าจะไม่แสดงในรายการแต่ยังอยู่ในระบบ</span>
+              <span className="text-sm text-surface-500">สินค้าจะไม่แสดงในรายการแต่ยังอยู่ในระบบ</span>
             </p>
           )}
           <div className="flex gap-2 justify-end">
             <button
               type="button"
               onClick={() => setProductToDelete(null)}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+              className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100"
             >
               ยกเลิก
             </button>
@@ -678,7 +734,7 @@ export default function Products() {
               type="button"
               onClick={confirmDelete}
               disabled={deletingId === productToDelete?.id}
-              className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50"
+              className="px-4 py-2 bg-accent-200 text-surface-900 rounded-xl hover:bg-accent-300 disabled:opacity-50 font-semibold"
             >
               {deletingId === productToDelete?.id ? 'กำลังลบ...' : 'ปิดการใช้งาน'}
             </button>
@@ -703,7 +759,7 @@ function ProductImage({
   const displayUrl = url && !failed ? url : ''
   if (!displayUrl) {
     return (
-      <div className="w-16 h-16 bg-gray-200 rounded flex items-center justify-center text-gray-400 text-xs">
+      <div className="w-20 h-20 bg-surface-200 rounded-xl flex items-center justify-center text-surface-400 text-xs">
         ไม่มีรูป
       </div>
     )
@@ -713,13 +769,13 @@ function ProductImage({
       href={displayUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="block w-16 h-16 rounded overflow-hidden hover:ring-2 hover:ring-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      className="block w-20 h-20 rounded-xl overflow-hidden hover:ring-2 hover:ring-primary-200 focus:outline-none focus:ring-2 focus:ring-primary-200"
       title="คลิกเพื่อเปิดรูปในแท็บใหม่"
     >
       <img
         src={displayUrl}
         alt={name}
-        className="w-16 h-16 object-cover"
+        className="w-20 h-20 object-cover"
         onError={() => setFailed(true)}
       />
     </a>
