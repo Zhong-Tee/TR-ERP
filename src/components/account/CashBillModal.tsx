@@ -201,7 +201,7 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
           scrollY: 0,
           windowHeight: document.body.scrollHeight,
         },
-        jsPDF: { unit: 'mm', format: [148, 210], orientation: 'portrait' as const },
+        jsPDF: { unit: 'mm' as const, format: [148, 210] as [number, number], orientation: 'portrait' as const },
       }
       await html2pdf().set(opt).from(billEl).save()
     } catch (err) {
