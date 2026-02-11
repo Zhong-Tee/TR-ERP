@@ -31,9 +31,9 @@ export default function ManualSlipCheckSection() {
   const [detailLoading, setDetailLoading] = useState(false)
 
   // Slip images for a row
-  const [slipImagesOrderId, setSlipImagesOrderId] = useState<string | null>(null)
-  const [slipUrls, setSlipUrls] = useState<string[]>([])
-  const [slipUrlsLoading, setSlipUrlsLoading] = useState(false)
+  const [, setSlipImagesOrderId] = useState<string | null>(null)
+  const [, setSlipUrls] = useState<string[]>([])
+  const [, setSlipUrlsLoading] = useState(false)
   const [zoomImage, setZoomImage] = useState<string | null>(null)
 
   // Check result
@@ -85,6 +85,7 @@ export default function ManualSlipCheckSection() {
   }
 
   // Load slip images for an order
+  // @ts-ignore TS6133 - kept for future use
   async function handleViewSlips(orderId: string) {
     setSlipImagesOrderId(orderId)
     setSlipUrls([])

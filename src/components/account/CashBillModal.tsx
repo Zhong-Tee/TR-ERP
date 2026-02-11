@@ -192,7 +192,7 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
 
       // ─── options ตรงกับ cashbill.html ทุกประการ ───
       const opt = {
-        margin: [0, 0, 0, 0],
+        margin: [0, 0, 0, 0] as [number, number, number, number],
         filename: `บิลเงินสด-${billNo.replace(/\//g, '-')}.pdf`,
         image: { type: 'jpeg', quality: 1 },
         html2canvas: {

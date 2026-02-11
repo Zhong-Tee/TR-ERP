@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import type { User, BankSetting, OrderChatLog, IssueType, IssueMessage } from '../types'
+import type { User, BankSetting, OrderChatLog, IssueType } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
