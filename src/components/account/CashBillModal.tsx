@@ -194,7 +194,7 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
       const opt = {
         margin: [0, 0, 0, 0] as [number, number, number, number],
         filename: `บิลเงินสด-${billNo.replace(/\//g, '-')}.pdf`,
-        image: { type: 'jpeg', quality: 1 },
+        image: { type: 'jpeg' as const, quality: 1 },
         html2canvas: {
           scale: 3,
           useCORS: true,
