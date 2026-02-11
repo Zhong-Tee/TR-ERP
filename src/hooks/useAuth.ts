@@ -111,6 +111,7 @@ export function useAuth() {
   }
 
   async function signOut() {
+    sessionStorage.removeItem('plan_unlocked')
     const { error } = await supabase.auth.signOut()
     if (error) throw error
   }

@@ -385,6 +385,12 @@ export async function deleteReason(id: string) {
   if (error) throw error
 }
 
+/** Settings: update reason fail_type (4M category). */
+export async function updateReasonType(id: string, failType: string) {
+  const { error } = await supabase.from('settings_reasons').update({ fail_type: failType }).eq('id', id)
+  if (error) throw error
+}
+
 /** Settings: update ink hex_code (ink_types). */
 export async function updateInkHex(id: number, hexCode: string) {
   const { error } = await supabase.from('ink_types').update({ hex_code: hexCode }).eq('id', id)

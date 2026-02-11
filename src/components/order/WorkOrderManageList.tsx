@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { Order, WorkOrder } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
@@ -66,6 +67,7 @@ export default function WorkOrderManageList({
   const [editingTrackingValue, setEditingTrackingValue] = useState('')
   const [updating, setUpdating] = useState(false)
   const [_channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
 
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
@@ -224,7 +226,7 @@ export default function WorkOrderManageList({
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type')
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user')
         .eq('work_order_name', workOrderName)
         .neq('status', 'จัดส่งแล้ว')
         .order('created_at', { ascending: false })
@@ -985,7 +987,7 @@ export default function WorkOrderManageList({
             const isExpanded = expandedWo === wo.work_order_name
             const channelCode = channelByWo[wo.work_order_name] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
-            const canCancelWorkOrder = user?.role === 'superadmin' || user?.role === 'admin'
+            const canCancelWorkOrder = user?.role === 'superadmin' || user?.role === 'admin-tr'
 
             return (
               <div key={wo.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
@@ -1126,6 +1128,7 @@ export default function WorkOrderManageList({
                                 <th className="p-3 text-left font-medium min-w-[120px]">ชื่อลูกค้า</th>
                                 <th className="p-3 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
                                 <th className="p-3 text-left font-medium min-w-[110px]">เลขคำสั่งซื้อ</th>
+                                <th className="p-3 text-left font-medium min-w-[100px]">ผู้ลงข้อมูล</th>
                                 <th className="p-3 pl-2 text-left font-medium w-56">เลขพัสดุ</th>
                               </tr>
                             </thead>
@@ -1141,7 +1144,9 @@ export default function WorkOrderManageList({
                                       />
                                     </td>
                                     <td className="p-3 align-middle">
-                                      <span className="text-blue-600 font-medium">{order.bill_no ?? '-'}</span>
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
+                                        {order.bill_no ?? '-'}
+                                      </button>
                                       {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                                         <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
                                           เคลม
@@ -1151,6 +1156,7 @@ export default function WorkOrderManageList({
                                     <td className="p-3 align-middle text-gray-700">{order.recipient_name ?? '-'}</td>
                                     <td className="p-3 align-middle text-gray-600">{order.customer_name ?? '-'}</td>
                                     <td className="p-3 align-middle text-gray-600">{order.channel_order_no ?? '-'}</td>
+                                    <td className="p-3 align-middle text-gray-600">{order.admin_user ?? '-'}</td>
                                     <td className="p-3 pl-2 align-middle w-56">
                                       {editingTrackingId === order.id ? (
                                         <div className="flex items-center gap-1 w-full max-w-[17.5rem]">
@@ -1450,6 +1456,11 @@ export default function WorkOrderManageList({
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* Detail Modal */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
       </Modal>
     </div>
   )

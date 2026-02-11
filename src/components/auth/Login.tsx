@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAuth } from '../../hooks/useAuth'
+import { useAuthContext } from '../../contexts/AuthContext'
 
 interface LoginProps {
   onLoginSuccess: () => void
@@ -10,7 +10,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const { signIn } = useAuth()
+  const { signIn } = useAuthContext()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -37,7 +37,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
           <p className="text-gray-600">ระบบจัดการออเดอร์และ QC</p>
         </div>
         
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} autoComplete="on" className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
               อีเมล
@@ -48,6 +48,8 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              autoComplete="email"
+              autoFocus
               className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
               placeholder="กรุณากรอกอีเมล"
             />
@@ -63,6 +65,13 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="current-password"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !loading) {
+                  e.preventDefault()
+                  handleSubmit(e as unknown as React.FormEvent)
+                }
+              }}
               className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
               placeholder="กรุณากรอกรหัสผ่าน"
             />

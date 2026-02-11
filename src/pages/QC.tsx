@@ -16,6 +16,7 @@ import {
   fetchReportUsers,
   addReason,
   deleteReason,
+  updateReasonType,
   updateInkHex,
   getPublicUrl,
   saveWorkOrderName,
@@ -62,7 +63,7 @@ function formatDuration(s: number | null | undefined): string {
 
 export default function QC() {
   const { user } = useAuthContext()
-  const isAdmin = user?.role === 'superadmin' || user?.role === 'admin'
+  const isAdmin = user?.role === 'superadmin' || user?.role === 'admin-tr'
 
   const [currentView, setCurrentView] = useState<QCView>('qc')
   const [loading, setLoading] = useState(false)
@@ -657,6 +658,15 @@ export default function QC() {
       await loadSettings()
     } catch (e: any) {
       alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleUpdateReasonType(id: string, failType: 'Man' | 'Machine' | 'Material' | 'Method') {
+    try {
+      await updateReasonType(id, failType)
+      await loadSettings()
+    } catch (e: any) {
+      alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
     }
   }
 
@@ -1533,17 +1543,27 @@ export default function QC() {
                 </div>
                 <ul className="divide-y border rounded-xl overflow-hidden">
                   {reasons.map((r) => (
-                    <li key={r.id} className="py-3 px-4 flex justify-between items-center bg-white hover:bg-gray-50">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold">{r.reason_text}</span>
-                        {r.fail_type && (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">
-                            {r.fail_type}
-                          </span>
-                        )}
+                    <li key={r.id} className="py-3 px-4 flex justify-between items-center bg-white hover:bg-gray-50 gap-2">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span className="font-bold truncate">{r.reason_text}</span>
                       </div>
-                      <button onClick={() => handleDeleteReason(r.id)} className="text-red-500 hover:text-red-700">
-                        ลบ
+                      <select
+                        value={r.fail_type || 'Man'}
+                        onChange={(e) => handleUpdateReasonType(r.id, e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
+                        className={`text-xs px-2 py-1 rounded-full border-0 cursor-pointer font-semibold shrink-0 ${
+                          r.fail_type === 'Machine' ? 'bg-orange-100 text-orange-700' :
+                          r.fail_type === 'Material' ? 'bg-green-100 text-green-700' :
+                          r.fail_type === 'Method' ? 'bg-purple-100 text-purple-700' :
+                          'bg-blue-100 text-blue-700'
+                        }`}
+                      >
+                        <option value="Man">Man</option>
+                        <option value="Machine">Machine</option>
+                        <option value="Material">Material</option>
+                        <option value="Method">Method</option>
+                      </select>
+                      <button onClick={() => handleDeleteReason(r.id)} className="text-red-400 hover:text-red-600 shrink-0">
+                        <i className="fas fa-trash-alt"></i>
                       </button>
                     </li>
                   ))}

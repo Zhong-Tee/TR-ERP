@@ -9,17 +9,21 @@ export default function Wms() {
 
   if (!user) return null
 
-  if (user.role === 'admin' || user.role === 'store' || user.role === 'superadmin') {
-    return <AdminLayout />
+  // Mobile role: picker (หน้ามือถือหยิบสินค้า)
+  if (user.role === 'picker') {
+    return <PickerLayout />
   }
 
-  if (user.role === 'production') {
+  // Mobile role: production_mb (หน้ามือถือสำหรับฝ่ายผลิต)
+  if (user.role === 'production_mb') {
     return <ProductionLayout />
   }
 
+  // Mobile role: manager (หน้ามือถืออนุมัติใบเบิก)
   if (user.role === 'manager') {
     return <ManagerLayout />
   }
 
-  return <PickerLayout />
+  // Desktop roles: admin-tr, store, superadmin, production, account และ role อื่นๆ ทั้งหมด
+  return <AdminLayout />
 }

@@ -12,6 +12,7 @@ export default function NotificationSection() {
       .channel('wms-notifications-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => {
         loadNotifications()
+        window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
 
@@ -46,11 +47,13 @@ export default function NotificationSection() {
   const markNotifRead = async (id: string) => {
     await supabase.from('wms_notifications').update({ is_read: true }).eq('id', id)
     loadNotifications()
+    window.dispatchEvent(new Event('wms-data-changed'))
   }
 
   const markNotifFixed = async (id: string) => {
     await supabase.from('wms_notifications').update({ status: 'fixed', is_read: true }).eq('id', id)
     loadNotifications()
+    window.dispatchEvent(new Event('wms-data-changed'))
   }
 
   const fontSizeClass = 'text-[18.66px]'

@@ -1,7 +1,8 @@
 import { useAuthContext } from '../../contexts/AuthContext'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { useWmsModal } from '../wms/useWmsModal'
 
 interface TopBarProps {
   sidebarOpen: boolean
@@ -11,9 +12,11 @@ interface TopBarProps {
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { user, signOut } = useAuthContext()
   const location = useLocation()
+  const navigate = useNavigate()
   const [issueOnCount, setIssueOnCount] = useState(0)
   const [newChatCount, setNewChatCount] = useState(0)
   const [menuCount, setMenuCount] = useState<number | null>(null)
+  const { showConfirm, ConfirmModal } = useWmsModal()
 
   // รับตัวเลขจำนวนจากหน้าลูก (เช่น AdminQC)
   useEffect(() => {
@@ -54,7 +57,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   })()
 
   const handleLogout = async () => {
-    if (confirm('ต้องการออกจากระบบหรือไม่?')) {
+    const ok = await showConfirm({ title: 'ออกจากระบบ', message: 'ต้องการออกจากระบบหรือไม่?' })
+    if (ok) {
       await signOut()
     }
   }
@@ -66,28 +70,43 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           supabase.from('or_issues').select('id', { count: 'exact', head: true }).eq('status', 'On'),
         ])
         setIssueOnCount(onRes.count ?? 0)
-        await loadUnreadChatCount()
+        await loadAllUnreadChatCount()
       } catch (error) {
         console.error('Error loading issue counts:', error)
       }
     }
-    const loadUnreadChatCount = async () => {
+    const loadAllUnreadChatCount = async () => {
       if (!user) return
       try {
-        const [{ data: reads }, { data: messages }] = await Promise.all([
+        // === Issue Chat unread ===
+        const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([
           supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
           supabase.from('or_issue_messages').select('issue_id, created_at'),
         ])
-        const readMap = new Map(
-          (reads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
+        const issueReadMap = new Map(
+          (issueReads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
         )
-        let total = 0
-        ;(messages || []).forEach((m: { issue_id: string; created_at: string }) => {
-          const lastRead = readMap.get(m.issue_id) ?? 0
-          const msgTime = new Date(m.created_at).getTime()
-          if (msgTime > lastRead) total += 1
+        let issueTotal = 0
+        ;(issueMessages || []).forEach((m: { issue_id: string; created_at: string }) => {
+          const lastRead = issueReadMap.get(m.issue_id) ?? 0
+          if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
         })
-        setNewChatCount(total)
+
+        // === Order Chat unread ===
+        const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([
+          supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
+          supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false),
+        ])
+        const orderReadMap = new Map(
+          (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
+        )
+        let orderTotal = 0
+        ;(orderMessages || []).forEach((m: { order_id: string; created_at: string }) => {
+          const lastRead = orderReadMap.get(m.order_id) ?? 0
+          if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
+        })
+
+        setNewChatCount(issueTotal + orderTotal)
       } catch (error) {
         console.error('Error loading unread chat count:', error)
       }
@@ -97,6 +116,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       .channel('topbar-issue-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadIssueCounts())
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, () => loadIssueCounts())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, () => loadAllUnreadChatCount())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
@@ -108,33 +128,79 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       if (!user) return
       ;(async () => {
         try {
-          const [{ data: reads }, { data: messages }] = await Promise.all([
+          // === Issue Chat unread ===
+          const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([
             supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
             supabase.from('or_issue_messages').select('issue_id, created_at'),
           ])
-          const readMap = new Map(
-            (reads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
+          const issueReadMap = new Map(
+            (issueReads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
           )
-          let total = 0
-          ;(messages || []).forEach((m: { issue_id: string; created_at: string }) => {
-            const lastRead = readMap.get(m.issue_id) ?? 0
-            const msgTime = new Date(m.created_at).getTime()
-            if (msgTime > lastRead) total += 1
+          let issueTotal = 0
+          ;(issueMessages || []).forEach((m: { issue_id: string; created_at: string }) => {
+            const lastRead = issueReadMap.get(m.issue_id) ?? 0
+            if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
           })
-          setNewChatCount(total)
+
+          // === Order Chat unread ===
+          const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([
+            supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
+            supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false),
+          ])
+          const orderReadMap = new Map(
+            (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
+          )
+          let orderTotal = 0
+          ;(orderMessages || []).forEach((m: { order_id: string; created_at: string }) => {
+            const lastRead = orderReadMap.get(m.order_id) ?? 0
+            if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
+          })
+
+          setNewChatCount(issueTotal + orderTotal)
         } catch (error) {
           console.error('Error refreshing unread chat count:', error)
         }
       })()
     }
     window.addEventListener('issue-chat-read', onChatRead)
-    return () => window.removeEventListener('issue-chat-read', onChatRead)
+    window.addEventListener('order-chat-read', onChatRead)
+    return () => {
+      window.removeEventListener('issue-chat-read', onChatRead)
+      window.removeEventListener('order-chat-read', onChatRead)
+    }
   }, [user])
 
   const issueTabs = [
     { key: 'on', label: `New Issue (${issueOnCount})` },
     { key: 'close', label: `New Chat (${newChatCount})` },
   ]
+
+  /** Navigate to the correct Issue page based on role, then switch Issue tab (on/close) */
+  const handleIssueClick = (tabKey: string) => {
+    // กำหนดเส้นทางตาม role
+    const isProductionRole = user?.role === 'production'
+    const targetPath = isProductionRole ? '/plan' : '/orders'
+
+    // ถ้าอยู่ในหน้าที่ถูกต้องแล้ว → แค่ส่ง event สลับ tab
+    if (location.pathname === targetPath) {
+      // ส่ง event ให้หน้า Orders/Plan สลับไปแท็บ issue ก่อน
+      window.dispatchEvent(new CustomEvent('navigate-to-issue', { detail: { tab: tabKey } }))
+      // แล้วส่ง event ให้ IssueBoard สลับ on/close
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('issue-tab-change', { detail: { tab: tabKey } }))
+      }, 50)
+    } else {
+      // navigate ไปหน้าที่ถูกต้อง
+      navigate(targetPath)
+      // รอ render แล้วส่ง event
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('navigate-to-issue', { detail: { tab: tabKey } }))
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('issue-tab-change', { detail: { tab: tabKey } }))
+        }, 100)
+      }, 150)
+    }
+  }
 
   const warehouseTabs = [
     { path: '/warehouse', label: 'คลังสินค้า' },
@@ -194,7 +260,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               <button
                 key={tab.key}
                 type="button"
-                onClick={() => window.dispatchEvent(new CustomEvent('issue-tab-change', { detail: { tab: tab.key } }))}
+                onClick={() => handleIssueClick(tab.key)}
                 className={`px-3 py-1.5 rounded-full text-sm font-semibold transition-colors shadow-sm ${
                   tab.key === 'on'
                     ? 'bg-yellow-400 text-emerald-900 hover:bg-yellow-300'
@@ -261,6 +327,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           </div>
         </div>
       )}
+      {ConfirmModal}
     </>
   )
 }

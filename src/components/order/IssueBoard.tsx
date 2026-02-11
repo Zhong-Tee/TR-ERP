@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Issue, IssueMessage, IssueType, Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
-import OrderForm from './OrderForm'
+import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
 
 type IssueBoardProps = {
@@ -46,6 +46,32 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   const [createTypeId, setCreateTypeId] = useState('')
   const [ordersForWorkOrder, setOrdersForWorkOrder] = useState<Order[]>([])
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
+  const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [now, setNow] = useState(() => Date.now())
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Tick every 60s so live elapsed time updates for open issues
+  useEffect(() => {
+    timerRef.current = setInterval(() => setNow(Date.now()), 60_000)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [])
+
+  /** Format elapsed time as ชม:นาที */
+  function formatElapsed(issue: IssueWithOrder): string {
+    let mins: number
+    if (issue.status === 'Close' && issue.duration_minutes != null) {
+      mins = issue.duration_minutes
+    } else if (issue.status === 'Close' && issue.closed_at) {
+      mins = Math.floor((new Date(issue.closed_at).getTime() - new Date(issue.created_at).getTime()) / 60_000)
+    } else {
+      mins = Math.floor((now - new Date(issue.created_at).getTime()) / 60_000)
+    }
+    if (mins < 0) mins = 0
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+  }
 
   const workOrderOptions = useMemo(() => {
     const names = workOrders.map((w) => w.work_order_name).filter(Boolean)
@@ -59,7 +85,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   useEffect(() => {
     loadIssues()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [types.length])
+  }, [types.length, fromDate, toDate])
 
   useEffect(() => {
     const onTabChange = (event: Event) => {
@@ -119,10 +145,13 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   async function loadIssues() {
     setLoading(true)
     try {
-      const { data: issues, error } = await supabase
+      let query = supabase
         .from('or_issues')
         .select('*')
         .order('created_at', { ascending: false })
+      if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
+      if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+      const { data: issues, error } = await query
       if (error) throw error
 
       let list = (issues || []) as Issue[]
@@ -154,10 +183,14 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
         creatorName: creatorMap.get(i.created_by),
       }))
-      const isPrivileged = user?.role && ['superadmin', 'admin', 'admin_qc'].includes(user.role)
-      if (!isPrivileged && user) {
+      // admin-pump: เห็นเฉพาะ issue ของบิลตัวเอง
+      // production: เห็นเฉพาะ issue ที่ตัวเองสร้าง
+      // role อื่นๆ: เห็นทั้งหมด
+      if (user?.role === 'admin-pump') {
         const me = user.username || user.email || ''
         withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === me)
+      } else if (user?.role === 'production') {
+        withOrder = withOrder.filter((i) => i.created_by === user.id)
       }
 
       const onList = withOrder.filter((i) => i.status === 'On')
@@ -268,7 +301,15 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     setUpdatingIssue(true)
     try {
       const updates: Partial<Issue> = { status }
-      if (status === 'Close') updates.closed_at = new Date().toISOString()
+      if (status === 'Close') {
+        const closedAt = new Date()
+        updates.closed_at = closedAt.toISOString()
+        updates.duration_minutes = Math.max(0, Math.floor((closedAt.getTime() - new Date(issue.created_at).getTime()) / 60_000))
+      }
+      if (status === 'On') {
+        updates.closed_at = null
+        updates.duration_minutes = null
+      }
       const { error } = await supabase.from('or_issues').update(updates).eq('id', issue.id)
       if (error) throw error
       setDetailIssue(null)
@@ -376,15 +417,31 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
             </button>
           ))}
         </div>
-        {scope === 'plan' && (
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            เปิด Ticket
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-sm text-gray-600 font-medium">จาก</label>
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+          />
+          <label className="text-sm text-gray-600 font-medium">ถึง</label>
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+          />
+          {scope === 'plan' && (
+            <button
+              type="button"
+              onClick={() => setCreateOpen(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              เปิด Ticket
+            </button>
+          )}
+        </div>
       </div>
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="divide-y">
@@ -401,7 +458,22 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
                       {issue.title}
                     </div>
                   </div>
-                  <div className="text-sm text-gray-500 shrink-0">{formatDateTime(issue.created_at)}</div>
+                  <div className="text-right shrink-0 space-y-1">
+                    <div className="text-sm text-gray-500">{formatDateTime(issue.created_at)}</div>
+                    <div className="text-center">
+                      <div className="text-[10px] text-gray-400 mb-0.5">ระยะเวลาปิด Ticket</div>
+                      <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm font-mono font-bold ${
+                        issue.status === 'On'
+                          ? 'bg-orange-100 text-orange-700'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        {formatElapsed(issue)}
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   {issue.type && (
@@ -450,8 +522,8 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
                     Chat
                   </button>
                   {(unreadByIssue[issue.id] || 0) > 0 && (
-                    <span className="px-3 py-1 rounded-full bg-red-500 text-white text-xs font-bold animate-pulse">
-                      New Chat {unreadByIssue[issue.id]}
+                    <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                      {unreadByIssue[issue.id]}
                     </span>
                   )}
                 </div>
@@ -480,6 +552,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
               {detailIssue.work_order_name && <div>ใบงาน: {detailIssue.work_order_name}</div>}
               <div>ผู้เปิดบิล: <span className="font-medium">{detailIssue.order?.admin_user || '-'}</span></div>
               <div>ผู้สร้าง Ticket: <span className="font-medium">{detailIssue.creatorName || '-'}</span></div>
+              <div>ระยะเวลา: <span className="font-mono font-bold text-orange-600">{formatElapsed(detailIssue)}</span></div>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">สถานะ Ticket</label>
@@ -631,31 +704,17 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
       <Modal
         open={!!detailOrder || detailLoading}
         onClose={() => setDetailOrder(null)}
-        contentClassName="max-w-6xl w-full"
+        contentClassName="max-w-5xl w-full"
       >
-        <div className="flex flex-col max-h-[85vh]">
-          <div className="p-4 border-b bg-gray-50 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-gray-900">รายละเอียดบิล</h3>
-            <button
-              type="button"
-              onClick={() => setDetailOrder(null)}
-              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
-            >
-              ปิดหน้าต่าง
-            </button>
+        {detailLoading ? (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
           </div>
-          <div className="p-4 overflow-y-auto">
-            {detailLoading ? (
-              <div className="flex justify-center items-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
-              </div>
-            ) : detailOrder ? (
-              <OrderForm order={detailOrder} onSave={() => {}} onCancel={() => setDetailOrder(null)} readOnly viewOnly />
-            ) : (
-              <div className="text-center text-gray-500 py-8">ไม่พบรายละเอียดบิล</div>
-            )}
-          </div>
-        </div>
+        ) : detailOrder ? (
+          <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />
+        ) : (
+          <div className="text-center text-gray-500 py-8">ไม่พบรายละเอียดบิล</div>
+        )}
       </Modal>
 
       <Modal

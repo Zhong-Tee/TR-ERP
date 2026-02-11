@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
+import OrderDetailView from './OrderDetailView'
 
 interface WorkOrderSelectionListProps {
   searchTerm?: string
@@ -22,6 +23,7 @@ export default function WorkOrderSelectionList({
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectQty, setSelectQty] = useState<string>('')
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [creating, setCreating] = useState(false)
   /** คลิก pill ช่องทาง = แสดงเฉพาะบิลช่องทางนั้น (null = ทั้งหมด) */
   const [pillChannel, setPillChannel] = useState<string | null>(null)
@@ -42,12 +44,14 @@ export default function WorkOrderSelectionList({
         .order('created_at', { ascending: false })
 
       if (channelFilter) {
-        query = query
-          .eq('channel_code', channelFilter)
-          .eq('status', channelFilter === 'PUMP' ? 'คอนเฟิร์มแล้ว' : 'ใบสั่งงาน')
+        if (channelFilter === 'PUMP') {
+          query = query.eq('channel_code', 'PUMP').in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
+        } else {
+          query = query.eq('channel_code', channelFilter).eq('status', 'ใบสั่งงาน')
+        }
       } else {
         query = query.or(
-          'and(channel_code.eq.PUMP,status.eq.คอนเฟิร์มแล้ว),and(channel_code.neq.PUMP,status.eq.ใบสั่งงาน)'
+          'and(channel_code.eq.PUMP,status.in.(คอนเฟิร์มแล้ว,เสร็จสิ้น)),and(channel_code.neq.PUMP,status.eq.ใบสั่งงาน)'
         )
       }
 
@@ -389,7 +393,9 @@ export default function WorkOrderSelectionList({
                       />
                     </td>
                     <td className="p-2 align-middle">
-                      <span className="text-blue-600 font-medium">{order.bill_no}</span>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
+                        {order.bill_no}
+                      </button>
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[200px] truncate" title={order.recipient_name ?? ''}>
                       {order.recipient_name ?? '-'}
@@ -431,6 +437,11 @@ export default function WorkOrderSelectionList({
           </div>
         </Modal>
       )}
+
+      {/* Detail Modal */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+      </Modal>
     </div>
   )
 }

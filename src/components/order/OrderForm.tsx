@@ -525,7 +525,7 @@ const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
 /** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
 const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
-/** ช่องทางที่ให้กรอกราคาเอง (ช่องทางชำระเงิน) */
+/** ช่องทางที่ให้กรอกราคาเอง (ล็อคราคา/หน่วย ใช้ราคาที่ข้อมูลชำระเงินแทน) */
 const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
 const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
@@ -949,8 +949,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return () => { cancelled = true }
   }, [order?.id, order?.status])
 
-  /** แปลงค่าเป็น boolean จริง (รองรับทั้ง boolean และ string จาก API); undefined/null = true (แสดงฟิลด์) */
-  function toBool(v: unknown, defaultVal = true): boolean {
+  /** แปลงค่าเป็น boolean จริง (รองรับทั้ง boolean และ string จาก API); undefined/null = false (ซ่อนฟิลด์) ยกเว้นระบุ defaultVal */
+  function toBool(v: unknown, defaultVal = false): boolean {
     if (v === undefined || v === null) return defaultVal
     return v === true || v === 'true'
   }
@@ -974,18 +974,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               const key = String(cat).trim()
               settingsMap[key] = {
                 product_name: toBool(row.product_name, true),
-                ink_color: toBool(row.ink_color, true),
-                layer: toBool(row.layer, true),
-                cartoon_pattern: toBool(row.cartoon_pattern, true),
-                line_pattern: toBool(row.line_pattern, true),
-                font: toBool(row.font, true),
-                line_1: toBool(row.line_1, true),
-                line_2: toBool(row.line_2, true),
-                line_3: toBool(row.line_3, true),
+                ink_color: toBool(row.ink_color),
+                layer: toBool(row.layer),
+                cartoon_pattern: toBool(row.cartoon_pattern),
+                line_pattern: toBool(row.line_pattern),
+                font: toBool(row.font),
+                line_1: toBool(row.line_1),
+                line_2: toBool(row.line_2),
+                line_3: toBool(row.line_3),
                 quantity: toBool(row.quantity, true),
                 unit_price: toBool(row.unit_price, true),
-                notes: toBool(row.notes, true),
-                attachment: toBool(row.attachment, true),
+                notes: toBool(row.notes),
+                attachment: toBool(row.attachment),
               }
             }
           })
@@ -1051,18 +1051,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             const key = String(cat).trim()
             settingsMap[key] = {
               product_name: toBool(row.product_name, true),
-              ink_color: toBool(row.ink_color, true),
-              layer: toBool(row.layer, true),
-              cartoon_pattern: toBool(row.cartoon_pattern, true),
-              line_pattern: toBool(row.line_pattern, true),
-              font: toBool(row.font, true),
-              line_1: toBool(row.line_1, true),
-              line_2: toBool(row.line_2, true),
-              line_3: toBool(row.line_3, true),
+              ink_color: toBool(row.ink_color),
+              layer: toBool(row.layer),
+              cartoon_pattern: toBool(row.cartoon_pattern),
+              line_pattern: toBool(row.line_pattern),
+              font: toBool(row.font),
+              line_1: toBool(row.line_1),
+              line_2: toBool(row.line_2),
+              line_3: toBool(row.line_3),
               quantity: toBool(row.quantity, true),
               unit_price: toBool(row.unit_price, true),
-              notes: toBool(row.notes, true),
-              attachment: toBool(row.attachment, true),
+              notes: toBool(row.notes),
+              attachment: toBool(row.attachment),
             }
           }
         })
@@ -1115,26 +1115,31 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   // คำนวณยอดสุทธิ
   function calculateTotal() {
     const itemsTotal = calculateItemsTotal()
-    const basePrice = isManualPriceChannel ? (formData.price || 0) : itemsTotal
-    let subtotal: number
     
-    // หากมีการกดปุ่มขอใบกำกับภาษี ยอดสุทธิจะใช้ยอดเงินที่ต้องชำระ (รวมภาษีแล้ว)
-    if (showTaxInvoice) {
-      // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
-      subtotal = basePrice * 1.07
-    } else {
-      // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
-      subtotal = basePrice + formData.shipping_cost - formData.discount
-    }
-    
-    // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
-    subtotal = Math.round(subtotal * 100) / 100
-    
-    setFormData(prev => ({
-      ...prev,
-      price: isManualPriceChannel ? (prev.price || 0) : itemsTotal,
-      total_amount: subtotal
-    }))
+    setFormData(prev => {
+      // ใช้ prev.channel_code แทน closure เพื่อป้องกัน stale value
+      const isManual = CHANNELS_MANUAL_PRICE.includes(prev.channel_code || '')
+      const basePrice = isManual ? (prev.price || 0) : itemsTotal
+      let subtotal: number
+      
+      // หากมีการกดปุ่มขอใบกำกับภาษี ยอดสุทธิจะใช้ยอดเงินที่ต้องชำระ (รวมภาษีแล้ว)
+      if (showTaxInvoice) {
+        // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
+        subtotal = basePrice * 1.07
+      } else {
+        // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
+        subtotal = basePrice + (prev.shipping_cost || 0) - (prev.discount || 0)
+      }
+      
+      // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
+      subtotal = Math.round(subtotal * 100) / 100
+      
+      return {
+        ...prev,
+        price: isManual ? (prev.price || 0) : itemsTotal,
+        total_amount: subtotal
+      }
+    })
   }
 
   useEffect(() => {
@@ -1301,8 +1306,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
 
     // ตรวจสอบว่ารายการสินค้าทุกรายการมีราคา/หน่วยหรือไม่
-    if (!isManualPriceChannel) {
-      const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
+    if (isManualPriceChannel) {
+      if (!formData.price || formData.price <= 0) {
+        setMessageModal({
+          open: true,
+          title: 'แจ้งเตือน',
+          message: 'กรุณากรอกราคาที่ข้อมูลการชำระเงิน',
+        })
+        return
+      }
+    } else {
+      const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item))
       if (itemsWithoutPrice.length > 0) {
         const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
         setMessageModal({
@@ -3140,6 +3154,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return CONDO_PRODUCTS.includes(name.trim())
   }
 
+  /** ตรวจว่าแถวนี้เป็นแถวย่อยของสินค้าคอนโด (ชั้น2-5) ที่ต้องล็อคราคา/หน่วย */
+  function isCondoSubRow(item: Partial<OrderItem>) {
+    return isCondoProduct(item.product_name) && item.product_type !== 'ชั้น1'
+  }
+
   function normalizeProductName(value?: string | null) {
     return (value || '').toLowerCase().trim().replace(/\s+/g, ' ')
   }
@@ -3282,9 +3301,26 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             <p className="text-red-900 whitespace-pre-wrap">{reviewRemarks}</p>
           </div>
         )}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h3 className="text-xl font-bold">ข้อมูลลูกค้า</h3>
           <div className="flex items-center gap-3 flex-wrap">
+            {/* ช่องทาง + สร้างบิล — อยู่บรรทัดเดียวกัน */}
+            <select
+              value={formData.channel_code}
+              onChange={(e) => setFormData({ ...formData, channel_code: e.target.value })}
+              disabled={formDisabled || !!order?.bill_no}
+              required
+              className={`w-48 px-3 py-2 border rounded-lg text-sm ${
+                (formDisabled || !!order?.bill_no) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+              }`}
+            >
+              <option value="">-- เลือกช่องทาง --</option>
+              {channels.map((ch) => (
+                <option key={ch.channel_code} value={ch.channel_code}>
+                  {ch.channel_name}
+                </option>
+              ))}
+            </select>
             {!formDisabled && (
               <>
                 {!order?.bill_no && (
@@ -3353,54 +3389,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             )}
           </div>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">ช่องทาง</label>
-            <select
-              value={formData.channel_code}
-              onChange={(e) => setFormData({ ...formData, channel_code: e.target.value })}
-              disabled={formDisabled || !!order?.bill_no}
-              required
-              className={`w-full px-3 py-2 border rounded-lg ${
-                (formDisabled || !!order?.bill_no) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
-              }`}
-            >
-              <option value="">-- เลือกช่องทาง --</option>
-              {channels.map((ch) => (
-                <option key={ch.channel_code} value={ch.channel_code}>
-                  {ch.channel_name}
-                </option>
-              ))}
-            </select>
+        {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | ชื่อช่องทาง/เลขคำสั่งซื้อ + เลขพัสดุ + โปรโมชั่น (ขวา) — ซ่อนเมื่อยังไม่สร้างบิล */}
+        {!order?.bill_no && !formDisabled && (
+          <div className="mt-4 p-4 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center text-gray-500 text-sm">
+            กรุณาเลือกช่องทาง แล้วกด <span className="font-semibold text-blue-600">สร้างบิล</span> เพื่อกรอกข้อมูลที่อยู่ลูกค้า
           </div>
-          {CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) && (
-            <div>
-              <label className="block text-sm font-medium mb-1">ชื่อช่องทาง</label>
-              <input
-                type="text"
-                value={formData.customer_name}
-                onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
-                required
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-              />
-            </div>
-          )}
-          {CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && (
-            <div>
-              <label className="block text-sm font-medium mb-1">เลขคำสั่งซื้อ</label>
-              <input
-                type="text"
-                value={formData.channel_order_no}
-                onChange={(e) => setFormData({ ...formData, channel_order_no: e.target.value })}
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-              />
-            </div>
-          )}
-        </div>
-        {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | เลขพัสดุ + โปรโมชั่น (ขวา) — แสดงผลสม่ำเสมอ */}
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        )}
+        <div className={`mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 ${!order?.bill_no && !formDisabled ? 'hidden' : ''}`}>
           {/* ที่อยู่ลูกค้า — ฝั่งซ้าย */}
           <div>
             <div className="flex items-center gap-2 mb-1">
@@ -3560,6 +3555,32 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             </div>
           </div>
           <div className="flex flex-col gap-4">
+            {/* ชื่อช่องทาง / เลขคำสั่งซื้อ — แสดงเฉพาะหลังสร้างบิล */}
+            {CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) && (
+              <div>
+                <label className="block text-sm font-medium mb-1">ชื่อช่องทาง</label>
+                <input
+                  type="text"
+                  value={formData.customer_name}
+                  onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
+                  required
+                  disabled={formDisabled}
+                  className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_name ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                />
+              </div>
+            )}
+            {CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code) && (
+              <div>
+                <label className="block text-sm font-medium mb-1">เลขคำสั่งซื้อ</label>
+                <input
+                  type="text"
+                  value={formData.channel_order_no}
+                  onChange={(e) => setFormData({ ...formData, channel_order_no: e.target.value })}
+                  disabled={formDisabled}
+                  className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                />
+              </div>
+            )}
             {formData.channel_code === 'SHOPP' && (
               <div>
                 <label className="block text-sm font-medium mb-1">วันที่ เวลา นัดรับ <span className="text-red-500">*</span></label>
@@ -3619,7 +3640,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
                 placeholder="กรอกเลขพัสดุ"
                 disabled={!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
             </div>
             <div>
@@ -3896,7 +3917,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           }
                         }}
                         disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
-                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ค้นหาหรือเลือกลาย..."
                         autoComplete="off"
                       />
@@ -3992,8 +4013,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <td className="border p-1.5">
                     <input
                       type="number"
-                      value={item.quantity || 1}
-                      onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                      value={item.quantity || ''}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        updateItem(index, 'quantity', v === '' ? 0 : (parseInt(v) || 0))
+                      }}
+                      onBlur={() => {
+                        if (!item.quantity) updateItem(index, 'quantity', 1)
+                      }}
                       min="1"
                       disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
@@ -4016,8 +4043,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       }}
                       step="0.01"
                       placeholder="0.00"
-                      disabled={formDisabled || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? reviewErrorFields?.unit_price) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? reviewErrorFields?.unit_price) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -4199,6 +4226,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               <p className="text-xs text-gray-500 mt-1">
                 {isManualPriceChannel ? 'กรอกยอดเองสำหรับช่องทางที่รองรับ' : 'คำนวณจากรายการสินค้า'}
               </p>
+              {isManualPriceChannel && (!formData.price || formData.price <= 0) && !formDisabled && (
+                <p className="text-xs text-amber-600 font-medium mt-1">กรุณากรอกราคาก่อนบันทึก</p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
@@ -4672,8 +4702,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               }
 
               // ตรวจสอบว่ารายการสินค้ามีราคา/หน่วยหรือไม่
-              if (!isManualPriceChannel) {
-                const itemsWithoutPrice = itemsWithProduct.filter(item => !item.unit_price || item.unit_price <= 0)
+              if (isManualPriceChannel) {
+                if (!formData.price || formData.price <= 0) {
+                  setMessageModal({
+                    open: true,
+                    title: 'แจ้งเตือน',
+                    message: 'กรุณากรอกราคาที่ข้อมูลการชำระเงิน',
+                  })
+                  return
+                }
+              } else {
+                const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item))
                 if (itemsWithoutPrice.length > 0) {
                   const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
                   setMessageModal({

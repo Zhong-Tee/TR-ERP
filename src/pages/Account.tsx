@@ -1,13 +1,16 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getEasySlipQuota } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
+import BillEditSection from '../components/account/BillEditSection'
+import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
+import CashBillModal from '../components/account/CashBillModal'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit'
 type AccountTab = 'refunds' | 'tax-invoice' | 'cash-bill' | 'approvals'
 type ApprovalFilter = 'refund' | 'tax-invoice' | 'cash-bill'
 
@@ -140,6 +143,8 @@ export default function Account() {
   }>({ open: false, order: null, type: null, submitting: false })
   /** Modal แจ้งผลหลังยืนยันใบกำกับภาษี/บิลเงินสด (แทน alert) */
   const [billingResultModal, setBillingResultModal] = useState<{ open: boolean; title: string; message: string }>({ open: false, title: '', message: '' })
+  /** Modal เปิดบิลเงินสด */
+  const [cashBillModal, setCashBillModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
   const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
@@ -147,6 +152,9 @@ export default function Account() {
   const [slipFilterOrderTaker, setSlipFilterOrderTaker] = useState<string>('')
   const [slipFilterChannel, setSlipFilterChannel] = useState<string>('')
   const [slipFilterDate, setSlipFilterDate] = useState<string>('')
+
+  /** ป้องกันกระพริบ: แสดง spinner เฉพาะครั้งแรกเท่านั้น */
+  const initialLoadDone = useRef(false)
 
   function copyToClipboard(text: string) {
     if (!text) return
@@ -315,10 +323,14 @@ export default function Account() {
   }
 
   useEffect(() => {
-    loadRefunds()
-    loadEasySlipQuota()
-    loadBillingRequests()
-    loadHistory()
+    Promise.all([
+      loadRefunds(),
+      loadEasySlipQuota(),
+      loadBillingRequests(),
+      loadHistory(),
+    ]).finally(() => {
+      initialLoadDone.current = true
+    })
   }, [])
 
   // เรียลไทม์: Realtime เมื่อ or_orders / ac_refunds เปลี่ยน
@@ -363,7 +375,8 @@ export default function Account() {
   }, [])
 
   async function loadRefunds() {
-    setLoading(true)
+    // แสดง spinner เฉพาะครั้งแรก — ป้องกันหน้ากระพริบเมื่อ refresh เบื้องหลัง
+    if (!initialLoadDone.current) setLoading(true)
     try {
       const { data, error } = await supabase
         .from('ac_refunds')
@@ -380,7 +393,6 @@ export default function Account() {
       setRefunds(filteredRefunds)
     } catch (error: any) {
       console.error('Error loading refunds:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
     } finally {
       setLoading(false)
     }
@@ -409,18 +421,23 @@ export default function Account() {
   }
 
   async function loadBillingRequests() {
-    setBillingLoading(true)
+    // แสดง spinner เฉพาะครั้งแรก — ป้องกันหน้ากระพริบเมื่อ refresh เบื้องหลัง
+    if (!initialLoadDone.current) setBillingLoading(true)
     try {
+      // กรองเฉพาะรายการที่ผ่านการตรวจสอบแล้ว (ไม่แสดง ตรวจสอบไม่ผ่าน, รอลงข้อมูล, ลงข้อมูลผิด)
+      const excludeStatuses = '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'
       const [taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_tax_invoice: true })
+          .not('status', 'in', excludeStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_cash_bill: true })
+          .not('status', 'in', excludeStatuses)
           .order('created_at', { ascending: false }),
       ])
 
@@ -445,7 +462,6 @@ export default function Account() {
       setCashBillOrders(filteredCash)
     } catch (error: any) {
       console.error('Error loading billing requests:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดรายการเอกสาร: ' + (error?.message || String(error)))
     } finally {
       setBillingLoading(false)
     }
@@ -492,18 +508,22 @@ export default function Account() {
   }
 
   async function loadHistory() {
-    setHistoryLoading(true)
+    // แสดง spinner เฉพาะครั้งแรก — ป้องกันหน้ากระพริบเมื่อ refresh เบื้องหลัง
+    if (!initialLoadDone.current) setHistoryLoading(true)
     try {
+      const historyExcludeStatuses = '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'
       const [taxRes, cashRes, refundRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_tax_invoice: true })
+          .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_cash_bill: true })
+          .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('ac_refunds')
@@ -535,7 +555,6 @@ export default function Account() {
       setHistoryRefunds(((refundRes as any).data || []) as Refund[])
     } catch (error: any) {
       console.error('Error loading history:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดประวัติเอกสาร: ' + (error?.message || String(error)))
     } finally {
       setHistoryLoading(false)
     }
@@ -598,7 +617,40 @@ export default function Account() {
   }
 
   async function confirmCashBill(order: BillingRequestOrder) {
-    openConfirmCashBill(order)
+    setCashBillModal({ open: true, order, submitting: false, viewOnly: false })
+  }
+
+  /** เปิดบิลเงินสดแบบดูอย่างเดียว (จากเมนูรายการอนุมัติ) */
+  function viewCashBill(order: BillingRequestOrder) {
+    setCashBillModal({ open: true, order, submitting: false, viewOnly: true })
+  }
+
+  async function submitCashBillConfirm(order: BillingRequestOrder) {
+    if (!user) return
+    setCashBillModal((prev) => ({ ...prev, submitting: true }))
+    try {
+      const bd = order.billing_details || {}
+      const newBillingDetails = {
+        ...bd,
+        account_confirmed_cash: true,
+        account_confirmed_cash_at: new Date().toISOString(),
+        account_confirmed_cash_by: user.id,
+      }
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ billing_details: newBillingDetails })
+        .eq('id', order.id)
+      if (error) throw error
+      setCashBillModal({ open: false, order: null, submitting: false, viewOnly: false })
+      setBillingResultModal({ open: true, title: 'สำเร็จ', message: 'ยืนยันบิลเงินสดเรียบร้อย' })
+      await loadBillingRequests()
+      await loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error: any) {
+      console.error('Error confirming cash bill:', error)
+      setCashBillModal({ open: false, order: null, submitting: false, viewOnly: false })
+      setBillingResultModal({ open: true, title: 'เกิดข้อผิดพลาด', message: 'เกิดข้อผิดพลาดในการยืนยันบิลเงินสด: ' + error.message })
+    }
   }
 
   if (loading) {
@@ -631,6 +683,20 @@ export default function Account() {
             className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'slip-verification' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
           >
             รายการการตรวจสลิป
+          </button>
+          <button
+            type="button"
+            onClick={() => setAccountSection('manual-slip-check')}
+            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'manual-slip-check' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+          >
+            ตรวจสลิปมือ
+          </button>
+          <button
+            type="button"
+            onClick={() => setAccountSection('bill-edit')}
+            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'bill-edit' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+          >
+            แก้ไขบิล
           </button>
         </nav>
       </div>
@@ -799,6 +865,10 @@ export default function Account() {
             </div>
           )}
         </section>
+      ) : accountSection === 'manual-slip-check' ? (
+        <ManualSlipCheckSection />
+      ) : accountSection === 'bill-edit' ? (
+        <BillEditSection />
       ) : (
         <>
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1076,6 +1146,7 @@ export default function Account() {
                         <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดสุทธิ</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ยืนยัน</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">บิลเงินสด</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
                       </tr>
                     </thead>
@@ -1099,6 +1170,18 @@ export default function Account() {
                             <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</td>
                             <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 text-gray-500 text-sm">{bd.account_confirmed_cash_at ? formatDateTime(bd.account_confirmed_cash_at) : '–'}</td>
+                            <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); viewCashBill(o) }}
+                                className="px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors inline-flex items-center gap-1.5"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                บิลเงินสด
+                              </button>
+                            </td>
                             <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                               <button
                                 type="button"
@@ -1589,7 +1672,17 @@ export default function Account() {
         </div>
       </Modal>
 
-      {/* Modal ยืนยัน ขอใบกำกับภาษี / ขอบิลเงินสด */}
+      {/* Modal เปิดบิลเงินสด */}
+      <CashBillModal
+        open={cashBillModal.open}
+        order={cashBillModal.order}
+        onClose={() => { if (!cashBillModal.submitting) setCashBillModal({ open: false, order: null, submitting: false, viewOnly: false }) }}
+        onConfirm={(o) => submitCashBillConfirm(o as BillingRequestOrder)}
+        submitting={cashBillModal.submitting}
+        hideConfirm={cashBillModal.viewOnly}
+      />
+
+      {/* Modal ยืนยัน ขอใบกำกับภาษี (ใช้สำหรับ tax-invoice เท่านั้น) */}
       {billingConfirmModal.open && billingConfirmModal.order && billingConfirmModal.type && (
         <Modal
           open

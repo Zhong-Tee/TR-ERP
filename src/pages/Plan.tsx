@@ -428,7 +428,7 @@ export default function Plan() {
   const [jobs, setJobs] = useState<PlanJob[]>([])
   const [loading, setLoading] = useState(true)
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
-  const [unlocked, setUnlocked] = useState(false)
+  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem('plan_unlocked') === 'true')
   const [passInput, setPassInput] = useState('')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
   const [issueOpenCount, setIssueOpenCount] = useState(0)
@@ -451,8 +451,13 @@ export default function Plan() {
   const [dDate, setDDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [depDate, setDepDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [depFilter, setDepFilter] = useState('ALL')
-  const [jDateFilter, setJDateFilter] = useState('')
   const [jSearch, setJSearch] = useState('')
+  const [jDateFrom, setJDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [jDateTo, setJDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [jChannelFilter, setJChannelFilter] = useState('')
+  const [jStatusFilter, setJStatusFilter] = useState('')
+  const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
   const [hideCompleted, setHideCompleted] = useState(true)
   const [selectedDeptForSettings, setSelectedDeptForSettings] = useState<string>('')
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
@@ -505,12 +510,37 @@ export default function Plan() {
       try {
         const { data, error } = await supabase
           .from('or_work_orders')
-          .select('work_order_name')
+          .select('work_order_name, status')
           .order('created_at', { ascending: false })
         if (error) throw error
-        setIssueWorkOrders((data || []) as Array<{ work_order_name: string }>)
+        const list = (data || []) as Array<{ work_order_name: string; status: string }>
+        setIssueWorkOrders(list)
+        // สร้าง map ชื่อใบงาน → สถานะ
+        const statusMap: Record<string, string> = {}
+        list.forEach((wo) => {
+          if (wo.work_order_name && !(wo.work_order_name in statusMap)) {
+            statusMap[wo.work_order_name] = wo.status || ''
+          }
+        })
+        setWoStatusByName(statusMap)
       } catch (error) {
         console.error('Error loading work orders for issues:', error)
+      }
+    })()
+  }, [])
+
+  // โหลดช่องทางสำหรับตัวกรอง ใบงานทั้งหมด
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('channels')
+          .select('channel_code, channel_name')
+          .order('channel_code', { ascending: true })
+        if (error) throw error
+        setJChannels(data || [])
+      } catch (error) {
+        console.error('Error loading channels:', error)
       }
     })()
   }, [])
@@ -533,6 +563,15 @@ export default function Plan() {
     return () => {
       supabase.removeChannel(channel)
     }
+  }, [])
+
+  // ฟัง event จาก TopBar เพื่อเปลี่ยนไป view Issue
+  useEffect(() => {
+    const onNavigateToIssue = () => {
+      setCurrentView('issue')
+    }
+    window.addEventListener('navigate-to-issue', onNavigateToIssue)
+    return () => window.removeEventListener('navigate-to-issue', onNavigateToIssue)
   }, [])
 
   const saveSettings = useCallback(
@@ -847,12 +886,14 @@ export default function Plan() {
     if (!unlocked) {
       if (passInput === LOCK_PASS) {
         setUnlocked(true)
+        sessionStorage.setItem('plan_unlocked', 'true')
         setPassInput('')
       } else {
         alert('รหัสผ่านไม่ถูกต้อง')
       }
     } else {
       setUnlocked(false)
+      sessionStorage.removeItem('plan_unlocked')
     }
   }
 
@@ -874,8 +915,15 @@ export default function Plan() {
   })()
 
   const filteredJobs = jobs
-    .filter((j) => !jDateFilter || sameDay(j.date, jDateFilter))
     .filter((j) => !jSearch.trim() || j.name.toLowerCase().includes(jSearch.toLowerCase()))
+    .filter((j) => !jDateFrom || j.date >= jDateFrom)
+    .filter((j) => !jDateTo || j.date <= jDateTo)
+    .filter((j) => !jChannelFilter || j.name.toUpperCase().startsWith(jChannelFilter.toUpperCase() + '-'))
+    .filter((j) => {
+      if (!jStatusFilter) return true
+      const woStatus = woStatusByName[j.name] || ''
+      return woStatus === jStatusFilter
+    })
     .sort((a, b) => b.date.localeCompare(a.date) || a.order_index - b.order_index)
 
   if (loading) {
@@ -1054,54 +1102,96 @@ export default function Plan() {
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <h2 className="border-b border-gray-200 px-4 py-3 text-lg font-semibold">ใบงานทั้งหมด (ค้นหา/แก้ไข/ลบ)</h2>
           <div className="p-4 space-y-4">
-            <div className="flex flex-wrap gap-4 items-end">
-              <div>
-                <label className="block text-sm text-gray-500 mb-1">เลือกวัน</label>
-                <select
-                  value={jDateFilter}
-                  onChange={(e) => setJDateFilter(e.target.value)}
-                  disabled={!unlocked}
-                  className="rounded-lg border border-gray-300 px-3 py-2"
+            <div className="bg-gray-50 p-4 rounded-2xl shadow-sm border border-gray-200">
+              <div className="flex flex-wrap gap-3 items-end">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทาง</label>
+                  <select
+                    value={jChannelFilter}
+                    onChange={(e) => setJChannelFilter(e.target.value)}
+                    className="px-3 py-2.5 border border-gray-300 rounded-xl bg-white text-base"
+                  >
+                    <option value="">ทั้งหมด</option>
+                    {jChannels.map((ch) => (
+                      <option key={ch.channel_code} value={ch.channel_code}>
+                        {ch.channel_name || ch.channel_code}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">สถานะ</label>
+                  <select
+                    value={jStatusFilter}
+                    onChange={(e) => setJStatusFilter(e.target.value)}
+                    className="px-3 py-2.5 border border-gray-300 rounded-xl bg-white text-base"
+                  >
+                    <option value="">ทั้งหมด</option>
+                    <option value="กำลังผลิต">กำลังผลิต</option>
+                    <option value="จัดส่งแล้ว">จัดส่งแล้ว</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">จากวันที่</label>
+                  <input
+                    type="date"
+                    value={jDateFrom}
+                    onChange={(e) => setJDateFrom(e.target.value)}
+                    className="px-3 py-2.5 border border-gray-300 rounded-xl bg-white text-base"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">ถึงวันที่</label>
+                  <input
+                    type="date"
+                    value={jDateTo}
+                    onChange={(e) => setJDateTo(e.target.value)}
+                    className="px-3 py-2.5 border border-gray-300 rounded-xl bg-white text-base"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">ค้นหาชื่อ</label>
+                  <input
+                    type="text"
+                    value={jSearch}
+                    onChange={(e) => setJSearch(e.target.value)}
+                    placeholder="พิมพ์บางส่วนของชื่อ"
+                    className="w-48 px-3 py-2.5 border border-gray-300 rounded-xl bg-white text-base"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setJSearch('')
+                    setJDateFrom(new Date().toISOString().split('T')[0])
+                    setJDateTo(new Date().toISOString().split('T')[0])
+                    setJChannelFilter('')
+                    setJStatusFilter('')
+                  }}
+                  className="rounded-xl border border-gray-300 bg-gray-100 px-4 py-2.5 font-medium hover:bg-gray-200 text-base"
                 >
-                  <option value="">-- ทุกวัน --</option>
-                  {[...new Set(jobs.map((j) => j.date))].sort((a, b) => b.localeCompare(a)).map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
+                  ล้างตัวกรอง
+                </button>
               </div>
-              <div>
-                <label className="block text-sm text-gray-500 mb-1">ค้นหาชื่อ</label>
-                <input
-                  type="text"
-                  value={jSearch}
-                  onChange={(e) => setJSearch(e.target.value)}
-                  placeholder="พิมพ์บางส่วนของชื่อ"
-                  disabled={!unlocked}
-                  className="w-64 rounded-lg border border-gray-300 px-3 py-2"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setJDateFilter('')
-                  setJSearch('')
-                }}
-                className="rounded-lg border border-gray-300 bg-gray-100 px-4 py-2 font-medium hover:bg-gray-200"
-              >
-                ล้างตัวกรอง
-              </button>
             </div>
-            <div className="overflow-x-auto max-h-[520px] rounded-xl border border-gray-200">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              <table className="min-w-full text-base table-fixed">
+                <colgroup>
+                  <col className="w-[15%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[40%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[16%]" />
+                </colgroup>
                 <thead className="bg-blue-600 text-white sticky top-0">
                   <tr>
-                    <th className="p-3 text-left font-semibold min-w-[100px]">วันที่</th>
-                    <th className="p-3 text-left font-semibold min-w-[80px]">เวลาตัด</th>
-                    <th className="p-3 text-left font-semibold min-w-[180px]">จำนวนต่อแผนก</th>
-                    <th className="p-3 text-left font-semibold min-w-[140px]">ชื่อใบงาน</th>
-                    <th className="p-3 text-left font-semibold min-w-[120px]">จัดการ</th>
+                    <th className="p-4 text-left font-semibold">ชื่อใบงาน</th>
+                    <th className="p-4 text-left font-semibold">วันที่</th>
+                    <th className="p-4 text-left font-semibold">เวลาตัด</th>
+                    <th className="p-4 text-left font-semibold">จำนวนต่อแผนก</th>
+                    <th className="p-4 text-left font-semibold">สถานะ</th>
+                    <th className="p-4 text-left font-semibold">จัดการ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1116,11 +1206,13 @@ export default function Plan() {
                       EMB: 'bg-yellow-100 text-yellow-700 border-yellow-300',
                       FOLD: 'bg-teal-100 text-teal-700 border-teal-300',
                     }
+                    const woStatus = woStatusByName[j.name] || ''
                     return (
                     <tr key={j.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                      <td className="p-3">{j.date}</td>
-                      <td className="p-3">{fmtCutTime(j.cut)}</td>
-                      <td className="p-3">
+                      <td className="p-4 font-semibold text-gray-900 whitespace-nowrap">{j.name}</td>
+                      <td className="p-4 text-gray-700 whitespace-nowrap">{j.date}</td>
+                      <td className="p-4 text-gray-700 whitespace-nowrap">{fmtCutTime(j.cut)}</td>
+                      <td className="p-4">
                         <div className="flex flex-wrap gap-1.5">
                           {settings.departments.map((d) => {
                             const q = j.qty?.[d] || 0
@@ -1133,8 +1225,24 @@ export default function Plan() {
                           })}
                         </div>
                       </td>
-                      <td className="p-3 font-semibold">{j.name}</td>
-                      <td className="p-3">
+                      <td className="p-4">
+                        {woStatus ? (
+                          <span
+                            className={`inline-flex px-3 py-1.5 rounded-full text-xs font-bold ${
+                              woStatus === 'กำลังผลิต'
+                                ? 'bg-amber-500 text-white'
+                                : woStatus === 'จัดส่งแล้ว'
+                                ? 'bg-green-500 text-white'
+                                : 'bg-gray-200 text-gray-700'
+                            }`}
+                          >
+                            {woStatus}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="p-4">
                         <button
                           type="button"
                           onClick={() => {

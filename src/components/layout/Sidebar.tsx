@@ -7,7 +7,6 @@ import {
   FiPackage,
   FiCheckCircle,
   FiDollarSign,
-  FiFileText,
   FiClipboard,
   FiGrid,
   FiSearch,
@@ -35,112 +34,105 @@ const menuItems: MenuItem[] = [
     label: 'Dashboard',
     icon: <FiHome className="w-6 h-6" />,
     path: '/dashboard',
-    roles: ['superadmin', 'admin', 'order_staff', 'admin_qc', 'account_staff'],
+    roles: ['superadmin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'],
   },
   {
     key: 'orders',
     label: 'ออเดอร์',
     icon: <FiPackage className="w-6 h-6" />,
     path: '/orders',
-    roles: ['superadmin', 'admin', 'order_staff', 'admin_qc', 'account_staff'],
+    roles: ['superadmin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'],
   },
   {
     key: 'admin-qc',
     label: 'รอตรวจคำสั่งซื้อ',
     icon: <FiCheckCircle className="w-6 h-6" />,
     path: '/admin-qc',
-    roles: ['superadmin', 'admin', 'admin_qc'],
+    roles: ['superadmin', 'admin-tr', 'admin_qc'],
   },
   {
     key: 'account',
     label: 'บัญชี',
     icon: <FiDollarSign className="w-6 h-6" />,
     path: '/account',
-    roles: ['superadmin', 'admin', 'account_staff'],
-  },
-  {
-    key: 'export',
-    label: 'ใบงาน',
-    icon: <FiFileText className="w-6 h-6" />,
-    path: '/export',
-    roles: ['superadmin', 'admin', 'order_staff'],
+    roles: ['superadmin', 'admin-tr', 'account'],
   },
   {
     key: 'plan',
     label: 'Plan',
     icon: <FiClipboard className="w-6 h-6" />,
     path: '/plan',
-    roles: ['superadmin', 'admin', 'order_staff'],
+    roles: ['superadmin', 'admin-tr', 'admin-pump'],
   },
   {
     key: 'wms',
     label: 'จัดสินค้า',
     icon: <FiGrid className="w-6 h-6" />,
     path: '/wms',
-    roles: ['superadmin', 'admin', 'store', 'production', 'manager', 'picker'],
+    roles: ['superadmin', 'admin-tr', 'store', 'production'],
   },
   {
     key: 'qc',
     label: 'QC',
     icon: <FiSearch className="w-6 h-6" />,
     path: '/qc',
-    roles: ['superadmin', 'admin', 'qc_staff'],
+    roles: ['superadmin', 'admin-tr', 'qc_staff'],
   },
   {
     key: 'packing',
     label: 'จัดของ',
     icon: <FiArchive className="w-6 h-6" />,
     path: '/packing',
-    roles: ['superadmin', 'admin', 'packing_staff'],
+    roles: ['superadmin', 'admin-tr', 'packing_staff'],
   },
   {
     key: 'transport',
     label: 'ทวนสอบขนส่ง',
     icon: <FiTruck className="w-6 h-6" />,
     path: '/transport',
-    roles: ['superadmin', 'admin', 'packing_staff'],
+    roles: ['superadmin', 'admin-tr', 'packing_staff'],
   },
   {
     key: 'products',
     label: 'สินค้า',
     icon: <FiShoppingBag className="w-6 h-6" />,
     path: '/products',
-    roles: ['superadmin', 'admin', 'order_staff'],
+    roles: ['superadmin', 'admin-tr', 'admin-pump'],
   },
   {
     key: 'cartoon-patterns',
     label: 'ลายการ์ตูน',
     icon: <FiImage className="w-6 h-6" />,
     path: '/cartoon-patterns',
-    roles: ['superadmin', 'admin', 'order_staff'],
+    roles: ['superadmin', 'admin-tr', 'admin-pump'],
   },
   {
     key: 'warehouse',
     label: 'คลัง',
     icon: <FiHome className="w-6 h-6" />,
     path: '/warehouse',
-    roles: ['superadmin', 'admin', 'store', 'manager'],
+    roles: ['superadmin', 'admin-tr', 'store'],
   },
   {
     key: 'purchase',
     label: 'สั่งซื้อ',
     icon: <FiShoppingCart className="w-6 h-6" />,
     path: '/purchase/pr',
-    roles: ['superadmin', 'admin', 'store', 'manager'],
+    roles: ['superadmin', 'admin-tr', 'store'],
   },
   {
     key: 'sales-reports',
     label: 'รายงานยอดขาย',
     icon: <FiBarChart2 className="w-6 h-6" />,
     path: '/sales-reports',
-    roles: ['superadmin', 'admin', 'viewer'],
+    roles: ['superadmin', 'admin-tr', 'viewer'],
   },
   {
     key: 'settings',
     label: 'ตั้งค่า',
     icon: <FiSettings className="w-6 h-6" />,
     path: '/settings',
-    roles: ['superadmin', 'admin'],
+    roles: ['superadmin', 'admin-tr'],
   },
 ]
 
@@ -150,15 +142,47 @@ interface SidebarProps {
 }
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
-const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account'] as const
+const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account', 'wms'] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
-  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0 })
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0, wms: 0 })
+  const [dbMenuAccess, setDbMenuAccess] = useState<Record<string, boolean> | null>(null)
+
+  // โหลดสิทธิ์เมนูจากตาราง st_user_menus ตาม role ของผู้ใช้
+  useEffect(() => {
+    if (!user?.role) return
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('st_user_menus')
+          .select('menu_key, has_access')
+          .eq('role', user.role)
+        if (error) {
+          console.error('Error loading menu access:', error)
+          return
+        }
+        // ถ้าไม่มีข้อมูลในตาราง = ยังไม่เคยตั้งค่า → ใช้ค่า default (hardcoded roles)
+        if (!data || data.length === 0) {
+          setDbMenuAccess(null)
+          return
+        }
+        const map: Record<string, boolean> = {}
+        data.forEach((row: { menu_key: string; has_access: boolean }) => {
+          map[row.menu_key] = row.has_access
+        })
+        setDbMenuAccess(map)
+      } catch (e) {
+        console.error('Sidebar loadMenuAccess:', e)
+      }
+    })()
+  }, [user?.role])
 
   const loadCounts = useCallback(async () => {
     try {
+      const today = new Date().toISOString().split('T')[0]
+
       const [qcRes, refundRes, taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
@@ -172,11 +196,13 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         supabase
           .from('or_orders')
           .select('id, billing_details')
-          .contains('billing_details', { request_tax_invoice: true }),
+          .contains('billing_details', { request_tax_invoice: true })
+          .not('status', 'in', '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'),
         supabase
           .from('or_orders')
           .select('id, billing_details')
-          .contains('billing_details', { request_cash_bill: true }),
+          .contains('billing_details', { request_cash_bill: true })
+          .not('status', 'in', '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'),
       ])
       const taxPending = ((taxRes.data || []) as { billing_details?: { account_confirmed_tax?: boolean } }[]).filter(
         (o) => !o.billing_details?.account_confirmed_tax
@@ -185,9 +211,68 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         (o) => !o.billing_details?.account_confirmed_cash
       ).length
       const accountTotal = (refundRes.count ?? 0) + taxPending + cashPending
+
+      // ── WMS counts ──
+      // 1. ใบงานใหม่
+      const { data: woData } = await supabase
+        .from('or_work_orders')
+        .select('work_order_name')
+        .eq('status', 'กำลังผลิต')
+      let newOrdersCount = 0
+      if (woData && woData.length > 0) {
+        const woNames = woData.map((wo: any) => wo.work_order_name)
+        const { data: assignedRows } = await supabase.from('wms_orders').select('order_id').in('order_id', woNames)
+        const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
+        newOrdersCount = woData.filter((wo: any) => !assignedSet.has(wo.work_order_name)).length
+      }
+      // 2. รายการใบงาน (เฉพาะ IN PROGRESS)
+      const { data: uploadData } = await supabase
+        .from('wms_orders')
+        .select('order_id, status')
+        .gte('created_at', today + 'T00:00:00')
+        .lte('created_at', today + 'T23:59:59')
+      const uploadGroups: Record<string, boolean> = {}
+      ;(uploadData || []).forEach((r: any) => {
+        if (!uploadGroups[r.order_id]) uploadGroups[r.order_id] = false
+        if (['pending', 'wrong', 'not_find'].includes(r.status)) uploadGroups[r.order_id] = true
+      })
+      const uploadCount = Object.values(uploadGroups).filter(Boolean).length
+      // 3. ตรวจสินค้า
+      const { data: reviewData } = await supabase
+        .from('wms_orders')
+        .select('order_id, status')
+        .gte('created_at', today + 'T00:00:00')
+        .lte('created_at', today + 'T23:59:59')
+      let reviewCount = 0
+      if (reviewData) {
+        const grouped: Record<string, { total: number; finished: number; picked: number }> = {}
+        reviewData.forEach((r: any) => {
+          if (!grouped[r.order_id]) grouped[r.order_id] = { total: 0, finished: 0, picked: 0 }
+          grouped[r.order_id].total++
+          if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock'].includes(r.status)) grouped[r.order_id].finished++
+          if (r.status === 'picked') grouped[r.order_id].picked++
+        })
+        reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
+      }
+      // 4. รายการเบิก (pending)
+      const { count: reqCount } = await supabase
+        .from('wms_requisitions')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'pending')
+        .gte('created_at', today + 'T00:00:00')
+        .lte('created_at', today + 'T23:59:59')
+      // 5. แจ้งเตือน (unread)
+      const { count: notifCount } = await supabase
+        .from('wms_notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'unread')
+
+      const wmsTotal = newOrdersCount + uploadCount + reviewCount + (reqCount ?? 0) + (notifCount ?? 0)
+
       setMenuCounts({
         'admin-qc': qcRes.count ?? 0,
         account: accountTotal,
+        wms: wmsTotal,
       })
     } catch (e) {
       console.error('Sidebar loadCounts:', e)
@@ -201,14 +286,18 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .channel('sidebar-menu-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => loadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
   }, [loadCounts])
 
-  // โพลทุก 30 วินาทีเมื่อแท็บเปิดอยู่ (fallback ให้ตัวเลขอัปเดตเรียลไทม์แม้ Realtime จะไม่ fire)
-  const POLL_INTERVAL_MS = 30_000
+  // โพลทุก 15 วินาทีเมื่อแท็บเปิดอยู่ (fallback ให้ตัวเลขอัปเดตเรียลไทม์แม้ Realtime จะไม่ fire)
+  const POLL_INTERVAL_MS = 15_000
   useEffect(() => {
     if (document.visibilityState !== 'visible') return
     const timer = setInterval(() => {
@@ -217,9 +306,9 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     return () => clearInterval(timer)
   }, [loadCounts])
 
-  // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc หรือ account เพื่อให้ตัวเลขตรงกับหน้านั้น
+  // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account หรือ wms เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {
-    if (location.pathname === '/admin-qc' || location.pathname === '/account') {
+    if (['/admin-qc', '/account', '/wms'].includes(location.pathname)) {
       loadCounts()
     }
   }, [location.pathname, loadCounts])
@@ -240,9 +329,31 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     return () => window.removeEventListener('sidebar-refresh-counts', onRefresh)
   }, [loadCounts])
 
-  const filteredMenuItems = menuItems.filter((item) =>
-    user?.role ? item.roles.includes(user.role) : false
-  )
+  // ฟัง event จากหน้า WMS AdminLayout เมื่อมีการอัปเดตตัวเลข (เร็วกว่า Realtime)
+  useEffect(() => {
+    const onWmsCounts = (e: Event) => {
+      const total = (e as CustomEvent).detail?.total
+      if (typeof total === 'number') {
+        setMenuCounts((prev) => ({ ...prev, wms: total }))
+      }
+    }
+    window.addEventListener('wms-counts-updated', onWmsCounts)
+    return () => window.removeEventListener('wms-counts-updated', onWmsCounts)
+  }, [])
+
+  const filteredMenuItems = menuItems.filter((item) => {
+    if (!user?.role) return false
+    // ถ้ามีข้อมูลจาก st_user_menus → ใช้ค่าจาก DB
+    if (dbMenuAccess !== null) {
+      if (item.key === 'dashboard') return true
+      // ถ้ามี key อยู่ใน DB → ใช้ค่าจาก DB
+      if (item.key in dbMenuAccess) return dbMenuAccess[item.key] === true
+      // ถ้าไม่มี key ใน DB (เมนูใหม่ยังไม่เคยบันทึก) → fallback ใช้ hardcoded roles
+      return item.roles.includes(user.role)
+    }
+    // ถ้ายังไม่มีข้อมูลจาก DB → fallback ใช้ hardcoded roles
+    return item.roles.includes(user.role)
+  })
 
   return (
     <aside

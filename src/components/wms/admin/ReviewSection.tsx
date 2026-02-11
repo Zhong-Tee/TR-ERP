@@ -135,6 +135,10 @@ export default function ReviewSection() {
         await saveFirstCheckSummary(reviewOrderSelect, sortedData)
       }
     }
+
+    // อัปเดต dropdown (เปลี่ยนสีเมื่อตรวจครบ) + แจ้ง AdminLayout ให้อัปเดตตัวเลข badge
+    loadReviewDropdown()
+    window.dispatchEvent(new Event('wms-data-changed'))
   }
 
   const saveFirstCheckSummary = async (oid: string, items: any[]) => {

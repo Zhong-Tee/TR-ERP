@@ -12,8 +12,8 @@ export default function WorkOrders() {
   const [loading, setLoading] = useState(true)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [channelFilter, setChannelFilter] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [statusFilter, setStatusFilter] = useState('')
 
   useEffect(() => {

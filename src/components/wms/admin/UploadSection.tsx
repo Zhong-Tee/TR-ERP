@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { calculateDuration } from '../wmsUtils'
 import OrderDetailModal from './OrderDetailModal'
@@ -14,6 +14,8 @@ export default function UploadSection() {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [tick, setTick] = useState(0)
+  // เก็บเวลาล่าสุดสำหรับแต่ละ order เพื่อ freeze เมื่อ COMPLETED
+  const durationCacheRef = useRef<Record<string, string>>({})
 
   useEffect(() => {
     loadUsers()
@@ -26,6 +28,7 @@ export default function UploadSection() {
       .channel('wms-upload-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => {
         loadOrdersDashboard()
+        window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
 
@@ -86,6 +89,10 @@ export default function UploadSection() {
       }
       acc[key].items.push(obj)
       acc[key].total++
+      // เก็บ created_at ที่เก่าที่สุด (min) เป็นเวลาเริ่มต้นของ group
+      if (new Date(obj.created_at) < new Date(acc[key].date)) {
+        acc[key].date = obj.created_at
+      }
       if (['picked', 'correct', 'wrong', 'not_find'].includes(obj.status)) {
         acc[key].picked_count++
       }
@@ -197,7 +204,23 @@ export default function UploadSection() {
                       </span>
                     </td>
                     <td className={`${cellClass} text-center font-mono text-blue-600 font-bold`}>
-                      {calculateDuration(o.date, !isWorking ? o.max_end : null)}
+                      {(() => {
+                        const key = o.id + (o.assigned || '')
+                        if (!isWorking && o.max_end) {
+                          // COMPLETED + มี end_time → คำนวณจริง แล้ว cache
+                          const d = calculateDuration(o.date, o.max_end)
+                          durationCacheRef.current[key] = d
+                          return d
+                        }
+                        if (!isWorking && !o.max_end) {
+                          // COMPLETED + ไม่มี end_time → freeze ที่ค่าล่าสุดที่เคย cache ไว้
+                          return durationCacheRef.current[key] || calculateDuration(o.date, o.date)
+                        }
+                        // IN PROGRESS → คำนวณ live แล้ว cache ไว้
+                        const d = calculateDuration(o.date, null)
+                        durationCacheRef.current[key] = d
+                        return d
+                      })()}
                     </td>
                     <td className={`${cellClass} text-center`}>
                       <button onClick={() => openDetailModal(o.id)} className="text-blue-500 font-bold underline">

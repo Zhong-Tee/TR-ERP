@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import type { User, BankSetting, OrderChatLog, IssueType } from '../types'
+import type { User, BankSetting, OrderChatLog, IssueType, IssueMessage } from '../types'
+import { formatDateTime } from '../lib/utils'
 import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
 
 export default function Settings() {
   const [users, setUsers] = useState<User[]>([])
@@ -91,13 +93,20 @@ export default function Settings() {
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
   const [chatLoading, setChatLoading] = useState(false)
-  const [chatFromDate, setChatFromDate] = useState('')
-  const [chatToDate, setChatToDate] = useState('')
+  const [chatFromDate, setChatFromDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [chatToDate, setChatToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [chatSource, setChatSource] = useState<'all' | 'confirm' | 'issue'>('all')
+  // Issue messages merged into a unified format
+  const [issueChatLogs, setIssueChatLogs] = useState<(OrderChatLog & { _source: 'issue'; _issueTitle?: string })[]>([])
+  // Bill-level grouping
+  const [selectedChatBill, setSelectedChatBill] = useState<string | null>(null)
   const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
   const [issueTypeName, setIssueTypeName] = useState('')
   const [issueTypeColor, setIssueTypeColor] = useState('#3B82F6')
   const [issueTypeSaving, setIssueTypeSaving] = useState(false)
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   useEffect(() => {
     loadUsers()
@@ -152,7 +161,7 @@ export default function Settings() {
 
   async function testWithImage() {
     if (!selectedImage) {
-      alert('กรุณาเลือกไฟล์รูปสลิปก่อน')
+      showMessage({ message: 'กรุณาเลือกไฟล์รูปสลิปก่อน' })
       return
     }
 
@@ -198,7 +207,7 @@ export default function Settings() {
       setUsers(data || [])
     } catch (error: any) {
       console.error('Error loading users:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
     } finally {
       setLoading(false)
     }
@@ -212,28 +221,78 @@ export default function Settings() {
         .eq('id', userId)
 
       if (error) throw error
-      alert('อัปเดตสิทธิ์สำเร็จ')
+      showMessage({ title: 'สำเร็จ', message: 'อัปเดตสิทธิ์สำเร็จ' })
       loadUsers()
     } catch (error: any) {
       console.error('Error updating user role:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
   const MENU_ROLE_OPTIONS = [
-    { key: 'orders', label: 'ออเดอร์' },
-    { key: 'admin-qc', label: 'รอตรวจคำสั่งซื้อ' },
-    { key: 'account', label: 'บัญชี' },
-    { key: 'export', label: 'ใบงาน' },
-    { key: 'plan', label: 'Plan' },
-    { key: 'wms', label: 'จัดสินค้า' },
-    { key: 'qc', label: 'QC' },
-    { key: 'packing', label: 'จัดของ' },
-    { key: 'transport', label: 'ทวนสอบขนส่ง' },
-    { key: 'products', label: 'สินค้า' },
-    { key: 'cartoon-patterns', label: 'ลายการ์ตูน' },
-    { key: 'sales-reports', label: 'รายงานยอดขาย' },
-    { key: 'settings', label: 'ตั้งค่า' },
+    // ── Dashboard ──
+    { key: 'dashboard', label: 'Dashboard', group: '' },
+    // ── ออเดอร์ ──
+    { key: 'orders', label: 'ออเดอร์', group: '' },
+    { key: 'orders-create', label: 'สร้าง/แก้ไข', group: 'orders' },
+    { key: 'orders-waiting', label: 'รอลงข้อมูล', group: 'orders' },
+    { key: 'orders-data-error', label: 'ลงข้อมูลผิด', group: 'orders' },
+    { key: 'orders-complete', label: 'ตรวจสอบไม่ผ่าน', group: 'orders' },
+    { key: 'orders-verified', label: 'ตรวจสอบแล้ว', group: 'orders' },
+    { key: 'orders-confirm', label: 'Confirm', group: 'orders' },
+    { key: 'orders-work-orders', label: 'ใบสั่งงาน', group: 'orders' },
+    { key: 'orders-work-orders-manage', label: 'จัดการใบงาน', group: 'orders' },
+    { key: 'orders-shipped', label: 'จัดส่งแล้ว', group: 'orders' },
+    { key: 'orders-cancelled', label: 'ยกเลิก', group: 'orders' },
+    { key: 'orders-issue', label: 'Issue', group: 'orders' },
+    // ── รอตรวจคำสั่งซื้อ ──
+    { key: 'admin-qc', label: 'รอตรวจคำสั่งซื้อ', group: '' },
+    // ── บัญชี ──
+    { key: 'account', label: 'บัญชี', group: '' },
+    { key: 'account-dashboard', label: 'Dashboard', group: 'account' },
+    { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
+    { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
+    { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
+    // ── Plan ──
+    { key: 'plan', label: 'Plan', group: '' },
+    // ── จัดสินค้า (WMS) ──
+    { key: 'wms', label: 'จัดสินค้า', group: '' },
+    { key: 'wms-new-orders', label: 'ใบงานใหม่', group: 'wms' },
+    { key: 'wms-upload', label: 'รายการใบงาน', group: 'wms' },
+    { key: 'wms-review', label: 'ตรวจสินค้า', group: 'wms' },
+    { key: 'wms-kpi', label: 'KPI', group: 'wms' },
+    { key: 'wms-requisition', label: 'รายการเบิก', group: 'wms' },
+    { key: 'wms-notif', label: 'แจ้งเตือน', group: 'wms' },
+    { key: 'wms-settings', label: 'ตั้งค่า', group: 'wms' },
+    // ── QC ──
+    { key: 'qc', label: 'QC', group: '' },
+    { key: 'qc-operation', label: 'QC Operation', group: 'qc' },
+    { key: 'qc-reject', label: 'Reject', group: 'qc' },
+    { key: 'qc-report', label: 'Reports & KPI', group: 'qc' },
+    { key: 'qc-history', label: 'History Check', group: 'qc' },
+    { key: 'qc-settings', label: 'Settings', group: 'qc' },
+    // ── จัดของ ──
+    { key: 'packing', label: 'จัดของ', group: '' },
+    // ── ทวนสอบขนส่ง ──
+    { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },
+    // ── สินค้า ──
+    { key: 'products', label: 'สินค้า', group: '' },
+    // ── ลายการ์ตูน ──
+    { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },
+    // ── คลัง ──
+    { key: 'warehouse', label: 'คลัง', group: '' },
+    { key: 'warehouse-audit', label: 'ตรวจนับ', group: 'warehouse' },
+    { key: 'warehouse-adjust', label: 'ปรับปรุง', group: 'warehouse' },
+    { key: 'warehouse-returns', label: 'คืน', group: 'warehouse' },
+    // ── สั่งซื้อ ──
+    { key: 'purchase', label: 'สั่งซื้อ', group: '' },
+    { key: 'purchase-pr', label: 'PR', group: 'purchase' },
+    { key: 'purchase-po', label: 'PO', group: 'purchase' },
+    { key: 'purchase-gr', label: 'GR', group: 'purchase' },
+    // ── รายงานยอดขาย ──
+    { key: 'sales-reports', label: 'รายงานยอดขาย', group: '' },
+    // ── ตั้งค่า ──
+    { key: 'settings', label: 'ตั้งค่า', group: '' },
   ] as const
 
   async function loadRoleMenus() {
@@ -243,7 +302,7 @@ export default function Settings() {
         .select('role, menu_key, has_access')
       if (error) throw error
       const map: Record<string, Record<string, boolean>> = {}
-      roles.forEach((role) => {
+      settingsRoles.forEach((role) => {
         map[role] = {}
         MENU_ROLE_OPTIONS.forEach((menu) => {
           map[role][menu.key] = true
@@ -261,32 +320,63 @@ export default function Settings() {
 
   async function loadChatLogs() {
     setChatLoading(true)
+    setSelectedChatBill(null)
     try {
-      let query = supabase
+      // Load Confirm Chat
+      let confirmQuery = supabase
         .from('or_order_chat_logs')
         .select('*')
         .order('created_at', { ascending: false })
+      if (chatFromDate) confirmQuery = confirmQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
+      if (chatToDate) confirmQuery = confirmQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      const { data: confirmData, error: confirmError } = await confirmQuery.limit(500)
+      if (confirmError) throw confirmError
+      setChatLogs((confirmData || []) as OrderChatLog[])
 
-      if (chatFromDate) {
-        query = query.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
-      }
-      if (chatToDate) {
-        query = query.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      // Load Issue Chat (messages + issue info)
+      let issueQuery = supabase
+        .from('or_issue_messages')
+        .select('*, or_issues!inner(id, title, order_id)')
+        .order('created_at', { ascending: false })
+      if (chatFromDate) issueQuery = issueQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
+      if (chatToDate) issueQuery = issueQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
+      const { data: issueData, error: issueError } = await issueQuery.limit(500)
+      if (issueError) throw issueError
+
+      // ดึง order_id → bill_no mapping
+      const orderIds = [...new Set((issueData || []).map((m: any) => m.or_issues?.order_id).filter(Boolean))]
+      let billMap: Record<string, string> = {}
+      if (orderIds.length > 0) {
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('id, bill_no')
+          .in('id', orderIds)
+        ;(orders || []).forEach((o: any) => { billMap[o.id] = o.bill_no })
       }
 
-      const { data, error } = await query.limit(500)
-      if (error) throw error
-      setChatLogs((data || []) as OrderChatLog[])
+      const mapped = (issueData || []).map((m: any) => ({
+        id: m.id,
+        order_id: m.or_issues?.order_id || '',
+        bill_no: billMap[m.or_issues?.order_id] || m.or_issues?.title || 'N/A',
+        sender_id: m.sender_id,
+        sender_name: m.sender_name,
+        message: m.message,
+        created_at: m.created_at,
+        _source: 'issue' as const,
+        _issueTitle: m.or_issues?.title,
+      }))
+      setIssueChatLogs(mapped)
     } catch (error: any) {
       console.error('Error loading chat logs:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดประวัติแชท: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดประวัติแชท: ' + error.message })
     } finally {
       setChatLoading(false)
     }
   }
 
   async function deleteChatLog(id: string) {
-    if (!confirm('ต้องการลบข้อความนี้หรือไม่?')) return
+    const ok = await showConfirm({ title: 'ลบข้อความ', message: 'ต้องการลบข้อความนี้หรือไม่?' })
+    if (!ok) return
     try {
       const { error } = await supabase
         .from('or_order_chat_logs')
@@ -296,7 +386,24 @@ export default function Settings() {
       setChatLogs((prev) => prev.filter((log) => log.id !== id))
     } catch (error: any) {
       console.error('Error deleting chat log:', error)
-      alert('เกิดข้อผิดพลาดในการลบ: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการลบ: ' + error.message })
+    }
+  }
+
+  async function deleteChatLogsByBill(billNo: string) {
+    const ok = await showConfirm({ title: 'ลบแชททั้งบิล', message: `ต้องการลบข้อความทั้งหมดของบิล ${billNo} หรือไม่?\n(เฉพาะ Confirm Chat เท่านั้น)` })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('or_order_chat_logs')
+        .delete()
+        .eq('bill_no', billNo)
+      if (error) throw error
+      setChatLogs((prev) => prev.filter((log) => log.bill_no !== billNo))
+      setSelectedChatBill(null)
+    } catch (error: any) {
+      console.error('Error deleting chat logs by bill:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการลบ: ' + error.message })
     }
   }
 
@@ -310,13 +417,13 @@ export default function Settings() {
       setIssueTypes((data || []) as IssueType[])
     } catch (error: any) {
       console.error('Error loading issue types:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดประเภท Issue: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดประเภท Issue: ' + error.message })
     }
   }
 
   async function saveIssueType() {
     if (!issueTypeName.trim()) {
-      alert('กรุณากรอกชื่อประเภท')
+      showMessage({ message: 'กรุณากรอกชื่อประเภท' })
       return
     }
     setIssueTypeSaving(true)
@@ -342,14 +449,15 @@ export default function Settings() {
       loadIssueTypes()
     } catch (error: any) {
       console.error('Error saving issue type:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
       setIssueTypeSaving(false)
     }
   }
 
   async function deleteIssueType(id: string) {
-    if (!confirm('ต้องการลบประเภท Issue นี้หรือไม่?')) return
+    const ok = await showConfirm({ title: 'ลบประเภท Issue', message: 'ต้องการลบประเภท Issue นี้หรือไม่?' })
+    if (!ok) return
     try {
       const { error } = await supabase
         .from('or_issue_types')
@@ -359,18 +467,34 @@ export default function Settings() {
       setIssueTypes((prev) => prev.filter((t) => t.id !== id))
     } catch (error: any) {
       console.error('Error deleting issue type:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
   async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
-    setRoleMenus((prev) => ({
-      ...prev,
-      [role]: {
-        ...(prev[role] || {}),
-        [menuKey]: checked,
-      },
-    }))
+    setRoleMenus((prev) => {
+      const updated = {
+        ...prev,
+        [role]: {
+          ...(prev[role] || {}),
+          [menuKey]: checked,
+        },
+      }
+      // ถ้าปิดเมนูหลัก → ปิดเมนูย่อยด้วย
+      if (!checked) {
+        MENU_ROLE_OPTIONS.forEach((m) => {
+          if (m.group === menuKey) {
+            updated[role][m.key] = false
+          }
+        })
+      }
+      // ถ้าเปิดเมนูย่อย → เปิดเมนูหลักด้วย
+      const menu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)
+      if (checked && menu && menu.group) {
+        updated[role][menu.group] = true
+      }
+      return updated
+    })
   }
 
   async function saveRoleMenus() {
@@ -389,10 +513,10 @@ export default function Settings() {
       })
       const { error } = await supabase.from('st_user_menus').upsert(payload, { onConflict: 'role,menu_key' })
       if (error) throw error
-      alert('บันทึกการตั้งค่า Role สำเร็จ')
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า Role สำเร็จ' })
     } catch (error: any) {
       console.error('Error saving role menus:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
       setSavingRoleMenus(false)
     }
@@ -456,7 +580,7 @@ export default function Settings() {
       setBankSettings(transformedData)
     } catch (error: any) {
       console.error('Error loading bank settings:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
     }
   }
 
@@ -554,10 +678,10 @@ export default function Settings() {
           { onConflict: 'category' }
         )
       }
-      alert('บันทึกตั้งค่าสินค้าสำเร็จ')
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกตั้งค่าสินค้าสำเร็จ' })
     } catch (error: any) {
       console.error('Error saving category field settings:', error)
-      alert('เกิดข้อผิดพลาดในการบันทึก: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการบันทึก: ' + error.message })
     } finally {
       setSavingProductSettings(false)
     }
@@ -613,12 +737,12 @@ export default function Settings() {
   async function saveBankSetting() {
     try {
       if (!bankFormData.account_number || !bankFormData.bank_code) {
-        alert('กรุณากรอกเลขบัญชีและรหัสธนาคาร')
+        showMessage({ message: 'กรุณากรอกเลขบัญชีและรหัสธนาคาร' })
         return
       }
 
       if (bankFormData.selectedChannels.length === 0) {
-        alert('กรุณาเลือกช่องทางการขายอย่างน้อย 1 ช่องทาง')
+        showMessage({ message: 'กรุณาเลือกช่องทางการขายอย่างน้อย 1 ช่องทาง' })
         return
       }
 
@@ -677,7 +801,7 @@ export default function Settings() {
             throw deleteError
           }
         }
-        alert('อัปเดตข้อมูลธนาคารสำเร็จ')
+        showMessage({ title: 'สำเร็จ', message: 'อัปเดตข้อมูลธนาคารสำเร็จ' })
       } else {
         // Insert new
         const { data, error } = await supabase
@@ -703,7 +827,7 @@ export default function Settings() {
         } else {
           bankSettingId = data.id
         }
-        alert('เพิ่มข้อมูลธนาคารสำเร็จ')
+        showMessage({ title: 'สำเร็จ', message: 'เพิ่มข้อมูลธนาคารสำเร็จ' })
       }
 
       // Insert channels
@@ -720,7 +844,7 @@ export default function Settings() {
         if (channelsError) {
           // If table doesn't exist yet, show warning but don't fail
           if (channelsError.message.includes('does not exist')) {
-            alert('เพิ่มข้อมูลธนาคารสำเร็จ แต่ไม่สามารถบันทึกช่องทางการขายได้ กรุณารัน migration 008_update_bank_settings.sql')
+            showMessage({ title: 'คำเตือน', message: 'เพิ่มข้อมูลธนาคารสำเร็จ แต่ไม่สามารถบันทึกช่องทางการขายได้ กรุณารัน migration 008_update_bank_settings.sql' })
           } else {
             throw channelsError
           }
@@ -731,14 +855,13 @@ export default function Settings() {
       loadBankSettings()
     } catch (error: any) {
       console.error('Error saving bank setting:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
   async function deleteBankSetting(id: string) {
-    if (!confirm('ต้องการลบข้อมูลธนาคารนี้หรือไม่?')) {
-      return
-    }
+    const ok = await showConfirm({ title: 'ลบข้อมูลธนาคาร', message: 'ต้องการลบข้อมูลธนาคารนี้หรือไม่?' })
+    if (!ok) return
 
     try {
       const { error } = await supabase
@@ -747,19 +870,18 @@ export default function Settings() {
         .eq('id', id)
 
       if (error) throw error
-      alert('ลบข้อมูลธนาคารสำเร็จ')
+      showMessage({ title: 'สำเร็จ', message: 'ลบข้อมูลธนาคารสำเร็จ' })
       loadBankSettings()
     } catch (error: any) {
       console.error('Error deleting bank setting:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
   // @ts-ignore TS6133 - kept for future use
   async function fixOrderStatuses() {
-    if (!confirm('ต้องการตรวจสอบและแก้ไขสถานะบิลทั้งหมดให้ถูกต้องตามข้อมูลในตารางหรือไม่?\n\nการดำเนินการนี้อาจใช้เวลาสักครู่')) {
-      return
-    }
+    const ok = await showConfirm({ title: 'แก้ไขสถานะบิล', message: 'ต้องการตรวจสอบและแก้ไขสถานะบิลทั้งหมดให้ถูกต้องตามข้อมูลในตารางหรือไม่?\n\nการดำเนินการนี้อาจใช้เวลาสักครู่' })
+    if (!ok) return
 
     setFixingStatus(true)
     setStatusFixResult(null)
@@ -910,19 +1032,32 @@ export default function Settings() {
     )
   }
 
-  const roles = [
+  // Role ทั้งหมด — ใช้ใน dropdown จัดการสิทธิ์ผู้ใช้
+  const allRoles = [
     'superadmin',
-    'admin',
+    'admin-tr',
     'admin_qc',
-    'order_staff',
+    'admin-pump',
     'qc_staff',
     'packing_staff',
-    'account_staff',
-    'viewer',
+    'account',
     'store',
     'production',
+    'production_mb',
     'manager',
     'picker',
+  ]
+  // Role ที่แสดงในตั้งค่า Role (ซ่อน mobile-only roles)
+  const settingsRoles = [
+    'superadmin',
+    'admin-tr',
+    'admin_qc',
+    'admin-pump',
+    'qc_staff',
+    'packing_staff',
+    'account',
+    'store',
+    'production',
   ]
 
   return (
@@ -1128,10 +1263,47 @@ export default function Settings() {
       )}
 
       {/* Users Tab */}
-      {activeTab === 'users' && (
+      {activeTab === 'users' && (() => {
+        const filteredUsers = userRoleFilter === 'all'
+          ? users
+          : users.filter((u) => u.role === userRoleFilter)
+        return (
         <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-bold mb-4">ผู้ใช้ทั้งหมด</h2>
-        {users.length === 0 ? (
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-bold">ผู้ใช้ทั้งหมด</h2>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-600">กรอง Role:</label>
+              <select
+                value={userRoleFilter}
+                onChange={(e) => setUserRoleFilter(e.target.value)}
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">ทั้งหมด ({users.length})</option>
+                {allRoles.map((role) => {
+                  const count = users.filter((u) => u.role === role).length
+                  return (
+                    <option key={role} value={role}>
+                      {role} ({count})
+                    </option>
+                  )
+                })}
+              </select>
+              {userRoleFilter !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => setUserRoleFilter('all')}
+                  className="text-xs text-gray-500 hover:text-red-500 px-2 py-1 rounded hover:bg-gray-100"
+                  title="ล้างตัวกรอง"
+                >
+                  ✕
+                </button>
+              )}
+              <span className="text-sm text-gray-400 ml-1">
+                {filteredUsers.length} รายการ
+              </span>
+            </div>
+          </div>
+        {filteredUsers.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
             ไม่พบข้อมูลผู้ใช้
           </div>
@@ -1147,7 +1319,7 @@ export default function Settings() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user, idx) => (
+                {filteredUsers.map((user, idx) => (
                   <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3">{user.email || '-'}</td>
                     <td className="p-3">{user.username || '-'}</td>
@@ -1157,7 +1329,7 @@ export default function Settings() {
                         onChange={(e) => updateUserRole(user.id, e.target.value)}
                         className="px-3 py-1 border rounded"
                       >
-                        {roles.map((role) => (
+                        {allRoles.map((role) => (
                           <option key={role} value={role}>
                             {role}
                           </option>
@@ -1172,7 +1344,8 @@ export default function Settings() {
           </div>
         )}
         </div>
-      )}
+        )
+      })()}
 
       {activeTab === 'role-settings' && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
@@ -1186,32 +1359,51 @@ export default function Settings() {
               {savingRoleMenus ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full border">
-              <thead>
+          <div className="overflow-x-auto" style={{ maxHeight: '75vh' }}>
+            <table className="w-full border-collapse text-sm">
+              <thead className="sticky top-0 z-10">
                 <tr className="bg-blue-600 text-white">
-                  <th className="p-3 text-left font-semibold rounded-tl-xl">Role</th>
-                  {MENU_ROLE_OPTIONS.map((menu, i) => (
-                    <th key={menu.key} className={`p-3 text-center text-sm font-semibold ${i === MENU_ROLE_OPTIONS.length - 1 ? 'rounded-tr-xl' : ''}`}>{menu.label}</th>
+                  <th className="p-2 text-left font-semibold rounded-tl-xl sticky left-0 z-20 bg-blue-600 min-w-[180px]">เมนู</th>
+                  {settingsRoles.map((role, i) => (
+                    <th key={role} className={`p-2 text-center text-xs font-semibold whitespace-nowrap ${i === settingsRoles.length - 1 ? 'rounded-tr-xl' : ''}`}>{role}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {roles.map((role, idx) => (
-                  <tr key={role} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="p-3 font-medium">{role}</td>
-                    {MENU_ROLE_OPTIONS.map((menu) => (
-                      <td key={menu.key} className="p-3 text-center">
-                        <input
-                          type="checkbox"
-                          className="rounded border-gray-300"
-                          checked={roleMenus?.[role]?.[menu.key] ?? false}
-                          onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
-                        />
+                {MENU_ROLE_OPTIONS.map((menu) => {
+                  const isSub = !!menu.group
+                  return (
+                    <tr
+                      key={menu.key}
+                      className={`transition-colors hover:bg-blue-50 ${
+                        isSub
+                          ? 'bg-gray-50/70'
+                          : 'bg-white border-t-2 border-gray-300'
+                      }`}
+                    >
+                      <td
+                        className={`p-2 whitespace-nowrap sticky left-0 z-[5] ${
+                          isSub
+                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 border-l-2 border-blue-200'
+                            : 'font-bold text-gray-800 bg-white'
+                        }`}
+                      >
+                        {isSub && <span className="text-blue-300 mr-1">└</span>}
+                        {menu.label}
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      {settingsRoles.map((role) => (
+                        <td key={role} className={`p-2 text-center ${isSub ? 'bg-gray-50/70' : 'bg-white'}`}>
+                          <input
+                            type="checkbox"
+                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500"
+                            checked={roleMenus?.[role]?.[menu.key] ?? false}
+                            onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -1619,81 +1811,173 @@ export default function Settings() {
         </div>
       )}
 
-      {activeTab === 'chat-history' && (
-        <div className="bg-white p-6 rounded-lg shadow space-y-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">จากวันที่</label>
-              <input
-                type="date"
-                value={chatFromDate}
-                onChange={(e) => setChatFromDate(e.target.value)}
-                className="px-3 py-2 border rounded-lg"
-              />
+      {activeTab === 'chat-history' && (() => {
+        // รวม chat จาก 2 แหล่ง + กรองตาม source
+        type UnifiedChat = OrderChatLog & { _source: 'confirm' | 'issue'; _issueTitle?: string }
+        const confirmMapped: UnifiedChat[] = chatLogs.map((l) => ({ ...l, _source: 'confirm' }))
+        const allChats: UnifiedChat[] =
+          chatSource === 'confirm' ? confirmMapped
+          : chatSource === 'issue' ? issueChatLogs
+          : [...confirmMapped, ...issueChatLogs]
+
+        // จัดกลุ่มตาม bill_no
+        const billGroups: Record<string, { bill_no: string; sources: Set<string>; lastDate: string; count: number; issueTitle?: string }> = {}
+        allChats.forEach((c) => {
+          const key = c.bill_no
+          if (!billGroups[key]) {
+            billGroups[key] = { bill_no: c.bill_no, sources: new Set(), lastDate: c.created_at, count: 0, issueTitle: c._issueTitle }
+          }
+          billGroups[key].sources.add(c._source)
+          billGroups[key].count++
+          if (c.created_at > billGroups[key].lastDate) billGroups[key].lastDate = c.created_at
+        })
+        const billList = Object.values(billGroups).sort((a, b) => b.lastDate.localeCompare(a.lastDate))
+
+        // ข้อความของบิลที่เลือก เรียงตาม created_at ascending (เก่าสุดก่อน)
+        const selectedMessages = selectedChatBill
+          ? allChats.filter((c) => c.bill_no === selectedChatBill).sort((a, b) => a.created_at.localeCompare(b.created_at))
+          : []
+
+        return (
+        <div className="bg-white rounded-xl shadow space-y-0 overflow-hidden">
+          {/* ── Filter Bar ── */}
+          <div className="p-4 border-b border-gray-200 bg-gray-50">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">จากวันที่</label>
+                <input type="date" value={chatFromDate} onChange={(e) => setChatFromDate(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ถึงวันที่</label>
+                <input type="date" value={chatToDate} onChange={(e) => setChatToDate(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">ประเภทแชท</label>
+                <select value={chatSource} onChange={(e) => setChatSource(e.target.value as any)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none">
+                  <option value="all">ทั้งหมด</option>
+                  <option value="confirm">Confirm Chat</option>
+                  <option value="issue">Issue Chat</option>
+                </select>
+              </div>
+              <button onClick={loadChatLogs} disabled={chatLoading} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 text-sm font-medium transition-colors">
+                {chatLoading ? 'กำลังโหลด...' : 'กรองข้อมูล'}
+              </button>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ถึงวันที่</label>
-              <input
-                type="date"
-                value={chatToDate}
-                onChange={(e) => setChatToDate(e.target.value)}
-                className="px-3 py-2 border rounded-lg"
-              />
-            </div>
-            <button
-              onClick={loadChatLogs}
-              disabled={chatLoading}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
-            >
-              {chatLoading ? 'กำลังโหลด...' : 'กรองข้อมูล'}
-            </button>
           </div>
 
           {chatLoading ? (
-            <div className="flex justify-center items-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+            <div className="flex justify-center items-center py-16">
+              <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-200 border-t-blue-500" />
             </div>
-          ) : chatLogs.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">ไม่พบประวัติแชท</div>
+          ) : billList.length === 0 ? (
+            <div className="flex flex-col items-center py-16 text-gray-400">
+              <svg className="w-12 h-12 mb-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+              <p className="text-sm">ไม่พบประวัติแชท</p>
+            </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-blue-600 text-white">
-                    <th className="p-3 text-left font-semibold rounded-tl-xl">วันที่เวลา</th>
-                    <th className="p-3 text-left font-semibold">เลขบิล</th>
-                    <th className="p-3 text-left font-semibold">ผู้ส่ง</th>
-                    <th className="p-3 text-left font-semibold">ข้อความ</th>
-                    <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {chatLogs.map((log, idx) => (
-                    <tr key={log.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                      <td className="p-3 whitespace-nowrap">{new Date(log.created_at).toLocaleString('th-TH')}</td>
-                      <td className="p-3 font-medium">{log.bill_no}</td>
-                      <td className="p-3">{log.sender_name}</td>
-                      <td className="p-3 max-w-[420px]">
-                        <div className="truncate" title={log.message}>
-                          {log.message}
-                        </div>
-                      </td>
-                      <td className="p-3">
+            <div className="flex" style={{ minHeight: '480px' }}>
+              {/* ── Bill List (Left Panel) ── */}
+              <div className="w-80 shrink-0 border-r border-gray-200 overflow-y-auto bg-white" style={{ maxHeight: '65vh' }}>
+                {billList.map((bill) => (
+                  <button
+                    key={bill.bill_no}
+                    type="button"
+                    onClick={() => setSelectedChatBill(bill.bill_no)}
+                    className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-blue-50 transition-colors ${selectedChatBill === bill.bill_no ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm text-gray-900 truncate">{bill.bill_no}</span>
+                      <span className="text-xs text-gray-400 shrink-0">{bill.count} ข้อความ</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      {bill.sources.has('confirm') && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 font-medium">Confirm</span>
+                      )}
+                      {bill.sources.has('issue') && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Issue</span>
+                      )}
+                      <span className="text-[11px] text-gray-400 ml-auto">{formatDateTime(bill.lastDate)}</span>
+                    </div>
+                    {bill.issueTitle && bill.sources.has('issue') && (
+                      <div className="text-[11px] text-gray-500 mt-0.5 truncate">Ticket: {bill.issueTitle}</div>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Chat Messages (Right Panel) ── */}
+              <div className="flex-1 flex flex-col bg-gray-50">
+                {!selectedChatBill ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
+                    <svg className="w-16 h-16 mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                    <p className="text-sm">เลือกบิลเพื่อดูประวัติแชท</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Chat Header */}
+                    <div className="px-5 py-3 bg-white border-b border-gray-200 flex items-center justify-between shrink-0">
+                      <div>
+                        <h4 className="font-bold text-gray-900 text-sm">{selectedChatBill}</h4>
+                        <p className="text-xs text-gray-500">{selectedMessages.length} ข้อความ</p>
+                      </div>
+                      <div className="flex items-center gap-2">
                         <button
-                          onClick={() => deleteChatLog(log.id)}
-                          className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-xs"
+                          type="button"
+                          onClick={() => deleteChatLogsByBill(selectedChatBill!)}
+                          className="inline-flex items-center gap-1 text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors"
                         >
-                          ลบ
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          ลบทั้งบิล
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <button type="button" onClick={() => setSelectedChatBill(null)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
+                          ปิด
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Chat Messages */}
+                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3" style={{ maxHeight: '55vh' }}>
+                      {selectedMessages.map((msg) => (
+                        <div key={msg.id} className="group">
+                          <div className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-100 max-w-xl">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-sm font-semibold text-gray-900">{msg.sender_name}</span>
+                              {msg._source === 'issue' ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Issue</span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 font-medium">Confirm</span>
+                              )}
+                              <span className="text-[11px] text-gray-400 ml-auto">{formatDateTime(msg.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap select-text">{msg.message}</p>
+                          </div>
+                          {/* Delete button (confirm chat only) */}
+                          {msg._source === 'confirm' && (
+                            <div className="mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                type="button"
+                                onClick={() => deleteChatLog(msg.id)}
+                                className="text-[11px] text-red-400 hover:text-red-600 transition-colors"
+                              >
+                                ลบข้อความ
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
-      )}
+        )
+      })()}
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

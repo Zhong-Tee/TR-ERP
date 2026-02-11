@@ -28,6 +28,7 @@ export default function RequisitionDashboard() {
       .channel('wms-admin-requisitions')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => {
         loadRequisitions()
+        window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
 

@@ -12,9 +12,12 @@ export const ERROR_FIELD_KEYS = [
   { key: 'channel_name', label: 'ชื่อช่องทาง' },
   { key: 'customer_name', label: 'ชื่อลูกค้า' },
   { key: 'address', label: 'ที่อยู่' },
+  { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
+  { key: 'tracking_number', label: 'เลขพัสดุ' },
   { key: 'product_name', label: 'ชื่อสินค้า' },
   { key: 'ink_color', label: 'สีหมึก' },
   { key: 'layer', label: 'ชั้น' },
+  { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
   { key: 'line_art', label: 'ลายเส้น' },
   { key: 'font', label: 'ฟอนต์' },
   { key: 'line_1', label: 'บรรทัด 1' },
@@ -28,12 +31,15 @@ export type ErrorFieldKey = (typeof ERROR_FIELD_KEYS)[number]['key']
 
 /** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" ในฟอร์ม — แสดงช่องติ๊ก "ชื่อช่องทาง" เฉพาะช่องทางเหล่านี้ */
 const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
+/** ช่องทางที่แสดงเลขคำสั่งซื้อ + เลขพัสดุ แทนที่ ชื่อลูกค้า + ที่อยู่ ในระดับบิล */
+const CHANNELS_ORDER_NO = ['SPTR', 'FSPTR', 'LZTR', 'TTTR']
 
 /** แมป ErrorFieldKey ระดับรายการ → ชื่อคอลัมน์ใน pr_category_field_settings */
-const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address'>, string> = {
+const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address' | 'channel_order_no' | 'tracking_number'>, string> = {
   product_name: 'product_name',
   ink_color: 'ink_color',
   layer: 'layer',
+  cartoon_pattern: 'cartoon_pattern',
   line_art: 'line_pattern',
   font: 'font',
   line_1: 'line_1',
@@ -54,11 +60,16 @@ function getVisibleErrorFieldsForOrder(
   const hasItems = items.length > 0
 
   const channelCode = (order as any).channel_code || ''
-  const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = [
-    ...(CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode) ? [{ key: 'channel_name' as const, label: 'ชื่อช่องทาง' }] : []),
-    { key: 'customer_name', label: 'ชื่อลูกค้า' },
-    { key: 'address', label: 'ที่อยู่' },
-  ]
+  const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = CHANNELS_ORDER_NO.includes(channelCode)
+    ? [
+        { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
+        { key: 'tracking_number', label: 'เลขพัสดุ' },
+      ]
+    : [
+        ...(CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode) ? [{ key: 'channel_name' as const, label: 'ชื่อช่องทาง' }] : []),
+        { key: 'customer_name', label: 'ชื่อลูกค้า' },
+        { key: 'address', label: 'ที่อยู่' },
+      ]
 
   if (!hasItems) return orderLevel
 
@@ -66,6 +77,7 @@ function getVisibleErrorFieldsForOrder(
     { key: 'product_name', label: 'ชื่อสินค้า' },
     { key: 'ink_color', label: 'สีหมึก' },
     { key: 'layer', label: 'ชั้น' },
+    { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
     { key: 'line_art', label: 'ลายเส้น' },
     { key: 'font', label: 'ฟอนต์' },
     { key: 'line_1', label: 'บรรทัด 1' },
@@ -110,7 +122,7 @@ function getVisibleErrorFieldsForOrder(
 }
 
 /** ฟิลด์ระดับบิล (ไม่แยกรายการ) */
-const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address']
+const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'channel_order_no', 'tracking_number']
 
 /** แยกรายการฟิลด์ที่แสดงเป็นระดับบิล vs ระดับรายการ */
 function getOrderLevelAndItemLevelErrorFields(
@@ -178,7 +190,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           console.error('Error loading category field settings:', error)
           return
         }
-        function toBool(v: unknown, defaultVal = true): boolean {
+        function toBool(v: unknown, defaultVal = false): boolean {
           if (v === undefined || v === null) return defaultVal
           return v === true || v === 'true'
         }
@@ -190,18 +202,18 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               const key = String(cat).trim()
               settingsMap[key] = {
                 product_name: toBool(row.product_name, true),
-                ink_color: toBool(row.ink_color, true),
-                layer: toBool(row.layer, true),
-                cartoon_pattern: toBool(row.cartoon_pattern, true),
-                line_pattern: toBool(row.line_pattern, true),
-                font: toBool(row.font, true),
-                line_1: toBool(row.line_1, true),
-                line_2: toBool(row.line_2, true),
-                line_3: toBool(row.line_3, true),
+                ink_color: toBool(row.ink_color),
+                layer: toBool(row.layer),
+                cartoon_pattern: toBool(row.cartoon_pattern),
+                line_pattern: toBool(row.line_pattern),
+                font: toBool(row.font),
+                line_1: toBool(row.line_1),
+                line_2: toBool(row.line_2),
+                line_3: toBool(row.line_3),
                 quantity: toBool(row.quantity, true),
                 unit_price: toBool(row.unit_price, true),
-                notes: toBool(row.notes, true),
-                attachment: toBool(row.attachment, true),
+                notes: toBool(row.notes),
+                attachment: toBool(row.attachment),
               }
             }
           })
@@ -433,7 +445,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-200px)] text-[12pt] min-h-0">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)] text-[12pt] min-h-0">
       {/* การ์ดซ้าย - รายการบิล */}
       <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
         <div className="p-4 border-b bg-gray-50 shrink-0 space-y-3">
@@ -531,18 +543,37 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       </span>
                     </div>
                   </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อช่องทาง</div>
-                    <div className="flex-1 text-sm">{selectedOrder.customer_name}</div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อลูกค้า</div>
-                    <div className="flex-1 text-sm">{(selectedOrder as Order & { recipient_name?: string | null }).recipient_name ?? selectedOrder.customer_name ?? '—'}</div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ที่อยู่</div>
-                    <div className="flex-1 whitespace-pre-wrap text-sm">{selectedOrder.customer_address}</div>
-                  </div>
+                  {CHANNELS_ORDER_NO.includes((selectedOrder as any).channel_code || '') ? (
+                    <>
+                      {(selectedOrder as any).channel_order_no && (
+                        <div className="flex items-start gap-3">
+                          <div className="w-24 text-gray-600 font-medium text-sm shrink-0">เลขคำสั่งซื้อ</div>
+                          <div className="flex-1 text-sm">{(selectedOrder as any).channel_order_no}</div>
+                        </div>
+                      )}
+                      {(selectedOrder as any).tracking_number && (
+                        <div className="flex items-start gap-3">
+                          <div className="w-24 text-gray-600 font-medium text-sm shrink-0">เลขพัสดุ</div>
+                          <div className="flex-1 text-sm">{(selectedOrder as any).tracking_number}</div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-start gap-3">
+                        <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อช่องทาง</div>
+                        <div className="flex-1 text-sm">{selectedOrder.customer_name}</div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ชื่อลูกค้า</div>
+                        <div className="flex-1 text-sm">{(selectedOrder as Order & { recipient_name?: string | null }).recipient_name ?? selectedOrder.customer_name ?? '—'}</div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ที่อยู่</div>
+                        <div className="flex-1 whitespace-pre-wrap text-sm">{selectedOrder.customer_address}</div>
+                      </div>
+                    </>
+                  )}
                   <div className="flex items-center gap-3">
                     <div className="w-24 text-gray-600 font-medium text-sm shrink-0">วันที่สร้าง</div>
                     <div className="text-sm">{formatDateTime(selectedOrder.created_at)}</div>
@@ -672,20 +703,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                     )}
                                   </div>
                                 </div>
-                                {/* Pattern lookup info (optional) */}
-                                {item.cartoon_pattern && (
-                                  <div className="mt-2 text-gray-600">
-                                    {pattern?.pattern_name ? (
-                                      <div>
-                                        พบข้อมูลลาย: <span className="font-medium">{pattern.pattern_name}</span>
-                                      </div>
-                                    ) : (
-                                      <div>
-                                        ไม่พบข้อมูลลายในระบบ
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
                               </div>
                             </div>
                           </div>

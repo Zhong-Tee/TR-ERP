@@ -9,15 +9,16 @@ export interface User {
 
 export type UserRole = 
   | 'superadmin' 
-  | 'admin' 
+  | 'admin-tr' 
   | 'admin_qc' 
-  | 'order_staff' 
+  | 'admin-pump' 
   | 'qc_staff' 
   | 'packing_staff' 
-  | 'account_staff' 
+  | 'account' 
   | 'viewer'
   | 'store'
   | 'production'
+  | 'production_mb'
   | 'manager'
   | 'picker'
 
@@ -30,8 +31,11 @@ export type OrderStatus =
   | 'ตรวจสอบไม่ผ่าน'
   | 'ตรวจสอบไม่สำเร็จ'
   | 'ตรวจสอบแล้ว'
+  | 'รอออกแบบ'
+  | 'ออกแบบแล้ว'
   | 'รอคอนเฟิร์ม'
   | 'คอนเฟิร์มแล้ว'
+  | 'เสร็จสิ้น'
   | 'ใบสั่งงาน'
   | 'ใบงานกำลังผลิต'
   | 'จัดส่งแล้ว'
@@ -176,6 +180,7 @@ export interface Issue {
   created_by: string
   created_at: string
   closed_at?: string | null
+  duration_minutes?: number | null
 }
 
 export interface IssueMessage {

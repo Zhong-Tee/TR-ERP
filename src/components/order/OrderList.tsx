@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
+import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import OrderDetailView from './OrderDetailView'
 
 interface OrderListProps {
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
@@ -28,6 +30,8 @@ interface OrderListProps {
   /** กรองวันที่สร้าง (สำหรับเมนูจัดส่งแล้ว) */
   dateFrom?: string
   dateTo?: string
+  /** เมื่อคลิกที่รายการ ให้เปิด OrderDetailView แทน onOrderClick */
+  useDetailViewOnClick?: boolean
 }
 
 export default function OrderList({
@@ -47,12 +51,80 @@ export default function OrderList({
   onDelete,
   dateFrom = '',
   dateTo = '',
+  useDetailViewOnClick = false,
 }: OrderListProps) {
+  const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [movingOrderId, setMovingOrderId] = useState<string | null>(null)
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState<Order | null>(null)
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
+  const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+
+  // ส่งตรวจสลิป modal
+  const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
+  const [slipCheckForm, setSlipCheckForm] = useState({ transfer_date: '', transfer_time: '', transfer_amount: '' })
+  const [slipCheckSubmitting, setSlipCheckSubmitting] = useState(false)
+  const [slipCheckSlipUrls, setSlipCheckSlipUrls] = useState<string[]>([])
+  const [slipCheckSlipLoading, setSlipCheckSlipLoading] = useState(false)
+  const [slipCheckResult, setSlipCheckResult] = useState<{ open: boolean; success: boolean; message: string }>({ open: false, success: false, message: '' })
+  const [slipCheckImageZoom, setSlipCheckImageZoom] = useState<string | null>(null)
+
+  async function openSlipCheckModal(order: Order) {
+    setSlipCheckOrder(order)
+    setSlipCheckForm({ transfer_date: '', transfer_time: '', transfer_amount: '' })
+    setSlipCheckSlipUrls([])
+    setSlipCheckSlipLoading(true)
+    try {
+      const { data } = await supabase
+        .from('ac_verified_slips')
+        .select('slip_image_url, slip_storage_path')
+        .eq('order_id', order.id)
+        .or('is_deleted.is.null,is_deleted.eq.false')
+        .order('created_at', { ascending: true })
+      const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
+      const urls: string[] = []
+      for (const r of rows) {
+        if (r.slip_storage_path) {
+          const parts = r.slip_storage_path.split('/')
+          const bucket = parts[0] || 'slip-images'
+          const filePath = parts.slice(1).join('/')
+          const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600)
+          if (signed?.signedUrl) { urls.push(signed.signedUrl); continue }
+          const retry = await supabase.storage.from('slip-images').createSignedUrl(filePath || r.slip_storage_path, 3600)
+          if (retry.data?.signedUrl) { urls.push(retry.data.signedUrl); continue }
+        }
+        if (r.slip_image_url) urls.push(r.slip_image_url)
+      }
+      setSlipCheckSlipUrls(urls)
+    } catch (e) {
+      console.error('Error loading slips:', e)
+    } finally {
+      setSlipCheckSlipLoading(false)
+    }
+  }
+
+  async function handleSlipCheckSubmit() {
+    if (!slipCheckOrder || !slipCheckForm.transfer_date || !slipCheckForm.transfer_time || !slipCheckForm.transfer_amount) return
+    setSlipCheckSubmitting(true)
+    try {
+      const { error } = await supabase.from('ac_manual_slip_checks').insert({
+        order_id: slipCheckOrder.id,
+        bill_no: slipCheckOrder.bill_no,
+        transfer_date: slipCheckForm.transfer_date,
+        transfer_time: slipCheckForm.transfer_time,
+        transfer_amount: parseFloat(slipCheckForm.transfer_amount),
+        submitted_by: user?.username || user?.email || 'unknown',
+      })
+      if (error) throw error
+      setSlipCheckResult({ open: true, success: true, message: 'ส่งตรวจสลิปเรียบร้อยแล้ว' })
+      setSlipCheckOrder(null)
+    } catch (e: any) {
+      setSlipCheckResult({ open: true, success: false, message: 'ส่งไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setSlipCheckSubmitting(false)
+    }
+  }
 
   useEffect(() => {
     loadOrders()
@@ -90,6 +162,11 @@ export default function OrderList({
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
         }
+        // admin-pump: เห็นเฉพาะบิลของตัวเอง
+        if (user?.role === 'admin-pump') {
+          const adminName = user.username ?? user.email ?? ''
+          if (adminName) query = query.eq('admin_user', adminName)
+        }
         const { data, error } = await query.limit(100)
         if (error) throw error
         filteredData = data || []
@@ -121,6 +198,11 @@ export default function OrderList({
         }
         if (dateTo) {
           query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
+        }
+        // admin-pump: เห็นเฉพาะบิลของตัวเอง
+        if (user?.role === 'admin-pump') {
+          const adminName = user.username ?? user.email ?? ''
+          if (adminName) query = query.eq('admin_user', adminName)
         }
 
         const { data, error } = await query.limit(100)
@@ -201,10 +283,19 @@ export default function OrderList({
 
         const orderIdsWithRejectedOverpayRefund = new Set((rejectedRefundsData || []).map((r: any) => r.order_id))
 
+        // Load manual slip check submissions
+        const { data: manualSlipData } = await supabase
+          .from('ac_manual_slip_checks')
+          .select('order_id')
+          .in('order_id', orderIds)
+
+        const orderIdsWithManualSlipCheck = new Set((manualSlipData || []).map((r: any) => r.order_id))
+
         filteredData = filteredData.map((order: any) => ({
           ...order,
           has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
-          has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id)
+          has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id),
+          has_manual_slip_check: orderIdsWithManualSlipCheck.has(order.id),
         }))
       }
       
@@ -243,7 +334,7 @@ export default function OrderList({
       {orders.map((order) => (
         <div
           key={order.id}
-          onClick={disableOrderClick ? undefined : () => onOrderClick(order)}
+          onClick={disableOrderClick ? undefined : () => (useDetailViewOnClick ? setDetailOrder(order) : onOrderClick(order))}
           className={`bg-gray-100 p-5 rounded-2xl border border-gray-200 transition-all ${
             disableOrderClick ? 'cursor-default' : 'hover:border-primary-300 hover:shadow-soft cursor-pointer'
           }`}
@@ -251,7 +342,9 @@ export default function OrderList({
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 mb-2 flex-wrap">
-                <strong className="text-primary-700 text-xl">{order.bill_no}</strong>
+                <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-primary-700 text-xl font-bold hover:text-blue-800 hover:underline transition-colors">
+                  {order.bill_no}
+                </button>
                 {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                   <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-accent-200 text-surface-900 border border-accent-300">
                     เคลม
@@ -419,20 +512,34 @@ export default function OrderList({
                 )}
               </div>
               <div className="text-base text-surface-600 min-w-0">
-                <p className="mb-1">
-                  <span className="font-medium">ลูกค้า:</span> {order.customer_name}
+                <p className="mb-1 flex flex-wrap gap-x-4">
+                  {order.customer_name && (
+                    <span><span className="font-medium">ชื่อช่องทาง:</span> {order.customer_name}</span>
+                  )}
+                  {order.recipient_name && (
+                    <span><span className="font-medium">ชื่อลูกค้า:</span> {order.recipient_name}</span>
+                  )}
+                  {order.customer_address && (
+                    <span><span className="font-medium">ที่อยู่:</span> {order.customer_address}</span>
+                  )}
+                  {order.channel_order_no && (
+                    <span><span className="font-medium">เลขคำสั่งซื้อ:</span> {order.channel_order_no}</span>
+                  )}
+                  {order.tracking_number && (
+                    <span><span className="font-medium">เลขพัสดุ:</span> {order.tracking_number}</span>
+                  )}
                 </p>
                 <p className="mb-1 font-bold">
                   ผู้ลงข้อมูล: {order.admin_user ?? '-'}
                 </p>
-                {order.tracking_number && (
-                  <p>
-                    <span className="font-medium">เลขพัสดุ:</span> {order.tracking_number}
-                  </p>
-                )}
               </div>
             </div>
             <div className="flex items-center gap-3 shrink-0">
+              {(order as any).has_manual_slip_check && (
+                <span className="px-2.5 py-1.5 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold whitespace-nowrap">
+                  ส่งตรวจสลิปแล้ว
+                </span>
+              )}
               <div className="text-right">
                 <div
                   className={`text-xl font-bold ${
@@ -449,7 +556,37 @@ export default function OrderList({
                   {formatDateTime(order.created_at)}
                 </div>
               </div>
-              {showMoveToWaitingButton && onMoveToWaiting && (
+              {(order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ') ? (
+                <div className="flex flex-col gap-1.5 items-end">
+                  {showMoveToWaitingButton && onMoveToWaiting && (
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        if (movingOrderId) return
+                        setMovingOrderId(order.id)
+                        try {
+                          await onMoveToWaiting(order)
+                        } finally {
+                          setMovingOrderId(null)
+                        }
+                      }}
+                      disabled={movingOrderId === order.id}
+                      className="px-3 py-2 bg-accent-200 hover:bg-accent-300 disabled:opacity-50 text-surface-900 text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); openSlipCheckModal(order) }}
+                    className="px-3 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                  >
+                    <i className="fas fa-paper-plane mr-1"></i>ส่งตรวจสลิป
+                  </button>
+                </div>
+              ) : null}
+              {showMoveToWaitingButton && onMoveToWaiting && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && (
                 <button
                   type="button"
                   onClick={async (e) => {
@@ -527,6 +664,126 @@ export default function OrderList({
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Detail Modal */}
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+      </Modal>
+
+      {/* ส่งตรวจสลิป Modal */}
+      <Modal open={!!slipCheckOrder} onClose={() => setSlipCheckOrder(null)} contentClassName="max-w-3xl w-full">
+        {slipCheckOrder && (
+          <div className="p-6">
+            <h3 className="text-xl font-bold text-gray-800 mb-1">ส่งตรวจสลิป</h3>
+            <p className="text-sm text-gray-500 mb-4">บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left: Slip images */}
+              <div>
+                <p className="text-sm font-semibold text-gray-700 mb-2">รูปสลิปโอน</p>
+                {slipCheckSlipLoading ? (
+                  <div className="flex justify-center py-12">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  </div>
+                ) : slipCheckSlipUrls.length === 0 ? (
+                  <div className="text-center py-8 text-gray-400 border rounded-xl bg-gray-50">
+                    <i className="fas fa-image text-3xl mb-2 block"></i>
+                    <p>ไม่พบรูปสลิป</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[450px] overflow-y-auto">
+                    {slipCheckSlipUrls.map((url, idx) => (
+                      <img
+                        key={idx}
+                        src={url}
+                        alt={`สลิป ${idx + 1}`}
+                        className="w-full object-contain rounded-lg border cursor-pointer hover:border-blue-400 transition bg-gray-50"
+                        onClick={() => setSlipCheckImageZoom(url)}
+                        onError={(e) => { e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23eee" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="12" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eโหลดไม่ได้%3C/text%3E%3C/svg%3E' }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Right: Form fields */}
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่โอน</label>
+                  <input
+                    type="date"
+                    value={slipCheckForm.transfer_date}
+                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_date: e.target.value }))}
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-600 mb-1">เวลาโอน</label>
+                  <input
+                    type="time"
+                    value={slipCheckForm.transfer_time}
+                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_time: e.target.value }))}
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-gray-600 mb-1">ยอดโอน (บาท)</label>
+                  <input
+                    type="number"
+                    value={slipCheckForm.transfer_amount}
+                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_amount: e.target.value }))}
+                    placeholder="0.00"
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => setSlipCheckOrder(null)}
+                    className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    onClick={handleSlipCheckSubmit}
+                    disabled={slipCheckSubmitting || !slipCheckForm.transfer_date || !slipCheckForm.transfer_time || !slipCheckForm.transfer_amount}
+                    className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50"
+                  >
+                    {slipCheckSubmitting ? 'กำลังส่ง...' : 'ยืนยัน'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Slip zoom modal */}
+      <Modal open={!!slipCheckImageZoom} onClose={() => setSlipCheckImageZoom(null)} contentClassName="max-w-xl w-full">
+        {slipCheckImageZoom && (
+          <div className="p-4">
+            <img src={slipCheckImageZoom} alt="สลิปขยาย" className="max-w-full max-h-[75vh] h-auto mx-auto rounded-lg" />
+            <div className="text-center mt-3">
+              <button onClick={() => setSlipCheckImageZoom(null)} className="px-4 py-2 border rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50">ปิด</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ส่งตรวจสลิป result modal */}
+      <Modal open={slipCheckResult.open} onClose={() => setSlipCheckResult({ open: false, success: false, message: '' })} contentClassName="max-w-sm">
+        <div className="p-6 text-center">
+          <div className={`text-5xl mb-4 ${slipCheckResult.success ? 'text-green-500' : 'text-red-500'}`}>
+            <i className={`fas ${slipCheckResult.success ? 'fa-check-circle' : 'fa-times-circle'}`}></i>
+          </div>
+          <p className="text-gray-700 font-semibold mb-4">{slipCheckResult.message}</p>
+          <button
+            onClick={() => setSlipCheckResult({ open: false, success: false, message: '' })}
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition"
+          >
+            ตกลง
+          </button>
+        </div>
       </Modal>
     </div>
   )

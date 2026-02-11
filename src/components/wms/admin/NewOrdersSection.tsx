@@ -36,12 +36,14 @@ export default function NewOrdersSection() {
       .channel('wms-new-workorders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
         loadWorkOrders()
+        window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
     const ordersChannel = supabase
       .channel('wms-new-workorders-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
         loadWorkOrders()
+        window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
     return () => {
@@ -63,7 +65,15 @@ export default function NewOrdersSection() {
       setLoading(false)
       return
     }
-    setWorkOrders(data)
+
+    // กรองเฉพาะใบงานที่ยังไม่ได้มอบหมาย Picker (ไม่มีใน wms_orders)
+    const woNames = data.map((wo) => wo.work_order_name)
+    const { data: assignedRows } = await supabase
+      .from('wms_orders')
+      .select('order_id')
+      .in('order_id', woNames)
+    const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
+    setWorkOrders(data.filter((wo) => !assignedSet.has(wo.work_order_name)))
     setLoading(false)
   }
 
@@ -141,6 +151,8 @@ export default function NewOrdersSection() {
       await ensurePlanDeptStart(selectedWorkOrder)
       showMessage({ message: `มอบหมายใบงาน ${selectedWorkOrder} ให้ Picker เรียบร้อยแล้ว` })
       closeAssignPicker()
+      loadWorkOrders()
+      window.dispatchEvent(new Event('wms-data-changed'))
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {

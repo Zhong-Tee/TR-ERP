@@ -222,23 +222,26 @@ export default function PickerLayout() {
 
   return (
     <div className="min-h-screen w-full bg-slate-900 text-white flex flex-col overflow-hidden rounded-none">
-      <header className="p-3 border-b border-slate-800 flex justify-between items-center bg-slate-900/90 sticky top-0 z-20">
-        <div className="flex items-center gap-2">
+      <header className="p-3 border-b border-slate-800 flex items-center bg-slate-900/90 sticky top-0 z-20">
+        {/* Left - fixed width */}
+        <div className="flex items-center gap-2 w-1/3 min-w-0">
           {!showOrderList && (
-            <button onClick={backToOrderList} className="bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center">
+            <button onClick={backToOrderList} className="bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center shrink-0">
               <i className="fas fa-chevron-left text-xs"></i>
             </button>
           )}
-          <div className="flex flex-col">
-            <span className="text-[16px] text-gray-500 font-black">พนักงาน</span>
-            <span className="text-[18.66px] font-bold text-blue-400 leading-tight">{user?.username || user?.email || '---'}</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-[16px] text-gray-500 font-black truncate">พนักงาน</span>
+            <span className="text-[18.66px] font-bold text-blue-400 leading-tight truncate">{user?.username || user?.email || '---'}</span>
           </div>
         </div>
-        <div className="flex flex-col items-center">
+        {/* Center - timer always centered */}
+        <div className="flex flex-col items-center w-1/3">
           <span className="text-[16px] text-gray-500 font-bold uppercase mb-1 text-center">ระยะเวลา</span>
           <span className="text-2xl font-mono font-black text-yellow-400">{timer}</span>
         </div>
-        <div className="flex flex-col items-end gap-2">
+        {/* Right - fixed width */}
+        <div className="flex flex-col items-end gap-2 w-1/3">
           <button
             type="button"
             onClick={handleLogout}
