@@ -563,6 +563,7 @@ export default function Account() {
     }
   }
 
+  // @ts-ignore TS6133 - kept for future use
   function openConfirmTaxInvoice(order: BillingRequestOrder) {
     setBillingConfirmModal({ open: true, order, type: 'tax-invoice', submitting: false })
   }
