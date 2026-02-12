@@ -8,6 +8,7 @@ import Modal from '../components/ui/Modal'
 import BillEditSection from '../components/account/BillEditSection'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
 import CashBillModal from '../components/account/CashBillModal'
+import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import * as XLSX from 'xlsx'
 
 type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit'
@@ -145,6 +146,8 @@ export default function Account() {
   const [billingResultModal, setBillingResultModal] = useState<{ open: boolean; title: string; message: string }>({ open: false, title: '', message: '' })
   /** Modal เปิดบิลเงินสด */
   const [cashBillModal, setCashBillModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
+  /** Modal เปิดใบกำกับภาษี */
+  const [taxInvoiceModal, setTaxInvoiceModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
   const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
@@ -614,7 +617,40 @@ export default function Account() {
   }
 
   async function confirmTaxInvoice(order: BillingRequestOrder) {
-    openConfirmTaxInvoice(order)
+    setTaxInvoiceModal({ open: true, order, submitting: false, viewOnly: false })
+  }
+
+  /** เปิดใบกำกับภาษีแบบดูอย่างเดียว (จากเมนูรายการอนุมัติ) */
+  function viewTaxInvoice(order: BillingRequestOrder) {
+    setTaxInvoiceModal({ open: true, order, submitting: false, viewOnly: true })
+  }
+
+  async function submitTaxInvoiceConfirm(order: BillingRequestOrder) {
+    if (!user) return
+    setTaxInvoiceModal((prev) => ({ ...prev, submitting: true }))
+    try {
+      const bd = order.billing_details || {}
+      const newBillingDetails = {
+        ...bd,
+        account_confirmed_tax: true,
+        account_confirmed_tax_at: new Date().toISOString(),
+        account_confirmed_tax_by: user.id,
+      }
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ billing_details: newBillingDetails })
+        .eq('id', order.id)
+      if (error) throw error
+      setTaxInvoiceModal({ open: false, order: null, submitting: false, viewOnly: false })
+      setBillingResultModal({ open: true, title: 'สำเร็จ', message: 'ยืนยันใบกำกับภาษีเรียบร้อย' })
+      await loadBillingRequests()
+      await loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error: any) {
+      console.error('Error confirming tax invoice:', error)
+      setTaxInvoiceModal({ open: false, order: null, submitting: false, viewOnly: false })
+      setBillingResultModal({ open: true, title: 'เกิดข้อผิดพลาด', message: 'เกิดข้อผิดพลาดในการยืนยันใบกำกับภาษี: ' + error.message })
+    }
   }
 
   async function confirmCashBill(order: BillingRequestOrder) {
@@ -626,7 +662,7 @@ export default function Account() {
     setCashBillModal({ open: true, order, submitting: false, viewOnly: true })
   }
 
-  async function submitCashBillConfirm(order: BillingRequestOrder) {
+  async function submitCashBillConfirm(order: BillingRequestOrder, invoiceNo?: string) {
     if (!user) return
     setCashBillModal((prev) => ({ ...prev, submitting: true }))
     try {
@@ -636,6 +672,7 @@ export default function Account() {
         account_confirmed_cash: true,
         account_confirmed_cash_at: new Date().toISOString(),
         account_confirmed_cash_by: user.id,
+        ...(invoiceNo ? { cash_bill_no: invoiceNo } : {}),
       }
       const { error } = await supabase
         .from('or_orders')
@@ -1119,13 +1156,23 @@ export default function Account() {
                             <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 text-gray-500 text-sm">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
                             <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); openSlipPopup(o.id, o.bill_no) }}
-                                className="px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
-                              >
-                                ดูสลิปโอน
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); viewTaxInvoice(o) }}
+                                  className="px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors inline-flex items-center gap-1.5"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                  ออกใบกำกับภาษี
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); openSlipPopup(o.id, o.bill_no) }}
+                                  className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors"
+                                >
+                                  ดูสลิปโอน
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         )
@@ -1678,9 +1725,19 @@ export default function Account() {
         open={cashBillModal.open}
         order={cashBillModal.order}
         onClose={() => { if (!cashBillModal.submitting) setCashBillModal({ open: false, order: null, submitting: false, viewOnly: false }) }}
-        onConfirm={(o) => submitCashBillConfirm(o as BillingRequestOrder)}
+        onConfirm={(o, invoiceNo) => submitCashBillConfirm(o as BillingRequestOrder, invoiceNo)}
         submitting={cashBillModal.submitting}
         hideConfirm={cashBillModal.viewOnly}
+      />
+
+      {/* Modal เปิดใบกำกับภาษี */}
+      <TaxInvoiceModal
+        open={taxInvoiceModal.open}
+        order={taxInvoiceModal.order}
+        onClose={() => { if (!taxInvoiceModal.submitting) setTaxInvoiceModal({ open: false, order: null, submitting: false, viewOnly: false }) }}
+        onConfirm={(o) => submitTaxInvoiceConfirm(o as BillingRequestOrder)}
+        submitting={taxInvoiceModal.submitting}
+        hideConfirm={taxInvoiceModal.viewOnly}
       />
 
       {/* Modal ยืนยัน ขอใบกำกับภาษี (ใช้สำหรับ tax-invoice เท่านั้น) */}

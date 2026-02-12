@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@react-pdf/renderer": "^4.3.2",
     "@supabase/supabase-js": "^2.91.0",
     "exceljs": "^4.4.0",
     "html2canvas": "^1.4.1",
