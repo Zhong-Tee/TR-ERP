@@ -29,11 +29,17 @@ export async function fetchWorkOrders(): Promise<WorkOrder[]> {
   return data || []
 }
 
-/** Work order with QC progress: total items, qc_done count, remaining. */
+/** Work order with QC progress: total items, pass/fail/remaining counts (items & bills). */
 export interface WorkOrderWithProgress extends WorkOrder {
   total_items: number
   qc_done: number
   remaining: number
+  pass_items: number
+  fail_items: number
+  total_bills: number
+  pass_bills: number
+  fail_bills: number
+  remaining_bills: number
 }
 
 /** Load work orders with QC progress. Excludes WOs that are fully QC'd (remaining === 0) when excludeCompleted is true. */
@@ -65,46 +71,75 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       total_items: 0,
       qc_done: 0,
       remaining: 0,
+      pass_items: 0,
+      fail_items: 0,
+      total_bills: 0,
+      pass_bills: 0,
+      fail_bills: 0,
+      remaining_bills: 0,
     }))
   }
 
+  // ดึง items พร้อม item_uid + order_id เพื่อ mapping กลับไปที่ bill
   const { data: items, error: itemsErr } = await supabase
     .from('or_order_items')
-    .select('order_id')
+    .select('order_id, item_uid')
     .in('order_id', allOrderIds)
   if (itemsErr) throw itemsErr
+
   const totalByOrderId: Record<string, number> = {}
+  // mapping: item_uid → order_id (เพื่อรู้ว่า item อยู่ bill ไหน)
+  const itemUidToOrderId: Record<string, string> = {}
+  // mapping: order_id → item_uids (ทุก item ใน bill นั้น)
+  const itemUidsByOrderId: Record<string, string[]> = {}
   ;(items || []).forEach((row) => {
     totalByOrderId[row.order_id] = (totalByOrderId[row.order_id] || 0) + 1
+    if (row.item_uid) {
+      itemUidToOrderId[row.item_uid] = row.order_id
+      if (!itemUidsByOrderId[row.order_id]) itemUidsByOrderId[row.order_id] = []
+      itemUidsByOrderId[row.order_id].push(row.item_uid)
+    }
   })
+
   const totalByWo: Record<string, number> = {}
   woNames.forEach((name) => {
     const ids = orderIdsByWo[name] || []
     totalByWo[name] = ids.reduce((sum, id) => sum + (totalByOrderId[id] || 0), 0)
   })
 
-  const { data: completedSessions, error: sessErr } = await supabase
+  // ดึง sessions ทั้งหมด (รวม session ที่ยังเปิดอยู่) พร้อม end_time เพื่อเช็ค open session
+  const { data: allSessions, error: sessErr } = await supabase
     .from('qc_sessions')
-    .select('id, filename')
-    .not('end_time', 'is', null)
+    .select('id, filename, end_time')
   if (sessErr) throw sessErr
   const sessionIdsByWo: Record<string, string[]> = {}
-  woNames.forEach((n) => (sessionIdsByWo[n] = []))
-  ;(completedSessions || []).forEach((s) => {
+  const hasOpenSessionByWo: Record<string, boolean> = {}
+  woNames.forEach((n) => { sessionIdsByWo[n] = []; hasOpenSessionByWo[n] = false })
+  ;(allSessions || []).forEach((s) => {
     const match = s.filename?.match(/^WO-(.+)$/)
-    if (match && woNames.includes(match[1])) sessionIdsByWo[match[1]].push(s.id)
+    if (match && woNames.includes(match[1])) {
+      sessionIdsByWo[match[1]].push(s.id)
+      if (!s.end_time) hasOpenSessionByWo[match[1]] = true
+    }
   })
 
-  const completedSessionIds = (completedSessions || []).map((s) => s.id)
-  let qcDoneBySession: Record<string, number> = {}
-  if (completedSessionIds.length > 0) {
+  // ดึง qc_records พร้อม item_uid + status เพื่อคำนวณ pass/fail ทั้ง item level และ bill level
+  const allSessionIds = (allSessions || []).map((s) => s.id)
+  // mapping: item_uid → status (ล่าสุด)
+  const itemStatusMap: Record<string, string> = {}
+  let qcPassBySession: Record<string, number> = {}
+  if (allSessionIds.length > 0) {
     const { data: records, error: recErr } = await supabase
       .from('qc_records')
-      .select('session_id')
-      .in('session_id', completedSessionIds)
+      .select('session_id, item_uid, status')
+      .in('session_id', allSessionIds)
     if (!recErr && records?.length) {
       records.forEach((r) => {
-        qcDoneBySession[r.session_id] = (qcDoneBySession[r.session_id] || 0) + 1
+        // เก็บ status ล่าสุดของแต่ละ item_uid
+        itemStatusMap[r.item_uid] = r.status
+        if (r.status === 'pass') {
+          qcPassBySession[r.session_id] = (qcPassBySession[r.session_id] || 0) + 1
+        }
       })
     }
   }
@@ -112,17 +147,46 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   const qcDoneByWo: Record<string, number> = {}
   woNames.forEach((name) => {
     const sids = sessionIdsByWo[name] || []
-    qcDoneByWo[name] = sids.reduce((sum, sid) => sum + (qcDoneBySession[sid] || 0), 0)
+    qcDoneByWo[name] = sids.reduce((sum, sid) => sum + (qcPassBySession[sid] || 0), 0)
   })
 
   const result: WorkOrderWithProgress[] = woList.map((wo) => {
-    const total_items = totalByWo[wo.work_order_name] ?? 0
-    const qc_done = qcDoneByWo[wo.work_order_name] ?? 0
-    const remaining = Math.max(0, total_items - qc_done)
-    return { ...wo, total_items, qc_done, remaining }
+    const woName = wo.work_order_name
+    const total_items = totalByWo[woName] ?? 0
+    const qc_done = qcDoneByWo[woName] ?? 0
+    const orderIds = orderIdsByWo[woName] || []
+    const total_bills = orderIds.length
+
+    // คำนวณ pass/fail ระดับ item
+    let pass_items = 0
+    let fail_items = 0
+    orderIds.forEach((orderId) => {
+      const uids = itemUidsByOrderId[orderId] || []
+      uids.forEach((uid) => {
+        const st = itemStatusMap[uid]
+        if (st === 'pass') pass_items++
+        else if (st === 'fail') fail_items++
+      })
+    })
+    const remaining = Math.max(0, total_items - pass_items - fail_items)
+
+    // คำนวณ pass/fail ระดับ bill
+    let pass_bills = 0
+    let fail_bills = 0
+    orderIds.forEach((orderId) => {
+      const uids = itemUidsByOrderId[orderId] || []
+      if (uids.length === 0) return
+      const statuses = uids.map((uid) => itemStatusMap[uid] || 'pending')
+      if (statuses.every((s) => s === 'pass')) pass_bills++
+      else if (statuses.some((s) => s === 'fail')) fail_bills++
+    })
+    const remaining_bills = total_bills - pass_bills - fail_bills
+
+    return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, total_bills, pass_bills, fail_bills, remaining_bills }
   })
 
-  if (excludeCompleted) return result.filter((r) => r.remaining > 0)
+  // ไม่กรองออกถ้ายังมี session เปิดอยู่ (ยังไม่กด Finish Job) แม้ remaining จะ = 0
+  if (excludeCompleted) return result.filter((r) => r.remaining > 0 || hasOpenSessionByWo[r.work_order_name])
   return result
 }
 

@@ -579,6 +579,13 @@ export default function OrderList({
                   )}
                   <button
                     type="button"
+                    onClick={(e) => { e.stopPropagation(); onOrderClick(order) }}
+                    className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                  >
+                    <i className="fas fa-edit mr-1"></i>แก้ไขบิล
+                  </button>
+                  <button
+                    type="button"
                     onClick={(e) => { e.stopPropagation(); openSlipCheckModal(order) }}
                     className="px-3 py-2 bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
                   >

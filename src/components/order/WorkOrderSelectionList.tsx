@@ -140,7 +140,7 @@ export default function WorkOrderSelectionList({
    * PACK = จำนวนบิล, STAMP/STK/CTT/LASER/TUBE = นับจาก product_category ของแต่ละรายการ
    */
   async function computeQtyFromOrders(orderIds: string[]): Promise<Record<string, number>> {
-    const qty: Record<string, number> = { STAMP: 0, STK: 0, CTT: 0, LASER: 0, TUBE: 0, PACK: orderIds.length }
+    const qty: Record<string, number> = { STAMP: 0, STK: 0, CTT: 0, LASER: 0, TUBE: 0, ETC: 0, PACK: orderIds.length }
     if (orderIds.length === 0) return qty
 
     const { data: items, error: itemsErr } = await supabase
@@ -168,6 +168,7 @@ export default function WorkOrderSelectionList({
       if (category.includes('UV')) qty.CTT += 1
       if (category.includes('LASER')) qty.LASER += 1
       if (category.includes('TUBE')) qty.TUBE += 1
+      if (['CALENDAR', 'ETC', 'INK'].includes(category)) qty.ETC += 1
     })
     return qty
   }

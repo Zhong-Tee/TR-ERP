@@ -3,6 +3,16 @@ import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
 
+// Category matching — same groups as Plan Dashboard "เบิก"
+const MAIN_KEYWORDS = ['STAMP', 'LASER']
+const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK']
+const isMainCategory = (cat: string): boolean => {
+  const upper = (cat || '').toUpperCase()
+  if (MAIN_KEYWORDS.some((kw) => upper.includes(kw))) return true
+  if (ETC_CATEGORIES.includes(upper)) return true
+  return false
+}
+
 export default function NewOrdersSection() {
   const [workOrders, setWorkOrders] = useState<Array<{ id: string; work_order_name: string; order_count: number; created_at: string }>>([])
   const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
@@ -18,7 +28,7 @@ export default function NewOrdersSection() {
     if (error || !data) return
     const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
     const dept = 'เบิก'
-    const procNames = ['ดึงกระดาษ/อุปกรณ์']
+    const procNames = ['หยิบของ', 'เสร็จแล้ว']
     tracks[dept] = tracks[dept] || {}
     procNames.forEach((p) => {
       if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
@@ -73,7 +83,41 @@ export default function NewOrdersSection() {
       .select('order_id')
       .in('order_id', woNames)
     const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
-    setWorkOrders(data.filter((wo) => !assignedSet.has(wo.work_order_name)))
+    const unassigned = data.filter((wo) => !assignedSet.has(wo.work_order_name))
+
+    // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/ETC)
+    if (unassigned.length > 0) {
+      const unassignedNames = unassigned.map((wo) => wo.work_order_name)
+      const { data: orders } = await supabase
+        .from('or_orders')
+        .select('work_order_name, or_order_items(product_id)')
+        .in('work_order_name', unassignedNames)
+
+      const allItems = (orders || []).flatMap((o: any) =>
+        (o.or_order_items || []).map((i: any) => ({ product_id: i.product_id, work_order_name: o.work_order_name }))
+      )
+      const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
+
+      let productCategoryMap: Record<string, string> = {}
+      if (productIds.length > 0) {
+        const { data: products } = await supabase.from('pr_products').select('id, product_category').in('id', productIds)
+        productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[p.id] = p.product_category || ''
+          return acc
+        }, {})
+      }
+
+      const woWithPickableItems = new Set<string>()
+      allItems.forEach((item: any) => {
+        if (isMainCategory(productCategoryMap[item.product_id] || '')) {
+          woWithPickableItems.add(item.work_order_name)
+        }
+      })
+
+      setWorkOrders(unassigned.filter((wo) => woWithPickableItems.has(wo.work_order_name)))
+    } else {
+      setWorkOrders([])
+    }
     setLoading(false)
   }
 
@@ -123,27 +167,76 @@ export default function NewOrdersSection() {
       }
 
       const productIds = Array.from(new Set(items.map((i: any) => i.product_id).filter(Boolean)))
-      let productMap: Record<string, { product_code?: string; storage_location?: string }> = {}
+      let productMap: Record<string, { product_code?: string; storage_location?: string; product_category?: string; rubber_code?: string }> = {}
       if (productIds.length > 0) {
         const { data: products } = await supabase
           .from('pr_products')
-          .select('id, product_code, storage_location')
+          .select('id, product_code, storage_location, product_category, rubber_code')
           .in('id', productIds)
         productMap = (products || []).reduce((acc: Record<string, any>, p: any) => {
-          acc[p.id] = { product_code: p.product_code, storage_location: p.storage_location }
+          acc[p.id] = { product_code: p.product_code, storage_location: p.storage_location, product_category: p.product_category, rubber_code: p.rubber_code }
           return acc
         }, {})
       }
 
-      const wmsRows = items.map((item: any) => ({
+      // Normal items (filtered by category) — CONDO STAMP รวม 5 ชั้นเป็น 1 รายการ
+      const filteredItems = items.filter((item: any) => {
+        const cat = productMap[item.product_id]?.product_category || ''
+        return isMainCategory(cat)
+      })
+
+      // Group by product_id เพื่อรวม CONDO STAMP (5 ชั้น → 1 รายการ)
+      const groupedByProduct = new Map<string, { product_id: string; product_name: string; totalQty: number }>()
+      filteredItems.forEach((item: any) => {
+        const key = item.product_id || item.product_name
+        const existing = groupedByProduct.get(key)
+        if (existing) {
+          existing.totalQty += item.quantity || 1
+        } else {
+          groupedByProduct.set(key, { product_id: item.product_id, product_name: item.product_name || 'N/A', totalQty: item.quantity || 1 })
+        }
+      })
+
+      const normalRows = Array.from(groupedByProduct.values()).map((group) => {
+        const cat = (productMap[group.product_id]?.product_category || '').toUpperCase()
+        // CONDO STAMP: 5 ชั้น = 1 ชุด → หาร 5 แล้วปัดขึ้น
+        const qty = cat.includes('CONDO STAMP') ? Math.ceil(group.totalQty / 5) : group.totalQty
+        return {
+          order_id: selectedWorkOrder,
+          product_code: productMap[group.product_id]?.product_code || group.product_name || 'N/A',
+          product_name: group.product_name,
+          location: productMap[group.product_id]?.storage_location || '',
+          qty,
+          assigned_to: selectedPickerId,
+          status: 'pending',
+        }
+      })
+
+      // Spare parts (grouped by rubber_code)
+      const spareMap = new Map<string, number>()
+      items.forEach((item: any) => {
+        const rc = productMap[item.product_id]?.rubber_code
+        const cat = productMap[item.product_id]?.product_category || ''
+        if (rc && isMainCategory(cat)) {
+          spareMap.set(rc, (spareMap.get(rc) || 0) + (item.quantity || 1))
+        }
+      })
+      const spareRows = Array.from(spareMap.entries()).map(([rc, spareQty]) => ({
         order_id: selectedWorkOrder,
-        product_code: productMap[item.product_id]?.product_code || item.product_name || 'N/A',
-        product_name: item.product_name || 'N/A',
-        location: productMap[item.product_id]?.storage_location || '',
-        qty: item.quantity || 1,
+        product_code: 'SPARE_PART',
+        product_name: `หน้ายาง+โฟม ${rc}`,
+        location: 'อะไหล่',
+        qty: spareQty,
         assigned_to: selectedPickerId,
         status: 'pending',
       }))
+
+      const wmsRows = [...normalRows, ...spareRows]
+
+      if (wmsRows.length === 0) {
+        showMessage({ message: 'ไม่มีสินค้าในหมวดหมู่ที่ต้องหยิบในใบงานนี้' })
+        return
+      }
 
       const { error } = await supabase.from('wms_orders').insert(wmsRows)
       if (error) throw error

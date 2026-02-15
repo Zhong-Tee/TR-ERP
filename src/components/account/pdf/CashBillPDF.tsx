@@ -64,18 +64,18 @@ const s = StyleSheet.create({
     borderWidth: 0.5,
     borderColor: cbColors.black,
     width: mm(70),
-    height: mm(28),
+    height: mm(32),
     padding: mm(2),
     justifyContent: 'center',
   },
   companyName: {
     fontSize: 9,
     fontWeight: 'bold',
-    marginBottom: 1,
+    marginBottom: 3,
   },
   companyDetail: {
     fontSize: 8,
-    lineHeight: 1.4,
+    lineHeight: 1.8,
     color: cbColors.darkGray,
   },
   titleBlock: {

@@ -103,6 +103,8 @@ export interface OrderItem {
   line_3: string | null
   /** เมื่อ true = ไม่รับข้อความบรรทัด 1-3, แสดง "ไม่รับชื่อ" ที่หมายเหตุ */
   no_name_line?: boolean
+  /** เมื่อ true = สินค้าของแถม (ฟรี) ไม่คิดราคา */
+  is_free?: boolean
   notes: string | null
   file_attachment: string | null
   packing_status: string | null
@@ -221,6 +223,8 @@ export interface Product {
   product_type: string | null
   rubber_code: string | null
   storage_location: string | null
+  unit_cost: number | null
+  safety_stock: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket product-images ตาม product_code */
   image_url?: string | null
   is_active: boolean
@@ -353,6 +357,8 @@ export interface InventoryAdjustmentItem {
   adjustment_id: string
   product_id: string
   qty_delta: number
+  new_safety_stock?: number | null
+  new_order_point?: string | null
   created_at: string
 }
 

@@ -21,12 +21,16 @@ export default function Warehouse() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
+  const [sellerFilter, setSellerFilter] = useState('')
+  const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
+  const [sellers, setSellers] = useState<string[]>([])
 
   useEffect(() => {
     loadProducts()
     loadBalances()
     loadCategories()
+    loadSellers()
   }, [])
 
   async function loadProducts() {
@@ -34,7 +38,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, order_point')
+        .select('id, product_code, product_name, product_category, order_point, seller_name')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -79,6 +83,37 @@ export default function Warehouse() {
     }
   }
 
+  async function loadSellers() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_sellers')
+        .select('name')
+        .eq('is_active', true)
+        .order('name')
+      if (error) throw error
+      setSellers((data || []).map((r: { name: string }) => r.name))
+    } catch (e) {
+      console.error('Load sellers failed:', e)
+    }
+  }
+
+  // คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ (ใช้ทั้งแสดงปุ่มและส่งไป Sidebar)
+  const belowOrderPointCount = useMemo(() => {
+    return products.filter((p) => {
+      const balance = balances[p.id]
+      const onHand = Number(balance?.on_hand || 0)
+      const orderPoint = toNumber(p.order_point)
+      return orderPoint !== null && orderPoint > 0 && onHand < orderPoint
+    }).length
+  }, [products, balances])
+
+  // ส่งจำนวนไป Sidebar ทุกครั้งที่เปลี่ยน
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent('warehouse-below-order-point', { detail: { count: belowOrderPointCount } })
+    )
+  }, [belowOrderPointCount])
+
   const filteredProducts = useMemo(() => {
     const term = search.trim().toLowerCase()
     return products.filter((p) => {
@@ -87,14 +122,25 @@ export default function Warehouse() {
         p.product_code.toLowerCase().includes(term) ||
         p.product_name.toLowerCase().includes(term)
       const matchCategory = !categoryFilter || (p.product_category || '') === categoryFilter
-      return matchTerm && matchCategory
+      const matchSeller = !sellerFilter || (p.seller_name || '') === sellerFilter
+
+      // ตัวกรองถึงจุดสั่งซื้อ
+      let matchOrderPoint = true
+      if (onlyBelowOrderPoint) {
+        const balance = balances[p.id]
+        const onHand = Number(balance?.on_hand || 0)
+        const orderPoint = toNumber(p.order_point)
+        matchOrderPoint = orderPoint !== null && orderPoint > 0 && onHand < orderPoint
+      }
+
+      return matchTerm && matchCategory && matchSeller && matchOrderPoint
     })
-  }, [products, search, categoryFilter])
+  }, [products, search, categoryFilter, sellerFilter, onlyBelowOrderPoint, balances])
 
   return (
     <div className="space-y-6 mt-4">
       <div className="bg-white p-6 rounded-lg shadow">
-        <div className="flex flex-wrap gap-4 mb-4">
+        <div className="flex flex-wrap gap-4 mb-4 items-center">
           <div className="flex-1 min-w-[200px]">
             <label htmlFor="warehouse-search" className="sr-only">ค้นหาสินค้า</label>
             <input
@@ -115,12 +161,43 @@ export default function Warehouse() {
               onChange={(e) => setCategoryFilter(e.target.value)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-base"
             >
-              <option value="">ทั้งหมด</option>
+              <option value="">หมวดหมู่ทั้งหมด</option>
               {categories.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
           </div>
+          <div className="w-full sm:w-auto sm:min-w-[180px]">
+            <label htmlFor="warehouse-seller" className="sr-only">ผู้ขาย</label>
+            <select
+              id="warehouse-seller"
+              value={sellerFilter}
+              onChange={(e) => setSellerFilter(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-base"
+            >
+              <option value="">ผู้ขายทั้งหมด</option>
+              {sellers.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOnlyBelowOrderPoint((v) => !v)}
+            className={`px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap ${
+              onlyBelowOrderPoint
+                ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600'
+                : 'bg-white text-orange-600 border-orange-300 hover:bg-orange-50'
+            }`}
+          >
+            ถึงจุดสั่งซื้อ {belowOrderPointCount > 0 && (
+              <span className={`ml-1.5 inline-flex items-center justify-center min-w-[1.4rem] h-5 px-1.5 rounded-full text-xs font-bold ${
+                onlyBelowOrderPoint ? 'bg-white text-orange-600' : 'bg-orange-500 text-white'
+              }`}>
+                {belowOrderPointCount}
+              </span>
+            )}
+          </button>
         </div>
 
         {loading ? (
@@ -138,6 +215,7 @@ export default function Warehouse() {
                   <th className="p-3 text-left font-semibold">รหัสสินค้า</th>
                   <th className="p-3 text-left font-semibold">หมวดหมู่</th>
                   <th className="p-3 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="p-3 text-left font-semibold">ผู้ขาย</th>
                   <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>
                   <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
                   <th className="p-3 text-center font-semibold rounded-tr-xl">Safety stock</th>
@@ -160,6 +238,7 @@ export default function Warehouse() {
                       <td className="p-3 font-medium">{product.product_code}</td>
                       <td className="p-3">{product.product_category || '-'}</td>
                       <td className="p-3">{product.product_name}</td>
+                      <td className="p-3 text-sm">{product.seller_name || '-'}</td>
                       <td className="p-3 text-center">{product.order_point || '-'}</td>
                       <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
                         {onHand.toLocaleString()}

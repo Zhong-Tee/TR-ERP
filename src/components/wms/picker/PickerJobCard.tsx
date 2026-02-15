@@ -14,9 +14,10 @@ interface PickerJobCardProps {
   onFinish: () => void
   onNoProduct: () => void
   onNavigate: (dir: number) => void
+  onJumpToItem: (itemId: string) => void
 }
 
-export default function PickerJobCard({ item, allItems, currentIndex, onFinish, onNoProduct, onNavigate }: PickerJobCardProps) {
+export default function PickerJobCard({ item, allItems, currentIndex, onFinish, onNoProduct, onNavigate, onJumpToItem }: PickerJobCardProps) {
   const [showListModal, setShowListModal] = useState(false)
   const [showAlertModal, setShowAlertModal] = useState(false)
   const { user } = useAuthContext()
@@ -24,7 +25,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
 
   const finished = ['picked', 'correct', 'out_of_stock'].includes(item.status)
   const imgUrl =
-    item.product_code === 'SPARE_PART' ? 'https://placehold.co/500x500?text=SPARE' : getProductImageUrl(item.product_code)
+    item.product_code === 'SPARE_PART' ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
 
   return (
     <>
@@ -120,8 +121,8 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
           currentItemId={item.id}
           currentIndex={currentIndex}
           onClose={() => setShowListModal(false)}
-          onJumpTo={(idx) => {
-            onNavigate(idx - currentIndex)
+          onJumpTo={(itemId) => {
+            onJumpToItem(itemId)
             setShowListModal(false)
           }}
         />

@@ -5,6 +5,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
+import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
@@ -12,6 +13,45 @@ const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
 const ECOMMERCE_CHANNELS = ['LZTR']
 /** หมวดสินค้าที่ไม่นับเป็นสินค้าหลัก (นับเป็นอะไหล่เท่านั้น) */
 const PICKING_EXCLUDED_CATEGORIES = ['UV', 'STK', 'TUBE']
+
+/** Flash Express template: 24 headers (ต้องตรง 100% กับ template ที่ Flash Express กำหนด) */
+const FLASH_EXPRESS_H = [
+  "Customer_order_number\n(เลขออเดอร์ของลูกค้า)",
+  "*Consignee_name\n(ชื่อผู้รับ)",
+  "*Address\n(ทิ่อยู่)",
+  "*Postal_code\n(รหัสไปรษณีย์)",
+  "*Phone_number\n(เบอร์โทรศัพท์)",
+  "Phone_number2\n(เบอร์โทรศัพท์)",
+  "Number of parcels \n\uFF08\u0E08\u0E33\u0E19\u0E27\u0E19\u0E1E\u0E31\u0E2A\u0E14\u0E38\uFF09",
+  "COD\n(ยอดเรียกเก็บ)",
+  "Item description1(Name|Size/Weight|color|quantity)",
+  "Item description2(Name|Size/Weight|color|quantity)",
+  "Item description3(Name|Size/Weight|color|quantity)",
+  "Item description4(Name|Size/Weight|color|quantity)",
+  "Item description5(Name|Size/Weight|color|quantity)",
+  "Item_type\n(ประเภทสินค้า)",
+  "*Weight_kg\n(น้ำหนัก)",
+  "Length\n(ยาว)",
+  "Width\n(กว้าง)",
+  "Height\n(สูง)",
+  "Declared_value\n(มูลค่าสินค้าที่ระบุโดยลูกค้า)",
+  "Box_shield",
+  "Document return service\n(บริการส่งคืนเอกสาร)",
+  "*Product_type         \uFF08\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E2A\u0E34\u0E19\u0E04\u0E49\u0E32\uFF09",
+  "*Payment method\n\uFF08\u0E27\u0E34\u0E18\u0E35\u0E0A\u0E33\u0E23\u0E30\u0E40\u0E07\u0E34\u0E19\uFF09",
+  "Remark\n(หมายเหตุ)",
+]
+
+/** คอลัมน์ Preview ใบปะหน้า — key ตรงกับ WaybillPreviewRow */
+const WAYBILL_PREVIEW_COLS: Array<{ key: string; label: string; width: string; required?: boolean }> = [
+  { key: 'addressRaw', label: 'Address (ต้นฉบับ)', width: 'min-w-[260px] w-[280px]' },
+  { key: 'consigneeName', label: 'ชื่อผู้รับ', width: 'min-w-[200px] w-[240px]', required: true },
+  { key: 'address', label: 'ที่อยู่', width: 'min-w-[280px] w-[320px]', required: true },
+  { key: 'postalCode', label: 'รหัสไปรษณีย์', width: 'min-w-[90px] w-[100px]', required: true },
+  { key: 'phone1', label: 'เบอร์โทร', width: 'min-w-[120px] w-[130px]', required: true },
+  { key: 'phone2', label: 'เบอร์โทร 2', width: 'min-w-[120px] w-[130px]' },
+  { key: 'cod', label: 'COD', width: 'min-w-[80px] w-[90px]' },
+]
 
 /** คอลัมน์ระดับรายการใน Export ไฟล์ผลิต — แมป key → ชื่อคอลัมน์ใน pr_category_field_settings */
 const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKey: string }> = [
@@ -21,7 +61,6 @@ const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKey: stri
   { key: 'cartoon_pattern', label: 'ลายการ์ตูน', settingsKey: 'cartoon_pattern' },
   { key: 'line_pattern', label: 'ลายเส้น', settingsKey: 'line_pattern' },
   { key: 'font', label: 'ฟอนต์', settingsKey: 'font' },
-  { key: 'no_name_line', label: 'ชื่อ ไม่รับชื่อ', settingsKey: 'line_1' },
   { key: 'line_1', label: 'บรรทัด 1', settingsKey: 'line_1' },
   { key: 'line_2', label: 'บรรทัด 2', settingsKey: 'line_2' },
   { key: 'line_3', label: 'บรรทัด 3', settingsKey: 'line_3' },
@@ -46,6 +85,10 @@ type PickingSlipModal = { open: boolean; workOrderName: string | null; mainItems
 type ImportTrackingModal = { open: boolean; workOrderName: string | null }
 /** Modal เรียงใบปะหน้า: เปิด + ชื่อใบงาน + ลำดับเลขพัสดุจากออร์เดอร์ */
 type WaybillSorterModal = { open: boolean; workOrderName: string | null; trackingNumbers: string[] }
+/** แถวข้อมูลในตาราง Preview ใบปะหน้า */
+interface WaybillPreviewRow { billNo: string; addressRaw: string; consigneeName: string; address: string; postalCode: string; phone1: string; phone2: string; cod: string }
+/** Modal Preview ใบปะหน้า */
+type WaybillPreviewModal = { open: boolean; workOrderName: string | null; rows: WaybillPreviewRow[] }
 /** สินค้าหลัก: จุดเก็บ, รหัส, รายการ, จำนวนเบิก */
 interface PickingMainRow { woName: string; code: string; name: string; location: string; finalQty: number }
 /** อะไหล่: รายการอะไหล่, จำนวน */
@@ -74,6 +117,7 @@ export default function WorkOrderManageList({
   const [pickingSlipModal, setPickingSlipModal] = useState<PickingSlipModal>({ open: false, workOrderName: null, mainItems: [], spareItems: [] })
   const [importTrackingModal, setImportTrackingModal] = useState<ImportTrackingModal>({ open: false, workOrderName: null })
   const [waybillSorterModal, setWaybillSorterModal] = useState<WaybillSorterModal>({ open: false, workOrderName: null, trackingNumbers: [] })
+  const [waybillPreviewModal, setWaybillPreviewModal] = useState<WaybillPreviewModal>({ open: false, workOrderName: null, rows: [] })
   const [wsLog, setWsLog] = useState<string[]>([])
   const [wsStatPdf, setWsStatPdf] = useState<string>('--')
   const [wsStatFound, setWsStatFound] = useState<string>('--')
@@ -698,20 +742,26 @@ export default function WorkOrderManageList({
           })
         }
       }
-      const visibleColumns = getVisibleExportItemColumns(ordersInWorkOrder, categoryFieldSettings, productCategoryByProductId)
+      const visibleColumns = EXPORT_ITEM_COLUMNS
       const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', ...visibleColumns.map((c) => c.label)]
       const dataToExport: unknown[][] = []
+      /** สินค้าที่แสดงคอลัมน์ "ชั้นที่" */
+      const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
+
       ordersInWorkOrder.forEach((order) => {
         const items = order.or_order_items || (order as any).order_items || []
         items.forEach((item: any) => {
           const noName = !!item.no_name_line
           const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+          const productName = String(item.product_name ?? '').trim()
+          const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
           const row: unknown[] = [workOrderName, order.bill_no, item.item_uid]
           visibleColumns.forEach((col) => {
-            if (col.key === 'no_name_line') row.push(noName ? 'ใช่' : '')
-            else if (col.key === 'notes') row.push(cleanNotes)
+            if (col.key === 'notes') row.push(cleanNotes)
             else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
             else if (col.key === 'quantity') row.push(1)
+            else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
+            else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
             else row.push(item[col.key] ?? '')
           })
           dataToExport.push(row)
@@ -766,32 +816,149 @@ export default function WorkOrderManageList({
     }
   }
 
-  async function exportWaybillCsv(workOrderName: string) {
+  /** เปิด Modal Preview ใบปะหน้า — แยกที่อยู่ → ชื่อ / ที่อยู่ / รหัสไปรษณีย์ / เบอร์โทร แล้วแสดง Preview ก่อน Export */
+  async function openWaybillPreview(workOrderName: string) {
     try {
+      setUpdating(true)
       const orders = await fetchOrdersWithItems(workOrderName)
       if (orders.length === 0) {
         setMessageModal({ open: true, message: 'ไม่พบออร์เดอร์' })
         return
       }
-      const headers = ['bill_no', 'customer_address', 'payment_method', 'total_amount']
-      const escapeCsv = (v: string) => {
-        const s = String(v ?? '')
-        if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
-        return s
+      const rows: WaybillPreviewRow[] = []
+      for (const order of orders) {
+        const addressRaw = (order.customer_address || '').trim()
+
+        // 1. ดึงเบอร์โทรออกจากข้อความ + ใช้ billing_details.mobile_phone เป็น fallback
+        const { candidates: phoneCandidates, rest: textAfterPhones } = extractPhonesFromText(addressRaw)
+        const localPhones = phoneCandidates.map(e164ToLocal)
+        // ถ้าไม่เจอเบอร์ในที่อยู่ ให้ใช้เบอร์จาก billing_details
+        const billingPhone = (order.billing_details?.mobile_phone || '').trim()
+        if (localPhones.length === 0 && billingPhone) {
+          localPhones.push(billingPhone)
+        } else if (localPhones.length === 1 && billingPhone && billingPhone !== localPhones[0]) {
+          localPhones.push(billingPhone)
+        }
+
+        // 2. ดึงรหัสไปรษณีย์ (เลข 5 หลักตัวสุดท้าย)
+        const postcodeMatches = [...textAfterPhones.matchAll(/\b(\d{5})\b/g)]
+        const postalCode = postcodeMatches.length ? postcodeMatches[postcodeMatches.length - 1][1] : ''
+        let textClean = textAfterPhones
+        if (postalCode) {
+          textClean = textClean
+            .replace(/(?:รหัสไปรษณีย์|ปณ\.?)\s*/gi, ' ')
+            .replace(new RegExp(`\\b${postalCode}\\b`), ' ')
+            .replace(/\s+/g, ' ').trim()
+        }
+
+        // 3. ดึงชื่อผู้รับ — ใช้ฟิลด์ structured ก่อน ถ้าไม่มีให้ลอง parse จากบรรทัดแรก
+        let consigneeName = (order.recipient_name || '').trim() || (order.customer_name || '').trim()
+        let addressClean = textClean
+
+        if (consigneeName) {
+          // ตัดชื่อออกจากข้อความที่อยู่ (ถ้าพบใน 50 ตัวอักษรแรก)
+          const idx = addressClean.indexOf(consigneeName)
+          if (idx >= 0 && idx < 50) {
+            addressClean = (addressClean.slice(0, idx) + addressClean.slice(idx + consigneeName.length)).replace(/\s+/g, ' ').trim()
+          }
+        } else {
+          // ลอง parse ชื่อจากบรรทัดแรก
+          const lines = textClean.split(/\n/).map(l => l.trim()).filter(Boolean)
+          if (lines.length > 0) {
+            const first = lines[0]
+            const hasAddrCue = /เลขที่|หมู่|ม\.|ต\.|อ\.|จ\.|ถนน|ถ\.|ซอย|ซ\.|แขวง|เขต|ตำบล|อำเภอ|จังหวัด|\d{1,5}\//.test(first)
+            if (!hasAddrCue && first.length < 60) {
+              consigneeName = first.replace(/[,;:|/\-]+$/g, '').trim()
+              addressClean = lines.slice(1).join('\n').replace(/\s+/g, ' ').trim()
+            }
+          }
+        }
+        // ลบเศษ separator นำหน้า/ท้าย
+        addressClean = addressClean.replace(/^[\s,;:|/\-]+/, '').replace(/[\s,;:|/\-]+$/, '').trim()
+
+        // 4. ใช้ billing_details เป็น fallback สำหรับ postalCode / address
+        const bd = order.billing_details
+        let finalPostalCode = postalCode || (bd?.postal_code || '')
+        let finalAddress = addressClean
+        // ถ้า billing_details มีที่อยู่ structured ให้ใช้ประกอบ
+        if (!finalAddress && bd?.address_line) {
+          finalAddress = [bd.address_line, bd.sub_district, bd.district, bd.province].filter(Boolean).join(' ')
+        }
+        // ถ้าชื่อยังว่าง ลอง billing
+        if (!consigneeName) {
+          consigneeName = (order.recipient_name || order.customer_name || '').trim()
+        }
+
+        // 5. COD
+        const isCod = (order.payment_method || '').toLowerCase().includes('cod')
+        const cod = isCod ? String(order.total_amount ?? 0) : '0'
+
+        rows.push({ billNo: order.bill_no, addressRaw, consigneeName, address: finalAddress, postalCode: finalPostalCode, phone1: localPhones[0] || '', phone2: localPhones[1] || '', cod })
       }
-      const rows = orders.map((order) => {
-        const address = ECOMMERCE_CHANNELS.includes(order.channel_code || '') ? '' : (order.customer_address || '')
-        return [escapeCsv(order.bill_no), escapeCsv(address), escapeCsv(order.payment_method || ''), escapeCsv(String(order.total_amount ?? ''))].join(',')
-      })
-      const csvContent = [headers.join(','), ...rows].join('\n')
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
-      const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = `Waybill_${workOrderName}.csv`
-      link.click()
+      setWaybillPreviewModal({ open: true, workOrderName, rows })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+    } finally {
+      setUpdating(false)
     }
+  }
+
+  /** อัปเดตค่าในแถว Preview ใบปะหน้า */
+  function updateWaybillPreviewRow(index: number, field: keyof WaybillPreviewRow, value: string) {
+    setWaybillPreviewModal(prev => ({
+      ...prev,
+      rows: prev.rows.map((r, i) => i === index ? { ...r, [field]: value } : r),
+    }))
+  }
+
+  /** ตรวจสอบแถวมีข้อมูลจำเป็นครบหรือไม่ */
+  function isWaybillRowMissing(row: WaybillPreviewRow): boolean {
+    return !row.consigneeName.trim() || !row.address.trim() || !row.postalCode.trim() || !row.phone1.trim()
+  }
+
+  /** Export ไฟล์ Excel (.xlsx) ตาม Flash Express template 24 คอลัมน์ */
+  function exportWaybillXlsx() {
+    const { workOrderName, rows } = waybillPreviewModal
+    if (rows.length === 0) return
+    const aoa: string[][] = [FLASH_EXPRESS_H]
+    for (const row of rows) {
+      const r = new Array(FLASH_EXPRESS_H.length).fill('')
+      r[0] = row.billNo            // Customer_order_number
+      r[1] = row.consigneeName     // *Consignee_name
+      r[2] = row.address           // *Address
+      r[3] = row.postalCode        // *Postal_code
+      r[4] = row.phone1            // *Phone_number
+      r[5] = row.phone2            // Phone_number2
+      r[6] = '1'                   // Number of parcels
+      r[7] = row.cod               // COD
+      // Item descriptions (8-12) = empty
+      r[13] = 'อื่นๆ'             // Item_type
+      r[14] = '0.1'               // *Weight_kg
+      r[15] = '1'                  // Length
+      r[16] = '1'                  // Width
+      r[17] = '1'                  // Height
+      // Declared_value (18) = empty
+      // Box_shield (19) = empty
+      // Document return service (20) = empty
+      r[21] = 'Standard'           // *Product_type
+      r[22] = 'payment by sender'  // *Payment method
+      r[23] = row.billNo           // Remark
+      aoa.push(r)
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = FLASH_EXPRESS_H.map(h => ({ wch: Math.min(45, Math.max(14, h.split('\n')[0].length + 6)) }))
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Export')
+    const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+    const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${workOrderName || 'output'}.xlsx`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   }
 
   async function openPickingSlipModal(workOrderName: string) {
@@ -920,6 +1087,70 @@ export default function WorkOrderManageList({
     setImportTrackingModal({ open: true, workOrderName })
   }
 
+  /** แมปหัวคอลัมน์ที่รองรับ → ฟิลด์ภายใน */
+  const BILL_NO_ALIASES = ['bill_no', 'เลขออเดอร์']
+  const TRACKING_ALIASES = ['tracking_number', 'เลขพัสดุ']
+
+  function findHeaderIndex(headers: string[], aliases: string[]): number {
+    return headers.findIndex((h) => aliases.some((a) => h.toLowerCase().trim() === a.toLowerCase()))
+  }
+
+  /** Parse ไฟล์ .xlsx หรือ .csv แล้วคืน array ของ { bill_no, tracking_number } */
+  function parseTrackingFile(file: File): Promise<{ bill_no: string; tracking_number: string }[]> {
+    return new Promise((resolve, reject) => {
+      const isXlsx = file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')
+
+      if (isXlsx) {
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          try {
+            const data = new Uint8Array(event.target?.result as ArrayBuffer)
+            const wb = XLSX.read(data, { type: 'array' })
+            const ws = wb.Sheets[wb.SheetNames[0]]
+            const rows: string[][] = XLSX.utils.sheet_to_json(ws, { header: 1 })
+            if (rows.length <= 1) throw new Error('ไฟล์ว่างเปล่า')
+            const headers = rows[0].map((h) => String(h ?? '').trim())
+            const billNoIndex = findHeaderIndex(headers, BILL_NO_ALIASES)
+            const trackingIndex = findHeaderIndex(headers, TRACKING_ALIASES)
+            if (billNoIndex === -1 || trackingIndex === -1) throw new Error('ไม่พบหัวข้อ เลขออเดอร์/bill_no และ เลขพัสดุ/tracking_number')
+            const updates: { bill_no: string; tracking_number: string }[] = []
+            for (let i = 1; i < rows.length; i++) {
+              const bill_no = String(rows[i]?.[billNoIndex] ?? '').trim()
+              const tracking_number = String(rows[i]?.[trackingIndex] ?? '').trim()
+              if (bill_no && tracking_number) updates.push({ bill_no, tracking_number })
+            }
+            resolve(updates)
+          } catch (err) { reject(err) }
+        }
+        reader.onerror = () => reject(new Error('อ่านไฟล์ไม่สำเร็จ'))
+        reader.readAsArrayBuffer(file)
+      } else {
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          try {
+            const csv = String(event.target?.result ?? '')
+            const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== '')
+            if (lines.length <= 1) throw new Error('ไฟล์ CSV ว่างเปล่า')
+            const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''))
+            const billNoIndex = findHeaderIndex(headers, BILL_NO_ALIASES)
+            const trackingIndex = findHeaderIndex(headers, TRACKING_ALIASES)
+            if (billNoIndex === -1 || trackingIndex === -1) throw new Error('ไม่พบหัวข้อ เลขออเดอร์/bill_no และ เลขพัสดุ/tracking_number')
+            const updates: { bill_no: string; tracking_number: string }[] = []
+            for (let i = 1; i < lines.length; i++) {
+              const values = lines[i].split(',')
+              const bill_no = values[billNoIndex]?.trim().replace(/"/g, '')
+              const tracking_number = values[trackingIndex]?.trim().replace(/"/g, '')
+              if (bill_no && tracking_number) updates.push({ bill_no, tracking_number })
+            }
+            resolve(updates)
+          } catch (err) { reject(err) }
+        }
+        reader.onerror = () => reject(new Error('อ่านไฟล์ไม่สำเร็จ'))
+        reader.readAsText(file, 'UTF-8')
+      }
+    })
+  }
+
   async function handleTrackingFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !importTrackingModal.workOrderName) return
@@ -927,42 +1158,26 @@ export default function WorkOrderManageList({
     setImportTrackingModal({ open: false, workOrderName: null })
     e.target.value = ''
     setUpdating(true)
-    const reader = new FileReader()
-    reader.onload = async (event) => {
-      try {
-        const csv = String(event.target?.result ?? '')
-        const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== '')
-        if (lines.length <= 1) throw new Error('ไฟล์ CSV ว่างเปล่า')
-        const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''))
-        const billNoIndex = headers.findIndex((h) => h.toLowerCase() === 'bill_no')
-        const trackingIndex = headers.findIndex((h) => h.toLowerCase() === 'tracking_number')
-        if (billNoIndex === -1 || trackingIndex === -1) throw new Error('ไม่พบหัวข้อ bill_no และ tracking_number')
-        const updates: { bill_no: string; tracking_number: string }[] = []
-        for (let i = 1; i < lines.length; i++) {
-          const values = lines[i].split(',')
-          const bill_no = values[billNoIndex]?.trim().replace(/"/g, '')
-          const tracking_number = values[trackingIndex]?.trim().replace(/"/g, '')
-          if (bill_no && tracking_number) updates.push({ bill_no, tracking_number })
+    try {
+      const updates = await parseTrackingFile(file)
+      if (updates.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
+      let updated = 0
+      for (const u of updates) {
+        const { data: ord } = await supabase.from('or_orders').select('id').eq('bill_no', u.bill_no).maybeSingle()
+        if (ord) {
+          await supabase.from('or_orders').update({ tracking_number: u.tracking_number }).eq('id', ord.id)
+          updated += 1
         }
-        if (updates.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
-        let updated = 0
-        for (const u of updates) {
-          const { data: ord } = await supabase.from('or_orders').select('id').eq('bill_no', u.bill_no).maybeSingle()
-          if (ord) {
-            await supabase.from('or_orders').update({ tracking_number: u.tracking_number }).eq('id', ord.id)
-            updated += 1
-          }
-        }
-        const woOrders = ordersByWo[workOrderName]
-        if (woOrders) await loadOrdersForWo(workOrderName)
-        onRefresh?.()
-      } catch (err: any) {
-        setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
-      } finally {
-        setUpdating(false)
       }
+      const woOrders = ordersByWo[workOrderName]
+      if (woOrders) await loadOrdersForWo(workOrderName)
+      onRefresh?.()
+      setMessageModal({ open: true, message: `นำเข้าเลขพัสดุสำเร็จ ${updated} / ${updates.length} รายการ` })
+    } catch (err: any) {
+      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+    } finally {
+      setUpdating(false)
     }
-    reader.readAsText(file, 'UTF-8')
   }
 
   if (loading && workOrders.length === 0) {
@@ -1040,7 +1255,7 @@ export default function WorkOrderManageList({
                       <>
                         <button
                           type="button"
-                          onClick={(e) => onHeaderButtonClick(e, () => exportWaybillCsv(wo.work_order_name))}
+                          onClick={(e) => onHeaderButtonClick(e, () => openWaybillPreview(wo.work_order_name))}
                           disabled={updating}
                           className="px-3 py-1.5 bg-yellow-100 text-yellow-800 rounded text-xs font-medium hover:bg-yellow-200 disabled:opacity-50"
                         >
@@ -1337,11 +1552,11 @@ export default function WorkOrderManageList({
       <Modal open={importTrackingModal.open} onClose={() => setImportTrackingModal({ open: false, workOrderName: null })} contentClassName="max-w-md w-full">
         <div className="p-6">
           <h3 className="text-lg font-bold text-gray-900 mb-2">นำเข้าเลขพัสดุ</h3>
-          <p className="text-gray-600 text-sm mb-4">เลือกไฟล์ CSV ที่มีหัวข้อ bill_no และ tracking_number</p>
+          <p className="text-gray-600 text-sm mb-4">เลือกไฟล์ .xlsx หรือ .csv ที่มีคอลัมน์ เลขออเดอร์ (bill_no) และ เลขพัสดุ (tracking_number)</p>
           <input
             ref={trackingFileInputRef}
             type="file"
-            accept=".csv"
+            accept=".xlsx,.xls,.csv"
             className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700"
             onChange={handleTrackingFileChange}
           />
@@ -1455,6 +1670,106 @@ export default function WorkOrderManageList({
               ปิด
             </button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Modal Preview ใบปะหน้า */}
+      <Modal
+        open={waybillPreviewModal.open}
+        onClose={() => setWaybillPreviewModal({ open: false, workOrderName: null, rows: [] })}
+        contentClassName="max-w-[1200px] w-full"
+      >
+        <div className="p-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">ตรวจสอบและ Export ใบปะหน้า</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                ใบงาน: <span className="font-semibold text-gray-700">{waybillPreviewModal.workOrderName}</span>
+                {' '}&bull;{' '}{waybillPreviewModal.rows.length} แถว
+                {waybillPreviewModal.rows.some(isWaybillRowMissing) && (
+                  <span className="ml-2 text-red-600 font-medium">
+                    (มี {waybillPreviewModal.rows.filter(isWaybillRowMissing).length} แถวข้อมูลไม่ครบ)
+                  </span>
+                )}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={exportWaybillXlsx}
+                disabled={waybillPreviewModal.rows.length === 0}
+                className="px-4 py-2 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition"
+              >
+                Export เป็น Excel (.xlsx)
+              </button>
+              <button
+                type="button"
+                onClick={() => setWaybillPreviewModal({ open: false, workOrderName: null, rows: [] })}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-auto max-h-[calc(100vh-220px)] border border-gray-200 rounded-xl">
+            <table className="w-full border-collapse text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr>
+                  <th className="px-2 py-2.5 bg-gray-100 border-b border-gray-200 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wide w-8">#</th>
+                  {WAYBILL_PREVIEW_COLS.map(col => (
+                    <th key={col.key} className={`px-2 py-2.5 bg-gray-100 border-b border-gray-200 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wide ${col.width}`}>
+                      {col.label}
+                      {col.required && <span className="text-red-400 ml-0.5">*</span>}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {waybillPreviewModal.rows.map((row, idx) => {
+                  const missing = isWaybillRowMissing(row)
+                  const stripe = idx % 2 === 0 ? 'bg-white' : 'bg-blue-50/60'
+                  const rowBg = missing ? 'bg-red-50' : stripe
+                  return (
+                    <tr key={idx} className={`${rowBg} hover:bg-blue-100/40 transition-colors`}>
+                      <td className="px-2 py-1.5 border-b border-gray-100 text-gray-400 text-xs text-center tabular-nums">{idx + 1}</td>
+                      {WAYBILL_PREVIEW_COLS.map(col => {
+                        const val = row[col.key as keyof WaybillPreviewRow]
+                        const isEmpty = col.required && !val.trim()
+                        const isReadOnly = col.key === 'addressRaw'
+                        const isMultiLine = col.key === 'address' || col.key === 'addressRaw' || col.key === 'consigneeName'
+                        return (
+                          <td key={col.key} className={`px-1.5 py-1.5 border-b border-gray-100 align-top ${col.width}`}>
+                            {isReadOnly ? (
+                              <div className="px-2 py-1.5 text-[13px] text-gray-500 whitespace-pre-line leading-relaxed max-h-32 overflow-y-auto">{val}</div>
+                            ) : (
+                              <textarea
+                                value={val}
+                                onChange={(e) => updateWaybillPreviewRow(idx, col.key as keyof WaybillPreviewRow, e.target.value)}
+                                rows={isMultiLine ? 3 : 1}
+                                className={`w-full px-2 py-1.5 text-[13px] leading-relaxed rounded-md border resize-vertical focus:outline-none focus:ring-1 focus:ring-blue-400
+                                  ${isEmpty ? 'border-red-300 bg-red-50/50' : 'border-gray-200 bg-transparent hover:border-gray-300'}
+                                `}
+                              />
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer hint */}
+          <p className="text-xs text-gray-400 mt-3 text-center">
+            คอลัมน์ที่มี <span className="text-red-400 font-bold">*</span> เป็นข้อมูลจำเป็น &bull;
+            แก้ไขข้อมูลได้โดยคลิกที่ช่อง &bull;
+            กด Export เพื่อดาวน์โหลดไฟล์ Flash Express (.xlsx)
+          </p>
         </div>
       </Modal>
 

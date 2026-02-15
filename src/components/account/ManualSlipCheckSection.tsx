@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -19,6 +19,11 @@ type ManualSlipRow = {
   reviewed_by: string | null
   reviewed_at: string | null
 }
+
+type EditingCell = {
+  rowId: string
+  field: 'transfer_date' | 'transfer_time' | 'transfer_amount'
+} | null
 
 export default function ManualSlipCheckSection() {
   const { user } = useAuthContext()
@@ -43,6 +48,87 @@ export default function ManualSlipCheckSection() {
   // Approve/Reject popup
   const [actionModal, setActionModal] = useState<{ open: boolean; row: ManualSlipRow | null }>({ open: false, row: null })
   const [actionSubmitting, setActionSubmitting] = useState(false)
+
+  // Inline editing state
+  const [editingCell, setEditingCell] = useState<EditingCell>(null)
+  const [editValue, setEditValue] = useState<string>('')
+  const [editSaving, setEditSaving] = useState(false)
+  const editInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus input when entering edit mode
+  useEffect(() => {
+    if (editingCell && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [editingCell])
+
+  // Start editing a cell on double-click
+  const startEditing = useCallback((rowId: string, field: EditingCell extends null ? never : NonNullable<EditingCell>['field'], currentValue: string | number) => {
+    setEditingCell({ rowId, field })
+    setEditValue(String(currentValue))
+  }, [])
+
+  // Cancel editing
+  const cancelEditing = useCallback(() => {
+    setEditingCell(null)
+    setEditValue('')
+  }, [])
+
+  // Save edited value to database
+  const saveEdit = useCallback(async () => {
+    if (!editingCell || editSaving) return
+    const { rowId, field } = editingCell
+    const row = rows.find(r => r.id === rowId)
+    if (!row) { cancelEditing(); return }
+
+    // Get original value for comparison
+    const originalValue = field === 'transfer_amount' ? String(row[field]) : row[field]
+    if (editValue.trim() === String(originalValue)) {
+      cancelEditing()
+      return
+    }
+
+    // Validate
+    let updateValue: string | number = editValue.trim()
+    if (field === 'transfer_date') {
+      // Expect YYYY-MM-DD format
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(updateValue)) {
+        setCheckResult({ open: true, message: 'รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)', type: 'warning' })
+        return
+      }
+    } else if (field === 'transfer_time') {
+      // Expect HH:MM format
+      if (!/^\d{2}:\d{2}$/.test(updateValue)) {
+        setCheckResult({ open: true, message: 'รูปแบบเวลาไม่ถูกต้อง (HH:MM)', type: 'warning' })
+        return
+      }
+    } else if (field === 'transfer_amount') {
+      const num = parseFloat(updateValue)
+      if (isNaN(num) || num < 0) {
+        setCheckResult({ open: true, message: 'ยอดโอนไม่ถูกต้อง', type: 'warning' })
+        return
+      }
+      updateValue = num
+    }
+
+    setEditSaving(true)
+    try {
+      const { error } = await supabase
+        .from('ac_manual_slip_checks')
+        .update({ [field]: updateValue })
+        .eq('id', rowId)
+      if (error) throw error
+
+      // Update local state
+      setRows(prev => prev.map(r => r.id === rowId ? { ...r, [field]: updateValue } : r))
+      cancelEditing()
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e), type: 'warning' })
+    } finally {
+      setEditSaving(false)
+    }
+  }, [editingCell, editValue, editSaving, rows, cancelEditing])
 
   useEffect(() => {
     loadRows()
@@ -294,15 +380,83 @@ export default function ManualSlipCheckSection() {
                     <div className="grid grid-cols-3 gap-3 text-sm mt-2">
                       <div>
                         <span className="text-gray-500">วันที่โอน:</span>{' '}
-                        <span className="font-semibold">{row.transfer_date}</span>
+                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_date' ? (
+                          <input
+                            ref={editInputRef}
+                            type="date"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => saveEdit()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') saveEdit()
+                              if (e.key === 'Escape') cancelEditing()
+                            }}
+                            disabled={editSaving}
+                            className="inline-block w-[140px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
+                          />
+                        ) : (
+                          <span
+                            className="font-semibold cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
+                            onDoubleClick={() => startEditing(row.id, 'transfer_date', row.transfer_date)}
+                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
+                          >
+                            {row.transfer_date}
+                          </span>
+                        )}
                       </div>
                       <div>
                         <span className="text-gray-500">เวลาโอน:</span>{' '}
-                        <span className="font-semibold">{row.transfer_time}</span>
+                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_time' ? (
+                          <input
+                            ref={editInputRef}
+                            type="time"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => saveEdit()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') saveEdit()
+                              if (e.key === 'Escape') cancelEditing()
+                            }}
+                            disabled={editSaving}
+                            className="inline-block w-[100px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
+                          />
+                        ) : (
+                          <span
+                            className="font-semibold cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
+                            onDoubleClick={() => startEditing(row.id, 'transfer_time', row.transfer_time)}
+                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
+                          >
+                            {row.transfer_time}
+                          </span>
+                        )}
                       </div>
                       <div>
                         <span className="text-gray-500">ยอดโอน:</span>{' '}
-                        <span className="font-bold text-blue-600">฿{Number(row.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}</span>
+                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_amount' ? (
+                          <input
+                            ref={editInputRef}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={() => saveEdit()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') saveEdit()
+                              if (e.key === 'Escape') cancelEditing()
+                            }}
+                            disabled={editSaving}
+                            className="inline-block w-[120px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
+                          />
+                        ) : (
+                          <span
+                            className="font-bold text-blue-600 cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
+                            onDoubleClick={() => startEditing(row.id, 'transfer_amount', row.transfer_amount)}
+                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
+                          >
+                            ฿{Number(row.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="text-xs text-gray-400 mt-1">

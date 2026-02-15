@@ -5,7 +5,7 @@ interface PickerListModalProps {
   currentItemId: string
   currentIndex: number
   onClose: () => void
-  onJumpTo: (index: number) => void
+  onJumpTo: (itemId: string) => void
 }
 
 export default function PickerListModal({ items, currentItemId, onClose, onJumpTo }: PickerListModalProps) {
@@ -23,6 +23,9 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
             <div className="text-center p-10 text-gray-400 italic">ไม่มีข้อมูลรายการ</div>
           ) : (
             items.map((item, idx) => {
+              const isFinished = ['picked', 'correct', 'out_of_stock'].includes(item.status)
+              const isCurrent = item.id === currentItemId
+
               let statusIcon = <div className="w-6 h-6 rounded-full border-2 border-gray-200"></div>
               let bgClass = 'bg-white'
 
@@ -34,22 +37,24 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
                 bgClass = 'bg-red-50/50'
               }
 
-              if (item.id === currentItemId) {
+              if (isCurrent) {
                 bgClass = 'border-blue-500 bg-blue-50 ring-2 ring-blue-100'
               }
 
               return (
                 <div
                   key={item.id}
-                  onClick={() => onJumpTo(idx)}
+                  onClick={() => onJumpTo(item.id)}
                   className={`flex items-center justify-between p-3 border rounded-2xl transition-all cursor-pointer active:scale-95 ${bgClass}`}
                 >
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <span className={`font-black text-sm w-4 ${item.id === currentItemId ? 'text-blue-600' : 'text-gray-300'}`}>
+                    <span className={`font-black text-sm w-4 ${isCurrent ? 'text-blue-600' : 'text-gray-300'}`}>
                       {idx + 1}
                     </span>
                     <div className="overflow-hidden">
-                      <div className="font-bold text-slate-800 text-sm truncate">{item.product_name}</div>
+                      <div className={`font-bold text-sm truncate ${isFinished ? 'text-gray-400 line-through' : 'text-slate-800'}`}>
+                        {item.product_name}
+                      </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase">
                         จุดเก็บ: <span className="text-red-500">{item.location}</span> | จำนวน: {item.qty}
                       </div>

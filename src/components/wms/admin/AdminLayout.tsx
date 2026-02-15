@@ -9,102 +9,19 @@ import NotificationSection from './NotificationSection'
 import SettingsSection from './SettingsSection'
 import { useWmsModal } from '../useWmsModal'
 import NewOrdersSection from './NewOrdersSection'
-
-const MENU_KEYS = {
-  UPLOAD: 'menu-upload',
-  NEW_ORDERS: 'menu-new-orders',
-  REVIEW: 'menu-review',
-  KPI: 'menu-kpi',
-  REQUISITION: 'menu-requisition',
-  NOTIF: 'menu-notif',
-  SETTINGS: 'menu-settings',
-}
-
-/** เมนูที่ต้องแสดง badge ตัวเลข */
-const COUNTED_KEYS = [MENU_KEYS.NEW_ORDERS, MENU_KEYS.UPLOAD, MENU_KEYS.REVIEW, MENU_KEYS.REQUISITION, MENU_KEYS.NOTIF]
+import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
   const { user } = useAuthContext()
-  const [activeMenu, setActiveMenu] = useState(MENU_KEYS.NEW_ORDERS)
+  const [activeMenu, setActiveMenu] = useState(WMS_MENU_KEYS.NEW_ORDERS)
   const { MessageModal, ConfirmModal } = useWmsModal()
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
 
   const loadTabCounts = useCallback(async () => {
     try {
-      const today = new Date().toISOString().split('T')[0]
-
-      // 1. ใบงานใหม่: work orders with status "กำลังผลิต" not yet assigned picker
-      const { data: woData } = await supabase
-        .from('or_work_orders')
-        .select('work_order_name')
-        .eq('status', 'กำลังผลิต')
-      let newOrdersCount = 0
-      if (woData && woData.length > 0) {
-        const woNames = woData.map((wo: any) => wo.work_order_name)
-        const { data: assignedRows } = await supabase
-          .from('wms_orders')
-          .select('order_id')
-          .in('order_id', woNames)
-        const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
-        newOrdersCount = woData.filter((wo: any) => !assignedSet.has(wo.work_order_name)).length
-      }
-
-      // 2. รายการใบงาน: นับเฉพาะ order_id ที่สถานะภาพรวม = IN PROGRESS (มี item ที่ status เป็น pending/wrong/not_find)
-      const { data: uploadData } = await supabase
-        .from('wms_orders')
-        .select('order_id, status')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-      const uploadGroups: Record<string, boolean> = {}
-      ;(uploadData || []).forEach((r: any) => {
-        if (!uploadGroups[r.order_id]) uploadGroups[r.order_id] = false
-        if (['pending', 'wrong', 'not_find'].includes(r.status)) uploadGroups[r.order_id] = true
-      })
-      const uploadCount = Object.values(uploadGroups).filter(Boolean).length
-
-      // 3. ตรวจสินค้า: completed orders today that still have unchecked items (picked)
-      const { data: reviewData } = await supabase
-        .from('wms_orders')
-        .select('order_id, status')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-      let reviewCount = 0
-      if (reviewData) {
-        const grouped: Record<string, { total: number; finished: number; picked: number }> = {}
-        reviewData.forEach((r: any) => {
-          if (!grouped[r.order_id]) grouped[r.order_id] = { total: 0, finished: 0, picked: 0 }
-          grouped[r.order_id].total++
-          if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock'].includes(r.status)) grouped[r.order_id].finished++
-          if (r.status === 'picked') grouped[r.order_id].picked++
-        })
-        reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
-      }
-
-      // 4. รายการเบิก: pending requisitions today
-      const { count: reqCount } = await supabase
-        .from('wms_requisitions')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'pending')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-
-      // 5. แจ้งเตือน: unread notifications
-      const { count: notifCount } = await supabase
-        .from('wms_notifications')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'unread')
-
-      const counts: Record<string, number> = {
-        [MENU_KEYS.NEW_ORDERS]: newOrdersCount,
-        [MENU_KEYS.UPLOAD]: uploadCount,
-        [MENU_KEYS.REVIEW]: reviewCount,
-        [MENU_KEYS.REQUISITION]: reqCount ?? 0,
-        [MENU_KEYS.NOTIF]: notifCount ?? 0,
-      }
+      const { counts, total } = await loadWmsTabCounts()
       setTabCounts(counts)
-
       // แจ้ง sidebar ให้อัปเดตตัวเลข
-      const total = Object.values(counts).reduce((s, n) => s + n, 0)
       window.dispatchEvent(new CustomEvent('wms-counts-updated', { detail: { total, counts } }))
     } catch (e) {
       console.error('Error loading WMS tab counts:', e)
@@ -137,13 +54,13 @@ export default function AdminLayout() {
   }, [loadTabCounts])
 
   const menuItems = [
-    { key: MENU_KEYS.NEW_ORDERS, label: 'ใบงานใหม่' },
-    { key: MENU_KEYS.UPLOAD, label: 'รายการใบงาน' },
-    { key: MENU_KEYS.REVIEW, label: 'ตรวจสินค้า' },
-    { key: MENU_KEYS.KPI, label: 'KPI' },
-    { key: MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
-    { key: MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
-    ...(user?.role !== 'store' ? [{ key: MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
+    { key: WMS_MENU_KEYS.NEW_ORDERS, label: 'ใบงานใหม่' },
+    { key: WMS_MENU_KEYS.UPLOAD, label: 'รายการใบงาน' },
+    { key: WMS_MENU_KEYS.REVIEW, label: 'ตรวจสินค้า' },
+    { key: WMS_MENU_KEYS.KPI, label: 'KPI' },
+    { key: WMS_MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
+    { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
+    ...(user?.role !== 'store' ? [{ key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
   ]
 
   return (
@@ -154,7 +71,7 @@ export default function AdminLayout() {
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {menuItems.map((item) => {
               const count = tabCounts[item.key] ?? 0
-              const showBadge = COUNTED_KEYS.includes(item.key) && count > 0
+              const showBadge = WMS_COUNTED_KEYS.includes(item.key) && count > 0
               return (
                 <button
                   key={item.key}
@@ -180,13 +97,13 @@ export default function AdminLayout() {
       </div>
 
       <div className="pt-4">
-        {activeMenu === MENU_KEYS.UPLOAD && <UploadSection />}
-        {activeMenu === MENU_KEYS.NEW_ORDERS && <NewOrdersSection />}
-        {activeMenu === MENU_KEYS.REVIEW && <ReviewSection />}
-        {activeMenu === MENU_KEYS.KPI && <KPISection />}
-        {activeMenu === MENU_KEYS.REQUISITION && <RequisitionDashboard />}
-        {activeMenu === MENU_KEYS.NOTIF && <NotificationSection />}
-        {activeMenu === MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
+        {activeMenu === WMS_MENU_KEYS.UPLOAD && <UploadSection />}
+        {activeMenu === WMS_MENU_KEYS.NEW_ORDERS && <NewOrdersSection />}
+        {activeMenu === WMS_MENU_KEYS.REVIEW && <ReviewSection />}
+        {activeMenu === WMS_MENU_KEYS.KPI && <KPISection />}
+        {activeMenu === WMS_MENU_KEYS.REQUISITION && <RequisitionDashboard />}
+        {activeMenu === WMS_MENU_KEYS.NOTIF && <NotificationSection />}
+        {activeMenu === WMS_MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
       </div>
       {MessageModal}
       {ConfirmModal}

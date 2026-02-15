@@ -140,7 +140,7 @@ export default function CartoonPatterns() {
     if (value == null) return null
     const n = Math.round(Number(value))
     if (!Number.isFinite(n)) return null
-    return Math.min(3, Math.max(1, n))
+    return Math.min(3, Math.max(0, n))
   }
 
   async function loadPatterns() {
@@ -339,9 +339,43 @@ export default function CartoonPatterns() {
       }
       if (!toInsert.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี pattern_name)')
 
-      const { error } = await supabase.from('cp_cartoon_patterns').insert(toInsert)
+      // ตรวจสอบชื่อลายซ้ำในไฟล์ที่นำเข้า
+      const uniqueNames = new Set<string>()
+      const deduped = toInsert.filter((item) => {
+        const key = item.pattern_name.toLowerCase()
+        if (uniqueNames.has(key)) return false
+        uniqueNames.add(key)
+        return true
+      })
+      const dupInFile = toInsert.length - deduped.length
+
+      // ตรวจสอบชื่อลายซ้ำกับข้อมูลในระบบ
+      const { data: existingPatterns } = await supabase
+        .from('cp_cartoon_patterns')
+        .select('pattern_name')
+        .eq('is_active', true)
+      const existingNames = new Set(
+        (existingPatterns || []).map((p: { pattern_name: string }) => p.pattern_name.toLowerCase())
+      )
+      const newItems = deduped.filter((item) => !existingNames.has(item.pattern_name.toLowerCase()))
+      const dupInDb = deduped.length - newItems.length
+
+      if (!newItems.length) {
+        const msgs: string[] = []
+        if (dupInFile > 0) msgs.push(`ซ้ำในไฟล์ ${dupInFile} รายการ`)
+        if (dupInDb > 0) msgs.push(`ซ้ำกับข้อมูลในระบบ ${dupInDb} รายการ`)
+        alert(`ไม่มีลายการ์ตูนใหม่ที่จะนำเข้า\n${msgs.join(', ')}`)
+        loadPatterns()
+        return
+      }
+
+      const { error } = await supabase.from('cp_cartoon_patterns').insert(newItems)
       if (error) throw error
-      alert(`นำเข้าลายการ์ตูน ${toInsert.length} รายการเรียบร้อย`)
+
+      const msgs: string[] = [`นำเข้าลายการ์ตูนใหม่ ${newItems.length} รายการเรียบร้อย`]
+      if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
+      if (dupInDb > 0) msgs.push(`ข้ามรายการที่มีอยู่แล้วในระบบ ${dupInDb} รายการ`)
+      alert(msgs.join('\n'))
       loadPatterns()
     } catch (err: any) {
       console.error('Import error:', err)
@@ -557,12 +591,12 @@ export default function CartoonPatterns() {
                           getDefaultLineCountForCategory(pattern.product_category ?? '')
                         }
                         onChange={(e) => {
-                          const next = normalizeLineCount(Number(e.target.value)) || 1
+                          const next = normalizeLineCount(Number(e.target.value)) ?? 0
                           updatePatternInline(pattern.id, { line_count: next })
                         }}
                         className="w-20 px-2 py-1 border rounded text-sm"
                       >
-                        {[1, 2, 3].map((n) => (
+                        {[0, 1, 2, 3].map((n) => (
                           <option key={n} value={n}>
                             {n}
                           </option>
@@ -655,7 +689,7 @@ export default function CartoonPatterns() {
                 className="w-full px-3 py-2 border rounded-lg"
               >
                 <option value="">-- เลือกจำนวนบรรทัด --</option>
-                {[1, 2, 3].map((n) => (
+                {[0, 1, 2, 3].map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>

@@ -55,7 +55,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
   const imgUrl = (productCode: string) => {
     if (productCode === 'SPARE_PART') {
-      return 'https://placehold.co/100x100?text=SPARE'
+      return getProductImageUrl('spare_part')
     }
     return getProductImageUrl(productCode)
   }

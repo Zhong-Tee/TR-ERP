@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Order, OrderItem } from '../../types'
+import { parseAddressText, ParsedAddress } from '../../lib/thaiAddress'
+import { e164ToLocal } from '../../lib/thaiPhone'
 import * as XLSX from 'xlsx'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
@@ -19,12 +21,95 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
   const [fullOrder, setFullOrder] = useState<Order | null>(null)
   const [loadedItems, setLoadedItems] = useState<OrderItem[] | null>(null)
 
+  /* ── Right-click context menu & edit link ── */
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; itemIdx: number } | null>(null)
+  const [editLinkItem, setEditLinkItem] = useState<{ idx: number; value: string } | null>(null)
+  const [editLinkSaving, setEditLinkSaving] = useState(false)
+  const ctxMenuRef = useRef<HTMLDivElement>(null)
+
+  // Close context menu on outside click / scroll
+  useEffect(() => {
+    if (!ctxMenu) return
+    const handleClose = () => setCtxMenu(null)
+    window.addEventListener('click', handleClose)
+    window.addEventListener('scroll', handleClose, true)
+    return () => {
+      window.removeEventListener('click', handleClose)
+      window.removeEventListener('scroll', handleClose, true)
+    }
+  }, [ctxMenu])
+
+  function handleContextMenu(e: React.MouseEvent, idx: number) {
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY, itemIdx: idx })
+  }
+
+  function handleEditLinkOpen() {
+    if (ctxMenu == null) return
+    const item = items[ctxMenu.itemIdx]
+    setEditLinkItem({ idx: ctxMenu.itemIdx, value: item?.file_attachment || '' })
+    setCtxMenu(null)
+  }
+
+  async function handleEditLinkSave() {
+    if (!editLinkItem) return
+    const item = items[editLinkItem.idx]
+    if (!item?.id) return
+    setEditLinkSaving(true)
+    try {
+      const { error } = await supabase
+        .from('or_order_items')
+        .update({ file_attachment: editLinkItem.value.trim() || null })
+        .eq('id', item.id)
+      if (error) throw error
+      // Update local state
+      if (loadedItems) {
+        setLoadedItems(prev => prev!.map((it, i2) => {
+          if (it.id === item.id) return { ...it, file_attachment: editLinkItem.value.trim() || null } as OrderItem
+          return it
+        }))
+      }
+      // Also update inline if present
+      const inl = ((order as any).or_order_items || []) as OrderItem[]
+      if (inl.length > 0) {
+        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: editLinkItem.value.trim() || null } : it)
+        ;(order as any).or_order_items = updated
+      }
+      setEditLinkItem(null)
+    } catch (err) {
+      console.error('Error saving link:', err)
+      alert('ไม่สามารถบันทึกลิงค์ได้')
+    } finally {
+      setEditLinkSaving(false)
+    }
+  }
+
   // ตรวจว่า order มีข้อมูลครบหรือไม่ (ถ้า partial เช่นจาก WorkOrderSelectionList จะไม่มี status)
   const isPartial = !initialOrder.status && !initialOrder.customer_address
   const order = (isPartial && fullOrder) ? fullOrder : initialOrder
 
   const inlineItems = ((order as any).or_order_items || []) as OrderItem[]
   const billing = order.billing_details
+
+  // ── Parse address เมื่อ billing ไม่มีข้อมูล structured (แขวง/ตำบล, เขต/อำเภอ, จังหวัด, รหัสไปรษณีย์, เบอร์โทร) ──
+  const hasBillingAddr = !!(billing?.sub_district || billing?.district || billing?.province || billing?.postal_code || billing?.mobile_phone)
+  const [parsedAddr, setParsedAddr] = useState<ParsedAddress | null>(null)
+  useEffect(() => {
+    if (hasBillingAddr || !order.customer_address) { setParsedAddr(null); return }
+    let cancelled = false
+    ;(async () => {
+      const parsed = await parseAddressText(order.customer_address, supabase)
+      if (!cancelled) setParsedAddr(parsed)
+    })()
+    return () => { cancelled = true }
+  }, [order.customer_address, hasBillingAddr])
+
+  // ค่าที่จะแสดง: ใช้ billing ก่อน ถ้าไม่มีให้ใช้ parsed
+  const displaySubDistrict = billing?.sub_district || parsedAddr?.subDistrict || null
+  const displayDistrict = billing?.district || parsedAddr?.district || null
+  const displayProvince = billing?.province || parsedAddr?.province || null
+  const displayPostalCode = billing?.postal_code || parsedAddr?.postalCode || null
+  const displayPhone = billing?.mobile_phone || (parsedAddr?.mobilePhoneCandidates?.[0] ? e164ToLocal(parsedAddr.mobilePhoneCandidates[0]) : parsedAddr?.mobilePhone) || null
 
   // Lazy-load full order เมื่อได้ข้อมูลไม่ครบ
   useEffect(() => {
@@ -164,15 +249,11 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
             <div className="md:col-span-2">
               <InfoRow label="ที่อยู่" value={order.customer_address} />
             </div>
-            {billing && (
-              <>
-                <InfoRow label="แขวง/ตำบล" value={billing.sub_district} />
-                <InfoRow label="เขต/อำเภอ" value={billing.district} />
-                <InfoRow label="จังหวัด" value={billing.province} />
-                <InfoRow label="รหัสไปรษณีย์" value={billing.postal_code} />
-                <InfoRow label="เบอร์โทร" value={billing.mobile_phone} />
-              </>
-            )}
+            <InfoRow label="แขวง/ตำบล" value={displaySubDistrict} />
+            <InfoRow label="เขต/อำเภอ" value={displayDistrict} />
+            <InfoRow label="จังหวัด" value={displayProvince} />
+            <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
+            <InfoRow label="เบอร์โทร" value={displayPhone} />
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
             <InfoRow label="ผู้ลงออเดอร์" value={order.admin_user} />
             <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
@@ -240,7 +321,7 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
                     const isTierProduct = SHOW_TIER_PRODUCTS.includes(item.product_name || '')
                     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
                     return (
-                    <tr key={item.id} className="hover:bg-blue-50/40 transition-colors">
+                    <tr key={item.id} className="hover:bg-blue-50/40 transition-colors cursor-context-menu" onContextMenu={(e) => handleContextMenu(e, idx)}>
                       <td className="px-3 py-2 text-gray-400">{idx + 1}</td>
                       <td className="px-3 py-2 font-medium text-gray-900 select-all">{item.product_name}</td>
                       <td className="px-3 py-2 text-gray-700 select-all">{item.ink_color || '-'}</td>
@@ -302,6 +383,66 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
           </section>
         )}
       </div>
+
+      {/* ── Right-click Context Menu ── */}
+      {ctxMenu && (
+        <div
+          ref={ctxMenuRef}
+          className="fixed z-[9999] bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[160px] animate-in fade-in"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <button
+            type="button"
+            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-2 transition-colors"
+            onClick={handleEditLinkOpen}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.102 1.101" />
+            </svg>
+            แก้ไขลิงค์ไฟล์แนบ
+          </button>
+        </div>
+      )}
+
+      {/* ── Edit Link Dialog ── */}
+      {editLinkItem && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40" onClick={() => !editLinkSaving && setEditLinkItem(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-5" onClick={(e) => e.stopPropagation()}>
+            <h4 className="text-sm font-bold text-gray-800 mb-1">แก้ไขลิงค์ไฟล์แนบ</h4>
+            <p className="text-xs text-gray-500 mb-3">
+              รายการที่ {editLinkItem.idx + 1}: {items[editLinkItem.idx]?.product_name || ''}
+            </p>
+            <input
+              type="url"
+              autoFocus
+              value={editLinkItem.value}
+              onChange={(e) => setEditLinkItem({ ...editLinkItem, value: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
+              placeholder="https://..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => setEditLinkItem(null)}
+                disabled={editLinkSaving}
+                className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleEditLinkSave}
+                disabled={editLinkSaving}
+                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {editLinkSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -6,6 +6,8 @@ import PickerOrderList from './PickerOrderList'
 import PickerJobCard from './PickerJobCard'
 import { useWmsModal } from '../useWmsModal'
 
+const WORKABLE_STATUSES = ['pending', 'wrong', 'not_find']
+
 export default function PickerLayout() {
   const { user, signOut } = useAuthContext()
   const [currentOrderId, setCurrentOrderId] = useState<string | null>(null)
@@ -17,29 +19,29 @@ export default function PickerLayout() {
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [loggingOut, setLoggingOut] = useState(false)
 
-  const ensurePlanDeptEnd = async (workOrderName: string) => {
-    if (!workOrderName) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'เบิก'
-    const procNames = ['ดึงกระดาษ/อุปกรณ์']
-    tracks[dept] = tracks[dept] || {}
-    procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
-      if (!tracks[dept][p].start) tracks[dept][p].start = new Date().toISOString()
-      tracks[dept][p].end = new Date().toISOString()
-    })
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+  /** หา index ของรายการที่ยังไม่เสร็จ ถัดจาก fromIndex (วน loop กลับต้น) */
+  const findNextWorkableIndex = (items: any[], fromIndex: number): number => {
+    for (let i = fromIndex + 1; i < items.length; i++) {
+      if (WORKABLE_STATUSES.includes(items[i].status)) return i
+    }
+    for (let i = 0; i <= fromIndex; i++) {
+      if (WORKABLE_STATUSES.includes(items[i].status)) return i
+    }
+    return -1
   }
 
   useEffect(() => {
     if (currentOrderId) {
-      loadPickerTask().catch((err) => {
+      loadPickerTask().then((sortedItems) => {
+        if (sortedItems) {
+          const firstWorkable = sortedItems.findIndex((i) => WORKABLE_STATUSES.includes(i.status))
+          if (firstWorkable >= 0) setCurrentIndex(firstWorkable)
+        }
+      }).catch((err) => {
         console.error('Error in loadPickerTask:', err)
       })
     }
-  }, [currentOrderId, currentIndex])
+  }, [currentOrderId])
 
   useEffect(() => {
     if (timerIntervalRef.current) {
@@ -64,8 +66,9 @@ export default function PickerLayout() {
     }
   }, [currentIndex, pickerItems, currentOrderId])
 
-  const loadPickerTask = async () => {
-    if (!currentOrderId) return 0
+  /** โหลดรายการทั้งหมด (ทุกสถานะ) เรียงตามจุดเก็บ — คืน sorted items หรือ null */
+  const loadPickerTask = async (): Promise<any[] | null> => {
+    if (!currentOrderId) return null
 
     const { data } = await supabase.from('wms_orders').select('*').eq('order_id', currentOrderId)
 
@@ -73,26 +76,21 @@ export default function PickerLayout() {
       showMessage({ message: 'ไม่พบข้อมูลใบงาน!' })
       setCurrentOrderId(null)
       setShowOrderList(true)
-      return 0
+      return null
     }
 
-    const hasWorkableItems = data.some((i) => ['pending', 'wrong', 'not_find'].includes(i.status))
+    const sortedItems = sortOrderItems(data)
+    setPickerItems(sortedItems)
+
+    const hasWorkableItems = sortedItems.some((i) => WORKABLE_STATUSES.includes(i.status))
     if (!hasWorkableItems) {
       showMessage({ message: 'ใบงานนี้จัดการครบทุกรายการแล้ว!' })
       setCurrentOrderId(null)
       setShowOrderList(true)
-      return 0
+      return null
     }
 
-    const workableItems = data.filter((i) => ['pending', 'wrong', 'not_find'].includes(i.status))
-    const sortedWorkableItems = sortOrderItems(workableItems)
-    setPickerItems(sortedWorkableItems)
-
-    if (currentIndex >= sortedWorkableItems.length) {
-      setCurrentIndex(0)
-    }
-
-    return sortedWorkableItems.length
+    return sortedItems
   }
 
   const selectOrder = (orderId: string) => {
@@ -121,29 +119,14 @@ export default function PickerLayout() {
         return
       }
 
-      if (currentOrderId) {
-        const { count } = await supabase
-          .from('wms_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('order_id', currentOrderId)
-          .neq('status', 'picked')
-        if ((count || 0) === 0) {
-          await ensurePlanDeptEnd(currentOrderId)
-        }
-      }
+      const sortedItems = await loadPickerTask()
+      if (!sortedItems) return
 
-      const remainingCount = await loadPickerTask()
-      if (remainingCount === 0) {
-        return
+      // ข้ามไปรายการถัดไปที่ยังไม่เสร็จ
+      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
+      if (nextIdx >= 0) {
+        setCurrentIndex(nextIdx)
       }
-
-      setCurrentIndex((prev) => {
-        const nextIndex = prev + 1
-        if (nextIndex >= remainingCount) {
-          return 0
-        }
-        return nextIndex
-      })
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
@@ -174,18 +157,14 @@ export default function PickerLayout() {
         },
       ])
 
-      const remainingCount = await loadPickerTask()
-      if (remainingCount === 0) {
-        return
-      }
+      const sortedItems = await loadPickerTask()
+      if (!sortedItems) return
 
-      setCurrentIndex((prev) => {
-        const nextIndex = prev + 1
-        if (nextIndex >= remainingCount) {
-          return 0
-        }
-        return nextIndex
-      })
+      // ข้ามไปรายการถัดไปที่ยังไม่เสร็จ
+      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
+      if (nextIdx >= 0) {
+        setCurrentIndex(nextIdx)
+      }
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
@@ -272,6 +251,10 @@ export default function PickerLayout() {
             onFinish={() => pickerFinishItem(currentItem.id)}
             onNoProduct={() => submitNoProduct(currentItem)}
             onNavigate={(dir) => pickerNavigate(dir)}
+            onJumpToItem={(itemId) => {
+              const idx = pickerItems.findIndex((i) => i.id === itemId)
+              if (idx >= 0) setCurrentIndex(idx)
+            }}
           />
         ) : (
           <div className="text-center text-slate-500 italic py-20">ไม่มีงานมอบหมาย</div>

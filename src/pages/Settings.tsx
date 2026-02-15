@@ -13,7 +13,7 @@ export default function Settings() {
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<
-    'users' | 'role-settings' | 'banks' | 'product-settings' | 'chat-history' | 'issue-types' | 'easyslip'
+    'users' | 'role-settings' | 'banks' | 'product-settings' | 'sellers' | 'chat-history' | 'issue-types' | 'easyslip'
   >('users')
   const [, setFixingStatus] = useState(false)
   const [, setStatusFixResult] = useState<{
@@ -106,6 +106,15 @@ export default function Settings() {
   const [issueTypeSaving, setIssueTypeSaving] = useState(false)
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+
+  // ผู้ขาย (Sellers)
+  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn: string; purchase_channel: string; is_active: boolean }[]>([])
+  const [sellerName, setSellerName] = useState('')
+  const [sellerNameCn, setSellerNameCn] = useState('')
+  const [sellerPurchaseChannel, setSellerPurchaseChannel] = useState('')
+  const [sellerSaving, setSellerSaving] = useState(false)
+  const [sellerEditingId, setSellerEditingId] = useState<string | null>(null)
+
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   useEffect(() => {
@@ -127,6 +136,9 @@ export default function Settings() {
     }
     if (activeTab === 'issue-types') {
       loadIssueTypes()
+    }
+    if (activeTab === 'sellers') {
+      loadSellers()
     }
   }, [activeTab])
 
@@ -210,6 +222,22 @@ export default function Settings() {
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function updateUsername(userId: string, newUsername: string) {
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ username: newUsername.trim() })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'อัปเดต Username สำเร็จ' })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating username:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
@@ -467,6 +495,74 @@ export default function Settings() {
       setIssueTypes((prev) => prev.filter((t) => t.id !== id))
     } catch (error: any) {
       console.error('Error deleting issue type:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  // ===== Sellers CRUD =====
+  async function loadSellers() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_sellers')
+        .select('*')
+        .eq('is_active', true)
+        .order('name')
+      if (error) throw error
+      setSellers(data || [])
+    } catch (error: any) {
+      console.error('Error loading sellers:', error)
+    }
+  }
+
+  async function saveSeller() {
+    if (!sellerName.trim()) {
+      showMessage({ message: 'กรุณากรอกชื่อผู้ขาย' })
+      return
+    }
+    setSellerSaving(true)
+    try {
+      const payload = {
+        name: sellerName.trim(),
+        name_cn: sellerNameCn.trim(),
+        purchase_channel: sellerPurchaseChannel.trim(),
+      }
+      if (sellerEditingId) {
+        const { error } = await supabase
+          .from('pr_sellers')
+          .update(payload)
+          .eq('id', sellerEditingId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('pr_sellers')
+          .insert(payload)
+        if (error) throw error
+      }
+      setSellerName('')
+      setSellerNameCn('')
+      setSellerPurchaseChannel('')
+      setSellerEditingId(null)
+      loadSellers()
+    } catch (error: any) {
+      console.error('Error saving seller:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setSellerSaving(false)
+    }
+  }
+
+  async function deleteSeller(id: string) {
+    const ok = await showConfirm({ title: 'ลบผู้ขาย', message: 'ต้องการลบผู้ขายนี้หรือไม่?' })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('pr_sellers')
+        .update({ is_active: false })
+        .eq('id', id)
+      if (error) throw error
+      setSellers((prev) => prev.filter((s) => s.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting seller:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
@@ -1071,6 +1167,7 @@ export default function Settings() {
               { key: 'role-settings', label: 'ตั้งค่า Role' },
               { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
               { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
+              { key: 'sellers', label: 'ผู้ขาย' },
               { key: 'issue-types', label: 'ประเภท Issue' },
               { key: 'chat-history', label: 'ประวัติแชท' },
               { key: 'easyslip', label: 'API EasySlip' },
@@ -1322,7 +1419,23 @@ export default function Settings() {
                 {filteredUsers.map((user, idx) => (
                   <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3">{user.email || '-'}</td>
-                    <td className="p-3">{user.username || '-'}</td>
+                    <td className="p-3">
+                      <input
+                        type="text"
+                        defaultValue={user.username || ''}
+                        placeholder="-"
+                        onBlur={(e) => {
+                          const newVal = e.target.value.trim()
+                          if (newVal !== (user.username || '')) {
+                            updateUsername(user.id, newVal)
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                        }}
+                        className="px-3 py-1 border border-gray-300 rounded w-full max-w-[200px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                      />
+                    </td>
                     <td className="p-3">
                       <select
                         value={user.role}
@@ -1705,6 +1818,106 @@ export default function Settings() {
                 </tbody>
               </table>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ผู้ขาย Tab */}
+      {activeTab === 'sellers' && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
+          </div>
+          <div className="flex gap-2 items-end flex-wrap">
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขาย</label>
+              <input
+                type="text"
+                value={sellerName}
+                onChange={(e) => setSellerName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                placeholder="กรอกชื่อผู้ขาย"
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+              />
+            </div>
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขายภาษาจีน</label>
+              <input
+                type="text"
+                value={sellerNameCn}
+                onChange={(e) => setSellerNameCn(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                placeholder="กรอกชื่อภาษาจีน"
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+              />
+            </div>
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทางซื้อ</label>
+              <input
+                type="text"
+                value={sellerPurchaseChannel}
+                onChange={(e) => setSellerPurchaseChannel(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                placeholder="เช่น Taobao, 1688, Alibaba"
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+              />
+            </div>
+            <button
+              onClick={saveSeller}
+              disabled={sellerSaving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
+            >
+              {sellerSaving ? 'กำลังบันทึก...' : sellerEditingId ? 'อัปเดต' : 'เพิ่ม'}
+            </button>
+            {sellerEditingId && (
+              <button
+                onClick={() => { setSellerEditingId(null); setSellerName(''); setSellerNameCn(''); setSellerPurchaseChannel('') }}
+                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100"
+              >
+                ยกเลิก
+              </button>
+            )}
+          </div>
+          {sellers.length === 0 ? (
+            <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลผู้ขาย</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="px-4 py-2.5 text-left font-semibold rounded-tl-xl w-12">#</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ช่องทางซื้อ</th>
+                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl w-40">การจัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sellers.map((s, idx) => (
+                  <tr key={s.id} className={`border-t hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
+                    <td className="px-4 py-2.5 font-semibold">{s.name}</td>
+                    <td className="px-4 py-2.5 text-gray-700">{s.name_cn || '-'}</td>
+                    <td className="px-4 py-2.5 text-gray-700">{s.purchase_channel || '-'}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => { setSellerEditingId(s.id); setSellerName(s.name); setSellerNameCn(s.name_cn || ''); setSellerPurchaseChannel(s.purchase_channel || '') }}
+                          className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          onClick={() => deleteSeller(s.id)}
+                          className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs font-semibold"
+                        >
+                          ลบ
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

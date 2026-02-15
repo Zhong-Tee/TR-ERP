@@ -135,9 +135,12 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
       setCustomerAddress2('')
     }
 
-    // Build items
+    // Build items — ใช้ tax_items ก่อน ถ้าราคาเป็น 0 ทั้งหมดให้ดึงจาก or_order_items แทน
     const taxItems = bd.tax_items || []
-    if (taxItems.length > 0) {
+    const allPricesZero = taxItems.length > 0 && taxItems.every((ti: { unit_price: number }) => !ti.unit_price || ti.unit_price <= 0)
+
+    if (taxItems.length > 0 && !allPricesZero) {
+      // tax_items มีราคาปกติ — ใช้ได้เลย
       const DEDUPE_KEYWORDS = ['TWP', 'TWB']
       const isDedupe = (name: string) => DEDUPE_KEYWORDS.some((kw) => name.includes(kw))
       const result: CashBillItem[] = []
@@ -154,7 +157,37 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
       })
       setItems(result)
     } else {
-      setItems([{ desc: 'สินค้า', qty: 1, price: order.total_amount || 0 }])
+      // tax_items ว่าง หรือราคาเป็น 0 ทั้งหมด → ดึงจาก or_order_items แทน
+      supabase
+        .from('or_order_items')
+        .select('product_name, quantity, unit_price, is_free')
+        .eq('order_id', order.id)
+        .order('created_at', { ascending: true })
+        .then(({ data: orderItems, error }) => {
+          if (error || !orderItems || orderItems.length === 0) {
+            // Fallback สุดท้าย: ใช้ยอดรวม
+            setItems([{ desc: 'สินค้า', qty: 1, price: order.total_amount || 0 }])
+            return
+          }
+          // กรองสินค้าของแถม (is_free) ออก
+          const paidItems = orderItems.filter((oi: { is_free?: boolean }) => !oi.is_free)
+          const itemsToUse = paidItems.length > 0 ? paidItems : orderItems
+          const DEDUPE_KEYWORDS = ['TWP', 'TWB']
+          const isDedupe = (name: string) => DEDUPE_KEYWORDS.some((kw) => name.includes(kw))
+          const result: CashBillItem[] = []
+          const seen = new Set<string>()
+          itemsToUse.forEach((oi: { product_name: string; quantity: number; unit_price: number }) => {
+            if (isDedupe(oi.product_name)) {
+              if (!seen.has(oi.product_name)) {
+                seen.add(oi.product_name)
+                result.push({ desc: oi.product_name, qty: 1, price: oi.unit_price || 0 })
+              }
+            } else {
+              result.push({ desc: oi.product_name, qty: oi.quantity || 1, price: oi.unit_price || 0 })
+            }
+          })
+          setItems(result.length > 0 ? result : [{ desc: 'สินค้า', qty: 1, price: order.total_amount || 0 }])
+        })
     }
   }, [order])
 

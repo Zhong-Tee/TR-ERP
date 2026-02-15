@@ -104,7 +104,7 @@ export default function QC() {
     if (error || !data) return
     const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
     const dept = 'QC'
-    const procNames = ['ตรวจสอบความถูกต้อง']
+    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
     tracks[dept] = tracks[dept] || {}
     procNames.forEach((p) => {
       if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
@@ -121,7 +121,7 @@ export default function QC() {
     if (error || !data) return
     const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
     const dept = 'QC'
-    const procNames = ['ตรวจสอบความถูกต้อง']
+    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
     tracks[dept] = tracks[dept] || {}
     const now = new Date().toISOString()
     procNames.forEach((p) => {
@@ -143,9 +143,17 @@ export default function QC() {
   // Settings
   const [reasons, setReasons] = useState<SettingsReason[]>([])
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
-  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink'>('reasons')
+  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs'>('reasons')
   const [newReason, setNewReason] = useState('')
   const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
+
+  // Skip QC (ไม่ต้อง QC)
+  const SKIP_QC_PASSWORD = 'TRkids@999'
+  const [skipQcUnlocked, setSkipQcUnlocked] = useState(false)
+  const [skipQcPassword, setSkipQcPassword] = useState('')
+  const [skipQcLoading, setSkipQcLoading] = useState<string | null>(null)
+  const [skipQcConfirmWo, setSkipQcConfirmWo] = useState<string | null>(null)
+  const [skipLogs, setSkipLogs] = useState<any[]>([])
 
   // Fail reason Modal (แทน window.prompt)
   const [failReasonModalOpen, setFailReasonModalOpen] = useState(false)
@@ -214,13 +222,45 @@ export default function QC() {
     }
   }, [])
 
+  // จำนวนรายการรอ QC (จำนวน work orders ที่ยังเหลือ)
+  const qcOperationCount = workOrdersWithProgress.length
+  // จำนวน reject items
+  const rejectCount = rejectData.length
+
+  // ส่งจำนวนรวมไปให้ Sidebar แสดงเรียลไทม์
+  useEffect(() => {
+    const total = qcOperationCount + rejectCount
+    window.dispatchEvent(new CustomEvent('sidebar-qc-counts', { detail: { total, qcOperation: qcOperationCount, reject: rejectCount } }))
+  }, [qcOperationCount, rejectCount])
+
   useEffect(() => {
     loadWorkOrders()
+    loadRejectItems()
     loadSettings()
     clearSessionBackup()
     const t = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(t)
-  }, [loadWorkOrders, loadSettings])
+  }, [loadWorkOrders, loadRejectItems, loadSettings])
+
+  // Realtime: อัปเดตจำนวน QC Operation + Reject เมื่อข้อมูลเปลี่ยน
+  useEffect(() => {
+    const channel = supabase
+      .channel('qc-page-realtime-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => {
+        loadRejectItems()
+        loadWorkOrders()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => {
+        loadWorkOrders()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
+        loadWorkOrders()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [loadRejectItems, loadWorkOrders])
 
   useEffect(() => {
     if (currentView === 'reject') loadRejectItems()
@@ -536,6 +576,17 @@ export default function QC() {
       setLoading(true)
       try {
         await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+
+        // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
+        setQcData((prev) => ({
+          ...prev,
+          items: prev.items.map((i) =>
+            i.uid === currentRejectItem.item_uid
+              ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
+              : i
+          ),
+        }))
+
         const updatedList = await fetchRejectItems()
         setRejectData(updatedList)
         const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (currentRejectItem.retry_count || 1))
@@ -679,11 +730,124 @@ export default function QC() {
     }
   }
 
+  function handleSkipQcPasswordCheck() {
+    if (skipQcPassword === SKIP_QC_PASSWORD) {
+      setSkipQcUnlocked(true)
+      setSkipQcPassword('')
+    } else if (skipQcPassword) {
+      alert('รหัสไม่ถูกต้อง')
+      setSkipQcPassword('')
+    }
+  }
+
+  async function handleSkipQcConfirm() {
+    const woName = skipQcConfirmWo
+    setSkipQcConfirmWo(null)
+    if (!woName) return
+    setSkipQcLoading(woName)
+    try {
+      const items = await fetchItemsByWorkOrder(woName)
+      if (items.length === 0) { alert('ไม่พบรายการ'); return }
+
+      const now = new Date()
+      const filename = `WO-${woName}`
+
+      // สร้าง session ที่จบแล้ว
+      const { data: session, error: sessErr } = await supabase
+        .from('qc_sessions')
+        .insert({
+          username: qcUsername,
+          filename,
+          start_time: now.toISOString(),
+          end_time: now.toISOString(),
+          total_items: items.length,
+          pass_count: items.length,
+          fail_count: 0,
+          kpi_score: 0,
+        })
+        .select('id')
+        .single()
+      if (sessErr) throw sessErr
+
+      // บันทึก QC records ทุกรายการเป็น pass
+      const records = items.map((item) => ({
+        session_id: session.id,
+        item_uid: item.uid,
+        status: 'pass',
+        qc_by: qcUsername,
+        product_name: item.product_name,
+        product_code: item.product_code,
+        bill_no: item.bill_no,
+        cartoon_name: item.cartoon_name,
+        ink_color: item.ink_color,
+        font: item.font,
+        floor: item.floor,
+        line1: item.line1,
+        line2: item.line2,
+        line3: item.line3,
+        qty: item.qty,
+        remark: 'ข้ามการ QC',
+      }))
+      const { error: recErr } = await supabase.from('qc_records').insert(records)
+      if (recErr) throw recErr
+
+      // อัปเดต plan
+      await ensurePlanDeptStart(woName)
+      await ensurePlanDeptEnd(woName)
+
+      // บันทึก log
+      await supabase.from('qc_skip_logs').insert({
+        work_order_name: woName,
+        skipped_by: qcUsername,
+        total_items: items.length,
+        item_details: items.map((i) => ({
+          uid: i.uid,
+          product_name: i.product_name,
+          product_code: i.product_code,
+          bill_no: i.bill_no,
+          ink_color: i.ink_color,
+          qty: i.qty,
+        })),
+      })
+
+      await loadWorkOrders()
+      loadRejectItems()
+    } catch (e: any) {
+      alert('เกิดข้อผิดพลาด: ' + (e?.message || e))
+    } finally {
+      setSkipQcLoading(null)
+    }
+  }
+
+  async function loadSkipLogs() {
+    try {
+      const { data, error } = await supabase
+        .from('qc_skip_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100)
+      if (error) throw error
+      setSkipLogs(data || [])
+    } catch (e) {
+      console.error('Error loading skip logs:', e)
+    }
+  }
+
+  function navigateItemInList(delta: number) {
+    if (!currentItem || itemsToShow.length === 0) return
+    const idx = itemsToShow.indexOf(currentItem)
+    const nextIdx = idx === -1 ? 0 : idx + delta
+    const next = itemsToShow[nextIdx]
+    if (next) setCurrentItem(next)
+  }
+
   function handleKeydown(e: React.KeyboardEvent) {
-    if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) return
     if (currentView === 'qc' && qcState.step === 'working') {
       if (e.key === 'ArrowLeft') navigateItem(-1)
       if (e.key === 'ArrowRight') navigateItem(1)
+      if (e.key === 'ArrowUp') { e.preventDefault(); navigateItemInList(-1) }
+      if (e.key === 'ArrowDown') { e.preventDefault(); navigateItemInList(1) }
     }
     if (currentView === 'reject' && currentRejectItem && activeRejectTab !== 'queue') {
       if (e.key === 'ArrowLeft') navigateRejectItem(-1)
@@ -692,11 +856,11 @@ export default function QC() {
   }
 
   return (
-    <div className="w-full" onKeyDown={handleKeydown} tabIndex={0}>
+    <div className="w-full flex-1 min-h-0 flex flex-col outline-none" onKeyDown={handleKeydown} tabIndex={0}>
       {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
-      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
-          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+      <div className="shrink-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="w-full flex items-center gap-4">
+          <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 flex-1" aria-label="Tabs">
             {filteredMenus.map((m) => (
               <button
                 key={m.id}
@@ -706,56 +870,121 @@ export default function QC() {
                 }`}
               >
                 {m.label}
-                {m.id === 'reject' && rejectData.length > 0 && (
-                  <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{rejectData.length}</span>
+                {m.id === 'qc' && qcOperationCount > 0 && (
+                  <span className="ml-1.5 bg-blue-500 text-white text-xs px-1.5 py-0.5 rounded-full">{qcOperationCount}</span>
+                )}
+                {m.id === 'reject' && rejectCount > 0 && (
+                  <span className="ml-1.5 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">{rejectCount}</span>
                 )}
               </button>
             ))}
           </nav>
+          {/* ช่องปลดล็อค ไม่ต้อง QC */}
+          <div className="shrink-0 flex items-center gap-2">
+            {skipQcUnlocked ? (
+              <span className="text-xs text-green-600 font-semibold bg-green-50 px-3 py-1.5 rounded-lg border border-green-200">ปลดล็อคแล้ว</span>
+            ) : (
+              <>
+                <input
+                  type="password"
+                  value={skipQcPassword}
+                  onChange={(e) => setSkipQcPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSkipQcPasswordCheck()}
+                  placeholder="รหัสปลดล็อค"
+                  className="border rounded-lg px-3 py-1.5 w-32 text-sm"
+                />
+                <button
+                  onClick={handleSkipQcPasswordCheck}
+                  className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium"
+                >
+                  ปลดล็อค
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="pt-4 flex flex-col min-h-[calc(100vh-12rem)]">
+      <div className="pt-4 flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overflow-hidden">
         {/* QC Operation */}
         {currentView === 'qc' && (
           <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
             {qcState.step === 'select' && (
-              <div className="bg-white p-6 rounded-xl shadow-sm">
-                <h2 className="text-xl font-bold mb-4">โหลดจากระบบ (Work Order)</h2>
-                <p className="text-sm text-gray-500 mb-4">เลือกใบงาน</p>
-                <div className="space-y-3 max-w-2xl">
-                  {workOrdersWithProgress.length === 0 && (
-                    <p className="text-gray-500 py-4">ไม่มีใบงานที่ยังมีรายการรอ QC ในขณะนี้</p>
-                  )}
-                  {workOrdersWithProgress.map((wo) => (
-                    <div
-                      key={wo.id}
-                      className="flex items-center justify-between gap-4 p-4 rounded-xl border border-gray-200 bg-gray-50/50 hover:bg-gray-50"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-bold text-gray-900 truncate">{wo.work_order_name}</div>
-                        <div className="text-sm text-gray-600 mt-0.5">
-                          <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining} รายการ</span>
-                          <span className="mx-1">/</span>
-                          <span>ทั้งหมด {wo.total_items} รายการ</span>
-                          <span className="ml-1 text-gray-500">({wo.order_count} บิล)</span>
-                        </div>
-                      </div>
+              workOrdersWithProgress.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">ไม่มีใบงานที่ยังมีรายการรอ QC ในขณะนี้</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {workOrdersWithProgress.map((wo) => {
+                    const isAllDone = wo.remaining === 0
+                    const hasProgress = wo.pass_items > 0 || wo.fail_items > 0
+
+                    let cardClass = ''
+                    let borderLeftColor = ''
+                    if (isAllDone) {
+                      cardClass = 'bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 hover:shadow-md'
+                      borderLeftColor = 'border-l-emerald-500'
+                    } else if (hasProgress) {
+                      cardClass = 'bg-blue-50/80 border-blue-200 hover:bg-blue-100 hover:shadow-md'
+                      borderLeftColor = 'border-l-blue-500'
+                    } else {
+                      cardClass = 'bg-white border-gray-200 hover:bg-gray-50 hover:shadow-md'
+                      borderLeftColor = 'border-l-gray-400'
+                    }
+
+                    return (
                       <button
+                        key={wo.id}
+                        className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
                         onClick={() => handleLoadWo(wo.work_order_name)}
-                        disabled={loading}
-                        className="shrink-0 px-5 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 font-medium"
+                        disabled={loading || skipQcLoading === wo.work_order_name}
                       >
-                        {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-lg font-bold flex items-center gap-2 flex-wrap">
+                              <span className="truncate">{wo.work_order_name}</span>
+                              {hasProgress && !isAllDone && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-blue-500 text-white shadow-sm">
+                                  🔄 กำลัง QC
+                                </span>
+                              )}
+                              {isAllDone && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
+                                  ✓ QC ครบ
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-sm text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                              <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining}</span>
+                              <span className="text-gray-400">/</span>
+                              <span className="text-gray-600">ทั้งหมด {wo.total_items} ({wo.total_bills} บิล)</span>
+                              <span className="text-green-600 font-medium">Pass {wo.pass_items}</span>
+                              <span className="text-red-500 font-medium">Fail {wo.fail_items}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2 shrink-0">
+                            <span className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
+                              {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
+                            </span>
+                            {skipQcUnlocked && (
+                              <span
+                                role="button"
+                                onClick={(e) => { e.stopPropagation(); setSkipQcConfirmWo(wo.work_order_name) }}
+                                className="px-3 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold shadow-sm hover:bg-amber-600 transition-colors"
+                              >
+                                {skipQcLoading === wo.work_order_name ? 'กำลังข้าม...' : 'ไม่ต้อง QC'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </button>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
-              </div>
+              )
             )}
 
             {qcState.step === 'working' && (
-              <div className="flex flex-col flex-1 min-h-0 bg-white -m-4 p-4 overflow-hidden">
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
                 <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
                   <div className="flex gap-8">
                     <div className="text-center">
@@ -788,10 +1017,15 @@ export default function QC() {
                     <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
                       ค้นหา
                     </button>
-                    {remainingItems === 0 && (
+                    {remainingItems === 0 && passedItems === totalItems && totalItems > 0 && (
                       <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
                         FINISH JOB
                       </button>
+                    )}
+                    {remainingItems === 0 && failedItems > 0 && (
+                      <span className="text-sm text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg">
+                        มีรายการไม่ผ่าน {failedItems} รายการ — ต้อง Pass ทุกรายการจึงจะจบงานได้
+                      </span>
                     )}
                     <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
                       สลับใบงาน
@@ -802,7 +1036,7 @@ export default function QC() {
                 <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
                   <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
                     <div className="p-2 border-b space-y-2">
-                      <div className="text-xs font-bold text-gray-600 uppercase">Items List</div>
+                      <div className="text-xs font-bold text-gray-600 uppercase">รายการ</div>
                       {qcCategoryOptions.length > 0 && (
                         <div className="flex items-center gap-2">
                           <label className="text-xs text-gray-500 whitespace-nowrap">หมวดหมู่สินค้า</label>
@@ -893,65 +1127,96 @@ export default function QC() {
                           <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentItem.product_name}</h2>
-                            <p className="text-xs text-gray-500">Bill: {currentItem.bill_no}</p>
+                            <p className="text-xs text-gray-500">เลขบิล: {currentItem.bill_no}</p>
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
                             <div className="text-xl font-bold text-blue-600 uppercase">{currentItem.uid}</div>
                           </div>
                         </div>
+                        {(currentItem.line1 || currentItem.line2 || currentItem.line3) && (
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
-                          <div className="text-[10px] text-gray-400 uppercase mb-2">Text Details</div>
-                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentItem.line1 || '-'}</div>
-                          <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentItem.line2 || '-'}</div>
-                          <div className="text-lg font-bold text-gray-800">{currentItem.line3 || '-'}</div>
+                          <div className="text-xs text-gray-400 font-semibold mb-2">ข้อความ</div>
+                          {currentItem.line1 && (
+                            <div className="text-xl font-bold text-gray-800 border-b border-gray-200 pb-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด1</span>
+                              <span>{currentItem.line1}</span>
+                            </div>
+                          )}
+                          {currentItem.line2 && (
+                            <div className="text-xl font-bold text-gray-800 border-b border-gray-200 pb-2 pt-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด2</span>
+                              <span>{currentItem.line2}</span>
+                            </div>
+                          )}
+                          {currentItem.line3 && (
+                            <div className="text-xl font-bold text-gray-800 pt-2 flex items-baseline gap-2">
+                              <span className="text-xs text-gray-400 font-normal shrink-0">บรรทัด3</span>
+                              <span>{currentItem.line3}</span>
+                            </div>
+                          )}
                         </div>
+                        )}
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Ink Color</div>
+                            <div className="text-xs text-gray-400">สีหมึก</div>
                             <div className="flex items-center gap-2">
                               <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentItem.ink_color) }} />
-                              <span className="font-bold truncate">{currentItem.ink_color || '-'}</span>
+                              <span className="font-bold truncate flex-1">{currentItem.ink_color || '-'}</span>
+                              {currentItem.ink_color && currentItem.ink_color.includes('กระดาษ') && (
+                                <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M5.625 1.5H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" fill="#DBEAFE" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M10.5 2.25H8.25m2.25 0v1.5a3.375 3.375 0 0 0 3.375 3.375h1.5A1.125 1.125 0 0 0 16.5 6V4.5" fill="#93C5FD" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M8.25 13.5h7.5M8.25 16.5H12" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                              {currentItem.ink_color && currentItem.ink_color.includes('ผ้า') && (
+                                <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M6.75 3 3 5.25v3h3l.75 1.5v8.25a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V9.75L18 8.25h3V5.25L17.25 3h-3a2.25 2.25 0 0 1-4.5 0h-3Z" fill="#FDE68A" stroke="#F59E0B" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
+                              {currentItem.ink_color && currentItem.ink_color.includes('พลาสติก') && (
+                                <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
+                                  <path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5m4.75-11.396c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082" fill="#D1FAE5" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                  <path d="M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" fill="#A7F3D0" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                              )}
                             </div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Font</div>
+                            <div className="text-xs text-gray-400">ฟอนต์</div>
                             <div className="font-bold">{currentItem.font || '-'}</div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Qty</div>
+                            <div className="text-xs text-gray-400">จำนวน</div>
                             <div className="text-2xl font-bold">{currentItem.qty || 1} pcs</div>
                           </div>
                         </div>
-                        <div className="mb-2 text-sm">
-                          <span className="text-gray-500">Floor: </span>
-                          <span className="font-bold">{currentItem.floor || '-'}</span>
-                          {currentItem.remark && (
-                            <>
-                              <span className="text-gray-500 ml-2">Remark: </span>
-                              <span className="font-medium">{currentItem.remark}</span>
-                            </>
-                          )}
-                        </div>
+                        {currentItem.remark && (
+                          <div className="mb-2 text-sm">
+                            <span className="text-gray-500">Remark: </span>
+                            <span className="font-medium">{currentItem.remark}</span>
+                          </div>
+                        )}
                         </div>
                         <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
                           <div className="flex gap-4">
                             <button
                               onClick={() => markStatus('fail')}
-                              className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
+                              className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600"
                             >
-                              FAIL
+                              ไม่ผ่าน
                             </button>
                             <button onClick={() => markStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
-                              PASS
+                              ผ่าน
                             </button>
                           </div>
                           <div className="flex gap-4">
-                            <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
-                              Prev
+                            <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
+                              ก่อนหน้า
                             </button>
                             <button onClick={() => navigateItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
-                              Next
+                              ถัดไป
                             </button>
                           </div>
                         </div>
@@ -1256,7 +1521,7 @@ export default function QC() {
                     <th className="px-4 py-3 text-center">Total</th>
                     <th className="px-4 py-3 text-center text-green-600">Pass</th>
                     <th className="px-4 py-3 text-center text-red-600">Fail</th>
-                    <th className="px-4 py-3 text-center">KPI (วินาที/ชิ้น)</th>
+                    <th className="px-4 py-3 text-center">KPI (ชม:นาที:วินาที)</th>
                     <th className="px-4 py-3 text-center">Action</th>
                   </tr>
                 </thead>
@@ -1275,7 +1540,13 @@ export default function QC() {
                       <td className="px-4 py-3 text-center font-bold text-green-600">{s.pass_count}</td>
                       <td className="px-4 py-3 text-center font-bold text-red-600">{s.fail_count}</td>
                       <td className="px-4 py-3 text-center">
-                        <span className="bg-gray-100 px-2 py-1 rounded font-mono font-bold">{(s.kpi_score ?? 0).toFixed(2)}</span>
+                        <span className="bg-gray-100 px-2 py-1 rounded font-mono font-bold">{(() => {
+                          const totalSec = Math.round((s.kpi_score ?? 0) * (s.total_items || 1))
+                          const h = Math.floor(totalSec / 3600)
+                          const m = Math.floor((totalSec % 3600) / 60)
+                          const sec = totalSec % 60
+                          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+                        })()}</span>
                       </td>
                       <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                         <button
@@ -1516,6 +1787,12 @@ export default function QC() {
               >
                 Ink
               </button>
+              <button
+                onClick={() => { setSettingsTab('skip_logs'); loadSkipLogs() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'skip_logs' ? 'border-amber-500 text-amber-600' : 'border-transparent text-gray-500'}`}
+              >
+                รายการไม่ QC
+              </button>
             </div>
             {settingsTab === 'reasons' && (
               <div>
@@ -1598,6 +1875,59 @@ export default function QC() {
                 </div>
               </div>
             )}
+            {settingsTab === 'skip_logs' && (
+              <div>
+                <p className="text-gray-600 mb-4">รายการใบงานที่ข้ามการ QC ทั้งหมด (ล่าสุด 100 รายการ)</p>
+                {skipLogs.length === 0 ? (
+                  <div className="py-8 text-center text-gray-400">ไม่มีรายการ</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr className="bg-gray-100">
+                          <th className="text-left px-4 py-3 font-semibold border-b">#</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">ใบงาน</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">ผู้ดำเนินการ</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">จำนวนรายการ</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">วันที่</th>
+                          <th className="text-left px-4 py-3 font-semibold border-b">รายละเอียด</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {skipLogs.map((log, idx) => (
+                          <tr key={log.id} className="border-b hover:bg-gray-50">
+                            <td className="px-4 py-3 text-gray-500">{idx + 1}</td>
+                            <td className="px-4 py-3 font-bold text-amber-700">{log.work_order_name}</td>
+                            <td className="px-4 py-3">{log.skipped_by}</td>
+                            <td className="px-4 py-3 text-center">{log.total_items}</td>
+                            <td className="px-4 py-3 text-gray-600">{new Date(log.created_at).toLocaleString('th-TH')}</td>
+                            <td className="px-4 py-3">
+                              {log.item_details && Array.isArray(log.item_details) && (
+                                <details className="cursor-pointer">
+                                  <summary className="text-blue-500 hover:text-blue-700 text-xs">ดูรายละเอียด ({log.item_details.length} รายการ)</summary>
+                                  <div className="mt-2 p-2 bg-gray-50 rounded text-xs space-y-1 max-h-40 overflow-y-auto">
+                                    {log.item_details.map((item: any, i: number) => (
+                                      <div key={i} className="flex gap-3">
+                                        <span className="text-gray-400">{i + 1}.</span>
+                                        <span className="font-mono text-gray-700">{item.uid}</span>
+                                        <span>{item.product_name}</span>
+                                        <span className="text-gray-500">{item.bill_no}</span>
+                                        {item.ink_color && <span className="text-purple-600">{item.ink_color}</span>}
+                                        {item.qty && <span className="text-gray-500">x{item.qty}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1628,6 +1958,37 @@ export default function QC() {
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium"
           >
             ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Skip QC confirm Modal */}
+      <Modal
+        open={!!skipQcConfirmWo}
+        onClose={() => setSkipQcConfirmWo(null)}
+        contentClassName="max-w-md"
+      >
+        <div className="p-4 border-b bg-amber-50 font-bold text-amber-800">
+          ยืนยัน ไม่ต้อง QC
+        </div>
+        <div className="p-4 text-sm text-gray-700">
+          <p>ต้องการข้ามการ QC ใบงาน <strong className="text-amber-700">{skipQcConfirmWo}</strong> ทั้งหมดใช่หรือไม่?</p>
+          <p className="mt-2 text-red-500 text-xs">* ระบบจะบันทึกทุกรายการเป็น "ผ่าน" และจบงานอัตโนมัติ</p>
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setSkipQcConfirmWo(null)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleSkipQcConfirm}
+            className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-medium"
+          >
+            ยืนยัน ข้าม QC
           </button>
         </div>
       </Modal>

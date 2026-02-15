@@ -114,7 +114,7 @@ export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalP
                     const currentColorClass = statusColorMap[item.status] || 'bg-gray-100'
                     const imgUrl =
                       item.product_code === 'SPARE_PART'
-                        ? 'https://placehold.co/100x100?text=SPARE'
+                        ? getProductImageUrl('spare_part')
                         : getProductImageUrl(item.product_code)
 
                     return (

@@ -155,8 +155,30 @@ export async function getAddressByZip(
       const hint = (addressHint ?? '').trim()
       let chosen: Row = rows[0] as Row
       if (hint) {
-        const matched = rows.find((r: Row) => r.name_th && hint.includes(r.name_th))
-        if (matched) chosen = matched as Row
+        // ให้คะแนนแต่ละ row โดยพิจารณาทั้งชื่อแขวง/ตำบล และ เขต/อำเภอ จากข้อความ
+        let bestScore = 0
+        for (const r of rows as Row[]) {
+          let score = 0
+          const subName = (r.name_th ?? '').trim()
+          const distName = getDistrict(r)
+          // ลอกคำนำหน้า เขต/อำเภอ ออกจากชื่อ district เพื่อเทียบกับข้อความ
+          const distNameBare = distName.replace(/^(เขต|อำเภอ)/, '').trim()
+
+          // +1 ถ้าชื่อแขวง/ตำบลอยู่ในข้อความ
+          if (subName && hint.includes(subName)) score += 1
+          // +2 ถ้าชื่อแขวง/ตำบลตามหลังคำว่า "แขวง" หรือ "ตำบล" (ชัวร์ว่าเป็นแขวง/ตำบลจริง)
+          if (subName && (hint.includes('แขวง' + subName) || hint.includes('ตำบล' + subName) || hint.includes('ต.' + subName))) score += 2
+
+          // +1 ถ้าชื่อเขต/อำเภอ (ลอกคำนำหน้า) อยู่ในข้อความ — ข้ามถ้าชื่อเหมือนแขวง/ตำบล เพื่อไม่นับซ้ำ (ป้องกัน false positive ที่พบบ่อยในกรุงเทพ)
+          if (distNameBare && distNameBare !== subName && hint.includes(distNameBare)) score += 1
+          // +2 ถ้าชื่อเขต/อำเภอตามหลังคำว่า "เขต" หรือ "อำเภอ" (ชัวร์ว่าเป็นเขต/อำเภอจริง)
+          if (distNameBare && (hint.includes('เขต' + distNameBare) || hint.includes('อำเภอ' + distNameBare) || hint.includes('อ.' + distNameBare))) score += 2
+
+          if (score > bestScore) {
+            bestScore = score
+            chosen = r
+          }
+        }
       }
       return {
         province: getProvince(chosen),
@@ -190,11 +212,18 @@ export async function getAddressByZip(
 }
 
 /** หาตำแหน่งที่ตัดข้อความที่อยู่ — ตัดตั้งแต่ แขวง/ตำบล หรือ เขต/อำเภอ เป็นต้นไป (ที่อยู่เหลือแค่บรรทัดที่อยู่จริง ไม่รวมแขวง ตำบล เขต อำเภอ จังหวัด) */
-function cutAddressLine(rest: string, subDistrict: string, district: string, province: string): string {
+function cutAddressLine(rest: string, subDistrict: string, district: string, province: string, options?: SubDistrictOption[]): string {
   const indices: number[] = []
   if (subDistrict && rest.includes(subDistrict)) indices.push(rest.indexOf(subDistrict))
   if (district && rest.includes(district)) indices.push(rest.indexOf(district))
   if (province && rest.includes(province)) indices.push(rest.indexOf(province))
+  // เช็คชื่อแขวง/ตำบล + เขต/อำเภอ จาก subDistrictOptions ทุกตัว (ไม่ใช่แค่ตัวที่เลือก)
+  if (options) {
+    for (const o of options) {
+      if (o.subDistrict && rest.includes(o.subDistrict)) indices.push(rest.indexOf(o.subDistrict))
+      if (o.district && rest.includes(o.district)) indices.push(rest.indexOf(o.district))
+    }
+  }
   if (rest.includes('ตำบล')) indices.push(rest.indexOf('ตำบล'))
   if (rest.includes('แขวง')) indices.push(rest.indexOf('แขวง'))
   if (rest.includes('อำเภอ')) indices.push(rest.indexOf('อำเภอ'))
@@ -235,14 +264,14 @@ export async function parseAddressText(
 
   const { province, options: subDistrictOptions, subDistrict, district } = await getAddressByZip(postalCode, supabaseClient, rest)
 
-  let addressLine = cutAddressLine(rest, subDistrict, district, province)
+  let addressLine = cutAddressLine(rest, subDistrict, district, province, subDistrictOptions)
 
   /** แยกชื่อลูกค้าจากต้น addressLine (คำที่อยู่ก่อนเลขที่/หมู่/ต./อ.) แล้วตัดชื่อออกจากช่องที่อยู่ */
   let recipientName: string | undefined
   const tokens = addressLine.split(/\s+/).filter(Boolean)
   const nameTokens: string[] = []
   for (const t of tokens) {
-    if (/^\d/.test(t) || t === 'หมู่' || /^ต\.?/.test(t) || /^อ\.?/.test(t) || /^จ\.?/.test(t)) break
+    if (/^\d/.test(t) || t === 'หมู่' || /^ต\./.test(t) || /^อ\./.test(t) || /^จ\./.test(t)) break
     nameTokens.push(t)
   }
   if (nameTokens.length > 0) {

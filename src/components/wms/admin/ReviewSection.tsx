@@ -3,6 +3,23 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
+/** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks */
+const ensurePlanDeptEnd = async (workOrderName: string) => {
+  if (!workOrderName) return
+  const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
+  if (error || !data) return
+  const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
+  const dept = 'เบิก'
+  const procNames = ['หยิบของ', 'เสร็จแล้ว']
+  tracks[dept] = tracks[dept] || {}
+  procNames.forEach((p) => {
+    if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+    if (!tracks[dept][p].start) tracks[dept][p].start = new Date().toISOString()
+    tracks[dept][p].end = new Date().toISOString()
+  })
+  await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+}
+
 export default function ReviewSection() {
   const [reviewDate, setReviewDate] = useState('')
   const [reviewOrderSelect, setReviewOrderSelect] = useState('')
@@ -133,6 +150,12 @@ export default function ReviewSection() {
           .eq('order_id', reviewOrderSelect)
 
         await saveFirstCheckSummary(reviewOrderSelect, sortedData)
+
+        // บันทึกเวลาเสร็จแผนก "เบิก" เมื่อรายการทั้งหมดเป็น "หยิบถูก" เท่านั้น
+        const allCorrect = sortedData.every((i) => i.status === 'correct')
+        if (allCorrect) {
+          await ensurePlanDeptEnd(reviewOrderSelect)
+        }
       }
     }
 
@@ -300,7 +323,7 @@ export default function ReviewSection() {
                   <div className="flex items-center gap-6 w-1/3">
                     <div className="text-xl font-black text-gray-300 w-8 text-center">{idx + 1}</div>
                     <img
-                      src={item.product_code === 'SPARE_PART' ? 'https://placehold.co/200x200?text=SPARE' : getProductImageUrl(item.product_code)}
+                      src={item.product_code === 'SPARE_PART' ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)}
                       className="w-20 h-20 object-cover rounded-xl border shadow-sm"
                       onError={(e) => {
                         const target = e.target as HTMLImageElement

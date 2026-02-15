@@ -34,7 +34,8 @@ export default function Modal({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex p-4 ${align === 'center' ? 'items-center justify-center' : 'items-center justify-start pl-[540px]'}`}
+      className={`fixed inset-0 z-50 flex px-4 pb-4 ${align === 'center' ? 'items-center justify-center' : 'items-center justify-start pl-[540px]'}`}
+      style={{ paddingTop: 'calc(5rem + var(--subnav-height, 0rem))' }}
       aria-hidden={!open}
     >
       <div
@@ -46,7 +47,8 @@ export default function Modal({
         role={role}
         aria-modal={ariaModal}
         aria-labelledby={ariaLabelledby}
-        className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 max-h-[calc(100vh-2rem)] overflow-y-auto ${contentClassName}`}
+        className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 overflow-y-auto ${contentClassName}`}
+        style={{ maxHeight: 'calc(100vh - 6rem - var(--subnav-height, 0rem))' }}
         onClick={closeOnBackdropClick ? (e) => e.stopPropagation() : undefined}
       >
         {children}

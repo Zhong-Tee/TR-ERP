@@ -131,8 +131,13 @@ function getOrderLevelAndItemLevelErrorFields(
   productCategoryByProductId: Record<string, string>
 ): { orderLevel: Array<{ key: ErrorFieldKey; label: string }>; itemLevel: Array<{ key: ErrorFieldKey; label: string }> } {
   const allFields = getVisibleErrorFieldsForOrder(order, categoryFieldSettings, productCategoryByProductId)
-  const orderLevel = allFields.filter((f) => ORDER_LEVEL_KEYS.includes(f.key))
-  const itemLevel = allFields.filter((f) => !ORDER_LEVEL_KEYS.includes(f.key))
+  const channelCode = (order as any)?.channel_code || ''
+  // สำหรับช่องทาง SPTR, FSPTR, LZTR, TTTR: ย้าย unit_price ไประดับบิล (ไม่ได้กรอกราคา/หน่วยต่อรายการ)
+  const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
+    ? [...ORDER_LEVEL_KEYS, 'unit_price']
+    : ORDER_LEVEL_KEYS
+  const orderLevel = allFields.filter((f) => effectiveOrderKeys.includes(f.key))
+  const itemLevel = allFields.filter((f) => !effectiveOrderKeys.includes(f.key))
   return { orderLevel, itemLevel }
 }
 
@@ -149,7 +154,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [channelFilter, setChannelFilter] = useState<string>('')
   const [productImageMap, setProductImageMap] = useState<Record<string, { product_code?: string; product_name?: string }>>({})
-  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string }>>({})
+  const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string; line_count?: number | null }>>({})
   /** ระดับบิล: ชื่อช่องทาง, ชื่อลูกค้า, ที่อยู่ */
   const [rejectErrorFieldsOrder, setRejectErrorFieldsOrder] = useState<Record<string, boolean>>(
     ORDER_LEVEL_KEYS.reduce((acc, key) => ({ ...acc, [key]: false }), {} as Record<string, boolean>)
@@ -256,7 +261,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             ? supabase.from('pr_products').select('id, product_name, product_code, product_category').in('id', productIds)
             : Promise.resolve({ data: [] as any[] }),
           cartoonKeys.length > 0
-            ? supabase.from('cp_cartoon_patterns').select('id, pattern_name').in('pattern_name', cartoonKeys)
+            ? supabase.from('cp_cartoon_patterns').select('id, pattern_name, line_count').in('pattern_name', cartoonKeys)
             : Promise.resolve({ data: [] as any[] }),
         ])
 
@@ -272,9 +277,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         setProductImageMap(nextProductMap)
         setProductCategoryByProductId(nextCategoryMap)
 
-        const nextPatternMap: Record<string, { pattern_name?: string }> = {}
+        const nextPatternMap: Record<string, { pattern_name?: string; line_count?: number | null }> = {}
         ;((patternsRes as any)?.data || []).forEach((p: any) => {
-          if (p.pattern_name) nextPatternMap[p.pattern_name] = { pattern_name: p.pattern_name }
+          if (p.pattern_name) nextPatternMap[p.pattern_name] = { pattern_name: p.pattern_name, line_count: p.line_count ?? null }
         })
         setCartoonPatternImageMap(nextPatternMap)
       } catch (error) {
@@ -357,7 +362,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   async function handleRejectSubmit() {
     if (!selectedOrder || !user?.id) return
 
-    const hasOrderChecked = ORDER_LEVEL_KEYS.some((key) => !!rejectErrorFieldsOrder[key])
+    // ตรวจสอบว่ามีติ๊กระดับบิลหรือไม่ — ใช้ทุก key ใน rejectErrorFieldsOrder (รวม unit_price ที่อาจอยู่ระดับบิลสำหรับบางช่องทาง)
+    const hasOrderChecked = Object.keys(rejectErrorFieldsOrder).some((key) => !!rejectErrorFieldsOrder[key])
     const items: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
     const hasItemChecked = items.some((_, i) => {
       const itemFields = rejectErrorFieldsByItem[i]
@@ -375,7 +381,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
 
     const errorFieldsObj: Record<string, unknown> = {}
-    ORDER_LEVEL_KEYS.forEach((key) => {
+    Object.keys(rejectErrorFieldsOrder).forEach((key) => {
       if (rejectErrorFieldsOrder[key]) (errorFieldsObj as Record<string, boolean>)[key] = true
     })
     if (items.length > 0) {
@@ -445,7 +451,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-120px)] text-[12pt] min-h-0">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0 text-[12pt]">
       {/* การ์ดซ้าย - รายการบิล */}
       <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
         <div className="p-4 border-b bg-gray-50 shrink-0 space-y-3">
@@ -614,6 +620,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
 
                         const unitPrice = Number(item.unit_price || 0)
                         const qty = Number(item.quantity || 0)
+                        const itemLineCount = pattern?.line_count ?? null
                         const detailRows: Array<{ key: ErrorFieldKey; label: string; value: string }> = [
                           { key: 'ink_color' as ErrorFieldKey, label: 'สีหมึก', value: item.ink_color || '-' },
                           { key: 'layer' as ErrorFieldKey, label: 'ชั้น', value: item.product_type || '-' },
@@ -622,7 +629,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           { key: 'line_1' as ErrorFieldKey, label: 'บรรทัด 1', value: item.line_1 || '-' },
                           { key: 'line_2' as ErrorFieldKey, label: 'บรรทัด 2', value: item.line_2 || '-' },
                           { key: 'line_3' as ErrorFieldKey, label: 'บรรทัด 3', value: item.line_3 || '-' },
-                        ].filter((row) => itemLevelKeys.has(row.key))
+                        ]
+                          .filter((row) => itemLevelKeys.has(row.key))
+                          .filter((row) => {
+                            if (itemLineCount == null) return true
+                            if (row.key === 'line_1') return itemLineCount >= 1
+                            if (row.key === 'line_2') return itemLineCount >= 2
+                            if (row.key === 'line_3') return itemLineCount >= 3
+                            return true
+                          })
                         const showQuantity = itemLevelKeys.has('quantity')
                         const showUnitPrice = itemLevelKeys.has('unit_price')
 
@@ -666,8 +681,11 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <div className="font-semibold text-gray-900 truncate">
+                                    <div className="font-semibold text-gray-900 truncate flex items-center gap-1.5">
                                       {item.product_name}
+                                      {item.is_free && (
+                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300 whitespace-nowrap shrink-0">สินค้าแถม</span>
+                                      )}
                                     </div>
                                     {item.cartoon_pattern && (
                                       <div className="text-gray-600 mt-1">
@@ -755,7 +773,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               <div className="space-y-4">
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
                   <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับบิล — เลือกรายการที่ผิด</h3>
-                  <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไข</p>
                   <div className="grid grid-cols-1 gap-2">
                     {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId).orderLevel.map(({ key, label }) => (
                       <label key={key} className="flex items-center gap-2 cursor-pointer">
@@ -777,15 +794,27 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   return (
                     <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
                       <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับรายการ — เลือกรายการที่ผิดต่อรายการ</h3>
-                      <p className="text-xs text-amber-800 mb-3">แสดงกรอบแดงในฟอร์มแก้ไขเฉพาะรายการที่เลือก</p>
                       <div className="space-y-4">
                         {orderItems.map((item: any, index: number) => (
                           <div key={item.id || index} className="border border-amber-200 rounded-lg p-3 bg-white/60">
                             <div className="text-sm font-medium text-amber-900 mb-2">
                               รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
+                              {item.is_free && (
+                                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300">สินค้าแถม</span>
+                              )}
                             </div>
                             <div className="grid grid-cols-1 gap-1.5">
-                              {itemLevel.map(({ key, label }) => (
+                              {itemLevel
+                                .filter(({ key }) => {
+                                  const pk = item.cartoon_pattern || ''
+                                  const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
+                                  if (lc == null) return true
+                                  if (key === 'line_1') return lc >= 1
+                                  if (key === 'line_2') return lc >= 2
+                                  if (key === 'line_3') return lc >= 3
+                                  return true
+                                })
+                                .map(({ key, label }) => (
                                 <label key={key} className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
@@ -815,7 +844,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     onChange={(e) => setRejectRemarks(e.target.value)}
                     placeholder="ระบุรายละเอียดที่ต้องแก้ไข..."
                     rows={3}
-                    className="w-full px-3 py-2 border rounded-lg border-gray-300 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm"
+                    className="w-full px-3 py-2 border rounded-lg border-gray-300 focus:outline-none focus:ring-0 focus:border-gray-300 text-sm"
                   />
                 </div>
               </div>

@@ -534,6 +534,14 @@ const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 /** ช่องทางที่เปิดปุ่มอัพโหลดสลิป (นอกจากช่องทางที่อยู่ใน bank_settings_channels) */
 const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 
+/** แมปสีหมึกพลาสติก → รหัสสินค้าหมึกแฟลชพลาสติกที่แถม */
+const PLASTIC_INK_BONUS_MAP: Record<string, { product_code: string; product_name: string }> = {
+  'พลาสติกดำ': { product_code: '110000321', product_name: 'หมึกแฟลชพลาสติก 5 ml. (ดำ)' },
+  'พลาสติกเขียว': { product_code: '110000320', product_name: 'หมึกแฟลชพลาสติก 5 ml. (เขียว)' },
+  'พลาสติกแดง': { product_code: '110000322', product_name: 'หมึกแฟลชพลาสติก 5 ml. (แดง)' },
+  'พลาสติกน้ำเงิน': { product_code: '110000323', product_name: 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)' },
+}
+
 export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOnly = false, viewOnly = false }: OrderFormProps) {
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
@@ -548,6 +556,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [patternSearchTerm, setPatternSearchTerm] = useState<{ [key: number]: string }>({})
+  const [fontSearchTerm, setFontSearchTerm] = useState<{ [key: number]: string }>({})
+  const [discountType, setDiscountType] = useState<'baht' | 'percent'>('baht')
   const [uploadedSlipPaths, setUploadedSlipPaths] = useState<string[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
@@ -851,7 +861,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           })
           setProductSearchTerm(searchTerms)
         } else {
-          setItems([{ product_type: 'ชั้น1' }])
+          setItems([{ product_type: 'ชั้น1', quantity: 1 }])
         }
 
         if (order.billing_details) {
@@ -883,7 +893,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           setUploadedSlipPaths([])
         }
       } else {
-        setItems([{ product_type: 'ชั้น1' }])
+        setItems([{ product_type: 'ชั้น1', quantity: 1 }])
         setUploadedSlipPaths([])
       }
     }
@@ -926,7 +936,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       const itemsArr = raw.items
       if (Array.isArray(itemsArr)) {
         const orderLevel: Record<string, boolean> = {}
-        const orderKeys = ['channel_name', 'customer_name', 'address']
+        const orderKeys = ['channel_name', 'customer_name', 'address', 'channel_order_no', 'tracking_number', 'unit_price']
         orderKeys.forEach((k) => {
           if (raw[k] === true) orderLevel[k] = true
         })
@@ -1112,6 +1122,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
+  // คำนวณส่วนลดเป็นบาท (รองรับทั้งบาทและ %)
+  function getDiscountInBaht(basePrice: number, discountValue: number, type: 'baht' | 'percent'): number {
+    if (type === 'percent') {
+      return Math.round(basePrice * (discountValue / 100) * 100) / 100
+    }
+    return discountValue
+  }
+
   // คำนวณยอดสุทธิ
   function calculateTotal() {
     const itemsTotal = calculateItemsTotal()
@@ -1128,7 +1146,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         subtotal = basePrice * 1.07
       } else {
         // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
-        subtotal = basePrice + (prev.shipping_cost || 0) - (prev.discount || 0)
+        const discountBaht = getDiscountInBaht(basePrice, prev.discount || 0, discountType)
+        subtotal = basePrice + (prev.shipping_cost || 0) - discountBaht
       }
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
@@ -1144,7 +1163,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   useEffect(() => {
     calculateTotal()
-  }, [items, formData.shipping_cost, formData.discount, showTaxInvoice, formData.price, formData.channel_code])
+  }, [items, formData.shipping_cost, formData.discount, discountType, showTaxInvoice, formData.price, formData.channel_code])
 
   useEffect(() => {
     if (undoingRef.current) return
@@ -1305,6 +1324,48 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       return
     }
 
+    // ตรวจสอบว่ารายการสินค้าที่เลือกแล้ว กรอกข้อมูลครบทุกฟิลด์ที่เปิดใช้งาน (ยกเว้น บรรทัด1-3, หมายเหตุ, ไฟล์แนบ, สินค้าฟรี)
+    const missingFieldItems: { index: number; productName: string; missingFields: string[] }[] = []
+    itemsWithProduct.forEach((item, _) => {
+      if ((item as { is_free?: boolean }).is_free) return // ข้ามสินค้าของแถม — ตรวจสอบเฉพาะปุ่ม "บันทึก (ข้อมูลครบ)"
+      const itemIndex = items.indexOf(item)
+      const missing: string[] = []
+      // สีหมึก
+      if (isFieldEnabled(itemIndex, 'ink_color') && !item.ink_color?.trim()) {
+        missing.push('สีหมึก')
+      }
+      // ลาย (cartoon_pattern) — อนุญาตให้กรอก "0" ได้
+      if (isFieldEnabled(itemIndex, 'cartoon_pattern') && !item.cartoon_pattern?.trim()) {
+        missing.push('ลาย (หากไม่ต้องการเลือกลาย กรุณาใส่เลข 0)')
+      }
+      // ฟอนต์ — อนุญาตให้กรอก "0" ได้
+      if (isFieldEnabled(itemIndex, 'font') && !item.font?.trim()) {
+        missing.push('ฟอนต์ (หากไม่ต้องการเลือกฟอนต์ กรุณาใส่เลข 0)')
+      }
+      // จำนวน
+      if (isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
+        missing.push('จำนวน')
+      }
+      if (missing.length > 0) {
+        missingFieldItems.push({
+          index: itemIndex + 1,
+          productName: item.product_name || 'สินค้า',
+          missingFields: missing,
+        })
+      }
+    })
+    if (missingFieldItems.length > 0) {
+      const details = missingFieldItems
+        .map(m => `รายการที่ ${m.index} (${m.productName}): ${m.missingFields.join(', ')}`)
+        .join('\n')
+      setMessageModal({
+        open: true,
+        title: 'แจ้งเตือน',
+        message: `กรุณากรอกข้อมูลให้ครบทุกช่อง\n\n${details}`,
+      })
+      return
+    }
+
     // ตรวจสอบว่ารายการสินค้าทุกรายการมีราคา/หน่วยหรือไม่
     if (isManualPriceChannel) {
       if (!formData.price || formData.price <= 0) {
@@ -1316,7 +1377,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         return
       }
     } else {
-      const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item))
+      const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
       if (itemsWithoutPrice.length > 0) {
         const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
         setMessageModal({
@@ -1352,13 +1413,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             }, 0)
       
       // คำนวณยอดสุทธิ (เหมือนกับ calculateTotal)
+      const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
       let calculatedTotal: number
       if (showTaxInvoice) {
         // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
         calculatedTotal = calculatedPrice * 1.07
       } else {
         // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
-        calculatedTotal = calculatedPrice + formData.shipping_cost - formData.discount
+        calculatedTotal = calculatedPrice + formData.shipping_cost - discountBahtForSave
       }
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
@@ -1386,7 +1448,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         tax_customer_phone: showCashBill ? (cashBillData.mobile_phone?.trim() || null) : (order?.billing_details && typeof order.billing_details === 'object' ? (order.billing_details as { tax_customer_phone?: string | null }).tax_customer_phone ?? null : null),
         tax_id: showTaxInvoice ? taxInvoiceData.tax_id : null,
         tax_items: (showTaxInvoice || showCashBill) ? itemsToSave
-          .filter(item => item.product_id)
+          .filter(item => item.product_id && !(item as { is_free?: boolean }).is_free)
           .map(item => ({
             product_name: item.product_name || '',
             quantity: item.quantity || 1,
@@ -1437,6 +1499,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         ...formDataForDb,
         customer_address: customerAddressToSave,
         price: calculatedPrice,
+        discount: discountBahtForSave,
         total_amount: calculatedTotal,
         payment_date: paymentDate,
         payment_time: paymentTime,
@@ -1519,6 +1582,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               line_2: item.line_2 || null,
               line_3: item.line_3 || null,
               no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+              is_free: !!(item as { is_free?: boolean }).is_free,
               notes: item.notes || null,
               file_attachment: item.file_attachment || null,
             }
@@ -2892,6 +2956,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             line_1: item.line_1 || null,
             line_2: item.line_2 || null,
             line_3: item.line_3 || null,
+            no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+            is_free: !!(item as { is_free?: boolean }).is_free,
             notes: item.notes || null,
             file_attachment: item.file_attachment || null,
           }))
@@ -3113,6 +3179,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             line_2: item.line_2 ?? null,
             line_3: item.line_3 ?? null,
             no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+            is_free: !!(item as { is_free?: boolean }).is_free,
             notes: item.notes ?? null,
             file_attachment: item.file_attachment ?? null,
           }
@@ -3138,10 +3205,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       lastItem?.product_name || lastItem?.product_id
         ? {
             product_type: 'ชั้น1',
+            quantity: 1,
             product_name: lastItem?.product_name ?? '',
             product_id: lastItem?.product_id ?? undefined,
           }
-        : { product_type: 'ชั้น1' }
+        : { product_type: 'ชั้น1', quantity: 1 }
     setItems([...items, newItem])
 
     setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem?.product_name ?? '' })
@@ -3175,58 +3243,157 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   function ensureCondoRows(index: number, product: Product) {
     const layers = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
-    let inserted = 0
 
-    setItems((prev) => {
-      const next = [...prev]
-      next[index] = {
-        ...next[index],
-        product_id: product.id,
-        product_name: product.product_name,
-        product_type: layers[0],
-      }
+    // คำนวณ items ใหม่จาก items ปัจจุบันโดยตรง (ไม่ใช้ functional updater)
+    // เพื่อให้ได้ผลลัพธ์ทันทีสำหรับ rebuild productSearchTerm
+    const next = [...items]
+    const oldItem = next[index]
 
-      const already = layers.slice(1).every((layer, offset) => {
-        const row = next[index + 1 + offset]
-        return (
-          row &&
-          (String(row.product_id || '') === String(product.id) || row.product_name === product.product_name) &&
-          (row.product_type || 'ชั้น1') === layer
-        )
-      })
+    next[index] = {
+      ...next[index],
+      product_id: product.id,
+      product_name: product.product_name,
+      product_type: layers[0],
+    }
 
-      if (already) return next
-      const newRows = layers.slice(1).map((layer) => ({
-        product_id: product.id,
-        product_name: product.product_name,
-        product_type: layer,
-      }))
-      inserted = newRows.length
-      next.splice(index + 1, 0, ...newRows)
-      return next
+    // ตรวจว่าแถวถัดไปเป็นแถวย่อยของคอนโดตัวใหม่ครบ 4 แถวแล้วหรือไม่
+    const already = layers.slice(1).every((layer, offset) => {
+      const row = next[index + 1 + offset]
+      return (
+        row &&
+        (String(row.product_id || '') === String(product.id) || row.product_name === product.product_name) &&
+        (row.product_type || 'ชั้น1') === layer
+      )
     })
 
-    if (inserted > 0) {
-      setProductSearchTerm((prev) => {
-        const next: { [key: number]: string } = {}
-        Object.keys(prev).forEach((key) => {
-          const i = Number(key)
-          if (Number.isNaN(i)) return
-          next[i > index ? i + inserted : i] = prev[i]
-        })
-        next[index] = product.product_name
-        for (let i = 1; i <= inserted; i += 1) {
-          next[index + i] = product.product_name
-        }
-        return next
-      })
-    } else {
-      setProductSearchTerm((prev) => ({ ...prev, [index]: product.product_name }))
+    if (already) {
+      setItems(next)
+      rebuildSearchTerms(next)
+      return
     }
+
+    // ลบแถวย่อยคอนโดเก่า (ถ้ามี) ที่อยู่ถัดจาก index
+    // กรณีเปลี่ยนจากคอนโดตัวหนึ่งเป็นอีกตัว หรือแก้ไขรายการเดิมที่เคยเป็นคอนโด
+    let oldSubCount = 0
+    if (isCondoProduct(oldItem.product_name)) {
+      for (let i = index + 1; i < next.length && i <= index + 4; i++) {
+        const sub = next[i]
+        if (
+          isCondoProduct(sub.product_name) &&
+          sub.product_type !== 'ชั้น1' &&
+          (String(sub.product_id || '') === String(oldItem.product_id || '') || sub.product_name === oldItem.product_name)
+        ) {
+          oldSubCount++
+        } else {
+          break
+        }
+      }
+    }
+    if (oldSubCount > 0) {
+      next.splice(index + 1, oldSubCount)
+    }
+
+    // แทรกแถวย่อย ชั้น2-5 ใหม่
+    const newRows = layers.slice(1).map((layer) => ({
+      product_id: product.id,
+      product_name: product.product_name,
+      product_type: layer,
+      quantity: 1,
+    }))
+    next.splice(index + 1, 0, ...newRows)
+
+    // set ทั้ง items และ productSearchTerm พร้อมกัน (React จะ batch ให้ render ครั้งเดียว)
+    setItems(next)
+    rebuildSearchTerms(next)
+  }
+
+  /** rebuild productSearchTerm ให้ตรงกับ items ปัจจุบัน */
+  function rebuildSearchTerms(newItems: Partial<OrderItem>[]) {
+    const terms: { [key: number]: string } = {}
+    newItems.forEach((it, i) => { terms[i] = it.product_name || '' })
+    setProductSearchTerm(terms)
   }
 
   function removeItem(index: number) {
-    setItems(items.filter((_, i) => i !== index))
+    const item = items[index]
+    const allBonusCodes = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_code))
+
+    // ---- กรณีสินค้าคอนโด: ลบแถว ชั้น1 พร้อมแถวย่อย ชั้น2-5 ----
+    if (isCondoProduct(item.product_name) && item.product_type === 'ชั้น1') {
+      const indicesToRemove = new Set([index])
+      for (let i = index + 1; i < items.length && i <= index + 4; i++) {
+        const sub = items[i]
+        if (
+          isCondoProduct(sub.product_name) &&
+          sub.product_type !== 'ชั้น1' &&
+          (String(sub.product_id || '') === String(item.product_id || '') || sub.product_name === item.product_name)
+        ) {
+          indicesToRemove.add(i)
+        } else {
+          break
+        }
+      }
+      const newItems = items.filter((_, i) => !indicesToRemove.has(i))
+      setItems(newItems)
+      rebuildSearchTerms(newItems)
+      return
+    }
+
+    // ---- กรณีแถวย่อยคอนโด (ชั้น2-5): ลบทั้งกลุ่ม ชั้น1-5 ----
+    if (isCondoProduct(item.product_name) && item.product_type !== 'ชั้น1') {
+      let parentIndex = -1
+      for (let i = index - 1; i >= 0; i--) {
+        if (
+          isCondoProduct(items[i].product_name) &&
+          items[i].product_type === 'ชั้น1' &&
+          (String(items[i].product_id || '') === String(item.product_id || '') || items[i].product_name === item.product_name)
+        ) {
+          parentIndex = i
+          break
+        }
+      }
+      if (parentIndex >= 0) {
+        const indicesToRemove = new Set([parentIndex])
+        for (let i = parentIndex + 1; i < items.length && i <= parentIndex + 4; i++) {
+          const sub = items[i]
+          if (
+            isCondoProduct(sub.product_name) &&
+            sub.product_type !== 'ชั้น1' &&
+            (String(sub.product_id || '') === String(items[parentIndex].product_id || '') || sub.product_name === items[parentIndex].product_name)
+          ) {
+            indicesToRemove.add(i)
+          } else {
+            break
+          }
+        }
+        const newItems = items.filter((_, i) => !indicesToRemove.has(i))
+        setItems(newItems)
+        rebuildSearchTerms(newItems)
+        return
+      }
+    }
+
+    // ---- กรณีปกติ (ไม่ใช่คอนโด) ----
+    // ตรวจว่าแถวถัดไปเป็นแถวแถมหมึกพลาสติกหรือไม่
+    const nextItem = items[index + 1]
+    let removeBonus = false
+    if (nextItem && (nextItem as { is_free?: boolean }).is_free) {
+      const nextProduct = products.find(p => p.id === nextItem.product_id)
+      if (nextProduct && allBonusCodes.has(nextProduct.product_code)) {
+        removeBonus = true
+      }
+    }
+    // ตรวจว่าแถวที่จะลบเป็นแถวแถมหมึกพลาสติกเองหรือไม่ → ถ้าใช่ ลบแค่แถวเดียว
+    let newItems: Partial<OrderItem>[]
+    if ((item as { is_free?: boolean }).is_free) {
+      newItems = items.filter((_, i) => i !== index)
+    } else if (removeBonus) {
+      newItems = items.filter((_, i) => i !== index && i !== index + 1)
+    } else {
+      newItems = items.filter((_, i) => i !== index)
+    }
+    setItems(newItems)
+    rebuildSearchTerms(newItems)
   }
 
   function updateItem(index: number, field: keyof OrderItem, value: any) {
@@ -3263,9 +3430,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   }
 
   function applyLineCountToItem(index: number, lineCount: number | null) {
-    if (!lineCount) return
+    if (lineCount == null) return
     const updates: Partial<OrderItem> = {}
-    if (lineCount <= 1) {
+    if (lineCount === 0) {
+      updates.line_1 = ''
+      updates.line_2 = ''
+      updates.line_3 = ''
+    } else if (lineCount <= 1) {
       updates.line_2 = ''
       updates.line_3 = ''
     } else if (lineCount === 2) {
@@ -3491,7 +3662,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     className={`w-full px-2 py-1.5 text-sm border rounded ${(CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100' : ''}`}
                   >
                     <option value="">-- เลือกเขต/อำเภอ --</option>
-                    {Array.from(new Set(subDistrictOptions.map((o) => o.district).filter(Boolean))).map((d) => (
+                    {Array.from(new Set(
+                      (formData.sub_district
+                        ? subDistrictOptions.filter((o) => o.subDistrict === formData.sub_district)
+                        : subDistrictOptions
+                      ).map((o) => o.district).filter(Boolean)
+                    )).map((d) => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                   </select>
@@ -3720,22 +3896,21 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
             <thead>
               <tr className="bg-gray-100">
+                <th className="border p-1 text-center w-10 text-[10px] leading-tight whitespace-nowrap">ฟรี</th>
                 <th className="border p-1.5 ">ชื่อสินค้า</th>
-                <th className="border p-1.5 w-28">สีหมึก</th>
-                <th className="border p-1.5 w-28 min-w-[7rem]">ชั้น</th>
+                <th className="border p-1.5 w-32">สีหมึก</th>
+                <th className="border p-1.5 w-16">ชั้น</th>
                 <th className="border p-1.5 w-20">ลาย</th>
-                <th className="border p-1.5 w-16">เส้น</th>
+                {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
+                {/* <th className="border p-1.5 w-16">เส้น</th> */}
                 <th className="border p-1.5 w-20">ฟอนต์</th>
-                <th className="border p-1.5 text-center w-16 leading-tight">
-                  <span className="block">ไม่</span>
-                  <span className="block">รับชื่อ</span>
-                </th>
+                <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">ไม่รับชื่อ</th>
                 <th className="border p-1.5">บรรทัด 1</th>
                 <th className="border p-1.5">บรรทัด 2</th>
                 <th className="border p-1.5">บรรทัด 3</th>
                 <th className="border p-1.5 w-14">จำนวน</th>
-                <th className="border p-1.5 w-20">ราคา/หน่วย</th>
-                <th className="border p-1.5">หมายเหตุ</th>
+                <th className="border p-1 w-20 text-[10px] leading-tight whitespace-nowrap">ราคา/หน่วย</th>
+                <th className="border p-1.5 w-28">หมายเหตุ</th>
                 <th className="border p-1.5 w-20">ไฟล์แนบ</th>
                 <th className="border p-1.5 w-10"></th>
               </tr>
@@ -3747,7 +3922,19 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
                 const lineLimit = getLineCountForPattern(item.cartoon_pattern)
                 return (
-                <tr key={index}>
+                <tr key={index} className={(item as { is_free?: boolean }).is_free ? 'bg-green-50' : ''}>
+                  <td className="border p-1 align-middle">
+                    <div className="flex items-center justify-center min-h-[28px]">
+                      <input
+                        type="checkbox"
+                        checked={!!(item as { is_free?: boolean }).is_free}
+                        onChange={(e) => updateItem(index, 'is_free', e.target.checked)}
+                        disabled={formDisabled}
+                        title="สินค้าของแถม (ฟรี)"
+                        className="w-4 h-4 rounded border-gray-300 accent-green-500"
+                      />
+                    </div>
+                  </td>
                   <td className="border p-1.5">
                     <div className="relative">
                       <input
@@ -3851,7 +4038,68 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <td className="border p-1.5">
                     <select
                       value={item.ink_color || ''}
-                      onChange={(e) => updateItem(index, 'ink_color', e.target.value)}
+                      onChange={(e) => {
+                        const selectedInk = e.target.value
+                        updateItem(index, 'ink_color', selectedInk)
+
+                        // รวม product_code ของหมึกแฟลชพลาสติกทั้งหมด (ใช้หาแถวแถมที่มีอยู่แล้ว)
+                        const allBonusCodes = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_code))
+
+                        // หาแถวแถมหมึกพลาสติกที่มีอยู่แล้วหลังแถวนี้ (แถวถัดไปที่เป็น is_free + product_code ตรง)
+                        const findExistingBonusIndex = (fromIndex: number): number => {
+                          const next = items[fromIndex + 1]
+                          if (!next || !(next as { is_free?: boolean }).is_free) return -1
+                          const nextProduct = products.find(p => p.id === next.product_id)
+                          if (nextProduct && allBonusCodes.has(nextProduct.product_code)) return fromIndex + 1
+                          return -1
+                        }
+
+                        const existingBonusIdx = findExistingBonusIndex(index)
+                        const bonusInfo = PLASTIC_INK_BONUS_MAP[selectedInk]
+
+                        if (bonusInfo) {
+                          // เลือกหมึกพลาสติก → ต้องมีแถวแถม
+                          const matchedProduct = products.find(p => p.product_code === bonusInfo.product_code)
+                          if (matchedProduct) {
+                            if (existingBonusIdx >= 0) {
+                              // มีแถวแถมอยู่แล้ว → เปลี่ยนเป็นหมึกสีใหม่
+                              setItems(prev => {
+                                const newItems = [...prev]
+                                newItems[existingBonusIdx] = {
+                                  ...newItems[existingBonusIdx],
+                                  product_id: matchedProduct.id,
+                                  product_name: matchedProduct.product_name,
+                                  is_free: true,
+                                  unit_price: 0,
+                                }
+                                return newItems
+                              })
+                              setProductSearchTerm(prev => ({ ...prev, [existingBonusIdx]: matchedProduct.product_name }))
+                            } else {
+                              // ยังไม่มีแถวแถม → เพิ่มใหม่
+                              setItems(prev => {
+                                const newItems = [...prev]
+                                const bonusItem: Partial<OrderItem> = {
+                                  product_id: matchedProduct.id,
+                                  product_name: matchedProduct.product_name,
+                                  product_type: 'ชั้น1',
+                                  quantity: 1,
+                                  unit_price: 0,
+                                  is_free: true,
+                                }
+                                newItems.splice(index + 1, 0, bonusItem as any)
+                                return newItems
+                              })
+                              setProductSearchTerm(prev => ({ ...prev, [index + 1]: matchedProduct.product_name }))
+                            }
+                          }
+                        } else {
+                          // ไม่ได้เลือกหมึกพลาสติก → ลบแถวแถมถ้ามี
+                          if (existingBonusIdx >= 0) {
+                            setItems(prev => prev.filter((_, i) => i !== existingBonusIdx))
+                          }
+                        }
+                      }}
                       disabled={formDisabled || !isFieldEnabled(index, 'ink_color')}
                       className={`w-full px-1.5 py-1 border rounded text-xs ${(formDisabled || !isFieldEnabled(index, 'ink_color')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['ink_color'] ?? reviewErrorFields?.ink_color) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     >
@@ -3864,18 +4112,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     </select>
                   </td>
                   <td className="border p-1.5">
-                    <select
-                      value={item.product_type || 'ชั้น1'}
-                      onChange={(e) => updateItem(index, 'product_type', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'layer')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-[90px] ${(formDisabled || !isFieldEnabled(index, 'layer')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['layer'] ?? reviewErrorFields?.layer) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                    >
-                      <option value="ชั้น1">ชั้น1</option>
-                      <option value="ชั้น2">ชั้น2</option>
-                      <option value="ชั้น3">ชั้น3</option>
-                      <option value="ชั้น4">ชั้น4</option>
-                      <option value="ชั้น5">ชั้น5</option>
-                    </select>
+                    <div className="w-full px-1.5 py-1 border rounded text-xs bg-gray-100 text-gray-500 text-center">
+                      {item.product_type || 'ชั้น1'}
+                    </div>
                   </td>
                   <td className="border p-1.5">
                     <div className="relative">
@@ -3888,6 +4127,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           setPatternSearchTerm({ ...patternSearchTerm, [index]: nextValue })
                           if (nextValue.trim() === '') {
                             updateItem(index, 'cartoon_pattern', '')
+                            return
+                          }
+                          // อนุญาตให้กรอก "0" เป็นค่าพิเศษ (ไม่ต้องการลาย)
+                          if (nextValue.trim() === '0') {
+                            updateItem(index, 'cartoon_pattern', '0')
                             return
                           }
                           const matchedPattern = getPatternByName(nextValue)
@@ -3905,6 +4149,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                             }
                             return
                           }
+                          // อนุญาตให้กรอก "0" เป็นค่าพิเศษ (ไม่ต้องการลาย)
+                          if (inputValue === '0') {
+                            updateItem(index, 'cartoon_pattern', '0')
+                            setPatternSearchTerm({ ...patternSearchTerm, [index]: '0' })
+                            return
+                          }
                           const matchedPattern = getPatternByName(inputValue)
                           if (matchedPattern) {
                             updateItem(index, 'cartoon_pattern', matchedPattern.pattern_name)
@@ -3918,7 +4168,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         }}
                         disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
                         className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                        placeholder="ค้นหาหรือเลือกลาย..."
+                        placeholder="ลาย"
                         autoComplete="off"
                       />
                       <datalist id={`pattern-list-${index}`}>
@@ -3928,7 +4178,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       </datalist>
                     </div>
                   </td>
-                  <td className="border p-1.5">
+                  {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
+                  {/* <td className="border p-1.5">
                     <input
                       type="text"
                       value={item.line_pattern || ''}
@@ -3937,21 +4188,72 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[4rem] ${(formDisabled || !isFieldEnabled(index, 'line_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_art'] ?? reviewErrorFields?.line_art) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                       placeholder="เส้น"
                     />
-                  </td>
+                  </td> */}
                   <td className="border p-1.5">
-                    <select
-                      value={item.font || ''}
-                      onChange={(e) => updateItem(index, 'font', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'font')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                    >
-                      <option value="">ฟอนต์</option>
-                      {fonts.map((font) => (
-                        <option key={font.font_code} value={font.font_name}>
-                          {font.font_name}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        list={`font-list-${index}`}
+                        value={fontSearchTerm[index] !== undefined ? fontSearchTerm[index] : (item.font || '')}
+                        onChange={(e) => {
+                          const nextValue = e.target.value
+                          setFontSearchTerm({ ...fontSearchTerm, [index]: nextValue })
+                          if (nextValue.trim() === '') {
+                            updateItem(index, 'font', '')
+                            return
+                          }
+                          // อนุญาตให้กรอก "0" เป็นค่าพิเศษ (ไม่ต้องการฟอนต์)
+                          if (nextValue.trim() === '0') {
+                            updateItem(index, 'font', '0')
+                            return
+                          }
+                          const matchedFont = fonts.find(f => f.font_name.trim().toLowerCase() === nextValue.trim().toLowerCase())
+                          if (matchedFont) {
+                            updateItem(index, 'font', matchedFont.font_name)
+                            setFontSearchTerm({ ...fontSearchTerm, [index]: matchedFont.font_name })
+                          }
+                        }}
+                        onBlur={(e) => {
+                          const inputValue = e.target.value.trim()
+                          if (!inputValue) {
+                            if (!item.font) {
+                              setFontSearchTerm({ ...fontSearchTerm, [index]: '' })
+                            }
+                            return
+                          }
+                          // อนุญาตให้กรอก "0" เป็นค่าพิเศษ (ไม่ต้องการฟอนต์)
+                          if (inputValue === '0') {
+                            updateItem(index, 'font', '0')
+                            setFontSearchTerm({ ...fontSearchTerm, [index]: '0' })
+                            return
+                          }
+                          const matchedFont = fonts.find(f => f.font_name.trim().toLowerCase() === inputValue.toLowerCase())
+                          if (matchedFont) {
+                            updateItem(index, 'font', matchedFont.font_name)
+                            setFontSearchTerm({ ...fontSearchTerm, [index]: matchedFont.font_name })
+                          } else if (item.font) {
+                            setFontSearchTerm({ ...fontSearchTerm, [index]: item.font || '' })
+                          } else {
+                            setFontSearchTerm({ ...fontSearchTerm, [index]: '' })
+                          }
+                        }}
+                        disabled={formDisabled || !isFieldEnabled(index, 'font')}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'font')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['font'] ?? reviewErrorFields?.font) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        placeholder="ฟอนต์"
+                        autoComplete="off"
+                      />
+                      <datalist id={`font-list-${index}`}>
+                        {fonts
+                          .filter(f => {
+                            const search = (fontSearchTerm[index] || '').trim().toLowerCase()
+                            if (!search) return true
+                            return f.font_name.toLowerCase().includes(search)
+                          })
+                          .map((font) => (
+                            <option key={font.font_code} value={font.font_name} />
+                          ))}
+                      </datalist>
+                    </div>
                   </td>
                   <td className="border p-1.5 align-middle">
                     <div className="flex items-center justify-center min-h-[28px]">
@@ -3970,8 +4272,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       type="text"
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -3983,10 +4285,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         formDisabled ||
                         !isFieldEnabled(index, 'line_2') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
-                        (!!lineLimit && lineLimit < 2)
+                        (lineLimit != null && lineLimit < 2)
                       }
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${
-                        (formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line || (!!lineLimit && lineLimit < 2))
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${
+                        (formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 2))
                           ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
                           : ''
                       } ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
@@ -4001,10 +4303,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         formDisabled ||
                         !isFieldEnabled(index, 'line_3') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
-                        (!!lineLimit && lineLimit < 3)
+                        (lineLimit != null && lineLimit < 3)
                       }
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${
-                        (formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line || (!!lineLimit && lineLimit < 3))
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${
+                        (formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 3))
                           ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
                           : ''
                       } ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
@@ -4013,7 +4315,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <td className="border p-1.5">
                     <input
                       type="number"
-                      value={item.quantity || ''}
+                      value={item.quantity || 1}
                       onChange={(e) => {
                         const v = e.target.value
                         updateItem(index, 'quantity', v === '' ? 0 : (parseInt(v) || 0))
@@ -4031,6 +4333,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       type="number"
                       value={item.unit_price || ''}
                       onChange={(e) => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)}
+                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       onFocus={(e) => {
                         if (e.target.value === '0') {
                           e.target.value = ''
@@ -4044,7 +4347,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       step="0.01"
                       placeholder="0.00"
                       disabled={formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? reviewErrorFields?.unit_price) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -4095,27 +4398,46 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <td className="border p-1.5">
                     {(() => {
                       const isFileExpanded = fileAttachmentFocusedIndex === index
-                      return isFileExpanded ? (
-                        <textarea
-                          value={item.file_attachment || ''}
-                          onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
-                          onBlur={() => setFileAttachmentFocusedIndex(null)}
-                          disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
-                          placeholder="URL ไฟล์แนบ"
-                          rows={3}
-                          className={`w-full min-w-[80px] px-1.5 py-1 border rounded resize-y text-xs ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                          autoFocus
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          value={item.file_attachment || ''}
-                          onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
-                          onFocus={() => setFileAttachmentFocusedIndex(index)}
-                          disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
-                          placeholder="ไฟล์แนบ"
-                          className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-                        />
+                      const attachValue = (item.file_attachment || '').trim()
+                      const isInvalidUrl = attachValue !== '' && !/^https?:\/\/.+/i.test(attachValue)
+                      return (
+                        <div>
+                          {isFileExpanded ? (
+                            <textarea
+                              value={item.file_attachment || ''}
+                              onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
+                              onBlur={() => {
+                                setFileAttachmentFocusedIndex(null)
+                                const val = (item.file_attachment || '').trim()
+                                if (val && !/^https?:\/\/.+/i.test(val)) {
+                                  setMessageModal({
+                                    open: true,
+                                    title: 'แจ้งเตือน',
+                                    message: `ไฟล์แนบรายการที่ ${index + 1} ไม่ใช่ลิงก์ (URL)\nกรุณาใส่ลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://`,
+                                  })
+                                }
+                              }}
+                              disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
+                              placeholder="URL ไฟล์แนบ"
+                              rows={3}
+                              className={`w-full min-w-[80px] px-1.5 py-1 border rounded resize-y text-xs ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${isInvalidUrl ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                              autoFocus
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={item.file_attachment || ''}
+                              onChange={(e) => updateItem(index, 'file_attachment', e.target.value)}
+                              onFocus={() => setFileAttachmentFocusedIndex(index)}
+                              disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
+                              placeholder="ไฟล์แนบ"
+                              className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${isInvalidUrl ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                            />
+                          )}
+                          {isInvalidUrl && (
+                            <p className="text-[10px] text-red-500 mt-0.5 leading-tight">ไม่ใช่ลิงก์ (URL)</p>
+                          )}
+                        </div>
                       )
                     })()}
                   </td>
@@ -4212,16 +4534,17 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           <div className="space-y-4">
             <h3 className="text-xl font-bold mb-2">ข้อมูลการชำระเงิน</h3>
             <div>
-              <label className="block text-sm font-medium mb-1">ราคา</label>
+              <label className="block text-sm font-medium mb-1">ราคารวม</label>
               <input
                 type="number"
                 value={formData.price || ''}
                 onChange={(e) => setFormData({ ...formData, price: parseFloat(e.target.value) || 0 })}
+                onWheel={(e) => (e.target as HTMLInputElement).blur()}
                 readOnly={!isManualPriceChannel}
                 step="0.01"
                 className={`w-full px-3 py-2 border rounded-lg font-semibold ${
                   isManualPriceChannel ? '' : 'bg-gray-100 text-gray-500'
-                }`}
+                } ${reviewErrorFields?.unit_price ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
               <p className="text-xs text-gray-500 mt-1">
                 {isManualPriceChannel ? 'กรอกยอดเองสำหรับช่องทางที่รองรับ' : 'คำนวณจากรายการสินค้า'}
@@ -4236,6 +4559,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 type="number"
                 value={formData.shipping_cost || ''}
                 onChange={(e) => setFormData({ ...formData, shipping_cost: parseFloat(e.target.value) || 0 })}
+                onWheel={(e) => (e.target as HTMLInputElement).blur()}
                 onFocus={(e) => {
                   if (e.target.value === '0') {
                     e.target.value = ''
@@ -4255,11 +4579,50 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">ส่วนลด</label>
+              <label className="block text-sm font-medium mb-1">
+                รูปแบบการลด
+              </label>
+              <div className="flex gap-0 border rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setDiscountType('baht')}
+                  disabled={formDisabled}
+                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
+                    discountType === 'baht'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                  } ${formDisabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                >
+                  บาท
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDiscountType('percent')}
+                  disabled={formDisabled}
+                  className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
+                    discountType === 'percent'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                  } ${formDisabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                >
+                  %
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                ส่วนลด {discountType === 'percent' ? '(%)' : '(บาท)'}
+              </label>
               <input
                 type="number"
                 value={formData.discount || ''}
-                onChange={(e) => setFormData({ ...formData, discount: parseFloat(e.target.value) || 0 })}
+                onChange={(e) => {
+                  let val = parseFloat(e.target.value) || 0
+                  // จำกัดค่า % ไม่เกิน 100
+                  if (discountType === 'percent' && val > 100) val = 100
+                  setFormData({ ...formData, discount: val })
+                }}
+                onWheel={(e) => (e.target as HTMLInputElement).blur()}
                 onFocus={(e) => {
                   if (e.target.value === '0') {
                     e.target.value = ''
@@ -4271,12 +4634,19 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   }
                 }}
                 step="0.01"
+                min="0"
+                max={discountType === 'percent' ? '100' : undefined}
                 placeholder="0"
                 disabled={formDisabled}
                 className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${
                   formData.discount === 0 ? 'text-gray-400' : ''
                 }`}
               />
+              {discountType === 'percent' && formData.discount > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  = {getDiscountInBaht(formData.price || 0, formData.discount, 'percent').toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">ยอดสุทธิ</label>
@@ -4712,7 +5082,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   return
                 }
               } else {
-                const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item))
+                const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
                 if (itemsWithoutPrice.length > 0) {
                   const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
                   setMessageModal({
@@ -4722,6 +5092,65 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   })
                   return
                 }
+              }
+
+              // ตรวจสอบว่ารายการสินค้าที่เลือกแล้ว กรอกข้อมูลครบทุกฟิลด์ที่เปิดใช้งาน (ยกเว้น บรรทัด1-3, หมายเหตุ, ไฟล์แนบ) — สินค้าฟรียังต้องกรอก สีหมึก/ลาย/ฟอนต์/จำนวน
+              const missingFieldItemsComplete: { index: number; productName: string; missingFields: string[] }[] = []
+              itemsWithProduct.forEach((item) => {
+                const itemIndex = itemsToValidate.indexOf(item)
+                const missing: string[] = []
+                if (isFieldEnabled(itemIndex, 'ink_color') && !item.ink_color?.trim()) {
+                  missing.push('สีหมึก')
+                }
+                // ลาย (cartoon_pattern) — อนุญาตให้กรอก "0" ได้
+                if (isFieldEnabled(itemIndex, 'cartoon_pattern') && !item.cartoon_pattern?.trim()) {
+                  missing.push('ลาย (หากไม่ต้องการเลือกลาย กรุณาใส่เลข 0)')
+                }
+                // ฟอนต์ — อนุญาตให้กรอก "0" ได้
+                if (isFieldEnabled(itemIndex, 'font') && !item.font?.trim()) {
+                  missing.push('ฟอนต์ (หากไม่ต้องการเลือกฟอนต์ กรุณาใส่เลข 0)')
+                }
+                if (isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
+                  missing.push('จำนวน')
+                }
+                if (missing.length > 0) {
+                  missingFieldItemsComplete.push({
+                    index: itemIndex + 1,
+                    productName: item.product_name || 'สินค้า',
+                    missingFields: missing,
+                  })
+                }
+              })
+              if (missingFieldItemsComplete.length > 0) {
+                const details = missingFieldItemsComplete
+                  .map(m => `รายการที่ ${m.index} (${m.productName}): ${m.missingFields.join(', ')}`)
+                  .join('\n')
+                setMessageModal({
+                  open: true,
+                  title: 'แจ้งเตือน',
+                  message: `กรุณากรอกข้อมูลให้ครบทุกช่อง\n\n${details}`,
+                })
+                return
+              }
+
+              // ตรวจสอบว่ารายการสินค้าที่ไม่ได้ติ๊ก "ไม่รับชื่อ" ต้องกรอกบรรทัด 1-3 อย่างน้อย 1 ช่อง (รวมสินค้าฟรี)
+              const itemsNoNameNotCheckedComplete = itemsWithProduct.filter((item) => {
+                const itemIndex = itemsToValidate.indexOf(item)
+                const noName = !!(item as { no_name_line?: boolean }).no_name_line
+                if (noName) return false
+                if (!isFieldEnabled(itemIndex, 'line_1')) return false
+                return !item.line_1?.trim() && !item.line_2?.trim() && !item.line_3?.trim()
+              })
+              if (itemsNoNameNotCheckedComplete.length > 0) {
+                const details = itemsNoNameNotCheckedComplete
+                  .map(item => `- ${item.product_name || 'สินค้า'} (รายการที่ ${itemsToValidate.indexOf(item) + 1})`)
+                  .join('\n')
+                setMessageModal({
+                  open: true,
+                  title: 'แจ้งเตือน',
+                  message: `มีรายการที่ไม่ได้กรอกชื่อ กรุณาติ๊ก "ไม่รับชื่อ" ที่รายการสินค้า\n\n${details}`,
+                })
+                return
               }
 
               // ตรวจสอบสลิปโอน — ช่องทาง SHOP PICKUP / SHOP SHIPPING บังคับอัพโหลดสลิปก่อนกด บันทึก(ข้อมูลครบ)
@@ -4988,13 +5417,32 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             ? async () => {
                 setConfirmingOverpay(true)
                 try {
-                  const { error: refundError } = await supabase.from('ac_refunds').insert({
+                  const refundData = {
                     order_id: verificationModal.orderId,
                     amount: verificationModal.overpayAmount,
-                    reason: `ลูกค้าโอนเกิน (ยอดออเดอร์: ฿${verificationModal.orderAmount.toLocaleString()}, ยอดสลิป: ฿${verificationModal.totalAmount.toLocaleString()})`,
-                    status: 'pending',
-                  })
-                  if (refundError) throw new Error(refundError.message)
+                    reason: `โอนเกิน (ยอดบิล: ฿${verificationModal.orderAmount.toLocaleString()}, สลิป: ฿${verificationModal.totalAmount.toLocaleString()})`,
+                    status: 'pending' as const,
+                  }
+
+                  // เช็คว่ามี pending refund ของ order นี้อยู่แล้วหรือไม่ — ถ้ามีให้อัพเดตแทน insert
+                  const { data: existingRefund } = await supabase
+                    .from('ac_refunds')
+                    .select('id')
+                    .eq('order_id', verificationModal.orderId)
+                    .eq('status', 'pending')
+                    .limit(1)
+                    .maybeSingle()
+
+                  if (existingRefund) {
+                    const { error: refundError } = await supabase
+                      .from('ac_refunds')
+                      .update({ amount: refundData.amount, reason: refundData.reason })
+                      .eq('id', existingRefund.id)
+                    if (refundError) throw new Error(refundError.message)
+                  } else {
+                    const { error: refundError } = await supabase.from('ac_refunds').insert(refundData)
+                    if (refundError) throw new Error(refundError.message)
+                  }
                   const { error: updateError } = await supabase
                     .from('or_orders')
                     .update({ status: 'ตรวจสอบแล้ว' })

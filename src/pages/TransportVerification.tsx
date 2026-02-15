@@ -283,15 +283,17 @@ export default function TransportVerification() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end bg-white rounded-xl border border-gray-200 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-500 font-semibold">วันที่:</span>
-          <input
-            type="date"
-            value={dateFilter}
-            onChange={(e) => setDateFilter(e.target.value)}
-            className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
-          />
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="flex items-center justify-end py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500 font-semibold">วันที่:</span>
+            <input
+              type="date"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+          </div>
         </div>
       </div>
 

@@ -48,7 +48,13 @@ export default function AdminQC() {
   }, [count])
 
   return (
-    <div className="w-full">
+    <div className="w-full flex-1 min-h-0 flex flex-col">
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
+        <div className="flex items-center justify-between py-3">
+          <span className="text-base font-semibold text-gray-700">รายการบิลที่รอตรวจสอบ</span>
+          <span className="text-sm text-gray-500">ตรวจสอบแล้ว: <strong className="text-blue-600">{count}</strong> รายการ</span>
+        </div>
+      </div>
       <OrderReviewList onStatusUpdate={refreshCounts} />
     </div>
   )

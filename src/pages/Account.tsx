@@ -96,6 +96,14 @@ function getTagLogic(row: VerifiedSlipRow): string {
   return tags.length > 0 ? tags.join(', ') : '–'
 }
 
+/** แปลงข้อความเหตุผล refund เป็นรูปแบบใหม่ (รองรับข้อมูลเก่าที่ใช้รูปแบบเดิม) */
+function formatRefundReason(reason: string): string {
+  return reason
+    .replace('ลูกค้าโอนเกิน', 'โอนเกิน')
+    .replace('ยอดออเดอร์:', 'ยอดบิล:')
+    .replace('ยอดสลิป:', 'สลิป:')
+}
+
 export default function Account() {
   const { user } = useAuthContext()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
@@ -383,14 +391,16 @@ export default function Account() {
     try {
       const { data, error } = await supabase
         .from('ac_refunds')
-        .select('*, or_orders(bill_no, customer_name)')
+        .select('*, or_orders(bill_no, customer_name, status)')
         .order('created_at', { ascending: false })
 
       if (error) throw error
       
       // กรองเฉพาะรายการที่ reason มีคำว่า "โอนเกิน"
-      const filteredRefunds = (data || []).filter((refund: Refund) => 
-        refund.reason && refund.reason.includes('โอนเกิน')
+      // และแสดงเฉพาะรายการที่ออเดอร์มีสถานะ: จัดส่งแล้ว เท่านั้น
+      const filteredRefunds = (data || []).filter((refund: any) => 
+        refund.reason && refund.reason.includes('โอนเกิน') &&
+        (refund as any).or_orders?.status === 'จัดส่งแล้ว'
       )
       
       setRefunds(filteredRefunds)
@@ -427,20 +437,20 @@ export default function Account() {
     // แสดง spinner เฉพาะครั้งแรก — ป้องกันหน้ากระพริบเมื่อ refresh เบื้องหลัง
     if (!initialLoadDone.current) setBillingLoading(true)
     try {
-      // กรองเฉพาะรายการที่ผ่านการตรวจสอบแล้ว (ไม่แสดง ตรวจสอบไม่ผ่าน, รอลงข้อมูล, ลงข้อมูลผิด)
-      const excludeStatuses = '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'
+      // กรองออกรายการที่สถานะบิลเป็น รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน
+      const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'
       const [taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_tax_invoice: true })
-          .not('status', 'in', excludeStatuses)
+          .not('status', 'in', excludeBillingStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
           .contains('billing_details', { request_cash_bill: true })
-          .not('status', 'in', excludeStatuses)
+          .not('status', 'in', excludeBillingStatuses)
           .order('created_at', { ascending: false }),
       ])
 
@@ -1092,7 +1102,7 @@ export default function Account() {
                           <td className="px-4 py-3 text-gray-700">{(refund as any).or_orders?.customer_name || '–'}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={refund.reason}>{refund.reason}</td>
+                          <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${refund.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                               {refund.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
@@ -1295,8 +1305,8 @@ export default function Account() {
                     <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">
                       ฿{refund.amount.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={refund.reason}>
-                      {refund.reason}
+                    <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={formatRefundReason(refund.reason)}>
+                      {formatRefundReason(refund.reason)}
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex px-2.5 py-1 rounded-lg text-sm font-medium bg-amber-100 text-amber-700">
@@ -1345,20 +1355,20 @@ export default function Account() {
           <div className="text-center py-14 text-gray-500 text-base">ไม่พบรายการขอใบกำกับภาษี</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-base">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบริษัท</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">TAX ID</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดก่อนภาษี</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">มูลค่าภาษี</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดสุทธิ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่สร้าง</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">เลขบิล</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ชื่อลูกค้า</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ชื่อบริษัท</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">TAX ID</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ที่อยู่</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ยอดก่อนภาษี</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">มูลค่าภาษี</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ยอดสุทธิ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">สถานะ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">วันที่สร้าง</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -1373,86 +1383,86 @@ export default function Account() {
                       onClick={() => setViewOrderId(o.id)}
                       className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
                     >
-                      <td className="px-4 py-3 font-semibold text-sky-700">
+                      <td className="px-3 py-2.5 font-semibold text-sky-700">
                         <span>{o.bill_no}</span>
                         {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
-                          <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                          <span className="ml-1 px-1 py-0.5 text-[10px] font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                         )}
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1.5">
                           <span className="text-gray-800">{o.customer_name || '–'}</span>
                           {o.customer_name && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); copyToClipboard(o.customer_name || '') }}
-                              className="text-sm text-sky-600 hover:underline"
+                              className="text-xs text-sky-600 hover:underline"
                             >
                               คัดลอก
                             </button>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1.5">
                           <span className="text-gray-700">{bd.tax_customer_name || '–'}</span>
                           {bd.tax_customer_name && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_name || '') }}
-                              className="text-sm text-sky-600 hover:underline"
+                              className="text-xs text-sky-600 hover:underline"
                             >
                               คัดลอก
                             </button>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1.5">
                           <span className="text-gray-700 tabular-nums">{bd.tax_id || '–'}</span>
                           {bd.tax_id && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_id || '') }}
-                              className="text-sm text-sky-600 hover:underline"
+                              className="text-xs text-sky-600 hover:underline"
                             >
                               คัดลอก
                             </button>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-start gap-2">
+                      <td className="px-3 py-2.5 text-gray-600 max-w-[160px] text-xs whitespace-pre-wrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-start gap-1.5">
                           <span className="truncate block" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</span>
                           {bd.tax_customer_address && (
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_address || '') }}
-                              className="text-sky-600 hover:underline shrink-0 text-sm"
+                              className="text-sky-600 hover:underline shrink-0 text-xs"
                             >
                               คัดลอก
                             </button>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-700 tabular-nums text-sm">
+                      <td className="px-3 py-2.5 text-gray-700 tabular-nums">
                         ฿{beforeVat ? beforeVat.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
                       </td>
-                      <td className="px-4 py-3 text-gray-700 tabular-nums text-sm">
+                      <td className="px-3 py-2.5 text-gray-700 tabular-nums">
                         ฿{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">
+                      <td className="px-3 py-2.5 font-semibold text-emerald-600 tabular-nums">
                         ฿{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${o.status === 'ตรวจสอบแล้ว' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>{o.status}</span>
+                      <td className="px-3 py-2.5">
+                        <span className={`inline-flex px-2 py-0.5 rounded-lg text-xs font-medium ${o.status === 'ตรวจสอบแล้ว' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>{o.status}</span>
                       </td>
-                      <td className="px-4 py-3 text-gray-500 text-sm">{formatDateTime(o.created_at)}</td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-3 py-2.5 text-gray-500 text-xs whitespace-nowrap">{formatDateTime(o.created_at)}</td>
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); confirmTaxInvoice(o) }}
-                          className="px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors"
+                          className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
                         >
                           ยืนยัน
                         </button>
@@ -1581,10 +1591,10 @@ export default function Account() {
           open
           onClose={() => setSlipPopupOrderId(null)}
           closeOnBackdropClick
-          contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+          contentClassName="max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col"
         >
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-gray-800">สลิปโอน — บิล {slipPopupBillNo}</h3>
+            <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-gray-800">สลิปโอน — บิล {slipPopupBillNo}</h3>
               <button
                 type="button"
                 onClick={() => setSlipPopupOrderId(null)}
@@ -1593,23 +1603,22 @@ export default function Account() {
                 ✕
               </button>
             </div>
-            <div className="p-6 overflow-y-auto flex-1">
+            <div className="p-4 overflow-y-auto flex-1">
               {slipPopupLoading ? (
-                <div className="flex justify-center py-12">
-                  <div className="animate-spin rounded-full h-10 w-10 border-2 border-sky-500 border-t-transparent" />
+                <div className="flex justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-sky-500 border-t-transparent" />
                 </div>
               ) : slipPopupUrls.length === 0 ? (
-                <p className="text-center text-gray-500 py-8">ไม่พบภาพสลิปโอนของบิลนี้</p>
+                <p className="text-center text-gray-500 py-6 text-sm">ไม่พบภาพสลิปโอนของบิลนี้</p>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {slipPopupUrls.map((url, idx) => (
                     <div key={idx} className="flex justify-center">
                       {slipPopupFailed.has(idx) ? (
-                        <div className="flex flex-col items-center justify-center py-12 px-6 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 min-h-[200px]">
-                          <span className="text-4xl mb-2">🖼️</span>
-                          <p className="font-medium">โหลดรูปไม่สำเร็จ</p>
-                          <p className="text-sm mt-1">ลิงก์อาจหมดอายุหรือไม่มีสิทธิ์เข้าถึง</p>
-                          <a href={url} target="_blank" rel="noopener noreferrer" className="mt-3 text-sm text-sky-600 hover:underline">เปิดในแท็บใหม่</a>
+                        <div className="flex flex-col items-center justify-center py-8 px-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 min-h-[120px]">
+                          <p className="font-medium text-sm">โหลดรูปไม่สำเร็จ</p>
+                          <p className="text-xs mt-1">ลิงก์อาจหมดอายุหรือไม่มีสิทธิ์เข้าถึง</p>
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-600 hover:underline">เปิดในแท็บใหม่</a>
                         </div>
                       ) : (
                         <img

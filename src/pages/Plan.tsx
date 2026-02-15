@@ -43,6 +43,13 @@ interface PlanJob {
 
 const LOCK_PASS = 'TRkids@999'
 
+/** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
+const AUTO_TRACK_DEPTS: Record<string, string> = {
+  'เบิก': 'บันทึกจาก WMS อัตโนมัติ',
+  'QC': 'บันทึกจากหน้า QC อัตโนมัติ',
+  'PACK': 'บันทึกจากหน้าแพ็คสินค้าอัตโนมัติ',
+}
+
 const defaultSettings: PlanSettingsData = {
   dayStart: '09:30',
   dayEnd: '18:30',
@@ -154,7 +161,7 @@ const toISODateTime = (dateStr: string, timeStr: string): string => {
 
 function getEffectiveQty(job: PlanJob, dept: string, _settings: PlanSettingsData): number {
   if (dept === 'เบิก') {
-    return (Number(job.qty?.['STAMP']) || 0) + (Number(job.qty?.['LASER']) || 0)
+    return (Number(job.qty?.['STAMP']) || 0) + (Number(job.qty?.['LASER']) || 0) + (Number(job.qty?.['ETC']) || 0)
   }
   if (dept === 'QC') return Number(job.qty?.['PACK']) || 0
   return Number(job.qty?.[dept]) || 0
@@ -167,14 +174,31 @@ function getJobStatusForDept(
 ): { text: string; key: 'pending' | 'progress' | 'done' } {
   const procs = (settings.processes[dept] || []).map((p) => p.name)
   const tracks = job.tracks?.[dept] || {}
-  if (procs.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
-  const completedSteps = procs.filter((p) => tracks[p]?.end).length
-  if (completedSteps === procs.length) return { text: 'เสร็จแล้ว', key: 'done' }
-  if (Object.values(tracks).some((t) => t?.start)) {
-    const currentStep =
-      procs.find((p) => tracks[p]?.start && !tracks[p]?.end) || procs.find((p) => !tracks[p]?.end)
-    return { text: currentStep || 'กำลังทำ', key: 'progress' }
+  const trackEntries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
+
+  if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
+
+  // เช็ค "เสร็จแล้ว": ลอง match ตาม settings ก่อน, fallback ไปดู track entries จริง
+  const completedSettingsSteps = procs.filter((p) => tracks[p]?.end).length
+  if (procs.length > 0 && completedSettingsSteps === procs.length) return { text: 'เสร็จแล้ว', key: 'done' }
+  // Fallback: ถ้าชื่อ process ไม่ตรงกับ settings แต่ track entries ทุกตัวเสร็จแล้ว
+  if (completedSettingsSteps === 0 && trackEntries.length > 0 && trackEntries.every(([, t]) => t?.end)) {
+    return { text: 'เสร็จแล้ว', key: 'done' }
   }
+
+  // เช็ค "กำลังทำ": มี start ใน tracks ไหม
+  if (Object.values(tracks).some((t) => t?.start)) {
+    // ลองหาชื่อ step จาก settings ก่อน
+    const currentStep = procs.find((p) => tracks[p]?.start && !tracks[p]?.end)
+    if (currentStep) return { text: currentStep, key: 'progress' }
+    // Fallback: หาจาก track entries จริง (กรณีชื่อ process เปลี่ยน)
+    const activeEntry = trackEntries.find(([, t]) => t?.start && !t?.end)
+    if (activeEntry) return { text: activeEntry[0], key: 'progress' }
+    // Fallback สุดท้าย
+    const pendingStep = procs.find((p) => !tracks[p]?.end)
+    return { text: pendingStep || 'กำลังทำ', key: 'progress' }
+  }
+
   return { text: 'รอดำเนินการ', key: 'pending' }
 }
 
@@ -392,20 +416,23 @@ function computePlanTimeline(
   return results
 }
 
-function getActualTimesForDept(job: PlanJob, dept: string, settings: PlanSettingsData): { actualStart: string; actualEnd: string } {
+function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettingsData): { actualStart: string; actualEnd: string } {
   const tracks = job.tracks?.[dept] || {}
-  const procs = (settings.processes[dept] || []).map((p) => p.name)
-  if (procs.length === 0) return { actualStart: '-', actualEnd: '-' }
+  // Iterate ALL track entries (ไม่ใช่แค่ชื่อ process จาก settings)
+  // เพื่อให้แสดงเวลาจริงที่บันทึกจาก WMS/QC/Packing ได้เสมอ
+  // แม้ชื่อ process ใน settings จะถูกเปลี่ยนไปแล้ว
+  const entries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
+  if (entries.length === 0) return { actualStart: '-', actualEnd: '-' }
   let firstStart: Date | null = null
   let lastEnd: Date | null = null
   let allFinished = true
-  for (const p of procs) {
-    if (tracks[p]?.start) {
-      const d = new Date(tracks[p].start!)
+  for (const [, t] of entries) {
+    if (t?.start) {
+      const d = new Date(t.start)
       if (!firstStart || d < firstStart) firstStart = d
     }
-    if (tracks[p]?.end) {
-      const d = new Date(tracks[p].end!)
+    if (t?.end) {
+      const d = new Date(t.end)
       if (!lastEnd || d > lastEnd) lastEnd = d
     } else allFinished = false
   }
@@ -648,6 +675,8 @@ export default function Plan() {
     settings.departments.forEach((d) => {
       qty[d] = Number(fQty[d] ?? 0)
     })
+    // Preserve ETC qty for เบิก calculation (ETC is not a visible department)
+    if (fQty['ETC']) qty['ETC'] = Number(fQty['ETC'])
     if (editingJobId) {
       const job = jobs.find((j) => j.id === editingJobId)
       if (!job) return
@@ -935,10 +964,10 @@ export default function Plan() {
   }
 
   return (
-    <div className="w-full">
-      {/* เมนูย่อย — fixed ชิด TopBar เต็มซ้ายขวา (สไตล์เดียวกับออเดอร์) */}
+    <div className="w-full flex flex-col min-h-0 h-full flex-1">
+      {/* เมนูย่อย — fixed ชิด TopBar เต็มซ้ายขวา (ไม่มี transition เพื่อแสดงทันที) */}
       <div
-        className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft transition-all duration-300"
+        className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft"
         style={{ left: 'var(--content-offset-left, 16rem)' }}
       >
         <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
@@ -1601,6 +1630,11 @@ export default function Plan() {
               <p className="text-xs text-gray-500">
                 * เวลาแผนจะอัปเดตตาม "เวลาเสร็จจริง" ของงานก่อนหน้า และข้าม "เวลาพัก" ของแต่ละแผนกโดยอัตโนมัติ
               </p>
+              <p className="text-xs text-gray-500">
+                * <span className="text-teal-600 font-semibold">เวลาสีเขียว⚡</span> = บันทึกอัตโนมัติ (เบิก→WMS, QC→หน้าตรวจ, PACK→หน้าแพ็ค) &nbsp;|&nbsp;
+                <span className="text-blue-600 font-semibold">เวลาสีน้ำเงิน</span> = บันทึกจากหน้าแผนก &nbsp;|&nbsp;
+                <span className="text-red-600 font-semibold">เวลาสีแดง</span> = ช้ากว่าแผน
+              </p>
               {/* KPI Bar - สรุปไลน์ต่อแผนก (จาก plan.html) */}
               <div className="flex flex-wrap gap-3">
                 {settings.departments.map((d) => {
@@ -1819,11 +1853,19 @@ export default function Plan() {
                                         className={
                                           (me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
                                             ? 'text-red-600 font-semibold'
-                                            : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                            : d in AUTO_TRACK_DEPTS && acts.actualStart !== '-'
+                                              ? 'text-teal-600 font-semibold'
+                                              : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
                                         }
-                                        title={unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเริ่มจริง' : undefined}
+                                        title={
+                                          d in AUTO_TRACK_DEPTS && acts.actualStart !== '-'
+                                            ? AUTO_TRACK_DEPTS[d] + (unlocked ? ' · ดับเบิ้ลคลิกเพื่อแก้ไข' : '')
+                                            : unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเริ่มจริง' : undefined
+                                        }
                                       >
-                                        {acts.actualStart !== '-' ? acts.actualStart : '\u00A0'}
+                                        {acts.actualStart !== '-' ? (
+                                          <>{acts.actualStart}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
+                                        ) : '\u00A0'}
                                       </span>
                                     )}
                                   </div>
@@ -1854,11 +1896,19 @@ export default function Plan() {
                                         className={
                                           (me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
                                             ? 'text-red-600 font-semibold'
-                                            : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                            : d in AUTO_TRACK_DEPTS && acts.actualEnd !== '-'
+                                              ? 'text-teal-600 font-semibold'
+                                              : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
                                         }
-                                        title={unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเสร็จจริง' : undefined}
+                                        title={
+                                          d in AUTO_TRACK_DEPTS && acts.actualEnd !== '-'
+                                            ? AUTO_TRACK_DEPTS[d] + (unlocked ? ' · ดับเบิ้ลคลิกเพื่อแก้ไข' : '')
+                                            : unlocked ? 'ดับเบิ้ลคลิกเพื่อแก้ไขเวลาเสร็จจริง' : undefined
+                                        }
                                       >
-                                        {acts.actualEnd !== '-' ? acts.actualEnd : '\u00A0'}
+                                        {acts.actualEnd !== '-' ? (
+                                          <>{acts.actualEnd}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
+                                        ) : '\u00A0'}
                                       </span>
                                     )}
                                   </div>

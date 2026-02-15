@@ -53,8 +53,14 @@ export async function adjustStockBalance({
   if (movementError) throw movementError
 }
 
+/**
+ * Batch process stock adjustments in chunks to avoid exhausting DB connection slots.
+ * Processes CHUNK_SIZE items in parallel at a time.
+ */
 export async function adjustStockBalancesBulk(inputs: StockAdjustmentInput[]): Promise<void> {
-  for (const item of inputs) {
-    await adjustStockBalance(item)
+  const CHUNK_SIZE = 5
+  for (let i = 0; i < inputs.length; i += CHUNK_SIZE) {
+    const chunk = inputs.slice(i, i + CHUNK_SIZE)
+    await Promise.all(chunk.map((item) => adjustStockBalance(item)))
   }
 }

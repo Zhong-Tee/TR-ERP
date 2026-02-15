@@ -3,6 +3,8 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
+import { loadWmsTabCounts } from '../wms/wmsUtils'
+import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import {
   FiPackage,
   FiCheckCircle,
@@ -51,13 +53,6 @@ const menuItems: MenuItem[] = [
     roles: ['superadmin', 'admin-tr', 'admin_qc'],
   },
   {
-    key: 'account',
-    label: 'บัญชี',
-    icon: <FiDollarSign className="w-6 h-6" />,
-    path: '/account',
-    roles: ['superadmin', 'admin-tr', 'account'],
-  },
-  {
     key: 'plan',
     label: 'Plan',
     icon: <FiClipboard className="w-6 h-6" />,
@@ -91,6 +86,13 @@ const menuItems: MenuItem[] = [
     icon: <FiTruck className="w-6 h-6" />,
     path: '/transport',
     roles: ['superadmin', 'admin-tr', 'packing_staff'],
+  },
+  {
+    key: 'account',
+    label: 'บัญชี',
+    icon: <FiDollarSign className="w-6 h-6" />,
+    path: '/account',
+    roles: ['superadmin', 'admin-tr', 'account'],
   },
   {
     key: 'products',
@@ -142,12 +144,12 @@ interface SidebarProps {
 }
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
-const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account', 'wms'] as const
+const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account', 'wms', 'qc', 'packing', 'warehouse'] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
-  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0, wms: 0 })
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
   const [dbMenuAccess, setDbMenuAccess] = useState<Record<string, boolean> | null>(null)
 
   // โหลดสิทธิ์เมนูจากตาราง st_user_menus ตาม role ของผู้ใช้
@@ -181,98 +183,91 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const loadCounts = useCallback(async () => {
     try {
-      const today = new Date().toISOString().split('T')[0]
-
-      const [qcRes, refundRes, taxRes, cashRes] = await Promise.all([
+      const [qcRes, qcRejectRes, qcWoList, refundRes, taxRes, cashRes, wmsResult, productsRes, balancesRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
           .eq('status', 'ตรวจสอบแล้ว')
           .neq('channel_code', 'PUMP'),
         supabase
-          .from('ac_refunds')
+          .from('qc_records')
           .select('id', { count: 'exact', head: true })
+          .eq('is_rejected', true),
+        fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
+        supabase
+          .from('ac_refunds')
+          .select('id, reason, or_orders(status)')
           .eq('status', 'pending'),
         supabase
           .from('or_orders')
           .select('id, billing_details')
           .contains('billing_details', { request_tax_invoice: true })
-          .not('status', 'in', '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'),
+          .not('status', 'in', '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'),
         supabase
           .from('or_orders')
           .select('id, billing_details')
           .contains('billing_details', { request_cash_bill: true })
-          .not('status', 'in', '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'),
+          .not('status', 'in', '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'),
+        // ── WMS counts — ใช้ shared function เดียวกับ AdminLayout ──
+        loadWmsTabCounts(),
+        // ── Warehouse: ดึงสินค้าที่มี order_point ──
+        supabase
+          .from('pr_products')
+          .select('id, order_point')
+          .eq('is_active', true)
+          .not('order_point', 'is', null),
+        supabase
+          .from('inv_stock_balances')
+          .select('product_id, on_hand'),
       ])
+      // กรองโอนคืน: เฉพาะ reason โอนเกิน + สถานะบิล จัดส่งแล้ว เท่านั้น
+      const refundPending = ((refundRes.data || []) as any[]).filter(
+        (r) => r.reason && r.reason.includes('โอนเกิน') &&
+          r.or_orders?.status === 'จัดส่งแล้ว'
+      ).length
       const taxPending = ((taxRes.data || []) as { billing_details?: { account_confirmed_tax?: boolean } }[]).filter(
         (o) => !o.billing_details?.account_confirmed_tax
       ).length
       const cashPending = ((cashRes.data || []) as { billing_details?: { account_confirmed_cash?: boolean } }[]).filter(
         (o) => !o.billing_details?.account_confirmed_cash
       ).length
-      const accountTotal = (refundRes.count ?? 0) + taxPending + cashPending
+      const accountTotal = refundPending + taxPending + cashPending
 
-      // ── WMS counts ──
-      // 1. ใบงานใหม่
-      const { data: woData } = await supabase
-        .from('or_work_orders')
-        .select('work_order_name')
-        .eq('status', 'กำลังผลิต')
-      let newOrdersCount = 0
-      if (woData && woData.length > 0) {
-        const woNames = woData.map((wo: any) => wo.work_order_name)
-        const { data: assignedRows } = await supabase.from('wms_orders').select('order_id').in('order_id', woNames)
-        const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
-        newOrdersCount = woData.filter((wo: any) => !assignedSet.has(wo.work_order_name)).length
+      // ── Packing total count — นับใบงานใหม่ทั้งหมด ──
+      let packingTotal = 0
+      try {
+        const { count: woCount } = await supabase
+          .from('or_work_orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'กำลังผลิต')
+        packingTotal = woCount ?? 0
+      } catch (_e) {
+        // ignore packing count errors
       }
-      // 2. รายการใบงาน (เฉพาะ IN PROGRESS)
-      const { data: uploadData } = await supabase
-        .from('wms_orders')
-        .select('order_id, status')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-      const uploadGroups: Record<string, boolean> = {}
-      ;(uploadData || []).forEach((r: any) => {
-        if (!uploadGroups[r.order_id]) uploadGroups[r.order_id] = false
-        if (['pending', 'wrong', 'not_find'].includes(r.status)) uploadGroups[r.order_id] = true
-      })
-      const uploadCount = Object.values(uploadGroups).filter(Boolean).length
-      // 3. ตรวจสินค้า
-      const { data: reviewData } = await supabase
-        .from('wms_orders')
-        .select('order_id, status')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-      let reviewCount = 0
-      if (reviewData) {
-        const grouped: Record<string, { total: number; finished: number; picked: number }> = {}
-        reviewData.forEach((r: any) => {
-          if (!grouped[r.order_id]) grouped[r.order_id] = { total: 0, finished: 0, picked: 0 }
-          grouped[r.order_id].total++
-          if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock'].includes(r.status)) grouped[r.order_id].finished++
-          if (r.status === 'picked') grouped[r.order_id].picked++
-        })
-        reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
-      }
-      // 4. รายการเบิก (pending)
-      const { count: reqCount } = await supabase
-        .from('wms_requisitions')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'pending')
-        .gte('created_at', today + 'T00:00:00')
-        .lte('created_at', today + 'T23:59:59')
-      // 5. แจ้งเตือน (unread)
-      const { count: notifCount } = await supabase
-        .from('wms_notifications')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'unread')
 
-      const wmsTotal = newOrdersCount + uploadCount + reviewCount + (reqCount ?? 0) + (notifCount ?? 0)
+      const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
+      const qcTotal = qcWoCount + (qcRejectRes.count ?? 0)
+
+      // ── คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ ──
+      let warehouseBelowOrderPoint = 0
+      try {
+        const balMap: Record<string, number> = {}
+        ;(balancesRes.data || []).forEach((r: any) => { balMap[r.product_id] = Number(r.on_hand || 0) })
+        warehouseBelowOrderPoint = (productsRes.data || []).filter((p: any) => {
+          const op = p.order_point != null ? Number(String(p.order_point).replace(/,/g, '').trim()) : null
+          if (op === null || !Number.isFinite(op) || op <= 0) return false
+          const onHand = balMap[p.id] ?? 0
+          return onHand < op
+        }).length
+      } catch (_) { /* ignore */ }
 
       setMenuCounts({
         'admin-qc': qcRes.count ?? 0,
         account: accountTotal,
-        wms: wmsTotal,
+        wms: wmsResult.total,
+        qc: qcTotal,
+        packing: packingTotal,
+        warehouse: warehouseBelowOrderPoint,
       })
     } catch (e) {
       console.error('Sidebar loadCounts:', e)
@@ -290,11 +285,27 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_stock_balances' }, () => loadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
   }, [loadCounts])
+
+  // ฟัง event จากหน้า QC เมื่อมีการอัปเดตจำนวน (เร็วกว่า Realtime)
+  useEffect(() => {
+    const onQcCounts = (e: Event) => {
+      const total = (e as CustomEvent).detail?.total
+      if (typeof total === 'number') {
+        setMenuCounts((prev) => ({ ...prev, qc: total }))
+      }
+    }
+    window.addEventListener('sidebar-qc-counts', onQcCounts)
+    return () => window.removeEventListener('sidebar-qc-counts', onQcCounts)
+  }, [])
 
   // โพลทุก 15 วินาทีเมื่อแท็บเปิดอยู่ (fallback ให้ตัวเลขอัปเดตเรียลไทม์แม้ Realtime จะไม่ fire)
   const POLL_INTERVAL_MS = 15_000
@@ -306,9 +317,9 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     return () => clearInterval(timer)
   }, [loadCounts])
 
-  // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account หรือ wms เพื่อให้ตัวเลขตรงกับหน้านั้น
+  // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account, wms, packing เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {
-    if (['/admin-qc', '/account', '/wms'].includes(location.pathname)) {
+    if (['/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse'].includes(location.pathname)) {
       loadCounts()
     }
   }, [location.pathname, loadCounts])
@@ -339,6 +350,30 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     }
     window.addEventListener('wms-counts-updated', onWmsCounts)
     return () => window.removeEventListener('wms-counts-updated', onWmsCounts)
+  }, [])
+
+  // ฟัง event จากหน้า Packing เมื่อจำนวนใบงานพร้อมจัดของเปลี่ยน (เร็วกว่า Realtime)
+  useEffect(() => {
+    const onPackingCount = (e: Event) => {
+      const count = (e as CustomEvent).detail?.count
+      if (typeof count === 'number') {
+        setMenuCounts((prev) => ({ ...prev, packing: count }))
+      }
+    }
+    window.addEventListener('packing-ready-count', onPackingCount)
+    return () => window.removeEventListener('packing-ready-count', onPackingCount)
+  }, [])
+
+  // ฟัง event จากหน้า Warehouse เมื่อจำนวนสินค้าต่ำกว่าจุดสั่งซื้อเปลี่ยน
+  useEffect(() => {
+    const onWarehouseCount = (e: Event) => {
+      const count = (e as CustomEvent).detail?.count
+      if (typeof count === 'number') {
+        setMenuCounts((prev) => ({ ...prev, warehouse: count }))
+      }
+    }
+    window.addEventListener('warehouse-below-order-point', onWarehouseCount)
+    return () => window.removeEventListener('warehouse-below-order-point', onWarehouseCount)
   }, [])
 
   const filteredMenuItems = menuItems.filter((item) => {
@@ -395,7 +430,9 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                       {item.label}
                       {MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
                         (menuCounts[item.key] ?? 0) > 0 && (
-                          <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-yellow-400 text-emerald-900">
+                          <span className={`min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm ${
+                            item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                          }`}>
                             {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
                           </span>
                         )}
@@ -403,7 +440,9 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                   ) : (
                     MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
                     (menuCounts[item.key] ?? 0) > 0 && (
-                      <span className="absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold bg-yellow-400 text-emerald-900 shadow-sm">
+                      <span className={`absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm ${
+                        item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                      }`}>
                         {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
                       </span>
                     )

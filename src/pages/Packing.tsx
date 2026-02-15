@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
-import { getPublicUrl } from '../lib/qcApi'
+import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
-import { Order, OrderItem, WorkOrder } from '../types'
+import { Order, OrderItem, WorkOrder, InkType } from '../types'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -43,12 +43,14 @@ type PackingItem = {
   claim_details: string | null
   file_attachment: string | null
   notes: string | null
-  qc_status: 'pass' | 'fail' | null
+  qc_status: 'pass' | 'fail' | 'skip' | null
 }
 
 type WorkOrderStatus = {
   hasTracking: boolean
   isPartiallyPacked: boolean
+  qcCompleted: boolean
+  qcSkipped: boolean
 }
 
 type RecordingState = {
@@ -128,6 +130,18 @@ export default function Packing() {
     shippedTime: string
   } | null>(null)
 
+  // Ink types for color display
+  const [inkTypes, setInkTypes] = useState<InkType[]>([])
+
+  // Hover zoom image state (fixed overlay to escape overflow clipping)
+  const [hoverImage, setHoverImage] = useState<{ url: string; rect: DOMRect } | null>(null)
+
+  function getInkColor(inkName: string | null | undefined): string {
+    if (!inkName) return '#ddd'
+    const ink = inkTypes.find((i) => i.ink_name === inkName)
+    return ink?.hex_code || '#ddd'
+  }
+
   const parcelScanRef = useRef<HTMLInputElement>(null)
   const itemScanRef = useRef<HTMLInputElement>(null)
   const inactivityTimerRef = useRef<number | null>(null)
@@ -148,7 +162,7 @@ export default function Packing() {
     if (error || !data) return
     const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
     const dept = 'PACK'
-    const procNames = ['ทำใบปะหน้า', 'แพ็ค']
+    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
     tracks[dept] = tracks[dept] || {}
     procNames.forEach((p) => {
       if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
@@ -171,7 +185,7 @@ export default function Packing() {
     if (error || !data) return
     const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
     const dept = 'PACK'
-    const procNames = ['ทำใบปะหน้า', 'แพ็ค']
+    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
     tracks[dept] = tracks[dept] || {}
     const now = new Date().toISOString()
     procNames.forEach((p) => {
@@ -182,9 +196,13 @@ export default function Packing() {
     await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
   }
 
-  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean) => {
+  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, qcReady: boolean) => {
     if (!hasTracking) {
       openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
+      return
+    }
+    if (!qcReady) {
+      openAlert('ใบงานนี้ยัง QC ไม่ครบ ไม่สามารถจัดของได้')
       return
     }
     await ensurePlanDeptStart(workOrderName)
@@ -199,7 +217,7 @@ export default function Packing() {
     aggregatedDataRef.current = aggregatedData
   }, [aggregatedData])
 
-  const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass')
+  const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
 
   const goToNextGroup = () => {
     const nextIndex = aggregatedDataRef.current.findIndex(
@@ -212,6 +230,7 @@ export default function Packing() {
 
   useEffect(() => {
     loadWorkOrdersForPacking()
+    fetchInkTypes().then(setInkTypes).catch(() => null)
     return () => {
       cleanupRecording(true, true)
       clearInactivityTimer()
@@ -375,6 +394,20 @@ export default function Packing() {
     return workOrders
   }, [workOrders])
 
+  /** จำนวนใบงานที่พร้อมเริ่มจัดของ (มีเลขพัสดุ + QC ครบ/ข้าม) */
+  const readyCount = useMemo(() => {
+    return workOrders.filter((wo) => {
+      const s = workOrderStatus[wo.work_order_name]
+      if (!s) return false
+      return s.hasTracking && (s.qcCompleted || s.qcSkipped)
+    }).length
+  }, [workOrders, workOrderStatus])
+
+  // แจ้ง Sidebar ทุกครั้งที่จำนวนใบงานใหม่ทั้งหมดเปลี่ยน
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('packing-ready-count', { detail: { count: workOrders.length } }))
+  }, [workOrders.length])
+
   const shippedOrdersFiltered = useMemo(() => {
     return shippedOrders.filter((row) => {
       if (!row.work_order_name) return false
@@ -508,10 +541,32 @@ export default function Packing() {
 
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
-        const { data: allProductionOrders } = await supabase
-          .from('or_orders')
-          .select('work_order_name, tracking_number, packing_meta, or_order_items(packing_status)')
-          .in('work_order_name', names)
+        const [
+          { data: allProductionOrders },
+          { data: finishedSessions },
+          { data: skipLogsData },
+        ] = await Promise.all([
+          supabase
+            .from('or_orders')
+            .select('work_order_name, tracking_number, packing_meta, or_order_items(packing_status)')
+            .in('work_order_name', names),
+          supabase
+            .from('qc_sessions')
+            .select('filename')
+            .not('end_time', 'is', null)
+            .in('filename', names.map((n) => `WO-${n}`)),
+          supabase
+            .from('qc_skip_logs')
+            .select('work_order_name')
+            .in('work_order_name', names),
+        ])
+
+        const finishedWoSet = new Set(
+          (finishedSessions || []).map((s: any) => (s.filename as string).replace(/^WO-/, ''))
+        )
+        const skippedWoSet = new Set(
+          (skipLogsData || []).map((s: any) => s.work_order_name as string)
+        )
 
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
@@ -522,7 +577,12 @@ export default function Packing() {
               o.packing_meta?.parcelScanned ||
               (o.or_order_items || []).some((oi: any) => oi.packing_status === 'สแกนแล้ว')
           )
-          statusMap[wo.work_order_name] = { hasTracking, isPartiallyPacked }
+          statusMap[wo.work_order_name] = {
+            hasTracking,
+            isPartiallyPacked,
+            qcCompleted: finishedWoSet.has(wo.work_order_name),
+            qcSkipped: skippedWoSet.has(wo.work_order_name),
+          }
         })
         setWorkOrderStatus(statusMap)
       } else {
@@ -575,18 +635,22 @@ export default function Packing() {
     if (uniqueUids.length === 0) return {}
     const { data, error } = await supabase
       .from('qc_records')
-      .select('item_uid, status, created_at')
+      .select('item_uid, status, remark, created_at')
       .in('item_uid', uniqueUids)
       .order('created_at', { ascending: false })
     if (error) {
       console.error('QC status load error:', error)
       return {}
     }
-    const map: Record<string, 'pass' | 'fail'> = {}
+    const map: Record<string, 'pass' | 'fail' | 'skip'> = {}
     ;(data || []).forEach((row: any) => {
       const uid = row.item_uid
       if (!uid || map[uid]) return
-      if (row.status === 'pass' || row.status === 'fail') map[uid] = row.status
+      if (row.status === 'pass' && row.remark === 'ข้ามการ QC') {
+        map[uid] = 'skip'
+      } else if (row.status === 'pass' || row.status === 'fail') {
+        map[uid] = row.status
+      }
     })
     return map
   }
@@ -1081,7 +1145,7 @@ export default function Packing() {
           <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
             <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
               {([
-                { key: 'new' as const, label: 'ใบงานใหม่', count: newWorkOrders.length },
+                { key: 'new' as const, label: 'ใบงานใหม่', count: workOrders.length },
                 { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
                 { key: 'queue' as const, label: 'คิวอัปโหลด' },
               ]).map((tab) => (
@@ -1114,30 +1178,81 @@ export default function Packing() {
                   const status = workOrderStatus[wo.work_order_name]
                   const hasTracking = status?.hasTracking ?? true
                   const isPartiallyPacked = status?.isPartiallyPacked ?? false
-                  let statusIcon = '📦'
-                  if (!hasTracking) statusIcon = '⚠️'
-                  else if (isPartiallyPacked) statusIcon = '🔄'
-                  const statusText = !hasTracking ? ' (รอเลขพัสดุ)' : ''
+                  const qcCompleted = status?.qcCompleted ?? false
+                  const qcSkipped = status?.qcSkipped ?? false
+                  const qcReady = qcCompleted || qcSkipped
+                  const canSelect = hasTracking && qcReady
+
+                  // สีตามสถานะ — ให้ความสำคัญกับ QC ก่อน, แล้วดู tracking
+                  let cardClass = ''
+                  let borderLeftColor = ''
+                  if (qcSkipped) {
+                    cardClass = canSelect
+                      ? 'bg-orange-50/80 border-orange-200 hover:bg-orange-100 hover:shadow-md'
+                      : 'bg-orange-50/60 border-orange-200'
+                    borderLeftColor = 'border-l-orange-500'
+                  } else if (qcCompleted) {
+                    cardClass = canSelect
+                      ? 'bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 hover:shadow-md'
+                      : 'bg-emerald-50/60 border-emerald-200'
+                    borderLeftColor = 'border-l-emerald-500'
+                  } else if (!hasTracking) {
+                    cardClass = 'bg-amber-50/60 border-amber-200'
+                    borderLeftColor = 'border-l-amber-400'
+                  } else {
+                    cardClass = 'bg-slate-50/80 border-slate-200'
+                    borderLeftColor = 'border-l-red-400'
+                  }
+                  if (!canSelect) cardClass += ' opacity-70 cursor-not-allowed'
+
                   return (
                     <button
                       key={wo.id}
-                      className={`p-4 border rounded-lg text-left transition-colors ${
-                        !hasTracking ? 'bg-yellow-50 border-yellow-200 hover:bg-yellow-100' : 'bg-gray-100 border-gray-200 hover:bg-gray-200'
-                      }`}
+                      className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
+                      disabled={!canSelect}
                       onClick={() => {
-                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking)
+                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, qcReady)
                       }}
                     >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-lg font-semibold">
-                            {statusIcon} {wo.work_order_name}
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-lg font-bold flex items-center gap-2 flex-wrap">
+                            <span className="truncate">{wo.work_order_name}</span>
+                            {/* ป้าย QC — แสดงเสมอ */}
+                            {qcSkipped ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-orange-500 text-white shadow-sm">
+                                ⏭ ไม่ต้อง QC
+                              </span>
+                            ) : qcCompleted ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
+                                ✓ Pass ครบ
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-red-500 text-white shadow-sm">
+                                ✗ รอ QC
+                              </span>
+                            )}
+                            {/* ป้ายเลขพัสดุ — แสดงแยกต่างหากเมื่อยังไม่มี */}
+                            {!hasTracking && (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-amber-500 text-white shadow-sm">
+                                ⚠ รอเลขพัสดุ
+                              </span>
+                            )}
                           </div>
-                          <div className="text-sm text-gray-600">
-                            {wo.order_count} บิล{statusText}
+                          <div className="text-sm text-gray-500 mt-1">
+                            {wo.order_count} บิล
+                            {isPartiallyPacked && <span className="ml-2 text-blue-600 font-medium">🔄 แพ็คค้าง</span>}
                           </div>
                         </div>
-                        <span className="text-blue-600 font-medium">เริ่มจัดของ</span>
+                        {canSelect ? (
+                          <span className="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
+                            เริ่มจัดของ
+                          </span>
+                        ) : (
+                          <span className="shrink-0 px-3 py-1.5 rounded-lg bg-gray-200 text-gray-400 text-sm font-medium">
+                            ไม่พร้อม
+                          </span>
+                        )}
                       </div>
                     </button>
                   )
@@ -1376,10 +1491,18 @@ export default function Packing() {
                         </div>
                         <div
                           className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                            isQcPassGroup(group) ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                            isQcPassGroup(group)
+                              ? group.every((i) => i.qc_status === 'skip')
+                                ? 'bg-orange-100 text-orange-700'
+                                : 'bg-green-100 text-green-700'
+                              : 'bg-red-100 text-red-700'
                           }`}
                         >
-                          {isQcPassGroup(group) ? 'QC Pass' : 'ยังไม่ QC'}
+                          {isQcPassGroup(group)
+                            ? group.every((i) => i.qc_status === 'skip')
+                              ? 'Not QC'
+                              : 'QC Pass'
+                            : 'ยังไม่ QC'}
                         </div>
                       </div>
                     </button>
@@ -1545,24 +1668,21 @@ export default function Packing() {
                               <tr key={item.item_uid} className={item.scanned ? 'bg-green-50' : ''}>
                                 <td className="p-2 border align-middle">
                                   <div className="flex flex-col items-center">
-                                    <div className="relative group origin-left">
-                                      <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
-                                        {productImageUrl ? (
-                                          <img
-                                            src={productImageUrl}
-                                            alt={item.product_name}
-                                            className="w-full h-full object-contain"
-                                          />
-                                        ) : (
-                                          <span className="text-xs text-gray-400">ไม่มีรูป</span>
-                                        )}
-                                      </div>
-                                      {productImageUrl && (
+                                    <div
+                                      className="w-20 h-20 border rounded bg-white flex items-center justify-center cursor-pointer"
+                                      onMouseEnter={(e) => {
+                                        if (productImageUrl) setHoverImage({ url: productImageUrl, rect: e.currentTarget.getBoundingClientRect() })
+                                      }}
+                                      onMouseLeave={() => setHoverImage(null)}
+                                    >
+                                      {productImageUrl ? (
                                         <img
                                           src={productImageUrl}
                                           alt={item.product_name}
-                                          className="pointer-events-none absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 object-contain transition-transform duration-150 ease-out group-hover:scale-[3.5] group-hover:translate-x-[20%] z-[60]"
+                                          className="w-full h-full object-contain"
                                         />
+                                      ) : (
+                                        <span className="text-xs text-gray-400">ไม่มีรูป</span>
                                       )}
                                     </div>
                                     <small className="mt-1">{item.item_uid}</small>
@@ -1570,24 +1690,21 @@ export default function Packing() {
                                 </td>
                                 <td className="p-2 border align-middle">
                                   <div className="flex flex-col items-center">
-                                    <div className="relative group origin-left">
-                                      <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
-                                        {patternImageUrl ? (
-                                          <img
-                                            src={patternImageUrl}
-                                            alt={patternName || 'pattern'}
-                                            className="w-full h-full object-contain"
-                                          />
-                                        ) : (
-                                          <span className="text-xs text-gray-400">ไม่มีรูป</span>
-                                        )}
-                                      </div>
-                                      {patternImageUrl && (
+                                    <div
+                                      className="w-20 h-20 border rounded bg-white flex items-center justify-center cursor-pointer"
+                                      onMouseEnter={(e) => {
+                                        if (patternImageUrl) setHoverImage({ url: patternImageUrl, rect: e.currentTarget.getBoundingClientRect() })
+                                      }}
+                                      onMouseLeave={() => setHoverImage(null)}
+                                    >
+                                      {patternImageUrl ? (
                                         <img
                                           src={patternImageUrl}
                                           alt={patternName || 'pattern'}
-                                          className="pointer-events-none absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 object-contain transition-transform duration-150 ease-out group-hover:scale-[3.5] group-hover:translate-x-[20%] z-[60]"
+                                          className="w-full h-full object-contain"
                                         />
+                                      ) : (
+                                        <span className="text-xs text-gray-400">ไม่มีรูป</span>
                                       )}
                                     </div>
                                     <small className="mt-1">{patternName || '-'}</small>
@@ -1599,8 +1716,16 @@ export default function Packing() {
                                       <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
                                         QC Pass
                                       </span>
-                                    ) : (
+                                    ) : item.qc_status === 'skip' ? (
+                                      <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                        Not QC
+                                      </span>
+                                    ) : item.qc_status === 'fail' ? (
                                       <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                        QC Fail
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 w-fit">
                                         ยังไม่ได้ QC
                                       </span>
                                     )}
@@ -1610,18 +1735,70 @@ export default function Packing() {
                                 <td className="p-2 border">
                                   {(item.shelf_location || '').trim() === 'ชั้น1' ? '' : (item.shelf_location || '')}
                                 </td>
-                                <td className="p-2 border">{item.ink_color || ''}</td>
+                                <td className="p-2 border">
+                                  {item.ink_color ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <span
+                                        className="w-6 h-6 rounded-full border shrink-0"
+                                        style={{ backgroundColor: getInkColor(item.ink_color) }}
+                                      />
+                                      <span
+                                        className="font-semibold text-sm px-1.5 py-0.5 rounded"
+                                        style={{
+                                          backgroundColor: getInkColor(item.ink_color) + '30',
+                                          color: getInkColor(item.ink_color) !== '#ddd' ? getInkColor(item.ink_color) : undefined,
+                                        }}
+                                      >
+                                        {item.ink_color}
+                                      </span>
+                                      {item.ink_color.includes('กระดาษ') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M5.625 1.5H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" fill="#DBEAFE" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M10.5 2.25H8.25m2.25 0v1.5a3.375 3.375 0 0 0 3.375 3.375h1.5A1.125 1.125 0 0 0 16.5 6V4.5" fill="#93C5FD" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M8.25 13.5h7.5M8.25 16.5H12" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                      {item.ink_color.includes('ผ้า') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M6.75 3 3 5.25v3h3l.75 1.5v8.25a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V9.75L18 8.25h3V5.25L17.25 3h-3a2.25 2.25 0 0 1-4.5 0h-3Z" fill="#FDE68A" stroke="#F59E0B" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                      {item.ink_color.includes('พลาสติก') && (
+                                        <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none">
+                                          <path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5m4.75-11.396c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082" fill="#D1FAE5" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                          <path d="M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" fill="#A7F3D0" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+                                        </svg>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    ''
+                                  )}
+                                </td>
                                 <td className="p-2 border">{combinedPattern}</td>
                                 <td className="p-2 border">{item.font || ''}</td>
                                 <td className="p-2 border">{item.details || ''}</td>
                                 <td className="p-2 border">{displayNotes}</td>
-                                <td className="p-2 border">
+                                <td className="p-2 border text-center">
                                   {fileLink ? (
-                                    <a href={fileLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">
-                                      เปิดลิงก์
+                                    <a
+                                      href={fileLink}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 transition-colors"
+                                      title="เปิดไฟล์แนบ"
+                                    >
+                                      <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                      </svg>
                                     </a>
+                                  ) : item.file_attachment ? (
+                                    <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gray-100 text-gray-400" title={item.file_attachment}>
+                                      <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                      </svg>
+                                    </span>
                                   ) : (
-                                    item.file_attachment || ''
+                                    <span className="text-gray-300">-</span>
                                   )}
                                 </td>
                               </tr>
@@ -1752,6 +1929,25 @@ export default function Packing() {
           </div>
         </div>
       </Modal>
+
+      {/* Fixed overlay for hover-zoomed product/pattern images — escapes all overflow clipping */}
+      {hoverImage && (
+        <div
+          className="pointer-events-none fixed z-[999999]"
+          style={{
+            top: hoverImage.rect.top + hoverImage.rect.height / 2,
+            left: hoverImage.rect.right + 12,
+            transform: 'translateY(-50%)',
+          }}
+        >
+          <img
+            src={hoverImage.url}
+            alt="preview"
+            className="w-[280px] h-[280px] object-contain rounded-xl border-2 border-white bg-white"
+            style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
+          />
+        </div>
+      )}
     </div>
   )
 }
