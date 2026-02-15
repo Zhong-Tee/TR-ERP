@@ -13,7 +13,7 @@ import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
   const { user } = useAuthContext()
-  const [activeMenu, setActiveMenu] = useState(WMS_MENU_KEYS.NEW_ORDERS)
+  const [activeMenu, setActiveMenu] = useState<string>(WMS_MENU_KEYS.NEW_ORDERS)
   const { MessageModal, ConfirmModal } = useWmsModal()
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
 
@@ -71,7 +71,7 @@ export default function AdminLayout() {
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {menuItems.map((item) => {
               const count = tabCounts[item.key] ?? 0
-              const showBadge = WMS_COUNTED_KEYS.includes(item.key) && count > 0
+              const showBadge = (WMS_COUNTED_KEYS as readonly string[]).includes(item.key) && count > 0
               return (
                 <button
                   key={item.key}

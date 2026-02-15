@@ -64,7 +64,7 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
       if (error) throw error
       // Update local state
       if (loadedItems) {
-        setLoadedItems(prev => prev!.map((it, i2) => {
+        setLoadedItems(prev => prev!.map((it) => {
           if (it.id === item.id) return { ...it, file_attachment: editLinkItem.value.trim() || null } as OrderItem
           return it
         }))

@@ -394,14 +394,7 @@ export default function Packing() {
     return workOrders
   }, [workOrders])
 
-  /** จำนวนใบงานที่พร้อมเริ่มจัดของ (มีเลขพัสดุ + QC ครบ/ข้าม) */
-  const readyCount = useMemo(() => {
-    return workOrders.filter((wo) => {
-      const s = workOrderStatus[wo.work_order_name]
-      if (!s) return false
-      return s.hasTracking && (s.qcCompleted || s.qcSkipped)
-    }).length
-  }, [workOrders, workOrderStatus])
+  // readyCount removed — unused
 
   // แจ้ง Sidebar ทุกครั้งที่จำนวนใบงานใหม่ทั้งหมดเปลี่ยน
   useEffect(() => {
@@ -655,7 +648,7 @@ export default function Packing() {
     return map
   }
 
-  function prepareDataForPacking(orders: OrderWithItems[], qcStatusMap: Record<string, 'pass' | 'fail'>) {
+  function prepareDataForPacking(orders: OrderWithItems[], qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) {
     const flatData: PackingItem[] = []
     orders.forEach((order) => {
       const isOrderShipped = order.status === 'จัดส่งแล้ว'

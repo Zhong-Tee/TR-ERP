@@ -10,7 +10,7 @@ import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
 /** ช่องทางที่ที่อยู่ไม่ส่งไปใบปะหน้า (SHOP แสดงที่อยู่เหมือน FBTR) */
-const ECOMMERCE_CHANNELS = ['LZTR']
+// const ECOMMERCE_CHANNELS = ['LZTR']
 /** หมวดสินค้าที่ไม่นับเป็นสินค้าหลัก (นับเป็นอะไหล่เท่านั้น) */
 const PICKING_EXCLUDED_CATEGORIES = ['UV', 'STK', 'TUBE']
 
@@ -129,61 +129,9 @@ export default function WorkOrderManageList({
   const trackingFileInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfInputRef = useRef<HTMLInputElement>(null)
   const pickingSlipContentRef = useRef<HTMLDivElement>(null)
-  /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่ (pr_category_field_settings) — ใช้กรองคอลัมน์ Export ไฟล์ผลิต ให้เหมือนเมนูรอตรวจคำสั่งซื้อ */
-  const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
-
   useEffect(() => {
     loadWorkOrders()
   }, [channelFilter, searchTerm])
-
-  // โหลด pr_category_field_settings ครั้งเดียว (เหมือน OrderReviewList)
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
-        if (cancelled) return
-        if (error) {
-          console.error('Error loading category field settings:', error)
-          return
-        }
-        function toBool(v: unknown, defaultVal = true): boolean {
-          if (v === undefined || v === null) return defaultVal
-          return v === true || v === 'true'
-        }
-        const settingsMap: Record<string, Record<string, boolean>> = {}
-        if (data && Array.isArray(data)) {
-          data.forEach((row: any) => {
-            const cat = row.category
-            if (cat != null && String(cat).trim() !== '') {
-              const key = String(cat).trim()
-              settingsMap[key] = {
-                product_name: toBool(row.product_name, true),
-                ink_color: toBool(row.ink_color, true),
-                layer: toBool(row.layer, true),
-                cartoon_pattern: toBool(row.cartoon_pattern, true),
-                line_pattern: toBool(row.line_pattern, true),
-                font: toBool(row.font, true),
-                line_1: toBool(row.line_1, true),
-                line_2: toBool(row.line_2, true),
-                line_3: toBool(row.line_3, true),
-                quantity: toBool(row.quantity, true),
-                unit_price: toBool(row.unit_price, true),
-                notes: toBool(row.notes, true),
-                attachment: toBool(row.attachment, true),
-              }
-            }
-          })
-        }
-        setCategoryFieldSettings(settingsMap)
-      } catch (e) {
-        if (!cancelled) console.error('Error loading category field settings:', e)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     async function loadChannels() {
@@ -671,46 +619,6 @@ export default function WorkOrderManageList({
     if (error) throw error
     const list = (data || []) as OrderWithItems[]
     return list
-  }
-
-  /** คืนคอลัมน์ระดับรายการที่ "เปิดให้กรอก" ตาม pr_category_field_settings อย่างน้อยหนึ่งรายการ (เหมือน OrderReviewList) */
-  function getVisibleExportItemColumns(
-    orders: OrderWithItems[],
-    categoryFieldSettings: Record<string, Record<string, boolean>>,
-    productCategoryByProductId: Record<string, string>
-  ): Array<{ key: string; label: string; settingsKey: string }> {
-    const allItems: any[] = []
-    orders.forEach((order) => {
-      const items = order.or_order_items || (order as any).order_items || []
-      allItems.push(...items)
-    })
-    if (allItems.length === 0) return EXPORT_ITEM_COLUMNS
-    const hasSettings = Object.keys(categoryFieldSettings).length > 0
-    const hasCategoryMap = Object.keys(productCategoryByProductId).length > 0
-    if (!hasSettings || !hasCategoryMap) return EXPORT_ITEM_COLUMNS
-
-    const enabled = new Set<string>()
-    for (const def of EXPORT_ITEM_COLUMNS) {
-      for (const item of allItems) {
-        const productId = item.product_id != null ? String(item.product_id) : null
-        const cat = productId ? productCategoryByProductId[productId] : null
-        if (!cat || String(cat).trim() === '') {
-          enabled.add(def.key)
-          break
-        }
-        const categorySettings = categoryFieldSettings[String(cat).trim()]
-        if (!categorySettings) {
-          enabled.add(def.key)
-          break
-        }
-        const v = categorySettings[def.settingsKey] as boolean | string | undefined
-        if (v === undefined || v === null || v === true || v === 'true') {
-          enabled.add(def.key)
-          break
-        }
-      }
-    }
-    return EXPORT_ITEM_COLUMNS.filter((c) => enabled.has(c.key))
   }
 
   async function exportProduction(workOrderName: string) {
