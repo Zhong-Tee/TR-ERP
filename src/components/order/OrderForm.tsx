@@ -1036,7 +1036,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   async function loadInitialData() {
     try {
       const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes] = await Promise.all([
-        supabase.from('pr_products').select('*').eq('is_active', true),
+        supabase.from('pr_products').select('*').eq('is_active', true).eq('product_type', 'FG'),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
@@ -1620,6 +1620,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           setUploadedSlipPaths([])
         }
       }
+
+      // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
 
       // แสดงผลด้วย VerificationResultModal แทน alert (localhost)
       setVerificationModal({
@@ -2891,6 +2894,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
     setImportSummary(summaryLines.join('\n'))
     setImportBusy(false)
+    // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+    if (successCount > 0 || waitingCount > 0) {
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    }
   }
 
   async function handleSmartImport(file: File) {
@@ -3422,6 +3429,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           .select()
                           .single()
                         if (error) throw error
+                        // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+                        window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
                         if (onOpenOrder) onOpenOrder(newOrder as Order)
                       } catch (e: any) {
                         setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'สร้างบิลไม่สำเร็จ' })

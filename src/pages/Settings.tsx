@@ -1169,6 +1169,7 @@ export default function Settings() {
     'production_mb',
     'manager',
     'picker',
+    'auditor',
   ]
   const settingsRoles = [
     'superadmin',
@@ -1185,6 +1186,7 @@ export default function Settings() {
     'production_mb',
     'manager',
     'picker',
+    'auditor',
   ]
 
   return (

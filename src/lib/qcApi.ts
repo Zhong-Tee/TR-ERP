@@ -2,7 +2,7 @@
  * QC System API: work orders, items by WO, settings_reasons, ink_types, storage URL.
  */
 import { supabase } from './supabase'
-import type { QCItem, WorkOrder } from '../types'
+import type { QCItem, WorkOrder, SettingsReason } from '../types'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
@@ -305,11 +305,26 @@ export async function saveQcRecord(
   if (error) throw error
 }
 
-/** Load settings_reasons for FAIL dropdown. */
-export async function fetchSettingsReasons() {
+/** Load settings_reasons for FAIL dropdown (tree: top-level + children). */
+export async function fetchSettingsReasons(): Promise<SettingsReason[]> {
   const { data, error } = await supabase
     .from('settings_reasons')
-    .select('id, reason_text, fail_type, created_at')
+    .select('id, reason_text, fail_type, parent_id, created_at')
+    .order('reason_text')
+  if (error) throw error
+  const all: SettingsReason[] = data || []
+  const topLevel = all.filter((r) => !r.parent_id)
+  topLevel.forEach((parent) => {
+    parent.children = all.filter((r) => r.parent_id === parent.id)
+  })
+  return topLevel
+}
+
+/** Load flat list of all settings_reasons (including sub-reasons). */
+export async function fetchAllReasonsFlat(): Promise<SettingsReason[]> {
+  const { data, error } = await supabase
+    .from('settings_reasons')
+    .select('id, reason_text, fail_type, parent_id, created_at')
     .order('reason_text')
   if (error) throw error
   return data || []
@@ -437,9 +452,15 @@ export async function fetchReportUsers(): Promise<{ id: string; username: string
   return data || []
 }
 
-/** Settings: add reason. */
+/** Settings: add top-level reason. */
 export async function addReason(reasonText: string, failType: string) {
   const { error } = await supabase.from('settings_reasons').insert({ reason_text: reasonText, fail_type: failType })
+  if (error) throw error
+}
+
+/** Settings: add sub-reason (inherits fail_type from parent). */
+export async function addSubReason(parentId: string, reasonText: string, failType: string) {
+  const { error } = await supabase.from('settings_reasons').insert({ reason_text: reasonText, fail_type: failType, parent_id: parentId })
   if (error) throw error
 }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
+import { useAuthContext } from '../contexts/AuthContext'
 import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
@@ -25,6 +26,7 @@ type Tab =
 
 export default function Orders() {
   const { hasAccess } = useMenuAccess()
+  const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<Tab>('create')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -64,66 +66,68 @@ export default function Orders() {
   }
 
   async function refreshCounts() {
+    // Helper: เพิ่มเงื่อนไข admin_user สำหรับ admin-pump / admin-tr
+    const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
+      ? (user.username ?? user.email ?? '')
+      : ''
+    function applyOwnerFilter(query: any) {
+      return adminName ? query.eq('admin_user', adminName) : query
+    }
+
     try {
       // Load waiting count
-      const { count: waitingCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'รอลงข้อมูล')
+      const { count: waitingCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล')
+      )
       
       // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
-      const { count: completeCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
+      const { count: completeCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
+      )
 
       // Load verified count
-      const { count: verifiedCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'ตรวจสอบแล้ว')
+      const { count: verifiedCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
+      )
 
       // Load data error count
-      const { count: dataErrorCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'ลงข้อมูลผิด')
+      const { count: dataErrorCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ลงข้อมูลผิด')
+      )
 
       // Load cancelled count
-      const { count: cancelledCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'ยกเลิก')
+      const { count: cancelledCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ยกเลิก')
+      )
 
       // Load shipped count
-      const { count: shippedCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'จัดส่งแล้ว')
+      const { count: shippedCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'จัดส่งแล้ว')
+      )
 
       // Load confirm count: งานใหม่ + รอออกแบบ + ออกแบบแล้ว + รอคอนเฟิร์ม + คอนเฟิร์มแล้ว (PUMP) - กรองวันนี้
       const todayStr = new Date().toISOString().split('T')[0]
-      const { count: confirmCountTotal } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_code', 'PUMP')
-        .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
-        .gte('created_at', `${todayStr}T00:00:00.000Z`)
-        .lte('created_at', `${todayStr}T23:59:59.999Z`)
+      const { count: confirmCountTotal } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .eq('channel_code', 'PUMP')
+          .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
+          .gte('created_at', `${todayStr}T00:00:00.000Z`)
+          .lte('created_at', `${todayStr}T23:59:59.999Z`)
+      )
 
       // Load work orders count (ใบสั่งงาน)
-      const { count: workOrdersPumpCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_code', 'PUMP')
-        .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
-        .is('work_order_name', null)
-      const { count: workOrdersOtherCount } = await supabase
-        .from('or_orders')
-        .select('id', { count: 'exact', head: true })
-        .neq('channel_code', 'PUMP')
-        .eq('status', 'ใบสั่งงาน')
-        .is('work_order_name', null)
+      const { count: workOrdersPumpCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .eq('channel_code', 'PUMP')
+          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
+          .is('work_order_name', null)
+      )
+      const { count: workOrdersOtherCount } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .neq('channel_code', 'PUMP')
+          .eq('status', 'ใบสั่งงาน')
+          .is('work_order_name', null)
+      )
       const workOrdersTotal = (workOrdersPumpCount ?? 0) + (workOrdersOtherCount ?? 0)
 
       // Load work orders manage count (จำนวนใบงานทั้งหมด)
@@ -132,7 +136,7 @@ export default function Orders() {
         .select('id', { count: 'exact', head: true })
         .eq('status', 'กำลังผลิต')
 
-      // Load issue count (On)
+      // Load issue count (On) — issue นับตาม role (RLS จะกรองให้)
       const { count: issueCount } = await supabase
         .from('or_issues')
         .select('id', { count: 'exact', head: true })
@@ -148,6 +152,8 @@ export default function Orders() {
       setWorkOrdersManageCount(workOrdersManageCount || 0)
       setShippedCount(shippedCount || 0)
       setIssueCount(issueCount || 0)
+      // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
     } catch (error) {
       console.error('Error refreshing counts:', error)
     }

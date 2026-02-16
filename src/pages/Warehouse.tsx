@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
-import { Product, StockBalance } from '../types'
+import { Product, ProductType, StockBalance } from '../types'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 
@@ -22,6 +22,7 @@ export default function Warehouse() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [sellerFilter, setSellerFilter] = useState('')
+  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
@@ -38,7 +39,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, order_point, seller_name')
+        .select('id, product_code, product_name, product_category, product_type, order_point, seller_name')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -123,6 +124,7 @@ export default function Warehouse() {
         p.product_name.toLowerCase().includes(term)
       const matchCategory = !categoryFilter || (p.product_category || '') === categoryFilter
       const matchSeller = !sellerFilter || (p.seller_name || '') === sellerFilter
+      const matchProductType = !productTypeFilter || p.product_type === productTypeFilter
 
       // ตัวกรองถึงจุดสั่งซื้อ
       let matchOrderPoint = true
@@ -133,9 +135,9 @@ export default function Warehouse() {
         matchOrderPoint = orderPoint !== null && orderPoint > 0 && onHand < orderPoint
       }
 
-      return matchTerm && matchCategory && matchSeller && matchOrderPoint
+      return matchTerm && matchCategory && matchSeller && matchProductType && matchOrderPoint
     })
-  }, [products, search, categoryFilter, sellerFilter, onlyBelowOrderPoint, balances])
+  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances])
 
   return (
     <div className="space-y-6 mt-4">
@@ -152,6 +154,19 @@ export default function Warehouse() {
               onChange={(e) => setSearch(e.target.value)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             />
+          </div>
+          <div className="w-full sm:w-auto sm:min-w-[150px]">
+            <label htmlFor="warehouse-product-type" className="sr-only">ประเภทสินค้า</label>
+            <select
+              id="warehouse-product-type"
+              value={productTypeFilter}
+              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-base"
+            >
+              <option value="">ทุกประเภท</option>
+              <option value="FG">FG - สินค้าสำเร็จรูป</option>
+              <option value="RM">RM - วัตถุดิบ</option>
+            </select>
           </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
             <label htmlFor="warehouse-category" className="sr-only">หมวดหมู่</label>
@@ -228,8 +243,7 @@ export default function Warehouse() {
                   const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
                   const orderPoint = toNumber(product.order_point)
                   const isLow =
-                    (orderPoint !== null && onHand < orderPoint) ||
-                    (safetyStock !== null && onHand < safetyStock)
+                    orderPoint !== null && orderPoint > 0 && onHand < orderPoint
                   return (
                     <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3">

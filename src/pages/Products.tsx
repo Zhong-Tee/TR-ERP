@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 import Modal from '../components/ui/Modal'
-import { Product } from '../types'
+import { Product, ProductType } from '../types'
 
 const SEARCH_DEBOUNCE_MS = 400
 
@@ -54,6 +54,11 @@ async function uploadImageToBucket(file: File): Promise<void> {
   if (error) throw error
 }
 
+const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
+  { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
+  { value: 'RM', label: 'RM - วัตถุดิบ' },
+]
+
 const emptyForm = () => ({
   product_code: '',
   product_name: '',
@@ -61,7 +66,7 @@ const emptyForm = () => ({
   product_name_cn: '',
   order_point: '',
   product_category: '',
-  product_type: '',
+  product_type: 'FG' as ProductType,
   rubber_code: '',
   storage_location: '',
   unit_cost: '',
@@ -74,6 +79,7 @@ export default function Products() {
   const [searchInput, setSearchInput] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
+  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
   const [categories, setCategories] = useState<string[]>([])
   const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
@@ -86,6 +92,14 @@ export default function Products() {
   const [importing, setImporting] = useState(false)
   const [uploadingImages, setUploadingImages] = useState(false)
   const [sellerOptions, setSellerOptions] = useState<string[]>([])
+
+  // Notification modal
+  const [notifyModal, setNotifyModal] = useState<{ open: boolean; type: 'success' | 'error' | 'warning'; title: string; message: string }>({
+    open: false, type: 'success', title: '', message: '',
+  })
+  function showNotify(type: 'success' | 'error' | 'warning', title: string, message: string = '') {
+    setNotifyModal({ open: true, type, title, message })
+  }
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -102,7 +116,7 @@ export default function Products() {
 
   useEffect(() => {
     loadProducts()
-  }, [appliedSearch, categoryFilter])
+  }, [appliedSearch, categoryFilter, productTypeFilter])
 
   useEffect(() => {
     loadCategories()
@@ -157,6 +171,9 @@ export default function Products() {
       if (categoryFilter) {
         query = query.eq('product_category', categoryFilter)
       }
+      if (productTypeFilter) {
+        query = query.eq('product_type', productTypeFilter)
+      }
 
       const { data, error } = await query
 
@@ -164,7 +181,7 @@ export default function Products() {
       setProducts(data || [])
     } catch (error: any) {
       console.error('Error loading products:', error)
-      alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
+      showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
     } finally {
       setLoading(false)
     }
@@ -187,7 +204,7 @@ export default function Products() {
       product_name_cn: product.product_name_cn || '',
       order_point: product.order_point || '',
       product_category: product.product_category || '',
-      product_type: product.product_type || '',
+      product_type: product.product_type || 'FG',
       rubber_code: product.rubber_code || '',
       storage_location: product.storage_location || '',
       unit_cost: product.unit_cost != null ? String(product.unit_cost) : '',
@@ -220,7 +237,7 @@ export default function Products() {
     const code = form.product_code.trim()
     const name = form.product_name.trim()
     if (!code || !name) {
-      alert('กรุณากรอกรหัสสินค้าและชื่อสินค้า')
+      showNotify('warning', 'กรุณากรอกรหัสสินค้าและชื่อสินค้า')
       return
     }
 
@@ -237,7 +254,7 @@ export default function Products() {
           product_name_cn: form.product_name_cn.trim() || null,
           order_point: form.order_point.trim() || null,
           product_category: form.product_category.trim() || null,
-          product_type: form.product_type.trim() || null,
+          product_type: form.product_type || 'FG',
           rubber_code: form.rubber_code.trim() || null,
           storage_location: form.storage_location.trim() || null,
           unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
@@ -245,7 +262,7 @@ export default function Products() {
           is_active: true,
         })
         if (error) throw error
-        alert('เพิ่มสินค้าเรียบร้อย')
+        showNotify('success', 'เพิ่มสินค้าเรียบร้อย')
       } else if (modalMode === 'edit' && editingProduct) {
         const { error } = await supabase
           .from('pr_products')
@@ -256,7 +273,7 @@ export default function Products() {
             product_name_cn: form.product_name_cn.trim() || null,
             order_point: form.order_point.trim() || null,
             product_category: form.product_category.trim() || null,
-            product_type: form.product_type.trim() || null,
+            product_type: form.product_type || 'FG',
             rubber_code: form.rubber_code.trim() || null,
             storage_location: form.storage_location.trim() || null,
             unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
@@ -264,14 +281,14 @@ export default function Products() {
           })
           .eq('id', editingProduct.id)
         if (error) throw error
-        alert('แก้ไขสินค้าเรียบร้อย')
+        showNotify('success', 'แก้ไขสินค้าเรียบร้อย')
       }
       closeModal()
       loadProducts()
       loadCategories()
     } catch (error: any) {
       console.error('Error saving product:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
     } finally {
       setSaving(false)
     }
@@ -294,7 +311,7 @@ export default function Products() {
       loadProducts()
     } catch (error: any) {
       console.error('Error deactivating product:', error)
-      alert('เกิดข้อผิดพลาด: ' + error.message)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
     } finally {
       setDeletingId(null)
     }
@@ -303,7 +320,7 @@ export default function Products() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PRODUCT_TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'ประเภท1', 'R001', 'A-1'],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'FG', 'R001', 'A-1'],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -330,7 +347,7 @@ export default function Products() {
       XLSX.writeFile(wb, 'ข้อมูลสินค้าทั้งหมด.xlsx')
     } catch (e: any) {
       console.error(e)
-      alert('ดาวน์โหลดไม่สำเร็จ: ' + (e?.message || e))
+      showNotify('error', 'ดาวน์โหลดไม่สำเร็จ', e?.message || String(e))
     }
   }
 
@@ -345,6 +362,7 @@ export default function Products() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
+      const validTypes: ProductType[] = ['FG', 'RM']
       const toInsert: Array<{
         product_code: string
         product_name: string
@@ -352,7 +370,7 @@ export default function Products() {
         product_name_cn: string | null
         order_point: string | null
         product_category: string | null
-        product_type: string | null
+        product_type: ProductType
         rubber_code: string | null
         storage_location: string | null
         is_active: boolean
@@ -362,6 +380,8 @@ export default function Products() {
         const code = String(row.product_code ?? '').trim()
         const name = String(row.product_name ?? '').trim()
         if (!code || !name) continue
+        const rawType = String(row.product_type ?? '').trim().toUpperCase()
+        const productType: ProductType = validTypes.includes(rawType as ProductType) ? (rawType as ProductType) : 'FG'
         toInsert.push({
           product_code: code,
           product_name: name,
@@ -369,7 +389,7 @@ export default function Products() {
           product_name_cn: (row.product_name_cn != null && String(row.product_name_cn).trim()) || null,
           order_point: (row.order_point != null && String(row.order_point).trim()) || null,
           product_category: (row.product_category != null && String(row.product_category).trim()) || null,
-          product_type: (row.product_type != null && String(row.product_type).trim()) || null,
+          product_type: productType,
           rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
           storage_location: (row.storage_location != null && String(row.storage_location).trim()) || null,
           is_active: true,
@@ -402,7 +422,7 @@ export default function Products() {
         const msgs: string[] = []
         if (dupInFile > 0) msgs.push(`ซ้ำในไฟล์ ${dupInFile} รายการ`)
         if (dupInDb > 0) msgs.push(`ซ้ำกับข้อมูลในระบบ ${dupInDb} รายการ`)
-        alert(`ไม่มีสินค้าใหม่ที่จะนำเข้า\n${msgs.join(', ')}`)
+        showNotify('warning', 'ไม่มีสินค้าใหม่ที่จะนำเข้า', msgs.join(', '))
         loadProducts()
         loadCategories()
         return
@@ -414,12 +434,12 @@ export default function Products() {
       const msgs: string[] = [`นำเข้าสินค้าใหม่ ${newItems.length} รายการเรียบร้อย`]
       if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
       if (dupInDb > 0) msgs.push(`ข้ามรายการที่มีอยู่แล้วในระบบ ${dupInDb} รายการ`)
-      alert(msgs.join('\n'))
+      showNotify('success', 'นำเข้าสินค้าสำเร็จ', msgs.join(', '))
       loadProducts()
       loadCategories()
     } catch (err: any) {
       console.error('Import error:', err)
-      alert('นำเข้าสินค้าล้มเหลว: ' + (err?.message || err))
+      showNotify('error', 'นำเข้าสินค้าล้มเหลว', err?.message || String(err))
     } finally {
       setImporting(false)
       importInputRef.current && (importInputRef.current.value = '')
@@ -430,7 +450,7 @@ export default function Products() {
     if (!files?.length) return
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith('image/'))
     if (!imageFiles.length) {
-      alert('กรุณาเลือกไฟล์รูปภาพเท่านั้น')
+      showNotify('warning', 'กรุณาเลือกไฟล์รูปภาพเท่านั้น')
       return
     }
     setUploadingImages(true)
@@ -447,9 +467,9 @@ export default function Products() {
         }
       }
       if (ok) {
-        alert(`อัปโหลดรูปสำเร็จ ${ok} ไฟล์${fail ? ` ล้มเหลว ${fail} ไฟล์` : ''}`)
+        showNotify('success', 'อัปโหลดรูปสำเร็จ', `${ok} ไฟล์${fail ? ` ล้มเหลว ${fail} ไฟล์` : ''}`)
       }
-      if (fail && !ok) alert('อัปโหลดรูปล้มเหลว: ' + (fail === 1 ? imageFiles[0].name : `${fail} ไฟล์`))
+      if (fail && !ok) showNotify('error', 'อัปโหลดรูปล้มเหลว', fail === 1 ? imageFiles[0].name : `${fail} ไฟล์`)
     } finally {
       setUploadingImages(false)
       uploadImagesInputRef.current && (uploadImagesInputRef.current.value = '')
@@ -528,6 +548,20 @@ export default function Products() {
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             />
           </div>
+          <div className="w-full sm:w-auto sm:min-w-[150px]">
+            <label htmlFor="products-type" className="sr-only">ประเภทสินค้า</label>
+            <select
+              id="products-type"
+              value={productTypeFilter}
+              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            >
+              <option value="">ทุกประเภท</option>
+              {PRODUCT_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
             <label htmlFor="products-category" className="sr-only">หมวดหมู่</label>
             <select
@@ -536,7 +570,7 @@ export default function Products() {
               onChange={(e) => setCategoryFilter(e.target.value)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             >
-              <option value="">ทั้งหมด</option>
+              <option value="">ทุกหมวดหมู่</option>
               {categories.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
@@ -554,48 +588,54 @@ export default function Products() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-xs">
               <thead>
                 <tr className="bg-blue-600 text-white">
-                  <th className="px-3 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">รหัสสินค้า</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">หมวดหมู่</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">จุดสั่งซื้อ</th>
-                  <th className="px-3 py-2.5 text-right font-semibold">ต้นทุน</th>
-                  <th className="px-3 py-2.5 text-right font-semibold">Safety Stock</th>
-                  <th className="px-3 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
+                  <th className="px-2 py-2 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="px-2 py-2 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="px-2 py-2 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
+                  <th className="px-2 py-2 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-2 py-2 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-2 py-2 text-left font-semibold">จุดจัดเก็บ</th>
+                  <th className="px-2 py-2 text-left font-semibold">รหัสหน้ายาง</th>
+                  <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
+                  <th className="px-2 py-2 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
+                  <th className="px-2 py-2 text-right font-semibold">Safety Stock</th>
+                  <th className="px-2 py-2 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
                 {products.map((product, idx) => (
                   <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="p-4">
+                    <td className="px-2 py-1.5">
                       <ProductImage
                         code={product.product_code}
                         name={product.product_name}
                       />
                     </td>
-                    <td className="p-4 font-semibold text-surface-900">{product.product_code}</td>
-                    <td className="p-4 text-surface-800">{product.product_name}</td>
-                    <td className="p-4 text-surface-700">{product.seller_name || '-'}</td>
-                    <td className="p-4 text-surface-700">{product.product_name_cn || '-'}</td>
-                    <td className="p-4 text-surface-700">{product.storage_location || '-'}</td>
-                    <td className="p-4 text-surface-700">{product.rubber_code || '-'}</td>
-                    <td className="p-4 text-surface-700">{product.product_category || '-'}</td>
-                    <td className="p-4 text-surface-700">{product.order_point || '-'}</td>
-                    <td className="p-4 text-right text-surface-700">{product.unit_cost != null ? Number(product.unit_cost).toLocaleString() : '-'}</td>
-                    <td className="p-4 text-right text-surface-700">{product.safety_stock != null ? Number(product.safety_stock).toLocaleString() : '-'}</td>
-                    <td className="p-4 text-right">
-                      <div className="flex gap-2 justify-end">
+                    <td className="px-2 py-1.5 font-semibold text-surface-900">{product.product_code}</td>
+                    <td className="px-2 py-1.5 text-surface-800">{product.product_name}</td>
+                    <td className="px-2 py-1.5 text-center">
+                      <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
+                        {product.product_type}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-surface-700">{product.seller_name || '-'}</td>
+                    <td className="px-2 py-1.5 text-surface-700">{product.product_name_cn || '-'}</td>
+                    <td className="px-2 py-1.5 text-surface-700">{product.storage_location || '-'}</td>
+                    <td className="px-2 py-1.5 text-surface-700">{product.rubber_code || '-'}</td>
+                    <td className="px-2 py-1.5 text-surface-700">{product.product_category || '-'}</td>
+                    <td className="px-2 py-1.5 text-center text-surface-700">{product.order_point || '-'}</td>
+                    <td className="px-2 py-1.5 text-right text-surface-700">{product.unit_cost != null ? Number(product.unit_cost).toLocaleString() : '-'}</td>
+                    <td className="px-2 py-1.5 text-right text-surface-700">{product.safety_stock != null ? Number(product.safety_stock).toLocaleString() : '-'}</td>
+                    <td className="px-2 py-1.5 text-right">
+                      <div className="flex gap-1.5 justify-end">
                         <button
                           type="button"
                           onClick={() => openEdit(product)}
-                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
+                          className="px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-xs font-semibold"
                         >
                           แก้ไข
                         </button>
@@ -603,7 +643,7 @@ export default function Products() {
                           type="button"
                           onClick={() => openDeleteConfirm(product)}
                           disabled={deletingId === product.id}
-                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
+                          className="px-2 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 text-xs font-semibold disabled:opacity-50"
                         >
                           {deletingId === product.id ? 'กำลังลบ...' : 'ลบ'}
                         </button>
@@ -715,13 +755,15 @@ export default function Products() {
             {/* ประเภทสินค้า */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">ประเภทสินค้า</label>
-              <input
-                type="text"
+              <select
                 value={form.product_type}
-                onChange={(e) => setForm((f) => ({ ...f, product_type: e.target.value }))}
-                placeholder="ประเภท"
+                onChange={(e) => setForm((f) => ({ ...f, product_type: e.target.value as ProductType }))}
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
-              />
+              >
+                {PRODUCT_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
             </div>
             {/* รหัสหน้ายาง */}
             <div>
@@ -842,6 +884,50 @@ export default function Products() {
               {deletingId === productToDelete?.id ? 'กำลังลบ...' : 'ปิดการใช้งาน'}
             </button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Notification Modal */}
+      <Modal open={notifyModal.open} onClose={() => setNotifyModal((p) => ({ ...p, open: false }))} closeOnBackdropClick contentClassName="max-w-sm">
+        <div className="p-6 text-center">
+          <div className={`mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-4 ${
+            notifyModal.type === 'success' ? 'bg-green-100' : notifyModal.type === 'error' ? 'bg-red-100' : 'bg-amber-100'
+          }`}>
+            {notifyModal.type === 'success' && (
+              <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {notifyModal.type === 'error' && (
+              <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            {notifyModal.type === 'warning' && (
+              <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          </div>
+          <h3 className={`text-lg font-bold mb-1 ${
+            notifyModal.type === 'success' ? 'text-green-800' : notifyModal.type === 'error' ? 'text-red-800' : 'text-amber-800'
+          }`}>
+            {notifyModal.title}
+          </h3>
+          {notifyModal.message && (
+            <p className="text-sm text-gray-600 mt-1">{notifyModal.message}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => setNotifyModal((p) => ({ ...p, open: false }))}
+            className={`mt-5 px-6 py-2.5 rounded-xl font-semibold text-white transition-colors ${
+              notifyModal.type === 'success' ? 'bg-green-600 hover:bg-green-700'
+                : notifyModal.type === 'error' ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-amber-500 hover:bg-amber-600'
+            }`}
+          >
+            ตกลง
+          </button>
         </div>
       </Modal>
     </div>

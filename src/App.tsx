@@ -21,10 +21,15 @@ import Settings from './pages/Settings'
 import Warehouse from './pages/Warehouse'
 import WarehouseAudit from './pages/WarehouseAudit'
 import WarehouseAdjust from './pages/WarehouseAdjust'
+import CreateAuditForm from './components/audit/CreateAuditForm'
+import MobileCountView from './components/audit/MobileCountView'
+import AuditReviewView from './components/audit/AuditReviewView'
+import AuditorHome from './components/audit/AuditorHome'
 import WarehouseReturns from './pages/WarehouseReturns'
 import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
+import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
 
 const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
@@ -60,6 +65,9 @@ function SmartRedirect() {
     )
   }
 
+  // Auditor: redirect ไปหน้า Audit โดยตรง
+  if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
+
   for (const menu of MENU_PATH_ORDER) {
     if (menuAccess !== null) {
       if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
@@ -69,6 +77,12 @@ function SmartRedirect() {
   }
 
   return <Navigate to="/orders" replace />
+}
+
+function AuditRouteSwitch() {
+  const { user } = useAuthContext()
+  if (user?.role === 'auditor') return <AuditorHome />
+  return <Layout><WarehouseAudit /></Layout>
 }
 
 function AppRoutes() {
@@ -226,9 +240,35 @@ function AppRoutes() {
       <Route
         path="/warehouse/audit"
         element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'auditor']}>
+            <AuditRouteSwitch />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/create"
+        element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
-              <WarehouseAudit />
+              <CreateAuditForm />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/:id/count"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'auditor']}>
+            <MobileCountView />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/audit/:id/review"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'manager']}>
+            <Layout>
+              <AuditReviewView />
             </Layout>
           </ProtectedRoute>
         }
@@ -256,7 +296,7 @@ function AppRoutes() {
       <Route
         path="/purchase/pr"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'account']}>
             <Layout>
               <PurchasePR />
             </Layout>
@@ -266,7 +306,7 @@ function AppRoutes() {
       <Route
         path="/purchase/po"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'account']}>
             <Layout>
               <PurchasePO />
             </Layout>
@@ -276,9 +316,19 @@ function AppRoutes() {
       <Route
         path="/purchase/gr"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'account']}>
             <Layout>
               <PurchaseGR />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/purchase/sample"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'account']}>
+            <Layout>
+              <PurchaseSample />
             </Layout>
           </ProtectedRoute>
         }

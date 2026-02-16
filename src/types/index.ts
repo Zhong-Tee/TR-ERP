@@ -22,6 +22,7 @@ export type UserRole =
   | 'production_mb'
   | 'manager'
   | 'picker'
+  | 'auditor'
 
 // Order Types
 export type OrderStatus = 
@@ -212,6 +213,9 @@ export interface WorkOrder {
   updated_at: string
 }
 
+// Product Type: FG = Finished Goods, RM = Raw Material
+export type ProductType = 'FG' | 'RM'
+
 // Product Types (รูปสินค้าดึงจาก Bucket product-images ชื่อไฟล์ = product_code)
 export interface Product {
   id: string
@@ -221,7 +225,7 @@ export interface Product {
   product_name_cn: string | null
   order_point: string | null
   product_category: string | null
-  product_type: string | null
+  product_type: ProductType
   rubber_code: string | null
   storage_location: string | null
   unit_cost: number | null
@@ -263,9 +267,14 @@ export interface InventoryPR {
   requested_at?: string | null
   approved_by?: string | null
   approved_at?: string | null
+  rejected_by?: string | null
+  rejected_at?: string | null
+  rejection_reason?: string | null
   note?: string | null
   created_at: string
   updated_at: string
+  /** joined */
+  inv_pr_items?: InventoryPRItem[]
 }
 
 export interface InventoryPRItem {
@@ -273,8 +282,13 @@ export interface InventoryPRItem {
   pr_id: string
   product_id: string
   qty: number
+  unit?: string | null
+  last_purchase_price?: number | null
+  estimated_price?: number | null
   note?: string | null
   created_at: string
+  /** joined product */
+  pr_products?: Product | null
 }
 
 export interface InventoryPO {
@@ -282,11 +296,25 @@ export interface InventoryPO {
   po_no: string
   pr_id?: string | null
   status: string
+  supplier_id?: string | null
+  supplier_name?: string | null
   ordered_by?: string | null
   ordered_at?: string | null
+  intl_shipping_method?: string | null
+  intl_shipping_weight?: number | null
+  intl_shipping_cbm?: number | null
+  intl_shipping_cost?: number | null
+  intl_shipping_currency?: string | null
+  intl_exchange_rate?: number | null
+  intl_shipping_cost_thb?: number | null
+  total_amount?: number | null
+  grand_total?: number | null
   note?: string | null
   created_at: string
   updated_at: string
+  /** joined */
+  inv_po_items?: InventoryPOItem[]
+  inv_pr?: { pr_no: string } | null
 }
 
 export interface InventoryPOItem {
@@ -295,8 +323,12 @@ export interface InventoryPOItem {
   product_id: string
   qty: number
   unit_price?: number | null
+  subtotal?: number | null
+  unit?: string | null
   note?: string | null
   created_at: string
+  /** joined product */
+  pr_products?: Product | null
 }
 
 export interface InventoryGR {
@@ -306,9 +338,16 @@ export interface InventoryGR {
   status: string
   received_by?: string | null
   received_at?: string | null
+  dom_shipping_company?: string | null
+  dom_shipping_cost?: number | null
+  dom_cost_per_piece?: number | null
+  shortage_note?: string | null
   note?: string | null
   created_at: string
   updated_at: string
+  /** joined */
+  inv_gr_items?: InventoryGRItem[]
+  inv_po?: { po_no: string } | null
 }
 
 export interface InventoryGRItem {
@@ -316,13 +355,58 @@ export interface InventoryGRItem {
   gr_id: string
   product_id: string
   qty_received: number
+  qty_ordered?: number | null
+  qty_shortage?: number | null
+  shortage_note?: string | null
   created_at: string
+  /** joined product */
+  pr_products?: Product | null
 }
+
+export interface InventorySample {
+  id: string
+  sample_no: string
+  status: string
+  received_by?: string | null
+  received_at?: string | null
+  supplier_name?: string | null
+  note?: string | null
+  created_at: string
+  updated_at: string
+  /** joined */
+  inv_sample_items?: InventorySampleItem[]
+}
+
+export interface InventorySampleItem {
+  id: string
+  sample_id: string
+  product_id?: string | null
+  product_name_manual?: string | null
+  qty: number
+  note?: string | null
+  created_at: string
+  /** joined product */
+  pr_products?: Product | null
+}
+
+export type AuditStatus = 'draft' | 'in_progress' | 'review' | 'completed' | 'closed'
+export type AuditType = 'full' | 'category' | 'location' | 'custom' | 'free_scan'
 
 export interface InventoryAudit {
   id: string
   audit_no: string
-  status: string
+  status: AuditStatus
+  audit_type?: AuditType | null
+  scope_filter?: Record<string, string[]> | null
+  assigned_to?: string[] | null
+  frozen_at?: string | null
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  adjustment_id?: string | null
+  location_accuracy_percent?: number | null
+  safety_stock_accuracy_percent?: number | null
+  total_location_mismatches?: number | null
+  total_safety_stock_mismatches?: number | null
   created_by?: string | null
   created_at: string
   completed_at?: string | null
@@ -339,7 +423,36 @@ export interface InventoryAuditItem {
   system_qty: number
   counted_qty: number
   variance: number
+  counted_by?: string | null
+  counted_at?: string | null
+  is_counted?: boolean
+  storage_location?: string | null
+  product_category?: string | null
+  system_location?: string | null
+  actual_location?: string | null
+  location_match?: boolean | null
+  system_safety_stock?: number | null
+  counted_safety_stock?: number | null
+  safety_stock_match?: boolean | null
   created_at: string
+  /** Joined product data */
+  pr_products?: {
+    product_code: string
+    product_name: string
+    storage_location?: string | null
+    product_category?: string | null
+  }
+}
+
+export interface InventoryAuditCountLog {
+  id: string
+  audit_item_id: string
+  log_type: 'count' | 'location' | 'safety_stock'
+  counted_qty?: number | null
+  actual_location?: string | null
+  counted_safety_stock?: number | null
+  counted_by?: string | null
+  counted_at: string
 }
 
 export interface InventoryAdjustment {
@@ -462,7 +575,9 @@ export interface SettingsReason {
   id: string
   reason_text: string
   fail_type?: 'Man' | 'Machine' | 'Material' | 'Method' | string
+  parent_id?: string | null
   created_at?: string
+  children?: SettingsReason[]
 }
 
 export interface InkType {

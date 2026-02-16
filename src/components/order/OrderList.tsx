@@ -162,8 +162,8 @@ export default function OrderList({
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
         }
-        // admin-pump: เห็นเฉพาะบิลของตัวเอง
-        if (user?.role === 'admin-pump') {
+        // admin-pump / admin-tr: เห็นเฉพาะบิลของตัวเอง
+        if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
           const adminName = user.username ?? user.email ?? ''
           if (adminName) query = query.eq('admin_user', adminName)
         }
@@ -199,8 +199,8 @@ export default function OrderList({
         if (dateTo) {
           query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
         }
-        // admin-pump: เห็นเฉพาะบิลของตัวเอง
-        if (user?.role === 'admin-pump') {
+        // admin-pump / admin-tr: เห็นเฉพาะบิลของตัวเอง
+        if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
           const adminName = user.username ?? user.email ?? ''
           if (adminName) query = query.eq('admin_user', adminName)
         }

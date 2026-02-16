@@ -201,7 +201,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         // ถ้า chat เปิดอยู่สำหรับ order นี้ → เพิ่ม message เข้า log ทันที + mark read
         if (chatOrder && chatOrder.id === row.order_id) {
           setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
-          if (user) {
+          if (user && !(user.role === 'superadmin' || user.role === 'admin')) {
             supabase.from('or_order_chat_reads').upsert({
               order_id: row.order_id,
               user_id: user.id,
@@ -307,14 +307,16 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     setStatusModal({ order, targetStatus, label })
   }
 
+  const isAdminRole = user?.role === 'superadmin' || user?.role === 'admin'
+
   async function openChat(order: Order) {
     setChatOrder(order)
     setChatMessage('')
     setChatLogs([])
     setChatLoading(true)
     try {
-      // Mark as read
-      if (user) {
+      // Mark as read (ข้าม superadmin/admin เพื่อไม่ให้ badge ลด)
+      if (user && !isAdminRole) {
         await supabase.from('or_order_chat_reads').upsert({
           order_id: order.id,
           user_id: user.id,
@@ -359,12 +361,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       if (error) throw error
       if (data) setChatLogs((prev) => [...prev, data as OrderChatLog])
       setChatMessage('')
-      // Mark as read after sending (sender has read everything)
-      await supabase.from('or_order_chat_reads').upsert({
-        order_id: chatOrder.id,
-        user_id: user.id,
-        last_read_at: new Date().toISOString(),
-      })
+      // Mark as read after sending (ข้าม superadmin/admin)
+      if (!isAdminRole) {
+        await supabase.from('or_order_chat_reads').upsert({
+          order_id: chatOrder.id,
+          user_id: user.id,
+          last_read_at: new Date().toISOString(),
+        })
+      }
     } catch (error: any) {
       console.error('Error sending chat:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))

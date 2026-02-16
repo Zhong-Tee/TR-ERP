@@ -16,6 +16,7 @@ import {
   searchHistoryByUid,
   fetchReportUsers,
   addReason,
+  addSubReason,
   deleteReason,
   updateReasonType,
   updateInkHex,
@@ -165,10 +166,20 @@ export default function QC() {
   const [skipQcConfirmWo, setSkipQcConfirmWo] = useState<string | null>(null)
   const [skipLogs, setSkipLogs] = useState<any[]>([])
 
+  // Sub-reason management (Settings)
+  const [addSubReasonParentId, setAddSubReasonParentId] = useState<string | null>(null)
+  const [newSubReason, setNewSubReason] = useState('')
+
+  // Delete reason confirm modal
+  const [deleteReasonModalOpen, setDeleteReasonModalOpen] = useState(false)
+  const [deleteReasonTarget, setDeleteReasonTarget] = useState<{ id: string; name: string } | null>(null)
+
   // Fail reason Modal (แทน window.prompt)
   const [failReasonModalOpen, setFailReasonModalOpen] = useState(false)
   const [failReasonContext, setFailReasonContext] = useState<'qc' | 'reject'>('qc')
   const [failReasonSelected, setFailReasonSelected] = useState<string | null>(null)
+  const [failReasonStep, setFailReasonStep] = useState<1 | 2>(1)
+  const [selectedParentReason, setSelectedParentReason] = useState<SettingsReason | null>(null)
 
   const filteredMenus = MENUS.filter((m) => (!m.adminOnly || isAdmin) && hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
 
@@ -407,12 +418,16 @@ export default function QC() {
   function openFailReasonModal(context: 'qc' | 'reject') {
     setFailReasonContext(context)
     setFailReasonSelected(null)
+    setFailReasonStep(1)
+    setSelectedParentReason(null)
     setFailReasonModalOpen(true)
   }
 
   function closeFailReasonModal() {
     setFailReasonModalOpen(false)
     setFailReasonSelected(null)
+    setFailReasonStep(1)
+    setSelectedParentReason(null)
   }
 
   function confirmFailReason() {
@@ -712,13 +727,33 @@ export default function QC() {
     }
   }
 
-  async function handleDeleteReason(id: string) {
-    if (!window.confirm('ลบเหตุผลนี้?')) return
+  async function handleAddSubReason(parentId: string, parentFailType: string) {
+    if (!newSubReason.trim()) return
     try {
-      await deleteReason(id)
+      await addSubReason(parentId, newSubReason.trim(), parentFailType)
+      setNewSubReason('')
+      setAddSubReasonParentId(null)
+      await loadSettings()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อย่อยไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  function handleDeleteReason(id: string, name?: string) {
+    setDeleteReasonTarget({ id, name: name || '' })
+    setDeleteReasonModalOpen(true)
+  }
+
+  async function confirmDeleteReason() {
+    if (!deleteReasonTarget) return
+    try {
+      await deleteReason(deleteReasonTarget.id)
       await loadSettings()
     } catch (e: any) {
       alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setDeleteReasonModalOpen(false)
+      setDeleteReasonTarget(null)
     }
   }
 
@@ -1830,28 +1865,80 @@ export default function QC() {
                 </div>
                 <ul className="divide-y border rounded-xl overflow-hidden">
                   {reasons.map((r) => (
-                    <li key={r.id} className="py-3 px-4 flex justify-between items-center bg-white hover:bg-gray-50 gap-2">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        <span className="font-bold truncate">{r.reason_text}</span>
+                    <li key={r.id} className="bg-white">
+                      <div className="py-3 px-4 flex justify-between items-center hover:bg-gray-50 gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="font-bold truncate">{r.reason_text}</span>
+                          {r.children && r.children.length > 0 && (
+                            <span className="text-xs text-gray-400">({r.children.length} หัวข้อย่อย)</span>
+                          )}
+                        </div>
+                        <select
+                          value={r.fail_type || 'Man'}
+                          onChange={(e) => handleUpdateReasonType(r.id, e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
+                          className={`text-xs px-2 py-1 rounded-full border-0 cursor-pointer font-semibold shrink-0 ${
+                            r.fail_type === 'Machine' ? 'bg-orange-100 text-orange-700' :
+                            r.fail_type === 'Material' ? 'bg-green-100 text-green-700' :
+                            r.fail_type === 'Method' ? 'bg-purple-100 text-purple-700' :
+                            'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          <option value="Man">Man</option>
+                          <option value="Machine">Machine</option>
+                          <option value="Material">Material</option>
+                          <option value="Method">Method</option>
+                        </select>
+                        <button
+                          onClick={() => { setAddSubReasonParentId(addSubReasonParentId === r.id ? null : r.id); setNewSubReason('') }}
+                          className="text-blue-400 hover:text-blue-600 shrink-0" title="เพิ่มหัวข้อย่อย"
+                        >
+                          <i className="fas fa-plus-circle"></i>
+                        </button>
+                        <button onClick={() => handleDeleteReason(r.id, r.reason_text)} className="text-red-400 hover:text-red-600 shrink-0">
+                          <i className="fas fa-trash-alt"></i>
+                        </button>
                       </div>
-                      <select
-                        value={r.fail_type || 'Man'}
-                        onChange={(e) => handleUpdateReasonType(r.id, e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
-                        className={`text-xs px-2 py-1 rounded-full border-0 cursor-pointer font-semibold shrink-0 ${
-                          r.fail_type === 'Machine' ? 'bg-orange-100 text-orange-700' :
-                          r.fail_type === 'Material' ? 'bg-green-100 text-green-700' :
-                          r.fail_type === 'Method' ? 'bg-purple-100 text-purple-700' :
-                          'bg-blue-100 text-blue-700'
-                        }`}
-                      >
-                        <option value="Man">Man</option>
-                        <option value="Machine">Machine</option>
-                        <option value="Material">Material</option>
-                        <option value="Method">Method</option>
-                      </select>
-                      <button onClick={() => handleDeleteReason(r.id)} className="text-red-400 hover:text-red-600 shrink-0">
-                        <i className="fas fa-trash-alt"></i>
-                      </button>
+                      {/* Sub-reasons */}
+                      {r.children && r.children.length > 0 && (
+                        <ul className="ml-8 mr-4 mb-2 border-l-2 border-blue-200">
+                          {r.children.map((sub) => (
+                            <li key={sub.id} className="py-2 px-4 flex items-center gap-2 text-sm hover:bg-blue-50 rounded-r">
+                              <span className="text-blue-400">↳</span>
+                              <span className="flex-1 truncate">{sub.reason_text}</span>
+                              <button onClick={() => handleDeleteReason(sub.id, sub.reason_text)} className="text-red-300 hover:text-red-500 shrink-0">
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {/* Inline add sub-reason form */}
+                      {addSubReasonParentId === r.id && (
+                        <div className="ml-8 mr-4 mb-3 flex gap-2 items-center">
+                          <span className="text-blue-400">↳</span>
+                          <input
+                            type="text"
+                            value={newSubReason}
+                            onChange={(e) => setNewSubReason(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleAddSubReason(r.id, r.fail_type || 'Man') }}
+                            placeholder="หัวข้อย่อยใหม่..."
+                            className="border rounded px-3 py-1.5 text-sm flex-1"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => handleAddSubReason(r.id, r.fail_type || 'Man')}
+                            className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 font-bold"
+                          >
+                            เพิ่ม
+                          </button>
+                          <button
+                            onClick={() => { setAddSubReasonParentId(null); setNewSubReason('') }}
+                            className="px-3 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-100"
+                          >
+                            ยกเลิก
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                   {reasons.length === 0 && <li className="py-8 text-center text-gray-400">ยังไม่มีเหตุผล — เพิ่มในช่องด้านบน</li>}
@@ -2036,41 +2123,101 @@ export default function QC() {
         </div>
       </Modal>
 
-      {/* Fail reason Modal — เลือกเหตุผล Fail เป็นตัวเลือก */}
+      {/* Fail reason Modal — 2-step: เลือกเหตุผลหลัก → เลือกหัวข้อย่อย (ถ้ามี) */}
       <Modal
         open={failReasonModalOpen}
         onClose={closeFailReasonModal}
         closeOnBackdropClick
         contentClassName="max-w-md"
       >
-        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800">
-          เลือกเหตุผล Fail
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          {failReasonStep === 2 && (
+            <button
+              type="button"
+              onClick={() => { setFailReasonStep(1); setSelectedParentReason(null); setFailReasonSelected(null) }}
+              className="text-blue-500 hover:text-blue-700"
+            >
+              <i className="fas fa-arrow-left"></i>
+            </button>
+          )}
+          <span>{failReasonStep === 1 ? 'เลือกเหตุผล Fail' : `${selectedParentReason?.reason_text} — เลือกหัวข้อย่อย`}</span>
         </div>
         <div className="p-4 space-y-3">
-          {reasons.length > 0 ? (
+          {failReasonStep === 1 && (
             <>
-              <p className="text-sm text-gray-600 mb-2">เลือกเหตุผลจากรายการด้านล่าง</p>
+              {reasons.length > 0 ? (
+                <>
+                  <p className="text-sm text-gray-600 mb-2">เลือกเหตุผลจากรายการด้านล่าง</p>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {reasons.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => {
+                          if (r.children && r.children.length > 0) {
+                            setSelectedParentReason(r)
+                            setFailReasonStep(2)
+                            setFailReasonSelected(null)
+                          } else {
+                            setFailReasonSelected(r.reason_text)
+                          }
+                        }}
+                        className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors flex items-center justify-between ${
+                          failReasonSelected === r.reason_text
+                            ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <span>{r.reason_text}</span>
+                        {r.children && r.children.length > 0 && (
+                          <span className="text-xs text-gray-400 flex items-center gap-1">
+                            {r.children.length} ย่อย <i className="fas fa-chevron-right text-[10px]"></i>
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">ยังไม่มีเหตุผลใน Settings กรุณาเพิ่มก่อนใช้งาน</p>
+              )}
+            </>
+          )}
+          {failReasonStep === 2 && selectedParentReason && (
+            <>
+              <p className="text-sm text-gray-600 mb-2">เลือกหัวข้อย่อยของ <strong>{selectedParentReason.reason_text}</strong></p>
               <div className="space-y-1 max-h-64 overflow-y-auto">
-                {reasons.map((r) => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => {
-                      setFailReasonSelected(r.reason_text)
-                    }}
-                    className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
-                      failReasonSelected === r.reason_text
-                        ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    {r.reason_text}
-                  </button>
-                ))}
+                {/* ตัวเลือก: เลือก parent โดยไม่ระบุย่อย */}
+                <button
+                  type="button"
+                  onClick={() => setFailReasonSelected(selectedParentReason.reason_text)}
+                  className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
+                    failReasonSelected === selectedParentReason.reason_text
+                      ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {selectedParentReason.reason_text} (ไม่ระบุรายละเอียด)
+                </button>
+                {selectedParentReason.children?.map((sub) => {
+                  const combined = `${selectedParentReason.reason_text} > ${sub.reason_text}`
+                  return (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setFailReasonSelected(combined)}
+                      className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
+                        failReasonSelected === combined
+                          ? 'border-blue-500 bg-blue-50 text-blue-800 font-medium'
+                          : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span className="text-blue-400 mr-1">↳</span> {sub.reason_text}
+                    </button>
+                  )
+                })}
               </div>
             </>
-          ) : (
-            <p className="text-sm text-gray-600">ยังไม่มีเหตุผลใน Settings กรุณาเพิ่มก่อนใช้งาน</p>
           )}
         </div>
         <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
@@ -2088,6 +2235,39 @@ export default function QC() {
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >
             ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Delete reason confirm Modal */}
+      <Modal
+        open={deleteReasonModalOpen}
+        onClose={() => { setDeleteReasonModalOpen(false); setDeleteReasonTarget(null) }}
+        closeOnBackdropClick
+        contentClassName="max-w-sm"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          <i className="fas fa-exclamation-triangle text-red-500"></i>
+          <span>ยืนยันการลบ</span>
+        </div>
+        <div className="p-5 text-sm text-gray-700">
+          <p>ต้องการลบเหตุผล <strong className="text-red-600">"{deleteReasonTarget?.name}"</strong> หรือไม่?</p>
+          <p className="text-xs text-gray-400 mt-2">หากเป็นหัวข้อหลักที่มีหัวข้อย่อย หัวข้อย่อยจะถูกลบทั้งหมด</p>
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => { setDeleteReasonModalOpen(false); setDeleteReasonTarget(null) }}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmDeleteReason}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium"
+          >
+            ลบ
           </button>
         </div>
       </Modal>

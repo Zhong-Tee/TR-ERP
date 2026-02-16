@@ -110,7 +110,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         setNewChatCount((prev) => prev + 1)
         if (chatIssue && chatIssue.id === row.issue_id) {
           setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
-          if (user) {
+          if (user && !(user.role === 'superadmin' || user.role === 'admin')) {
             supabase.from('or_issue_reads').upsert({
               issue_id: row.issue_id,
               user_id: user.id,
@@ -183,14 +183,15 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
         creatorName: creatorMap.get(i.created_by),
       }))
-      // admin-pump: เห็นเฉพาะ issue ของบิลตัวเอง
-      // production: เห็นเฉพาะ issue ที่ตัวเองสร้าง
-      // role อื่นๆ: เห็นทั้งหมด
-      if (user?.role === 'admin-pump') {
+      // admin-pump / admin-tr: เห็นเฉพาะ issue ของบิลตัวเอง
+      // production: เห็นเฉพาะ issue ที่ตัวเองสร้าง หรือเป็นเจ้าของบิล
+      // superadmin / admin: เห็นทั้งหมด
+      // role อื่นๆ: ไม่เห็นเลย
+      if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
         const me = user.username || user.email || ''
         withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === me)
       } else if (user?.role === 'production') {
-        withOrder = withOrder.filter((i) => i.created_by === user.id)
+        withOrder = withOrder.filter((i) => i.created_by === user.id || (i.order?.admin_user || '') === (user.username || user.email || ''))
       }
 
       const onList = withOrder.filter((i) => i.status === 'On')
@@ -237,14 +238,17 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     }
   }
 
+  const isAdminRole = user?.role === 'superadmin' || user?.role === 'admin'
+
   async function openChat(issue: IssueWithOrder) {
     setChatIssue(issue)
     setChatMessage('')
     setChatLogs([])
-    window.dispatchEvent(new CustomEvent('issue-chat-read'))
+    if (!isAdminRole) window.dispatchEvent(new CustomEvent('issue-chat-read'))
     setChatLoading(true)
     try {
-      if (user) {
+      // Mark as read (ข้าม superadmin/admin เพื่อไม่ให้ badge ลด)
+      if (user && !isAdminRole) {
         await supabase.from('or_issue_reads').upsert({
           issue_id: issue.id,
           user_id: user.id,

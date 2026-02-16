@@ -121,7 +121,7 @@ const menuItems: MenuItem[] = [
     label: 'สั่งซื้อ',
     icon: <FiShoppingCart className="w-6 h-6" />,
     path: '/purchase/pr',
-    roles: ['superadmin', 'admin', 'admin-tr', 'store'],
+    roles: ['superadmin', 'admin', 'admin-tr', 'store', 'account'],
   },
   {
     key: 'sales-reports',
@@ -145,17 +145,22 @@ interface SidebarProps {
 }
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
-const MENU_KEYS_WITH_COUNT = ['admin-qc', 'account', 'wms', 'qc', 'packing', 'warehouse'] as const
+const MENU_KEYS_WITH_COUNT = ['orders', 'admin-qc', 'account', 'wms', 'qc', 'packing', 'warehouse'] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
-  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
   const { menuAccess: dbMenuAccess } = useMenuAccess()
 
   const loadCounts = useCallback(async () => {
     try {
-      const [qcRes, qcRejectRes, qcWoList, refundRes, taxRes, cashRes, wmsResult, productsRes, balancesRes] = await Promise.all([
+      const [ordersRes, qcRes, qcRejectRes, qcWoList, refundRes, taxRes, cashRes, wmsResult, productsRes, balancesRes] = await Promise.all([
+        // ── Orders: นับออเดอร์ที่รอดำเนินการ (รอลงข้อมูล + ลงข้อมูลผิด + ตรวจสอบไม่ผ่าน) ──
+        supabase
+          .from('or_orders')
+          .select('id', { count: 'exact', head: true })
+          .in('status', ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน']),
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
@@ -234,6 +239,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       } catch (_) { /* ignore */ }
 
       setMenuCounts({
+        orders: ordersRes.count ?? 0,
         'admin-qc': qcRes.count ?? 0,
         account: accountTotal,
         wms: wmsResult.total,
@@ -291,7 +297,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account, wms, packing เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {
-    if (['/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse'].includes(location.pathname)) {
+    if (['/orders', '/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse'].includes(location.pathname)) {
       loadCounts()
     }
   }, [location.pathname, loadCounts])

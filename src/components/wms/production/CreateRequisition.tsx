@@ -4,6 +4,7 @@ import { supabase } from '../../../lib/supabase'
 import BarcodeScanner from './BarcodeScanner'
 import { getProductImageUrl } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
+import type { ProductType } from '../../../types'
 
 export default function CreateRequisition() {
   const { user } = useAuthContext()
@@ -20,6 +21,7 @@ export default function CreateRequisition() {
   const [loadingTopics, setLoadingTopics] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
   const [selectedProductCode, setSelectedProductCode] = useState('')
+  const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   useEffect(() => {
@@ -27,6 +29,13 @@ export default function CreateRequisition() {
     loadAllProducts()
     loadRequisitionTopics()
   }, [])
+
+  useEffect(() => {
+    loadAllProducts()
+    setProducts([])
+    setSearchTerm('')
+    setSelectedProductCode('')
+  }, [productTypeFilter])
 
   const generateRequisitionId = async () => {
     const date = new Date()
@@ -65,6 +74,7 @@ export default function CreateRequisition() {
         .from('pr_products')
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
+        .eq('product_type', productTypeFilter)
         .order('product_name', { ascending: true })
 
       if (error) throw error
@@ -88,6 +98,7 @@ export default function CreateRequisition() {
         .from('pr_products')
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
+        .eq('product_type', productTypeFilter)
         .or(`product_code.ilike.%${searchTerm}%,product_name.ilike.%${searchTerm}%`)
         .limit(20)
 
@@ -230,6 +241,31 @@ export default function CreateRequisition() {
       </div>
 
       <div className="bg-slate-800 p-4 rounded-2xl">
+        <label className="block text-sm font-bold text-gray-300 mb-2">ประเภทสินค้า</label>
+        <div className="flex gap-2 mb-3">
+          <button
+            type="button"
+            onClick={() => setProductTypeFilter('FG')}
+            className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${
+              productTypeFilter === 'FG'
+                ? 'bg-green-600 text-white shadow-lg'
+                : 'bg-slate-700 text-gray-400 hover:bg-slate-600'
+            }`}
+          >
+            FG สินค้าสำเร็จรูป
+          </button>
+          <button
+            type="button"
+            onClick={() => setProductTypeFilter('RM')}
+            className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${
+              productTypeFilter === 'RM'
+                ? 'bg-orange-600 text-white shadow-lg'
+                : 'bg-slate-700 text-gray-400 hover:bg-slate-600'
+            }`}
+          >
+            RM วัตถุดิบ
+          </button>
+        </div>
         <label className="block text-sm font-bold text-gray-300 mb-2">เลือกรายการสินค้า</label>
         <select
           value={selectedProductCode}

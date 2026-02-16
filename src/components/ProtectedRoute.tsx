@@ -51,6 +51,15 @@ export default function ProtectedRoute({
     return <Navigate to="/login" replace />
   }
 
+  // Auditor: อนุญาตเฉพาะหน้า audit ที่ได้รับมอบหมาย ข้ามการตรวจ menuAccess
+  if (user.role === 'auditor') {
+    const isAuditPath = location.pathname.startsWith('/warehouse/audit')
+    if (!isAuditPath || (allowedRoles && !allowedRoles.includes('auditor'))) {
+      return <Navigate to="/" replace />
+    }
+    return <>{children}</>
+  }
+
   const menuKey = pathToMenuKey(location.pathname)
 
   if (menuKey && menuAccess !== null) {

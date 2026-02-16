@@ -47,6 +47,15 @@ export default function WarehouseAdjust() {
   const [updating, setUpdating] = useState<string | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
 
+  // Notification modal state
+  const [notifyModal, setNotifyModal] = useState<{ open: boolean; type: 'success' | 'error' | 'warning'; title: string; message: string }>({
+    open: false, type: 'success', title: '', message: '',
+  })
+
+  function showNotify(type: 'success' | 'error' | 'warning', title: string, message: string = '') {
+    setNotifyModal({ open: true, type, title, message })
+  }
+
   useEffect(() => {
     loadAll()
   }, [])
@@ -202,7 +211,7 @@ export default function WarehouseAdjust() {
       setCreateOpen(true)
     } catch (e: any) {
       console.error('Import error:', e)
-      alert('นำเข้าไม่สำเร็จ: ' + (e?.message || e))
+      showNotify('error', 'นำเข้าไม่สำเร็จ', e?.message || String(e))
     } finally {
       importInputRef.current && (importInputRef.current.value = '')
     }
@@ -210,7 +219,7 @@ export default function WarehouseAdjust() {
 
   async function createAdjustment() {
     if (!note.trim()) {
-      alert('กรุณากรอกหัวข้อการปรับ')
+      showNotify('warning', 'กรุณากรอกหัวข้อการปรับ')
       return
     }
     // กรองรายการที่มีสินค้า และมีการเปลี่ยนแปลง (สต๊อค, safety stock, หรือ order_point)
@@ -225,7 +234,7 @@ export default function WarehouseAdjust() {
       return qtyChanged || safetyChanged || orderPointChanged
     })
     if (!validItems.length) {
-      alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการที่มีค่าเปลี่ยนแปลง')
+      showNotify('warning', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการที่มีค่าเปลี่ยนแปลง')
       return
     }
     setSaving(true)
@@ -264,10 +273,10 @@ export default function WarehouseAdjust() {
       setNote('')
       setCreateOpen(false)
       await loadAll()
-      alert(`สร้างใบปรับสต๊อคเรียบร้อย (${validItems.length} รายการ) — รออนุมัติ`)
+      showNotify('success', 'สร้างใบปรับสต๊อคเรียบร้อย', `${validItems.length} รายการ — รออนุมัติ`)
     } catch (e: any) {
       console.error('Create adjustment failed:', e)
-      alert('สร้างใบปรับสต๊อคไม่สำเร็จ: ' + (e?.message || e))
+      showNotify('error', 'สร้างใบปรับสต๊อคไม่สำเร็จ', e?.message || String(e))
     } finally {
       setSaving(false)
     }
@@ -332,10 +341,10 @@ export default function WarehouseAdjust() {
       await loadAll()
       // แจ้ง Sidebar ให้อัปเดตจำนวนสินค้าต่ำกว่าจุดสั่งซื้อ
       window.dispatchEvent(new Event('sidebar-refresh-counts'))
-      alert('อนุมัติการปรับสต๊อคเรียบร้อย')
+      showNotify('success', 'อนุมัติการปรับสต๊อคเรียบร้อย')
     } catch (e: any) {
       console.error('Approve adjustment failed:', e)
-      alert('อนุมัติไม่สำเร็จ: ' + (e?.message || e))
+      showNotify('error', 'อนุมัติไม่สำเร็จ', e?.message || String(e))
     } finally {
       setUpdating(null)
     }
@@ -582,6 +591,50 @@ export default function WarehouseAdjust() {
               ปิด
             </button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Notification Modal */}
+      <Modal open={notifyModal.open} onClose={() => setNotifyModal((p) => ({ ...p, open: false }))} closeOnBackdropClick contentClassName="max-w-sm">
+        <div className="p-6 text-center">
+          <div className={`mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-4 ${
+            notifyModal.type === 'success' ? 'bg-green-100' : notifyModal.type === 'error' ? 'bg-red-100' : 'bg-amber-100'
+          }`}>
+            {notifyModal.type === 'success' && (
+              <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {notifyModal.type === 'error' && (
+              <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            {notifyModal.type === 'warning' && (
+              <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          </div>
+          <h3 className={`text-lg font-bold mb-1 ${
+            notifyModal.type === 'success' ? 'text-green-800' : notifyModal.type === 'error' ? 'text-red-800' : 'text-amber-800'
+          }`}>
+            {notifyModal.title}
+          </h3>
+          {notifyModal.message && (
+            <p className="text-sm text-gray-600 mt-1">{notifyModal.message}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => setNotifyModal((p) => ({ ...p, open: false }))}
+            className={`mt-5 px-6 py-2.5 rounded-xl font-semibold text-white transition-colors ${
+              notifyModal.type === 'success' ? 'bg-green-600 hover:bg-green-700'
+                : notifyModal.type === 'error' ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-amber-500 hover:bg-amber-600'
+            }`}
+          >
+            ตกลง
+          </button>
         </div>
       </Modal>
     </div>

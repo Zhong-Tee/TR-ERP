@@ -1,7 +1,7 @@
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 
@@ -20,6 +20,7 @@ const PURCHASE_ACCESS_MAP: Record<string, string> = {
   '/purchase/pr': 'purchase-pr',
   '/purchase/po': 'purchase-po',
   '/purchase/gr': 'purchase-gr',
+  '/purchase/sample': 'purchase-sample',
 }
 
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
@@ -32,6 +33,40 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [menuCount, setMenuCount] = useState<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
+
+  const loadBelowOrderPoint = useCallback(async () => {
+    try {
+      const [productsRes, balancesRes] = await Promise.all([
+        supabase.from('pr_products').select('id, order_point').eq('is_active', true).not('order_point', 'is', null),
+        supabase.from('inv_stock_balances').select('product_id, on_hand'),
+      ])
+      const balMap: Record<string, number> = {}
+      ;(balancesRes.data || []).forEach((r: any) => { balMap[r.product_id] = Number(r.on_hand || 0) })
+      const count = (productsRes.data || []).filter((p: any) => {
+        const op = p.order_point != null ? Number(String(p.order_point).replace(/,/g, '').trim()) : null
+        if (op === null || !Number.isFinite(op) || op <= 0) return false
+        return (balMap[p.id] ?? 0) < op
+      }).length
+      setBelowOrderPointCount(count)
+    } catch (_) { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    loadBelowOrderPoint()
+    window.addEventListener('sidebar-refresh-counts', loadBelowOrderPoint)
+
+    const channel = supabase
+      .channel('topbar-stock-reorder')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_stock_balances' }, () => loadBelowOrderPoint())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pr_products' }, () => loadBelowOrderPoint())
+      .subscribe()
+
+    return () => {
+      window.removeEventListener('sidebar-refresh-counts', loadBelowOrderPoint)
+      supabase.removeChannel(channel)
+    }
+  }, [loadBelowOrderPoint])
 
   // รับตัวเลขจำนวนจากหน้าลูก (เช่น AdminQC)
   useEffect(() => {
@@ -84,54 +119,151 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }
 
+  // Role ที่เห็นแชท/issue
+  const CHAT_ROLES = ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'production']
+  const ADMIN_ROLES = ['superadmin', 'admin']
+  const OWNER_ROLES = ['admin-tr', 'admin-pump']
+  const canSeeChat = CHAT_ROLES.includes(user?.role || '')
+  const isAdminRole = ADMIN_ROLES.includes(user?.role || '')
+
   useEffect(() => {
+    if (!canSeeChat) {
+      setIssueOnCount(0)
+      setNewChatCount(0)
+      return
+    }
+
     const loadIssueCounts = async () => {
       try {
-        const [onRes] = await Promise.all([
-          supabase.from('or_issues').select('id', { count: 'exact', head: true }).eq('status', 'On'),
-        ])
-        setIssueOnCount(onRes.count ?? 0)
+        // Issue count — RLS จะกรองให้ตาม role อัตโนมัติ
+        const { count: onCount } = await supabase
+          .from('or_issues')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'On')
+        setIssueOnCount(onCount ?? 0)
         await loadAllUnreadChatCount()
       } catch (error) {
         console.error('Error loading issue counts:', error)
       }
     }
+
     const loadAllUnreadChatCount = async () => {
       if (!user) return
+      // Role อื่นที่ไม่ได้อยู่ใน CHAT_ROLES → ไม่แสดง badge
+      if (!canSeeChat) { setNewChatCount(0); return }
+
       try {
+        const role = user.role || ''
+        const me = user.username || user.email || ''
+
+        // === ดึง order_ids ที่เกี่ยวข้องกับ user (สำหรับ owner roles) ===
+        let myOrderIds: string[] | null = null
+        let myIssueIds: string[] | null = null
+
+        if (OWNER_ROLES.includes(role)) {
+          const { data: myOrders } = await supabase
+            .from('or_orders')
+            .select('id')
+            .eq('admin_user', me)
+          myOrderIds = (myOrders || []).map((o: any) => o.id)
+
+          if (myOrderIds.length > 0) {
+            const { data: myIssues } = await supabase
+              .from('or_issues')
+              .select('id')
+              .in('order_id', myOrderIds)
+            myIssueIds = (myIssues || []).map((i: any) => i.id)
+          } else {
+            myIssueIds = []
+          }
+        } else if (role === 'production') {
+          const { data: createdIssues } = await supabase
+            .from('or_issues')
+            .select('id, order_id')
+          const myCreated = (createdIssues || []).filter((i: any) => i.created_by === user.id)
+          myIssueIds = myCreated.map((i: any) => i.id)
+          const issueOrderIds = myCreated.map((i: any) => i.order_id).filter(Boolean)
+          const { data: ownedOrders } = await supabase
+            .from('or_orders')
+            .select('id')
+            .eq('admin_user', me)
+          const ownedIds = (ownedOrders || []).map((o: any) => o.id)
+          myOrderIds = Array.from(new Set([...issueOrderIds, ...ownedIds]))
+          // Also include issues from owned orders
+          if (ownedIds.length > 0) {
+            const { data: ownedIssues } = await supabase
+              .from('or_issues')
+              .select('id')
+              .in('order_id', ownedIds)
+            const ownedIssueIds = (ownedIssues || []).map((i: any) => i.id)
+            myIssueIds = Array.from(new Set([...myIssueIds, ...ownedIssueIds]))
+          }
+        }
+        // admin/superadmin: myOrderIds = null → ไม่กรอง (เห็นทั้งหมด)
+
         // === Issue Chat unread ===
-        const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([
-          supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
-          supabase.from('or_issue_messages').select('issue_id, created_at'),
-        ])
-        const issueReadMap = new Map(
-          (issueReads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
-        )
         let issueTotal = 0
-        ;(issueMessages || []).forEach((m: { issue_id: string; created_at: string }) => {
-          const lastRead = issueReadMap.get(m.issue_id) ?? 0
-          if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
-        })
+        const shouldCountIssueChat = myIssueIds === null || myIssueIds.length > 0
+        if (shouldCountIssueChat) {
+          let issueReadsQ = supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id)
+          let issueMessagesQ = supabase.from('or_issue_messages').select('issue_id, created_at')
+          if (myIssueIds) issueMessagesQ = issueMessagesQ.in('issue_id', myIssueIds)
+
+          const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([issueReadsQ, issueMessagesQ])
+          // superadmin/admin: ไม่ใช้ read map → นับ unread ทั้งหมด (badge ไม่ลดเมื่ออ่าน)
+          if (isAdminRole) {
+            const readMap = new Map(
+              (issueReads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
+            )
+            ;(issueMessages || []).forEach((m: any) => {
+              const lastRead = readMap.get(m.issue_id) ?? 0
+              if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
+            })
+          } else {
+            const readMap = new Map(
+              (issueReads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
+            )
+            ;(issueMessages || []).forEach((m: any) => {
+              const lastRead = readMap.get(m.issue_id) ?? 0
+              if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
+            })
+          }
+        }
 
         // === Order Chat unread ===
-        const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([
-          supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
-          supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false),
-        ])
-        const orderReadMap = new Map(
-          (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
-        )
         let orderTotal = 0
-        ;(orderMessages || []).forEach((m: { order_id: string; created_at: string }) => {
-          const lastRead = orderReadMap.get(m.order_id) ?? 0
-          if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
-        })
+        const shouldCountOrderChat = myOrderIds === null || myOrderIds.length > 0
+        if (shouldCountOrderChat) {
+          let orderReadsQ = supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id)
+          let orderMessagesQ = supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false)
+          if (myOrderIds) orderMessagesQ = orderMessagesQ.in('order_id', myOrderIds)
+
+          const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([orderReadsQ, orderMessagesQ])
+          if (isAdminRole) {
+            const readMap = new Map(
+              (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
+            )
+            ;(orderMessages || []).forEach((m: any) => {
+              const lastRead = readMap.get(m.order_id) ?? 0
+              if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
+            })
+          } else {
+            const readMap = new Map(
+              (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
+            )
+            ;(orderMessages || []).forEach((m: any) => {
+              const lastRead = readMap.get(m.order_id) ?? 0
+              if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
+            })
+          }
+        }
 
         setNewChatCount(issueTotal + orderTotal)
       } catch (error) {
         console.error('Error loading unread chat count:', error)
       }
     }
+
     loadIssueCounts()
     const channel = supabase
       .channel('topbar-issue-counts')
@@ -142,40 +274,61 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [user])
+  }, [user, canSeeChat, isAdminRole])
 
   useEffect(() => {
+    if (!canSeeChat) return
     const onChatRead = () => {
-      if (!user) return
+      if (!user || isAdminRole) return
       ;(async () => {
         try {
-          // === Issue Chat unread ===
-          const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([
-            supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
-            supabase.from('or_issue_messages').select('issue_id, created_at'),
-          ])
-          const issueReadMap = new Map(
-            (issueReads || []).map((r: { issue_id: string; last_read_at: string }) => [r.issue_id, new Date(r.last_read_at).getTime()])
-          )
-          let issueTotal = 0
-          ;(issueMessages || []).forEach((m: { issue_id: string; created_at: string }) => {
-            const lastRead = issueReadMap.get(m.issue_id) ?? 0
-            if (new Date(m.created_at).getTime() > lastRead) issueTotal += 1
-          })
+          const role = user.role || ''
+          const me = user.username || user.email || ''
 
-          // === Order Chat unread ===
-          const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([
-            supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
-            supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false),
-          ])
-          const orderReadMap = new Map(
-            (orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
-          )
+          let myOrderIds: string[] | null = null
+          let myIssueIds: string[] | null = null
+
+          if (OWNER_ROLES.includes(role)) {
+            const { data: myOrders } = await supabase.from('or_orders').select('id').eq('admin_user', me)
+            myOrderIds = (myOrders || []).map((o: any) => o.id)
+            if (myOrderIds.length > 0) {
+              const { data: myIssues } = await supabase.from('or_issues').select('id').in('order_id', myOrderIds)
+              myIssueIds = (myIssues || []).map((i: any) => i.id)
+            } else {
+              myIssueIds = []
+            }
+          } else if (role === 'production') {
+            const { data: allIssues } = await supabase.from('or_issues').select('id, order_id, created_by')
+            const myCreated = (allIssues || []).filter((i: any) => i.created_by === user.id)
+            myIssueIds = myCreated.map((i: any) => i.id)
+            myOrderIds = myCreated.map((i: any) => i.order_id).filter(Boolean)
+          }
+
+          // Issue Chat unread
+          let issueTotal = 0
+          if (myIssueIds === null || myIssueIds.length > 0) {
+            let issueReadsQ = supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id)
+            let issueMessagesQ = supabase.from('or_issue_messages').select('issue_id, created_at')
+            if (myIssueIds) issueMessagesQ = issueMessagesQ.in('issue_id', myIssueIds)
+            const [{ data: issueReads }, { data: issueMessages }] = await Promise.all([issueReadsQ, issueMessagesQ])
+            const readMap = new Map((issueReads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()]))
+            ;(issueMessages || []).forEach((m: any) => {
+              if (new Date(m.created_at).getTime() > (readMap.get(m.issue_id) ?? 0)) issueTotal += 1
+            })
+          }
+
+          // Order Chat unread
           let orderTotal = 0
-          ;(orderMessages || []).forEach((m: { order_id: string; created_at: string }) => {
-            const lastRead = orderReadMap.get(m.order_id) ?? 0
-            if (new Date(m.created_at).getTime() > lastRead) orderTotal += 1
-          })
+          if (myOrderIds === null || myOrderIds.length > 0) {
+            let orderReadsQ = supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id)
+            let orderMessagesQ = supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false)
+            if (myOrderIds) orderMessagesQ = orderMessagesQ.in('order_id', myOrderIds)
+            const [{ data: orderReads }, { data: orderMessages }] = await Promise.all([orderReadsQ, orderMessagesQ])
+            const readMap = new Map((orderReads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()]))
+            ;(orderMessages || []).forEach((m: any) => {
+              if (new Date(m.created_at).getTime() > (readMap.get(m.order_id) ?? 0)) orderTotal += 1
+            })
+          }
 
           setNewChatCount(issueTotal + orderTotal)
         } catch (error) {
@@ -189,7 +342,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       window.removeEventListener('issue-chat-read', onChatRead)
       window.removeEventListener('order-chat-read', onChatRead)
     }
-  }, [user])
+  }, [user, canSeeChat, isAdminRole])
 
   const issueTabs = [
     { key: 'on', label: `New Issue (${issueOnCount})` },
@@ -227,13 +380,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse', label: 'คลังสินค้า' },
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
-    { path: '/warehouse/returns', label: 'รับสินค้าตีกลับ' },
   ].filter((tab) => hasAccess(WAREHOUSE_ACCESS_MAP[tab.path] || tab.path))
 
   const purchaseTabs = [
     { path: '/purchase/pr', label: 'PR (ใบขอซื้อ)' },
     { path: '/purchase/po', label: 'PO (ใบสั่งซื้อ)' },
     { path: '/purchase/gr', label: 'GR (ใบรับสินค้า)' },
+    { path: '/purchase/sample', label: 'สินค้าตัวอย่าง' },
   ].filter((tab) => hasAccess(PURCHASE_ACCESS_MAP[tab.path] || tab.path))
 
   const activeSubTabs = location.pathname.startsWith('/warehouse')
@@ -277,7 +430,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
             )}
           </h2>
           <div className="flex items-center gap-2">
-            {issueTabs.map((tab) => (
+            {canSeeChat && issueTabs.map((tab) => (
               <button
                 key={tab.key}
                 type="button"
@@ -321,17 +474,25 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {activeSubTabs.map((tab) => {
                   const isActive = location.pathname === tab.path
+                  const badge = tab.path === '/warehouse' && belowOrderPointCount > 0
+                    ? belowOrderPointCount
+                    : null
                   return (
                     <Link
                       key={tab.path}
                       to={tab.path}
-                      className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                      className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors flex items-center gap-1.5 ${
                         isActive
                           ? 'border-blue-500 text-blue-600'
                           : 'border-transparent text-gray-500 hover:text-blue-600'
                       }`}
                     >
                       {tab.label}
+                      {badge !== null && (
+                        <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-orange-500 text-white">
+                          {badge > 99 ? '99+' : badge}
+                        </span>
+                      )}
                     </Link>
                   )
                 })}
@@ -343,6 +504,15 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                   className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm whitespace-nowrap flex-shrink-0"
                 >
                   + สร้าง PR
+                </button>
+              )}
+              {location.pathname === '/purchase/sample' && (
+                <button
+                  type="button"
+                  onClick={() => window.dispatchEvent(new CustomEvent('purchase-sample-create'))}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm whitespace-nowrap flex-shrink-0"
+                >
+                  + รับสินค้าตัวอย่าง
                 </button>
               )}
             </div>
