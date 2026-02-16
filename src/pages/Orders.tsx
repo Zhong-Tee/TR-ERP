@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
@@ -23,6 +24,7 @@ type Tab =
   
 
 export default function Orders() {
+  const { hasAccess } = useMenuAccess()
   const [activeTab, setActiveTab] = useState<Tab>('create')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -282,7 +284,7 @@ export default function Orders() {
               { id: 'shipped', label: 'จัดส่งแล้ว', count: shippedCount, countColor: 'text-blue-600' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
-            ].map((tab) => (
+            ].filter((tab) => hasAccess(`orders-${tab.id}`)).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => {

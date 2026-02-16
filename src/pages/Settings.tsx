@@ -6,8 +6,10 @@ import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 
 export default function Settings() {
+  const { hasAccess, refreshMenuAccess } = useMenuAccess()
   const [users, setUsers] = useState<User[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
@@ -631,6 +633,7 @@ export default function Settings() {
       })
       const { error } = await supabase.from('st_user_menus').upsert(payload, { onConflict: 'role,menu_key' })
       if (error) throw error
+      refreshMenuAccess()
       showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า Role สำเร็จ' })
     } catch (error: any) {
       console.error('Error saving role menus:', error)
@@ -1160,13 +1163,13 @@ export default function Settings() {
     'qc_staff',
     'packing_staff',
     'account',
+    'viewer',
     'store',
     'production',
     'production_mb',
     'manager',
     'picker',
   ]
-  // Role ที่แสดงในตั้งค่า Role (ซ่อน mobile-only roles)
   const settingsRoles = [
     'superadmin',
     'admin',
@@ -1176,8 +1179,12 @@ export default function Settings() {
     'qc_staff',
     'packing_staff',
     'account',
+    'viewer',
     'store',
     'production',
+    'production_mb',
+    'manager',
+    'picker',
   ]
 
   return (
@@ -1195,7 +1202,7 @@ export default function Settings() {
               { key: 'issue-types', label: 'ประเภท Issue' },
               { key: 'chat-history', label: 'ประวัติแชท' },
               { key: 'easyslip', label: 'API EasySlip' },
-            ] as { key: typeof activeTab; label: string }[]).map((tab) => (
+            ] as { key: typeof activeTab; label: string }[]).filter((tab) => hasAccess(`settings-${tab.key}`)).map((tab) => (
               <button
                 key={tab.key}
                 type="button"

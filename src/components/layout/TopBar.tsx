@@ -1,4 +1,5 @@
 import { useAuthContext } from '../../contexts/AuthContext'
+import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabase'
@@ -9,14 +10,28 @@ interface TopBarProps {
   onToggleSidebar?: () => void
 }
 
+const WAREHOUSE_ACCESS_MAP: Record<string, string> = {
+  '/warehouse': 'warehouse-stock',
+  '/warehouse/audit': 'warehouse-audit',
+  '/warehouse/adjust': 'warehouse-adjust',
+  '/warehouse/returns': 'warehouse-returns',
+}
+const PURCHASE_ACCESS_MAP: Record<string, string> = {
+  '/purchase/pr': 'purchase-pr',
+  '/purchase/po': 'purchase-po',
+  '/purchase/gr': 'purchase-gr',
+}
+
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { user, signOut } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const location = useLocation()
   const navigate = useNavigate()
   const [issueOnCount, setIssueOnCount] = useState(0)
   const [newChatCount, setNewChatCount] = useState(0)
   const [menuCount, setMenuCount] = useState<number | null>(null)
-  const { showConfirm, ConfirmModal } = useWmsModal()
+  const [loggingOut, setLoggingOut] = useState(false)
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   // รับตัวเลขจำนวนจากหน้าลูก (เช่น AdminQC)
   useEffect(() => {
@@ -58,8 +73,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const handleLogout = async () => {
     const ok = await showConfirm({ title: 'ออกจากระบบ', message: 'ต้องการออกจากระบบหรือไม่?' })
-    if (ok) {
+    if (!ok) return
+    setLoggingOut(true)
+    try {
       await signOut()
+    } catch (error: any) {
+      showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setLoggingOut(false)
     }
   }
 
@@ -207,13 +228,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
     { path: '/warehouse/returns', label: 'รับสินค้าตีกลับ' },
-  ]
+  ].filter((tab) => hasAccess(WAREHOUSE_ACCESS_MAP[tab.path] || tab.path))
 
   const purchaseTabs = [
     { path: '/purchase/pr', label: 'PR (ใบขอซื้อ)' },
     { path: '/purchase/po', label: 'PO (ใบสั่งซื้อ)' },
     { path: '/purchase/gr', label: 'GR (ใบรับสินค้า)' },
-  ]
+  ].filter((tab) => hasAccess(PURCHASE_ACCESS_MAP[tab.path] || tab.path))
 
   const activeSubTabs = location.pathname.startsWith('/warehouse')
     ? warehouseTabs
@@ -282,9 +303,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
         )}
         <button
           onClick={handleLogout}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-semibold"
+          disabled={loggingOut}
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-semibold disabled:opacity-50"
         >
-          ออกจากระบบ
+          {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
         </button>
         </div>
       </header>
@@ -327,6 +349,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           </div>
         </div>
       )}
+      {MessageModal}
       {ConfirmModal}
     </>
   )

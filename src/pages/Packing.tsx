@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType } from '../types'
@@ -81,6 +82,7 @@ function naturalSortCompare(a: string, b: string) {
 
 export default function Packing() {
   const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
   const [loading, setLoading] = useState(true)
@@ -1141,7 +1143,7 @@ export default function Packing() {
                 { key: 'new' as const, label: 'ใบงานใหม่', count: workOrders.length },
                 { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
                 { key: 'queue' as const, label: 'คิวอัปโหลด' },
-              ]).map((tab) => (
+              ]).filter((tab) => hasAccess(`packing-${tab.key}`)).map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => setSelectionTab(tab.key)}

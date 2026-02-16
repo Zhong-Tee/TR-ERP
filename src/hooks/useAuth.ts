@@ -113,7 +113,15 @@ export function useAuth() {
   async function signOut() {
     sessionStorage.removeItem('plan_unlocked')
     const { error } = await supabase.auth.signOut()
-    if (error) throw error
+    if (error) {
+      // Session หมดอายุหรือหายไปแล้ว → ล้าง state แล้ว redirect ได้เลย
+      if (error.message?.includes('session missing') || error.message?.includes('Session')) {
+        setUser(null)
+        setSupabaseUser(null)
+        return
+      }
+      throw error
+    }
   }
 
   return {

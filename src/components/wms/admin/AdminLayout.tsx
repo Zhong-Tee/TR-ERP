@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import { useMenuAccess } from '../../../contexts/MenuAccessContext'
 import { supabase } from '../../../lib/supabase'
 import UploadSection from './UploadSection'
 import ReviewSection from './ReviewSection'
@@ -13,6 +14,7 @@ import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
   const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const [activeMenu, setActiveMenu] = useState<string>(WMS_MENU_KEYS.NEW_ORDERS)
   const { MessageModal, ConfirmModal } = useWmsModal()
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
@@ -66,7 +68,7 @@ export default function AdminLayout() {
     { key: WMS_MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
     { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
     ...(user?.role !== 'store' ? [{ key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
-  ]
+  ].filter((item) => hasAccess(item.key))
 
   return (
     <div className="w-full">

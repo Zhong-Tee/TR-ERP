@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
@@ -150,36 +151,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
   const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
-  const [dbMenuAccess, setDbMenuAccess] = useState<Record<string, boolean> | null>(null)
-
-  // โหลดสิทธิ์เมนูจากตาราง st_user_menus ตาม role ของผู้ใช้
-  useEffect(() => {
-    if (!user?.role) return
-    ;(async () => {
-      try {
-        const { data, error } = await supabase
-          .from('st_user_menus')
-          .select('menu_key, has_access')
-          .eq('role', user.role)
-        if (error) {
-          console.error('Error loading menu access:', error)
-          return
-        }
-        // ถ้าไม่มีข้อมูลในตาราง = ยังไม่เคยตั้งค่า → ใช้ค่า default (hardcoded roles)
-        if (!data || data.length === 0) {
-          setDbMenuAccess(null)
-          return
-        }
-        const map: Record<string, boolean> = {}
-        data.forEach((row: { menu_key: string; has_access: boolean }) => {
-          map[row.menu_key] = row.has_access
-        })
-        setDbMenuAccess(map)
-      } catch (e) {
-        console.error('Sidebar loadMenuAccess:', e)
-      }
-    })()
-  }, [user?.role])
+  const { menuAccess: dbMenuAccess } = useMenuAccess()
 
   const loadCounts = useCallback(async () => {
     try {
@@ -380,7 +352,6 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     if (!user?.role) return false
     // ถ้ามีข้อมูลจาก st_user_menus → ใช้ค่าจาก DB
     if (dbMenuAccess !== null) {
-      if (item.key === 'dashboard') return true
       // ถ้ามี key อยู่ใน DB → ใช้ค่าจาก DB
       if (item.key in dbMenuAccess) return dbMenuAccess[item.key] === true
       // ถ้าไม่มี key ใน DB (เมนูใหม่ยังไม่เคยบันทึก) → fallback ใช้ hardcoded roles

@@ -3,6 +3,7 @@
  * อ้างอิงจาก Order_MS/plan.html – ใช้กับ TR-ERP ผ่าน Supabase
  */
 import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
@@ -450,7 +451,17 @@ function getOverallJobStatus(job: PlanJob, settings: PlanSettingsData): { key: '
   return { key: 'pending' }
 }
 
+const PLAN_MENU_KEY_MAP: Record<string, string> = {
+  dash: 'plan-dash',
+  dept: 'plan-dept',
+  jobs: 'plan-jobs',
+  form: 'plan-form',
+  set: 'plan-set',
+  issue: 'plan-issue',
+}
+
 export default function Plan() {
+  const { hasAccess } = useMenuAccess()
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -982,7 +993,7 @@ export default function Plan() {
                   ['set', 'ตั้งค่า'],
                   ['issue', `Issue (${issueOpenCount})`],
                 ] as [ViewKey, string][]
-              ).map(([key, label]) => (
+              ).filter(([key]) => hasAccess(PLAN_MENU_KEY_MAP[key] || key)).map(([key, label]) => (
                 <button
                   key={key}
                   type="button"

@@ -1,9 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import { MenuAccessProvider } from './contexts/MenuAccessContext'
 import Login from './components/auth/Login'
 import Layout from './components/layout/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import { useAuthContext } from './contexts/AuthContext'
+import { useMenuAccess } from './contexts/MenuAccessContext'
 import Orders from './pages/Orders'
 import AdminQC from './pages/AdminQC'
 import Account from './pages/Account'
@@ -24,6 +26,50 @@ import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
 import DashboardPage from './pages/Dashboard'
+
+const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
+  { key: 'dashboard', path: '/dashboard', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'] },
+  { key: 'orders', path: '/orders', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'] },
+  { key: 'admin-qc', path: '/admin-qc', roles: ['superadmin', 'admin', 'admin-tr', 'admin_qc'] },
+  { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'] },
+  { key: 'wms', path: '/wms', roles: ['superadmin', 'admin', 'admin-tr', 'store', 'production'] },
+  { key: 'qc', path: '/qc', roles: ['superadmin', 'admin', 'admin-tr', 'qc_staff'] },
+  { key: 'packing', path: '/packing', roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'] },
+  { key: 'transport', path: '/transport', roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'] },
+  { key: 'account', path: '/account', roles: ['superadmin', 'admin', 'admin-tr', 'account'] },
+  { key: 'products', path: '/products', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'] },
+  { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'admin-tr', 'store'] },
+  { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'admin-tr', 'viewer'] },
+  { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'admin-tr'] },
+]
+
+function SmartRedirect() {
+  const { user } = useAuthContext()
+  const { menuAccess, menuAccessLoading, hasAccess } = useMenuAccess()
+
+  if (!user) return <Navigate to="/" replace />
+
+  if (menuAccessLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
+  for (const menu of MENU_PATH_ORDER) {
+    if (menuAccess !== null) {
+      if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
+    } else {
+      if (menu.roles.includes(user.role)) return <Navigate to={menu.path} replace />
+    }
+  }
+
+  return <Navigate to="/orders" replace />
+}
 
 function AppRoutes() {
   const { user, loading } = useAuthContext()
@@ -59,7 +105,7 @@ function AppRoutes() {
     <Routes>
       <Route
         path="/"
-        element={<Navigate to="/dashboard" replace />}
+        element={<SmartRedirect />}
       />
       <Route
         path="/dashboard"
@@ -276,7 +322,9 @@ function App() {
   return (
     <Router>
       <AuthProvider>
-        <AppRoutes />
+        <MenuAccessProvider>
+          <AppRoutes />
+        </MenuAccessProvider>
       </AuthProvider>
     </Router>
   )

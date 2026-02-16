@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { useAuthContext } from '../contexts/AuthContext'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getEasySlipQuota } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
 import BillEditSection from '../components/account/BillEditSection'
@@ -106,6 +107,7 @@ function formatRefundReason(reason: string): string {
 
 export default function Account() {
   const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
   const [refunds, setRefunds] = useState<Refund[]>([])
@@ -719,34 +721,21 @@ export default function Account() {
     <div className="space-y-8">
       <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
         <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => setAccountSection('dashboard')}
-            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'dashboard' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
-          >
-            Dashboard
-          </button>
-          <button
-            type="button"
-            onClick={() => setAccountSection('slip-verification')}
-            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'slip-verification' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
-          >
-            รายการการตรวจสลิป
-          </button>
-          <button
-            type="button"
-            onClick={() => setAccountSection('manual-slip-check')}
-            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'manual-slip-check' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
-          >
-            ตรวจสลิปมือ
-          </button>
-          <button
-            type="button"
-            onClick={() => setAccountSection('bill-edit')}
-            className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === 'bill-edit' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
-          >
-            แก้ไขบิล
-          </button>
+          {([
+            { key: 'dashboard' as AccountSection, label: 'Dashboard' },
+            { key: 'slip-verification' as AccountSection, label: 'รายการการตรวจสลิป' },
+            { key: 'manual-slip-check' as AccountSection, label: 'ตรวจสลิปมือ' },
+            { key: 'bill-edit' as AccountSection, label: 'แก้ไขบิล' },
+          ]).filter((s) => hasAccess(`account-${s.key}`)).map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => setAccountSection(s.key)}
+              className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === s.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              {s.label}
+            </button>
+          ))}
         </nav>
       </div>
 
@@ -994,6 +983,7 @@ export default function Account() {
 
       {/* แถบเมนูย่อย — แสดงตัวเลขแบบเรียลไทม์ */}
       <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max border-b border-surface-200 overflow-x-auto">
+        {hasAccess('account-refunds') && (
         <button
           type="button"
           onClick={() => setActiveTab('refunds')}
@@ -1004,6 +994,8 @@ export default function Account() {
             {loading ? '–' : pendingRefunds.length}
           </span>
         </button>
+        )}
+        {hasAccess('account-tax-invoice') && (
         <button
           type="button"
           onClick={() => setActiveTab('tax-invoice')}
@@ -1014,6 +1006,8 @@ export default function Account() {
             {billingLoading ? '–' : taxInvoiceOrders.length}
           </span>
         </button>
+        )}
+        {hasAccess('account-cash-bill') && (
         <button
           type="button"
           onClick={() => setActiveTab('cash-bill')}
@@ -1024,6 +1018,8 @@ export default function Account() {
             {billingLoading ? '–' : cashBillOrders.length}
           </span>
         </button>
+        )}
+        {hasAccess('account-approvals') && (
         <button
           type="button"
           onClick={() => setActiveTab('approvals')}
@@ -1031,9 +1027,10 @@ export default function Account() {
         >
           รายการอนุมัติ
         </button>
+        )}
       </nav>
 
-      {activeTab === 'approvals' && (
+      {activeTab === 'approvals' && hasAccess('account-approvals') && (
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการอนุมัติ</h2>
@@ -1262,7 +1259,7 @@ export default function Account() {
       </section>
       )}
 
-      {activeTab === 'refunds' && (
+      {activeTab === 'refunds' && hasAccess('account-refunds') && (
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการโอนคืน</h2>
@@ -1341,7 +1338,7 @@ export default function Account() {
       </section>
       )}
 
-      {activeTab === 'tax-invoice' && (
+      {activeTab === 'tax-invoice' && hasAccess('account-tax-invoice') && (
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-sky-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการขอใบกำกับภาษี</h2>
@@ -1477,7 +1474,7 @@ export default function Account() {
       </section>
       )}
 
-      {activeTab === 'cash-bill' && (
+      {activeTab === 'cash-bill' && hasAccess('account-cash-bill') && (
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 bg-emerald-50/50">
           <h2 className="text-lg font-semibold text-gray-800">รายการขอบิลเงินสด</h2>

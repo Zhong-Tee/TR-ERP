@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
+import { useMenuAccess } from '../contexts/MenuAccessContext'
 import type { QCItem, QCRecord, QCSession, SettingsReason, InkType } from '../types'
 import {
   fetchWorkOrdersWithProgress,
@@ -61,8 +62,17 @@ function formatDuration(s: number | null | undefined): string {
   return `${h > 0 ? h + 'h ' : ''}${m > 0 ? m + 'm ' : ''}${sec}s`
 }
 
+const QC_MENU_KEY_MAP: Record<string, string> = {
+  qc: 'qc-operation',
+  reject: 'qc-reject',
+  report: 'qc-report',
+  history: 'qc-history',
+  settings: 'qc-settings',
+}
+
 export default function QC() {
   const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const isAdmin = user?.role === 'superadmin' || user?.role === 'admin-tr'
 
   const [currentView, setCurrentView] = useState<QCView>('qc')
@@ -160,7 +170,7 @@ export default function QC() {
   const [failReasonContext, setFailReasonContext] = useState<'qc' | 'reject'>('qc')
   const [failReasonSelected, setFailReasonSelected] = useState<string | null>(null)
 
-  const filteredMenus = MENUS.filter((m) => !m.adminOnly || isAdmin)
+  const filteredMenus = MENUS.filter((m) => (!m.adminOnly || isAdmin) && hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
 
   const qcUsername = user?.username || user?.email || 'unknown'
 
