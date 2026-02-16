@@ -74,11 +74,11 @@ export default function ScopeSelector({
         .eq('is_active', true)
         .order('product_code', { ascending: true })
         .then(({ data, error }) => {
+          if (error) console.error(error)
           if (!error && data) setProducts(data as ProductOption[])
           setProductsLoaded(true)
+          setProductsLoading(false)
         })
-        .catch(console.error)
-        .finally(() => setProductsLoading(false))
     }
   }, [auditType, productsLoaded])
 

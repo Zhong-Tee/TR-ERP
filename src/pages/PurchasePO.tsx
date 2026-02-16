@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
-import type { InventoryPO, InventoryPR, InventoryPRItem } from '../types'
+import type { InventoryPO, InventoryPR } from '../types'
 import {
   loadPOList,
   loadPODetail,

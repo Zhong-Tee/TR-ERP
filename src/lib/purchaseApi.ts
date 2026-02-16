@@ -6,13 +6,10 @@
 import { supabase } from './supabase'
 import type {
   InventoryPR,
-  InventoryPRItem,
   InventoryPO,
   InventoryPOItem,
   InventoryGR,
-  InventoryGRItem,
   InventorySample,
-  InventorySampleItem,
   Product,
 } from '../types'
 

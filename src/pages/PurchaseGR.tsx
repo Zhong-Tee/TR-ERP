@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
-import type { InventoryGR, InventoryPO, InventoryPOItem } from '../types'
+import type { InventoryGR, InventoryPO } from '../types'
 import {
   loadGRList,
   loadGRDetail,

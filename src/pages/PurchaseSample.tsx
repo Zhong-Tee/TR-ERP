@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
-import type { InventorySample, InventorySampleItem, Product } from '../types'
+import type { InventorySample, Product } from '../types'
 import {
   loadSamples,
   loadSampleDetail,

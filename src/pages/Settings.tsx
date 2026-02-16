@@ -1183,10 +1183,6 @@ export default function Settings() {
     'viewer',
     'store',
     'production',
-    'production_mb',
-    'manager',
-    'picker',
-    'auditor',
   ]
 
   return (
