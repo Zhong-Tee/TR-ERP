@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryAdjustment, InventoryAdjustmentItem, Product } from '../types'
-import { adjustStockBalancesBulk } from '../lib/inventory'
+import { adjustStockBalancesBulkRPC, bulkUpdateSafetyStock, bulkUpdateOrderPoint } from '../lib/inventory'
 
 interface DraftItem {
   product_id: string
@@ -292,10 +292,10 @@ export default function WarehouseAdjust() {
         .eq('id', adjustment.id)
       if (error) throw error
 
-      // อัปเดต on_hand (stock movement)
+      // อัปเดต on_hand + movement ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N×3 queries)
       const qtyItems = (items || []).filter((i) => Number(i.qty_delta) !== 0)
       if (qtyItems.length) {
-        await adjustStockBalancesBulk(
+        await adjustStockBalancesBulkRPC(
           qtyItems.map((item) => ({
             productId: item.product_id,
             qtyDelta: Number(item.qty_delta),
@@ -307,36 +307,31 @@ export default function WarehouseAdjust() {
         )
       }
 
-      // Batch อัปเดต safety_stock ใน inv_stock_balances (chunk ทีละ 10 เพื่อไม่ให้เกิน connection limit)
-      const CHUNK = 10
+      // อัปเดต safety_stock ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N queries)
       const safetyItems = (items || []).filter((i) => i.new_safety_stock != null)
-      for (let i = 0; i < safetyItems.length; i += CHUNK) {
-        const chunk = safetyItems.slice(i, i + CHUNK)
-        await Promise.all(
-          chunk.map((item) =>
-            supabase
-              .from('inv_stock_balances')
-              .update({ safety_stock: Number(item.new_safety_stock) })
-              .eq('product_id', item.product_id)
-          )
+      if (safetyItems.length) {
+        await bulkUpdateSafetyStock(
+          safetyItems.map((item) => ({
+            productId: item.product_id,
+            safetyStock: Number(item.new_safety_stock),
+          }))
         )
       }
 
-      // Batch อัปเดต order_point ใน pr_products (chunk ทีละ 10)
+      // อัปเดต order_point ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N queries)
       const orderPointItems = (items || []).filter((i) => i.new_order_point != null)
-      for (let i = 0; i < orderPointItems.length; i += CHUNK) {
-        const chunk = orderPointItems.slice(i, i + CHUNK)
-        await Promise.all(
-          chunk.map((item) =>
-            supabase
-              .from('pr_products')
-              .update({ order_point: item.new_order_point })
-              .eq('id', item.product_id)
-          )
+      if (orderPointItems.length) {
+        await bulkUpdateOrderPoint(
+          orderPointItems.map((item) => ({
+            productId: item.product_id,
+            orderPoint: String(item.new_order_point),
+          }))
         )
       }
 
       await loadAll()
+      // แจ้ง Sidebar ให้อัปเดตจำนวนสินค้าต่ำกว่าจุดสั่งซื้อ
+      window.dispatchEvent(new Event('sidebar-refresh-counts'))
       alert('อนุมัติการปรับสต๊อคเรียบร้อย')
     } catch (e: any) {
       console.error('Approve adjustment failed:', e)

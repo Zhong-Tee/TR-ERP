@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { UserRole } from '../../types'
@@ -274,26 +274,36 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     }
   }, [])
 
-  // โหลดครั้งแรก + Realtime (ถ้าเปิดใช้ใน Supabase)
+  // ── Debounce: รวม Realtime events หลายครั้งในช่วงเวลาสั้น ๆ เป็นการเรียก loadCounts ครั้งเดียว ──
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const debouncedLoadCounts = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      loadCounts()
+    }, 2_000)
+  }, [loadCounts])
+  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
+
+  // โหลดครั้งแรก + Realtime พร้อม debounce (ลด API calls จาก Realtime events ที่มาถี่ ๆ)
   useEffect(() => {
     loadCounts()
     const channel = supabase
       .channel('sidebar-menu-counts')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => loadCounts())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_stock_balances' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => debouncedLoadCounts())
+      // ไม่ subscribe inv_stock_balances — ใช้ event dispatch จากหน้าที่ปรับสต๊อคแทน เพื่อป้องกัน cascade
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [loadCounts])
+  }, [loadCounts, debouncedLoadCounts])
 
   // ฟัง event จากหน้า QC เมื่อมีการอัปเดตจำนวน (เร็วกว่า Realtime)
   useEffect(() => {
@@ -306,16 +316,6 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     window.addEventListener('sidebar-qc-counts', onQcCounts)
     return () => window.removeEventListener('sidebar-qc-counts', onQcCounts)
   }, [])
-
-  // โพลทุก 15 วินาทีเมื่อแท็บเปิดอยู่ (fallback ให้ตัวเลขอัปเดตเรียลไทม์แม้ Realtime จะไม่ fire)
-  const POLL_INTERVAL_MS = 15_000
-  useEffect(() => {
-    if (document.visibilityState !== 'visible') return
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') loadCounts()
-    }, POLL_INTERVAL_MS)
-    return () => clearInterval(timer)
-  }, [loadCounts])
 
   // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account, wms, packing เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {

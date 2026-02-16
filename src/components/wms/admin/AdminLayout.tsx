@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
 import UploadSection from './UploadSection'
@@ -21,30 +21,35 @@ export default function AdminLayout() {
     try {
       const { counts, total } = await loadWmsTabCounts()
       setTabCounts(counts)
-      // แจ้ง sidebar ให้อัปเดตตัวเลข
       window.dispatchEvent(new CustomEvent('wms-counts-updated', { detail: { total, counts } }))
     } catch (e) {
       console.error('Error loading WMS tab counts:', e)
     }
   }, [])
 
+  // ── Debounce: รวม Realtime events หลายครั้งเป็นการเรียก loadTabCounts ครั้งเดียว ──
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const debouncedLoadTabCounts = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      loadTabCounts()
+    }, 2_000)
+  }, [loadTabCounts])
+  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
+
+  // Realtime: รวม channel เดียว + debounce เพื่อลด API calls
   useEffect(() => {
     loadTabCounts()
-    const ch1 = supabase.channel('wms-tab-cnt-wo').on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => loadTabCounts()).subscribe()
-    const ch2 = supabase.channel('wms-tab-cnt-orders').on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => loadTabCounts()).subscribe()
-    const ch3 = supabase.channel('wms-tab-cnt-req').on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => loadTabCounts()).subscribe()
-    const ch4 = supabase.channel('wms-tab-cnt-notif').on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => loadTabCounts()).subscribe()
-    const ch5 = supabase.channel('wms-tab-cnt-ororders').on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadTabCounts()).subscribe()
-    return () => { [ch1, ch2, ch3, ch4, ch5].forEach((c) => supabase.removeChannel(c)) }
-  }, [loadTabCounts])
-
-  // Poll ทุก 15 วินาที
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') loadTabCounts()
-    }, 15_000)
-    return () => clearInterval(timer)
-  }, [loadTabCounts])
+    const channel = supabase
+      .channel('wms-tab-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadTabCounts())
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [loadTabCounts, debouncedLoadTabCounts])
 
   // ฟัง event จาก child sections เมื่อข้อมูลเปลี่ยน → อัปเดตตัวเลข badge ทันที
   useEffect(() => {
