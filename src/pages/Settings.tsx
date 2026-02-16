@@ -281,8 +281,18 @@ export default function Settings() {
     { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
     { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
     { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
+    { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
+    { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
+    { key: 'account-cash-bill', label: 'ขอบิลเงินสด', group: 'account' },
+    { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     // ── Plan ──
     { key: 'plan', label: 'Plan', group: '' },
+    { key: 'plan-dash', label: 'Dashboard (Master Plan)', group: 'plan' },
+    { key: 'plan-dept', label: 'หน้าแผนก (คิวงาน)', group: 'plan' },
+    { key: 'plan-jobs', label: 'ใบงานทั้งหมด', group: 'plan' },
+    { key: 'plan-form', label: 'สร้าง/แก้ไขใบงาน', group: 'plan' },
+    { key: 'plan-set', label: 'ตั้งค่า', group: 'plan' },
+    { key: 'plan-issue', label: 'Issue', group: 'plan' },
     // ── จัดสินค้า (WMS) ──
     { key: 'wms', label: 'จัดสินค้า', group: '' },
     { key: 'wms-new-orders', label: 'ใบงานใหม่', group: 'wms' },
@@ -301,6 +311,9 @@ export default function Settings() {
     { key: 'qc-settings', label: 'Settings', group: 'qc' },
     // ── จัดของ ──
     { key: 'packing', label: 'จัดของ', group: '' },
+    { key: 'packing-new', label: 'ใบงานใหม่', group: 'packing' },
+    { key: 'packing-shipped', label: 'จัดส่งแล้ว', group: 'packing' },
+    { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
     // ── ทวนสอบขนส่ง ──
     { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },
     // ── สินค้า ──
@@ -309,18 +322,27 @@ export default function Settings() {
     { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },
     // ── คลัง ──
     { key: 'warehouse', label: 'คลัง', group: '' },
-    { key: 'warehouse-audit', label: 'ตรวจนับ', group: 'warehouse' },
-    { key: 'warehouse-adjust', label: 'ปรับปรุง', group: 'warehouse' },
-    { key: 'warehouse-returns', label: 'คืน', group: 'warehouse' },
+    { key: 'warehouse-stock', label: 'คลังสินค้า', group: 'warehouse' },
+    { key: 'warehouse-audit', label: 'Audit', group: 'warehouse' },
+    { key: 'warehouse-adjust', label: 'ปรับสต๊อค', group: 'warehouse' },
+    { key: 'warehouse-returns', label: 'รับสินค้าตีกลับ', group: 'warehouse' },
     // ── สั่งซื้อ ──
     { key: 'purchase', label: 'สั่งซื้อ', group: '' },
-    { key: 'purchase-pr', label: 'PR', group: 'purchase' },
-    { key: 'purchase-po', label: 'PO', group: 'purchase' },
-    { key: 'purchase-gr', label: 'GR', group: 'purchase' },
+    { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },
+    { key: 'purchase-po', label: 'PO (ใบสั่งซื้อ)', group: 'purchase' },
+    { key: 'purchase-gr', label: 'GR (ใบรับสินค้า)', group: 'purchase' },
     // ── รายงานยอดขาย ──
     { key: 'sales-reports', label: 'รายงานยอดขาย', group: '' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },
+    { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
+    { key: 'settings-role-settings', label: 'ตั้งค่า Role', group: 'settings' },
+    { key: 'settings-banks', label: 'ตั้งค่าข้อมูลธนาคาร', group: 'settings' },
+    { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
+    { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
+    { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
+    { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
+    { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
   ] as const
 
   async function loadRoleMenus() {
@@ -1131,6 +1153,7 @@ export default function Settings() {
   // Role ทั้งหมด — ใช้ใน dropdown จัดการสิทธิ์ผู้ใช้
   const allRoles = [
     'superadmin',
+    'admin',
     'admin-tr',
     'admin_qc',
     'admin-pump',
@@ -1146,6 +1169,7 @@ export default function Settings() {
   // Role ที่แสดงในตั้งค่า Role (ซ่อน mobile-only roles)
   const settingsRoles = [
     'superadmin',
+    'admin',
     'admin-tr',
     'admin_qc',
     'admin-pump',

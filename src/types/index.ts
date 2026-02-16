@@ -9,6 +9,7 @@ export interface User {
 
 export type UserRole = 
   | 'superadmin' 
+  | 'admin'
   | 'admin-tr' 
   | 'admin_qc' 
   | 'admin-pump' 

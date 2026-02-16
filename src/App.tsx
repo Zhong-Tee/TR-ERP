@@ -74,7 +74,7 @@ function AppRoutes() {
       <Route
         path="/orders"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'admin-pump', 'admin_qc', 'account']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account']}>
             <Layout>
               <Orders />
             </Layout>
@@ -84,7 +84,7 @@ function AppRoutes() {
       <Route
         path="/admin-qc"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'admin_qc']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin_qc']}>
             <Layout>
               <AdminQC />
             </Layout>
@@ -94,7 +94,7 @@ function AppRoutes() {
       <Route
         path="/account"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'account']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'account']}>
             <Layout>
               <Account />
             </Layout>
@@ -104,7 +104,7 @@ function AppRoutes() {
       <Route
         path="/plan"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'admin-pump']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump']}>
             <Layout>
               <div className="p-6">
                 <Plan />
@@ -116,7 +116,7 @@ function AppRoutes() {
       <Route
         path="/wms"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store', 'production', 'production_mb', 'manager', 'picker']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'production', 'production_mb', 'manager', 'picker']}>
             {isWmsMobileRole ? (
               <Wms />
             ) : (
@@ -130,7 +130,7 @@ function AppRoutes() {
       <Route
         path="/qc"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'qc_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'qc_staff']}>
             <Layout>
               <QC />
             </Layout>
@@ -140,7 +140,7 @@ function AppRoutes() {
       <Route
         path="/packing"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'packing_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'packing_staff']}>
             <Layout>
               <Packing />
             </Layout>
@@ -150,7 +150,7 @@ function AppRoutes() {
       <Route
         path="/transport"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'packing_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'packing_staff']}>
             <Layout>
               <TransportVerification />
             </Layout>
@@ -160,7 +160,7 @@ function AppRoutes() {
       <Route
         path="/products"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'admin-pump']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump']}>
             <Layout>
               <Products />
             </Layout>
@@ -170,7 +170,7 @@ function AppRoutes() {
       <Route
         path="/warehouse"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <Warehouse />
             </Layout>
@@ -180,7 +180,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/audit"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <WarehouseAudit />
             </Layout>
@@ -190,7 +190,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/adjust"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <WarehouseAdjust />
             </Layout>
@@ -200,7 +200,7 @@ function AppRoutes() {
       <Route
         path="/warehouse/returns"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <WarehouseReturns />
             </Layout>
@@ -210,7 +210,7 @@ function AppRoutes() {
       <Route
         path="/purchase/pr"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <PurchasePR />
             </Layout>
@@ -220,7 +220,7 @@ function AppRoutes() {
       <Route
         path="/purchase/po"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <PurchasePO />
             </Layout>
@@ -230,7 +230,7 @@ function AppRoutes() {
       <Route
         path="/purchase/gr"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'store']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store']}>
             <Layout>
               <PurchaseGR />
             </Layout>
@@ -240,7 +240,7 @@ function AppRoutes() {
       <Route
         path="/cartoon-patterns"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'admin-pump']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump']}>
             <Layout>
               <CartoonPatterns />
             </Layout>
@@ -250,7 +250,7 @@ function AppRoutes() {
       <Route
         path="/sales-reports"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr', 'viewer']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'viewer']}>
             <Layout>
               <SalesReports />
             </Layout>
@@ -260,7 +260,7 @@ function AppRoutes() {
       <Route
         path="/settings"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin-tr']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr']}>
             <Layout>
               <Settings />
             </Layout>
