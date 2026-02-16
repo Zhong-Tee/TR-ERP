@@ -1202,37 +1202,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     e.preventDefault()
     if (!user) return
 
-    // Validation สำหรับบันทึก "รอลงข้อมูล"
+    // Validation สำหรับบันทึก "รอลงข้อมูล" — บังคับแค่เลือกช่องทาง + สร้างบิลแล้ว
     if (!formData.channel_code || formData.channel_code.trim() === '') {
       setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
       return
     }
 
-    if (CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code)) {
-      if (!formData.customer_name || formData.customer_name.trim() === '') {
-        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อช่องทาง' })
-        return
-      }
-    }
-    if (CHANNELS_SHOW_ORDER_NO.includes(formData.channel_code)) {
-      if (!formData.channel_order_no || formData.channel_order_no.trim() === '') {
-        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขคำสั่งซื้อ' })
-        return
-      }
-      // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED ไม่บังคับกรอกชื่อลูกค้าเมื่อบันทึก
-      if (!CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code) && (!formData.customer_name || formData.customer_name.trim() === '')) {
-        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกชื่อลูกค้า' })
-        return
-      }
+    if (!order?.bill_no) {
+      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากดสร้างบิลก่อนบันทึก' })
+      return
     }
 
-    if (formData.channel_code === 'SHOPP') {
-      if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
-        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
-        return
-      }
-    }
-
+    // ถ้ามีเลขพัสดุ เช็คซ้ำ (ไม่บังคับกรอก แต่ถ้ากรอกต้องไม่ซ้ำ)
     if (formData.tracking_number && formData.tracking_number.trim()) {
       const { data: dup, error } = await supabase
         .from('or_orders')
@@ -1248,14 +1229,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'เลขพัสดุซ้ำกับรายการในระบบ' })
         return
       }
-    }
-
-    const isAddressBlocked = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
-    const composedAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
-    const hasAddress = (formData.customer_address?.trim() || composedAddress) !== ''
-    if (!isAddressBlocked && !hasAddress) {
-      setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill' })
-      return
     }
 
     // พยายาม match สินค้าที่ไม่มี product_id แต่มี product_name หรือรหัสสินค้า
@@ -1309,84 +1282,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         await handleSubmitInternal(updatedItems, 'รอลงข้อมูล')
       }, 100)
       return
-    }
-    
-    // ตรวจสอบว่ามีรายการสินค้าที่มี product_id หรือไม่
-    const itemsWithProduct = items.filter(item => item.product_id)
-    if (itemsWithProduct.length === 0) {
-      // ตรวจสอบว่ามีรายการที่สร้างไว้แล้วหรือไม่
-      const hasItems = items.length > 0
-      if (hasItems) {
-        setProductSelectAlertOpen(true)
-      } else {
-        alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ')
-      }
-      return
-    }
-
-    // ตรวจสอบว่ารายการสินค้าที่เลือกแล้ว กรอกข้อมูลครบทุกฟิลด์ที่เปิดใช้งาน (ยกเว้น บรรทัด1-3, หมายเหตุ, ไฟล์แนบ, สินค้าฟรี)
-    const missingFieldItems: { index: number; productName: string; missingFields: string[] }[] = []
-    itemsWithProduct.forEach((item, _) => {
-      if ((item as { is_free?: boolean }).is_free) return // ข้ามสินค้าของแถม — ตรวจสอบเฉพาะปุ่ม "บันทึก (ข้อมูลครบ)"
-      const itemIndex = items.indexOf(item)
-      const missing: string[] = []
-      // สีหมึก
-      if (isFieldEnabled(itemIndex, 'ink_color') && !item.ink_color?.trim()) {
-        missing.push('สีหมึก')
-      }
-      // ลาย (cartoon_pattern) — อนุญาตให้กรอก "0" ได้
-      if (isFieldEnabled(itemIndex, 'cartoon_pattern') && !item.cartoon_pattern?.trim()) {
-        missing.push('ลาย (หากไม่ต้องการเลือกลาย กรุณาใส่เลข 0)')
-      }
-      // ฟอนต์ — อนุญาตให้กรอก "0" ได้
-      if (isFieldEnabled(itemIndex, 'font') && !item.font?.trim()) {
-        missing.push('ฟอนต์ (หากไม่ต้องการเลือกฟอนต์ กรุณาใส่เลข 0)')
-      }
-      // จำนวน
-      if (isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
-        missing.push('จำนวน')
-      }
-      if (missing.length > 0) {
-        missingFieldItems.push({
-          index: itemIndex + 1,
-          productName: item.product_name || 'สินค้า',
-          missingFields: missing,
-        })
-      }
-    })
-    if (missingFieldItems.length > 0) {
-      const details = missingFieldItems
-        .map(m => `รายการที่ ${m.index} (${m.productName}): ${m.missingFields.join(', ')}`)
-        .join('\n')
-      setMessageModal({
-        open: true,
-        title: 'แจ้งเตือน',
-        message: `กรุณากรอกข้อมูลให้ครบทุกช่อง\n\n${details}`,
-      })
-      return
-    }
-
-    // ตรวจสอบว่ารายการสินค้าทุกรายการมีราคา/หน่วยหรือไม่
-    if (isManualPriceChannel) {
-      if (!formData.price || formData.price <= 0) {
-        setMessageModal({
-          open: true,
-          title: 'แจ้งเตือน',
-          message: 'กรุณากรอกราคาที่ข้อมูลการชำระเงิน',
-        })
-        return
-      }
-    } else {
-      const itemsWithoutPrice = itemsWithProduct.filter(item => (!item.unit_price || item.unit_price <= 0) && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
-      if (itemsWithoutPrice.length > 0) {
-        const itemNames = itemsWithoutPrice.map(item => item.product_name || 'สินค้า').join(', ')
-        setMessageModal({
-          open: true,
-          title: 'แจ้งเตือน',
-          message: `กรุณากรอกราคา/หน่วยสำหรับรายการสินค้าทั้งหมด\n\nรายการที่ยังไม่มีราคา:\n${itemNames}`,
-        })
-        return
-      }
     }
 
       await handleSubmitInternal(items, 'รอลงข้อมูล')
@@ -1609,19 +1504,25 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         } else {
           console.warn('No items to insert - all items are missing product_id')
           console.warn('All items:', items)
-          const itemsWithoutProductId = items.map((item, idx) => ({
-            index: idx,
-            product_name: item.product_name,
-            product_id: item.product_id,
-            has_product_name: !!item.product_name,
-            has_product_id: !!item.product_id
-          }))
-          console.warn('Items without product_id:', itemsWithoutProductId)
-          alert('คำเตือน: ไม่มีรายการสินค้าที่จะบันทึก กรุณาเลือกสินค้าจาก dropdown ก่อนบันทึก\n\nตรวจสอบ Console (F12) เพื่อดูรายละเอียด')
+          // แจ้งเตือนเฉพาะ "ข้อมูลครบ" — "รอลงข้อมูล" ไม่ต้องบังคับมีสินค้า
+          if (targetStatus !== 'รอลงข้อมูล') {
+            const itemsWithoutProductId = items.map((item, idx) => ({
+              index: idx,
+              product_name: item.product_name,
+              product_id: item.product_id,
+              has_product_name: !!item.product_name,
+              has_product_id: !!item.product_id
+            }))
+            console.warn('Items without product_id:', itemsWithoutProductId)
+            alert('คำเตือน: ไม่มีรายการสินค้าที่จะบันทึก กรุณาเลือกสินค้าจาก dropdown ก่อนบันทึก\n\nตรวจสอบ Console (F12) เพื่อดูรายละเอียด')
+          }
         }
       } else {
         console.warn('No items in the form')
-        alert('กรุณาเพิ่มรายการสินค้าก่อนบันทึก')
+        // แจ้งเตือนเฉพาะ "ข้อมูลครบ" — "รอลงข้อมูล" ไม่ต้องบังคับมีสินค้า
+        if (targetStatus !== 'รอลงข้อมูล') {
+          alert('กรุณาเพิ่มรายการสินค้าก่อนบันทึก')
+        }
       }
 
       // ถ้าเป็น "ลงข้อมูลเสร็จสิ้น" ให้ตรวจสอบสลิป (เฉพาะเมื่อช่องทางมีในข้อมูลธนาคารสำหรับตรวจสลิป)
@@ -4994,6 +4895,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               if (formData.channel_code === 'SHOPP') {
                 if (!formData.scheduled_pickup_at || !formData.scheduled_pickup_at.trim()) {
                   setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกวันที่ เวลา นัดรับ' })
+                  return
+                }
+              }
+
+              // ช่องทาง SPTR, FSPTR, TTTR, LZTR บังคับกรอกเลขพัสดุ
+              if (CHANNELS_ENABLE_TRACKING.includes(formData.channel_code)) {
+                if (!formData.tracking_number || !formData.tracking_number.trim()) {
+                  setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขพัสดุ' })
                   return
                 }
               }
