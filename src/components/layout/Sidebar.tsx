@@ -128,7 +128,7 @@ const menuItems: MenuItem[] = [
     label: 'รายงานยอดขาย',
     icon: <FiBarChart2 className="w-6 h-6" />,
     path: '/sales-reports',
-    roles: ['superadmin', 'admin', 'admin-tr', 'viewer'],
+    roles: ['superadmin', 'admin', 'admin-tr'],
   },
   {
     key: 'settings',
@@ -155,102 +155,38 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const loadCounts = useCallback(async () => {
     try {
-      const [ordersRes, qcRes, qcRejectRes, qcWoList, refundRes, taxRes, cashRes, wmsResult, productsRes, balancesRes] = await Promise.all([
-        // ── Orders: นับออเดอร์ที่รอดำเนินการ (รอลงข้อมูล + ลงข้อมูลผิด + ตรวจสอบไม่ผ่าน) ──
-        supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .in('status', ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน']),
-        supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'ตรวจสอบแล้ว')
-          .neq('channel_code', 'PUMP'),
-        supabase
-          .from('qc_records')
-          .select('id', { count: 'exact', head: true })
-          .eq('is_rejected', true),
+      // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
+      // ส่ง username + role เพื่อให้ admin-tr / admin-pump เห็นเฉพาะ orders ของตัวเอง
+      const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
+        ? (user.username ?? user.email ?? '')
+        : ''
+      const [rpcRes, qcWoList, wmsResult] = await Promise.all([
+        supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
-        supabase
-          .from('ac_refunds')
-          .select('id, reason, or_orders(status)')
-          .eq('status', 'pending'),
-        supabase
-          .from('or_orders')
-          .select('id, billing_details')
-          .contains('billing_details', { request_tax_invoice: true })
-          .not('status', 'in', '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'),
-        supabase
-          .from('or_orders')
-          .select('id, billing_details')
-          .contains('billing_details', { request_cash_bill: true })
-          .not('status', 'in', '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'),
-        // ── WMS counts — ใช้ shared function เดียวกับ AdminLayout ──
         loadWmsTabCounts(),
-        // ── Warehouse: ดึงสินค้าที่มี order_point ──
-        supabase
-          .from('pr_products')
-          .select('id, order_point')
-          .eq('is_active', true)
-          .not('order_point', 'is', null),
-        supabase
-          .from('inv_stock_balances')
-          .select('product_id, on_hand'),
       ])
-      // กรองโอนคืน: เฉพาะ reason โอนเกิน + สถานะบิล จัดส่งแล้ว เท่านั้น
-      const refundPending = ((refundRes.data || []) as any[]).filter(
-        (r) => r.reason && r.reason.includes('โอนเกิน') &&
-          r.or_orders?.status === 'จัดส่งแล้ว'
-      ).length
-      const taxPending = ((taxRes.data || []) as { billing_details?: { account_confirmed_tax?: boolean } }[]).filter(
-        (o) => !o.billing_details?.account_confirmed_tax
-      ).length
-      const cashPending = ((cashRes.data || []) as { billing_details?: { account_confirmed_cash?: boolean } }[]).filter(
-        (o) => !o.billing_details?.account_confirmed_cash
-      ).length
-      const accountTotal = refundPending + taxPending + cashPending
 
-      // ── Packing total count — นับใบงานใหม่ทั้งหมด ──
-      let packingTotal = 0
-      try {
-        const { count: woCount } = await supabase
-          .from('or_work_orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'กำลังผลิต')
-        packingTotal = woCount ?? 0
-      } catch (_e) {
-        // ignore packing count errors
-      }
-
+      const c = rpcRes.data || {}
+      const accountTotal = (c.refund_pending || 0) + (c.tax_pending || 0) + (c.cash_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
-      const qcTotal = qcWoCount + (qcRejectRes.count ?? 0)
-
-      // ── คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ ──
-      let warehouseBelowOrderPoint = 0
-      try {
-        const balMap: Record<string, number> = {}
-        ;(balancesRes.data || []).forEach((r: any) => { balMap[r.product_id] = Number(r.on_hand || 0) })
-        warehouseBelowOrderPoint = (productsRes.data || []).filter((p: any) => {
-          const op = p.order_point != null ? Number(String(p.order_point).replace(/,/g, '').trim()) : null
-          if (op === null || !Number.isFinite(op) || op <= 0) return false
-          const onHand = balMap[p.id] ?? 0
-          return onHand < op
-        }).length
-      } catch (_) { /* ignore */ }
+      const qcTotal = qcWoCount + (c.qc_reject || 0)
 
       setMenuCounts({
-        orders: ordersRes.count ?? 0,
-        'admin-qc': qcRes.count ?? 0,
+        orders: c.orders || 0,
+        'admin-qc': c.admin_qc || 0,
         account: accountTotal,
         wms: wmsResult.total,
         qc: qcTotal,
-        packing: packingTotal,
-        warehouse: warehouseBelowOrderPoint,
+        packing: c.packing || 0,
+        warehouse: c.warehouse || 0,
       })
+
+      // ── แจ้ง TopBar ให้ใช้ค่า warehouse count จาก RPC (ลด query ซ้ำ) ──
+      window.dispatchEvent(new CustomEvent('sidebar-warehouse-count', { detail: { count: c.warehouse || 0 } }))
     } catch (e) {
       console.error('Sidebar loadCounts:', e)
     }
-  }, [])
+  }, [user?.role, user?.username, user?.email])
 
   // ── Debounce: รวม Realtime events หลายครั้งในช่วงเวลาสั้น ๆ เป็นการเรียก loadCounts ครั้งเดียว ──
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)

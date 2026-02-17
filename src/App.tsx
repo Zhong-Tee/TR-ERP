@@ -44,7 +44,7 @@ const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
   { key: 'account', path: '/account', roles: ['superadmin', 'admin', 'admin-tr', 'account'] },
   { key: 'products', path: '/products', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'] },
   { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'admin-tr', 'store'] },
-  { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'admin-tr', 'viewer'] },
+  { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'admin-tr'] },
   { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'admin-tr'] },
 ]
 
@@ -346,7 +346,7 @@ function AppRoutes() {
       <Route
         path="/sales-reports"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'viewer']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr']}>
             <Layout>
               <SalesReports />
             </Layout>

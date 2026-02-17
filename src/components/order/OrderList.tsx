@@ -448,8 +448,24 @@ export default function OrderList({
                           ? `ยอดรวมสลิป ฿${Number((order as any).slip_logs_total_amount).toLocaleString()} ${(order as any).slip_logs_amount_matches ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง')} ยอดออเดอร์`
                           : `สลิปที่ ${slipNumber}: ยอดเงิน ${slip.amount_match === null ? 'ไม่ระบุ' : (slip.amount_match ? 'ตรง' : (amountMismatchType === 'under' ? 'ขาด' : amountMismatchType === 'over' ? 'เกิน' : 'ไม่ตรง'))}`
 
+                      // ตรวจว่า API ถูกเรียกแต่ไม่ได้ข้อมูลกลับมา (สลิปหมดอายุ หรือ สลิปปลอม)
+                      const isNoDataFromApi = hasEasySlipVerification && !hasAnyMatch && !isDuplicate
+
                       return (
                         <React.Fragment key={idx}>
+                          {/* กรณี API ไม่คืนข้อมูล → แสดงป้ายสลิปหมดอายุ/สลิปปลอม */}
+                          {isNoDataFromApi && (
+                            <>
+                              {isMultipleSlips && (
+                                <span className="px-2.5 py-1 bg-surface-200 text-surface-800 rounded-full text-sm font-semibold border border-surface-300">
+                                  ใบที่ {slipNumber}
+                                </span>
+                              )}
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-semibold bg-red-100 text-red-700 border border-red-300" title={`สลิปที่ ${slipNumber}: ตรวจสอบแล้วไม่ได้ข้อมูลจาก API — สลิปอาจหมดอายุหรือเป็นสลิปปลอม`}>
+                                <span>สลิปหมดอายุ หรือ สลิปปลอม</span>
+                              </span>
+                            </>
+                          )}
                           {hasAnyMatch && (
                             <>
                               {/* แสดงหมายเลขสลิป (เฉพาะเมื่อมีหลายใบ) */}

@@ -8,15 +8,34 @@ import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 
+const SETTINGS_TABS = [
+  { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
+  { key: 'role-settings', label: 'ตั้งค่า Role' },
+  { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
+  { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
+  { key: 'sellers', label: 'ผู้ขาย' },
+  { key: 'issue-types', label: 'ประเภท Issue' },
+  { key: 'chat-history', label: 'ประวัติแชท' },
+  { key: 'easyslip', label: 'API EasySlip' },
+] as const
+
+type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
+
 export default function Settings() {
   const { hasAccess, refreshMenuAccess } = useMenuAccess()
   const [users, setUsers] = useState<User[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<
-    'users' | 'role-settings' | 'banks' | 'product-settings' | 'sellers' | 'chat-history' | 'issue-types' | 'easyslip'
-  >('users')
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>('users')
+
+  // ตั้งค่า activeTab ให้เป็นแท็บแรกที่ user มีสิทธิ์เข้าถึง
+  useEffect(() => {
+    const firstAccessible = SETTINGS_TABS.find(t => hasAccess(`settings-${t.key}`))
+    if (firstAccessible && !hasAccess(`settings-${activeTab}`)) {
+      setActiveTab(firstAccessible.key)
+    }
+  }, [hasAccess]) // eslint-disable-line react-hooks/exhaustive-deps
   const [, setFixingStatus] = useState(false)
   const [, setStatusFixResult] = useState<{
     success: boolean
@@ -91,6 +110,12 @@ export default function Settings() {
   const [productCategories, setProductCategories] = useState<string[]>([])
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<ProductFieldKey, boolean>>>({})
   const [savingProductSettings, setSavingProductSettings] = useState(false)
+  // Product-level field overrides (null = ใช้ค่าจากหมวดหมู่)
+  const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
+  const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, boolean | null>>>({})
+  const [savingProductOverrides, setSavingProductOverrides] = useState(false)
+  const [overrideSearchTerm, setOverrideSearchTerm] = useState('')
+  const [overrideCategoryFilter, setOverrideCategoryFilter] = useState<string>('')
   const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
@@ -129,6 +154,8 @@ export default function Settings() {
     if (activeTab === 'product-settings') {
       loadProductCategories()
       loadCategoryFieldSettings()
+      loadAllProducts()
+      loadProductOverrides()
     }
     if (activeTab === 'role-settings') {
       loadRoleMenus()
@@ -808,6 +835,129 @@ export default function Settings() {
     }
   }
 
+  // --- Product-level field overrides ---
+  async function loadAllProducts() {
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('id, product_name, product_code, product_category')
+        .eq('is_active', true)
+        .eq('product_type', 'FG')
+        .order('product_name')
+      if (error) throw error
+      setAllProducts(data || [])
+    } catch (error: any) {
+      console.error('Error loading products for overrides:', error)
+      setAllProducts([])
+    }
+  }
+
+  async function loadProductOverrides() {
+    try {
+      const { data, error } = await supabase.from('pr_product_field_overrides').select('*')
+      if (error) throw error
+      const map: Record<string, Record<ProductFieldKey, boolean | null>> = {}
+      ;(data || []).forEach((row: any) => {
+        const pid = row.product_id
+        if (!pid) return
+        const entry: Record<string, boolean | null> = {}
+        for (const { key } of PRODUCT_FIELD_KEYS) {
+          entry[key] = row[key] ?? null
+        }
+        map[pid] = entry as Record<ProductFieldKey, boolean | null>
+      })
+      setProductOverrides(map)
+    } catch (error: any) {
+      console.error('Error loading product overrides:', error)
+      setProductOverrides({})
+    }
+  }
+
+  function getProductOverrideFields(productId: string): Record<ProductFieldKey, boolean | null> {
+    if (productOverrides[productId]) return { ...productOverrides[productId] }
+    const empty: Record<string, boolean | null> = {}
+    for (const { key } of PRODUCT_FIELD_KEYS) empty[key] = null
+    return empty as Record<ProductFieldKey, boolean | null>
+  }
+
+  function setProductOverrideField(productId: string, field: ProductFieldKey, value: boolean | null) {
+    setProductOverrides((prev) => ({
+      ...prev,
+      [productId]: { ...getProductOverrideFields(productId), [field]: value },
+    }))
+  }
+
+  /** ตรวจว่าสินค้านี้มี override ที่แตกต่างจาก null (ต้องบันทึก) */
+  function productHasOverrides(productId: string): boolean {
+    const fields = productOverrides[productId]
+    if (!fields) return false
+    return Object.values(fields).some((v) => v !== null)
+  }
+
+  /** สินค้าที่กรองตามการค้นหาและหมวดหมู่ — แสดงเฉพาะรายการที่มี override หรือตรงกับการค้นหา */
+  function getFilteredProductsForOverride() {
+    let list = allProducts
+    if (overrideCategoryFilter) {
+      list = list.filter((p) => (p.product_category || '') === overrideCategoryFilter)
+    }
+    if (overrideSearchTerm.trim()) {
+      const term = overrideSearchTerm.trim().toLowerCase()
+      list = list.filter(
+        (p) =>
+          (p.product_name || '').toLowerCase().includes(term) ||
+          (p.product_code || '').toLowerCase().includes(term)
+      )
+    }
+    return list
+  }
+
+  async function saveProductOverrides() {
+    setSavingProductOverrides(true)
+    try {
+      const productsWithOverrides = allProducts.filter((p) => productHasOverrides(p.id))
+      const productsWithoutOverrides = allProducts.filter((p) => !productHasOverrides(p.id))
+
+      for (const product of productsWithOverrides) {
+        const fields = getProductOverrideFields(product.id)
+        await supabase.from('pr_product_field_overrides').upsert(
+          {
+            product_id: product.id,
+            ink_color: fields.ink_color,
+            layer: fields.layer,
+            cartoon_pattern: fields.cartoon_pattern,
+            line_pattern: fields.line_pattern,
+            font: fields.font,
+            line_1: fields.line_1,
+            line_2: fields.line_2,
+            line_3: fields.line_3,
+            quantity: fields.quantity,
+            unit_price: fields.unit_price,
+            notes: fields.notes,
+            attachment: fields.attachment,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'product_id' }
+        )
+      }
+
+      if (productsWithoutOverrides.length > 0) {
+        const idsToDelete = productsWithoutOverrides
+          .filter((p) => p.id in productOverrides)
+          .map((p) => p.id)
+        if (idsToDelete.length > 0) {
+          await supabase.from('pr_product_field_overrides').delete().in('product_id', idsToDelete)
+        }
+      }
+
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกตั้งค่า override ระดับสินค้าสำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการบันทึก: ' + error.message })
+    } finally {
+      setSavingProductOverrides(false)
+    }
+  }
+
   async function openBankForm(bank?: BankSetting) {
     if (bank) {
       setEditingBank(bank)
@@ -1163,7 +1313,6 @@ export default function Settings() {
     'qc_staff',
     'packing_staff',
     'account',
-    'viewer',
     'store',
     'production',
     'production_mb',
@@ -1180,7 +1329,6 @@ export default function Settings() {
     'qc_staff',
     'packing_staff',
     'account',
-    'viewer',
     'store',
     'production',
   ]
@@ -1191,16 +1339,7 @@ export default function Settings() {
       <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
         <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
-            {([
-              { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
-              { key: 'role-settings', label: 'ตั้งค่า Role' },
-              { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
-              { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
-              { key: 'sellers', label: 'ผู้ขาย' },
-              { key: 'issue-types', label: 'ประเภท Issue' },
-              { key: 'chat-history', label: 'ประวัติแชท' },
-              { key: 'easyslip', label: 'API EasySlip' },
-            ] as { key: typeof activeTab; label: string }[]).filter((tab) => hasAccess(`settings-${tab.key}`)).map((tab) => (
+            {SETTINGS_TABS.filter((tab) => hasAccess(`settings-${tab.key}`)).map((tab) => (
               <button
                 key={tab.key}
                 type="button"
@@ -1219,7 +1358,7 @@ export default function Settings() {
       </div>
 
       {/* API EasySlip Tab */}
-      {activeTab === 'easyslip' && (
+      {activeTab === 'easyslip' && hasAccess('settings-easyslip') && (
         <div className="space-y-6">
           {/* Test EasySlip Connection Section */}
           <div className="bg-white p-4 rounded-lg shadow">
@@ -1389,7 +1528,7 @@ export default function Settings() {
       )}
 
       {/* Users Tab */}
-      {activeTab === 'users' && (() => {
+      {activeTab === 'users' && hasAccess('settings-users') && (() => {
         const filteredUsers = userRoleFilter === 'all'
           ? users
           : users.filter((u) => u.role === userRoleFilter)
@@ -1489,7 +1628,7 @@ export default function Settings() {
         )
       })()}
 
-      {activeTab === 'role-settings' && (
+      {activeTab === 'role-settings' && hasAccess('settings-role-settings') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
@@ -1553,7 +1692,7 @@ export default function Settings() {
       )}
 
       {/* Bank Settings Tab */}
-      {activeTab === 'banks' && (
+      {activeTab === 'banks' && hasAccess('settings-banks') && (
         <div className="space-y-6">
           <div className="bg-white p-6 rounded-lg shadow">
             <div className="flex justify-between items-center mb-4">
@@ -1799,7 +1938,8 @@ export default function Settings() {
       )}
 
       {/* ตั้งค่าสินค้า Tab */}
-      {activeTab === 'product-settings' && (
+      {activeTab === 'product-settings' && hasAccess('settings-product-settings') && (
+        <>
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
@@ -1849,10 +1989,130 @@ export default function Settings() {
             </div>
           )}
         </div>
+
+        {/* Override ระดับสินค้า */}
+        <div className="bg-white p-6 rounded-lg shadow mt-6">
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่าฟิลด์ระดับสินค้า (Override)</h2>
+              <p className="text-sm text-gray-500 mt-1">ตั้งค่าเฉพาะสินค้าที่ต้องการแตกต่างจากหมวดหมู่ — คลิกเพื่อสลับ 3 สถานะ</p>
+            </div>
+            <button
+              onClick={saveProductOverrides}
+              disabled={savingProductOverrides || allProducts.length === 0}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {savingProductOverrides ? 'กำลังบันทึก...' : 'บันทึก Override'}
+            </button>
+          </div>
+          <div className="flex items-center gap-6 mb-3 text-xs text-gray-600">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-gray-300 bg-gray-100 relative">
+                <span className="absolute inset-0 flex items-center justify-center text-gray-400 font-bold text-[10px]">—</span>
+              </span>
+              ตามหมวดหมู่ (ค่าเริ่มต้น)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-amber-500 bg-amber-500 relative">
+                <svg className="w-3 h-3 text-white absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+              </span>
+              Override เปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-red-400 bg-red-50 relative">
+                <svg className="w-3 h-3 text-red-500 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </span>
+              Override ปิด
+            </span>
+          </div>
+          <div className="flex gap-3 mb-4 flex-wrap">
+            <input
+              type="text"
+              placeholder="ค้นหาชื่อหรือรหัสสินค้า..."
+              value={overrideSearchTerm}
+              onChange={(e) => setOverrideSearchTerm(e.target.value)}
+              className="flex-1 min-w-[200px] px-3 py-2 border rounded-lg text-sm"
+            />
+            <select
+              value={overrideCategoryFilter}
+              onChange={(e) => setOverrideCategoryFilter(e.target.value)}
+              className="px-3 py-2 border rounded-lg text-sm"
+            >
+              <option value="">ทุกหมวดหมู่</option>
+              {productCategories.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+          {allProducts.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              ไม่พบสินค้า
+            </div>
+          ) : (() => {
+            const filtered = getFilteredProductsForOverride()
+            if (filtered.length === 0) return (
+              <div className="text-center py-8 text-gray-500">
+                ไม่พบสินค้าที่ตรงกับการค้นหา
+              </div>
+            )
+            return (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="bg-amber-600 text-white">
+                      <th className="p-2 text-left font-semibold whitespace-nowrap rounded-tl-xl">สินค้า</th>
+                      <th className="p-2 text-left font-semibold whitespace-nowrap text-xs">หมวดหมู่</th>
+                      {PRODUCT_FIELD_KEYS.map(({ key, label }, i) => (
+                        <th key={key} className={`p-1.5 text-center font-semibold text-xs whitespace-nowrap ${i === PRODUCT_FIELD_KEYS.length - 1 ? 'rounded-tr-xl' : ''}`}>
+                          {label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((product, idx) => {
+                      const catKey = (product.product_category || '').trim()
+                      const catSettings = catKey ? getCategoryFields(catKey) : defaultCategoryFields
+                      const overrideFields = getProductOverrideFields(product.id)
+                      const hasAny = productHasOverrides(product.id)
+                      return (
+                        <tr
+                          key={product.id}
+                          className={`border-b border-gray-200 hover:bg-amber-50 transition-colors ${hasAny ? 'bg-amber-50/50' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
+                        >
+                          <td className="p-2 border-r border-gray-200 font-medium whitespace-nowrap max-w-[200px] truncate" title={`${product.product_code} — ${product.product_name}`}>
+                            <span className="text-gray-500 text-xs mr-1">{product.product_code}</span>
+                            {product.product_name}
+                          </td>
+                          <td className="p-2 border-r border-gray-200 text-xs text-gray-500 whitespace-nowrap">{catKey || '—'}</td>
+                          {PRODUCT_FIELD_KEYS.map(({ key }) => {
+                            const overrideVal = overrideFields[key]
+                            const categoryVal = catSettings[key]
+                            return (
+                              <td key={key} className="p-1 text-center border-r border-gray-200">
+                                <TriStateOverrideCheckbox
+                                  value={overrideVal}
+                                  categoryValue={categoryVal}
+                                  onChange={(v) => setProductOverrideField(product.id, key, v)}
+                                />
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <p className="text-xs text-gray-400 mt-2">แสดง {filtered.length} จาก {allProducts.length} สินค้า</p>
+              </div>
+            )
+          })()}
+        </div>
+        </>
       )}
 
       {/* ผู้ขาย Tab */}
-      {activeTab === 'sellers' && (
+      {activeTab === 'sellers' && hasAccess('settings-sellers') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
@@ -1951,7 +2211,7 @@ export default function Settings() {
         </div>
       )}
 
-      {activeTab === 'issue-types' && (
+      {activeTab === 'issue-types' && hasAccess('settings-issue-types') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold">ประเภท Issue</h2>
@@ -2053,7 +2313,7 @@ export default function Settings() {
         </div>
       )}
 
-      {activeTab === 'chat-history' && (() => {
+      {activeTab === 'chat-history' && hasAccess('settings-chat-history') && (() => {
         // รวม chat จาก 2 แหล่ง + กรองตาม source
         type UnifiedChat = OrderChatLog & { _source: 'confirm' | 'issue'; _issueTitle?: string }
         const confirmMapped: UnifiedChat[] = chatLogs.map((l) => ({ ...l, _source: 'confirm' }))
@@ -2221,5 +2481,70 @@ export default function Settings() {
       {MessageModal}
       {ConfirmModal}
     </div>
+  )
+}
+
+/** Tri-state checkbox สำหรับ override ระดับสินค้า: null (ตามหมวดหมู่) → true (เปิด) → false (ปิด) → null */
+function TriStateOverrideCheckbox({
+  value,
+  categoryValue,
+  onChange,
+}: {
+  value: boolean | null
+  categoryValue: boolean
+  onChange: (v: boolean | null) => void
+}) {
+  function handleClick() {
+    if (value === null) onChange(true)
+    else if (value === true) onChange(false)
+    else onChange(null)
+  }
+
+  const title =
+    value === null
+      ? `ตามหมวดหมู่ (${categoryValue ? 'เปิด' : 'ปิด'}) — คลิกเพื่อ override เปิด`
+      : value
+        ? 'Override: เปิด — คลิกเพื่อ override ปิด'
+        : 'Override: ปิด — คลิกเพื่อกลับตามหมวดหมู่'
+
+  if (value === null) {
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className="w-5 h-5 rounded border-2 border-gray-300 bg-gray-100 flex items-center justify-center cursor-pointer hover:border-gray-400 transition-colors mx-auto"
+      >
+        <span className="text-gray-400 font-bold text-[11px] leading-none">—</span>
+      </button>
+    )
+  }
+
+  if (value === true) {
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className="w-5 h-5 rounded border-2 border-amber-500 bg-amber-500 flex items-center justify-center cursor-pointer hover:bg-amber-600 hover:border-amber-600 transition-colors mx-auto"
+      >
+        <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title={title}
+      className="w-5 h-5 rounded border-2 border-red-400 bg-red-50 flex items-center justify-center cursor-pointer hover:bg-red-100 hover:border-red-500 transition-colors mx-auto"
+    >
+      <svg className="w-3.5 h-3.5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
+    </button>
   )
 }

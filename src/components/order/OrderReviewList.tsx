@@ -49,11 +49,12 @@ const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' |
   unit_price: 'unit_price',
 }
 
-/** คืนรายการฟิลด์ที่แสดงในตัวเลือก "ลงข้อมูลผิด" ตามฟิลด์ที่ให้กรอก (pr_category_field_settings) เหมือนฟอร์มลงออเดอร์ */
+/** คืนรายการฟิลด์ที่แสดงในตัวเลือก "ลงข้อมูลผิด" ตามฟิลด์ที่ให้กรอก (pr_category_field_settings + product override) เหมือนฟอร์มลงออเดอร์ */
 function getVisibleErrorFieldsForOrder(
   order: Order | null,
   categoryFieldSettings: Record<string, Record<string, boolean>>,
-  productCategoryByProductId: Record<string, string>
+  productCategoryByProductId: Record<string, string>,
+  productFieldOverrides?: Record<string, Record<string, boolean | null>>
 ): Array<{ key: ErrorFieldKey; label: string }> {
   if (!order) return []
   const items: any[] = (order as any).order_items || (order as any).or_order_items || []
@@ -89,8 +90,9 @@ function getVisibleErrorFieldsForOrder(
 
   const hasSettings = Object.keys(categoryFieldSettings).length > 0
   const hasCategoryMap = Object.keys(productCategoryByProductId).length > 0
+  const hasOverrides = productFieldOverrides && Object.keys(productFieldOverrides).length > 0
 
-  if (!hasSettings || !hasCategoryMap) {
+  if (!hasSettings && !hasOverrides) {
     return [...orderLevel, ...itemLevelDef]
   }
 
@@ -99,17 +101,34 @@ function getVisibleErrorFieldsForOrder(
     const settingsKey = (ITEM_FIELD_TO_SETTINGS_KEY as Record<ErrorFieldKey, string>)[def.key]
     for (const item of items) {
       const productId = item.product_id != null ? String(item.product_id) : null
+
+      // 1. ตรวจ product-level override ก่อน
+      if (productId && hasOverrides) {
+        const overrides = productFieldOverrides![productId]
+        if (overrides) {
+          const ov = overrides[settingsKey]
+          if (ov !== undefined && ov !== null) {
+            if (ov === true) {
+              enabledItemFields.add(def.key)
+              break
+            }
+            continue
+          }
+        }
+      }
+
+      // 2. Fallback ไปดูหมวดหมู่
       const cat = productId ? productCategoryByProductId[productId] : null
       if (!cat || String(cat).trim() === '') {
         enabledItemFields.add(def.key)
         break
       }
-      const categorySettings = categoryFieldSettings[String(cat).trim()]
-      if (!categorySettings) {
+      const catSettings = categoryFieldSettings[String(cat).trim()]
+      if (!catSettings) {
         enabledItemFields.add(def.key)
         break
       }
-      const v = categorySettings[settingsKey] as boolean | string | undefined
+      const v = catSettings[settingsKey] as boolean | string | undefined
       if (v === undefined || v === null || v === true || v === 'true') {
         enabledItemFields.add(def.key)
         break
@@ -128,9 +147,10 @@ const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'add
 function getOrderLevelAndItemLevelErrorFields(
   order: Order | null,
   categoryFieldSettings: Record<string, Record<string, boolean>>,
-  productCategoryByProductId: Record<string, string>
+  productCategoryByProductId: Record<string, string>,
+  productFieldOverrides?: Record<string, Record<string, boolean | null>>
 ): { orderLevel: Array<{ key: ErrorFieldKey; label: string }>; itemLevel: Array<{ key: ErrorFieldKey; label: string }> } {
-  const allFields = getVisibleErrorFieldsForOrder(order, categoryFieldSettings, productCategoryByProductId)
+  const allFields = getVisibleErrorFieldsForOrder(order, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
   const channelCode = (order as any)?.channel_code || ''
   // สำหรับช่องทาง SPTR, FSPTR, LZTR, TTTR: ย้าย unit_price ไประดับบิล (ไม่ได้กรอกราคา/หน่วยต่อรายการ)
   const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
@@ -172,6 +192,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
   /** product_id → product_category สำหรับรายการในบิลที่เลือก (ใช้ร่วมกับ categoryFieldSettings) */
   const [productCategoryByProductId, setProductCategoryByProductId] = useState<Record<string, string>>({})
+  /** Override ตั้งค่าฟิลด์ระดับสินค้า (product_id → { fieldKey → boolean | null }) */
+  const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null>>>({})
 
   useEffect(() => {
     loadOrders()
@@ -184,48 +206,78 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     })()
   }, [])
 
-  // โหลด pr_category_field_settings ครั้งเดียว (เหมือน OrderForm)
+  // โหลด pr_category_field_settings + pr_product_field_overrides ครั้งเดียว
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
-        if (cancelled) return
-        if (error) {
-          console.error('Error loading category field settings:', error)
-          return
-        }
         function toBool(v: unknown, defaultVal = false): boolean {
           if (v === undefined || v === null) return defaultVal
           return v === true || v === 'true'
         }
-        const settingsMap: Record<string, Record<string, boolean>> = {}
-        if (data && Array.isArray(data)) {
-          data.forEach((row: any) => {
-            const cat = row.category
-            if (cat != null && String(cat).trim() !== '') {
-              const key = String(cat).trim()
-              settingsMap[key] = {
-                product_name: toBool(row.product_name, true),
-                ink_color: toBool(row.ink_color),
-                layer: toBool(row.layer),
-                cartoon_pattern: toBool(row.cartoon_pattern),
-                line_pattern: toBool(row.line_pattern),
-                font: toBool(row.font),
-                line_1: toBool(row.line_1),
-                line_2: toBool(row.line_2),
-                line_3: toBool(row.line_3),
-                quantity: toBool(row.quantity, true),
-                unit_price: toBool(row.unit_price, true),
-                notes: toBool(row.notes),
-                attachment: toBool(row.attachment),
+        const [catRes, overrideRes] = await Promise.all([
+          supabase.from('pr_category_field_settings').select('*'),
+          supabase.from('pr_product_field_overrides').select('*'),
+        ])
+        if (cancelled) return
+        if (catRes.error) {
+          console.error('Error loading category field settings:', catRes.error)
+        } else {
+          const settingsMap: Record<string, Record<string, boolean>> = {}
+          if (catRes.data && Array.isArray(catRes.data)) {
+            catRes.data.forEach((row: any) => {
+              const cat = row.category
+              if (cat != null && String(cat).trim() !== '') {
+                const key = String(cat).trim()
+                settingsMap[key] = {
+                  product_name: toBool(row.product_name, true),
+                  ink_color: toBool(row.ink_color),
+                  layer: toBool(row.layer),
+                  cartoon_pattern: toBool(row.cartoon_pattern),
+                  line_pattern: toBool(row.line_pattern),
+                  font: toBool(row.font),
+                  line_1: toBool(row.line_1),
+                  line_2: toBool(row.line_2),
+                  line_3: toBool(row.line_3),
+                  quantity: toBool(row.quantity, true),
+                  unit_price: toBool(row.unit_price, true),
+                  notes: toBool(row.notes),
+                  attachment: toBool(row.attachment),
+                }
               }
-            }
-          })
+            })
+          }
+          setCategoryFieldSettings(settingsMap)
         }
-        setCategoryFieldSettings(settingsMap)
+        if (overrideRes.error) {
+          console.error('Error loading product field overrides:', overrideRes.error)
+        } else {
+          const overridesMap: Record<string, Record<string, boolean | null>> = {}
+          if (overrideRes.data && Array.isArray(overrideRes.data)) {
+            overrideRes.data.forEach((row: any) => {
+              const pid = row.product_id
+              if (!pid) return
+              overridesMap[pid] = {
+                product_name: row.product_name ?? null,
+                ink_color: row.ink_color ?? null,
+                layer: row.layer ?? null,
+                cartoon_pattern: row.cartoon_pattern ?? null,
+                line_pattern: row.line_pattern ?? null,
+                font: row.font ?? null,
+                line_1: row.line_1 ?? null,
+                line_2: row.line_2 ?? null,
+                line_3: row.line_3 ?? null,
+                quantity: row.quantity ?? null,
+                unit_price: row.unit_price ?? null,
+                notes: row.notes ?? null,
+                attachment: row.attachment ?? null,
+              }
+            })
+          }
+          setProductFieldOverrides(overridesMap)
+        }
       } catch (e) {
-        if (!cancelled) console.error('Error loading category field settings:', e)
+        if (!cancelled) console.error('Error loading field settings:', e)
       }
     })()
     return () => {
@@ -603,7 +655,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                         const { itemLevel } = getOrderLevelAndItemLevelErrorFields(
                           selectedOrder,
                           categoryFieldSettings,
-                          productCategoryByProductId
+                          productCategoryByProductId,
+                          productFieldOverrides
                         )
                         const itemLevelKeys = new Set<ErrorFieldKey>(itemLevel.map((field) => field.key))
 
@@ -774,7 +827,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
                   <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับบิล — เลือกรายการที่ผิด</h3>
                   <div className="grid grid-cols-1 gap-2">
-                    {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId).orderLevel.map(({ key, label }) => (
+                    {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides).orderLevel.map(({ key, label }) => (
                       <label key={key} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="checkbox"
@@ -789,7 +842,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 </div>
                 {(() => {
                   const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-                  const { itemLevel } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId)
+                  const { itemLevel } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
                   if (orderItems.length === 0 || itemLevel.length === 0) return null
                   return (
                     <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">

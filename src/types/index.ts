@@ -16,7 +16,6 @@ export type UserRole =
   | 'qc_staff' 
   | 'packing_staff' 
   | 'account' 
-  | 'viewer'
   | 'store'
   | 'production'
   | 'production_mb'
@@ -502,13 +501,35 @@ export interface CartoonPattern {
   id: string
   pattern_name: string
   pattern_code?: string
+  /** @deprecated ใช้ product_categories แทน */
   product_category?: string | null
+  /** หมวดหมู่สินค้าที่ลายนี้ใช้ได้ (รองรับหลายหมวดหมู่) */
+  product_categories?: string[] | null
   line_count?: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket cartoon-patterns ตาม pattern_name */
   image_url?: string | null
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+/** Override ตั้งค่าฟิลด์ระดับสินค้า — null = ใช้ค่าจากหมวดหมู่, true/false = override */
+export interface ProductFieldOverride {
+  product_id: string
+  ink_color: boolean | null
+  layer: boolean | null
+  cartoon_pattern: boolean | null
+  line_pattern: boolean | null
+  font: boolean | null
+  line_1: boolean | null
+  line_2: boolean | null
+  line_3: boolean | null
+  quantity: boolean | null
+  unit_price: boolean | null
+  notes: boolean | null
+  attachment: boolean | null
+  created_at?: string
+  updated_at?: string
 }
 
 // QC Types

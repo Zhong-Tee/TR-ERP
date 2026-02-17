@@ -65,7 +65,7 @@ export function useAuth() {
                 .insert({
                   id: userId,
                   username: authUser.user.email?.split('@')[0] || 'user',
-                  role: 'viewer',
+                  role: 'store',
                 })
                 .select()
                 .single()

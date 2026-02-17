@@ -618,6 +618,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
+  /** Override ตั้งค่าฟิลด์ระดับสินค้า (product_id → { fieldKey → boolean | null }) */
+  const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null>>>({})
   /** index ของแถวที่ช่องหมายเหตุกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
   const [notesFocusedIndex, setNotesFocusedIndex] = useState<number | null>(null)
   /** index ของแถวที่ช่องไฟล์แนบกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
@@ -970,39 +972,69 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     let cancelled = false
     ;(async () => {
       try {
-        const { data, error } = await supabase.from('pr_category_field_settings').select('*')
+        const [catRes, overrideRes] = await Promise.all([
+          supabase.from('pr_category_field_settings').select('*'),
+          supabase.from('pr_product_field_overrides').select('*'),
+        ])
         if (cancelled) return
-        if (error) {
-          console.error('Error loading category field settings:', error)
-          return
-        }
-        const settingsMap: Record<string, Record<string, boolean>> = {}
-        if (data && Array.isArray(data)) {
-          data.forEach((row: any) => {
-            const cat = row.category
-            if (cat != null && String(cat).trim() !== '') {
-              const key = String(cat).trim()
-              settingsMap[key] = {
-                product_name: toBool(row.product_name, true),
-                ink_color: toBool(row.ink_color),
-                layer: toBool(row.layer),
-                cartoon_pattern: toBool(row.cartoon_pattern),
-                line_pattern: toBool(row.line_pattern),
-                font: toBool(row.font),
-                line_1: toBool(row.line_1),
-                line_2: toBool(row.line_2),
-                line_3: toBool(row.line_3),
-                quantity: toBool(row.quantity, true),
-                unit_price: toBool(row.unit_price, true),
-                notes: toBool(row.notes),
-                attachment: toBool(row.attachment),
+        if (catRes.error) {
+          console.error('Error loading category field settings:', catRes.error)
+        } else {
+          const settingsMap: Record<string, Record<string, boolean>> = {}
+          if (catRes.data && Array.isArray(catRes.data)) {
+            catRes.data.forEach((row: any) => {
+              const cat = row.category
+              if (cat != null && String(cat).trim() !== '') {
+                const key = String(cat).trim()
+                settingsMap[key] = {
+                  product_name: toBool(row.product_name, true),
+                  ink_color: toBool(row.ink_color),
+                  layer: toBool(row.layer),
+                  cartoon_pattern: toBool(row.cartoon_pattern),
+                  line_pattern: toBool(row.line_pattern),
+                  font: toBool(row.font),
+                  line_1: toBool(row.line_1),
+                  line_2: toBool(row.line_2),
+                  line_3: toBool(row.line_3),
+                  quantity: toBool(row.quantity, true),
+                  unit_price: toBool(row.unit_price, true),
+                  notes: toBool(row.notes),
+                  attachment: toBool(row.attachment),
+                }
               }
-            }
-          })
+            })
+          }
+          setCategoryFieldSettings(settingsMap)
         }
-        setCategoryFieldSettings(settingsMap)
+        if (overrideRes.error) {
+          console.error('Error loading product field overrides:', overrideRes.error)
+        } else {
+          const overridesMap: Record<string, Record<string, boolean | null>> = {}
+          if (overrideRes.data && Array.isArray(overrideRes.data)) {
+            overrideRes.data.forEach((row: any) => {
+              const pid = row.product_id
+              if (!pid) return
+              overridesMap[pid] = {
+                product_name: row.product_name ?? null,
+                ink_color: row.ink_color ?? null,
+                layer: row.layer ?? null,
+                cartoon_pattern: row.cartoon_pattern ?? null,
+                line_pattern: row.line_pattern ?? null,
+                font: row.font ?? null,
+                line_1: row.line_1 ?? null,
+                line_2: row.line_2 ?? null,
+                line_3: row.line_3 ?? null,
+                quantity: row.quantity ?? null,
+                unit_price: row.unit_price ?? null,
+                notes: row.notes ?? null,
+                attachment: row.attachment ?? null,
+              }
+            })
+          }
+          setProductFieldOverrides(overridesMap)
+        }
       } catch (e) {
-        if (!cancelled) console.error('Error loading category field settings:', e)
+        if (!cancelled) console.error('Error loading field settings:', e)
       }
     })()
     return () => { cancelled = true }
@@ -1035,7 +1067,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true).eq('product_type', 'FG'),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
@@ -1043,6 +1075,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
         supabase.from('pr_category_field_settings').select('*'),
         supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
+        supabase.from('pr_product_field_overrides').select('*'),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
@@ -1078,16 +1111,41 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         })
       }
       setCategoryFieldSettings(settingsMap)
+
+      // โหลด product-level field overrides
+      const overridesMap: Record<string, Record<string, boolean | null>> = {}
+      if (productOverridesRes.data && Array.isArray(productOverridesRes.data)) {
+        productOverridesRes.data.forEach((row: any) => {
+          const pid = row.product_id
+          if (!pid) return
+          overridesMap[pid] = {
+            product_name: row.product_name ?? null,
+            ink_color: row.ink_color ?? null,
+            layer: row.layer ?? null,
+            cartoon_pattern: row.cartoon_pattern ?? null,
+            line_pattern: row.line_pattern ?? null,
+            font: row.font ?? null,
+            line_1: row.line_1 ?? null,
+            line_2: row.line_2 ?? null,
+            line_3: row.line_3 ?? null,
+            quantity: row.quantity ?? null,
+            unit_price: row.unit_price ?? null,
+            notes: row.notes ?? null,
+            attachment: row.attachment ?? null,
+          }
+        })
+      }
+      setProductFieldOverrides(overridesMap)
     } catch (error) {
       console.error('Error loading data:', error)
     }
   }
 
-  /** เช็คว่าฟิลด์นี้ควรแสดงหรือไม่ สำหรับ item ที่ index นี้ */
+  /** เช็คว่าฟิลด์นี้ควรแสดงหรือไม่ สำหรับ item ที่ index นี้ — ตรวจสอบ product override ก่อน แล้ว fallback ไปหมวดหมู่ */
   function isFieldEnabled(itemIndex: number, fieldKey: string): boolean {
     const item = items[itemIndex]
-    if (!item?.product_id) return true // ถ้ายังไม่เลือกสินค้า แสดงทุกฟิลด์
-    
+    if (!item?.product_id) return true
+
     // หา product จาก id ก่อน; ถ้าไม่เจอลองจาก product_name (เผื่อ type ไม่ตรง)
     let product = products.find(p => String(p.id) === String(item.product_id))
     if (!product && item.product_name) {
@@ -1097,14 +1155,24 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
     if (!product) return true
 
+    // 1. ตรวจสอบ product-level override ก่อน
+    const productId = String(product.id)
+    const overrides = productFieldOverrides[productId]
+    if (overrides) {
+      const overrideVal = overrides[fieldKey]
+      if (overrideVal !== undefined && overrideVal !== null) {
+        return overrideVal === true
+      }
+    }
+
+    // 2. Fallback ไปดูค่าจากหมวดหมู่
     const catRaw = (product as { product_category?: string | null }).product_category
     if (catRaw === undefined || catRaw === null || String(catRaw).trim() === '') return true
 
     const catKey = String(catRaw).trim()
     const categorySettings = categoryFieldSettings[catKey]
-    if (!categorySettings) return true // ถ้าไม่มี setting สำหรับหมวดหมู่นี้ แสดงทุกฟิลด์ (default = true)
+    if (!categorySettings) return true
 
-    // คืนค่า boolean จริง (ถ้าค่าเป็น string "false" จะได้ false; ไม่มี key = แสดงฟิลด์)
     const v = categorySettings[fieldKey] as boolean | string | undefined
     if (v === undefined || v === null) return true
     return v === true || v === 'true'
@@ -3359,7 +3427,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     const searchLower = searchTerm.trim().toLowerCase()
     let list = cartoonPatterns
     if (category) {
-      list = list.filter((p) => (p.product_category || '').trim() === category)
+      list = list.filter((p) => {
+        const cats = p.product_categories
+        if (Array.isArray(cats) && cats.length > 0) {
+          return cats.some((c) => (c || '').trim() === category)
+        }
+        return (p.product_category || '').trim() === category
+      })
     }
     if (searchLower) {
       list = list.filter((p) => (p.pattern_name || '').toLowerCase().includes(searchLower))

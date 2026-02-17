@@ -228,6 +228,7 @@ export default function Warehouse() {
                 <tr className="bg-blue-600 text-white">
                   <th className="p-3 text-left font-semibold rounded-tl-xl">รูป</th>
                   <th className="p-3 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="p-3 text-center font-semibold">ประเภท</th>
                   <th className="p-3 text-left font-semibold">หมวดหมู่</th>
                   <th className="p-3 text-left font-semibold">ชื่อสินค้า</th>
                   <th className="p-3 text-left font-semibold">ผู้ขาย</th>
@@ -250,6 +251,15 @@ export default function Warehouse() {
                         <ProductImage code={product.product_code} name={product.product_name} />
                       </td>
                       <td className="p-3 font-medium">{product.product_code}</td>
+                      <td className="p-3 text-center">
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          product.product_type === 'RM'
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        }`}>
+                          {product.product_type || 'FG'}
+                        </span>
+                      </td>
                       <td className="p-3">{product.product_category || '-'}</td>
                       <td className="p-3">{product.product_name}</td>
                       <td className="p-3 text-sm">{product.seller_name || '-'}</td>
