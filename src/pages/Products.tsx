@@ -4,6 +4,9 @@ import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 import Modal from '../components/ui/Modal'
 import { Product, ProductType } from '../types'
+import { useAuthContext } from '../contexts/AuthContext'
+
+const COST_VISIBLE_ROLES = ['superadmin', 'account']
 
 const SEARCH_DEBOUNCE_MS = 400
 
@@ -74,6 +77,8 @@ const emptyForm = () => ({
 })
 
 export default function Products() {
+  const { user } = useAuthContext()
+  const canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [searchInput, setSearchInput] = useState('')
@@ -601,7 +606,7 @@ export default function Products() {
                   <th className="px-2 py-2 text-left font-semibold">รหัสหน้ายาง</th>
                   <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
                   <th className="px-2 py-2 text-center font-semibold">จุดสั่งซื้อ</th>
-                  <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
+                  {canSeeCost && <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>}
                   <th className="px-2 py-2 text-right font-semibold">Safety Stock</th>
                   <th className="px-2 py-2 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
@@ -628,7 +633,7 @@ export default function Products() {
                     <td className="px-2 py-1.5 text-surface-700">{product.rubber_code || '-'}</td>
                     <td className="px-2 py-1.5 text-surface-700">{product.product_category || '-'}</td>
                     <td className="px-2 py-1.5 text-center text-surface-700">{product.order_point || '-'}</td>
-                    <td className="px-2 py-1.5 text-right text-surface-700">{product.unit_cost != null ? Number(product.unit_cost).toLocaleString() : '-'}</td>
+                    {canSeeCost && <td className="px-2 py-1.5 text-right text-surface-700">{product.unit_cost != null ? Number(product.unit_cost).toLocaleString() : '-'}</td>}
                     <td className="px-2 py-1.5 text-right text-surface-700">{product.safety_stock != null ? Number(product.safety_stock).toLocaleString() : '-'}</td>
                     <td className="px-2 py-1.5 text-right">
                       <div className="flex gap-1.5 justify-end">
@@ -777,6 +782,7 @@ export default function Products() {
               />
             </div>
             {/* ต้นทุนสินค้า */}
+            {canSeeCost && (
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">ต้นทุนสินค้า</label>
               <input
@@ -789,6 +795,7 @@ export default function Products() {
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               />
             </div>
+            )}
             {/* Safety Stock */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">Safety Stock</label>

@@ -3,21 +3,21 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
-/** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks */
+/** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
 const ensurePlanDeptEnd = async (workOrderName: string) => {
   if (!workOrderName) return
-  const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-  if (error || !data) return
-  const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-  const dept = 'เบิก'
+  const now = new Date().toISOString()
+  const patch: Record<string, Record<string, string>> = {}
   const procNames = ['หยิบของ', 'เสร็จแล้ว']
-  tracks[dept] = tracks[dept] || {}
   procNames.forEach((p) => {
-    if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
-    if (!tracks[dept][p].start) tracks[dept][p].start = new Date().toISOString()
-    tracks[dept][p].end = new Date().toISOString()
+    patch[p] = { start_if_null: now, end: now }
   })
-  await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+  const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+    p_job_name: workOrderName,
+    p_dept: 'เบิก',
+    p_patch: patch,
+  })
+  if (error) console.error('ensurePlanDeptEnd error:', error.message)
 }
 
 export default function ReviewSection() {

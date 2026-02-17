@@ -793,24 +793,29 @@ export default function Plan() {
         return
       }
 
-      const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
-      if (!tracks[dept]) tracks[dept] = {}
       const procs = (settings.processes[dept] || []).map((p) => p.name)
       const iso = raw ? toISODateTime(job.date, raw) : null
+      const patch: Record<string, Record<string, string | null>> = {}
       procs.forEach((p) => {
-        if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
         if (field === 'actualStart') {
-          tracks[dept][p].start = iso
+          patch[p] = { start: iso }
         } else {
-          tracks[dept][p].end = iso
-          if (iso && !tracks[dept][p].start) tracks[dept][p].start = iso
-        }
-        if (!iso) {
-          if (field === 'actualStart') tracks[dept][p].start = null
-          else tracks[dept][p].end = null
+          patch[p] = iso ? { start_if_null: iso, end: iso } : { end: null }
         }
       })
-      await updateJobField(job.id, { tracks })
+      setDbStatus('กำลังอัปเดต...')
+      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+        p_job_id: job.id,
+        p_dept: dept,
+        p_patch: patch,
+      })
+      if (error) {
+        setDbStatus('อัปเดตล้มเหลว')
+        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+        return
+      }
+      setJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, tracks: newTracks } : j)))
+      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
     [dashEdit, settings.processes, updateJobField]
   )
@@ -821,35 +826,21 @@ export default function Plan() {
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (t?.start && !window.confirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?')) return
-      const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
-      if (!tracks[dept]) tracks[dept] = {}
-      if (!tracks[dept][proc]) tracks[dept][proc] = { start: null, end: null }
-      tracks[dept][proc].start = nowISO()
-      const isFirstTimestamp = !Object.values(tracks[dept] || {}).some((p) => p?.start || p?.end)
-      const updates: Partial<PlanJob> = { tracks }
-      if (isFirstTimestamp) {
-        try {
-          const computationOrder = ['เบิก', 'STK', 'CTT', 'TUBE', 'STAMP', 'LASER', 'QC', 'PACK']
-          const allDepts = settings.departments
-          const orderedDepts = [...new Set([...computationOrder, ...allDepts])]
-          const allTimelines: Record<string, TimelineItem[]> = {}
-          orderedDepts.forEach((d) => {
-            if (allDepts.includes(d)) {
-              allTimelines[d] = computePlanTimeline(d, job.date, settings, jobs, 'cut', { precomputed: allTimelines })
-            }
-          })
-          const currentPlan = allTimelines[dept]?.find((p) => p.id === jobId)
-          if (currentPlan && Number.isFinite(currentPlan.start) && Number.isFinite(currentPlan.end)) {
-            const locked_plans = { ...(job.locked_plans || {}), [dept]: { start: currentPlan.start, end: currentPlan.end } }
-            updates.locked_plans = locked_plans
-          }
-        } catch (_err) {
-          // skip locked_plans on error
-        }
+      setDbStatus('กำลังอัปเดต...')
+      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+        p_job_id: jobId,
+        p_dept: dept,
+        p_patch: { [proc]: { start: nowISO() } },
+      })
+      if (error) {
+        setDbStatus('อัปเดตล้มเหลว')
+        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+        return
       }
-      await updateJobField(jobId, updates)
+      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs, settings, updateJobField]
+    [jobs]
   )
 
   const markEnd = useCallback(
@@ -858,14 +849,22 @@ export default function Plan() {
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (!t?.start && !window.confirm('ยังไม่กดเริ่ม จะบันทึกเสร็จเลยหรือไม่?')) return
-      const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
-      if (!tracks[dept]) tracks[dept] = {}
-      if (!tracks[dept][proc]) tracks[dept][proc] = { start: null, end: null }
-      if (!tracks[dept][proc].start) tracks[dept][proc].start = nowISO()
-      tracks[dept][proc].end = nowISO()
-      await updateJobField(jobId, { tracks })
+      const now = nowISO()
+      setDbStatus('กำลังอัปเดต...')
+      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+        p_job_id: jobId,
+        p_dept: dept,
+        p_patch: { [proc]: { start_if_null: now, end: now } },
+      })
+      if (error) {
+        setDbStatus('อัปเดตล้มเหลว')
+        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+        return
+      }
+      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs, updateJobField]
+    [jobs]
   )
 
   const backStep = useCallback(
@@ -874,39 +873,44 @@ export default function Plan() {
       if (!job) return
       const skipConfirm = opts?.skipConfirm === true
       const procs = (settings.processes[dept] || []).map((p) => p.name)
-      const tracks = JSON.parse(JSON.stringify(job.tracks || {})) as PlanJob['tracks']
-      if (!tracks[dept]) tracks[dept] = {}
-      const updates: Partial<PlanJob> = { tracks }
-      let currentIndex = procs.findIndex((p) => !tracks[dept][p]?.end)
+      const tracks = job.tracks?.[dept] || {}
+      let currentIndex = procs.findIndex((p) => !tracks[p]?.end)
+
+      let patch: Record<string, Record<string, string | null>> | null = null
+
       if (currentIndex === -1 && procs.length > 0) {
         const lastProc = procs[procs.length - 1]
         if (!skipConfirm && !window.confirm(`ยกเลิกการเสร็จสิ้นของขั้นตอน "${lastProc}"?`)) return
-        tracks[dept][lastProc] = tracks[dept][lastProc] || { start: null, end: null }
-        tracks[dept][lastProc].end = null
-        await updateJobField(jobId, updates)
+        patch = { [lastProc]: { end: null } }
+      } else if (currentIndex >= 0) {
+        const currentProc = procs[currentIndex]
+        const t = tracks[currentProc] || { start: null, end: null }
+        if (t.start) {
+          if (!skipConfirm && !window.confirm(`ล้างเวลาเริ่มของขั้นตอน "${currentProc}"?`)) return
+          patch = { [currentProc]: { start: null, end: null } }
+        } else if (currentIndex > 0) {
+          const prevProc = procs[currentIndex - 1]
+          if (!skipConfirm && !window.confirm(`ย้อนกลับไปแก้ไขขั้นตอนก่อนหน้า "${prevProc}"?`)) return
+          patch = { [prevProc]: { end: null } }
+        }
+      }
+
+      if (!patch) return
+      setDbStatus('กำลังอัปเดต...')
+      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+        p_job_id: jobId,
+        p_dept: dept,
+        p_patch: patch,
+      })
+      if (error) {
+        setDbStatus('อัปเดตล้มเหลว')
+        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
         return
       }
-      const currentProc = procs[currentIndex]
-      const t = tracks[dept][currentProc] || { start: null, end: null }
-      if (t.start) {
-        if (!skipConfirm && !window.confirm(`ล้างเวลาเริ่มของขั้นตอน "${currentProc}"?`)) return
-        const isOnlyStartAction =
-          Object.values(tracks[dept]).filter((p) => p?.start).length === 1 &&
-          !Object.values(tracks[dept]).some((p) => p?.end)
-        if (isOnlyStartAction && job.locked_plans?.[dept]) {
-          const locked_plans = { ...job.locked_plans }
-          delete locked_plans[dept]
-          updates.locked_plans = locked_plans
-        }
-        tracks[dept][currentProc] = { ...t, start: null, end: null }
-      } else if (currentIndex > 0) {
-        const prevProc = procs[currentIndex - 1]
-        if (!skipConfirm && !window.confirm(`ย้อนกลับไปแก้ไขขั้นตอนก่อนหน้า "${prevProc}"?`)) return
-        if (tracks[dept][prevProc]) tracks[dept][prevProc].end = null
-      }
-      await updateJobField(jobId, updates)
+      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs, settings, updateJobField]
+    [jobs, settings]
   )
 
   const deleteJob = useCallback(async (job: PlanJob) => {

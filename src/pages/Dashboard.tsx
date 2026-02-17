@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import {
   FiPackage,
@@ -9,17 +9,23 @@ import {
   FiShoppingBag,
   FiArchive,
   FiBarChart2,
+  FiRefreshCw,
 } from 'react-icons/fi'
 
 interface OrderRow {
+  status: string
+  total_amount: number
+  channel_code: string
+  entry_date: string
+}
+
+interface TopOrder {
   id: string
   bill_no: string
   status: string
   total_amount: number
   channel_code: string
   customer_name: string
-  created_at: string
-  work_order_name?: string | null
 }
 
 interface IssueRow {
@@ -31,9 +37,15 @@ const STATUS_COLORS: Record<string, string> = {
   'รอลงข้อมูล': 'bg-yellow-100 text-yellow-700',
   'รอตรวจคำสั่งซื้อ': 'bg-orange-100 text-orange-700',
   'ลงข้อมูลเสร็จสิ้น': 'bg-blue-100 text-blue-700',
+  'ลงข้อมูลผิด': 'bg-red-100 text-red-700',
+  'ตรวจสอบไม่ผ่าน': 'bg-rose-100 text-rose-700',
+  'ตรวจสอบไม่สำเร็จ': 'bg-pink-100 text-pink-700',
   'ตรวจสอบแล้ว': 'bg-indigo-100 text-indigo-700',
+  'รอออกแบบ': 'bg-violet-100 text-violet-700',
+  'ออกแบบแล้ว': 'bg-fuchsia-100 text-fuchsia-700',
   'รอคอนเฟิร์ม': 'bg-purple-100 text-purple-700',
   'คอนเฟิร์มแล้ว': 'bg-cyan-100 text-cyan-700',
+  'เสร็จสิ้น': 'bg-lime-100 text-lime-700',
   'ใบสั่งงาน': 'bg-teal-100 text-teal-700',
   'ใบงานกำลังผลิต': 'bg-amber-100 text-amber-700',
   'จัดส่งแล้ว': 'bg-green-100 text-green-700',
@@ -44,26 +56,36 @@ function formatCurrency(n: number) {
   return '฿' + n.toLocaleString('th-TH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 }
 
+function toLocalDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export default function Dashboard() {
   const [orders, setOrders] = useState<OrderRow[]>([])
+  const [topOrders, setTopOrders] = useState<TopOrder[]>([])
   const [products, setProducts] = useState<{ id: string; product_category: string | null }[]>([])
   const [issues, setIssues] = useState<IssueRow[]>([])
   const [orderItems, setOrderItems] = useState<{ product_name: string; quantity: number }[]>([])
   const [loading, setLoading] = useState(true)
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null)
 
-  useEffect(() => {
-    loadData()
-  }, [])
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true)
     try {
-      const [ordersRes, productsRes, issuesRes, itemsRes] = await Promise.all([
+      const [ordersRes, topOrdersRes, productsRes, issuesRes, itemsRes] = await Promise.all([
+        // Fetch ALL orders with only the columns needed for summary/breakdown
+        // No .limit() cap -- use large limit to override Supabase default of 1000
         supabase
           .from('or_orders')
-          .select('id, bill_no, status, total_amount, channel_code, customer_name, created_at, work_order_name')
-          .order('created_at', { ascending: false })
-          .limit(1000),
+          .select('status, total_amount, channel_code, entry_date')
+          .limit(500000),
+        // Top 10 revenue orders (small, specific query)
+        supabase
+          .from('or_orders')
+          .select('id, bill_no, status, total_amount, channel_code, customer_name')
+          .neq('status', 'ยกเลิก')
+          .order('total_amount', { ascending: false })
+          .limit(10),
         supabase
           .from('pr_products')
           .select('id, product_category')
@@ -71,31 +93,44 @@ export default function Dashboard() {
         supabase
           .from('or_issues')
           .select('id, status'),
+        // Fetch ALL order items for top-selling calculation
         supabase
           .from('or_order_items')
-          .select('product_name, quantity'),
+          .select('product_name, quantity')
+          .limit(500000),
       ])
       if (ordersRes.data) setOrders(ordersRes.data as OrderRow[])
+      if (topOrdersRes.data) setTopOrders(topOrdersRes.data as TopOrder[])
       if (productsRes.data) setProducts(productsRes.data)
       if (issuesRes.data) setIssues(issuesRes.data as IssueRow[])
       if (itemsRes.data) setOrderItems(itemsRes.data as { product_name: string; quantity: number }[])
+      setLastLoaded(new Date())
     } catch (e) {
       console.error('Dashboard load failed:', e)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const today = new Date().toISOString().slice(0, 10)
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  // Auto-refresh every 5 minutes
+  useEffect(() => {
+    const interval = setInterval(loadData, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [loadData])
+
+  const today = toLocalDate(new Date())
 
   const stats = useMemo(() => {
     const totalOrders = orders.length
-    const todayOrders = orders.filter((o) => o.created_at?.slice(0, 10) === today).length
-    const totalRevenue = orders
-      .filter((o) => o.status !== 'ยกเลิก')
-      .reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0)
-    const todayRevenue = orders
-      .filter((o) => o.created_at?.slice(0, 10) === today && o.status !== 'ยกเลิก')
+    const todayOrders = orders.filter((o) => o.entry_date === today).length
+    const nonCancelled = orders.filter((o) => o.status !== 'ยกเลิก')
+    const totalRevenue = nonCancelled.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0)
+    const todayRevenue = nonCancelled
+      .filter((o) => o.entry_date === today)
       .reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0)
     const shipped = orders.filter((o) => o.status === 'จัดส่งแล้ว').length
     const pending = orders.filter((o) =>
@@ -107,7 +142,8 @@ export default function Dashboard() {
     const cancelled = orders.filter((o) => o.status === 'ยกเลิก').length
     const totalProducts = products.length
     const openIssues = issues.filter((i) => i.status === 'On').length
-    return { totalOrders, todayOrders, totalRevenue, todayRevenue, shipped, pending, production, cancelled, totalProducts, openIssues }
+    const avgOrderValue = nonCancelled.length > 0 ? totalRevenue / nonCancelled.length : 0
+    return { totalOrders, todayOrders, totalRevenue, todayRevenue, shipped, pending, production, cancelled, totalProducts, openIssues, avgOrderValue }
   }, [orders, products, issues, today])
 
   const statusBreakdown = useMemo(() => {
@@ -128,14 +164,6 @@ export default function Dashboard() {
     })
     return Object.entries(map).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8)
   }, [orders])
-
-  const topRevenueOrders = useMemo(() =>
-    [...orders]
-      .filter((o) => o.status !== 'ยกเลิก' && Number(o.total_amount) > 0)
-      .sort((a, b) => Number(b.total_amount) - Number(a.total_amount))
-      .slice(0, 10),
-    [orders]
-  )
 
   const categoryBreakdown = useMemo(() => {
     const map: Record<string, number> = {}
@@ -162,7 +190,7 @@ export default function Dashboard() {
 
   const CATEGORY_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6']
 
-  if (loading) {
+  if (loading && !lastLoaded) {
     return (
       <div className="flex justify-center items-center py-24">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
@@ -172,6 +200,23 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 pt-4">
+      {/* Refresh bar */}
+      <div className="flex items-center justify-end gap-3">
+        {lastLoaded && (
+          <span className="text-sm text-gray-400">
+            อัปเดตล่าสุด: {lastLoaded.toLocaleTimeString('th-TH')}
+          </span>
+        )}
+        <button
+          onClick={loadData}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 shadow-sm"
+        >
+          <FiRefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          รีเฟรช
+        </button>
+      </div>
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="bg-white rounded-2xl border border-gray-200 p-5 flex items-center gap-4 shadow-sm">
@@ -257,9 +302,7 @@ export default function Dashboard() {
           </div>
           <div>
             <div className="text-sm text-gray-500 font-medium">ยอดเฉลี่ย/บิล</div>
-            <div className="text-2xl font-black text-gray-900">
-              {stats.totalOrders > 0 ? formatCurrency(Math.round(stats.totalRevenue / (stats.totalOrders - stats.cancelled || 1))) : '฿0'}
-            </div>
+            <div className="text-2xl font-black text-gray-900">{formatCurrency(Math.round(stats.avgOrderValue))}</div>
           </div>
         </div>
       </div>
@@ -323,13 +366,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Bottom section: Product categories + Recent orders */}
+      {/* Bottom section: Product categories + Top Revenue Orders */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Product Categories */}
         <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
           <h3 className="text-lg font-bold text-gray-900 mb-4">หมวดหมู่สินค้า</h3>
           <div className="flex items-center gap-6">
-            {/* Simple donut representation */}
             <div className="relative w-32 h-32 flex-shrink-0">
               <svg viewBox="0 0 36 36" className="w-32 h-32 -rotate-90">
                 {(() => {
@@ -389,7 +431,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {topRevenueOrders.map((o, idx) => (
+                {topOrders.map((o, idx) => (
                   <tr key={o.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-2.5 text-center">
                       {idx < 3 ? (
@@ -415,7 +457,7 @@ export default function Dashboard() {
                     </td>
                   </tr>
                 ))}
-                {topRevenueOrders.length === 0 && (
+                {topOrders.length === 0 && (
                   <tr>
                     <td colSpan={5} className="p-6 text-center text-gray-400">ไม่มีข้อมูล</td>
                   </tr>

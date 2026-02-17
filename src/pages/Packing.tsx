@@ -52,6 +52,8 @@ type WorkOrderStatus = {
   isPartiallyPacked: boolean
   qcCompleted: boolean
   qcSkipped: boolean
+  totalItems: number
+  packedItems: number
 }
 
 type RecordingState = {
@@ -160,19 +162,13 @@ export default function Packing() {
 
   const ensurePlanDeptStart = async (workOrderName: string) => {
     if (!workOrderName) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'PACK'
-    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
-    tracks[dept] = tracks[dept] || {}
-    procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'PACK',
+      p_patch: { 'เริ่มแพ็ค': { start_if_null: now } },
     })
-    const firstProc = procNames[0]
-    if (tracks[dept][firstProc]?.start) return
-    tracks[dept][firstProc].start = new Date().toISOString()
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+    if (error) console.error('PACK ensurePlanDeptStart error:', error.message)
   }
 
   const checkAndMarkPackEnd = async (workOrderName: string) => {
@@ -183,19 +179,18 @@ export default function Packing() {
       .eq('work_order_name', workOrderName)
       .neq('status', 'จัดส่งแล้ว')
     if ((count || 0) !== 0) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'PACK'
-    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
-    tracks[dept] = tracks[dept] || {}
     const now = new Date().toISOString()
+    const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
+    const patch: Record<string, Record<string, string>> = {}
     procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
-      if (!tracks[dept][p].start) tracks[dept][p].start = now
-      tracks[dept][p].end = now
+      patch[p] = { start_if_null: now, end: now }
     })
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'PACK',
+      p_patch: patch,
+    })
+    if (error) console.error('PACK checkAndMarkPackEnd error:', error.message)
   }
 
   const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, qcReady: boolean) => {
@@ -387,6 +382,11 @@ export default function Packing() {
     return aggregatedData.every((group) => group[0].isOrderComplete)
   }, [aggregatedData])
 
+  const allGroupsScanned = useMemo(() => {
+    if (aggregatedData.length === 0) return false
+    return completedIndices.size === aggregatedData.length
+  }, [completedIndices, aggregatedData])
+
   const currentGroup = useMemo(() => {
     if (currentIndex < 0) return null
     return aggregatedData[currentIndex] || null
@@ -572,11 +572,20 @@ export default function Packing() {
               o.packing_meta?.parcelScanned ||
               (o.or_order_items || []).some((oi: any) => oi.packing_status === 'สแกนแล้ว')
           )
+          let totalItems = 0
+          let packedItems = 0
+          ordersInWo.forEach((o: any) => {
+            const items = o.or_order_items || []
+            totalItems += items.length
+            packedItems += items.filter((oi: any) => oi.packing_status === 'สแกนแล้ว').length
+          })
           statusMap[wo.work_order_name] = {
             hasTracking,
             isPartiallyPacked,
             qcCompleted: finishedWoSet.has(wo.work_order_name),
             qcSkipped: skippedWoSet.has(wo.work_order_name),
+            totalItems,
+            packedItems,
           }
         })
         setWorkOrderStatus(statusMap)
@@ -889,6 +898,37 @@ export default function Packing() {
       openAlert('ปิดใบงานเรียบร้อย')
       await loadWorkOrdersForPacking()
     })
+  }
+
+  async function shipAllAndFinalize() {
+    if (!currentWorkOrderName) return
+    setIsLoadingOrders(true)
+    try {
+      const ids: string[] = []
+      completedIndices.forEach((index) => {
+        const group = aggregatedData[index]
+        if (group && !group[0].isOrderComplete) ids.push(group[0].order_id)
+      })
+
+      if (ids.length > 0) {
+        const shippedBy = user?.username || user?.email || 'unknown'
+        const { error } = await supabase
+          .from('or_orders')
+          .update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() })
+          .in('id', ids)
+        if (error) throw error
+      }
+
+      await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', currentWorkOrderName)
+      await checkAndMarkPackEnd(currentWorkOrderName)
+      playSuccessSound()
+      openAlert(`จัดส่งสำเร็จทั้งหมด ${ids.length || aggregatedData.length} รายการ!`)
+      await loadWorkOrdersForPacking()
+    } catch (error: any) {
+      openAlert(error.message)
+    } finally {
+      setIsLoadingOrders(false)
+    }
   }
 
   function playSuccessSound() {
@@ -1234,9 +1274,23 @@ export default function Packing() {
                               </span>
                             )}
                           </div>
-                          <div className="text-sm text-gray-500 mt-1">
-                            {wo.order_count} บิล
-                            {isPartiallyPacked && <span className="ml-2 text-blue-600 font-medium">🔄 แพ็คค้าง</span>}
+                          <div className="text-sm text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                            <span>{wo.order_count} บิล</span>
+                            <span className="text-gray-400">|</span>
+                            <span>รวม {status?.totalItems ?? 0} รายการ</span>
+                            {(status?.packedItems ?? 0) > 0 && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-emerald-600 font-medium">แพ็คแล้ว {status?.packedItems ?? 0}</span>
+                              </>
+                            )}
+                            {(status?.totalItems ?? 0) - (status?.packedItems ?? 0) > 0 && (status?.packedItems ?? 0) > 0 && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-amber-600 font-medium">คงเหลือ {(status?.totalItems ?? 0) - (status?.packedItems ?? 0)}</span>
+                              </>
+                            )}
+                            {isPartiallyPacked && <span className="ml-1 text-blue-600 font-medium">🔄 แพ็คค้าง</span>}
                           </div>
                         </div>
                         {canSelect ? (
@@ -1418,7 +1472,15 @@ export default function Packing() {
                   >
                     ❮ กลับไปเลือกใบงาน
                   </button>
-                {hasPendingCompleted && (
+                {allGroupsScanned && !allGroupsShipped && (
+                  <button
+                    className="px-5 py-2.5 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 font-bold shadow-lg animate-pulse"
+                    onClick={() => openConfirm(`ยืนยันจัดส่งทั้งหมด ${aggregatedData.length} ออเดอร์ แล้วย้ายไปจัดส่งแล้ว?`, shipAllAndFinalize)}
+                  >
+                    🚚 จัดส่งออเดอร์ทั้งหมด
+                  </button>
+                )}
+                {hasPendingCompleted && !allGroupsScanned && (
                   <button
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
                     onClick={shipAllScannedOrders}

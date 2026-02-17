@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import { getPublicUrl } from '../../lib/qcApi'
 import { Order } from '../../types'
@@ -49,6 +49,71 @@ const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' |
   unit_price: 'unit_price',
 }
 
+const ITEM_LEVEL_DEF: Array<{ key: ErrorFieldKey; label: string }> = [
+  { key: 'product_name', label: 'ชื่อสินค้า' },
+  { key: 'ink_color', label: 'สีหมึก' },
+  { key: 'layer', label: 'ชั้น' },
+  { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
+  { key: 'line_art', label: 'ลายเส้น' },
+  { key: 'font', label: 'ฟอนต์' },
+  { key: 'line_1', label: 'บรรทัด 1' },
+  { key: 'line_2', label: 'บรรทัด 2' },
+  { key: 'line_3', label: 'บรรทัด 3' },
+  { key: 'quantity', label: 'จำนวน' },
+  { key: 'unit_price', label: 'ราคา' },
+]
+
+/** คืนฟิลด์ที่แสดงสำหรับ item เดียว โดยดู product override ก่อน แล้ว fallback ไปหมวดหมู่ */
+function getVisibleFieldsForItem(
+  item: any,
+  categoryFieldSettings: Record<string, Record<string, boolean>>,
+  productCategoryByProductId: Record<string, string>,
+  productFieldOverrides?: Record<string, Record<string, boolean | null>>
+): Set<ErrorFieldKey> {
+  const enabled = new Set<ErrorFieldKey>()
+  const hasSettings = Object.keys(categoryFieldSettings).length > 0
+  const hasOverrides = productFieldOverrides && Object.keys(productFieldOverrides).length > 0
+  const productId = item.product_id != null ? String(item.product_id) : null
+
+  if (!hasSettings && !hasOverrides) {
+    ITEM_LEVEL_DEF.forEach((d) => enabled.add(d.key))
+    return enabled
+  }
+
+  for (const def of ITEM_LEVEL_DEF) {
+    const settingsKey = (ITEM_FIELD_TO_SETTINGS_KEY as Record<ErrorFieldKey, string>)[def.key]
+
+    // 1. ตรวจ product-level override ก่อน
+    if (productId && hasOverrides) {
+      const overrides = productFieldOverrides![productId]
+      if (overrides) {
+        const ov = overrides[settingsKey]
+        if (ov !== undefined && ov !== null) {
+          if (ov === true) enabled.add(def.key)
+          continue
+        }
+      }
+    }
+
+    // 2. Fallback ไปดูหมวดหมู่
+    const cat = productId ? productCategoryByProductId[productId] : null
+    if (!cat || String(cat).trim() === '') {
+      enabled.add(def.key)
+      continue
+    }
+    const catSettings = categoryFieldSettings[String(cat).trim()]
+    if (!catSettings) {
+      enabled.add(def.key)
+      continue
+    }
+    const v = catSettings[settingsKey] as boolean | string | undefined
+    if (v === undefined || v === null || v === true || v === 'true') {
+      enabled.add(def.key)
+    }
+  }
+  return enabled
+}
+
 /** คืนรายการฟิลด์ที่แสดงในตัวเลือก "ลงข้อมูลผิด" ตามฟิลด์ที่ให้กรอก (pr_category_field_settings + product override) เหมือนฟอร์มลงออเดอร์ */
 function getVisibleErrorFieldsForOrder(
   order: Order | null,
@@ -74,68 +139,14 @@ function getVisibleErrorFieldsForOrder(
 
   if (!hasItems) return orderLevel
 
-  const itemLevelDef: Array<{ key: ErrorFieldKey; label: string }> = [
-    { key: 'product_name', label: 'ชื่อสินค้า' },
-    { key: 'ink_color', label: 'สีหมึก' },
-    { key: 'layer', label: 'ชั้น' },
-    { key: 'cartoon_pattern', label: 'ลายการ์ตูน' },
-    { key: 'line_art', label: 'ลายเส้น' },
-    { key: 'font', label: 'ฟอนต์' },
-    { key: 'line_1', label: 'บรรทัด 1' },
-    { key: 'line_2', label: 'บรรทัด 2' },
-    { key: 'line_3', label: 'บรรทัด 3' },
-    { key: 'quantity', label: 'จำนวน' },
-    { key: 'unit_price', label: 'ราคา' },
-  ]
-
-  const hasSettings = Object.keys(categoryFieldSettings).length > 0
-  const hasOverrides = productFieldOverrides && Object.keys(productFieldOverrides).length > 0
-
-  if (!hasSettings && !hasOverrides) {
-    return [...orderLevel, ...itemLevelDef]
-  }
-
+  // รวมฟิลด์จากทุก item (union) — ใช้สำหรับ order-level aggregation
   const enabledItemFields = new Set<ErrorFieldKey>()
-  for (const def of itemLevelDef) {
-    const settingsKey = (ITEM_FIELD_TO_SETTINGS_KEY as Record<ErrorFieldKey, string>)[def.key]
-    for (const item of items) {
-      const productId = item.product_id != null ? String(item.product_id) : null
-
-      // 1. ตรวจ product-level override ก่อน
-      if (productId && hasOverrides) {
-        const overrides = productFieldOverrides![productId]
-        if (overrides) {
-          const ov = overrides[settingsKey]
-          if (ov !== undefined && ov !== null) {
-            if (ov === true) {
-              enabledItemFields.add(def.key)
-              break
-            }
-            continue
-          }
-        }
-      }
-
-      // 2. Fallback ไปดูหมวดหมู่
-      const cat = productId ? productCategoryByProductId[productId] : null
-      if (!cat || String(cat).trim() === '') {
-        enabledItemFields.add(def.key)
-        break
-      }
-      const catSettings = categoryFieldSettings[String(cat).trim()]
-      if (!catSettings) {
-        enabledItemFields.add(def.key)
-        break
-      }
-      const v = catSettings[settingsKey] as boolean | string | undefined
-      if (v === undefined || v === null || v === true || v === 'true') {
-        enabledItemFields.add(def.key)
-        break
-      }
-    }
+  for (const item of items) {
+    const perItem = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+    perItem.forEach((k) => enabledItemFields.add(k))
   }
 
-  const itemLevel = itemLevelDef.filter((def) => enabledItemFields.has(def.key))
+  const itemLevel = ITEM_LEVEL_DEF.filter((def) => enabledItemFields.has(def.key))
   return [...orderLevel, ...itemLevel]
 }
 
@@ -350,6 +361,37 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }, [selectedOrder?.id])
 
+  // ปุ่มลูกศร ขึ้น/ลง เพื่อเลื่อนรายการบิล
+  const navigateOrder = useCallback(
+    (direction: 'up' | 'down') => {
+      if (orders.length === 0) return
+      const currentIdx = selectedOrder ? orders.findIndex((o) => o.id === selectedOrder.id) : -1
+      const nextIdx = direction === 'up'
+        ? (currentIdx <= 0 ? orders.length - 1 : currentIdx - 1)
+        : (currentIdx >= orders.length - 1 ? 0 : currentIdx + 1)
+      setSelectedOrder(orders[nextIdx])
+      const el = document.getElementById(`order-review-item-${orders[nextIdx].id}`)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    },
+    [orders, selectedOrder]
+  )
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        navigateOrder('up')
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        navigateOrder('down')
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [navigateOrder])
+
   async function loadOrders(silent = false): Promise<Order[]> {
     if (!silent) setLoading(true)
     try {
@@ -537,8 +579,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
               {orders.map((order) => (
                 <button
                   key={order.id}
+                  id={`order-review-item-${order.id}`}
                   onClick={() => setSelectedOrder(order)}
-                  className={`w-full p-4 text-left hover:bg-gray-50 transition-colors ${
+                  className={`w-full p-4 text-left hover:bg-gray-50 transition-colors focus:outline-none ${
                     selectedOrder?.id === order.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
                   }`}
                 >
@@ -651,15 +694,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       {(() => {
                         const orderItems: any[] =
                           (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-                        const { itemLevel } = getOrderLevelAndItemLevelErrorFields(
-                          selectedOrder,
-                          categoryFieldSettings,
-                          productCategoryByProductId,
-                          productFieldOverrides
-                        )
-                        const itemLevelKeys = new Set<ErrorFieldKey>(itemLevel.map((field) => field.key))
 
                         return orderItems.map((item: any) => {
+                        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
                         const product = productImageMap[item.product_id] || null
                         const productImageUrl = product?.product_code
                           ? getPublicUrl(PRODUCT_IMAGES_BUCKET, product.product_code, '.jpg')
@@ -682,7 +719,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           { key: 'line_2' as ErrorFieldKey, label: 'บรรทัด 2', value: item.line_2 || '-' },
                           { key: 'line_3' as ErrorFieldKey, label: 'บรรทัด 3', value: item.line_3 || '-' },
                         ]
-                          .filter((row) => itemLevelKeys.has(row.key))
+                          .filter((row) => perItemKeys.has(row.key))
                           .filter((row) => {
                             if (itemLineCount == null) return true
                             if (row.key === 'line_1') return itemLineCount >= 1
@@ -690,8 +727,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                             if (row.key === 'line_3') return itemLineCount >= 3
                             return true
                           })
-                        const showQuantity = itemLevelKeys.has('quantity')
-                        const showUnitPrice = itemLevelKeys.has('unit_price')
+                        const showQuantity = perItemKeys.has('quantity')
+                        const showUnitPrice = perItemKeys.has('unit_price')
 
                         return (
                           <div key={item.id} className="border rounded-lg p-3">
@@ -841,13 +878,23 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 </div>
                 {(() => {
                   const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-                  const { itemLevel } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
-                  if (orderItems.length === 0 || itemLevel.length === 0) return null
+                  if (orderItems.length === 0) return null
+
+                  const channelCode = (selectedOrder as any)?.channel_code || ''
+                  const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
+                    ? [...ORDER_LEVEL_KEYS, 'unit_price']
+                    : ORDER_LEVEL_KEYS
+
                   return (
                     <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
                       <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับรายการ — เลือกรายการที่ผิดต่อรายการ</h3>
                       <div className="space-y-4">
-                        {orderItems.map((item: any, index: number) => (
+                        {orderItems.map((item: any, index: number) => {
+                          const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+                          const perItemLevel = ITEM_LEVEL_DEF
+                            .filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
+                          if (perItemLevel.length === 0) return null
+                          return (
                           <div key={item.id || index} className="border border-amber-200 rounded-lg p-3 bg-white/60">
                             <div className="text-sm font-medium text-amber-900 mb-2">
                               รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
@@ -856,7 +903,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                               )}
                             </div>
                             <div className="grid grid-cols-1 gap-1.5">
-                              {itemLevel
+                              {perItemLevel
                                 .filter(({ key }) => {
                                   const pk = item.cartoon_pattern || ''
                                   const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
@@ -884,7 +931,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                               ))}
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </div>
                   )

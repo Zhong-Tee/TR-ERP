@@ -79,6 +79,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (path.startsWith('/warehouse')) return 'คลัง'
     if (path.startsWith('/purchase')) return 'สั่งซื้อ'
     if (path.startsWith('/sales-reports')) return 'รายงานยอดขาย'
+    if (path.startsWith('/kpi')) return 'KPI'
     if (path.startsWith('/settings')) return 'ตั้งค่า'
     return 'เมนู'
   })()

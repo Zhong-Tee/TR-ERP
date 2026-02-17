@@ -12,7 +12,7 @@ import CashBillModal from '../components/account/CashBillModal'
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'slip-age'
 type AccountTab = 'refunds' | 'tax-invoice' | 'cash-bill' | 'approvals'
 type ApprovalFilter = 'refund' | 'tax-invoice' | 'cash-bill'
 
@@ -726,6 +726,7 @@ export default function Account() {
             { key: 'slip-verification' as AccountSection, label: 'รายการการตรวจสลิป' },
             { key: 'manual-slip-check' as AccountSection, label: 'ตรวจสลิปมือ' },
             { key: 'bill-edit' as AccountSection, label: 'แก้ไขบิล' },
+            { key: 'slip-age' as AccountSection, label: 'อายุสลิป' },
           ]).filter((s) => hasAccess(`account-${s.key}`)).map((s) => (
             <button
               key={s.key}
@@ -907,6 +908,88 @@ export default function Account() {
         <ManualSlipCheckSection />
       ) : accountSection === 'bill-edit' ? (
         <BillEditSection />
+      ) : accountSection === 'slip-age' ? (
+        <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-indigo-50">
+            <h2 className="text-lg font-bold text-gray-800">อายุสลิปที่รองรับการตรวจสอบ</h2>
+            <p className="text-sm text-gray-500 mt-1">ระยะเวลาที่สลิปสามารถนำมาตรวจสอบได้ แยกตามแอปพลิเคชันธนาคาร</p>
+          </div>
+          <div className="p-6 space-y-6">
+            {/* 30 วัน */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold bg-green-100 text-green-700">
+                  <i className="fas fa-calendar-check mr-1.5"></i>30 วัน
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {[
+                  { name: 'K PLUS', bank: 'ธนาคารกสิกรไทย', logo: 'kbank', brandColor: '#138f2d' },
+                  { name: 'MAKE by KBank', bank: 'ธนาคารกสิกรไทย', logo: 'kbank', brandColor: '#138f2d' },
+                  { name: 'Krungthai NEXT', bank: 'ธนาคารกรุงไทย', logo: 'ktb', brandColor: '#1ba5e1' },
+                  { name: 'Paotang', bank: 'ธนาคารกรุงไทย', logo: 'ktb', brandColor: '#1ba5e1' },
+                  { name: 'Bangkok Bank', bank: 'ธนาคารกรุงเทพ', logo: 'bbl', brandColor: '#1e4598' },
+                  { name: 'CIMB THAI', bank: 'ธนาคารซีไอเอ็มบี', logo: 'cimb', brandColor: '#7e2f36' },
+                  { name: 'UOB TMRW Thailand', bank: 'ธนาคารยูโอบี', logo: 'uob', brandColor: '#0b3979' },
+                ].map((app) => (
+                  <div key={app.name} className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-lg border border-gray-100 hover:border-green-200 hover:bg-green-50/30 transition-colors">
+                    <div className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center p-2" style={{ backgroundColor: app.brandColor }}>
+                      <img src={`https://raw.githubusercontent.com/omise/banks-logo/master/th/${app.logo}.svg`} alt={app.bank} className="w-full h-full object-contain" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-gray-800 text-sm">{app.name}</div>
+                      <div className="text-xs text-gray-500">{app.bank}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 7 วัน */}
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold bg-amber-100 text-amber-700">
+                  <i className="fas fa-calendar-day mr-1.5"></i>7 วัน
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                {[
+                  { name: 'SCB Easy', bank: 'ธนาคารไทยพาณิชย์', logo: 'scb', brandColor: '#4e2e7f' },
+                  { name: 'TTB Touch', bank: 'ธนาคารทหารไทยธนชาต', logo: 'ttb', brandColor: '#fc4f1f' },
+                  { name: 'MyMo by GSB', bank: 'ธนาคารออมสิน', logo: 'gsb', brandColor: '#eb198d' },
+                  { name: 'KMA-Krungsri', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
+                  { name: 'Kept', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
+                  { name: 'Dime!', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
+                  { name: 'KKP MOBILE', bank: 'ธนาคารเกียรตินาคินภัทร', logo: 'kk', brandColor: '#199cc5' },
+                  { name: 'GHB ALL GEN', bank: 'ธนาคารอาคารสงเคราะห์', logo: 'ghb', brandColor: '#f57d23' },
+                  { name: 'TISCO My Wealth', bank: 'ธนาคารทิสโก้', logo: 'tisco', brandColor: '#12549f' },
+                  { name: 'LHB You', bank: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', logo: 'lhb', brandColor: '#6d6e71' },
+                ].map((app) => (
+                  <div key={app.name} className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-lg border border-gray-100 hover:border-amber-200 hover:bg-amber-50/30 transition-colors">
+                    <div className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center p-2" style={{ backgroundColor: app.brandColor }}>
+                      <img src={`https://raw.githubusercontent.com/omise/banks-logo/master/th/${app.logo}.svg`} alt={app.bank} className="w-full h-full object-contain" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-gray-800 text-sm">{app.name}</div>
+                      <div className="text-xs text-gray-500">{app.bank}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* หมายเหตุ */}
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-sm text-blue-800">
+              <div className="flex gap-2">
+                <i className="fas fa-info-circle mt-0.5 shrink-0"></i>
+                <div>
+                  <p className="font-semibold mb-1">หมายเหตุ</p>
+                  <p>อายุสลิป คือ ระยะเวลาตั้งแต่วันที่ทำรายการโอนเงิน จนถึงวันที่นำสลิปมาตรวจสอบผ่านระบบ EasySlip หากเกินระยะเวลาที่กำหนด สลิปจะไม่สามารถตรวจสอบได้</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
       ) : (
         <>
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

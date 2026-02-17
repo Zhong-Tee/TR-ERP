@@ -22,6 +22,7 @@ import {
   FiBarChart2,
   FiSettings,
 } from 'react-icons/fi'
+import { LuWarehouse, LuGauge } from 'react-icons/lu'
 
 interface MenuItem {
   key: string
@@ -112,7 +113,7 @@ const menuItems: MenuItem[] = [
   {
     key: 'warehouse',
     label: 'คลัง',
-    icon: <FiHome className="w-6 h-6" />,
+    icon: <LuWarehouse className="w-6 h-6" />,
     path: '/warehouse',
     roles: ['superadmin', 'admin', 'admin-tr', 'store'],
   },
@@ -128,6 +129,13 @@ const menuItems: MenuItem[] = [
     label: 'รายงานยอดขาย',
     icon: <FiBarChart2 className="w-6 h-6" />,
     path: '/sales-reports',
+    roles: ['superadmin', 'admin', 'admin-tr'],
+  },
+  {
+    key: 'kpi',
+    label: 'KPI',
+    icon: <LuGauge className="w-6 h-6" />,
+    path: '/kpi',
     roles: ['superadmin', 'admin', 'admin-tr'],
   },
   {

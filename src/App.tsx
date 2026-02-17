@@ -17,6 +17,7 @@ import Wms from './pages/Wms'
 import Products from './pages/Products'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
+import KPIDashboard from './pages/KPI'
 import Settings from './pages/Settings'
 import Warehouse from './pages/Warehouse'
 import WarehouseAudit from './pages/WarehouseAudit'
@@ -45,6 +46,7 @@ const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
   { key: 'products', path: '/products', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'] },
   { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'admin-tr', 'store'] },
   { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'admin-tr'] },
+  { key: 'kpi', path: '/kpi', roles: ['superadmin', 'admin', 'admin-tr'] },
   { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'admin-tr'] },
 ]
 
@@ -349,6 +351,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr']}>
             <Layout>
               <SalesReports />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/kpi"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr']}>
+            <Layout>
+              <KPIDashboard />
             </Layout>
           </ProtectedRoute>
         }

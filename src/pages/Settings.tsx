@@ -318,16 +318,6 @@ export default function Settings() {
     { key: 'orders-issue', label: 'Issue', group: 'orders' },
     // ── รอตรวจคำสั่งซื้อ ──
     { key: 'admin-qc', label: 'รอตรวจคำสั่งซื้อ', group: '' },
-    // ── บัญชี ──
-    { key: 'account', label: 'บัญชี', group: '' },
-    { key: 'account-dashboard', label: 'Dashboard', group: 'account' },
-    { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
-    { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
-    { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
-    { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
-    { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
-    { key: 'account-cash-bill', label: 'ขอบิลเงินสด', group: 'account' },
-    { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     // ── Plan ──
     { key: 'plan', label: 'Plan', group: '' },
     { key: 'plan-dash', label: 'Dashboard (Master Plan)', group: 'plan' },
@@ -359,6 +349,17 @@ export default function Settings() {
     { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
     // ── ทวนสอบขนส่ง ──
     { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },
+    // ── บัญชี ──
+    { key: 'account', label: 'บัญชี', group: '' },
+    { key: 'account-dashboard', label: 'Dashboard', group: 'account' },
+    { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
+    { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
+    { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
+    { key: 'account-slip-age', label: 'อายุสลิป', group: 'account' },
+    { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
+    { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
+    { key: 'account-cash-bill', label: 'ขอบิลเงินสด', group: 'account' },
+    { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },
     // ── ลายการ์ตูน ──
@@ -374,8 +375,11 @@ export default function Settings() {
     { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },
     { key: 'purchase-po', label: 'PO (ใบสั่งซื้อ)', group: 'purchase' },
     { key: 'purchase-gr', label: 'GR (ใบรับสินค้า)', group: 'purchase' },
+    { key: 'purchase-sample', label: 'สินค้าตัวอย่าง', group: 'purchase' },
     // ── รายงานยอดขาย ──
     { key: 'sales-reports', label: 'รายงานยอดขาย', group: '' },
+    // ── KPI ──
+    { key: 'kpi', label: 'KPI', group: '' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },
     { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },

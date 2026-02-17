@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useAuthContext } from '../../../contexts/AuthContext'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems } from '../wmsUtils'
@@ -9,16 +10,25 @@ interface RequisitionDetailModalProps {
   onClose: () => void
 }
 
+const CAN_APPROVE_ROLES = ['superadmin', 'admin']
+
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
+  const { user } = useAuthContext()
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [createdByUser, setCreatedByUser] = useState<any | null>(null)
   const [approvedByUser, setApprovedByUser] = useState<any | null>(null)
-  const { showMessage, MessageModal } = useWmsModal()
+  const [approving, setApproving] = useState(false)
+  const [selectedPicker, setSelectedPicker] = useState('')
+  const [pickers, setPickers] = useState<any[]>([])
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+
+  const canApprove = CAN_APPROVE_ROLES.includes(user?.role || '') && requisition.status === 'pending'
 
   useEffect(() => {
     loadItems()
     loadUsers()
+    if (canApprove) loadPickers()
   }, [requisition])
 
   const loadItems = async () => {
@@ -50,6 +60,91 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
       setApprovedByUser(approvedBy.data)
     } catch (error) {
       console.error('Error loading users:', error)
+    }
+  }
+
+  const loadPickers = async () => {
+    try {
+      const { data, error } = await supabase.from('us_users').select('id, username').eq('role', 'picker').order('username')
+      if (error) throw error
+      setPickers(data || [])
+    } catch (error) {
+      console.error('Error loading pickers:', error)
+    }
+  }
+
+  const handleApprove = async () => {
+    if (!selectedPicker) {
+      showMessage({ message: 'กรุณาเลือกพนักงาน Picker' })
+      return
+    }
+
+    const ok = await showConfirm({
+      title: 'ยืนยันการอนุมัติ',
+      message: `ยืนยันการอนุมัติใบเบิก ${requisition.requisition_id}?\nจำนวนรายการ: ${items.length}\nมอบหมายให้: ${
+        pickers.find((p) => p.id === selectedPicker)?.username || '-'
+      }`,
+    })
+    if (!ok) return
+
+    setApproving(true)
+    try {
+      const { error: reqError } = await supabase
+        .from('wms_requisitions')
+        .update({
+          status: 'approved',
+          approved_by: user?.id,
+          approved_at: new Date().toISOString(),
+        })
+        .eq('id', requisition.id)
+
+      if (reqError) throw reqError
+
+      const orderData = items.map((item) => ({
+        order_id: requisition.requisition_id,
+        product_code: item.product_code,
+        product_name: item.product_name,
+        location: item.location,
+        qty: item.qty,
+        assigned_to: selectedPicker,
+        status: 'pending',
+      }))
+
+      const { error: orderError } = await supabase.from('wms_orders').insert(orderData)
+      if (orderError) throw orderError
+
+      showMessage({ message: `อนุมัติใบเบิก ${requisition.requisition_id} สำเร็จ!\nมอบหมายให้ Picker แล้ว` })
+      onClose()
+    } catch (error: any) {
+      showMessage({ message: `เกิดข้อผิดพลาด: ${error.message}` })
+    } finally {
+      setApproving(false)
+    }
+  }
+
+  const handleReject = async () => {
+    const ok = await showConfirm({ title: 'ยืนยันการปฏิเสธ', message: `ยืนยันการปฏิเสธใบเบิก ${requisition.requisition_id}?` })
+    if (!ok) return
+
+    setApproving(true)
+    try {
+      const { error } = await supabase
+        .from('wms_requisitions')
+        .update({
+          status: 'rejected',
+          approved_by: user?.id,
+          approved_at: new Date().toISOString(),
+        })
+        .eq('id', requisition.id)
+
+      if (error) throw error
+
+      showMessage({ message: 'ปฏิเสธใบเบิกแล้ว' })
+      onClose()
+    } catch (error: any) {
+      showMessage({ message: `เกิดข้อผิดพลาด: ${error.message}` })
+    } finally {
+      setApproving(false)
     }
   }
 
@@ -181,10 +276,59 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                 </div>
               )}
             </div>
+
+            {canApprove && (
+              <div className="bg-white p-6 rounded-xl border shadow-sm mt-4">
+                <label className="block text-sm font-bold text-gray-700 uppercase mb-2">มอบหมายให้ Picker *</label>
+                <select
+                  value={selectedPicker}
+                  onChange={(e) => setSelectedPicker(e.target.value)}
+                  className="w-full bg-gray-50 text-slate-800 px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 transition"
+                >
+                  <option value="">-- เลือกพนักงาน Picker --</option>
+                  {pickers.map((picker) => (
+                    <option key={picker.id} value={picker.id}>
+                      {picker.username || picker.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
+
+          {canApprove && (
+            <div className="p-4 border-t border-gray-200 flex gap-3 bg-white">
+              <button
+                onClick={handleReject}
+                disabled={approving}
+                className="flex-1 bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 disabled:opacity-50 transition"
+              >
+                <i className="fas fa-times mr-2"></i>
+                ปฏิเสธ
+              </button>
+              <button
+                onClick={handleApprove}
+                disabled={approving || !selectedPicker}
+                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition"
+              >
+                {approving ? (
+                  <>
+                    <i className="fas fa-spinner fa-spin mr-2"></i>
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  <>
+                    <i className="fas fa-check mr-2"></i>
+                    อนุมัติ
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       </Modal>
       {MessageModal}
+      {ConfirmModal}
     </>
   )
 }

@@ -24,19 +24,13 @@ export default function NewOrdersSection() {
 
   const ensurePlanDeptStart = async (workOrderName: string) => {
     if (!workOrderName) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'เบิก'
-    const procNames = ['หยิบของ', 'เสร็จแล้ว']
-    tracks[dept] = tracks[dept] || {}
-    procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'เบิก',
+      p_patch: { 'หยิบของ': { start_if_null: now } },
     })
-    const firstProc = procNames[0]
-    if (tracks[dept][firstProc]?.start) return
-    tracks[dept][firstProc].start = new Date().toISOString()
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+    if (error) console.error('ensurePlanDeptStart error:', error.message)
   }
 
   useEffect(() => {

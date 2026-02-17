@@ -443,11 +443,12 @@ export async function searchHistoryByUid(itemUid: string) {
   return data || []
 }
 
-/** Get us_users list for report filter (username for qc_sessions). */
+/** Get us_users list for report filter — only qc_staff role. */
 export async function fetchReportUsers(): Promise<{ id: string; username: string | null }[]> {
   const { data, error } = await supabase
     .from('us_users')
     .select('id, username')
+    .eq('role', 'qc_staff')
   if (error) throw error
   return data || []
 }

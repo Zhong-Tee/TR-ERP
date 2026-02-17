@@ -28,6 +28,20 @@ export async function loadProductsWithLastPrice(): Promise<(Product & { last_pri
   }))
 }
 
+/* ──────────────── Stock Balances ──────────────── */
+
+export async function loadStockBalances(): Promise<Record<string, number>> {
+  const { data, error } = await supabase
+    .from('inv_stock_balances')
+    .select('product_id, on_hand')
+  if (error) throw error
+  const map: Record<string, number> = {}
+  for (const row of (data || [])) {
+    map[row.product_id] = Number(row.on_hand) || 0
+  }
+  return map
+}
+
 /* ──────────────── PR (Purchase Requisition) ──────────────── */
 
 export interface PRListFilters {

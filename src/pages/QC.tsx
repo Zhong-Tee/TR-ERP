@@ -111,36 +111,29 @@ export default function QC() {
 
   const ensurePlanDeptStart = useCallback(async (workOrderName: string) => {
     if (!workOrderName) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'QC'
-    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
-    tracks[dept] = tracks[dept] || {}
-    procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
+    const now = new Date().toISOString()
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'QC',
+      p_patch: { 'เริ่มQC': { start_if_null: now } },
     })
-    const firstProc = procNames[0]
-    if (tracks[dept][firstProc]?.start) return
-    tracks[dept][firstProc].start = new Date().toISOString()
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+    if (error) console.error('QC ensurePlanDeptStart error:', error.message)
   }, [])
 
   const ensurePlanDeptEnd = useCallback(async (workOrderName: string) => {
     if (!workOrderName) return
-    const { data, error } = await supabase.from('plan_jobs').select('id, tracks').eq('name', workOrderName).single()
-    if (error || !data) return
-    const tracks = (data.tracks || {}) as Record<string, Record<string, { start: string | null; end: string | null }>>
-    const dept = 'QC'
-    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
-    tracks[dept] = tracks[dept] || {}
     const now = new Date().toISOString()
+    const procNames = ['เริ่มQC', 'เสร็จแล้ว']
+    const patch: Record<string, Record<string, string>> = {}
     procNames.forEach((p) => {
-      if (!tracks[dept][p]) tracks[dept][p] = { start: null, end: null }
-      if (!tracks[dept][p].start) tracks[dept][p].start = now
-      tracks[dept][p].end = now
+      patch[p] = { start_if_null: now, end: now }
     })
-    await supabase.from('plan_jobs').update({ tracks }).eq('id', data.id)
+    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
+      p_job_name: workOrderName,
+      p_dept: 'QC',
+      p_patch: patch,
+    })
+    if (error) console.error('QC ensurePlanDeptEnd error:', error.message)
   }, [])
   const [switchJobConfirmOpen, setSwitchJobConfirmOpen] = useState(false)
   const [sessionItems, setSessionItems] = useState<QCRecord[]>([])
