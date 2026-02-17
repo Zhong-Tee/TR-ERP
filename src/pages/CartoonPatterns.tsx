@@ -6,6 +6,7 @@ import Modal from '../components/ui/Modal'
 import { CartoonPattern } from '../types'
 
 const SEARCH_DEBOUNCE_MS = 400
+const PAGE_SIZE = 50
 const BUCKET_CARTOON_PATTERNS = 'cartoon-patterns'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
 
@@ -63,6 +64,8 @@ export default function CartoonPatterns() {
   const [productCategories, setProductCategories] = useState<string[]>([])
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, { line_1?: boolean; line_2?: boolean; line_3?: boolean }>>({})
   const [categoryDrafts, setCategoryDrafts] = useState<Record<string, string[]>>({})
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
   const uploadImagesInputRef = useRef<HTMLInputElement>(null)
@@ -70,6 +73,7 @@ export default function CartoonPatterns() {
   useEffect(() => {
     debounceRef.current = setTimeout(() => {
       setAppliedSearch(searchInput.trim())
+      setPage(1)
     }, SEARCH_DEBOUNCE_MS)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -78,7 +82,7 @@ export default function CartoonPatterns() {
 
   useEffect(() => {
     loadPatterns()
-  }, [appliedSearch])
+  }, [appliedSearch, page])
 
   useEffect(() => {
     loadProductCategories()
@@ -87,19 +91,12 @@ export default function CartoonPatterns() {
 
   async function loadProductCategories() {
     try {
-      const { data, error } = await supabase
-        .from('pr_products')
-        .select('product_category')
-        .eq('is_active', true)
-        .not('product_category', 'is', null)
+      const { data, error } = await supabase.rpc('get_distinct_product_categories')
       if (error) throw error
-      const categories = Array.from(
-        new Set(
-          (data || [])
-            .map((r: { product_category: string | null }) => r.product_category)
-            .filter((c): c is string => !!c && String(c).trim() !== '')
-        )
-      ).sort((a, b) => a.localeCompare(b))
+      const categories = (data || [])
+        .map((r: { product_category: string }) => r.product_category)
+        .filter((c: string) => !!c && c.trim() !== '')
+        .sort((a: string, b: string) => a.localeCompare(b))
       setProductCategories(categories)
     } catch (error: any) {
       console.error('Error loading product categories:', error)
@@ -152,20 +149,25 @@ export default function CartoonPatterns() {
   async function loadPatterns() {
     setLoading(true)
     try {
+      const from = (page - 1) * PAGE_SIZE
+      const to = from + PAGE_SIZE - 1
+
       let query = supabase
         .from('cp_cartoon_patterns')
-        .select('*')
+        .select('*', { count: 'exact' })
         .eq('is_active', true)
         .order('pattern_name', { ascending: true })
+        .range(from, to)
 
       if (appliedSearch) {
         query = query.ilike('pattern_name', `%${appliedSearch}%`)
       }
 
-      const { data, error } = await query
+      const { data, error, count } = await query
 
       if (error) throw error
       setPatterns(data || [])
+      setTotalCount(count ?? 0)
     } catch (error: any) {
       console.error('Error loading patterns:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
@@ -319,6 +321,14 @@ export default function CartoonPatterns() {
     }
   }
 
+  /** เปรียบเทียบ categories array ว่าเหมือนกันหรือไม่ */
+  function areCategoriesEqual(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+    const arrA = (a || []).filter(Boolean).sort()
+    const arrB = (b || []).filter(Boolean).sort()
+    if (arrA.length !== arrB.length) return false
+    return arrA.every((v, i) => v === arrB[i])
+  }
+
   async function handleImport(file: File) {
     setImporting(true)
     try {
@@ -330,7 +340,8 @@ export default function CartoonPatterns() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
-      const toInsert: Array<{ pattern_name: string; product_categories?: string[] | null; line_count?: number | null; is_active: boolean }> = []
+      type ImportItem = { pattern_name: string; product_categories: string[] | null; line_count: number | null; is_active: boolean }
+      const parsed: ImportItem[] = []
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i]
         const name = String(row.pattern_name ?? '').trim()
@@ -341,51 +352,104 @@ export default function CartoonPatterns() {
         const lineCount = normalizeLineCount(
           rawLineCount != null ? rawLineCount : categories.length > 0 ? getDefaultLineCountForCategories(categories) : null
         )
-        toInsert.push({
+        parsed.push({
           pattern_name: name,
           product_categories: categories.length > 0 ? categories : null,
           line_count: lineCount,
           is_active: true,
         })
       }
-      if (!toInsert.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี pattern_name)')
+      if (!parsed.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี pattern_name)')
 
-      // ตรวจสอบชื่อลายซ้ำในไฟล์ที่นำเข้า
-      const uniqueNames = new Set<string>()
-      const deduped = toInsert.filter((item) => {
+      // ป้องกันชื่อซ้ำในไฟล์เดียวกัน (เก็บแถวสุดท้ายที่ซ้ำ)
+      const seenNames = new Map<string, number>()
+      const deduped: ImportItem[] = []
+      for (const item of parsed) {
         const key = item.pattern_name.toLowerCase()
-        if (uniqueNames.has(key)) return false
-        uniqueNames.add(key)
-        return true
-      })
-      const dupInFile = toInsert.length - deduped.length
+        const existIdx = seenNames.get(key)
+        if (existIdx !== undefined) {
+          deduped[existIdx] = item
+        } else {
+          seenNames.set(key, deduped.length)
+          deduped.push(item)
+        }
+      }
+      const dupInFile = parsed.length - deduped.length
 
-      // ตรวจสอบชื่อลายซ้ำกับข้อมูลในระบบ
+      // ดึงข้อมูลลายที่มีอยู่ในระบบ (พร้อมข้อมูลเพื่อเปรียบเทียบ)
       const { data: existingPatterns } = await supabase
         .from('cp_cartoon_patterns')
-        .select('pattern_name')
+        .select('id, pattern_name, product_categories, line_count')
         .eq('is_active', true)
-      const existingNames = new Set(
-        (existingPatterns || []).map((p: { pattern_name: string }) => p.pattern_name.toLowerCase())
+      const existingMap = new Map(
+        (existingPatterns || []).map((p) => [p.pattern_name.toLowerCase(), p])
       )
-      const newItems = deduped.filter((item) => !existingNames.has(item.pattern_name.toLowerCase()))
-      const dupInDb = deduped.length - newItems.length
 
-      if (!newItems.length) {
-        const msgs: string[] = []
-        if (dupInFile > 0) msgs.push(`ซ้ำในไฟล์ ${dupInFile} รายการ`)
-        if (dupInDb > 0) msgs.push(`ซ้ำกับข้อมูลในระบบ ${dupInDb} รายการ`)
-        alert(`ไม่มีลายการ์ตูนใหม่ที่จะนำเข้า\n${msgs.join(', ')}`)
+      // แยกรายการใหม่ vs รายการที่ต้องอัปเดต vs ไม่มีการเปลี่ยนแปลง
+      const newItems: ImportItem[] = []
+      const toUpdate: Array<{ id: string; product_categories: string[] | null; line_count: number | null }> = []
+      let unchangedCount = 0
+
+      for (const item of deduped) {
+        const existing = existingMap.get(item.pattern_name.toLowerCase())
+        if (!existing) {
+          newItems.push(item)
+        } else {
+          const catsChanged = !areCategoriesEqual(existing.product_categories, item.product_categories)
+          const lineCountChanged = (existing.line_count ?? null) !== (item.line_count ?? null)
+          if (catsChanged || lineCountChanged) {
+            toUpdate.push({
+              id: existing.id,
+              product_categories: item.product_categories,
+              line_count: item.line_count,
+            })
+          } else {
+            unchangedCount++
+          }
+        }
+      }
+
+      if (!newItems.length && !toUpdate.length) {
+        const msgs: string[] = ['ไม่มีข้อมูลที่ต้องเปลี่ยนแปลง']
+        if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
+        if (unchangedCount > 0) msgs.push(`ข้อมูลเดิมไม่เปลี่ยนแปลง ${unchangedCount} รายการ`)
+        alert(msgs.join('\n'))
         loadPatterns()
         return
       }
 
-      const { error } = await supabase.from('cp_cartoon_patterns').insert(newItems)
-      if (error) throw error
+      // Insert รายการใหม่
+      if (newItems.length) {
+        const { error } = await supabase.from('cp_cartoon_patterns').insert(newItems)
+        if (error) throw error
+      }
 
-      const msgs: string[] = [`นำเข้าลายการ์ตูนใหม่ ${newItems.length} รายการเรียบร้อย`]
+      // Update รายการที่มีการเปลี่ยนแปลง (ทีละรายการ)
+      let updateOk = 0
+      let updateFail = 0
+      for (const item of toUpdate) {
+        const { error } = await supabase
+          .from('cp_cartoon_patterns')
+          .update({
+            product_categories: item.product_categories,
+            line_count: item.line_count,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.id)
+        if (error) {
+          console.error('Update error:', item.id, error)
+          updateFail++
+        } else {
+          updateOk++
+        }
+      }
+
+      const msgs: string[] = []
+      if (newItems.length) msgs.push(`เพิ่มลายใหม่ ${newItems.length} รายการ`)
+      if (updateOk) msgs.push(`อัปเดตข้อมูล ${updateOk} รายการ`)
+      if (updateFail) msgs.push(`อัปเดตไม่สำเร็จ ${updateFail} รายการ`)
       if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
-      if (dupInDb > 0) msgs.push(`ข้ามรายการที่มีอยู่แล้วในระบบ ${dupInDb} รายการ`)
+      if (unchangedCount > 0) msgs.push(`ข้อมูลเดิมไม่เปลี่ยนแปลง ${unchangedCount} รายการ`)
       alert(msgs.join('\n'))
       loadPatterns()
     } catch (err: any) {
@@ -609,6 +673,52 @@ export default function CartoonPatterns() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {totalCount > PAGE_SIZE && (
+          <div className="flex items-center justify-between mt-4 pt-4 border-t text-sm text-gray-600">
+            <span>
+              แสดง {Math.min((page - 1) * PAGE_SIZE + 1, totalCount)}–{Math.min(page * PAGE_SIZE, totalCount)} จาก {totalCount} รายการ
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(1)}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ‹ ก่อนหน้า
+              </button>
+              <span className="px-3 py-1 font-medium">
+                หน้า {page} / {Math.ceil(totalCount / PAGE_SIZE)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(Math.ceil(totalCount / PAGE_SIZE), p + 1))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ถัดไป ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage(Math.ceil(totalCount / PAGE_SIZE))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                »
+              </button>
+            </div>
           </div>
         )}
       </div>

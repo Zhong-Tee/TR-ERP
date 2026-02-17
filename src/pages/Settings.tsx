@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import type { User, BankSetting, OrderChatLog, IssueType } from '../types'
 import { formatDateTime } from '../lib/utils'
@@ -114,8 +114,11 @@ export default function Settings() {
   const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
   const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, boolean | null>>>({})
   const [savingProductOverrides, setSavingProductOverrides] = useState(false)
+  const [overrideSearchInput, setOverrideSearchInput] = useState('')
   const [overrideSearchTerm, setOverrideSearchTerm] = useState('')
   const [overrideCategoryFilter, setOverrideCategoryFilter] = useState<string>('')
+  const [overridePage, setOverridePage] = useState(1)
+  const overrideDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
@@ -169,7 +172,18 @@ export default function Settings() {
     if (activeTab === 'sellers') {
       loadSellers()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
+
+  useEffect(() => {
+    overrideDebounceRef.current = setTimeout(() => {
+      setOverrideSearchTerm(overrideSearchInput.trim())
+      setOverridePage(1)
+    }, 400)
+    return () => {
+      if (overrideDebounceRef.current) clearTimeout(overrideDebounceRef.current)
+    }
+  }, [overrideSearchInput])
 
   async function testConnection() {
     setTestingConnection(true)
@@ -894,14 +908,16 @@ export default function Settings() {
     return Object.values(fields).some((v) => v !== null)
   }
 
-  /** สินค้าที่กรองตามการค้นหาและหมวดหมู่ — แสดงเฉพาะรายการที่มี override หรือตรงกับการค้นหา */
-  function getFilteredProductsForOverride() {
+  const OVERRIDE_PAGE_SIZE = 50
+
+  /** สินค้าที่กรองตามการค้นหาและหมวดหมู่ (memoized) */
+  const filteredOverrideProducts = useMemo(() => {
     let list = allProducts
     if (overrideCategoryFilter) {
       list = list.filter((p) => (p.product_category || '') === overrideCategoryFilter)
     }
-    if (overrideSearchTerm.trim()) {
-      const term = overrideSearchTerm.trim().toLowerCase()
+    if (overrideSearchTerm) {
+      const term = overrideSearchTerm.toLowerCase()
       list = list.filter(
         (p) =>
           (p.product_name || '').toLowerCase().includes(term) ||
@@ -909,7 +925,13 @@ export default function Settings() {
       )
     }
     return list
-  }
+  }, [allProducts, overrideCategoryFilter, overrideSearchTerm])
+
+  const overrideTotalPages = Math.ceil(filteredOverrideProducts.length / OVERRIDE_PAGE_SIZE)
+  const paginatedOverrideProducts = useMemo(() => {
+    const start = (overridePage - 1) * OVERRIDE_PAGE_SIZE
+    return filteredOverrideProducts.slice(start, start + OVERRIDE_PAGE_SIZE)
+  }, [filteredOverrideProducts, overridePage])
 
   async function saveProductOverrides() {
     setSavingProductOverrides(true)
@@ -2029,13 +2051,13 @@ export default function Settings() {
             <input
               type="text"
               placeholder="ค้นหาชื่อหรือรหัสสินค้า..."
-              value={overrideSearchTerm}
-              onChange={(e) => setOverrideSearchTerm(e.target.value)}
+              value={overrideSearchInput}
+              onChange={(e) => setOverrideSearchInput(e.target.value)}
               className="flex-1 min-w-[200px] px-3 py-2 border rounded-lg text-sm"
             />
             <select
               value={overrideCategoryFilter}
-              onChange={(e) => setOverrideCategoryFilter(e.target.value)}
+              onChange={(e) => { setOverrideCategoryFilter(e.target.value); setOverridePage(1) }}
               className="px-3 py-2 border rounded-lg text-sm"
             >
               <option value="">ทุกหมวดหมู่</option>
@@ -2048,14 +2070,12 @@ export default function Settings() {
             <div className="text-center py-12 text-gray-500">
               ไม่พบสินค้า
             </div>
-          ) : (() => {
-            const filtered = getFilteredProductsForOverride()
-            if (filtered.length === 0) return (
-              <div className="text-center py-8 text-gray-500">
-                ไม่พบสินค้าที่ตรงกับการค้นหา
-              </div>
-            )
-            return (
+          ) : filteredOverrideProducts.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              ไม่พบสินค้าที่ตรงกับการค้นหา
+            </div>
+          ) : (
+            <>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-sm">
                   <thead>
@@ -2070,7 +2090,7 @@ export default function Settings() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((product, idx) => {
+                    {paginatedOverrideProducts.map((product, idx) => {
                       const catKey = (product.product_category || '').trim()
                       const catSettings = catKey ? getCategoryFields(catKey) : defaultCategoryFields
                       const overrideFields = getProductOverrideFields(product.id)
@@ -2103,10 +2123,54 @@ export default function Settings() {
                     })}
                   </tbody>
                 </table>
-                <p className="text-xs text-gray-400 mt-2">แสดง {filtered.length} จาก {allProducts.length} สินค้า</p>
               </div>
-            )
-          })()}
+              <div className="flex items-center justify-between mt-3 text-sm text-gray-600">
+                <span>
+                  แสดง {Math.min((overridePage - 1) * OVERRIDE_PAGE_SIZE + 1, filteredOverrideProducts.length)}–{Math.min(overridePage * OVERRIDE_PAGE_SIZE, filteredOverrideProducts.length)} จาก {filteredOverrideProducts.length} รายการ
+                  {filteredOverrideProducts.length < allProducts.length && ` (ทั้งหมด ${allProducts.length})`}
+                </span>
+                {overrideTotalPages > 1 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage(1)}
+                      disabled={overridePage <= 1}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage((p) => Math.max(1, p - 1))}
+                      disabled={overridePage <= 1}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      ‹ ก่อนหน้า
+                    </button>
+                    <span className="px-2 py-1 font-medium text-xs">
+                      หน้า {overridePage} / {overrideTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage((p) => Math.min(overrideTotalPages, p + 1))}
+                      disabled={overridePage >= overrideTotalPages}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      ถัดไป ›
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOverridePage(overrideTotalPages)}
+                      disabled={overridePage >= overrideTotalPages}
+                      className="px-2 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                    >
+                      »
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
         </>
       )}
