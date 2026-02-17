@@ -99,7 +99,6 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   // Role ที่เห็นแชท/issue
   const CHAT_ROLES = ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'production']
   const ADMIN_ROLES = ['superadmin', 'admin']
-  const OWNER_ROLES = ['admin-tr', 'admin-pump']
   const canSeeChat = CHAT_ROLES.includes(user?.role || '')
   const isAdminRole = ADMIN_ROLES.includes(user?.role || '')
 

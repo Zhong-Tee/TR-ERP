@@ -549,7 +549,6 @@ export default function CartoonPatterns() {
                     <td className="p-3 font-medium">{pattern.pattern_name}</td>
                     <td className="p-3">
                       <InlineCategorySelect
-                        patternId={pattern.id}
                         currentCategories={pattern.product_categories || (pattern.product_category ? [pattern.product_category] : [])}
                         allCategories={productCategories}
                         draft={categoryDrafts[pattern.id]}
@@ -784,14 +783,12 @@ export default function CartoonPatterns() {
 
 /** Inline multi-category selector for the patterns table */
 function InlineCategorySelect({
-  patternId,
   currentCategories,
   allCategories,
   draft,
   onDraftChange,
   onCommit,
 }: {
-  patternId: string
   currentCategories: string[]
   allCategories: string[]
   draft: string[] | undefined

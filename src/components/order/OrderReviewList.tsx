@@ -89,7 +89,6 @@ function getVisibleErrorFieldsForOrder(
   ]
 
   const hasSettings = Object.keys(categoryFieldSettings).length > 0
-  const hasCategoryMap = Object.keys(productCategoryByProductId).length > 0
   const hasOverrides = productFieldOverrides && Object.keys(productFieldOverrides).length > 0
 
   if (!hasSettings && !hasOverrides) {
