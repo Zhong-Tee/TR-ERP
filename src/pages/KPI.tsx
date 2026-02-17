@@ -193,12 +193,12 @@ export default function KPIDashboard() {
 
     return {
       sales: (sales.data || []) as SalesOrder[],
-      wms: (wms.data || []) as WmsSummary[],
+      wms: (wms.data || []) as unknown as WmsSummary[],
       wmsOrd: (wmsOrd.data || []) as WmsOrder[],
       qc: (qc.data || []) as QcSession[],
       pack: (pack.data || []) as PackLog[],
       prod: (prod.data || []) as PlanJob[],
-      issues: (issues.data || []) as IssueRow[],
+      issues: (issues.data || []) as unknown as IssueRow[],
       audits: (audits.data || []) as AuditRow[],
     }
   }, [])
