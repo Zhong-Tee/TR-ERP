@@ -54,15 +54,15 @@ export default function Sidebar({ activeMenu, setActiveMenu, username, onLogout,
   }
 
   const menuItems = [
-    { key: 'menu-upload', icon: 'fa-file-import', label: 'จัดสินค้า' },
-    { key: 'menu-review', icon: 'fa-tasks', label: 'ตรวจสินค้า', badge: reviewBadge },
-    { key: 'menu-kpi', icon: 'fa-chart-pie', label: 'KPI' },
-    { key: 'menu-requisition', icon: 'fa-clipboard-list', label: 'รายการเบิก' },
-    { key: 'menu-notif', icon: 'fa-bell', label: 'แจ้งเตือน', badge: notifBadge },
+    { key: 'wms-upload', icon: 'fa-file-import', label: 'จัดสินค้า' },
+    { key: 'wms-review', icon: 'fa-tasks', label: 'ตรวจสินค้า', badge: reviewBadge },
+    { key: 'wms-kpi', icon: 'fa-chart-pie', label: 'KPI' },
+    { key: 'wms-requisition', icon: 'fa-clipboard-list', label: 'รายการเบิก' },
+    { key: 'wms-notif', icon: 'fa-bell', label: 'แจ้งเตือน', badge: notifBadge },
     ...(userRole !== 'store'
       ? [
-          { key: 'menu-settings', icon: 'fa-sliders-h', label: 'ตั้งค่า' },
-          { key: 'menu-no-image', icon: 'fa-image', label: 'รหัสที่ไม่มีรูป' },
+          { key: 'wms-settings', icon: 'fa-sliders-h', label: 'ตั้งค่า' },
+          { key: 'wms-no-image', icon: 'fa-image', label: 'รหัสที่ไม่มีรูป' },
         ]
       : []),
   ]

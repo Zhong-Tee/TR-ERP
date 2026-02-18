@@ -309,7 +309,7 @@ export default function TransportVerification() {
                   activeParcelType === p ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                 }`}
               >
-                {p === 'กล่อง' ? '📦' : p === 'ซองกระดาษ' ? '📄' : p === 'ซองบับเบิล' ? '🫧' : '🛍️'} {p.replace('ซอง', '').trim() || 'ซอง'}
+                {p === 'กล่อง' ? '📦' : p === 'ซองกระดาษ' ? '📄' : p === 'ซองบับเบิล' ? '🫧' : '🛍️'} {p === 'ซองกระดาษ' ? 'ซอง' : p === 'ซองบับเบิล' ? 'บับเบิล' : p}
               </button>
             ))}
           </div>

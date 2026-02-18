@@ -87,6 +87,7 @@ export default function Packing() {
   const { hasAccess } = useMenuAccess()
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
+  const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'selection' | 'main'>('selection')
   const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue'>('new')
@@ -105,6 +106,7 @@ export default function Packing() {
   const [aggregatedData, setAggregatedData] = useState<PackingItem[][]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [currentWorkOrderName, setCurrentWorkOrderName] = useState<string | null>(null)
+  const [packStartTime, setPackStartTime] = useState<Date | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: '' | 'success' | 'error' }>({
     text: '',
     type: ''
@@ -202,7 +204,9 @@ export default function Packing() {
       openAlert('ใบงานนี้ยัง QC ไม่ครบ ไม่สามารถจัดของได้')
       return
     }
-    await ensurePlanDeptStart(workOrderName)
+    const skipTrack = user?.role === 'superadmin' || user?.role === 'admin'
+    if (!skipTrack) await ensurePlanDeptStart(workOrderName)
+    setPackStartTime(new Date())
     await loadPackingData(workOrderName)
   }
 
@@ -523,6 +527,7 @@ export default function Packing() {
   async function loadWorkOrdersForPacking() {
     setLoading(true)
     setView('selection')
+    setPackStartTime(null)
     try {
       const { data, error } = await supabase
         .from('or_work_orders')
@@ -589,8 +594,20 @@ export default function Packing() {
           }
         })
         setWorkOrderStatus(statusMap)
+
+        const { data: planJobs } = await supabase
+          .from('plan_jobs')
+          .select('name, tracks')
+          .in('name', names)
+        const timeMap: Record<string, string | null> = {}
+        ;(planJobs || []).forEach((pj: any) => {
+          const start = pj.tracks?.PACK?.['เริ่มแพ็ค']?.start ?? null
+          if (start) timeMap[pj.name] = start
+        })
+        setPlanStartTimes(timeMap)
       } else {
         setWorkOrderStatus({})
+        setPlanStartTimes({})
       }
 
       const { data: shippedData, error: shippedError } = await supabase
@@ -1291,6 +1308,14 @@ export default function Packing() {
                               </>
                             )}
                             {isPartiallyPacked && <span className="ml-1 text-blue-600 font-medium">🔄 แพ็คค้าง</span>}
+                            {planStartTimes[wo.work_order_name] && (
+                              <>
+                                <span className="text-gray-400">|</span>
+                                <span className="text-indigo-600 font-medium">
+                                  ⏱ เริ่ม {new Date(planStartTimes[wo.work_order_name]!).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
                         {canSelect ? (
@@ -1462,9 +1487,19 @@ export default function Packing() {
 
           <div className="bg-white p-4 rounded-lg shadow">
               <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-xl font-bold">
-                จัดของ: {currentWorkOrderName || '-'}
-              </h2>
+              <div>
+                <h2 className="text-xl font-bold">
+                  จัดของ: {currentWorkOrderName || '-'}
+                </h2>
+                {packStartTime && (
+                  <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-1.5 mt-1">
+                    <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                    <span className="text-lg font-bold text-indigo-700">
+                      {packStartTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                  </div>
+                )}
+              </div>
                 <div className="flex flex-wrap gap-2">
                   <button
                     className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"

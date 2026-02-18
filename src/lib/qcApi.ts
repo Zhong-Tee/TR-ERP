@@ -131,8 +131,9 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   if (allSessionIds.length > 0) {
     const { data: records, error: recErr } = await supabase
       .from('qc_records')
-      .select('session_id, item_uid, status')
+      .select('session_id, item_uid, status, created_at')
       .in('session_id', allSessionIds)
+      .order('created_at', { ascending: true })
     if (!recErr && records?.length) {
       records.forEach((r) => {
         // เก็บ status ล่าสุดของแต่ละ item_uid

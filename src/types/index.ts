@@ -479,8 +479,10 @@ export interface InventoryReturn {
   id: string
   return_no: string
   ref_bill_no?: string | null
+  tracking_number?: string | null
   reason?: string | null
   status: string
+  disposition?: string | null
   created_by?: string | null
   created_at: string
   received_by?: string | null
@@ -491,6 +493,27 @@ export interface InventoryReturn {
 export interface InventoryReturnItem {
   id: string
   return_id: string
+  product_id: string
+  qty: number
+  created_at: string
+}
+
+// WMS Return Requisition Types (คืนของ)
+export interface WmsReturnRequisition {
+  id: string
+  return_no: string
+  topic?: string | null
+  status: string
+  created_by?: string | null
+  created_at: string
+  approved_by?: string | null
+  approved_at?: string | null
+  note?: string | null
+}
+
+export interface WmsReturnRequisitionItem {
+  id: string
+  return_requisition_id: string
   product_id: string
   qty: number
   created_at: string

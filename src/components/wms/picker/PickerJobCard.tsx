@@ -4,6 +4,7 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl } from '../wmsUtils'
 import PickerListModal from './PickerListModal'
 import AlertModal from './AlertModal'
+import SentAlertsModal from './SentAlertsModal'
 import { useWmsModal } from '../useWmsModal'
 
 interface PickerJobCardProps {
@@ -20,6 +21,7 @@ interface PickerJobCardProps {
 export default function PickerJobCard({ item, allItems, currentIndex, onFinish, onNoProduct, onNavigate, onJumpToItem }: PickerJobCardProps) {
   const [showListModal, setShowListModal] = useState(false)
   const [showAlertModal, setShowAlertModal] = useState(false)
+  const [showSentAlertsModal, setShowSentAlertsModal] = useState(false)
   const { user } = useAuthContext()
   const { showMessage, MessageModal } = useWmsModal()
 
@@ -77,6 +79,13 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
               <span className="text-sm font-bold">สินค้าหมด</span>
             </button>
           </div>
+          <button
+            onClick={() => setShowSentAlertsModal(true)}
+            className="w-full mb-3 bg-blue-100 text-blue-700 py-2.5 rounded-2xl font-bold text-sm hover:bg-blue-200 active:scale-95 transition-all"
+            type="button"
+          >
+            ดูแจ้งเตือนที่ส่งไป
+          </button>
 
           <div className="bg-slate-50 px-6 py-2 rounded-2xl border flex items-center justify-between">
             <span className="text-[18.66px] text-gray-400 font-bold uppercase">จำนวนเบิก</span>
@@ -146,6 +155,9 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
             setShowAlertModal(false)
           }}
         />
+      )}
+      {showSentAlertsModal && user?.id && (
+        <SentAlertsModal pickerId={user.id} onClose={() => setShowSentAlertsModal(false)} />
       )}
       {MessageModal}
     </>

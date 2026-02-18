@@ -333,6 +333,7 @@ export default function Settings() {
     { key: 'wms-review', label: 'ตรวจสินค้า', group: 'wms' },
     { key: 'wms-kpi', label: 'KPI', group: 'wms' },
     { key: 'wms-requisition', label: 'รายการเบิก', group: 'wms' },
+    { key: 'wms-return-requisition', label: 'รายการคืน', group: 'wms' },
     { key: 'wms-notif', label: 'แจ้งเตือน', group: 'wms' },
     { key: 'wms-settings', label: 'ตั้งค่า', group: 'wms' },
     // ── QC ──

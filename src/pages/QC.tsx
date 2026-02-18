@@ -75,6 +75,7 @@ export default function QC() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
   const isAdmin = user?.role === 'superadmin' || user?.role === 'admin-tr'
+  const canSkipQc = user?.role === 'superadmin' || user?.role === 'admin'
 
   const [currentView, setCurrentView] = useState<QCView>('qc')
   const [loading, setLoading] = useState(false)
@@ -152,9 +153,6 @@ export default function QC() {
   const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
 
   // Skip QC (ไม่ต้อง QC)
-  const SKIP_QC_PASSWORD = 'TRkids@999'
-  const [skipQcUnlocked, setSkipQcUnlocked] = useState(false)
-  const [skipQcPassword, setSkipQcPassword] = useState('')
   const [skipQcLoading, setSkipQcLoading] = useState<string | null>(null)
   const [skipQcConfirmWo, setSkipQcConfirmWo] = useState<string | null>(null)
   const [skipLogs, setSkipLogs] = useState<any[]>([])
@@ -208,10 +206,25 @@ export default function QC() {
     return ink?.hex_code || '#ddd'
   }
 
+  const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
+
   const loadWorkOrders = useCallback(async () => {
     try {
       const list = await fetchWorkOrdersWithProgress(true)
       setWorkOrdersWithProgress(list)
+      if (list.length > 0) {
+        const names = list.map((w) => w.work_order_name)
+        const { data: planJobs } = await supabase
+          .from('plan_jobs')
+          .select('name, tracks')
+          .in('name', names)
+        const map: Record<string, string | null> = {}
+        ;(planJobs || []).forEach((pj: any) => {
+          const start = pj.tracks?.QC?.['เริ่มQC']?.start ?? null
+          if (start) map[pj.name] = start
+        })
+        setPlanStartTimes(map)
+      }
     } catch (e) {
       console.error(e)
     }
@@ -313,7 +326,8 @@ export default function QC() {
     setLoading(true)
     setQcCategoryFilter('')
     try {
-      await ensurePlanDeptStart(woName)
+      const skipTrack = user?.role === 'superadmin' || user?.role === 'admin'
+      if (!skipTrack) await ensurePlanDeptStart(woName)
       const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
         alert('ไม่พบรายการในใบงานนี้')
@@ -768,16 +782,6 @@ export default function QC() {
     }
   }
 
-  function handleSkipQcPasswordCheck() {
-    if (skipQcPassword === SKIP_QC_PASSWORD) {
-      setSkipQcUnlocked(true)
-      setSkipQcPassword('')
-    } else if (skipQcPassword) {
-      alert('รหัสไม่ถูกต้อง')
-      setSkipQcPassword('')
-    }
-  }
-
   async function handleSkipQcConfirm() {
     const woName = skipQcConfirmWo
     setSkipQcConfirmWo(null)
@@ -829,8 +833,16 @@ export default function QC() {
       const { error: recErr } = await supabase.from('qc_records').insert(records)
       if (recErr) throw recErr
 
-      // อัปเดต plan
-      await ensurePlanDeptStart(woName)
+      // ปิด session ที่ยังค้างของใบงานนี้ทั้งหมด เพื่อไม่ให้ยังโชว์ใน QC Operation
+      await supabase
+        .from('qc_sessions')
+        .update({ end_time: now.toISOString() })
+        .eq('filename', filename)
+        .is('end_time', null)
+
+      // อัปเดต plan — superadmin/admin ไม่บันทึกเวลาเริ่ม
+      const skipTrackEnd = user?.role === 'superadmin' || user?.role === 'admin'
+      if (!skipTrackEnd) await ensurePlanDeptStart(woName)
       await ensurePlanDeptEnd(woName)
 
       // บันทึก log
@@ -848,6 +860,8 @@ export default function QC() {
         })),
       })
 
+      // เอารายการใบงานออกจากหน้าให้ทันทีหลังข้าม QC สำเร็จ
+      setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
       await loadWorkOrders()
       loadRejectItems()
     } catch (e: any) {
@@ -917,29 +931,6 @@ export default function QC() {
               </button>
             ))}
           </nav>
-          {/* ช่องปลดล็อค ไม่ต้อง QC */}
-          <div className="shrink-0 flex items-center gap-2">
-            {skipQcUnlocked ? (
-              <span className="text-xs text-green-600 font-semibold bg-green-50 px-3 py-1.5 rounded-lg border border-green-200">ปลดล็อคแล้ว</span>
-            ) : (
-              <>
-                <input
-                  type="password"
-                  value={skipQcPassword}
-                  onChange={(e) => setSkipQcPassword(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSkipQcPasswordCheck()}
-                  placeholder="รหัสปลดล็อค"
-                  className="border rounded-lg px-3 py-1.5 w-32 text-sm"
-                />
-                <button
-                  onClick={handleSkipQcPasswordCheck}
-                  className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm font-medium"
-                >
-                  ปลดล็อค
-                </button>
-              </>
-            )}
-          </div>
         </div>
       </div>
 
@@ -997,13 +988,18 @@ export default function QC() {
                               <span className="text-gray-600">ทั้งหมด {wo.total_items} ({wo.total_bills} บิล)</span>
                               <span className="text-green-600 font-medium">Pass {wo.pass_items}</span>
                               <span className="text-red-500 font-medium">Fail {wo.fail_items}</span>
+                              {planStartTimes[wo.work_order_name] && (
+                                <span className="text-indigo-600 font-medium">
+                                  ⏱ เริ่ม {new Date(planStartTimes[wo.work_order_name]!).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="flex gap-2 shrink-0">
                             <span className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
                               {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
                             </span>
-                            {skipQcUnlocked && (
+                            {canSkipQc && (
                               <span
                                 role="button"
                                 onClick={(e) => { e.stopPropagation(); setSkipQcConfirmWo(wo.work_order_name) }}
@@ -1042,6 +1038,14 @@ export default function QC() {
                       <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
                     </div>
                   </div>
+                  {qcState.startTime && (
+                    <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2">
+                      <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                      <span className="text-lg font-bold text-indigo-700">
+                        {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex gap-2 items-center">
                     <input
                       ref={barcodeInputRef}

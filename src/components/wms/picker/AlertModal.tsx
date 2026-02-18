@@ -11,16 +11,22 @@ export default function AlertModal({ onClose, onSubmit }: AlertModalProps) {
   const [topics, setTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [pendingTopic, setPendingTopic] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string>('')
 
   useEffect(() => {
     loadAlertOptions()
   }, [])
 
   const loadAlertOptions = async () => {
-    const { data } = await supabase.from('wms_notification_topics').select('*').order('topic_name')
-    if (data) {
-      setTopics(data)
+    const { data, error } = await supabase.from('wms_notification_topics').select('*').order('topic_name')
+    if (error) {
+      setLoadError(error.message || 'โหลดรายการหัวข้อไม่สำเร็จ')
+      setTopics([])
+      setLoading(false)
+      return
     }
+    setLoadError('')
+    setTopics(data || [])
     setLoading(false)
   }
 
@@ -37,6 +43,10 @@ export default function AlertModal({ onClose, onSubmit }: AlertModalProps) {
           <div className="p-6 grid grid-cols-1 gap-3 overflow-y-auto" style={{ maxHeight: '60vh' }}>
             {loading ? (
               <div className="text-center p-4">กำลังโหลด...</div>
+            ) : loadError ? (
+              <div className="text-center p-4 text-red-500">{loadError}</div>
+            ) : topics.length === 0 ? (
+              <div className="text-center p-4 text-gray-500">ไม่พบหัวข้อแจ้งเตือน</div>
             ) : (
               topics.map((t) => (
                 <button

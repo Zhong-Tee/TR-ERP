@@ -24,8 +24,10 @@ type Tab =
   | 'cancelled'
   
 
+const ALL_TABS: Tab[] = ['create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'work-orders', 'work-orders-manage', 'shipped', 'cancelled', 'issue']
+
 export default function Orders() {
-  const { hasAccess } = useMenuAccess()
+  const { hasAccess, menuAccessLoading } = useMenuAccess()
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<Tab>('create')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
@@ -46,6 +48,14 @@ export default function Orders() {
   const [listRefreshKey, setListRefreshKey] = useState(0)
   const [shippedDateFrom, setShippedDateFrom] = useState(() => new Date().toISOString().split('T')[0])
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(`orders-${activeTab}`)) {
+      const first = ALL_TABS.find((t) => hasAccess(`orders-${t}`))
+      if (first) setActiveTab(first)
+    }
+  }, [menuAccessLoading])
 
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)

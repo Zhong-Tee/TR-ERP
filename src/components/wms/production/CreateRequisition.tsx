@@ -14,7 +14,6 @@ export default function CreateRequisition() {
   const [selectedItems, setSelectedItems] = useState<any[]>([])
   const [requisitionId, setRequisitionId] = useState('')
   const [notes, setNotes] = useState('')
-  const [selectedTopic, setSelectedTopic] = useState('')
   const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
@@ -141,8 +140,14 @@ export default function CreateRequisition() {
         selectedItems.map((item) => (item.product_code === product.product_code ? { ...item, qty: item.qty + 1 } : item))
       )
     } else {
-      setSelectedItems([...selectedItems, { ...product, qty: 1 }])
+      setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '' }])
     }
+  }
+
+  const updateItemTopic = (productCode: string, topic: string) => {
+    setSelectedItems(
+      selectedItems.map((item) => (item.product_code === productCode ? { ...item, requisition_topic: topic } : item))
+    )
   }
 
   const removeItem = (productCode: string) => {
@@ -165,8 +170,9 @@ export default function CreateRequisition() {
       return
     }
 
-    if (!selectedTopic || !selectedTopic.trim()) {
-      showMessage({ message: 'กรุณาเลือกหัวข้อการเบิก' })
+    const missingTopic = selectedItems.some((item) => !item.requisition_topic)
+    if (missingTopic) {
+      showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' })
       return
     }
 
@@ -190,7 +196,7 @@ export default function CreateRequisition() {
             created_by: user?.id,
             status: 'pending',
             notes: notes.trim(),
-            requisition_topic: selectedTopic || null,
+            requisition_topic: null,
           },
         ])
         .select()
@@ -204,16 +210,16 @@ export default function CreateRequisition() {
         product_name: item.product_name,
         location: item.storage_location || item.location || null,
         qty: item.qty,
+        requisition_topic: item.requisition_topic || null,
       }))
 
       const { error: itemsError } = await supabase.from('wms_requisition_items').insert(items)
       if (itemsError) throw itemsError
 
-      showMessage({ message: `✅ สร้างใบเบิก ${requisitionId} สำเร็จ!\nรอการอนุมัติจากผู้จัดการ` })
+      showMessage({ message: `สร้างใบเบิก ${requisitionId} สำเร็จ!\nรอการอนุมัติจากผู้จัดการ` })
 
       setSelectedItems([])
       setNotes('')
-      setSelectedTopic('')
       setSearchTerm('')
       setProducts([])
       setSelectedProductCode('')
@@ -365,6 +371,26 @@ export default function CreateRequisition() {
                     <div className="font-bold text-white text-sm break-words">{item.product_name}</div>
                   </div>
                 </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-gray-400 mb-1">
+                    หัวข้อการเบิก <span className="text-red-400">*</span>
+                  </label>
+                  <select
+                    value={item.requisition_topic || ''}
+                    onChange={(e) => updateItemTopic(item.product_code, e.target.value)}
+                    disabled={loadingTopics}
+                    className={`w-full text-white px-3 py-2 rounded-lg border text-sm focus:border-blue-500 focus:outline-none ${
+                      item.requisition_topic ? 'bg-slate-600 border-slate-500' : 'bg-slate-600 border-red-500/50'
+                    }`}
+                  >
+                    <option value="">{loadingTopics ? 'กำลังโหลด...' : '-- เลือกหัวข้อ --'}</option>
+                    {requisitionTopics.map((topic, tidx) => (
+                      <option key={tidx} value={topic.topic_name}>
+                        {topic.topic_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-600">
                   <div className="flex items-center gap-2">
                     <button
@@ -394,26 +420,6 @@ export default function CreateRequisition() {
           </div>
         </div>
       )}
-
-      <div className="bg-slate-800 p-4 rounded-2xl">
-        <label className="block text-sm font-bold text-gray-300 mb-2">
-          หัวข้อการเบิก <span className="text-red-400">*</span>
-        </label>
-        <select
-          value={selectedTopic}
-          onChange={(e) => setSelectedTopic(e.target.value)}
-          disabled={loadingTopics}
-          required
-          className="w-full bg-slate-700 text-white px-4 py-3 rounded-xl border border-slate-600 focus:border-blue-500 focus:outline-none"
-        >
-          <option value="">{loadingTopics ? 'กำลังโหลด...' : '-- เลือกหัวข้อการเบิก --'}</option>
-          {requisitionTopics.map((topic, idx) => (
-            <option key={idx} value={topic.topic_name}>
-              {topic.topic_name}
-            </option>
-          ))}
-        </select>
-      </div>
 
       <div className="bg-slate-800 p-4 rounded-2xl">
         <label className="block text-sm font-bold text-gray-300 mb-2">

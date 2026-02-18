@@ -198,6 +198,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse', label: 'คลังสินค้า' },
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
+    { path: '/warehouse/returns', label: 'รับสินค้าตีกลับ' },
   ].filter((tab) => hasAccess(WAREHOUSE_ACCESS_MAP[tab.path] || tab.path))
 
   const purchaseTabs = [

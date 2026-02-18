@@ -1,10 +1,15 @@
 import { useState, useEffect } from 'react'
+import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { getProductImageUrl } from '../wmsUtils'
 import RequisitionDetailModal from './RequisitionDetailModal'
+import Modal from '../../ui/Modal'
 import * as ExcelJS from 'exceljs'
 import { useWmsModal } from '../useWmsModal'
+import type { ProductType } from '../../../types'
 
 export default function RequisitionDashboard() {
+  const { user } = useAuthContext()
   const [requisitions, setRequisitions] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedRequisition, setSelectedRequisition] = useState<any | null>(null)
@@ -12,7 +17,21 @@ export default function RequisitionDashboard() {
   const [filterDateStart, setFilterDateStart] = useState('')
   const [filterDateEnd, setFilterDateEnd] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+
+  // --- Create requisition state ---
+  const [showCreate, setShowCreate] = useState(false)
+  const [cSearchTerm, setCSearchTerm] = useState('')
+  const [cProducts, setCProducts] = useState<any[]>([])
+  const [cAllProducts, setCAllProducts] = useState<any[]>([])
+  const [cSelectedItems, setCSelectedItems] = useState<any[]>([])
+  const [cRequisitionId, setCRequisitionId] = useState('')
+  const [cNotes, setCNotes] = useState('')
+  const [cTopics, setCTopics] = useState<any[]>([])
+  const [cSearching, setCSearching] = useState(false)
+  const [cLoadingProducts, setCLoadingProducts] = useState(false)
+  const [cProductType, setCProductType] = useState<ProductType>('FG')
+  const [cSubmitting, setCSubmitting] = useState(false)
 
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]
@@ -137,7 +156,6 @@ export default function RequisitionDashboard() {
           วันที่ทำรายการ: formatDate(requisition.created_at),
           วันที่อนุมัติ: formatDate(requisition.approved_at),
           สถานะ: requisition.status === 'pending' ? 'รออนุมัติ' : requisition.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธ',
-          หัวข้อการเบิก: requisition.requisition_topic || '-',
           หมายเหตุ: requisition.notes || '-',
         }
 
@@ -226,6 +244,122 @@ export default function RequisitionDashboard() {
     rejected: requisitions.filter((r) => r.status === 'rejected').length,
   }
 
+  // --- Create requisition helpers ---
+  const openCreateModal = async () => {
+    setShowCreate(true)
+    setCSelectedItems([])
+    setCNotes('')
+    setCSearchTerm('')
+    setCProducts([])
+    setCProductType('FG')
+    await Promise.all([generateCRequisitionId(), loadCAllProducts('FG'), loadCTopics()])
+  }
+
+  const generateCRequisitionId = async () => {
+    const d = new Date()
+    const ds = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+    const { count } = await supabase.from('wms_requisitions').select('*', { count: 'exact', head: true }).like('requisition_id', `REQ-${ds}-%`)
+    setCRequisitionId(`REQ-${ds}-${((count || 0) + 1).toString().padStart(3, '0')}`)
+  }
+
+  const loadCTopics = async () => {
+    const { data } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+    setCTopics(data || [])
+  }
+
+  const loadCAllProducts = async (pt?: ProductType) => {
+    setCLoadingProducts(true)
+    try {
+      const { data } = await supabase
+        .from('pr_products')
+        .select('product_code, product_name, storage_location')
+        .eq('is_active', true)
+        .eq('product_type', pt || cProductType)
+        .order('product_name')
+      setCAllProducts(data || [])
+    } finally {
+      setCLoadingProducts(false)
+    }
+  }
+
+  const cSearchProducts = async () => {
+    if (!cSearchTerm.trim()) { setCProducts([]); return }
+    setCSearching(true)
+    try {
+      const { data } = await supabase
+        .from('pr_products')
+        .select('product_code, product_name, storage_location')
+        .eq('is_active', true)
+        .eq('product_type', cProductType)
+        .or(`product_code.ilike.%${cSearchTerm}%,product_name.ilike.%${cSearchTerm}%`)
+        .limit(20)
+      setCProducts(data || [])
+    } finally {
+      setCSearching(false)
+    }
+  }
+
+  const cAddItem = (product: any) => {
+    const existing = cSelectedItems.find((i: any) => i.product_code === product.product_code)
+    if (existing) {
+      setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
+    } else {
+      setCSelectedItems([...cSelectedItems, { ...product, qty: 1, requisition_topic: '' }])
+    }
+  }
+
+  const cRemoveItem = (code: string) => setCSelectedItems(cSelectedItems.filter((i: any) => i.product_code !== code))
+
+  const cUpdateQty = (code: string, qty: number) => {
+    if (qty < 1) { cRemoveItem(code); return }
+    setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, qty } : i))
+  }
+
+  const cUpdateTopic = (code: string, topic: string) => {
+    setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
+  }
+
+  const cSubmit = async () => {
+    if (cSelectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
+    if (cSelectedItems.some((i: any) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
+    if (!cNotes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
+
+    const ok = await showConfirm({ title: 'ยืนยันสร้างใบเบิก', message: `สร้างใบเบิก ${cRequisitionId}?\nจำนวน ${cSelectedItems.length} รายการ` })
+    if (!ok) return
+
+    setCSubmitting(true)
+    try {
+      const { error: reqErr } = await supabase.from('wms_requisitions').insert({
+        requisition_id: cRequisitionId,
+        created_by: user?.id,
+        status: 'pending',
+        notes: cNotes.trim(),
+        requisition_topic: null,
+      })
+      if (reqErr) throw reqErr
+
+      const items = cSelectedItems.map((item: any) => ({
+        requisition_id: cRequisitionId,
+        product_code: item.product_code,
+        product_name: item.product_name,
+        location: item.storage_location || null,
+        qty: item.qty,
+        requisition_topic: item.requisition_topic || null,
+      }))
+      const { error: itemErr } = await supabase.from('wms_requisition_items').insert(items)
+      if (itemErr) throw itemErr
+
+      showMessage({ message: `สร้างใบเบิก ${cRequisitionId} สำเร็จ` })
+      setShowCreate(false)
+      loadRequisitions()
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: any) {
+      showMessage({ message: `เกิดข้อผิดพลาด: ${e.message}` })
+    } finally {
+      setCSubmitting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="text-center py-20 text-gray-400">
@@ -239,13 +373,22 @@ export default function RequisitionDashboard() {
     <section>
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-3xl font-black text-slate-800">รายการเบิก</h2>
-        <button
-          onClick={exportToExcel}
-          className="bg-green-600 text-white px-6 py-2.5 rounded-lg font-bold hover:bg-green-700 transition flex items-center gap-2 shadow-md"
-        >
-          <i className="fas fa-file-excel"></i>
-          ดาวน์โหลด Excel
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={openCreateModal}
+            className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-bold hover:bg-blue-700 transition flex items-center gap-2 shadow-md"
+          >
+            <i className="fas fa-plus-circle"></i>
+            สร้างใบเบิก
+          </button>
+          <button
+            onClick={exportToExcel}
+            className="bg-green-600 text-white px-6 py-2.5 rounded-lg font-bold hover:bg-green-700 transition flex items-center gap-2 shadow-md"
+          >
+            <i className="fas fa-file-excel"></i>
+            ดาวน์โหลด Excel
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -317,11 +460,11 @@ export default function RequisitionDashboard() {
               <tr>
                 <th className="p-4">รายการเบิก</th>
                 <th className="p-4">ผู้เบิก</th>
-                <th className="p-4">ผู้อนุมัติ</th>
                 <th className="p-4">วันที่ทำรายการ</th>
+                <th className="p-4">หมายเหตุ</th>
                 <th className="p-4">วันที่อนุมัติ</th>
                 <th className="p-4 text-center">สถานะ</th>
-                <th className="p-4 text-center">รายละเอียด</th>
+                <th className="p-4 text-center">จัดการ</th>
               </tr>
             </thead>
             <tbody className="divide-y text-gray-600">
@@ -337,8 +480,8 @@ export default function RequisitionDashboard() {
                   <tr key={req.id} className="hover:bg-blue-50 border-b transition">
                     <td className="p-4 font-black text-blue-600">{req.requisition_id}</td>
                     <td className="p-4 font-bold text-slate-700">{req.created_by_user?.username || '---'}</td>
-                    <td className="p-4 font-bold text-slate-700">{req.approved_by_user?.username || '-'}</td>
                     <td className="p-4 text-gray-500 text-xs">{formatDate(req.created_at)}</td>
+                    <td className="p-4 text-gray-500 text-sm">{req.notes || '-'}</td>
                     <td className="p-4 text-gray-500 text-xs">{formatDate(req.approved_at)}</td>
                     <td className="p-4 text-center">{getStatusBadge(req.status)}</td>
                     <td className="p-4 text-center">
@@ -355,7 +498,139 @@ export default function RequisitionDashboard() {
       </div>
 
       {isModalOpen && selectedRequisition && <RequisitionDetailModal requisition={selectedRequisition} onClose={closeModal} />}
+
+      {/* Create Requisition Modal */}
+      <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl">
+        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+          <div className="p-6 border-b flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+            <div>
+              <h2 className="text-2xl font-black text-white">สร้างใบเบิกสินค้า</h2>
+              <span className="text-sm font-bold text-blue-200">{cRequisitionId}</span>
+            </div>
+            <button onClick={() => setShowCreate(false)} className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
+              <i className="fas fa-times" style={{ fontSize: '1.5rem' }}></i>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
+            <div className="grid grid-cols-2 gap-6">
+              {/* Left: product search & select */}
+              <div className="space-y-4">
+                <div className="bg-white p-5 rounded-xl border shadow-sm space-y-3">
+                  <h3 className="font-bold text-slate-800 text-base">ค้นหาสินค้า</h3>
+                  <div className="flex gap-2">
+                    {(['FG', 'RM'] as ProductType[]).map((pt) => (
+                      <button key={pt} type="button" onClick={() => { setCProductType(pt); loadCAllProducts(pt); setCProducts([]); setCSearchTerm('') }}
+                        className={`flex-1 py-2 rounded-lg font-bold text-sm transition ${cProductType === pt ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                        {pt === 'FG' ? 'FG สินค้าสำเร็จรูป' : 'RM วัตถุดิบ'}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    value=""
+                    onChange={(e) => { if (e.target.value) { const p = cAllProducts.find((x: any) => x.product_code === e.target.value); if (p) cAddItem(p) } }}
+                    disabled={cLoadingProducts}
+                    className="w-full border p-2.5 rounded-lg text-sm"
+                  >
+                    <option value="">{cLoadingProducts ? 'กำลังโหลด...' : `-- เลือกสินค้าจากรายการ (${cAllProducts.length}) --`}</option>
+                    {cAllProducts.map((p: any) => <option key={p.product_code} value={p.product_code}>{p.product_code} — {p.product_name}</option>)}
+                  </select>
+                  <div className="flex gap-2">
+                    <input type="text" value={cSearchTerm} onChange={(e) => setCSearchTerm(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && cSearchProducts()}
+                      placeholder="รหัสหรือชื่อสินค้า..."
+                      className="flex-1 border p-2.5 rounded-lg text-sm" />
+                    <button onClick={cSearchProducts} disabled={cSearching} className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm hover:bg-blue-700 disabled:opacity-50">
+                      {cSearching ? '...' : 'ค้นหา'}
+                    </button>
+                  </div>
+                </div>
+
+                {cProducts.length > 0 && (
+                  <div className="bg-white p-5 rounded-xl border shadow-sm">
+                    <h3 className="font-bold text-slate-800 text-sm mb-3">ผลการค้นหา ({cProducts.length})</h3>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                      {cProducts.map((p: any) => (
+                        <div key={p.product_code} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-blue-50 transition border">
+                          <img src={getProductImageUrl(p.product_code)} className="w-14 h-14 object-cover rounded-lg border" alt=""
+                            onError={(e) => { (e.target as HTMLImageElement).src = 'https://placehold.co/100x100?text=NO+IMG' }} />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-slate-800 text-sm truncate">{p.product_name}</div>
+                            <div className="text-xs text-gray-500">รหัส: {p.product_code}</div>
+                            {p.storage_location && <div className="text-xs text-red-500">จุดเก็บ: {p.storage_location}</div>}
+                          </div>
+                          <button onClick={() => cAddItem(p)} className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-green-700 shrink-0">
+                            <i className="fas fa-plus mr-1"></i>เพิ่ม
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right: selected items & notes */}
+              <div className="space-y-4">
+                <div className="bg-white p-5 rounded-xl border shadow-sm">
+                  <h3 className="font-bold text-slate-800 text-base mb-3">รายการที่เลือก ({cSelectedItems.length})</h3>
+                  {cSelectedItems.length === 0 ? (
+                    <div className="text-center py-10 text-gray-400">
+                      <i className="fas fa-inbox text-3xl mb-2"></i>
+                      <div>ยังไม่มีรายการ</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-[400px] overflow-y-auto">
+                      {cSelectedItems.map((item: any) => (
+                        <div key={item.product_code} className="p-3 bg-gray-50 rounded-lg border space-y-2">
+                          <div className="flex items-center gap-3">
+                            <img src={getProductImageUrl(item.product_code)} className="w-14 h-14 object-cover rounded-lg border shrink-0" alt=""
+                              onError={(e) => { (e.target as HTMLImageElement).src = 'https://placehold.co/100x100?text=NO+IMG' }} />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-bold text-slate-800 text-sm truncate">{item.product_name}</div>
+                              <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                            </div>
+                            <button onClick={() => cRemoveItem(item.product_code)} className="text-red-500 hover:text-red-700 p-1"><i className="fas fa-trash"></i></button>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <select value={item.requisition_topic || ''} onChange={(e) => cUpdateTopic(item.product_code, e.target.value)}
+                              className={`flex-1 border p-2 rounded-lg text-sm ${item.requisition_topic ? 'border-gray-300' : 'border-red-400'}`}>
+                              <option value="">-- หัวข้อการเบิก * --</option>
+                              {cTopics.map((t: any) => <option key={t.id} value={t.topic_name}>{t.topic_name}</option>)}
+                            </select>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button onClick={() => cUpdateQty(item.product_code, item.qty - 1)} className="w-8 h-8 rounded-lg bg-red-100 text-red-600 font-bold hover:bg-red-200">-</button>
+                              <input type="number" value={item.qty} onChange={(e) => cUpdateQty(item.product_code, Number(e.target.value) || 0)}
+                                className="w-14 text-center border rounded-lg p-1.5 text-sm font-bold" min={1} />
+                              <button onClick={() => cUpdateQty(item.product_code, item.qty + 1)} className="w-8 h-8 rounded-lg bg-green-100 text-green-600 font-bold hover:bg-green-200">+</button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white p-5 rounded-xl border shadow-sm">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">หมายเหตุ <span className="text-red-500">*</span></label>
+                  <textarea value={cNotes} onChange={(e) => setCNotes(e.target.value)} placeholder="กรุณากรอกหมายเหตุ..."
+                    className={`w-full border p-3 rounded-lg text-sm resize-none ${cNotes.trim() ? 'border-gray-300' : 'border-red-400'}`} rows={3} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 border-t bg-white flex justify-end gap-3">
+            <button onClick={() => setShowCreate(false)} className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition">ยกเลิก</button>
+            <button onClick={cSubmit} disabled={cSubmitting || cSelectedItems.length === 0}
+              className="bg-green-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition flex items-center gap-2">
+              {cSubmitting ? <><i className="fas fa-spinner fa-spin"></i>กำลังบันทึก...</> : <><i className="fas fa-check-circle"></i>สร้างใบเบิก ({cSelectedItems.length} รายการ)</>}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {MessageModal}
+      {ConfirmModal}
     </section>
   )
 }

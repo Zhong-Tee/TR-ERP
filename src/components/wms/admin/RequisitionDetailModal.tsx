@@ -224,14 +224,6 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                   <div className="text-slate-600 text-sm">{formatDate(requisition.approved_at)}</div>
                 </div>
               </div>
-              {requisition.requisition_topic && (
-                <div className="mb-3">
-                  <div className="text-sm text-gray-500 font-bold uppercase mb-1">หัวข้อการเบิก</div>
-                  <div className="text-blue-600 bg-blue-50 px-3 py-2 rounded-lg font-bold inline-block">
-                    {requisition.requisition_topic}
-                  </div>
-                </div>
-              )}
               {requisition.notes && (
                 <div className="mt-4 pt-4 border-t">
                   <div className="text-sm text-gray-500 font-bold uppercase mb-2">หมายเหตุ</div>

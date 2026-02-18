@@ -3,6 +3,7 @@
  * อ้างอิงจาก Order_MS/plan.html – ใช้กับ TR-ERP ผ่าน Supabase
  */
 import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
@@ -41,8 +42,6 @@ interface PlanJob {
   order_index: number
   created_at?: string
 }
-
-const LOCK_PASS = 'TRkids@999'
 
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
 const AUTO_TRACK_DEPTS: Record<string, string> = {
@@ -460,14 +459,16 @@ const PLAN_MENU_KEY_MAP: Record<string, string> = {
   issue: 'plan-issue',
 }
 
+const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'dept', 'jobs', 'form', 'set', 'issue']
+
 export default function Plan() {
-  const { hasAccess } = useMenuAccess()
+  const { user } = useAuthContext()
+  const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const unlocked = user?.role === 'superadmin' || user?.role === 'admin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
   const [loading, setLoading] = useState(true)
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
-  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem('plan_unlocked') === 'true')
-  const [passInput, setPassInput] = useState('')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
   const [issueOpenCount, setIssueOpenCount] = useState(0)
   const [issueWorkOrders, setIssueWorkOrders] = useState<Array<{ work_order_name: string }>>([])
@@ -478,6 +479,14 @@ export default function Plan() {
     field: 'planStart' | 'actualStart' | 'actualEnd'
     value: string
   } | null>(null)
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(PLAN_MENU_KEY_MAP[currentView] || currentView)) {
+      const first = ALL_PLAN_VIEWS.find((v) => hasAccess(PLAN_MENU_KEY_MAP[v] || v))
+      if (first) setCurrentView(first)
+    }
+  }, [menuAccessLoading])
 
   // Form state
   const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -926,20 +935,6 @@ export default function Plan() {
     setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
   }, [])
 
-  const handleUnlock = () => {
-    if (!unlocked) {
-      if (passInput === LOCK_PASS) {
-        setUnlocked(true)
-        sessionStorage.setItem('plan_unlocked', 'true')
-        setPassInput('')
-      } else {
-        alert('รหัสผ่านไม่ถูกต้อง')
-      }
-    } else {
-      setUnlocked(false)
-      sessionStorage.removeItem('plan_unlocked')
-    }
-  }
 
   const dayJobs = jobs
     .filter((j) => sameDay(j.date, dDate))
@@ -1013,30 +1008,12 @@ export default function Plan() {
               ))}
             </nav>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <input
-                type="password"
-                value={passInput}
-                onChange={(e) => setPassInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
-                placeholder="รหัสผ่าน"
-                className="w-28 rounded-xl border border-gray-300 px-3 py-2 text-sm"
-                style={{ display: unlocked ? 'none' : undefined }}
-              />
-              <button
-                type="button"
-                onClick={handleUnlock}
-                className={`rounded-xl px-4 py-2 text-sm font-semibold ${
-                  unlocked ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-blue-600 text-white hover:bg-blue-700'
-                }`}
-              >
-                {unlocked ? 'ล็อคระบบ' : 'ปลดล็อก'}
-              </button>
               <span
                 className={`rounded-full px-3 py-2 text-sm font-semibold ${
                   unlocked ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'
                 }`}
               >
-                {unlocked ? '🔓 ปลดล็อคแล้ว' : '🔒 ล็อคอยู่'}
+                {unlocked ? '🔓 แก้ไขได้' : '🔒 ดูอย่างเดียว'}
               </span>
             </div>
           </div>
@@ -1959,7 +1936,7 @@ export default function Plan() {
             </h2>
             {!unlocked && (
               <div className="mx-4 mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
-                ต้องปลดล็อกก่อนจึงจะแก้ไขตั้งค่าได้ — ใส่รหัสผ่านด้านบนแล้วกดปุ่ม ปลดล็อก
+                เฉพาะ role superadmin และ admin เท่านั้นที่สามารถแก้ไขตั้งค่าได้
               </div>
             )}
             <div className="p-4 space-y-6">

@@ -6,6 +6,7 @@ import UploadSection from './UploadSection'
 import ReviewSection from './ReviewSection'
 import KPISection from './KPISection'
 import RequisitionDashboard from './RequisitionDashboard'
+import ReturnRequisitionDashboard from './ReturnRequisitionDashboard'
 import NotificationSection from './NotificationSection'
 import SettingsSection from './SettingsSection'
 import { useWmsModal } from '../useWmsModal'
@@ -14,8 +15,8 @@ import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
   const { user } = useAuthContext()
-  const { hasAccess } = useMenuAccess()
-  const [activeMenu, setActiveMenu] = useState<string>(WMS_MENU_KEYS.NEW_ORDERS)
+  const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const [activeMenu, setActiveMenu] = useState<string>('')
   const { MessageModal, ConfirmModal } = useWmsModal()
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
 
@@ -48,6 +49,7 @@ export default function AdminLayout() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => debouncedLoadTabCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_return_requisitions' }, () => debouncedLoadTabCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadTabCounts())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
@@ -66,9 +68,16 @@ export default function AdminLayout() {
     { key: WMS_MENU_KEYS.REVIEW, label: 'ตรวจสินค้า' },
     { key: WMS_MENU_KEYS.KPI, label: 'KPI' },
     { key: WMS_MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
+    { key: WMS_MENU_KEYS.RETURN_REQUISITION, label: 'รายการคืน' },
     { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
     ...(user?.role !== 'store' ? [{ key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
   ].filter((item) => hasAccess(item.key))
+
+  useEffect(() => {
+    if (!menuAccessLoading && menuItems.length > 0 && !menuItems.some((m) => m.key === activeMenu)) {
+      setActiveMenu(menuItems[0].key)
+    }
+  }, [menuAccessLoading, menuItems, activeMenu])
 
   return (
     <div className="w-full">
@@ -109,6 +118,7 @@ export default function AdminLayout() {
         {activeMenu === WMS_MENU_KEYS.REVIEW && <ReviewSection />}
         {activeMenu === WMS_MENU_KEYS.KPI && <KPISection />}
         {activeMenu === WMS_MENU_KEYS.REQUISITION && <RequisitionDashboard />}
+        {activeMenu === WMS_MENU_KEYS.RETURN_REQUISITION && <ReturnRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.NOTIF && <NotificationSection />}
         {activeMenu === WMS_MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
       </div>

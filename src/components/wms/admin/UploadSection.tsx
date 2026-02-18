@@ -9,8 +9,8 @@ export default function UploadSection() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [orders, setOrders] = useState<any[]>([])
   const [filterUser, setFilterUser] = useState('')
-  const [filterDateStart, setFilterDateStart] = useState('')
-  const [filterDateEnd, setFilterDateEnd] = useState('')
+  const [filterDateStart, setFilterDateStart] = useState(() => new Date().toISOString().split('T')[0])
+  const [filterDateEnd, setFilterDateEnd] = useState(() => new Date().toISOString().split('T')[0])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [tick, setTick] = useState(0)
@@ -20,9 +20,6 @@ export default function UploadSection() {
   useEffect(() => {
     loadUsers()
     loadOrdersDashboard()
-    const today = new Date().toISOString().split('T')[0]
-    setFilterDateStart(today)
-    setFilterDateEnd(today)
 
     const channel = supabase
       .channel('wms-upload-orders')

@@ -1,15 +1,16 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import { supabase } from '../../lib/supabase'
 
-/** key ของเมนูย่อย WMS — ใช้ร่วมกันทั้ง Sidebar และ AdminLayout */
+/** key ของเมนูย่อย WMS — ต้องตรงกับ st_user_menus (Settings) ที่ใช้ wms-* prefix */
 export const WMS_MENU_KEYS = {
-  UPLOAD: 'menu-upload',
-  NEW_ORDERS: 'menu-new-orders',
-  REVIEW: 'menu-review',
-  KPI: 'menu-kpi',
-  REQUISITION: 'menu-requisition',
-  NOTIF: 'menu-notif',
-  SETTINGS: 'menu-settings',
+  UPLOAD: 'wms-upload',
+  NEW_ORDERS: 'wms-new-orders',
+  REVIEW: 'wms-review',
+  KPI: 'wms-kpi',
+  REQUISITION: 'wms-requisition',
+  RETURN_REQUISITION: 'wms-return-requisition',
+  NOTIF: 'wms-notif',
+  SETTINGS: 'wms-settings',
 } as const
 
 /** เมนูที่ต้องแสดง badge ตัวเลข */
@@ -18,6 +19,7 @@ export const WMS_COUNTED_KEYS = [
   WMS_MENU_KEYS.UPLOAD,
   WMS_MENU_KEYS.REVIEW,
   WMS_MENU_KEYS.REQUISITION,
+  WMS_MENU_KEYS.RETURN_REQUISITION,
   WMS_MENU_KEYS.NOTIF,
 ]
 
@@ -39,15 +41,17 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     .eq('status', 'กำลังผลิต')
   let newOrdersCount = 0
   if (woData && woData.length > 0) {
-    const woNames = woData.map((wo: any) => wo.work_order_name)
-    const { data: assignedRows } = await supabase
+    const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
+    const { data: assignedRows, error: assignedErr } = await supabase
       .from('wms_orders')
       .select('order_id')
       .in('order_id', woNames)
+    if (assignedErr) {
+      console.error('loadWmsTabCounts wms_orders error:', assignedErr.message)
+    }
     const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
-    const unassignedNames = woNames.filter((n: string) => !assignedSet.has(n))
+    const unassignedNames = woNames.filter((n) => !assignedSet.has(n))
 
-    // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (ตาม NewOrdersSection)
     if (unassignedNames.length > 0) {
       const mainKW = ['STAMP', 'LASER']
       const etcCats = ['CALENDAR', 'ETC', 'INK']
@@ -73,7 +77,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
       allItems.forEach((item: any) => {
         if (isPickable(catMap[item.product_id] || '')) woWithPickable.add(item.work_order_name)
       })
-      newOrdersCount = unassignedNames.filter((n: string) => woWithPickable.has(n)).length
+      newOrdersCount = unassignedNames.filter((n) => woWithPickable.has(n)).length
     }
   }
 
@@ -104,26 +108,31 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
   }
 
-  // 4. รายการเบิก: pending requisitions today
-  const { count: reqCount } = await supabase
-    .from('wms_requisitions')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'pending')
-    .gte('created_at', today + 'T00:00:00')
-    .lte('created_at', today + 'T23:59:59')
-
-  // 5. แจ้งเตือน: notifications ที่ยังไม่ได้อ่าน
-  const { count: notifCount } = await supabase
-    .from('wms_notifications')
-    .select('id', { count: 'exact', head: true })
-    .eq('is_read', false)
+  // 4-6. รายการเบิก + รายการคืน + แจ้งเตือน — ยิง parallel เพื่อลด round-trip
+  const [reqRes, returnReqRes, notifRes] = await Promise.all([
+    supabase
+      .from('wms_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending')
+      .gte('created_at', today + 'T00:00:00')
+      .lte('created_at', today + 'T23:59:59'),
+    supabase
+      .from('wms_return_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    supabase
+      .from('wms_notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('is_read', false),
+  ])
 
   const counts: WmsTabCounts = {
     [WMS_MENU_KEYS.NEW_ORDERS]: newOrdersCount,
     [WMS_MENU_KEYS.UPLOAD]: uploadCount,
     [WMS_MENU_KEYS.REVIEW]: reviewCount,
-    [WMS_MENU_KEYS.REQUISITION]: reqCount ?? 0,
-    [WMS_MENU_KEYS.NOTIF]: notifCount ?? 0,
+    [WMS_MENU_KEYS.REQUISITION]: reqRes.count ?? 0,
+    [WMS_MENU_KEYS.RETURN_REQUISITION]: returnReqRes.count ?? 0,
+    [WMS_MENU_KEYS.NOTIF]: notifRes.count ?? 0,
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0)
   return { counts, total }

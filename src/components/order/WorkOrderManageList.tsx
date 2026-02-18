@@ -695,17 +695,32 @@ export default function WorkOrderManageList({
         setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
         return
       }
+      const allItems = orders.flatMap((order) => order.or_order_items || (order as any).order_items || [])
+      const productIds = Array.from(new Set(allItems.map((item: any) => item.product_id).filter(Boolean)))
+      const productCategoryByProductId: Record<string, string> = {}
+      if (productIds.length > 0) {
+        const { data: products, error: productsError } = await supabase
+          .from('pr_products')
+          .select('id, product_category')
+          .in('id', productIds)
+        if (productsError) throw productsError
+        ;(products || []).forEach((p: any) => {
+          productCategoryByProductId[String(p.id)] = String(p.product_category || '').trim()
+        })
+      }
+
       const headers = ['Item UID', 'ชื่อสินค้า', 'สีหมึก', 'บรรทัด 1', 'หมวด']
       const dataToExport: unknown[][] = []
       orders.forEach((order) => {
         const items = order.or_order_items || (order as any).order_items || []
         items.forEach((item: any) => {
+          const category = productCategoryByProductId[String(item.product_id)] || 'N/A'
           dataToExport.push([
             item.item_uid,
             item.product_name,
             item.ink_color ?? '',
             forceText(item.line_1),
-            'N/A',
+            category,
           ])
         })
       })
