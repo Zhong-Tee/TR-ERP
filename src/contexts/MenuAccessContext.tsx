@@ -19,6 +19,15 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuthContext()
   const [accessMap, setAccessMap] = useState<Record<string, boolean> | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [prevRole, setPrevRole] = useState<string | undefined>(user?.role)
+
+  // Synchronously reset loaded state when role changes so consumers
+  // (SmartRedirect, ProtectedRoute) never see stale menuAccess data.
+  if (prevRole !== user?.role) {
+    setPrevRole(user?.role)
+    setLoaded(false)
+    setAccessMap(null)
+  }
 
   const loadAccess = useCallback(async () => {
     if (!user?.role) {

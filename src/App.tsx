@@ -38,7 +38,7 @@ const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
   { key: 'orders', path: '/orders', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'] },
   { key: 'admin-qc', path: '/admin-qc', roles: ['superadmin', 'admin', 'admin-tr', 'admin_qc'] },
   { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'] },
-  { key: 'wms', path: '/wms', roles: ['superadmin', 'admin', 'admin-tr', 'store', 'production'] },
+  { key: 'wms', path: '/wms', roles: ['superadmin', 'admin', 'admin-tr', 'store', 'production', 'production_mb', 'manager', 'picker'] },
   { key: 'qc', path: '/qc', roles: ['superadmin', 'admin', 'admin-tr', 'qc_staff'] },
   { key: 'packing', path: '/packing', roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'] },
   { key: 'transport', path: '/transport', roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'] },
@@ -51,11 +51,18 @@ const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
 ]
 
 function SmartRedirect() {
-  const { user } = useAuthContext()
+  const { user, signOut } = useAuthContext()
   const { menuAccess, menuAccessLoading, hasAccess } = useMenuAccess()
 
   if (!user) return <Navigate to="/" replace />
 
+  // Special roles: redirect immediately without waiting for menuAccess
+  if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
+
+  const WMS_MOBILE_ROLES = ['picker', 'production_mb', 'manager']
+  if (WMS_MOBILE_ROLES.includes(user.role)) return <Navigate to="/wms" replace />
+
+  // Desktop roles: wait for menuAccess to determine first accessible page
   if (menuAccessLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -67,18 +74,30 @@ function SmartRedirect() {
     )
   }
 
-  // Auditor: redirect ไปหน้า Audit โดยตรง
-  if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
-
+  // หา menu แรกที่ role มีสิทธิ์ + menuAccess อนุญาต
   for (const menu of MENU_PATH_ORDER) {
-    if (menuAccess !== null) {
-      if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
-    } else {
-      if (menu.roles.includes(user.role)) return <Navigate to={menu.path} replace />
-    }
+    const roleAllowed = menu.roles.includes(user.role)
+    const menuAllowed = menuAccess !== null ? hasAccess(menu.key) : true
+    if (roleAllowed && menuAllowed) return <Navigate to={menu.path} replace />
   }
 
-  return <Navigate to="/orders" replace />
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <div className="text-center space-y-4 p-8 bg-white rounded-xl shadow-lg max-w-md">
+        <div className="text-5xl">🔒</div>
+        <p className="text-xl font-bold text-gray-700">ไม่มีเมนูที่สามารถเข้าถึงได้</p>
+        <p className="text-gray-500">กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่าสิทธิ์การใช้งาน</p>
+        <div className="flex gap-3 justify-center pt-2">
+          <button onClick={() => window.location.reload()} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            รีเฟรช
+          </button>
+          <button onClick={() => signOut()} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+            ออกจากระบบ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function AuditRouteSwitch() {
@@ -90,9 +109,6 @@ function AuditRouteSwitch() {
 function AppRoutes() {
   const { user, loading } = useAuthContext()
   const location = useLocation()
-
-  // Debug
-  console.log('AppRoutes - loading:', loading, 'user:', user)
 
   if (loading) {
     return (
@@ -106,8 +122,9 @@ function AppRoutes() {
   }
 
   if (!user) {
-    console.log('No user found, showing login page')
-    // onLoginSuccess จะไม่ถูกเรียกแล้ว เพราะ onAuthStateChange จะจัดการให้
+    if (location.pathname !== '/') {
+      return <Navigate to="/" replace />
+    }
     return <Login onLoginSuccess={() => {}} />
   }
 
@@ -126,7 +143,7 @@ function AppRoutes() {
       <Route
         path="/dashboard"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account']}>
             <Layout>
               <DashboardPage />
             </Layout>

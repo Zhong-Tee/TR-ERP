@@ -1,4 +1,4 @@
-import { Navigate, useLocation } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { UserRole } from '../types'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
@@ -28,6 +28,30 @@ interface ProtectedRouteProps {
   allowedRoles?: UserRole[]
 }
 
+function NoAccessFallback() {
+  const { signOut } = useAuthContext()
+  const navigate = useNavigate()
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100">
+      <div className="text-center space-y-4 p-8 bg-white rounded-xl shadow-lg max-w-md">
+        <div className="text-5xl">🔒</div>
+        <p className="text-xl font-bold text-gray-700">ไม่มีสิทธิ์เข้าถึงหน้านี้</p>
+        <p className="text-gray-500">กรุณาติดต่อผู้ดูแลระบบเพื่อตั้งค่าสิทธิ์การใช้งาน</p>
+        <div className="flex gap-3 justify-center pt-2">
+          <button onClick={() => navigate('/')} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+            กลับหน้าหลัก
+          </button>
+          <button onClick={() => signOut()} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+            ออกจากระบบ
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const WMS_MOBILE_ROLES: string[] = ['picker', 'production_mb', 'manager']
+
 export default function ProtectedRoute({
   children,
   allowedRoles,
@@ -36,7 +60,7 @@ export default function ProtectedRoute({
   const location = useLocation()
   const { menuAccess, menuAccessLoading, hasAccess } = useMenuAccess()
 
-  if (loading || menuAccessLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -48,26 +72,45 @@ export default function ProtectedRoute({
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />
+    return <Navigate to="/" replace />
   }
 
-  // Auditor: อนุญาตเฉพาะหน้า audit ที่ได้รับมอบหมาย ข้ามการตรวจ menuAccess
+  // Auditor: bypass menuAccess, only allow /warehouse/audit paths
   if (user.role === 'auditor') {
     const isAuditPath = location.pathname.startsWith('/warehouse/audit')
     if (!isAuditPath || (allowedRoles && !allowedRoles.includes('auditor'))) {
-      return <Navigate to="/" replace />
+      return <NoAccessFallback />
     }
     return <>{children}</>
   }
 
+  // WMS mobile roles: bypass menuAccess, only allow /wms
+  if (WMS_MOBILE_ROLES.includes(user.role)) {
+    if (location.pathname.startsWith('/wms') && (!allowedRoles || allowedRoles.includes(user.role))) {
+      return <>{children}</>
+    }
+    return <NoAccessFallback />
+  }
+
+  // Desktop roles: wait for menuAccess before deciding
+  if (menuAccessLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">กำลังโหลด...</p>
+        </div>
+      </div>
+    )
+  }
+
   const menuKey = pathToMenuKey(location.pathname)
 
-  if (menuKey && menuAccess !== null) {
-    if (!hasAccess(menuKey)) {
-      return <Navigate to="/" replace />
-    }
-  } else if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/" replace />
+  const menuBlocked = menuKey && menuAccess !== null && !hasAccess(menuKey)
+  const roleBlocked = !menuBlocked && allowedRoles && !allowedRoles.includes(user.role)
+
+  if (menuBlocked || roleBlocked) {
+    return <NoAccessFallback />
   }
 
   return <>{children}</>
