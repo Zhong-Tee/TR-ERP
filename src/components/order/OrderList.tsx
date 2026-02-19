@@ -330,48 +330,56 @@ export default function OrderList({
   }
 
   return (
-    <div className="space-y-2">
-      {orders.map((order) => (
+    <div className="space-y-2.5">
+      {orders.map((order, orderIdx) => {
+        const channelCode = (order.channel_code || '').toUpperCase()
+        const channelColor =
+          channelCode.startsWith('TTTR') ? 'bg-blue-100 text-blue-700 border border-blue-200'
+          : channelCode.startsWith('LZTR') ? 'bg-purple-100 text-purple-700 border border-purple-200'
+          : channelCode.startsWith('SPTR') ? 'bg-orange-100 text-orange-700 border border-orange-200'
+          : channelCode.startsWith('FBTR') ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+          : channelCode.startsWith('LNTR') ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+          : channelCode.startsWith('TLTR') ? 'bg-sky-100 text-sky-700 border border-sky-200'
+          : 'bg-slate-100 text-slate-600 border border-slate-200'
+
+        const statusStyle =
+          order.status === 'จัดส่งแล้ว' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+          : order.status === 'ลงข้อมูลเสร็จสิ้น' ? 'bg-teal-100 text-teal-700 border border-teal-200'
+          : order.status === 'รอลงข้อมูล' ? 'bg-amber-100 text-amber-700 border border-amber-200'
+          : order.status === 'รอตรวจคำสั่งซื้อ' ? 'bg-yellow-100 text-yellow-700 border border-yellow-200'
+          : order.status === 'ตรวจสอบแล้ว' ? ((order as any).has_overpay_refund ? 'bg-orange-100 text-orange-700 border border-orange-200' : 'bg-sky-100 text-sky-700 border border-sky-200')
+          : order.status === 'ลงข้อมูลผิด' ? 'bg-rose-100 text-rose-700 border border-rose-200'
+          : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ' ? 'bg-red-100 text-red-700 border border-red-200'
+          : order.status === 'ยกเลิก' ? 'bg-gray-200 text-gray-500 border border-gray-300'
+          : 'bg-slate-100 text-slate-600 border border-slate-200'
+
+        const cardBg = orderIdx % 2 === 0
+          ? 'bg-white border-l-4 border-l-blue-400 border border-gray-100'
+          : 'bg-slate-50 border-l-4 border-l-indigo-400 border border-gray-100'
+
+        return (
         <div
           key={order.id}
           onClick={disableOrderClick ? undefined : () => (useDetailViewOnClick ? setDetailOrder(order) : onOrderClick(order))}
-          className={`bg-gray-100 p-5 rounded-2xl border border-gray-200 transition-all ${
-            disableOrderClick ? 'cursor-default' : 'hover:border-primary-300 hover:shadow-soft cursor-pointer'
+          className={`${cardBg} p-5 rounded-2xl shadow-sm transition-all ${
+            disableOrderClick ? 'cursor-default' : 'hover:shadow-md hover:border-blue-200 cursor-pointer'
           }`}
         >
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-3 mb-2 flex-wrap">
-                <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-primary-700 text-xl font-bold hover:text-blue-800 hover:underline transition-colors">
+              <div className="flex items-center gap-2.5 mb-2 flex-wrap">
+                <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-700 text-xl font-bold hover:text-blue-900 hover:underline transition-colors">
                   {order.bill_no}
                 </button>
                 {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
-                  <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-accent-200 text-surface-900 border border-accent-300">
+                  <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-pink-100 text-pink-700 border border-pink-200">
                     เคลม
                   </span>
                 )}
-                <span className="px-2.5 py-1 bg-surface-100 text-surface-700 rounded-full text-sm font-semibold">
+                <span className={`px-2.5 py-1 rounded-full text-sm font-semibold ${channelColor}`}>
                   {order.channel_code}
                 </span>
-                <span
-                  className={`px-2.5 py-1 rounded-full text-sm font-semibold ${
-                    order.status === 'ลงข้อมูลเสร็จสิ้น'
-                      ? 'bg-secondary-200 text-secondary-900'
-                      : order.status === 'รอลงข้อมูล'
-                      ? 'bg-accent-200 text-surface-900'
-                      : order.status === 'รอตรวจคำสั่งซื้อ'
-                      ? 'bg-accent-200 text-surface-900'
-                      : order.status === 'ตรวจสอบแล้ว'
-                      ? (order as any).has_overpay_refund
-                        ? 'bg-accent-200 text-surface-900'
-                        : 'bg-primary-100 text-primary-900'
-                      : order.status === 'ลงข้อมูลผิด'
-                      ? 'bg-accent-200 text-surface-900'
-                      : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ'
-                      ? 'bg-accent-200 text-surface-900'
-                      : 'bg-surface-100 text-surface-700'
-                  }`}
-                >
+                <span className={`px-2.5 py-1 rounded-full text-sm font-semibold ${statusStyle}`}>
                   {order.status === 'ตรวจสอบแล้ว' && (order as any).has_overpay_refund
                     ? 'ตรวจสอบแล้ว (โอนเกิน)'
                     : order.status}
@@ -644,7 +652,8 @@ export default function OrderList({
             </div>
           </div>
         </div>
-      ))}
+        )
+      })}
       <Modal
         open={!!deleteConfirmOrder}
         onClose={() => { if (!deletingOrderId) setDeleteConfirmOrder(null) }}

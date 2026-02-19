@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
-import type { QCItem, QCRecord, QCSession, SettingsReason, InkType } from '../types'
+import type { QCItem, QCRecord, QCSession, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
 import {
   fetchWorkOrdersWithProgress,
   fetchItemsByWorkOrder,
@@ -24,7 +24,23 @@ import {
   saveWorkOrderName,
   setSessionBackup,
   clearSessionBackup,
+  fetchChecklistTopics,
+  createChecklistTopic,
+  updateChecklistTopic,
+  deleteChecklistTopic,
+  fetchChecklistItems,
+  createChecklistItem,
+  deleteChecklistItem,
+  fetchChecklistTopicProducts,
+  addChecklistTopicProduct,
+  removeChecklistTopicProduct,
+  uploadChecklistFile,
+  searchProducts,
+  fetchChecklistForProduct,
+  generateChecklistTemplate,
+  importChecklistFromExcel,
 } from '../lib/qcApi'
+import type { BulkImportResult } from '../lib/qcApi'
 import type { WorkOrderWithProgress } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
@@ -76,6 +92,7 @@ export default function QC() {
   const { hasAccess } = useMenuAccess()
   const isAdmin = user?.role === 'superadmin' || user?.role === 'admin-tr'
   const canSkipQc = user?.role === 'superadmin' || user?.role === 'admin'
+  const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
 
   const [currentView, setCurrentView] = useState<QCView>('qc')
   const [loading, setLoading] = useState(false)
@@ -148,7 +165,7 @@ export default function QC() {
   // Settings
   const [reasons, setReasons] = useState<SettingsReason[]>([])
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
-  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs'>('reasons')
+  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics'>('reasons')
   const [newReason, setNewReason] = useState('')
   const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
 
@@ -160,6 +177,27 @@ export default function QC() {
   // Sub-reason management (Settings)
   const [addSubReasonParentId, setAddSubReasonParentId] = useState<string | null>(null)
   const [newSubReason, setNewSubReason] = useState('')
+
+  // Checklist Topics (Settings)
+  const [clTopics, setClTopics] = useState<QCChecklistTopic[]>([])
+  const [clNewTopicName, setClNewTopicName] = useState('')
+  const [clSelectedTopic, setClSelectedTopic] = useState<QCChecklistTopic | null>(null)
+  const [clItems, setClItems] = useState<QCChecklistItem[]>([])
+  const [clProducts, setClProducts] = useState<QCChecklistTopicProduct[]>([])
+  const [clNewItemTitle, setClNewItemTitle] = useState('')
+  const [clNewItemFile, setClNewItemFile] = useState<File | null>(null)
+  const [clProductSearch, setClProductSearch] = useState('')
+  const [clProductResults, setClProductResults] = useState<{ product_code: string; product_name: string }[]>([])
+  const [clEditTopicId, setClEditTopicId] = useState<string | null>(null)
+  const [clEditTopicName, setClEditTopicName] = useState('')
+  const [clUploading, setClUploading] = useState(false)
+  const [clImporting, setClImporting] = useState(false)
+  const [clImportResult, setClImportResult] = useState<BulkImportResult | null>(null)
+  const clFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Checklist for QC Operation (in-memory checkbox state)
+  const [checklistItems, setChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
 
   // Delete reason confirm modal
   const [deleteReasonModalOpen, setDeleteReasonModalOpen] = useState(false)
@@ -321,6 +359,19 @@ export default function QC() {
     }
   }, [currentItem])
 
+  useEffect(() => {
+    setCheckedIds(new Set())
+    if (currentItem?.product_code) {
+      fetchChecklistForProduct(currentItem.product_code)
+        .then(setChecklistItems)
+        .catch(() => setChecklistItems([]))
+    } else {
+      setChecklistItems([])
+    }
+  }, [currentItem?.product_code])
+
+  const allChecklistChecked = checklistItems.length === 0 || checklistItems.every((item) => checkedIds.has(item.id))
+
   async function handleLoadWo(woName: string) {
     if (!woName) return
     setLoading(true)
@@ -371,6 +422,16 @@ export default function QC() {
         if (sessErr) throw sessErr
         sessionId = newSession?.id ?? null
       }
+
+      const { data: planJob } = await supabase
+        .from('plan_jobs')
+        .select('tracks')
+        .eq('name', woName)
+        .order('date', { ascending: false })
+        .limit(1)
+        .single()
+      const planStart = planJob?.tracks?.QC?.['เริ่มQC']?.start
+      if (planStart) startTime = new Date(planStart)
 
       setQcData({ items })
       setQcState({ step: 'working', startTime, filename, sessionId })
@@ -497,7 +558,12 @@ export default function QC() {
   }
 
   async function markStatus(status: 'pass' | 'fail') {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!currentItem) return
+    if (status === 'pass' && !allChecklistChecked) {
+      alert('กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อนกด ผ่าน')
+      return
+    }
     if (status === 'pass') {
       if (qcState.sessionId) {
         try {
@@ -521,6 +587,7 @@ export default function QC() {
   }
 
   async function finishSession() {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!qcState.sessionId) {
       alert('ไม่พบ session')
       return
@@ -885,6 +952,156 @@ export default function QC() {
     }
   }
 
+  // --- Checklist Settings handlers ---
+  async function loadChecklistTopics() {
+    try {
+      const data = await fetchChecklistTopics()
+      setClTopics(data)
+    } catch (e: any) {
+      console.error('loadChecklistTopics error:', e)
+    }
+  }
+
+  async function handleCreateTopic() {
+    const name = clNewTopicName.trim()
+    if (!name) return
+    try {
+      await createChecklistTopic(name)
+      setClNewTopicName('')
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleDeleteTopic(id: string) {
+    if (!confirm('ลบหัวข้อนี้ รวมถึงหัวข้อย่อยและสินค้าที่เชื่อม?')) return
+    try {
+      await deleteChecklistTopic(id)
+      if (clSelectedTopic?.id === id) { setClSelectedTopic(null); setClItems([]); setClProducts([]) }
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSaveEditTopic() {
+    if (!clEditTopicId || !clEditTopicName.trim()) return
+    try {
+      await updateChecklistTopic(clEditTopicId, clEditTopicName.trim())
+      setClEditTopicId(null)
+      setClEditTopicName('')
+      await loadChecklistTopics()
+      if (clSelectedTopic?.id === clEditTopicId) {
+        setClSelectedTopic((prev) => prev ? { ...prev, name: clEditTopicName.trim() } : null)
+      }
+    } catch (e: any) {
+      alert('แก้ไขไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSelectTopic(topic: QCChecklistTopic) {
+    setClSelectedTopic(topic)
+    try {
+      const [items, products] = await Promise.all([
+        fetchChecklistItems(topic.id),
+        fetchChecklistTopicProducts(topic.id),
+      ])
+      setClItems(items)
+      setClProducts(products)
+    } catch (e: any) {
+      console.error('loadTopicDetail error:', e)
+    }
+  }
+
+  async function handleAddChecklistItem() {
+    if (!clSelectedTopic || !clNewItemTitle.trim()) return
+    setClUploading(true)
+    try {
+      let fileUrl: string | null = null
+      let fileType: 'image' | 'pdf' | null = null
+      if (clNewItemFile) {
+        fileUrl = await uploadChecklistFile(clNewItemFile)
+        fileType = clNewItemFile.type === 'application/pdf' ? 'pdf' : 'image'
+      }
+      await createChecklistItem(clSelectedTopic.id, clNewItemTitle.trim(), fileUrl, fileType)
+      setClNewItemTitle('')
+      setClNewItemFile(null)
+      const items = await fetchChecklistItems(clSelectedTopic.id)
+      setClItems(items)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('เพิ่มหัวข้อย่อยไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setClUploading(false)
+    }
+  }
+
+  async function handleDeleteChecklistItem(id: string) {
+    if (!clSelectedTopic) return
+    try {
+      await deleteChecklistItem(id)
+      const items = await fetchChecklistItems(clSelectedTopic.id)
+      setClItems(items)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleSearchProducts() {
+    const q = clProductSearch.trim()
+    if (!q) { setClProductResults([]); return }
+    try {
+      const results = await searchProducts(q)
+      setClProductResults(results)
+    } catch (e: any) {
+      console.error('searchProducts error:', e)
+    }
+  }
+
+  async function handleAddProduct(product: { product_code: string; product_name: string }) {
+    if (!clSelectedTopic) return
+    try {
+      await addChecklistTopicProduct(clSelectedTopic.id, product.product_code, product.product_name)
+      const products = await fetchChecklistTopicProducts(clSelectedTopic.id)
+      setClProducts(products)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      if (e?.message?.includes('duplicate') || e?.code === '23505') {
+        alert('สินค้านี้มีอยู่ในหัวข้อนี้แล้ว')
+      } else {
+        alert('เพิ่มสินค้าไม่สำเร็จ: ' + (e?.message || e))
+      }
+    }
+  }
+
+  async function handleRemoveProduct(id: string) {
+    if (!clSelectedTopic) return
+    try {
+      await removeChecklistTopicProduct(id)
+      const products = await fetchChecklistTopicProducts(clSelectedTopic.id)
+      setClProducts(products)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('ลบสินค้าไม่สำเร็จ: ' + (e?.message || e))
+    }
+  }
+
+  async function handleImportExcel(file: File) {
+    setClImporting(true)
+    setClImportResult(null)
+    try {
+      const result = await importChecklistFromExcel(file)
+      setClImportResult(result)
+      await loadChecklistTopics()
+    } catch (e: any) {
+      alert('นำเข้าไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setClImporting(false)
+    }
+  }
+
   function navigateItemInList(delta: number) {
     if (!currentItem || itemsToShow.length === 0) return
     const idx = itemsToShow.indexOf(currentItem)
@@ -1038,7 +1255,7 @@ export default function QC() {
                       <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
                     </div>
                   </div>
-                  {qcState.startTime && (
+                  {qcState.startTime && !isViewOnly && (
                     <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2">
                       <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
                       <span className="text-lg font-bold text-indigo-700">
@@ -1059,7 +1276,7 @@ export default function QC() {
                     <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
                       ค้นหา
                     </button>
-                    {remainingItems === 0 && passedItems === totalItems && totalItems > 0 && (
+                    {remainingItems === 0 && passedItems === totalItems && totalItems > 0 && !isViewOnly && (
                       <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
                         FINISH JOB
                       </button>
@@ -1234,6 +1451,22 @@ export default function QC() {
                             <div className="text-2xl font-bold">{currentItem.qty || 1} pcs</div>
                           </div>
                         </div>
+                        {currentItem.file_attachment && currentItem.file_attachment.trim() !== '' && (
+                          <div className="bg-white p-2 rounded border mb-4">
+                            <div className="text-xs text-gray-400 mb-1">ไฟล์แนบ</div>
+                            <a
+                              href={currentItem.file_attachment.startsWith('http') ? currentItem.file_attachment : `https://${currentItem.file_attachment}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium text-sm"
+                            >
+                              <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                              </svg>
+                              เปิดไฟล์แนบ
+                            </a>
+                          </div>
+                        )}
                         {currentItem.remark && (
                           <div className="mb-2 text-sm">
                             <span className="text-gray-500">Remark: </span>
@@ -1242,6 +1475,11 @@ export default function QC() {
                         )}
                         </div>
                         <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                          {isViewOnly ? (
+                            <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
+                              โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถทำ QC ได้)
+                            </div>
+                          ) : (
                           <div className="flex gap-4">
                             <button
                               onClick={() => markStatus('fail')}
@@ -1249,10 +1487,20 @@ export default function QC() {
                             >
                               ไม่ผ่าน
                             </button>
-                            <button onClick={() => markStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
+                            <button
+                              onClick={() => markStatus('pass')}
+                              disabled={!allChecklistChecked}
+                              title={!allChecklistChecked ? 'กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อน' : ''}
+                              className={`flex-1 py-3 rounded-xl font-bold ${
+                                allChecklistChecked
+                                  ? 'bg-green-500 text-white hover:bg-green-600'
+                                  : 'bg-green-300 text-white cursor-not-allowed opacity-60'
+                              }`}
+                            >
                               ผ่าน
                             </button>
                           </div>
+                          )}
                           <div className="flex gap-4">
                             <button onClick={() => navigateItem(-1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
                               ก่อนหน้า
@@ -1266,6 +1514,94 @@ export default function QC() {
                     ) : (
                       <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
                         <p className="text-lg">สแกน Barcode เพื่อเริ่ม</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Checklist Card (4th column) */}
+                  <div className="w-72 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col min-h-0 overflow-hidden">
+                    <div className="p-3 border-b bg-green-50">
+                      <h3 className="font-bold text-green-800 text-sm flex items-center gap-2">
+                        <i className="fas fa-clipboard-check"></i>
+                        เช็คลิส หัวข้อการตรวจเช็ค
+                      </h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      {!currentItem ? (
+                        <div className="py-8 text-center text-gray-400 text-sm">เลือกรายการเพื่อดูเช็คลิส</div>
+                      ) : checklistItems.length === 0 ? (
+                        <div className="py-8 text-center text-gray-400 text-sm">ไม่มีรายการเช็คลิสสำหรับสินค้านี้</div>
+                      ) : (
+                        (() => {
+                          const grouped: Record<string, (QCChecklistItem & { topic_name: string })[]> = {}
+                          checklistItems.forEach((item) => {
+                            if (!grouped[item.topic_name]) grouped[item.topic_name] = []
+                            grouped[item.topic_name].push(item)
+                          })
+                          return Object.entries(grouped).map(([topicName, items]) => (
+                            <div key={topicName} className="mb-2">
+                              <div className="text-xs font-bold text-gray-500 uppercase px-1 py-1 border-b border-gray-100">{topicName}</div>
+                              {items.map((item) => (
+                                <label
+                                  key={item.id}
+                                  className={`flex items-center gap-2 px-2 py-2 rounded cursor-pointer hover:bg-gray-50 ${
+                                    checkedIds.has(item.id) ? 'bg-green-50' : ''
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checkedIds.has(item.id)}
+                                    onChange={() => {
+                                      setCheckedIds((prev) => {
+                                        const next = new Set(prev)
+                                        if (next.has(item.id)) next.delete(item.id)
+                                        else next.add(item.id)
+                                        return next
+                                      })
+                                    }}
+                                    disabled={isViewOnly}
+                                    className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 shrink-0"
+                                  />
+                                  <span className={`flex-1 text-sm ${checkedIds.has(item.id) ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                    {item.title}
+                                  </span>
+                                  {item.file_url && (
+                                    <a
+                                      href={item.file_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center hover:bg-blue-200"
+                                      title="ดูคู่มือตรวจ QC"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <i className="fas fa-info text-[10px]"></i>
+                                    </a>
+                                  )}
+                                </label>
+                              ))}
+                            </div>
+                          ))
+                        })()
+                      )}
+                    </div>
+                    {checklistItems.length > 0 && !isViewOnly && (
+                      <div className="shrink-0 p-2 border-t bg-gray-50">
+                        <button
+                          onClick={() => {
+                            if (checkedIds.size === checklistItems.length) {
+                              setCheckedIds(new Set())
+                            } else {
+                              setCheckedIds(new Set(checklistItems.map((i) => i.id)))
+                            }
+                          }}
+                          className={`w-full py-2 rounded-lg font-bold text-sm ${
+                            checkedIds.size === checklistItems.length
+                              ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                              : 'bg-green-500 text-white hover:bg-green-600'
+                          }`}
+                        >
+                          {checkedIds.size === checklistItems.length ? 'ยกเลิกทั้งหมด' : 'ผ่านทั้งหมด'}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1835,6 +2171,12 @@ export default function QC() {
               >
                 รายการไม่ QC
               </button>
+              <button
+                onClick={() => { setSettingsTab('checklist_topics'); loadChecklistTopics() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'checklist_topics' ? 'border-green-500 text-green-600' : 'border-transparent text-gray-500'}`}
+              >
+                หัวข้อQC
+              </button>
             </div>
             {settingsTab === 'reasons' && (
               <div>
@@ -2018,6 +2360,260 @@ export default function QC() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+            )}
+            {settingsTab === 'checklist_topics' && (
+              <div>
+                {!clSelectedTopic ? (
+                  <>
+                    <div className="flex gap-2 mb-4 flex-wrap items-center">
+                      <input
+                        type="text"
+                        value={clNewTopicName}
+                        onChange={(e) => setClNewTopicName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleCreateTopic()}
+                        placeholder="ชื่อหัวข้อใหญ่ใหม่"
+                        className="border rounded px-3 py-2 flex-1"
+                      />
+                      <button onClick={handleCreateTopic} className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold">
+                        เพิ่มหัวข้อ
+                      </button>
+                      <div className="w-px h-8 bg-gray-200 mx-1"></div>
+                      <button
+                        onClick={generateChecklistTemplate}
+                        className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold flex items-center gap-2"
+                      >
+                        <i className="fas fa-download text-sm"></i> ดาวน์โหลด Template
+                      </button>
+                      <button
+                        onClick={() => clFileInputRef.current?.click()}
+                        disabled={clImporting}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-bold flex items-center gap-2 disabled:opacity-50"
+                      >
+                        <i className="fas fa-upload text-sm"></i> {clImporting ? 'กำลังนำเข้า...' : 'อัพโหลดนำเข้า'}
+                      </button>
+                      <input
+                        ref={clFileInputRef}
+                        type="file"
+                        accept=".xlsx,.xls"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]
+                          if (f) handleImportExcel(f)
+                          e.target.value = ''
+                        }}
+                      />
+                    </div>
+                    {clImportResult && (
+                      <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
+                        <div className="font-bold text-blue-800 mb-2">ผลการนำเข้า</div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อใหม่</div>
+                            <div className="text-lg font-bold text-green-600">{clImportResult.topicsCreated}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อมีอยู่แล้ว</div>
+                            <div className="text-lg font-bold text-gray-500">{clImportResult.topicsExisting}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">หัวข้อย่อยใหม่</div>
+                            <div className="text-lg font-bold text-blue-600">{clImportResult.itemsCreated}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">สินค้าเชื่อมใหม่</div>
+                            <div className="text-lg font-bold text-green-600">{clImportResult.productsLinked}</div>
+                          </div>
+                          <div className="bg-white rounded p-2 border text-center">
+                            <div className="text-xs text-gray-500">สินค้าข้าม (ซ้ำ)</div>
+                            <div className="text-lg font-bold text-amber-600">{clImportResult.productsSkipped}</div>
+                          </div>
+                        </div>
+                        {clImportResult.errors.length > 0 && (
+                          <details className="mt-2">
+                            <summary className="text-red-600 cursor-pointer font-medium">ข้อผิดพลาด ({clImportResult.errors.length} รายการ)</summary>
+                            <ul className="mt-1 text-red-600 text-xs space-y-1 max-h-32 overflow-y-auto">
+                              {clImportResult.errors.map((err, i) => <li key={i}>{err}</li>)}
+                            </ul>
+                          </details>
+                        )}
+                        <button onClick={() => setClImportResult(null)} className="mt-2 text-xs text-gray-400 hover:text-gray-600">ปิด</button>
+                      </div>
+                    )}
+                    {clTopics.length === 0 ? (
+                      <div className="py-8 text-center text-gray-400">ยังไม่มีหัวข้อ QC — เพิ่มในช่องด้านบน</div>
+                    ) : (
+                      <div className="border rounded-xl overflow-hidden divide-y">
+                        {clTopics.map((topic) => (
+                          <div key={topic.id} className="py-3 px-4 flex items-center gap-3 hover:bg-gray-50">
+                            {clEditTopicId === topic.id ? (
+                              <div className="flex-1 flex gap-2 items-center">
+                                <input
+                                  type="text"
+                                  value={clEditTopicName}
+                                  onChange={(e) => setClEditTopicName(e.target.value)}
+                                  onKeyDown={(e) => e.key === 'Enter' && handleSaveEditTopic()}
+                                  className="border rounded px-3 py-1 flex-1"
+                                  autoFocus
+                                />
+                                <button onClick={handleSaveEditTopic} className="px-3 py-1 bg-blue-500 text-white rounded text-sm font-bold">บันทึก</button>
+                                <button onClick={() => setClEditTopicId(null)} className="px-3 py-1 border rounded text-sm">ยกเลิก</button>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => handleSelectTopic(topic)}
+                                  className="flex-1 text-left min-w-0"
+                                >
+                                  <span className="font-bold text-gray-800">{topic.name}</span>
+                                  <span className="ml-3 text-xs text-gray-400">
+                                    {topic.items_count || 0} หัวข้อย่อย / {topic.products_count || 0} สินค้า
+                                  </span>
+                                </button>
+                                <button
+                                  onClick={() => { setClEditTopicId(topic.id); setClEditTopicName(topic.name) }}
+                                  className="text-blue-400 hover:text-blue-600 shrink-0" title="แก้ไข"
+                                >
+                                  <i className="fas fa-pen text-sm"></i>
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteTopic(topic.id)}
+                                  className="text-red-400 hover:text-red-600 shrink-0" title="ลบ"
+                                >
+                                  <i className="fas fa-trash-alt text-sm"></i>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div>
+                    <button
+                      onClick={() => { setClSelectedTopic(null); setClItems([]); setClProducts([]); setClProductSearch(''); setClProductResults([]) }}
+                      className="mb-4 text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1"
+                    >
+                      <i className="fas fa-arrow-left text-sm"></i> กลับหน้ารายการหัวข้อ
+                    </button>
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">{clSelectedTopic.name}</h3>
+
+                    {/* Sub-items */}
+                    <div className="mb-6">
+                      <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                        <i className="fas fa-list-check text-green-500"></i> หัวข้อย่อย ({clItems.length})
+                      </h4>
+                      <div className="flex gap-2 mb-3 flex-wrap">
+                        <input
+                          type="text"
+                          value={clNewItemTitle}
+                          onChange={(e) => setClNewItemTitle(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleAddChecklistItem()}
+                          placeholder="ชื่อหัวข้อย่อยใหม่"
+                          className="border rounded px-3 py-2 flex-1"
+                        />
+                        <label className="flex items-center gap-2 px-3 py-2 border rounded cursor-pointer hover:bg-gray-50 text-sm">
+                          <i className="fas fa-paperclip text-gray-400"></i>
+                          <span className="text-gray-600 truncate max-w-[120px]">{clNewItemFile ? clNewItemFile.name : 'แนบไฟล์'}</span>
+                          <input
+                            type="file"
+                            accept="image/*,application/pdf"
+                            className="hidden"
+                            onChange={(e) => setClNewItemFile(e.target.files?.[0] || null)}
+                          />
+                        </label>
+                        <button
+                          onClick={handleAddChecklistItem}
+                          disabled={clUploading}
+                          className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold disabled:opacity-50"
+                        >
+                          {clUploading ? 'กำลังอัพโหลด...' : 'เพิ่ม'}
+                        </button>
+                      </div>
+                      {clItems.length === 0 ? (
+                        <div className="py-4 text-center text-gray-400 text-sm">ยังไม่มีหัวข้อย่อย</div>
+                      ) : (
+                        <ul className="border rounded-xl overflow-hidden divide-y">
+                          {clItems.map((item, idx) => (
+                            <li key={item.id} className="py-2.5 px-4 flex items-center gap-3 hover:bg-gray-50">
+                              <span className="text-gray-400 text-sm w-6 text-right">{idx + 1}.</span>
+                              <span className="flex-1 font-medium truncate">{item.title}</span>
+                              {item.file_url && (
+                                <a
+                                  href={item.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-400 hover:text-blue-600 shrink-0"
+                                  title={item.file_type === 'pdf' ? 'ดูไฟล์ PDF' : 'ดูรูปภาพ'}
+                                >
+                                  <i className={`fas ${item.file_type === 'pdf' ? 'fa-file-pdf text-red-400' : 'fa-image text-green-400'}`}></i>
+                                </a>
+                              )}
+                              <button onClick={() => handleDeleteChecklistItem(item.id)} className="text-red-400 hover:text-red-600 shrink-0">
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    {/* Linked products */}
+                    <div>
+                      <h4 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                        <i className="fas fa-box text-blue-500"></i> สินค้าที่เชื่อม ({clProducts.length})
+                      </h4>
+                      <div className="flex gap-2 mb-3">
+                        <input
+                          type="text"
+                          value={clProductSearch}
+                          onChange={(e) => setClProductSearch(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleSearchProducts()}
+                          placeholder="ค้นหารหัสสินค้า / ชื่อสินค้า"
+                          className="border rounded px-3 py-2 flex-1"
+                        />
+                        <button onClick={handleSearchProducts} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
+                          ค้นหา
+                        </button>
+                      </div>
+                      {clProductResults.length > 0 && (
+                        <div className="mb-3 border rounded-lg max-h-48 overflow-y-auto divide-y">
+                          {clProductResults.map((p) => (
+                            <div key={p.product_code} className="py-2 px-3 flex items-center justify-between hover:bg-blue-50 text-sm">
+                              <div className="min-w-0">
+                                <span className="font-mono font-bold text-blue-700">{p.product_code}</span>
+                                <span className="ml-2 text-gray-600 truncate">{p.product_name}</span>
+                              </div>
+                              <button
+                                onClick={() => handleAddProduct(p)}
+                                className="shrink-0 px-3 py-1 bg-green-500 text-white rounded text-xs font-bold hover:bg-green-600"
+                              >
+                                เพิ่ม
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {clProducts.length === 0 ? (
+                        <div className="py-4 text-center text-gray-400 text-sm">ยังไม่มีสินค้าเชื่อม — ค้นหาด้านบนเพื่อเพิ่ม</div>
+                      ) : (
+                        <div className="border rounded-xl overflow-hidden divide-y">
+                          {clProducts.map((p, idx) => (
+                            <div key={p.id} className="py-2.5 px-4 flex items-center gap-3 hover:bg-gray-50">
+                              <span className="text-gray-400 text-sm w-6 text-right">{idx + 1}.</span>
+                              <span className="font-mono font-bold text-blue-700">{p.product_code}</span>
+                              <span className="flex-1 truncate text-gray-600">{p.product_name}</span>
+                              <button onClick={() => handleRemoveProduct(p.id)} className="text-red-400 hover:text-red-600 shrink-0">
+                                <i className="fas fa-times"></i>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

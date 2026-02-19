@@ -34,8 +34,10 @@ export default function RequisitionDashboard() {
   const [cSubmitting, setCSubmitting] = useState(false)
 
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0]
-    if (!filterDateStart) setFilterDateStart(today)
+    const now = new Date()
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    const today = now.toISOString().split('T')[0]
+    if (!filterDateStart) setFilterDateStart(monthStart)
     if (!filterDateEnd) setFilterDateEnd(today)
   }, [])
 

@@ -9,6 +9,7 @@ export const WMS_MENU_KEYS = {
   KPI: 'wms-kpi',
   REQUISITION: 'wms-requisition',
   RETURN_REQUISITION: 'wms-return-requisition',
+  BORROW_REQUISITION: 'wms-borrow-requisition',
   NOTIF: 'wms-notif',
   SETTINGS: 'wms-settings',
 } as const
@@ -20,6 +21,7 @@ export const WMS_COUNTED_KEYS = [
   WMS_MENU_KEYS.REVIEW,
   WMS_MENU_KEYS.REQUISITION,
   WMS_MENU_KEYS.RETURN_REQUISITION,
+  WMS_MENU_KEYS.BORROW_REQUISITION,
   WMS_MENU_KEYS.NOTIF,
 ]
 
@@ -108,16 +110,18 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
   }
 
-  // 4-6. รายการเบิก + รายการคืน + แจ้งเตือน — ยิง parallel เพื่อลด round-trip
-  const [reqRes, returnReqRes, notifRes] = await Promise.all([
+  // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel
+  const [reqRes, returnReqRes, borrowReqRes, notifRes] = await Promise.all([
     supabase
       .from('wms_requisitions')
       .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending')
-      .gte('created_at', today + 'T00:00:00')
-      .lte('created_at', today + 'T23:59:59'),
+      .eq('status', 'pending'),
     supabase
       .from('wms_return_requisitions')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending'),
+    supabase
+      .from('wms_borrow_requisitions')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending'),
     supabase
@@ -132,6 +136,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     [WMS_MENU_KEYS.REVIEW]: reviewCount,
     [WMS_MENU_KEYS.REQUISITION]: reqRes.count ?? 0,
     [WMS_MENU_KEYS.RETURN_REQUISITION]: returnReqRes.count ?? 0,
+    [WMS_MENU_KEYS.BORROW_REQUISITION]: borrowReqRes.count ?? 0,
     [WMS_MENU_KEYS.NOTIF]: notifRes.count ?? 0,
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0)

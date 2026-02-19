@@ -15,6 +15,7 @@ import TransportVerification from './pages/TransportVerification'
 import Plan from './pages/Plan'
 import Wms from './pages/Wms'
 import Products from './pages/Products'
+import ProductsInactive from './pages/ProductsInactive'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
 import KPIDashboard from './pages/KPI'
@@ -74,11 +75,15 @@ function SmartRedirect() {
     )
   }
 
-  // หา menu แรกที่ role มีสิทธิ์ + menuAccess อนุญาต
+  // หา menu แรกที่ role มีสิทธิ์เข้าถึง
   for (const menu of MENU_PATH_ORDER) {
-    const roleAllowed = menu.roles.includes(user.role)
-    const menuAllowed = menuAccess !== null ? hasAccess(menu.key) : true
-    if (roleAllowed && menuAllowed) return <Navigate to={menu.path} replace />
+    if (menuAccess !== null) {
+      // มีข้อมูลจาก DB → ใช้ DB เป็น single source of truth
+      if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
+    } else {
+      // ยังไม่มีข้อมูลจาก DB → fallback ใช้ hardcoded roles
+      if (menu.roles.includes(user.role)) return <Navigate to={menu.path} replace />
+    }
   }
 
   return (
@@ -232,6 +237,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'packing_staff']}>
             <Layout>
               <TransportVerification />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/products/inactive"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'admin-pump']}>
+            <Layout>
+              <ProductsInactive />
             </Layout>
           </ProtectedRoute>
         }

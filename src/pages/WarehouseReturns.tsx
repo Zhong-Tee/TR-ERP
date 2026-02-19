@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryReturn, InventoryReturnItem } from '../types'
-import { adjustStockBalancesBulk } from '../lib/inventory'
+import { adjustStockBalancesBulkRPC } from '../lib/inventory'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useWmsModal } from '../components/wms/useWmsModal'
 
@@ -240,7 +240,7 @@ export default function WarehouseReturns() {
       if (error) throw error
 
       if (disposition === 'return_to_stock') {
-        await adjustStockBalancesBulk(
+        await adjustStockBalancesBulkRPC(
           (items || []).map((item) => ({
             productId: item.product_id,
             qtyDelta: Number(item.qty),
@@ -250,6 +250,17 @@ export default function WarehouseReturns() {
             note: `รับสินค้าตีกลับ ${ret.return_no} (คืนกลับสต๊อค)`,
           }))
         )
+      } else if (disposition === 'waste') {
+        const wasteItems = (items || []).map((item) => ({
+          product_id: item.product_id,
+          qty: Number(item.qty),
+        }))
+        const { error: wasteErr } = await supabase.rpc('rpc_record_waste_cost', {
+          p_items: wasteItems,
+          p_ref_id: ret.id,
+          p_user_id: user?.id || null,
+        })
+        if (wasteErr) throw wasteErr
       }
 
       await loadAll()
@@ -313,10 +324,10 @@ export default function WarehouseReturns() {
   }
 
   const filterTabs: { key: StatusFilter; label: string; color: string; activeColor: string; count: number }[] = [
-    { key: 'all', label: 'ทั้งหมด', color: 'text-slate-600 border-slate-300 hover:bg-slate-50', activeColor: 'bg-slate-700 text-white border-slate-700', count: stats.all },
-    { key: 'pending', label: 'รอดำเนินการ', color: 'text-amber-600 border-amber-300 hover:bg-amber-50', activeColor: 'bg-amber-500 text-white border-amber-500', count: stats.pending },
-    { key: 'return_to_stock', label: 'คืนกลับสต๊อค', color: 'text-green-600 border-green-300 hover:bg-green-50', activeColor: 'bg-green-600 text-white border-green-600', count: stats.return_to_stock },
-    { key: 'waste', label: 'ตีเป็นของเสีย', color: 'text-red-600 border-red-300 hover:bg-red-50', activeColor: 'bg-red-600 text-white border-red-600', count: stats.waste },
+    { key: 'all', label: 'ทั้งหมด', color: 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200', activeColor: 'bg-slate-700 text-white border-slate-700', count: stats.all },
+    { key: 'pending', label: 'รอดำเนินการ', color: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100', activeColor: 'bg-amber-500 text-white border-amber-500', count: stats.pending },
+    { key: 'return_to_stock', label: 'คืนกลับสต๊อค', color: 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100', activeColor: 'bg-green-600 text-white border-green-600', count: stats.return_to_stock },
+    { key: 'waste', label: 'ตีเป็นของเสีย', color: 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100', activeColor: 'bg-red-600 text-white border-red-600', count: stats.waste },
   ]
 
   const isWasteView = statusFilter === 'waste'
@@ -395,9 +406,9 @@ export default function WarehouseReturns() {
                       <button
                         type="button"
                         onClick={() => openView(ret)}
-                        className="text-blue-500 font-bold underline hover:text-blue-700"
+                        className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-bold transition"
                       >
-                        View
+                        ดูรายละเอียด
                       </button>
                     </td>
                   </tr>
@@ -415,7 +426,7 @@ export default function WarehouseReturns() {
             <h2 className="text-2xl font-black text-white">เปิดใบรับสินค้าตีกลับ</h2>
             <button
               onClick={() => setCreateOpen(false)}
-              className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all"
+              className="text-white text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-blue-800 transition-all"
             >
               <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
             </button>
@@ -590,7 +601,7 @@ export default function WarehouseReturns() {
             </div>
             <button
               onClick={() => setViewing(null)}
-              className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all"
+              className="text-white text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-blue-800 transition-all"
             >
               <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
             </button>
@@ -740,7 +751,7 @@ export default function WarehouseReturns() {
       {/* Lightbox */}
       {lightboxImg && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 p-4"
           onClick={() => setLightboxImg(null)}
         >
           <div className="relative max-w-[90vw] max-h-[85vh]">

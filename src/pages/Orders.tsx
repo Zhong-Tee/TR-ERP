@@ -46,7 +46,10 @@ export default function Orders() {
   const [issueCount, setIssueCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
-  const [shippedDateFrom, setShippedDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [shippedDateFrom, setShippedDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
 
   useEffect(() => {
@@ -115,14 +118,11 @@ export default function Orders() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'จัดส่งแล้ว')
       )
 
-      // Load confirm count: งานใหม่ + รอออกแบบ + ออกแบบแล้ว + รอคอนเฟิร์ม + คอนเฟิร์มแล้ว (PUMP) - กรองวันนี้
-      const todayStr = new Date().toISOString().split('T')[0]
+      // Load confirm count: งานใหม่ + รอออกแบบ + ออกแบบแล้ว + รอคอนเฟิร์ม + คอนเฟิร์มแล้ว (PUMP)
       const { count: confirmCountTotal } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
           .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
-          .gte('created_at', `${todayStr}T00:00:00.000Z`)
-          .lte('created_at', `${todayStr}T23:59:59.999Z`)
       )
 
       // Load work orders count (ใบสั่งงาน)
@@ -257,7 +257,10 @@ export default function Orders() {
 
     const channel = supabase
       .channel('orders-count-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadCounts()
+        setListRefreshKey((k) => k + 1)
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
       .subscribe()
@@ -454,6 +457,7 @@ export default function Orders() {
             onOrderClick={handleOrderClick}
             dateFrom={shippedDateFrom}
             dateTo={shippedDateTo}
+            refreshTrigger={listRefreshKey}
           />
         ) : activeTab === 'cancelled' ? (
           <OrderList

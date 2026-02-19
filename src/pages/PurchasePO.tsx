@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import html2canvas from 'html2canvas'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
 import type { InventoryPO, InventoryPR } from '../types'
+import type { InventoryGR } from '../types'
 import {
   loadPOList,
   loadPODetail,
@@ -10,6 +12,10 @@ import {
   markPOOrdered,
   updatePOShipping,
   loadSellers,
+  loadUserDisplayNames,
+  loadGRsForPO,
+  resolveShortage,
+  recalcPOLandedCost,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 
@@ -25,9 +31,38 @@ const SHIPPING_METHODS = [
   { value: 'sea', label: 'ทางเรือ' },
   { value: 'air', label: 'ทางอากาศ' },
   { value: 'express', label: 'ด่วน (Express)' },
-  { value: 'land', label: 'ทางบก' },
+  { value: 'land', label: 'ทางรถ' },
   { value: 'other', label: 'อื่นๆ' },
 ]
+
+function ZoomImage({ src }: { src: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+
+  const handleEnter = () => {
+    if (!ref.current) return
+    const rect = ref.current.getBoundingClientRect()
+    setPos({ top: rect.top, left: rect.right + 8 })
+  }
+  const handleLeave = () => setPos(null)
+
+  return (
+    <div ref={ref} className="w-12 h-12 flex-shrink-0 cursor-pointer" onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
+      <div className="w-12 h-12 rounded-lg bg-gray-200 overflow-hidden">
+        <img src={src} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+      </div>
+      {pos && (
+        <img
+          src={src}
+          alt=""
+          className="fixed w-48 h-48 object-cover rounded-xl shadow-2xl border-2 border-white pointer-events-none"
+          style={{ top: pos.top, left: pos.left, zIndex: 9999 }}
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+        />
+      )}
+    </div>
+  )
+}
 
 interface PriceEdit {
   product_id: string
@@ -52,6 +87,7 @@ export default function PurchasePO() {
   const [selectedSellerName, setSelectedSellerName] = useState('')
   const [priceEdits, setPriceEdits] = useState<PriceEdit[]>([])
   const [poNote, setPoNote] = useState('')
+  const [expectedArrival, setExpectedArrival] = useState('')
   const [saving, setSaving] = useState(false)
 
   // detail
@@ -71,7 +107,46 @@ export default function PurchasePO() {
   })
   const [shippingSaving, setShippingSaving] = useState(false)
 
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
   const [updating, setUpdating] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const exportRef = useRef<HTMLDivElement>(null)
+
+  // GR history for detail modal
+  const [grHistory, setGrHistory] = useState<InventoryGR[]>([])
+  const [grHistoryLoading, setGrHistoryLoading] = useState(false)
+
+  // Resolution modal
+  const [resolveOpen, setResolveOpen] = useState(false)
+  const [resolvePO, setResolvePO] = useState<InventoryPO | null>(null)
+  const [resolutions, setResolutions] = useState<{ po_item_id: string; product_name: string; qty_outstanding: number; resolution_type: string; resolution_note: string }[]>([])
+  const [resolveSaving, setResolveSaving] = useState(false)
+
+  // Partial PO count for badge
+  const partialCount = useMemo(() => pos.filter((p) => p.status === 'partial').length, [pos])
+
+  const handleExportPNG = useCallback(async () => {
+    if (!viewing || !exportRef.current) return
+    setExporting(true)
+    try {
+      const canvas = await html2canvas(exportRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      })
+      const link = document.createElement('a')
+      link.download = `${viewing.po_no}_order.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (e) {
+      console.error('Export failed:', e)
+      alert('ดาวน์โหลดไม่สำเร็จ')
+    } finally {
+      setExporting(false)
+    }
+  }, [viewing])
 
   useEffect(() => { loadAll() }, [statusFilter, search])
 
@@ -86,6 +161,12 @@ export default function PurchasePO() {
       setPos(poData)
       if (!availablePRs.length) setAvailablePRs(prData)
       if (!sellers.length) setSellers(sellerData as any)
+
+      const uids = poData.map((po: any) => po.created_by).filter(Boolean)
+      if (uids.length) {
+        const names = await loadUserDisplayNames(uids)
+        setUserMap((prev) => ({ ...prev, ...names }))
+      }
     } catch (e) {
       console.error('Load PO failed:', e)
     } finally {
@@ -103,6 +184,7 @@ export default function PurchasePO() {
     setSelectedSellerId('')
     setSelectedSellerName('')
     setPoNote('')
+    setExpectedArrival('')
     setCreateOpen(true)
   }
 
@@ -141,6 +223,8 @@ export default function PurchasePO() {
           unit_price: p.unit_price!,
         })),
         note: poNote.trim() || undefined,
+        userId: user?.id,
+        expectedArrivalDate: expectedArrival || null,
       })
       setCreateOpen(false)
       setSelectedPR(null)
@@ -168,9 +252,14 @@ export default function PurchasePO() {
   async function openDetail(po: InventoryPO) {
     setViewing(po)
     setDetailLoading(true)
+    setGrHistory([])
     try {
-      const detail = await loadPODetail(po.id)
+      const [detail, grs] = await Promise.all([
+        loadPODetail(po.id),
+        loadGRsForPO(po.id),
+      ])
       setViewing(detail)
+      setGrHistory(grs)
     } catch (e) {
       console.error(e)
     } finally {
@@ -213,6 +302,7 @@ export default function PurchasePO() {
         intl_shipping_cost_thb: costThb || undefined,
         grand_total: total + costThb || undefined,
       })
+      await recalcPOLandedCost(shippingPO.id)
       setShippingOpen(false)
       if (viewing && viewing.id === shippingPO.id) {
         const detail = await loadPODetail(shippingPO.id)
@@ -226,12 +316,78 @@ export default function PurchasePO() {
     }
   }
 
+  function openResolveModal(po: InventoryPO) {
+    setResolvePO(po)
+    const items = (po.inv_po_items || []) as any[]
+    setResolutions(
+      items
+        .filter((item: any) => {
+          const recv = Number(item.qty_received_total) || 0
+          const resolved = Number(item.resolution_qty) || 0
+          return (recv + resolved) < Number(item.qty)
+        })
+        .map((item: any) => ({
+          po_item_id: item.id,
+          product_name: `${item.pr_products?.product_code || ''} - ${item.pr_products?.product_name || ''}`,
+          qty_outstanding: Number(item.qty) - (Number(item.qty_received_total) || 0) - (Number(item.resolution_qty) || 0),
+          resolution_type: 'waiting',
+          resolution_note: '',
+        }))
+    )
+    setResolveOpen(true)
+  }
+
+  async function handleSaveResolution() {
+    if (!resolvePO) return
+    const toResolve = resolutions.filter((r) => r.resolution_type !== 'waiting')
+    if (toResolve.length === 0) {
+      alert('กรุณาเลือกวิธีจัดการอย่างน้อย 1 รายการ')
+      return
+    }
+    setResolveSaving(true)
+    try {
+      await resolveShortage({
+        poId: resolvePO.id,
+        resolutions: toResolve.map((r) => ({
+          po_item_id: r.po_item_id,
+          resolution_type: r.resolution_type,
+          resolution_qty: r.qty_outstanding,
+          resolution_note: r.resolution_note || undefined,
+        })),
+        userId: user?.id,
+      })
+      setResolveOpen(false)
+      setResolvePO(null)
+      if (viewing && viewing.id === resolvePO.id) {
+        const [detail, grs] = await Promise.all([
+          loadPODetail(resolvePO.id),
+          loadGRsForPO(resolvePO.id),
+        ])
+        setViewing(detail)
+        setGrHistory(grs)
+      }
+      await loadAll()
+    } catch (e: any) {
+      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setResolveSaving(false)
+    }
+  }
+
+  const RESOLUTION_TYPES = [
+    { value: 'waiting', label: 'รอส่งเพิ่ม', color: 'text-gray-500' },
+    { value: 'refund', label: 'คืนเงิน', color: 'text-blue-700' },
+    { value: 'wrong_item', label: 'สินค้าผิด', color: 'text-orange-700' },
+    { value: 'cancelled', label: 'ยกเลิก', color: 'text-red-700' },
+  ]
+
   const statusTabs = [
     { key: 'all', label: 'ทั้งหมด' },
     { key: 'open', label: 'เปิด' },
     { key: 'ordered', label: 'สั่งซื้อแล้ว' },
     { key: 'partial', label: 'รับบางส่วน' },
     { key: 'received', label: 'รับครบ' },
+    { key: 'closed', label: 'ปิดแล้ว' },
   ]
 
   return (
@@ -262,11 +418,16 @@ export default function PurchasePO() {
               <button
                 key={t.key}
                 onClick={() => setStatusFilter(t.key)}
-                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors relative ${
                   statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 {t.label}
+                {t.key === 'partial' && partialCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold">
+                    {partialCount}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -297,37 +458,57 @@ export default function PurchasePO() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ PO</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">PR</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้จัดจำหน่าย</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สั่ง</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">การจัดการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สั่ง</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้ขาย</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท.)</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ต้นทุน/ชิ้น</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">คาดการณ์เข้าไทย</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {pos.map((po) => {
-                  const st = STATUS_MAP[po.status] || { label: po.status, color: 'bg-gray-100 text-gray-700' }
+                  const items = (po.inv_po_items || []) as any[]
+                  const itemCount = items.length
+                  const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
+                  const shippingThb = po.intl_shipping_cost_thb != null ? Number(po.intl_shipping_cost_thb) : 0
+                  const costPerPiece = totalQty > 0 && shippingThb > 0 ? shippingThb / totalQty : null
                   return (
                     <tr key={po.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-900">{po.po_no}</td>
                       <td className="px-4 py-3 text-gray-600">{(po as any).inv_pr?.pr_no || '-'}</td>
-                      <td className="px-4 py-3 text-gray-600">{po.supplier_name || '-'}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
-                          {st.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                      </td>
                       <td className="px-4 py-3 text-gray-600">
                         {po.ordered_at ? new Date(po.ordered_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
                       </td>
+                      <td className="px-4 py-3 text-gray-600">{po.created_by ? userMap[po.created_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-gray-600">{po.supplier_name || '-'}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{itemCount || '-'}</td>
+                      <td className="px-4 py-3 text-right font-medium">
+                        {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {po.intl_shipping_cost_thb != null
+                          ? Number(po.intl_shipping_cost_thb).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' ฿'
+                          : po.intl_shipping_cost != null
+                            ? Number(po.intl_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' ' + (po.intl_shipping_currency || '')
+                            : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-600">
+                        {costPerPiece != null ? costPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center text-gray-600">
+                        {po.expected_arrival_date
+                          ? new Date(po.expected_arrival_date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
+                          : '-'}
+                      </td>
                       <td className="px-4 py-3 text-right">
-                        <div className="flex gap-1.5 justify-end">
+                        <div className="flex gap-2 justify-end">
                           <button
                             onClick={() => openDetail(po)}
-                            className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold"
+                            className="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-sm font-semibold transition-colors"
                           >
                             ดู
                           </button>
@@ -335,14 +516,14 @@ export default function PurchasePO() {
                             <>
                               <button
                                 onClick={() => openShipping(po)}
-                                className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-xs font-semibold"
+                                className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
                               >
                                 ค่าขนส่ง
                               </button>
                               <button
                                 onClick={() => handleMarkOrdered(po)}
                                 disabled={updating === po.id}
-                                className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold disabled:opacity-50"
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold disabled:opacity-50 transition-colors"
                               >
                                 สั่งซื้อแล้ว
                               </button>
@@ -351,7 +532,7 @@ export default function PurchasePO() {
                           {(po.status === 'ordered' || po.status === 'received') && po.intl_shipping_cost == null && (
                             <button
                               onClick={() => openShipping(po)}
-                              className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-xs font-semibold"
+                              className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
                             >
                               + ค่าขนส่ง
                             </button>
@@ -400,6 +581,7 @@ export default function PurchasePO() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b">
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
@@ -412,8 +594,16 @@ export default function PurchasePO() {
                       const price = pe?.unit_price ?? 0
                       const subtotal = price * Number(item.qty)
                       const prod = item.pr_products
+                      const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
                       return (
                         <tr key={item.id || item.product_id}>
+                          <td className="px-3 py-2">
+                            {imgUrl ? (
+                              <ZoomImage src={imgUrl} />
+                            ) : (
+                              <div className="w-12 h-12 rounded-lg bg-gray-200 flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                            )}
+                          </td>
                           <td className="px-3 py-2">
                             <div className="font-medium">{prod?.product_code} - {prod?.product_name}</div>
                           </td>
@@ -438,13 +628,49 @@ export default function PurchasePO() {
                   </tbody>
                   <tfoot>
                     <tr className="bg-gray-50 border-t">
-                      <td colSpan={3} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                      <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
                       <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
                         {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
                       </td>
                     </tr>
                   </tfoot>
                 </table>
+              </div>
+
+              {/* expected arrival date */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">วันที่คาดการณ์เข้าไทย</label>
+                <input
+                  type="date"
+                  value={expectedArrival}
+                  onChange={(e) => setExpectedArrival(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                />
+                <div className="flex gap-2 mt-2">
+                  {[7, 14, 30].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        const dt = new Date()
+                        dt.setDate(dt.getDate() + d)
+                        setExpectedArrival(dt.toISOString().split('T')[0])
+                      }}
+                      className="px-3 py-1 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold transition-colors"
+                    >
+                      +{d} วัน
+                    </button>
+                  ))}
+                  {expectedArrival && (
+                    <button
+                      type="button"
+                      onClick={() => setExpectedArrival('')}
+                      className="px-3 py-1 bg-gray-100 text-gray-500 rounded-lg hover:bg-gray-200 text-xs transition-colors"
+                    >
+                      ล้าง
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* note */}
@@ -473,7 +699,7 @@ export default function PurchasePO() {
       </Modal>
 
       {/* ── Detail Modal ── */}
-      <Modal open={!!viewing} onClose={() => setViewing(null)} contentClassName="max-w-4xl">
+      <Modal open={!!viewing} onClose={() => setViewing(null)} contentClassName="max-w-6xl">
         <div className="p-6 space-y-5">
           {detailLoading ? (
             <div className="flex justify-center py-12">
@@ -499,13 +725,19 @@ export default function PurchasePO() {
               {/* meta */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
-                  <div className="text-gray-500 text-xs">ผู้จัดจำหน่าย</div>
+                  <div className="text-gray-500 text-xs">ผู้ขาย</div>
                   <div className="font-medium">{viewing.supplier_name || '-'}</div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <div className="text-gray-500 text-xs">ยอดรวมสินค้า</div>
                   <div className="font-medium">{viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
                 </div>
+                {viewing.expected_arrival_date && (
+                  <div className="bg-orange-50 rounded-lg p-3">
+                    <div className="text-orange-600 text-xs">คาดการณ์เข้าไทย</div>
+                    <div className="font-medium text-orange-800">{new Date(viewing.expected_arrival_date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                  </div>
+                )}
                 {viewing.intl_shipping_cost_thb != null && (
                   <div className="bg-purple-50 rounded-lg p-3">
                     <div className="text-purple-600 text-xs">ค่าขนส่งต่างประเทศ</div>
@@ -540,48 +772,201 @@ export default function PurchasePO() {
               )}
 
               {/* items */}
-              <div className="overflow-x-auto border rounded-lg">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-gray-50 border-b">
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวน</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {(viewing.inv_po_items || []).map((item: any) => {
-                      const prod = item.pr_products
-                      const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
-                      return (
-                        <tr key={item.id}>
-                          <td className="px-3 py-2">
-                            <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
-                              {imgUrl ? (
-                                <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="font-medium">{prod?.product_code} - {prod?.product_name}</div>
-                          </td>
-                          <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
-                          <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
-                          <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
-                          <td className="px-3 py-2 text-gray-500 max-w-[160px] truncate">{item.note || '-'}</td>
+              {(() => {
+                const showRecvCols = ['partial', 'received', 'closed'].includes(viewing.status)
+                return (
+                  <div className="overflow-x-auto border rounded-lg">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50 border-b">
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รหัสสินค้า</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">สั่งซื้อ</th>
+                          {showRecvCols && (
+                            <>
+                              <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รับแล้ว</th>
+                              <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ค้างรับ</th>
+                              <th className="px-3 py-2.5 text-center font-semibold text-gray-600">สถานะ</th>
+                            </>
+                          )}
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
                         </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {(viewing.inv_po_items || []).map((item: any) => {
+                          const prod = item.pr_products
+                          const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                          const recvTotal = Number(item.qty_received_total) || 0
+                          const resolvedQty = Number(item.resolution_qty) || 0
+                          const outstanding = Math.max(Number(item.qty) - recvTotal - resolvedQty, 0)
+                          const resType = item.resolution_type
+                          return (
+                            <tr key={item.id} className={outstanding > 0 && showRecvCols ? 'bg-orange-50/40' : ''}>
+                              <td className="px-3 py-2">
+                                <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
+                                  {imgUrl ? (
+                                    <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-gray-600">{prod?.product_code || '-'}</td>
+                              <td className="px-3 py-2">
+                                <div className="font-medium">{prod?.product_name || '-'}</div>
+                              </td>
+                              <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
+                              {showRecvCols && (
+                                <>
+                                  <td className="px-3 py-2 text-right font-medium text-emerald-700">{recvTotal.toLocaleString()}</td>
+                                  <td className="px-3 py-2 text-right">
+                                    {outstanding > 0 ? (
+                                      <span className="text-red-600 font-semibold">{outstanding.toLocaleString()}</span>
+                                    ) : (
+                                      <span className="text-green-600">-</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-center">
+                                    {recvTotal >= Number(item.qty) ? (
+                                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">รับครบ</span>
+                                    ) : resType === 'refund' ? (
+                                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">คืนเงิน</span>
+                                    ) : resType === 'wrong_item' ? (
+                                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-800">สินค้าผิด</span>
+                                    ) : resType === 'cancelled' ? (
+                                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-200 text-gray-700">ยกเลิก</span>
+                                    ) : outstanding > 0 ? (
+                                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">รอรับเพิ่ม</span>
+                                    ) : (
+                                      <span className="text-green-600 text-xs">-</span>
+                                    )}
+                                  </td>
+                                </>
+                              )}
+                              <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                              <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })()}
+
+              {/* GR History */}
+              {grHistory.length > 0 && (
+                <div className="border rounded-lg">
+                  <div className="px-4 py-3 bg-gray-50 border-b">
+                    <h3 className="text-sm font-semibold text-gray-700">ประวัติการรับสินค้า ({grHistory.length} รอบ)</h3>
+                  </div>
+                  <div className="divide-y">
+                    {grHistory.map((gr) => {
+                      const grItems = (gr as any).inv_gr_items || []
+                      const grTotalRecv = grItems.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
+                      const grTotalOrd = grItems.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
+                      return (
+                        <div key={gr.id} className="px-4 py-2.5 flex items-center justify-between text-sm">
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium text-gray-900">{gr.gr_no}</span>
+                            <span className="text-gray-500">
+                              {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-gray-600">
+                              รับ {grTotalRecv.toLocaleString()}/{grTotalOrd.toLocaleString()} ชิ้น
+                            </span>
+                            <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                              gr.status === 'partial' ? 'bg-orange-100 text-orange-800' : 'bg-green-100 text-green-800'
+                            }`}>
+                              {gr.status === 'partial' ? 'บางส่วน' : 'ครบ'}
+                            </span>
+                          </div>
+                        </div>
                       )
                     })}
-                  </tbody>
-                </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Resolve shortage button for partial POs */}
+              {viewing.status === 'partial' && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-yellow-800">มีรายการค้างรับ</div>
+                    <div className="text-xs text-yellow-600 mt-0.5">จัดการยอดค้าง: คืนเงิน, สินค้าผิด, หรือยกเลิกรายการ</div>
+                  </div>
+                  <button
+                    onClick={() => openResolveModal(viewing)}
+                    className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm font-semibold transition-colors"
+                  >
+                    จัดการยอดค้าง
+                  </button>
+                </div>
+              )}
+
+              {/* Hidden export area for PNG download */}
+              <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+                <div ref={exportRef} style={{ width: 800, padding: 32, backgroundColor: '#fff', fontFamily: 'sans-serif' }}>
+                  <div style={{ textAlign: 'center', marginBottom: 20 }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: '#111' }}>采购订单</div>
+                    <div style={{ fontSize: 14, color: '#666', marginTop: 6 }}>
+                      {viewing.po_no} &nbsp;|&nbsp; 订购日期: {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}
+                    </div>
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#f3f4f6' }}>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600, width: 140 }}>图片</th>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600, width: 80 }}>数量</th>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600 }}>产品</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(viewing.inv_po_items || []).map((item: any) => {
+                        const prod = item.pr_products
+                        const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                        return (
+                          <tr key={item.id}>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
+                              {imgUrl ? (
+                                <img src={imgUrl} alt="" crossOrigin="anonymous" style={{ width: 125, height: 125, objectFit: 'cover', display: 'inline-block', borderRadius: 4 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                              ) : (
+                                <div style={{ width: 125, height: 125, backgroundColor: '#e5e7eb', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', borderRadius: 4 }}>No Image</div>
+                              )}
+                            </td>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle', fontSize: 16, fontWeight: 600 }}>
+                              {Number(item.qty).toLocaleString()} {item.unit || ''}
+                            </td>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: 600, fontSize: 15 }}>{prod?.product_name_cn || '-'}</div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t">
+                <button
+                  onClick={handleExportPNG}
+                  disabled={exporting}
+                  className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+                >
+                  {exporting ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  )}
+                  ดาวน์โหลด PNG
+                </button>
                 <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
                   ปิด
                 </button>
@@ -685,6 +1070,87 @@ export default function PurchasePO() {
             </button>
             <button onClick={handleSaveShipping} disabled={shippingSaving} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 text-sm font-semibold">
               {shippingSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Resolution Modal ── */}
+      <Modal open={resolveOpen} onClose={() => setResolveOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-3xl">
+        <div className="p-6 space-y-5">
+          <h2 className="text-xl font-bold text-gray-900">จัดการยอดค้างรับ</h2>
+          {resolvePO && (
+            <div className="bg-yellow-50 rounded-lg p-3 text-sm">
+              <span className="font-semibold text-yellow-800">PO: {resolvePO.po_no}</span>
+              {resolvePO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {resolvePO.supplier_name}</span>}
+            </div>
+          )}
+
+          <div className="overflow-x-auto border rounded-lg">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b">
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">ค้างรับ</th>
+                  <th className="px-3 py-2.5 text-center font-semibold text-gray-600 w-40">การจัดการ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-48">หมายเหตุ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {resolutions.map((r, idx) => (
+                  <tr key={r.po_item_id} className={r.resolution_type !== 'waiting' ? 'bg-blue-50/30' : ''}>
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-gray-900">{r.product_name}</div>
+                    </td>
+                    <td className="px-3 py-2 text-right text-red-600 font-semibold">{r.qty_outstanding.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-center">
+                      <select
+                        value={r.resolution_type}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          setResolutions((prev) => prev.map((item, i) => i === idx ? { ...item, resolution_type: val } : item))
+                        }}
+                        className="px-2 py-1.5 border rounded-lg text-xs w-full"
+                      >
+                        {RESOLUTION_TYPES.map((rt) => (
+                          <option key={rt.value} value={rt.value}>{rt.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.resolution_type !== 'waiting' && (
+                        <input
+                          type="text"
+                          value={r.resolution_note}
+                          onChange={(e) => {
+                            const val = e.target.value
+                            setResolutions((prev) => prev.map((item, i) => i === idx ? { ...item, resolution_note: val } : item))
+                          }}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs"
+                          placeholder="หมายเหตุ..."
+                        />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
+            <strong>คำอธิบาย:</strong> "รอส่งเพิ่ม" = รอรับ GR รอบถัดไป (ไม่บันทึก), "คืนเงิน" = ผู้ขายคืนเงิน, "สินค้าผิด" = ได้รับสินค้าผิด, "ยกเลิก" = ไม่ต้องการแล้ว
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2 border-t">
+            <button onClick={() => setResolveOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
+              ยกเลิก
+            </button>
+            <button
+              onClick={handleSaveResolution}
+              disabled={resolveSaving || resolutions.every((r) => r.resolution_type === 'waiting')}
+              className="px-5 py-2.5 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 disabled:opacity-50 text-sm font-semibold"
+            >
+              {resolveSaving ? 'กำลังบันทึก...' : 'บันทึกการจัดการ'}
             </button>
           </div>
         </div>

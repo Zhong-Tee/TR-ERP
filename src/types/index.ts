@@ -228,6 +228,7 @@ export interface Product {
   rubber_code: string | null
   storage_location: string | null
   unit_cost: number | null
+  landed_cost: number | null
   safety_stock: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket product-images ตาม product_code */
   image_url?: string | null
@@ -262,6 +263,7 @@ export interface InventoryPR {
   id: string
   pr_no: string
   status: string
+  pr_type?: string | null
   requested_by?: string | null
   requested_at?: string | null
   approved_by?: string | null
@@ -297,6 +299,7 @@ export interface InventoryPO {
   status: string
   supplier_id?: string | null
   supplier_name?: string | null
+  created_by?: string | null
   ordered_by?: string | null
   ordered_at?: string | null
   intl_shipping_method?: string | null
@@ -308,6 +311,7 @@ export interface InventoryPO {
   intl_shipping_cost_thb?: number | null
   total_amount?: number | null
   grand_total?: number | null
+  expected_arrival_date?: string | null
   note?: string | null
   created_at: string
   updated_at: string
@@ -325,6 +329,12 @@ export interface InventoryPOItem {
   subtotal?: number | null
   unit?: string | null
   note?: string | null
+  qty_received_total?: number | null
+  resolution_type?: string | null
+  resolution_qty?: number | null
+  resolution_note?: string | null
+  resolved_at?: string | null
+  resolved_by?: string | null
   created_at: string
   /** joined product */
   pr_products?: Product | null
@@ -610,6 +620,7 @@ export interface QCItem {
   line3: string
   qty: number
   remark: string
+  file_attachment?: string | null
   status: 'pass' | 'fail' | 'pending'
   fail_reason?: string | null
   check_time?: Date | null
@@ -629,6 +640,35 @@ export interface InkType {
   ink_name: string
   hex_code?: string | null
   created_at?: string
+}
+
+// QC Checklist Types
+export interface QCChecklistTopic {
+  id: string
+  name: string
+  sort_order: number
+  created_at: string
+  items_count?: number
+  products_count?: number
+}
+
+export interface QCChecklistItem {
+  id: string
+  topic_id: string
+  title: string
+  file_url: string | null
+  file_type: 'image' | 'pdf' | null
+  sort_order: number
+  created_at: string
+  topic_name?: string
+}
+
+export interface QCChecklistTopicProduct {
+  id: string
+  topic_id: string
+  product_code: string
+  product_name: string
+  created_at: string
 }
 
 // Order Review Types (Admin QC)

@@ -2,7 +2,8 @@
  * QC System API: work orders, items by WO, settings_reasons, ink_types, storage URL.
  */
 import { supabase } from './supabase'
-import type { QCItem, WorkOrder, SettingsReason } from '../types'
+import * as XLSX from 'xlsx'
+import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
@@ -206,7 +207,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
 
   const { data: items, error: itemsErr } = await supabase
     .from('or_order_items')
-    .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes')
+    .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment')
     .in('order_id', orderIds)
   if (itemsErr) throw itemsErr
   if (!items?.length) return []
@@ -242,6 +243,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     line3: row.line_3 ?? '',
     qty: row.quantity ?? 1,
     remark: row.notes ?? '',
+    file_attachment: row.file_attachment ?? null,
     status: 'pending',
   }))
   return qcItems
@@ -482,4 +484,324 @@ export async function updateReasonType(id: string, failType: string) {
 export async function updateInkHex(id: number, hexCode: string) {
   const { error } = await supabase.from('ink_types').update({ hex_code: hexCode }).eq('id', id)
   if (error) throw error
+}
+
+// ============================================
+// QC Checklist API
+// ============================================
+
+/** Load all checklist topics with item/product counts. */
+export async function fetchChecklistTopics(): Promise<QCChecklistTopic[]> {
+  const { data: topics, error } = await supabase
+    .from('qc_checklist_topics')
+    .select('*')
+    .order('sort_order')
+    .order('created_at')
+  if (error) throw error
+  if (!topics || topics.length === 0) return []
+
+  const ids = topics.map((t: any) => t.id)
+
+  const { data: items } = await supabase
+    .from('qc_checklist_items')
+    .select('topic_id')
+    .in('topic_id', ids)
+
+  const { data: products } = await supabase
+    .from('qc_checklist_topic_products')
+    .select('topic_id')
+    .in('topic_id', ids)
+
+  const itemCounts: Record<string, number> = {}
+  const prodCounts: Record<string, number> = {}
+  items?.forEach((i: any) => { itemCounts[i.topic_id] = (itemCounts[i.topic_id] || 0) + 1 })
+  products?.forEach((p: any) => { prodCounts[p.topic_id] = (prodCounts[p.topic_id] || 0) + 1 })
+
+  return topics.map((t: any) => ({
+    ...t,
+    items_count: itemCounts[t.id] || 0,
+    products_count: prodCounts[t.id] || 0,
+  }))
+}
+
+export async function createChecklistTopic(name: string): Promise<QCChecklistTopic> {
+  const { data, error } = await supabase
+    .from('qc_checklist_topics')
+    .insert({ name })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function updateChecklistTopic(id: string, name: string) {
+  const { error } = await supabase
+    .from('qc_checklist_topics')
+    .update({ name })
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteChecklistTopic(id: string) {
+  const { error } = await supabase
+    .from('qc_checklist_topics')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function fetchChecklistItems(topicId: string): Promise<QCChecklistItem[]> {
+  const { data, error } = await supabase
+    .from('qc_checklist_items')
+    .select('*')
+    .eq('topic_id', topicId)
+    .order('sort_order')
+    .order('created_at')
+  if (error) throw error
+  return data || []
+}
+
+export async function createChecklistItem(
+  topicId: string,
+  title: string,
+  fileUrl?: string | null,
+  fileType?: 'image' | 'pdf' | null,
+): Promise<QCChecklistItem> {
+  const { data, error } = await supabase
+    .from('qc_checklist_items')
+    .insert({ topic_id: topicId, title, file_url: fileUrl || null, file_type: fileType || null })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function deleteChecklistItem(id: string) {
+  const { error } = await supabase
+    .from('qc_checklist_items')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function fetchChecklistTopicProducts(topicId: string): Promise<QCChecklistTopicProduct[]> {
+  const { data, error } = await supabase
+    .from('qc_checklist_topic_products')
+    .select('*')
+    .eq('topic_id', topicId)
+    .order('created_at')
+  if (error) throw error
+  return data || []
+}
+
+export async function addChecklistTopicProduct(
+  topicId: string,
+  productCode: string,
+  productName: string,
+): Promise<QCChecklistTopicProduct> {
+  const { data, error } = await supabase
+    .from('qc_checklist_topic_products')
+    .insert({ topic_id: topicId, product_code: productCode, product_name: productName })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function removeChecklistTopicProduct(id: string) {
+  const { error } = await supabase
+    .from('qc_checklist_topic_products')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** Fetch all checklist items for a product (used in QC Operation). */
+export async function fetchChecklistForProduct(productCode: string): Promise<(QCChecklistItem & { topic_name: string })[]> {
+  const { data: links, error: linkErr } = await supabase
+    .from('qc_checklist_topic_products')
+    .select('topic_id')
+    .eq('product_code', productCode)
+  if (linkErr) throw linkErr
+  if (!links || links.length === 0) return []
+
+  const topicIds = [...new Set(links.map((l: any) => l.topic_id))]
+
+  const { data: topics, error: topicErr } = await supabase
+    .from('qc_checklist_topics')
+    .select('id, name')
+    .in('id', topicIds)
+  if (topicErr) throw topicErr
+
+  const topicMap: Record<string, string> = {}
+  topics?.forEach((t: any) => { topicMap[t.id] = t.name })
+
+  const { data: items, error: itemErr } = await supabase
+    .from('qc_checklist_items')
+    .select('*')
+    .in('topic_id', topicIds)
+    .order('sort_order')
+    .order('created_at')
+  if (itemErr) throw itemErr
+
+  return (items || []).map((item: any) => ({
+    ...item,
+    topic_name: topicMap[item.topic_id] || '',
+  }))
+}
+
+export async function uploadChecklistFile(file: File): Promise<string> {
+  const ext = file.name.split('.').pop() || 'bin'
+  const path = `${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+  const { error } = await supabase.storage
+    .from('qc-checklist-files')
+    .upload(path, file, { upsert: false })
+  if (error) throw error
+  const { data: urlData } = supabase.storage.from('qc-checklist-files').getPublicUrl(path)
+  return urlData.publicUrl
+}
+
+/** Search products from pr_products for linking. */
+export async function searchProducts(query: string): Promise<{ product_code: string; product_name: string }[]> {
+  const { data, error } = await supabase
+    .from('pr_products')
+    .select('product_code, product_name')
+    .eq('is_active', true)
+    .or(`product_code.ilike.%${query}%,product_name.ilike.%${query}%`)
+    .limit(20)
+  if (error) throw error
+  return data || []
+}
+
+// ============================================
+// Bulk Import / Template
+// ============================================
+
+/** Generate and download an Excel template for bulk checklist import. */
+export function generateChecklistTemplate() {
+  const wb = XLSX.utils.book_new()
+
+  const ws1Data = [
+    ['ชื่อหัวข้อใหญ่', 'ชื่อหัวข้อย่อย'],
+    ['ตรวจสอบลายเส้น', 'เส้นตรงไม่คด'],
+    ['ตรวจสอบลายเส้น', 'ไม่มีรอยขูดขีด'],
+    ['ตรวจสอบสี', 'สีตรงตามตัวอย่าง'],
+    ['ตรวจสอบสี', 'ไม่มีสีเลอะ'],
+  ]
+  const ws1 = XLSX.utils.aoa_to_sheet(ws1Data)
+  ws1['!cols'] = [{ wch: 30 }, { wch: 30 }]
+  XLSX.utils.book_append_sheet(wb, ws1, 'หัวข้อและหัวข้อย่อย')
+
+  const ws2Data = [
+    ['ชื่อหัวข้อใหญ่', 'รหัสสินค้า'],
+    ['ตรวจสอบลายเส้น', 'SPTR001'],
+    ['ตรวจสอบลายเส้น', 'SPTR002'],
+    ['ตรวจสอบสี', 'SPTR001'],
+  ]
+  const ws2 = XLSX.utils.aoa_to_sheet(ws2Data)
+  ws2['!cols'] = [{ wch: 30 }, { wch: 20 }]
+  XLSX.utils.book_append_sheet(wb, ws2, 'เชื่อมสินค้า')
+
+  XLSX.writeFile(wb, 'QC_Checklist_Template.xlsx')
+}
+
+export interface BulkImportResult {
+  topicsCreated: number
+  topicsExisting: number
+  itemsCreated: number
+  productsLinked: number
+  productsSkipped: number
+  errors: string[]
+}
+
+/** Import checklist data from an Excel file (2 sheets). */
+export async function importChecklistFromExcel(file: File): Promise<BulkImportResult> {
+  const result: BulkImportResult = {
+    topicsCreated: 0,
+    topicsExisting: 0,
+    itemsCreated: 0,
+    productsLinked: 0,
+    productsSkipped: 0,
+    errors: [],
+  }
+
+  const buffer = await file.arrayBuffer()
+  const wb = XLSX.read(buffer, { type: 'array' })
+
+  // Sheet 1: หัวข้อและหัวข้อย่อย
+  const sheet1 = wb.Sheets[wb.SheetNames[0]]
+  if (!sheet1) { result.errors.push('ไม่พบ Sheet แรก'); return result }
+  const rows1: string[][] = XLSX.utils.sheet_to_json(sheet1, { header: 1, defval: '' })
+
+  // Sheet 2: เชื่อมสินค้า
+  const sheet2 = wb.Sheets[wb.SheetNames[1]]
+  const rows2: string[][] = sheet2 ? XLSX.utils.sheet_to_json(sheet2, { header: 1, defval: '' }) : []
+
+  // Load existing topics
+  const { data: existingTopics } = await supabase
+    .from('qc_checklist_topics')
+    .select('id, name')
+  const topicMap: Record<string, string> = {}
+  existingTopics?.forEach((t: any) => { topicMap[t.name.trim()] = t.id })
+
+  // Process Sheet 1 (skip header row)
+  for (let i = 1; i < rows1.length; i++) {
+    const topicName = String(rows1[i][0] || '').trim()
+    const itemTitle = String(rows1[i][1] || '').trim()
+    if (!topicName || !itemTitle) continue
+
+    if (!topicMap[topicName]) {
+      try {
+        const newTopic = await createChecklistTopic(topicName)
+        topicMap[topicName] = newTopic.id
+        result.topicsCreated++
+      } catch (e: any) {
+        result.errors.push(`แถว ${i + 1}: สร้างหัวข้อ "${topicName}" ไม่สำเร็จ - ${e?.message || e}`)
+        continue
+      }
+    } else {
+      result.topicsExisting++
+    }
+
+    try {
+      await createChecklistItem(topicMap[topicName], itemTitle)
+      result.itemsCreated++
+    } catch (e: any) {
+      result.errors.push(`แถว ${i + 1}: เพิ่มหัวข้อย่อย "${itemTitle}" ไม่สำเร็จ - ${e?.message || e}`)
+    }
+  }
+
+  // Process Sheet 2 (skip header row)
+  for (let i = 1; i < rows2.length; i++) {
+    const topicName = String(rows2[i][0] || '').trim()
+    const productCode = String(rows2[i][1] || '').trim()
+    if (!topicName || !productCode) continue
+
+    const topicId = topicMap[topicName]
+    if (!topicId) {
+      result.errors.push(`เชื่อมสินค้า แถว ${i + 1}: ไม่พบหัวข้อ "${topicName}"`)
+      continue
+    }
+
+    // Look up product name
+    const { data: prod } = await supabase
+      .from('pr_products')
+      .select('product_name')
+      .eq('product_code', productCode)
+      .single()
+    const productName = prod?.product_name || productCode
+
+    try {
+      await addChecklistTopicProduct(topicId, productCode, productName)
+      result.productsLinked++
+    } catch (e: any) {
+      if (e?.message?.includes('duplicate') || e?.code === '23505') {
+        result.productsSkipped++
+      } else {
+        result.errors.push(`เชื่อมสินค้า แถว ${i + 1}: "${productCode}" ไม่สำเร็จ - ${e?.message || e}`)
+      }
+    }
+  }
+
+  return result
 }

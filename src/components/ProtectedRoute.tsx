@@ -106,11 +106,16 @@ export default function ProtectedRoute({
 
   const menuKey = pathToMenuKey(location.pathname)
 
-  const menuBlocked = menuKey && menuAccess !== null && !hasAccess(menuKey)
-  const roleBlocked = !menuBlocked && allowedRoles && !allowedRoles.includes(user.role)
-
-  if (menuBlocked || roleBlocked) {
-    return <NoAccessFallback />
+  if (menuAccess !== null) {
+    // มีข้อมูลจาก DB (superadmin ตั้งค่าแล้ว) → ใช้ DB เป็น single source of truth
+    if (menuKey && !hasAccess(menuKey)) {
+      return <NoAccessFallback />
+    }
+  } else {
+    // ยังไม่มีข้อมูลจาก DB สำหรับ role นี้ → fallback ใช้ allowedRoles
+    if (allowedRoles && !allowedRoles.includes(user.role)) {
+      return <NoAccessFallback />
+    }
   }
 
   return <>{children}</>

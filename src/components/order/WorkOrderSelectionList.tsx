@@ -138,6 +138,7 @@ export default function WorkOrderSelectionList({
   /**
    * คำนวณจำนวนต่อแผนกจาก order_items + product_category (logic ตาม index.html)
    * PACK = จำนวนบิล, STAMP/STK/CTT/LASER/TUBE = นับจาก product_category ของแต่ละรายการ
+   * CTT รองรับหมวด UV และ SUBLIMATION
    */
   async function computeQtyFromOrders(orderIds: string[]): Promise<Record<string, number>> {
     const qty: Record<string, number> = { STAMP: 0, STK: 0, CTT: 0, LASER: 0, TUBE: 0, ETC: 0, PACK: orderIds.length }
@@ -165,7 +166,7 @@ export default function WorkOrderSelectionList({
       const category = categoryByProductId[row.product_id] || ''
       if (category.includes('STAMP')) qty.STAMP += 1
       if (category.includes('STK')) qty.STK += 1
-      if (category.includes('UV')) qty.CTT += 1
+      if (category.includes('UV') || category.includes('SUBLIMATION')) qty.CTT += 1
       if (category.includes('LASER')) qty.LASER += 1
       if (category.includes('TUBE')) qty.TUBE += 1
       if (['CALENDAR', 'ETC', 'INK'].includes(category)) qty.ETC += 1

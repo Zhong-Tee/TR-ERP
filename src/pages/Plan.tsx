@@ -120,7 +120,7 @@ const parseTimeToMin = (t: string | null | undefined): number => {
 }
 const minToHHMM = (m: number) => {
   const totalMinutes = Math.floor(m)
-  const hours = Math.floor(totalMinutes / 60)
+  const hours = Math.floor(totalMinutes / 60) % 24
   const minutes = totalMinutes % 60
   return `${pad(hours)}:${pad(minutes)}`
 }
@@ -416,13 +416,10 @@ function computePlanTimeline(
   return results
 }
 
-function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettingsData): { actualStart: string; actualEnd: string } {
+function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettingsData): { actualStart: string; actualEnd: string; startDayOffset: number; endDayOffset: number } {
   const tracks = job.tracks?.[dept] || {}
-  // Iterate ALL track entries (ไม่ใช่แค่ชื่อ process จาก settings)
-  // เพื่อให้แสดงเวลาจริงที่บันทึกจาก WMS/QC/Packing ได้เสมอ
-  // แม้ชื่อ process ใน settings จะถูกเปลี่ยนไปแล้ว
   const entries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
-  if (entries.length === 0) return { actualStart: '-', actualEnd: '-' }
+  if (entries.length === 0) return { actualStart: '-', actualEnd: '-', startDayOffset: 0, endDayOffset: 0 }
   let firstStart: Date | null = null
   let lastEnd: Date | null = null
   let allFinished = true
@@ -436,9 +433,12 @@ function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettin
       if (!lastEnd || d > lastEnd) lastEnd = d
     } else allFinished = false
   }
+  const planDateStart = new Date(`${job.date}T00:00:00`)
+  const dayDiffStart = firstStart ? Math.floor((firstStart.getTime() - planDateStart.getTime()) / 86400000) : 0
+  const dayDiffEnd = (allFinished && lastEnd) ? Math.floor((lastEnd.getTime() - planDateStart.getTime()) / 86400000) : 0
   const actualStart = firstStart ? `${pad(firstStart.getHours())}:${pad(firstStart.getMinutes())}` : '-'
   const actualEnd = allFinished && lastEnd ? `${pad(lastEnd.getHours())}:${pad(lastEnd.getMinutes())}` : '-'
-  return { actualStart, actualEnd }
+  return { actualStart, actualEnd, startDayOffset: dayDiffStart, endDayOffset: dayDiffEnd }
 }
 
 function getOverallJobStatus(job: PlanJob, settings: PlanSettingsData): { key: 'pending' | 'progress' | 'done' } {
@@ -1604,8 +1604,8 @@ export default function Plan() {
                               status.text,
                               me ? secToHHMM(me.start) : '-',
                               me ? secToHHMM(me.end) : '-',
-                              acts.actualStart,
-                              acts.actualEnd,
+                              acts.startDayOffset > 0 ? `+${acts.startDayOffset} ${acts.actualStart}` : acts.actualStart,
+                              acts.endDayOffset > 0 ? `+${acts.endDayOffset} ${acts.actualEnd}` : acts.actualEnd,
                             ])
                           })
                         const ws = XLSX.utils.aoa_to_sheet(data)
@@ -1843,11 +1843,13 @@ export default function Plan() {
                                       <span
                                         onDoubleClick={() => startDashEdit(j.id, d, 'actualStart', acts.actualStart !== '-' ? acts.actualStart : '')}
                                         className={
-                                          (me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
+                                          (acts.startDayOffset > 0
                                             ? 'text-red-600 font-semibold'
-                                            : d in AUTO_TRACK_DEPTS && acts.actualStart !== '-'
-                                              ? 'text-teal-600 font-semibold'
-                                              : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                            : me && acts.actualStart !== '-' && getEarliestActualStartSecForDept(j, d) > me.start
+                                              ? 'text-red-600 font-semibold'
+                                              : d in AUTO_TRACK_DEPTS && acts.actualStart !== '-'
+                                                ? 'text-teal-600 font-semibold'
+                                                : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
                                         }
                                         title={
                                           d in AUTO_TRACK_DEPTS && acts.actualStart !== '-'
@@ -1856,7 +1858,7 @@ export default function Plan() {
                                         }
                                       >
                                         {acts.actualStart !== '-' ? (
-                                          <>{acts.actualStart}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
+                                          <>{acts.startDayOffset > 0 && <span className="text-red-600">+{acts.startDayOffset} </span>}{acts.actualStart}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
                                         ) : '\u00A0'}
                                       </span>
                                     )}
@@ -1886,11 +1888,13 @@ export default function Plan() {
                                       <span
                                         onDoubleClick={() => startDashEdit(j.id, d, 'actualEnd', acts.actualEnd !== '-' ? acts.actualEnd : '')}
                                         className={
-                                          (me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
+                                          (acts.endDayOffset > 0
                                             ? 'text-red-600 font-semibold'
-                                            : d in AUTO_TRACK_DEPTS && acts.actualEnd !== '-'
-                                              ? 'text-teal-600 font-semibold'
-                                              : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
+                                            : me && acts.actualEnd !== '-' && getLatestActualEndSecForDept(j, d) > me.end
+                                              ? 'text-red-600 font-semibold'
+                                              : d in AUTO_TRACK_DEPTS && acts.actualEnd !== '-'
+                                                ? 'text-teal-600 font-semibold'
+                                                : 'text-blue-600 font-semibold') + (unlocked ? ' cursor-pointer' : '')
                                         }
                                         title={
                                           d in AUTO_TRACK_DEPTS && acts.actualEnd !== '-'
@@ -1899,7 +1903,7 @@ export default function Plan() {
                                         }
                                       >
                                         {acts.actualEnd !== '-' ? (
-                                          <>{acts.actualEnd}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
+                                          <>{acts.endDayOffset > 0 && <span className="text-red-600">+{acts.endDayOffset} </span>}{acts.actualEnd}{d in AUTO_TRACK_DEPTS && <span className="text-[9px] opacity-50 ml-0.5">⚡</span>}</>
                                         ) : '\u00A0'}
                                       </span>
                                     )}

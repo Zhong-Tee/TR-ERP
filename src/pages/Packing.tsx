@@ -54,6 +54,8 @@ type WorkOrderStatus = {
   qcSkipped: boolean
   totalItems: number
   packedItems: number
+  totalBills: number
+  packedBills: number
 }
 
 type RecordingState = {
@@ -85,6 +87,7 @@ function naturalSortCompare(a: string, b: string) {
 export default function Packing() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
+  const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
@@ -100,7 +103,11 @@ export default function Packing() {
       shipped_by: string | null
     }>
   >([])
-  const [shippedDateFilter, setShippedDateFilter] = useState('')
+  const [shippedDateFrom, setShippedDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [shippedChannelFilter, setShippedChannelFilter] = useState('')
   const [shippedPackerFilter, setShippedPackerFilter] = useState('')
   const [aggregatedData, setAggregatedData] = useState<PackingItem[][]>([])
@@ -206,7 +213,19 @@ export default function Packing() {
     }
     const skipTrack = user?.role === 'superadmin' || user?.role === 'admin'
     if (!skipTrack) await ensurePlanDeptStart(workOrderName)
-    setPackStartTime(new Date())
+
+    let startTime: Date = new Date()
+    const { data: planJob } = await supabase
+      .from('plan_jobs')
+      .select('tracks')
+      .eq('name', workOrderName)
+      .order('date', { ascending: false })
+      .limit(1)
+      .single()
+    const planStart = planJob?.tracks?.PACK?.['เริ่มแพ็ค']?.start
+    if (planStart) startTime = new Date(planStart)
+
+    setPackStartTime(startTime)
     await loadPackingData(workOrderName)
   }
 
@@ -254,9 +273,9 @@ export default function Packing() {
       setAccessToken(session?.access_token || null).catch(() => null)
     })
     loadFolderFromSettings().catch(() => null)
-    refreshQueue().catch(() => null)
+    refreshQueue(true).catch(() => null)
     const timer = window.setInterval(() => {
-      refreshQueue().catch(() => null)
+      refreshQueue(false).catch(() => null)
     }, 5000)
     return () => {
       window.clearInterval(timer)
@@ -288,12 +307,12 @@ export default function Packing() {
     setFolderHandleState(handle)
   }
 
-  async function refreshQueue() {
-    setQueueLoading(true)
+  async function refreshQueue(showLoading = false) {
+    if (showLoading) setQueueLoading(true)
     const list = await listQueueItems()
     const sorted = list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     setQueueItems(sorted)
-    setQueueLoading(false)
+    if (showLoading) setQueueLoading(false)
     if (folderHandle) {
       await cleanupLocalFiles(folderHandle, sorted)
     }
@@ -322,9 +341,9 @@ export default function Packing() {
     setDialog({ open: true, mode: 'alert', title, message, confirmText: 'รับทราบ' })
   }
 
-  const openConfirm = (message: string, onConfirm: () => void, title = 'ยืนยันการทำรายการ') => {
+  const openConfirm = (message: string, onConfirm: () => void, title = 'ยืนยันการทำรายการ', confirmText = 'ตกลง', cancelText = 'ยกเลิก') => {
     confirmActionRef.current = onConfirm
-    setDialog({ open: true, mode: 'confirm', title, message, confirmText: 'ตกลง', cancelText: 'ยกเลิก' })
+    setDialog({ open: true, mode: 'confirm', title, message, confirmText, cancelText })
   }
 
   const closeDialog = () => {
@@ -410,15 +429,14 @@ export default function Packing() {
   const shippedOrdersFiltered = useMemo(() => {
     return shippedOrders.filter((row) => {
       if (!row.work_order_name) return false
-      if (shippedDateFilter) {
-        const date = row.shipped_time ? new Date(row.shipped_time).toISOString().slice(0, 10) : ''
-        if (date !== shippedDateFilter) return false
-      }
+      const date = row.shipped_time ? new Date(row.shipped_time).toISOString().slice(0, 10) : ''
+      if (shippedDateFrom && date < shippedDateFrom) return false
+      if (shippedDateTo && date > shippedDateTo) return false
       if (shippedChannelFilter && row.channel_code !== shippedChannelFilter) return false
       if (shippedPackerFilter && row.shipped_by !== shippedPackerFilter) return false
       return true
     })
-  }, [shippedOrders, shippedDateFilter, shippedChannelFilter, shippedPackerFilter])
+  }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter])
 
   const shippedWorkOrders = useMemo(() => {
     const grouped = new Map<
@@ -516,6 +534,7 @@ export default function Packing() {
       const latestIndex = currentIndexRef.current
       const latestGroup = aggregatedDataRef.current[latestIndex]
       if (!latestGroup) return
+      if (latestGroup.every((item) => item.scanned)) return
       const hasStarted = latestGroup.some((item) => item.scanned || item.parcelScanned)
       if (hasStarted) {
         await performResetAction(latestIndex)
@@ -525,6 +544,7 @@ export default function Packing() {
   }
 
   async function loadWorkOrdersForPacking() {
+    clearInactivityTimer()
     setLoading(true)
     setView('selection')
     setPackStartTime(null)
@@ -579,10 +599,14 @@ export default function Packing() {
           )
           let totalItems = 0
           let packedItems = 0
-          ordersInWo.forEach((o: any) => {
+          let packedBills = 0
+          const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
+          billsWithTracking.forEach((o: any) => {
             const items = o.or_order_items || []
             totalItems += items.length
-            packedItems += items.filter((oi: any) => oi.packing_status === 'สแกนแล้ว').length
+            const scannedCount = items.filter((oi: any) => oi.packing_status === 'สแกนแล้ว').length
+            packedItems += scannedCount
+            if (items.length > 0 && scannedCount === items.length) packedBills++
           })
           statusMap[wo.work_order_name] = {
             hasTracking,
@@ -591,6 +615,8 @@ export default function Packing() {
             qcSkipped: skippedWoSet.has(wo.work_order_name),
             totalItems,
             packedItems,
+            totalBills: billsWithTracking.length,
+            packedBills,
           }
         })
         setWorkOrderStatus(statusMap)
@@ -730,8 +756,13 @@ export default function Packing() {
     const nextIndex = aggregated.findIndex(
       (group) => !group.every((item) => item.scanned) && !group[0].isOrderComplete
     )
-    setCurrentIndex(nextIndex !== -1 ? nextIndex : 0)
-    startInactivityTimer()
+    if (nextIndex !== -1) {
+      setCurrentIndex(nextIndex)
+      startInactivityTimer()
+    } else {
+      const firstNotShipped = aggregated.findIndex((group) => !group[0].isOrderComplete)
+      setCurrentIndex(firstNotShipped !== -1 ? firstNotShipped : aggregated.length - 1)
+    }
   }
 
   async function performResetAction(index = currentIndexRef.current) {
@@ -828,17 +859,25 @@ export default function Packing() {
         .select('id')
       if (itemError) {
         console.error('Error updating item scan:', itemError)
-      } else {
-        const scannedBy = user?.username || user?.email || 'unknown'
-        const itemId = updatedItems?.[0]?.id ?? null
-        const { error: logError } = await supabase.from('pk_packing_logs').insert({
-          order_id: itemToScan.order_id,
-          item_id: itemId,
-          packed_by: scannedBy,
-          notes: 'item_scan'
-        })
-        if (logError) console.warn('Failed to log item scan:', logError)
+        playErrorSound()
+        setStatusMessage({ text: '❌ บันทึกไม่สำเร็จ: ' + itemError.message, type: 'error' })
+        return
       }
+      if (!updatedItems || updatedItems.length === 0) {
+        console.error('RLS blocked update – packing_staff may lack UPDATE permission on or_order_items')
+        playErrorSound()
+        setStatusMessage({ text: '❌ ไม่สามารถบันทึกสถานะสแกนได้ (สิทธิ์ไม่พอ)', type: 'error' })
+        return
+      }
+      const scannedBy = user?.username || user?.email || 'unknown'
+      const itemId = updatedItems[0]?.id ?? null
+      const { error: logError } = await supabase.from('pk_packing_logs').insert({
+        order_id: itemToScan.order_id,
+        item_id: itemId,
+        packed_by: scannedBy,
+        notes: 'item_scan'
+      })
+      if (logError) console.warn('Failed to log item scan:', logError)
 
       setItemScanValue('')
       playSuccessSound()
@@ -858,14 +897,13 @@ export default function Packing() {
       if (updatedGroup.every((item) => item.scanned)) {
         clearInactivityTimer()
         setStatusMessage({ text: '✅ สแกนครบแล้ว!', type: 'success' })
-        const nextIndex = aggregatedDataRef.current.findIndex(
-          (g, idx) => idx !== currentIndex && !g.every((item) => item.scanned) && !g[0].isOrderComplete
+        openConfirm(
+          'สแกนสินค้าครบแล้ว แพ็คเสร็จเรียบร้อยใช่ไหม?',
+          () => { stopRecordingAndAdvance() },
+          'ยืนยันการแพ็คสินค้า',
+          'ใช่ (หยุดบันทึก)',
+          'ไม่ใช่ (ตรวจสอบอีกรอบ)'
         )
-        if (nextIndex !== -1) {
-          setTimeout(() => {
-            setCurrentIndex(nextIndex)
-          }, 700)
-        }
       }
     } else {
       playErrorSound()
@@ -960,6 +998,23 @@ export default function Packing() {
 
   async function handleOrderClick(index: number) {
     if (index === currentIndex) return
+    if (recordingState.status === 'recording') {
+      openConfirm(
+        'กำลังบันทึกวิดีโออยู่ ต้องการหยุดบันทึกและเปลี่ยนบิลหรือไม่?',
+        () => {
+          stopRecording()
+          switchToOrder(index)
+        },
+        'หยุดบันทึกวิดีโอ',
+        'ใช่ (หยุดบันทึก)',
+        'ไม่ใช่ (บันทึกต่อ)'
+      )
+      return
+    }
+    await switchToOrder(index)
+  }
+
+  async function switchToOrder(index: number) {
     const previousIndex = currentIndexRef.current
     if (previousIndex !== -1 && previousIndex !== index) {
       const oldGroup = aggregatedDataRef.current[previousIndex]
@@ -1292,7 +1347,7 @@ export default function Packing() {
                             )}
                           </div>
                           <div className="text-sm text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                            <span>{wo.order_count} บิล</span>
+                            <span>{wo.order_count} บิล{(status?.packedBills ?? 0) > 0 && <span className="text-emerald-600 font-medium"> (แพ็คแล้ว {status.packedBills}/{status.totalBills})</span>}</span>
                             <span className="text-gray-400">|</span>
                             <span>รวม {status?.totalItems ?? 0} รายการ</span>
                             {(status?.packedItems ?? 0) > 0 && (
@@ -1335,13 +1390,22 @@ export default function Packing() {
             )
           ) : selectionTab === 'shipped' ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">วันที่</label>
+                  <label className="block text-xs text-gray-500 mb-1">วันที่เริ่มต้น</label>
                   <input
                     type="date"
-                    value={shippedDateFilter}
-                    onChange={(e) => setShippedDateFilter(e.target.value)}
+                    value={shippedDateFrom}
+                    onChange={(e) => setShippedDateFrom(e.target.value)}
+                    className="w-full border rounded px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">วันที่สิ้นสุด</label>
+                  <input
+                    type="date"
+                    value={shippedDateTo}
+                    onChange={(e) => setShippedDateTo(e.target.value)}
                     className="w-full border rounded px-3 py-2 text-sm"
                   />
                 </div>
@@ -1383,20 +1447,26 @@ export default function Packing() {
                   {shippedWorkOrders.map((wo) => (
                     <button
                       key={wo.work_order_name}
-                      className="p-4 border rounded-lg bg-gray-100 border-gray-200 text-left hover:bg-gray-200 transition-colors"
+                      className="p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm bg-orange-50/80 border-orange-200 border-l-orange-500 hover:bg-orange-100 hover:shadow-md"
                       onClick={() => {
                         loadPackingData(wo.work_order_name)
                       }}
                     >
-                      <div className="text-lg font-semibold">✅ {wo.work_order_name}</div>
-                      <div className="text-sm text-gray-600">
-                        {wo.order_count} บิล • {wo.shipped_time ? new Date(wo.shipped_time).toLocaleString('th-TH') : '-'}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-lg font-bold text-gray-800 truncate">{wo.work_order_name}</div>
+                        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-orange-500 text-white shadow-sm shrink-0">
+                          ✓ จัดส่งแล้ว
+                        </span>
                       </div>
-                      <div className="text-xs text-gray-500 mt-1">
-                        ช่องทาง: {Array.from(wo.channels).join(', ') || '-'}
+                      <div className="text-sm text-gray-600 mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <span>{wo.order_count} บิล</span>
+                        <span className="text-gray-300">|</span>
+                        <span>{wo.shipped_time ? new Date(wo.shipped_time).toLocaleString('th-TH') : '-'}</span>
                       </div>
-                      <div className="text-xs text-gray-500">
-                        ผู้แพ็ค: {Array.from(wo.packers).join(', ') || '-'}
+                      <div className="text-xs text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                        <span>ช่องทาง: {Array.from(wo.channels).join(', ') || '-'}</span>
+                        <span className="text-gray-300">|</span>
+                        <span>ผู้แพ็ค: {Array.from(wo.packers).join(', ') || '-'}</span>
                       </div>
                     </button>
                   ))}
@@ -1422,25 +1492,56 @@ export default function Packing() {
               ) : queueItems.length === 0 ? (
                 <div className="text-center py-6 text-gray-500">ไม่มีคิวอัปโหลด</div>
               ) : (
+                <>
+                {queueItems.some((i) => i.status === 'success' && i.localDeleted) && (
+                  <div className="flex justify-end">
+                    <button
+                      className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm"
+                      onClick={async () => {
+                        const toDelete = queueItems.filter((i) => i.status === 'success' && i.localDeleted)
+                        for (const item of toDelete) {
+                          await deleteQueueItem(item.id)
+                        }
+                        await refreshQueue()
+                      }}
+                    >
+                      ลบรายการที่ลบไฟล์แล้วทั้งหมด ({queueItems.filter((i) => i.status === 'success' && i.localDeleted).length})
+                    </button>
+                  </div>
+                )}
                 <div className="space-y-2">
-                  {queueItems.map((item) => (
-                    <div key={item.id} className="border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
+                  {queueItems.map((item) => {
+                    const isSuccess = item.status === 'success'
+                    const isFailed = item.status === 'failed'
+                    const isPending = item.status === 'pending'
+                    const isUploading = item.status === 'uploading'
+                    const cardClass = isSuccess
+                      ? 'bg-blue-50 border-blue-200 text-blue-900'
+                      : isFailed
+                        ? 'bg-red-50 border-red-300 text-red-900'
+                        : isUploading
+                          ? 'bg-sky-50 border-sky-300 text-sky-900'
+                          : 'bg-amber-50 border-amber-300 text-amber-900'
+                    return (
+                    <div key={item.id} className={`border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 ${cardClass}`}>
                       <div className="min-w-0">
                         <div className="font-medium truncate">
                           {item.workOrderName} • {item.trackingNumber}
                         </div>
-                        <div className="text-xs text-gray-500">
-                          {item.filename} • {item.status}
-                          {item.localDeleted ? ' (ลบไฟล์แล้ว)' : ''}
+                        <div className="text-xs opacity-70">
+                          {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : item.filename} • {
+                            isSuccess ? 'อัปโหลดสำเร็จ' : isFailed ? 'อัปโหลดไม่สำเร็จ' : isUploading ? 'กำลังอัปโหลด...' : 'รอคิว'
+                          }
+                          {item.localDeleted ? ' • ลบไฟล์แล้ว' : ''}
                         </div>
                         {item.lastError && (
-                          <div className="text-xs text-red-600 truncate">Error: {item.lastError}</div>
+                          <div className="text-xs truncate text-red-600">Error: {item.lastError}</div>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        {item.status === 'failed' && (
+                        {isFailed && (
                           <button
-                            className="px-3 py-1 text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600"
+                            className="px-3 py-1 text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 font-medium"
                             onClick={async () => {
                               await updateQueueItem(item.id, { status: 'pending', lastError: null })
                               await refreshQueue()
@@ -1457,9 +1558,9 @@ export default function Packing() {
                             อัปโหลดใหม่
                           </button>
                         )}
-                        {item.status === 'success' && (
+                        {isSuccess && (
                           <button
-                            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+                            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 font-medium"
                             onClick={async () => {
                               await deleteQueueItem(item.id)
                               await refreshQueue()
@@ -1470,8 +1571,10 @@ export default function Packing() {
                         )}
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
+                </>
               )}
             </div>
           )}
@@ -1491,7 +1594,7 @@ export default function Packing() {
                 <h2 className="text-xl font-bold">
                   จัดของ: {currentWorkOrderName || '-'}
                 </h2>
-                {packStartTime && (
+                {packStartTime && !isViewOnly && (
                   <div className="inline-flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-1.5 mt-1">
                     <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
                     <span className="text-lg font-bold text-indigo-700">
@@ -1507,7 +1610,7 @@ export default function Packing() {
                   >
                     ❮ กลับไปเลือกใบงาน
                   </button>
-                {allGroupsScanned && !allGroupsShipped && (
+                {!isViewOnly && allGroupsScanned && !allGroupsShipped && (
                   <button
                     className="px-5 py-2.5 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 font-bold shadow-lg animate-pulse"
                     onClick={() => openConfirm(`ยืนยันจัดส่งทั้งหมด ${aggregatedData.length} ออเดอร์ แล้วย้ายไปจัดส่งแล้ว?`, shipAllAndFinalize)}
@@ -1515,7 +1618,7 @@ export default function Packing() {
                     🚚 จัดส่งออเดอร์ทั้งหมด
                   </button>
                 )}
-                {hasPendingCompleted && !allGroupsScanned && (
+                {!isViewOnly && hasPendingCompleted && !allGroupsScanned && (
                   <button
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
                     onClick={shipAllScannedOrders}
@@ -1523,6 +1626,7 @@ export default function Packing() {
                     จัดส่งออร์เดอร์ที่สำเร็จ
                   </button>
                 )}
+                {!isViewOnly && (
                 <button
                   className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600"
                   onClick={async () => {
@@ -1534,13 +1638,19 @@ export default function Packing() {
                 >
                   แพ็คใหม่
                 </button>
-                {allGroupsShipped && (
+                )}
+                {!isViewOnly && allGroupsShipped && (
                   <button
                     className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
                     onClick={finalizeWorkOrder}
                   >
                     ย้ายไป "จัดส่งแล้ว"
                   </button>
+                )}
+                {isViewOnly && (
+                  <div className="text-sm text-gray-500 bg-gray-100 px-4 py-2 rounded-lg">
+                    โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถจัดของได้)
+                  </div>
                 )}
               </div>
             </div>
@@ -1622,7 +1732,7 @@ export default function Packing() {
                               handleParcelScan()
                             }
                           }}
-                          disabled={currentGroup[0].parcelScanned || currentGroup[0].isOrderComplete || !isQcPassGroup(currentGroup)}
+                          disabled={isViewOnly || currentGroup[0].parcelScanned || currentGroup[0].isOrderComplete || !isQcPassGroup(currentGroup)}
                         />
                       </div>
                       <div className="space-y-2">
@@ -1640,6 +1750,7 @@ export default function Packing() {
                             }
                           }}
                           disabled={
+                            isViewOnly ||
                             !currentGroup[0].parcelScanned ||
                             currentGroup[0].isOrderComplete ||
                             currentGroup.every((item) => item.scanned)

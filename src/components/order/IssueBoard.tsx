@@ -46,7 +46,10 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   const [createTypeId, setCreateTypeId] = useState('')
   const [ordersForWorkOrder, setOrdersForWorkOrder] = useState<Order[]>([])
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
-  const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [fromDate, setFromDate] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
   const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
   const [now, setNow] = useState(() => Date.now())
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)

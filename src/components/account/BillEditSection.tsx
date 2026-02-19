@@ -6,8 +6,6 @@ import { formatDateTime } from '../../lib/utils'
 import OrderForm from '../order/OrderForm'
 import Modal from '../ui/Modal'
 
-const UNLOCK_PASSWORD = 'TRkids@999'
-
 const ALL_STATUSES: OrderStatus[] = [
   'รอลงข้อมูล',
   'รอตรวจคำสั่งซื้อ',
@@ -55,11 +53,6 @@ type SearchResult = {
 export default function BillEditSection() {
   const { user } = useAuthContext()
 
-  // Password gate
-  const [unlocked, setUnlocked] = useState(false)
-  const [password, setPassword] = useState('')
-  const [passwordError, setPasswordError] = useState('')
-
   // Search & filter
   const [searchQuery, setSearchQuery] = useState('')
   const [filterDateFrom, setFilterDateFrom] = useState(() => new Date().toISOString().slice(0, 10))
@@ -88,21 +81,10 @@ export default function BillEditSection() {
 
   // Load channels
   useEffect(() => {
-    if (!unlocked) return
     supabase.from('channels').select('channel_code, channel_name').order('channel_code').then(({ data }) => {
       if (data) setChannels(data)
     })
-  }, [unlocked])
-
-  // Password unlock
-  const handleUnlock = () => {
-    if (password === UNLOCK_PASSWORD) {
-      setUnlocked(true)
-      setPasswordError('')
-    } else {
-      setPasswordError('รหัสไม่ถูกต้อง')
-    }
-  }
+  }, [])
 
   // Search bills
   const handleSearch = useCallback(async () => {
@@ -283,37 +265,6 @@ export default function BillEditSection() {
       }
     }
     return changes
-  }
-
-  // ──────────── Password Gate ────────────
-  if (!unlocked) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="bg-white rounded-2xl shadow-lg border p-8 w-full max-w-sm text-center">
-          <div className="text-5xl mb-4">
-            <i className="fas fa-lock text-gray-300"></i>
-          </div>
-          <h2 className="text-xl font-bold text-gray-800 mb-2">แก้ไขบิล</h2>
-          <p className="text-sm text-gray-500 mb-6">กรุณาใส่รหัสปลดล็อกเพื่อเข้าใช้งาน</p>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => { setPassword(e.target.value); setPasswordError('') }}
-            onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
-            placeholder="รหัสปลดล็อก"
-            className="w-full border rounded-lg px-4 py-3 text-center text-lg mb-3 focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
-            autoFocus
-          />
-          {passwordError && <p className="text-red-500 text-sm mb-3">{passwordError}</p>}
-          <button
-            onClick={handleUnlock}
-            className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition"
-          >
-            ปลดล็อก
-          </button>
-        </div>
-      </div>
-    )
   }
 
   // ──────────── Editing View ────────────

@@ -1,26 +1,24 @@
 import { useState } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import CreateRequisition from './CreateRequisition'
-import RequisitionList from './RequisitionList'
 import ProductionWorkQueue from './ProductionWorkQueue'
 import ProductionReturn from './ProductionReturn'
 import ProductionParcelReturn from './ProductionParcelReturn'
+import ProductionBorrow from './ProductionBorrow'
 import { useWmsModal } from '../useWmsModal'
 
-type ViewKey = 'menu' | 'queue' | 'withdraw' | 'return' | 'parcel-return'
-type WithdrawTab = 'create' | 'list'
-
+type ViewKey = 'menu' | 'queue' | 'withdraw' | 'return' | 'borrow' | 'parcel-return'
 const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; color: string }[] = [
   { key: 'queue', label: 'บันทึกคิวงาน', icon: 'fas fa-clipboard-list', desc: 'ลงเวลาเริ่ม/เสร็จขั้นตอนการผลิต', color: 'from-blue-600 to-blue-800' },
   { key: 'withdraw', label: 'เบิกของ', icon: 'fas fa-dolly', desc: 'สร้างใบเบิกสินค้า/วัตถุดิบ', color: 'from-emerald-600 to-emerald-800' },
   { key: 'return', label: 'คืนของ', icon: 'fas fa-undo-alt', desc: 'คืนสินค้า/วัตถุดิบเข้าคลัง', color: 'from-orange-600 to-orange-800' },
+  { key: 'borrow', label: 'ยืมของ', icon: 'fas fa-hand-holding', desc: 'สร้างใบยืมสินค้า/วัตถุดิบ', color: 'from-cyan-600 to-cyan-800' },
   { key: 'parcel-return', label: 'รับสินค้าตีกลับ', icon: 'fas fa-barcode', desc: 'สแกนเลขพัสดุรับคืนจากลูกค้า', color: 'from-purple-600 to-purple-800' },
 ]
 
 export default function ProductionLayout() {
   const { user, signOut } = useAuthContext()
   const [activeView, setActiveView] = useState<ViewKey>('menu')
-  const [withdrawTab, setWithdrawTab] = useState<WithdrawTab>('create')
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [loggingOut, setLoggingOut] = useState(false)
 
@@ -63,30 +61,6 @@ export default function ProductionLayout() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {activeView === 'withdraw' && (
-            <>
-              <button
-                onClick={() => setWithdrawTab('create')}
-                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all ${
-                  withdrawTab === 'create' ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-700 text-gray-300'
-                }`}
-              >
-                <i className="fas fa-plus-circle mr-1" />
-                <span className="hidden sm:inline">สร้างใบเบิก</span>
-                <span className="sm:hidden">สร้าง</span>
-              </button>
-              <button
-                onClick={() => setWithdrawTab('list')}
-                className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all ${
-                  withdrawTab === 'list' ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-700 text-gray-300'
-                }`}
-              >
-                <i className="fas fa-list mr-1" />
-                <span className="hidden sm:inline">รายการใบเบิก</span>
-                <span className="sm:hidden">รายการ</span>
-              </button>
-            </>
-          )}
           <button
             type="button"
             onClick={handleLogout}
@@ -123,13 +97,9 @@ export default function ProductionLayout() {
           </div>
         )}
         {activeView === 'queue' && <ProductionWorkQueue />}
-        {activeView === 'withdraw' && (
-          <>
-            {withdrawTab === 'create' && <CreateRequisition />}
-            {withdrawTab === 'list' && <RequisitionList />}
-          </>
-        )}
+        {activeView === 'withdraw' && <CreateRequisition />}
         {activeView === 'return' && <ProductionReturn />}
+        {activeView === 'borrow' && <ProductionBorrow />}
         {activeView === 'parcel-return' && <ProductionParcelReturn />}
       </div>
       {MessageModal}

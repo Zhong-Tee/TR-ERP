@@ -149,13 +149,12 @@ export default function ReviewSection() {
           .update({ end_time: new Date().toISOString() })
           .eq('order_id', reviewOrderSelect)
 
-        await saveFirstCheckSummary(reviewOrderSelect, sortedData)
+        try { await saveFirstCheckSummary(reviewOrderSelect, sortedData) } catch (e) { console.error('saveFirstCheckSummary error:', e) }
+      }
 
-        // บันทึกเวลาเสร็จแผนก "เบิก" เมื่อรายการทั้งหมดเป็น "หยิบถูก" เท่านั้น
-        const allCorrect = sortedData.every((i) => i.status === 'correct')
-        if (allCorrect) {
-          await ensurePlanDeptEnd(reviewOrderSelect)
-        }
+      const allCorrect = sortedData.length > 0 && sortedData.every((i) => i.status === 'correct')
+      if (allCorrect) {
+        await ensurePlanDeptEnd(reviewOrderSelect)
       }
     }
 

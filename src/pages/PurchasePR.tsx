@@ -10,6 +10,7 @@ import {
   rejectPR,
   loadProductsWithLastPrice,
   loadStockBalances,
+  loadUserDisplayNames,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 
@@ -75,6 +76,7 @@ export default function PurchasePR() {
   const [saving, setSaving] = useState(false)
   const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
   const [note, setNote] = useState('')
+  const [prType, setPrType] = useState<'normal' | 'urgent'>('normal')
   const [productSearch, setProductSearch] = useState('')
   const [filterType, setFilterType] = useState('')
   const [filterSeller, setFilterSeller] = useState('')
@@ -88,6 +90,9 @@ export default function PurchasePR() {
   const [viewing, setViewing] = useState<InventoryPR | null>(null)
   const [viewItems, setViewItems] = useState<InventoryPRItem[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
+
+  // user display names
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
 
   // approve/reject
   const [updating, setUpdating] = useState(false)
@@ -116,12 +121,19 @@ export default function PurchasePR() {
         products.length ? Promise.resolve(products) : loadProductsWithLastPrice(),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
       ])
-      setPrs(prData.map((pr: any) => ({
+      const mappedPrs = prData.map((pr: any) => ({
         ...pr,
         _itemCount: pr.inv_pr_items?.length ?? 0,
-      })))
+      }))
+      setPrs(mappedPrs)
       if (!products.length) setProducts(prodData as any)
       if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
+
+      const uids = mappedPrs.map((pr: any) => pr.requested_by).filter(Boolean)
+      if (uids.length) {
+        const names = await loadUserDisplayNames(uids)
+        setUserMap((prev) => ({ ...prev, ...names }))
+      }
     } catch (e) {
       console.error('Load PR failed:', e)
     } finally {
@@ -179,6 +191,10 @@ export default function PurchasePR() {
   }
 
   function onSelectProduct(index: number, productId: string) {
+    if (productId && draftItems.some((d, i) => i !== index && d.product_id === productId)) {
+      alert('สินค้านี้ถูกเพิ่มในรายการแล้ว')
+      return
+    }
     const prod = productMap.get(productId)
     updateDraftItem(index, {
       product_id: productId,
@@ -187,6 +203,7 @@ export default function PurchasePR() {
   }
 
   function addSupplierProduct(productId: string) {
+    if (draftItems.some((d) => d.product_id === productId)) return
     const prod = productMap.get(productId)
     const newItem: DraftItem = {
       product_id: productId,
@@ -220,9 +237,11 @@ export default function PurchasePR() {
 
   /* ── Pull reorder-point items ── */
   function loadReorderPointItems() {
+    const existingProductIds = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
     const reorderItems: DraftItem[] = []
     for (const prod of products) {
       if (!prod.order_point) continue
+      if (existingProductIds.has(prod.id)) continue
       const op = parseFloat(String(prod.order_point).replace(/,/g, ''))
       if (isNaN(op) || op <= 0) continue
       const onHand = stockBalances[prod.id] ?? 0
@@ -258,8 +277,11 @@ export default function PurchasePR() {
 
   /* ── Create PR ── */
   async function handleCreatePR() {
+    if (!note.trim()) { alert('กรุณาระบุหัวข้อขอซื้อ'); return }
     const valid = draftItems.filter((i) => i.product_id && i.qty > 0)
     if (!valid.length) { alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return }
+    const ids = valid.map((i) => i.product_id)
+    if (new Set(ids).size !== ids.length) { alert('พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง'); return }
     setSaving(true)
     try {
       await createPR({
@@ -270,11 +292,13 @@ export default function PurchasePR() {
           estimated_price: i.estimated_price,
           note: i.note || undefined,
         })),
-        note: note.trim() || undefined,
+        note: note.trim(),
         userId: user?.id,
+        prType,
       })
       setDraftItems([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
       setNote('')
+      setPrType('normal')
       closeCreate()
       await loadAll()
     } catch (e: any) {
@@ -383,29 +407,38 @@ export default function PurchasePR() {
               <thead>
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ PR</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ประเภท PR</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หัวข้อขอซื้อ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
-                  <th className="px-4 py-3 text-center font-semibold text-gray-600">รายการ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่ขอ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">การจัดการ</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {prs.map((pr) => {
                   const st = STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
+                  const isUrgent = pr.pr_type === 'urgent'
                   return (
                     <tr key={pr.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-900">{pr.pr_no}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${isUrgent ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                          {isUrgent ? 'ด่วน' : 'ปกติ'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
+                      <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
                           {st.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
                       <td className="px-4 py-3 text-right">
                         <button
                           onClick={() => openDetail(pr)}
@@ -522,12 +555,14 @@ export default function PurchasePR() {
                               className="flex-1 px-3 py-2 border rounded-lg bg-white text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
                             >
                               <option value="">เลือกสินค้า</option>
-                              {filteredProducts.map((p) => (
-                                <option key={p.id} value={p.id}>
-                                  {p.product_code} - {p.product_name}
-                                  {p.seller_name ? ` (${p.seller_name})` : ''}
-                                </option>
-                              ))}
+                              {filteredProducts
+                                .filter((p) => p.id === item.product_id || !draftItems.some((d, di) => di !== index && d.product_id === p.id))
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.product_code} - {p.product_name}
+                                    {p.seller_name ? ` (${p.seller_name})` : ''}
+                                  </option>
+                                ))}
                             </select>
                             {item.product_id && prod?.seller_name && (
                               <button
@@ -627,16 +662,40 @@ export default function PurchasePR() {
                 + เพิ่มรายการสินค้า
               </button>
 
-              {/* note */}
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ</label>
-                <textarea
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
-                  rows={2}
-                  placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
-                />
+              {/* pr type + note */}
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-4 items-center">
+                  <label className="text-sm font-medium text-gray-700">ประเภท PR:</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPrType('normal')}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${prType === 'normal' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                      ปกติ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPrType('urgent')}
+                      className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${prType === 'urgent' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                      ด่วน
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    หัวข้อขอซื้อ <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none ${!note.trim() ? 'border-red-300' : ''}`}
+                    rows={2}
+                    placeholder="ระบุหัวข้อขอซื้อ (บังคับ)"
+                    required
+                  />
+                </div>
               </div>
             </div>
 
@@ -681,14 +740,15 @@ export default function PurchasePR() {
                           </div>
                           <button
                             onClick={() => addSupplierProduct(p.id)}
+                            disabled={alreadyAdded}
                             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
                               alreadyAdded
-                                ? 'bg-gray-100 text-gray-400'
+                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                                 : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                             }`}
                           >
-                            <i className="fas fa-plus mr-1"></i>
-                            เพิ่ม
+                            <i className={`fas ${alreadyAdded ? 'fa-check' : 'fa-plus'} mr-1`}></i>
+                            {alreadyAdded ? 'เพิ่มแล้ว' : 'เพิ่ม'}
                           </button>
                         </div>
                       )
@@ -717,7 +777,7 @@ export default function PurchasePR() {
       )}
 
       {/* ── Detail Modal ── */}
-      <Modal open={!!viewing} onClose={() => { setViewing(null); setRejectOpen(false) }} contentClassName="max-w-4xl">
+      <Modal open={!!viewing} onClose={() => { setViewing(null); setRejectOpen(false) }} contentClassName="max-w-6xl">
         <div className="p-6 space-y-5">
           {detailLoading ? (
             <div className="flex justify-center py-12">
@@ -741,8 +801,16 @@ export default function PurchasePR() {
               {/* meta */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
-                  <div className="text-gray-500 text-xs">วันที่ขอ</div>
+                  <div className="text-gray-500 text-xs">วันที่สร้าง</div>
                   <div className="font-medium">{viewing.requested_at ? new Date(viewing.requested_at).toLocaleString('th-TH') : '-'}</div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ประเภท PR</div>
+                  <div className="font-medium">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${viewing.pr_type === 'urgent' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                      {viewing.pr_type === 'urgent' ? 'ด่วน' : 'ปกติ'}
+                    </span>
+                  </div>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <div className="text-gray-500 text-xs">จำนวนรายการ</div>
@@ -764,7 +832,7 @@ export default function PurchasePR() {
 
               {viewing.note && (
                 <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                  <span className="text-blue-600 font-medium">หมายเหตุ:</span> {viewing.note}
+                  <span className="text-blue-600 font-medium">หัวข้อขอซื้อ:</span> {viewing.note}
                 </div>
               )}
 

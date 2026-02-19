@@ -9,6 +9,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 const COST_VISIBLE_ROLES = ['superadmin', 'account']
 
 const SEARCH_DEBOUNCE_MS = 400
+const PAGE_SIZE = 50
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
@@ -97,6 +98,8 @@ export default function Products() {
   const [importing, setImporting] = useState(false)
   const [uploadingImages, setUploadingImages] = useState(false)
   const [sellerOptions, setSellerOptions] = useState<string[]>([])
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
 
   // Notification modal
   const [notifyModal, setNotifyModal] = useState<{ open: boolean; type: 'success' | 'error' | 'warning'; title: string; message: string }>({
@@ -113,6 +116,7 @@ export default function Products() {
   useEffect(() => {
     debounceRef.current = setTimeout(() => {
       setAppliedSearch(searchInput.trim())
+      setPage(1)
     }, SEARCH_DEBOUNCE_MS)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -120,8 +124,12 @@ export default function Products() {
   }, [searchInput])
 
   useEffect(() => {
+    setPage(1)
+  }, [categoryFilter, productTypeFilter])
+
+  useEffect(() => {
     loadProducts()
-  }, [appliedSearch, categoryFilter, productTypeFilter])
+  }, [appliedSearch, categoryFilter, productTypeFilter, page])
 
   useEffect(() => {
     loadCategories()
@@ -162,11 +170,15 @@ export default function Products() {
   async function loadProducts() {
     setLoading(true)
     try {
+      const from = (page - 1) * PAGE_SIZE
+      const to = from + PAGE_SIZE - 1
+
       let query = supabase
         .from('pr_products')
-        .select('*')
+        .select('*', { count: 'exact' })
         .eq('is_active', true)
         .order('product_code', { ascending: true })
+        .range(from, to)
 
       if (appliedSearch) {
         query = query.or(
@@ -180,10 +192,11 @@ export default function Products() {
         query = query.eq('product_type', productTypeFilter)
       }
 
-      const { data, error } = await query
+      const { data, error, count } = await query
 
       if (error) throw error
       setProducts(data || [])
+      setTotalCount(count || 0)
     } catch (error: any) {
       console.error('Error loading products:', error)
       showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
@@ -482,8 +495,8 @@ export default function Products() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-end gap-2 mt-2">
+    <div className="space-y-6 mt-4">
+      <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={downloadProductsExcel}
@@ -658,6 +671,52 @@ export default function Products() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination */}
+        {totalCount > PAGE_SIZE && (
+          <div className="flex items-center justify-between mt-4 pt-4 border-t text-sm text-gray-600">
+            <span>
+              แสดง {Math.min((page - 1) * PAGE_SIZE + 1, totalCount)}–{Math.min(page * PAGE_SIZE, totalCount)} จาก {totalCount} รายการ
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage(1)}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ‹ ก่อนหน้า
+              </button>
+              <span className="px-3 py-1 font-medium">
+                หน้า {page} / {Math.ceil(totalCount / PAGE_SIZE)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(Math.ceil(totalCount / PAGE_SIZE), p + 1))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ถัดไป ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setPage(Math.ceil(totalCount / PAGE_SIZE))}
+                disabled={page >= Math.ceil(totalCount / PAGE_SIZE)}
+                className="px-2.5 py-1 border rounded-lg hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                »
+              </button>
+            </div>
           </div>
         )}
       </div>

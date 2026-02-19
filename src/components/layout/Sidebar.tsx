@@ -159,6 +159,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
   const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
+  const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const { menuAccess: dbMenuAccess } = useMenuAccess()
 
   const loadCounts = useCallback(async () => {
@@ -168,10 +169,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
         ? (user.username ?? user.email ?? '')
         : ''
-      const [rpcRes, qcWoList, wmsResult] = await Promise.all([
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes] = await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
         loadWmsTabCounts(),
+        supabase.from('inv_returns').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
       ])
 
       const c = rpcRes.data || {}
@@ -188,9 +190,12 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         packing: c.packing || 0,
         warehouse: c.warehouse || 0,
       })
+      const pendingReturnCount = pendingReturnsRes.count || 0
+      setWarehousePendingReturnCount(pendingReturnCount)
 
       // ── แจ้ง TopBar ให้ใช้ค่า warehouse count จาก RPC (ลด query ซ้ำ) ──
       window.dispatchEvent(new CustomEvent('sidebar-warehouse-count', { detail: { count: c.warehouse || 0 } }))
+      window.dispatchEvent(new CustomEvent('sidebar-pending-return-count', { detail: { count: pendingReturnCount } }))
     } catch (e) {
       console.error('Sidebar loadCounts:', e)
     }
@@ -220,6 +225,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => debouncedLoadCounts())
       // ไม่ subscribe inv_stock_balances — ใช้ event dispatch จากหน้าที่ปรับสต๊อคแทน เพื่อป้องกัน cascade
       .subscribe()
     return () => {
@@ -300,14 +306,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (!user?.role) return false
-    // ถ้ามีข้อมูลจาก st_user_menus → ใช้ค่าจาก DB
     if (dbMenuAccess !== null) {
-      // ถ้ามี key อยู่ใน DB → ใช้ค่าจาก DB
-      if (item.key in dbMenuAccess) return dbMenuAccess[item.key] === true
-      // ถ้าไม่มี key ใน DB (เมนูใหม่ยังไม่เคยบันทึก) → fallback ใช้ hardcoded roles
-      return item.roles.includes(user.role)
+      // มีข้อมูลจาก DB (superadmin ตั้งค่าแล้ว) → ใช้ DB เป็น single source of truth
+      return dbMenuAccess[item.key] === true
     }
-    // ถ้ายังไม่มีข้อมูลจาก DB → fallback ใช้ hardcoded roles
+    // ยังไม่มีข้อมูลจาก DB สำหรับ role นี้ → fallback ใช้ hardcoded roles
     return item.roles.includes(user.role)
   })
 
@@ -331,7 +334,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       <nav className="p-4 flex-1 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         <ul className="space-y-2">
           {filteredMenuItems.map((item) => {
-            const isActive = location.pathname === item.path
+            const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/')
+            const baseCount = menuCounts[item.key] ?? 0
+            const displayCount = item.key === 'warehouse'
+              ? baseCount + warehousePendingReturnCount
+              : baseCount
             return (
               <li key={item.key}>
                 <Link
@@ -350,21 +357,21 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                     <span className="whitespace-nowrap flex items-center gap-2 text-base">
                       {item.label}
                       {MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
-                        (menuCounts[item.key] ?? 0) > 0 && (
+                        displayCount > 0 && (
                           <span className={`min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm ${
                             item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
                           }`}>
-                            {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
+                            {displayCount > 99 ? '99+' : displayCount}
                           </span>
                         )}
                     </span>
                   ) : (
                     MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
-                    (menuCounts[item.key] ?? 0) > 0 && (
+                    displayCount > 0 && (
                       <span className={`absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm ${
                         item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
                       }`}>
-                        {(menuCounts[item.key] ?? 0) > 99 ? '99+' : menuCounts[item.key]}
+                        {displayCount > 99 ? '99+' : displayCount}
                       </span>
                     )
                   )}

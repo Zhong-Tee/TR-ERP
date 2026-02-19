@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchAuditorAssignedAudits } from '../../lib/auditApi'
 import ProductionParcelReturn from '../wms/production/ProductionParcelReturn'
+import { useWmsModal } from '../wms/useWmsModal'
 import type { InventoryAudit } from '../../types'
 
 type ViewKey = 'menu' | 'audit' | 'parcel-return'
@@ -19,6 +20,7 @@ export default function AuditorHome() {
   const [audits, setAudits] = useState<InventoryAudit[]>([])
   const [loading, setLoading] = useState(true)
   const [loggingOut, setLoggingOut] = useState(false)
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   useEffect(() => {
     if (!user?.id) return
@@ -29,10 +31,14 @@ export default function AuditorHome() {
   }, [user?.id])
 
   async function handleLogout() {
+    const ok = await showConfirm({ title: 'ออกจากระบบ', message: 'ยืนยันออกจากระบบ?' })
+    if (!ok) return
     setLoggingOut(true)
     try {
       await signOut()
       navigate('/')
+    } catch (error: any) {
+      showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
       setLoggingOut(false)
     }
@@ -80,6 +86,8 @@ export default function AuditorHome() {
             ))}
           </div>
         </div>
+        {MessageModal}
+        {ConfirmModal}
       </div>
     )
   }
@@ -116,6 +124,8 @@ export default function AuditorHome() {
         <div className="flex-1 overflow-y-auto">
           <ProductionParcelReturn />
         </div>
+        {MessageModal}
+        {ConfirmModal}
       </div>
     )
   }
@@ -213,6 +223,8 @@ export default function AuditorHome() {
           )}
         </div>
       </div>
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

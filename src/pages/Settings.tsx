@@ -334,6 +334,7 @@ export default function Settings() {
     { key: 'wms-kpi', label: 'KPI', group: 'wms' },
     { key: 'wms-requisition', label: 'รายการเบิก', group: 'wms' },
     { key: 'wms-return-requisition', label: 'รายการคืน', group: 'wms' },
+    { key: 'wms-borrow-requisition', label: 'รายการยืม', group: 'wms' },
     { key: 'wms-notif', label: 'แจ้งเตือน', group: 'wms' },
     { key: 'wms-settings', label: 'ตั้งค่า', group: 'wms' },
     // ── QC ──
@@ -361,8 +362,10 @@ export default function Settings() {
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-cash-bill', label: 'ขอบิลเงินสด', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
+    { key: 'account-trial-balance', label: 'งบทดลอง', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },
+    { key: 'products-inactive', label: 'รายการสินค้าไม่เคลื่อนไหว', group: 'products' },
     // ── ลายการ์ตูน ──
     { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },
     // ── คลัง ──
@@ -398,6 +401,8 @@ export default function Settings() {
       const { data, error } = await supabase
         .from('st_user_menus')
         .select('role, menu_key, has_access')
+        .in('role', settingsRoles)
+        .limit(5000)
       if (error) throw error
       const map: Record<string, Record<string, boolean>> = {}
       settingsRoles.forEach((role) => {
@@ -408,7 +413,7 @@ export default function Settings() {
       })
       ;(data || []).forEach((row: any) => {
         if (!map[row.role]) map[row.role] = {}
-        map[row.role][row.menu_key] = row.has_access !== false
+        map[row.role][row.menu_key] = row.has_access === true
       })
       setRoleMenus(map)
     } catch (error: any) {
@@ -680,6 +685,7 @@ export default function Settings() {
       const { error } = await supabase.from('st_user_menus').upsert(payload, { onConflict: 'role,menu_key' })
       if (error) throw error
       refreshMenuAccess()
+      await loadRoleMenus()
       showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า Role สำเร็จ' })
     } catch (error: any) {
       console.error('Error saving role menus:', error)

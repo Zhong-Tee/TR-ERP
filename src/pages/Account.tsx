@@ -10,9 +10,10 @@ import BillEditSection from '../components/account/BillEditSection'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
 import CashBillModal from '../components/account/CashBillModal'
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
+import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'slip-age'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'slip-age' | 'trial-balance'
 type AccountTab = 'refunds' | 'tax-invoice' | 'cash-bill' | 'approvals'
 type ApprovalFilter = 'refund' | 'tax-invoice' | 'cash-bill'
 
@@ -164,7 +165,7 @@ export default function Account() {
   /** ตัวกรองรายการตรวจสลิป */
   const [slipFilterOrderTaker, setSlipFilterOrderTaker] = useState<string>('')
   const [slipFilterChannel, setSlipFilterChannel] = useState<string>('')
-  const [slipFilterDate, setSlipFilterDate] = useState<string>('')
+  const [slipFilterDate, setSlipFilterDate] = useState<string>(() => new Date().toISOString().split('T')[0])
 
   /** ป้องกันกระพริบ: แสดง spinner เฉพาะครั้งแรกเท่านั้น */
   const initialLoadDone = useRef(false)
@@ -727,6 +728,7 @@ export default function Account() {
             { key: 'manual-slip-check' as AccountSection, label: 'ตรวจสลิปมือ' },
             { key: 'bill-edit' as AccountSection, label: 'แก้ไขบิล' },
             { key: 'slip-age' as AccountSection, label: 'อายุสลิป' },
+            { key: 'trial-balance' as AccountSection, label: 'งบทดลอง' },
           ]).filter((s) => hasAccess(`account-${s.key}`)).map((s) => (
             <button
               key={s.key}
@@ -990,6 +992,8 @@ export default function Account() {
             </div>
           </div>
         </section>
+      ) : accountSection === 'trial-balance' ? (
+        <TrialBalanceSection />
       ) : (
         <>
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

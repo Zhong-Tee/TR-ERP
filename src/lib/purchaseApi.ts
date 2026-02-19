@@ -13,6 +13,23 @@ import type {
   Product,
 } from '../types'
 
+/* ──────────────── User Display Names ──────────────── */
+
+export async function loadUserDisplayNames(userIds: string[]): Promise<Record<string, string>> {
+  const unique = [...new Set(userIds.filter(Boolean))]
+  if (!unique.length) return {}
+  const { data, error } = await supabase
+    .from('us_users')
+    .select('id, username, email')
+    .in('id', unique)
+  if (error) throw error
+  const map: Record<string, string> = {}
+  for (const u of (data || [])) {
+    map[u.id] = u.username || u.email || u.id
+  }
+  return map
+}
+
 /* ──────────────── Products ──────────────── */
 
 export async function loadProductsWithLastPrice(): Promise<(Product & { last_price?: number | null })[]> {
@@ -101,6 +118,7 @@ export interface CreatePRInput {
   }[]
   note?: string
   userId?: string
+  prType?: string
 }
 
 export async function createPR(input: CreatePRInput) {
@@ -108,6 +126,7 @@ export async function createPR(input: CreatePRInput) {
     p_items: input.items,
     p_note: input.note || null,
     p_user_id: input.userId || null,
+    p_pr_type: input.prType || 'normal',
   })
   if (error) throw error
   return data as { id: string; pr_no: string }
@@ -150,7 +169,7 @@ export interface POListFilters {
 export async function loadPOList(filters: POListFilters = {}): Promise<InventoryPO[]> {
   let q = supabase
     .from('inv_po')
-    .select('*, inv_pr(pr_no), inv_po_items(id)')
+    .select('*, inv_pr(pr_no), inv_po_items(id, qty)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -194,6 +213,8 @@ export interface ConvertPRtoPOInput {
   supplierName?: string | null
   prices?: { product_id: string; unit_price: number }[]
   note?: string
+  userId?: string
+  expectedArrivalDate?: string | null
 }
 
 export async function convertPRtoPO(input: ConvertPRtoPOInput) {
@@ -203,9 +224,16 @@ export async function convertPRtoPO(input: ConvertPRtoPOInput) {
     p_supplier_name: input.supplierName || null,
     p_prices: input.prices || [],
     p_note: input.note || null,
+    p_user_id: input.userId || null,
   })
   if (error) throw error
-  return data as { id: string; po_no: string; total_amount: number }
+  const result = data as { id: string; po_no: string; total_amount: number }
+
+  if (input.expectedArrivalDate) {
+    await supabase.from('inv_po').update({ expected_arrival_date: input.expectedArrivalDate }).eq('id', result.id)
+  }
+
+  return result
 }
 
 export async function markPOOrdered(poId: string, userId: string) {
@@ -237,6 +265,11 @@ export async function updatePOShipping(poId: string, shipping: {
   if (error) throw error
 }
 
+export async function recalcPOLandedCost(poId: string) {
+  const { error } = await supabase.rpc('rpc_recalc_po_landed_cost', { p_po_id: poId })
+  if (error) throw error
+}
+
 /* ──────────────── GR (Goods Receipt) ──────────────── */
 
 export interface GRListFilters {
@@ -249,7 +282,7 @@ export interface GRListFilters {
 export async function loadGRList(filters: GRListFilters = {}): Promise<InventoryGR[]> {
   let q = supabase
     .from('inv_gr')
-    .select('*, inv_po(po_no), inv_gr_items(id)')
+    .select('*, inv_po(po_no), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -324,6 +357,23 @@ export async function loadPOItemsForGR(poId: string) {
     .eq('po_id', poId)
   if (error) throw error
   return (data || []) as unknown as InventoryPOItem[]
+}
+
+export async function loadPODetailWithItems(poId: string) {
+  const { data, error } = await supabase
+    .from('inv_po')
+    .select(`
+      *,
+      inv_pr(pr_no),
+      inv_po_items(
+        *,
+        pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category)
+      )
+    `)
+    .eq('id', poId)
+    .single()
+  if (error) throw error
+  return data as unknown as InventoryPO
 }
 
 /* ──────────────── Samples ──────────────── */
@@ -422,13 +472,13 @@ export async function loadApprovedPRsWithoutPO(): Promise<InventoryPR[]> {
   return ((allApproved || []) as unknown as InventoryPR[]).filter((pr) => !usedPrIds.has(pr.id))
 }
 
-/* ──────────────── Ordered POs without GR ──────────────── */
+/* ──────────────── POs available for GR (ordered + partial) ──────────────── */
 
-export async function loadOrderedPOsWithoutGR(): Promise<InventoryPO[]> {
+export async function loadPOsForGR(): Promise<{ newPOs: InventoryPO[]; partialPOs: InventoryPO[] }> {
   const { data: allOrdered, error: poErr } = await supabase
     .from('inv_po')
-    .select('*, inv_po_items(id, product_id, qty, unit_price, pr_products(product_code, product_name))')
-    .eq('status', 'ordered')
+    .select('*, inv_po_items(id, product_id, qty, qty_received_total, unit_price, pr_products(product_code, product_name))')
+    .in('status', ['ordered', 'partial'])
     .order('created_at', { ascending: false })
   if (poErr) throw poErr
 
@@ -439,5 +489,45 @@ export async function loadOrderedPOsWithoutGR(): Promise<InventoryPO[]> {
   if (grErr) throw grErr
 
   const usedPoIds = new Set((allGRs || []).map((g: any) => g.po_id))
-  return ((allOrdered || []) as unknown as InventoryPO[]).filter((po) => !usedPoIds.has(po.id))
+  const all = (allOrdered || []) as unknown as InventoryPO[]
+
+  const newPOs = all.filter((po) => po.status === 'ordered' && !usedPoIds.has(po.id))
+  const partialPOs = all.filter((po) => po.status === 'partial')
+
+  return { newPOs, partialPOs }
+}
+
+/* ──────────────── GRs for a specific PO (history) ──────────────── */
+
+export async function loadGRsForPO(poId: string): Promise<InventoryGR[]> {
+  const { data, error } = await supabase
+    .from('inv_gr')
+    .select('*, inv_gr_items(id, product_id, qty_ordered, qty_received, qty_shortage)')
+    .eq('po_id', poId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data || []) as unknown as InventoryGR[]
+}
+
+/* ──────────────── Resolve PO shortage ──────────────── */
+
+export interface ResolveShortageInput {
+  poId: string
+  resolutions: {
+    po_item_id: string
+    resolution_type: string
+    resolution_qty: number
+    resolution_note?: string
+  }[]
+  userId?: string
+}
+
+export async function resolveShortage(input: ResolveShortageInput) {
+  const { data, error } = await supabase.rpc('rpc_resolve_po_shortage', {
+    p_po_id: input.poId,
+    p_resolutions: input.resolutions,
+    p_user_id: input.userId || null,
+  })
+  if (error) throw error
+  return data as { success: boolean; updated_count: number; po_status: string }
 }

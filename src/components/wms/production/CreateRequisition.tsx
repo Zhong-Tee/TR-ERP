@@ -2,31 +2,45 @@ import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
 import BarcodeScanner from './BarcodeScanner'
-import { getProductImageUrl } from '../wmsUtils'
+import { getProductImageUrl, sortOrderItems } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 import type { ProductType } from '../../../types'
 
+interface ReqItem {
+  product_code: string
+  product_name: string
+  storage_location?: string
+  qty: number
+  requisition_topic: string
+}
+
 export default function CreateRequisition() {
   const { user } = useAuthContext()
+  const [activeTab, setActiveTab] = useState<'create' | 'list'>('create')
   const [searchTerm, setSearchTerm] = useState('')
   const [products, setProducts] = useState<any[]>([])
   const [allProducts, setAllProducts] = useState<any[]>([])
-  const [selectedItems, setSelectedItems] = useState<any[]>([])
+  const [selectedItems, setSelectedItems] = useState<ReqItem[]>([])
   const [requisitionId, setRequisitionId] = useState('')
   const [notes, setNotes] = useState('')
   const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
-  const [loadingTopics, setLoadingTopics] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
   const [selectedProductCode, setSelectedProductCode] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
+  const [submitting, setSubmitting] = useState(false)
+  const [reqList, setReqList] = useState<any[]>([])
+  const [loadingList, setLoadingList] = useState(false)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [detailItems, setDetailItems] = useState<any[]>([])
+  const [detailLoading, setDetailLoading] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   useEffect(() => {
     generateRequisitionId()
     loadAllProducts()
-    loadRequisitionTopics()
+    loadTopics()
   }, [])
 
   useEffect(() => {
@@ -36,34 +50,26 @@ export default function CreateRequisition() {
     setSelectedProductCode('')
   }, [productTypeFilter])
 
+  useEffect(() => {
+    if (activeTab === 'list') loadReqList()
+  }, [activeTab])
+
   const generateRequisitionId = async () => {
     const date = new Date()
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    const dateStr = `${year}${month}${day}`
-
+    const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
     const { count } = await supabase
       .from('wms_requisitions')
       .select('*', { count: 'exact', head: true })
       .like('requisition_id', `REQ-${dateStr}-%`)
-
-    const nextNumber = (count || 0) + 1
-    const sequence = nextNumber.toString().padStart(3, '0')
-    setRequisitionId(`REQ-${dateStr}-${sequence}`)
+    const seq = ((count || 0) + 1).toString().padStart(3, '0')
+    setRequisitionId(`REQ-${dateStr}-${seq}`)
   }
 
-  const loadRequisitionTopics = async () => {
-    setLoadingTopics(true)
+  const loadTopics = async () => {
     try {
-      const { data, error } = await supabase.from('wms_requisition_topics').select('*').order('topic_name', { ascending: true })
-      if (error) throw error
+      const { data } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
       setRequisitionTopics(data || [])
-    } catch (error: any) {
-      showMessage({ message: `โหลดหัวข้อไม่สำเร็จ: ${error.message}` })
-    } finally {
-      setLoadingTopics(false)
-    }
+    } catch {}
   }
 
   const loadAllProducts = async () => {
@@ -74,23 +80,65 @@ export default function CreateRequisition() {
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
         .eq('product_type', productTypeFilter)
-        .order('product_name', { ascending: true })
-
+        .order('product_name')
       if (error) throw error
       setAllProducts(data || [])
-    } catch (error: any) {
-      showMessage({ message: `เกิดข้อผิดพลาดในการโหลดรายการสินค้า: ${error.message}` })
+    } catch (e: any) {
+      showMessage({ message: `โหลดสินค้าไม่สำเร็จ: ${e.message}` })
     } finally {
       setLoadingAllProducts(false)
     }
   }
 
-  const searchProducts = async () => {
-    if (!searchTerm.trim()) {
-      setProducts([])
-      return
+  const loadReqList = async () => {
+    setLoadingList(true)
+    try {
+      const { data, error } = await supabase
+        .from('wms_requisitions')
+        .select('*')
+        .eq('created_by', user?.id || '')
+        .order('created_at', { ascending: false })
+        .limit(50)
+      const requisitionsWithUsers = await Promise.all(
+        (data || []).map(async (req: any) => {
+          if (req.approved_by) {
+            const { data: userData } = await supabase.from('us_users').select('username').eq('id', req.approved_by).single()
+            return { ...req, approved_by_user: userData }
+          }
+          return req
+        })
+      )
+      if (error) throw error
+      setReqList(requisitionsWithUsers)
+    } catch (e: any) {
+      console.error('Load req list error:', e)
+    } finally {
+      setLoadingList(false)
     }
+  }
 
+  const toggleDetail = async (reqId: string) => {
+    if (expandedId === reqId) { setExpandedId(null); setDetailItems([]); return }
+    setExpandedId(reqId)
+    setDetailLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('wms_requisition_items')
+        .select('*')
+        .eq('requisition_id', reqId)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      setDetailItems(sortOrderItems(data || []))
+    } catch (e: any) {
+      showMessage({ message: `เกิดข้อผิดพลาด: ${e.message}` })
+      setDetailItems([])
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  const searchProducts = async () => {
+    if (!searchTerm.trim()) { setProducts([]); return }
     setLoading(true)
     try {
       const { data, error } = await supabase
@@ -100,350 +148,376 @@ export default function CreateRequisition() {
         .eq('product_type', productTypeFilter)
         .or(`product_code.ilike.%${searchTerm}%,product_name.ilike.%${searchTerm}%`)
         .limit(20)
-
       if (error) throw error
       setProducts(data || [])
-    } catch (error: any) {
-      showMessage({ message: `เกิดข้อผิดพลาดในการค้นหา: ${error.message}` })
+    } catch (e: any) {
+      showMessage({ message: `ค้นหาไม่สำเร็จ: ${e.message}` })
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      searchProducts()
     }
   }
 
   const handleBarcodeScan = (barcode: string) => {
     setShowScanner(false)
     setSearchTerm(barcode)
-    setTimeout(() => {
-      searchProducts()
-    }, 100)
-  }
-
-  const handleSelectProduct = (productCode: string) => {
-    if (!productCode) return
-    const product = allProducts.find((p) => p.product_code === productCode)
-    if (product) {
-      addItem(product)
-      setSelectedProductCode('')
-    }
+    setTimeout(() => searchProducts(), 100)
   }
 
   const addItem = (product: any) => {
-    const existing = selectedItems.find((item) => item.product_code === product.product_code)
+    const existing = selectedItems.find((i) => i.product_code === product.product_code)
     if (existing) {
-      setSelectedItems(
-        selectedItems.map((item) => (item.product_code === product.product_code ? { ...item, qty: item.qty + 1 } : item))
-      )
+      setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
       setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '' }])
     }
   }
 
-  const updateItemTopic = (productCode: string, topic: string) => {
-    setSelectedItems(
-      selectedItems.map((item) => (item.product_code === productCode ? { ...item, requisition_topic: topic } : item))
-    )
+  const updateItemTopic = (code: string, topic: string) => {
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
   }
 
-  const removeItem = (productCode: string) => {
-    setSelectedItems(selectedItems.filter((item) => item.product_code !== productCode))
-  }
+  const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
 
-  const updateQty = (productCode: string, newQty: number) => {
-    if (newQty < 1) {
-      removeItem(productCode)
-      return
-    }
-    setSelectedItems(
-      selectedItems.map((item) => (item.product_code === productCode ? { ...item, qty: newQty } : item))
-    )
+  const updateQty = (code: string, qty: number) => {
+    if (qty < 1) { removeItem(code); return }
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, qty } : i))
   }
 
   const submitRequisition = async () => {
-    if (selectedItems.length === 0) {
-      showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' })
-      return
-    }
-
-    const missingTopic = selectedItems.some((item) => !item.requisition_topic)
-    if (missingTopic) {
-      showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' })
-      return
-    }
-
-    if (!notes || !notes.trim()) {
-      showMessage({ message: 'กรุณากรอกหมายเหตุ' })
-      return
-    }
+    if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
+    if (selectedItems.some((i) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
+    if (!notes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
 
     const ok = await showConfirm({
       title: 'ยืนยันการสร้างใบเบิก',
-      message: `ยืนยันการสร้างใบเบิก ${requisitionId}?\nจำนวนรายการ: ${selectedItems.length}`,
+      message: `ยืนยันสร้างใบเบิก ${requisitionId}?\nจำนวนรายการ: ${selectedItems.length}`,
     })
     if (!ok) return
 
+    setSubmitting(true)
     try {
       const { error: reqError } = await supabase
         .from('wms_requisitions')
-        .insert([
-          {
-            requisition_id: requisitionId,
-            created_by: user?.id,
-            status: 'pending',
-            notes: notes.trim(),
-            requisition_topic: null,
-          },
-        ])
+        .insert({
+          requisition_id: requisitionId,
+          created_by: user?.id,
+          status: 'pending',
+          notes: notes.trim(),
+          requisition_topic: null,
+        })
         .select()
         .single()
-
       if (reqError) throw reqError
 
       const items = selectedItems.map((item) => ({
         requisition_id: requisitionId,
         product_code: item.product_code,
         product_name: item.product_name,
-        location: item.storage_location || item.location || null,
+        location: item.storage_location || null,
         qty: item.qty,
         requisition_topic: item.requisition_topic || null,
       }))
-
       const { error: itemsError } = await supabase.from('wms_requisition_items').insert(items)
       if (itemsError) throw itemsError
 
-      showMessage({ message: `สร้างใบเบิก ${requisitionId} สำเร็จ!\nรอการอนุมัติจากผู้จัดการ` })
-
+      showMessage({ message: `สร้างใบเบิก ${requisitionId} สำเร็จ` })
       setSelectedItems([])
       setNotes('')
       setSearchTerm('')
       setProducts([])
       setSelectedProductCode('')
       generateRequisitionId()
-    } catch (error: any) {
-      showMessage({ message: `เกิดข้อผิดพลาด: ${error.message}` })
+    } catch (e: any) {
+      showMessage({ message: `สร้างใบเบิกไม่สำเร็จ: ${e.message}` })
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  const imgUrl = (productCode: string) => {
-    if (productCode === 'SPARE_PART') {
-      return getProductImageUrl('spare_part')
-    }
-    return getProductImageUrl(productCode)
+  const statusBadge = (status: string) => {
+    const map: Record<string, string> = { pending: 'bg-amber-500', approved: 'bg-green-500', rejected: 'bg-red-500' }
+    const labels: Record<string, string> = { pending: 'รออนุมัติ', approved: 'อนุมัติแล้ว', rejected: 'ไม่อนุมัติ' }
+    return (
+      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${map[status] || 'bg-gray-500'}`}>
+        {labels[status] || status}
+      </span>
+    )
+  }
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return '-'
+    return new Date(dateString).toLocaleString('th-TH', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   }
 
   return (
-    <div className="p-4 space-y-4 pb-24">
-      <div className="bg-slate-800 p-4 rounded-2xl">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xl font-black text-white">สร้างใบเบิกสินค้า</h2>
-          <span className="text-sm font-bold text-blue-400 bg-blue-900/30 px-3 py-1 rounded-lg">{requisitionId}</span>
-        </div>
-        <div className="text-xs text-gray-400">รหัสใบเบิกจะถูกสร้างอัตโนมัติ</div>
-      </div>
-
-      <div className="bg-slate-800 p-4 rounded-2xl">
-        <label className="block text-sm font-bold text-gray-300 mb-2">ประเภทสินค้า</label>
-        <div className="flex gap-2 mb-3">
-          <button
-            type="button"
-            onClick={() => setProductTypeFilter('FG')}
-            className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${
-              productTypeFilter === 'FG'
-                ? 'bg-green-600 text-white shadow-lg'
-                : 'bg-slate-700 text-gray-400 hover:bg-slate-600'
-            }`}
-          >
-            FG สินค้าสำเร็จรูป
-          </button>
-          <button
-            type="button"
-            onClick={() => setProductTypeFilter('RM')}
-            className={`flex-1 py-2.5 rounded-xl font-bold text-sm transition-all ${
-              productTypeFilter === 'RM'
-                ? 'bg-orange-600 text-white shadow-lg'
-                : 'bg-slate-700 text-gray-400 hover:bg-slate-600'
-            }`}
-          >
-            RM วัตถุดิบ
-          </button>
-        </div>
-        <label className="block text-sm font-bold text-gray-300 mb-2">เลือกรายการสินค้า</label>
-        <select
-          value={selectedProductCode}
-          onChange={(e) => handleSelectProduct(e.target.value)}
-          disabled={loadingAllProducts}
-          className="w-full bg-slate-700 text-white px-4 py-3 rounded-xl border border-slate-600 focus:border-blue-500 focus:outline-none"
+    <div className="flex flex-col h-full">
+      {/* Tab switcher */}
+      <div className="flex border-b border-slate-700 px-3 pt-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('create')}
+          className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
+            activeTab === 'create' ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-400' : 'text-gray-400'
+          }`}
         >
-          <option value="">{loadingAllProducts ? 'กำลังโหลด...' : '-- เลือกรายการสินค้า --'}</option>
-          {allProducts.map((product, idx) => (
-            <option key={idx} value={product.product_code}>
-              {product.product_name}
-            </option>
-          ))}
-        </select>
+          สร้างใบเบิก
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('list')}
+          className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
+            activeTab === 'list' ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-400' : 'text-gray-400'
+          }`}
+        >
+          รายการใบเบิก
+        </button>
       </div>
 
-      <div className="bg-slate-800 p-4 rounded-2xl">
-        <label className="block text-sm font-bold text-gray-300 mb-2">ค้นหาสินค้า</label>
-        <div className="flex gap-2 flex-wrap">
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="รหัสสินค้า หรือ ชื่อสินค้า"
-            className="flex-1 min-w-0 bg-slate-700 text-white px-3 py-2.5 rounded-xl border border-slate-600 focus:border-blue-500 focus:outline-none text-sm"
-          />
-          <button
-            onClick={searchProducts}
-            disabled={loading}
-            className="bg-blue-600 text-white px-4 py-2.5 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 text-sm whitespace-nowrap shrink-0"
-          >
-            {loading ? '...' : 'ค้นหา'}
-          </button>
-          <button
-            onClick={() => setShowScanner(true)}
-            className="bg-purple-600 text-white px-4 py-2.5 rounded-xl font-bold hover:bg-purple-700 shrink-0 flex items-center gap-2"
-            title="สแกนบาร์โค้ด"
-          >
-            <i className="fas fa-qrcode"></i>
-            <span className="text-sm">สแกน</span>
-          </button>
-        </div>
-        <div className="text-xs text-gray-400 mt-2">ค้นหาได้ทั้งชื่อสินค้าและรหัสสินค้า หรือใช้ปุ่มสแกนบาร์โค้ด</div>
-      </div>
+      {activeTab === 'create' ? (
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          {/* Requisition No */}
+          <div className="rounded-xl bg-slate-800 border border-slate-700 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-400">เลขที่ใบเบิก</span>
+              <span className="text-sm font-bold text-blue-400">{requisitionId}</span>
+            </div>
+          </div>
 
-      {products.length > 0 && (
-        <div className="bg-slate-800 p-4 rounded-2xl">
-          <h3 className="text-sm font-bold text-gray-300 mb-3">ผลการค้นหา ({products.length})</h3>
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {products.map((product, idx) => (
-              <div key={idx} className="flex items-center gap-3 p-3 bg-slate-700 rounded-xl hover:bg-slate-600 transition">
-                <img
-                  src={imgUrl(product.product_code)}
-                  className="w-16 h-16 object-cover rounded-lg"
-                  onError={(e) => {
-                    const target = e.target as HTMLImageElement
-                    target.src = 'https://placehold.co/100x100?text=NO+IMG'
-                  }}
-                  alt={product.product_name}
-                />
-                <div className="flex-1">
-                  <div className="font-bold text-white text-sm">{product.product_name}</div>
-                  <div className="text-xs text-gray-400">รหัส: {product.product_code}</div>
-                  <div className="text-xs text-red-400">จุดเก็บ: {product.storage_location || '---'}</div>
-                </div>
-                <button
-                  onClick={() => addItem(product)}
-                  className="bg-green-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-green-700"
-                >
-                  <i className="fas fa-plus mr-1"></i>
-                  เพิ่ม
-                </button>
-              </div>
+          {/* Product type filter */}
+          <div className="flex gap-2">
+            {(['FG', 'RM'] as ProductType[]).map((pt) => (
+              <button
+                key={pt}
+                type="button"
+                onClick={() => setProductTypeFilter(pt)}
+                className={`flex-1 py-1.5 rounded-lg text-xs font-bold ${
+                  productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-slate-700 text-gray-300'
+                }`}
+              >
+                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : 'วัตถุดิบ'}
+              </button>
             ))}
           </div>
-        </div>
-      )}
 
-      {selectedItems.length > 0 && (
-        <div className="bg-slate-800 p-4 rounded-2xl">
-          <h3 className="text-sm font-bold text-gray-300 mb-3">รายการที่เลือก ({selectedItems.length})</h3>
-          <div className="space-y-3">
-            {selectedItems.map((item, idx) => (
-              <div key={idx} className="flex flex-col gap-3 p-3 bg-slate-700 rounded-xl">
-                <div className="flex items-center gap-3">
+          {/* Search & scan */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && searchProducts()}
+              placeholder="ค้นหาสินค้า..."
+              className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-gray-500"
+            />
+            <button type="button" onClick={searchProducts} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold">
+              ค้นหา
+            </button>
+            <button type="button" onClick={() => setShowScanner(true)} className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm">
+              <i className="fas fa-camera" />
+            </button>
+          </div>
+
+          {/* Dropdown select */}
+          {!loadingAllProducts && allProducts.length > 0 && (
+            <select
+              value={selectedProductCode}
+              onChange={(e) => {
+                if (e.target.value) {
+                  const p = allProducts.find((x) => x.product_code === e.target.value)
+                  if (p) addItem(p)
+                  setSelectedProductCode('')
+                }
+              }}
+              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white"
+            >
+              <option value="">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</option>
+              {allProducts.map((p) => (
+                <option key={p.product_code} value={p.product_code}>
+                  {p.product_code} - {p.product_name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Search results */}
+          {loading && <div className="text-center text-gray-500 text-xs py-2">กำลังค้นหา...</div>}
+          {products.length > 0 && (
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {products.map((p) => (
+                <button
+                  key={p.product_code}
+                  type="button"
+                  onClick={() => addItem(p)}
+                  className="w-full flex items-center gap-2 p-2 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 text-left"
+                >
                   <img
-                    src={imgUrl(item.product_code)}
-                    className="w-16 h-16 object-cover rounded-lg shrink-0"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement
-                      target.src = 'https://placehold.co/100x100?text=NO+IMG'
-                    }}
-                    alt={item.product_name}
+                    src={getProductImageUrl(p.product_code)}
+                    alt=""
+                    className="w-10 h-10 rounded-lg object-cover bg-slate-700"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                   />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-bold text-white text-sm break-words">{item.product_name}</div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-bold text-white truncate">{p.product_code}</div>
+                    <div className="text-[10px] text-gray-400 truncate">{p.product_name}</div>
                   </div>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-400 mb-1">
-                    หัวข้อการเบิก <span className="text-red-400">*</span>
-                  </label>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Selected items */}
+          {selectedItems.length > 0 && (
+            <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-bold text-white">รายการเบิก ({selectedItems.length})</span>
+              </div>
+              {selectedItems.map((item) => (
+                <div key={item.product_code} className="bg-slate-700 rounded-lg p-2 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <img
+                      src={getProductImageUrl(item.product_code)}
+                      alt=""
+                      className="w-10 h-10 rounded-lg object-cover bg-slate-600"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold text-white truncate">{item.product_code}</div>
+                      <div className="text-[10px] text-gray-400 truncate">{item.product_name}</div>
+                    </div>
+                    <button type="button" onClick={() => removeItem(item.product_code)} className="text-red-400 hover:text-red-300">
+                      <i className="fas fa-trash text-sm" />
+                    </button>
+                  </div>
                   <select
                     value={item.requisition_topic || ''}
                     onChange={(e) => updateItemTopic(item.product_code, e.target.value)}
-                    disabled={loadingTopics}
-                    className={`w-full text-white px-3 py-2 rounded-lg border text-sm focus:border-blue-500 focus:outline-none ${
-                      item.requisition_topic ? 'bg-slate-600 border-slate-500' : 'bg-slate-600 border-red-500/50'
+                    className={`w-full rounded-lg border bg-slate-600 px-3 py-2 text-sm text-white ${
+                      item.requisition_topic ? 'border-slate-500' : 'border-red-500/50'
                     }`}
                   >
-                    <option value="">{loadingTopics ? 'กำลังโหลด...' : '-- เลือกหัวข้อ --'}</option>
-                    {requisitionTopics.map((topic, tidx) => (
-                      <option key={tidx} value={topic.topic_name}>
-                        {topic.topic_name}
-                      </option>
+                    <option value="">-- หัวข้อเบิก * --</option>
+                    {requisitionTopics.map((t) => (
+                      <option key={t.id} value={t.topic_name}>{t.topic_name}</option>
                     ))}
                   </select>
-                </div>
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-600">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => updateQty(item.product_code, item.qty - 1)}
-                      className="bg-red-600 text-white w-10 h-10 rounded-lg font-bold text-lg hover:bg-red-700 active:scale-95 transition-all"
-                    >
-                      -
-                    </button>
-                    <span className="text-white font-bold text-lg w-12 text-center">{item.qty}</span>
-                    <button
-                      onClick={() => updateQty(item.product_code, item.qty + 1)}
-                      className="bg-green-600 text-white w-10 h-10 rounded-lg font-bold text-lg hover:bg-green-700 active:scale-95 transition-all"
-                    >
-                      +
-                    </button>
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">-</button>
+                    <input
+                      type="number"
+                      value={item.qty}
+                      onChange={(e) => updateQty(item.product_code, Number(e.target.value) || 0)}
+                      className="w-12 text-center rounded bg-slate-600 text-white text-sm py-1"
+                      min={1}
+                    />
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">+</button>
                   </div>
-                  <button
-                    onClick={() => removeItem(item.product_code)}
-                    className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-red-700 active:scale-95 transition-all"
-                  >
-                    <i className="fas fa-trash mr-1"></i>
-                    ลบ
-                  </button>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+          )}
+
+          {/* Notes (required) */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              หมายเหตุ <span className="text-red-400">*</span>
+            </label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-white placeholder-gray-500 ${
+                notes.trim() ? 'border-slate-600' : 'border-red-500/60'
+              }`}
+              rows={2}
+              placeholder="กรุณาระบุหมายเหตุ (จำเป็น)"
+            />
           </div>
-        </div>
-      )}
 
-      <div className="bg-slate-800 p-4 rounded-2xl">
-        <label className="block text-sm font-bold text-gray-300 mb-2">
-          หมายเหตุ <span className="text-red-400">*</span>
-        </label>
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder="กรุณากรอกหมายเหตุ..."
-          required
-          className="w-full bg-slate-700 text-white px-4 py-3 rounded-xl border border-slate-600 focus:border-blue-500 focus:outline-none resize-none text-base"
-          rows={3}
-        />
-      </div>
-
-      {selectedItems.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-slate-900 border-t border-slate-700 z-10">
+          {/* Submit */}
           <button
+            type="button"
             onClick={submitRequisition}
-            className="w-full bg-green-600 text-white py-4 rounded-2xl font-black text-lg shadow-lg hover:bg-green-700 active:scale-95 transition-all"
+            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.requisition_topic) || !notes.trim()}
+            className="w-full py-3 rounded-xl bg-green-600 text-white font-bold text-base hover:bg-green-700 active:bg-green-800 disabled:opacity-50"
           >
-            <i className="fas fa-check-circle mr-2"></i>
-            สร้างใบเบิก ({selectedItems.length} รายการ)
+            {submitting ? 'กำลังบันทึก...' : `ยืนยันเบิกของ (${selectedItems.length} รายการ)`}
           </button>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {loadingList ? (
+            <div className="flex justify-center py-10">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
+            </div>
+          ) : reqList.length === 0 ? (
+            <p className="text-center text-gray-500 py-10">ยังไม่มีรายการเบิก</p>
+          ) : (
+            reqList.map((req) => {
+              const isExpanded = expandedId === req.requisition_id
+              return (
+                <div key={req.id} className="rounded-xl bg-slate-800 border border-slate-700 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => toggleDetail(req.requisition_id)}
+                    className="w-full text-left p-3 active:bg-slate-700 transition-colors"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-sm font-bold text-white truncate">{req.requisition_id}</span>
+                        <i className={`fas fa-chevron-down text-[10px] text-gray-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      </div>
+                      {statusBadge(req.status)}
+                    </div>
+                    <div className="text-[10px] text-gray-400 mt-1">
+                      {formatDate(req.created_at)}
+                    </div>
+                    {req.notes && <div className="text-xs text-gray-400 mt-1 truncate">หมายเหตุ: {req.notes}</div>}
+                    {req.status === 'approved' && req.approved_by_user && (
+                      <div className="text-[10px] text-green-400 mt-1">
+                        <i className="fas fa-check-circle mr-1" />อนุมัติโดย: {req.approved_by_user.username}
+                      </div>
+                    )}
+                    {req.status === 'rejected' && req.approved_by_user && (
+                      <div className="text-[10px] text-red-400 mt-1">
+                        <i className="fas fa-times-circle mr-1" />ปฏิเสธโดย: {req.approved_by_user.username}
+                      </div>
+                    )}
+                  </button>
+
+                  {isExpanded && (
+                    <div className="border-t border-slate-700 px-3 pb-3 pt-2">
+                      {detailLoading ? (
+                        <div className="text-center py-4 text-gray-400 text-xs">กำลังโหลด...</div>
+                      ) : detailItems.length === 0 ? (
+                        <div className="text-center py-4 text-gray-500 text-xs">ไม่มีรายการสินค้า</div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] font-bold text-gray-400 mb-1">รายการสินค้า ({detailItems.length})</div>
+                          {detailItems.map((item, idx) => (
+                            <div key={item.id} className="flex items-center gap-2 p-2 bg-slate-700 rounded-lg">
+                              <div className="text-xs font-bold text-gray-500 w-5 text-center shrink-0">{idx + 1}</div>
+                              <img
+                                src={getProductImageUrl(item.product_code)}
+                                className="w-10 h-10 object-cover rounded-lg shrink-0 border border-slate-600"
+                                onError={(e) => { (e.target as HTMLImageElement).src = 'https://placehold.co/100x100?text=NO+IMG' }}
+                                alt={item.product_name}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-bold text-white truncate">{item.product_name}</div>
+                                <div className="text-[10px] text-gray-400">รหัส: {item.product_code}</div>
+                              </div>
+                              <div className="text-white font-bold text-sm shrink-0 bg-blue-600/30 px-2 py-0.5 rounded-lg">
+                                x{item.qty}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })
+          )}
         </div>
       )}
 

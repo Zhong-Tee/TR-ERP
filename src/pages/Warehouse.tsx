@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
+import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
@@ -16,6 +17,9 @@ function toNumber(value: string | null | undefined): number | null {
 }
 
 export default function Warehouse() {
+  const { user } = useAuthContext()
+  const canSeeCost = user?.role === 'superadmin'
+
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
   const [loading, setLoading] = useState(true)
@@ -39,7 +43,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, product_type, order_point, seller_name')
+        .select('id, product_code, product_name, product_category, product_type, order_point, seller_name, landed_cost')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -234,7 +238,8 @@ export default function Warehouse() {
                   <th className="p-3 text-left font-semibold">ผู้ขาย</th>
                   <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>
                   <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
-                  <th className="p-3 text-center font-semibold rounded-tr-xl">Safety stock</th>
+                  <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>Safety stock</th>
+                  {canSeeCost && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
                 </tr>
               </thead>
               <tbody>
@@ -268,6 +273,13 @@ export default function Warehouse() {
                         {onHand.toLocaleString()}
                       </td>
                       <td className="p-3 text-center">{safetyStock !== null ? safetyStock.toLocaleString() : '-'}</td>
+                      {canSeeCost && (
+                        <td className="p-3 text-right font-medium">
+                          {product.landed_cost != null && Number(product.landed_cost) > 0
+                            ? Number(product.landed_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
+                            : '-'}
+                        </td>
+                      )}
                     </tr>
                   )
                 })}

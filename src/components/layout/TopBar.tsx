@@ -22,6 +22,10 @@ const PURCHASE_ACCESS_MAP: Record<string, string> = {
   '/purchase/gr': 'purchase-gr',
   '/purchase/sample': 'purchase-sample',
 }
+const PRODUCT_ACCESS_MAP: Record<string, string> = {
+  '/products': 'products',
+  '/products/inactive': 'products-inactive',
+}
 
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { user, signOut } = useAuthContext()
@@ -34,6 +38,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [loggingOut, setLoggingOut] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
+  const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
 
   // ── รับค่า warehouse count จาก Sidebar RPC (ลด 2 queries + 1 realtime channel ซ้ำ) ──
   useEffect(() => {
@@ -41,8 +46,16 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       const count = (e as CustomEvent).detail?.count
       if (typeof count === 'number') setBelowOrderPointCount(count)
     }
+    const onPendingReturnCount = (e: Event) => {
+      const count = (e as CustomEvent).detail?.count
+      if (typeof count === 'number') setWarehousePendingReturnCount(count)
+    }
     window.addEventListener('sidebar-warehouse-count', onWarehouseCount)
-    return () => window.removeEventListener('sidebar-warehouse-count', onWarehouseCount)
+    window.addEventListener('sidebar-pending-return-count', onPendingReturnCount)
+    return () => {
+      window.removeEventListener('sidebar-warehouse-count', onWarehouseCount)
+      window.removeEventListener('sidebar-pending-return-count', onPendingReturnCount)
+    }
   }, [])
 
   // รับตัวเลขจำนวนจากหน้าลูก (เช่น AdminQC)
@@ -208,19 +221,54 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/purchase/sample', label: 'สินค้าตัวอย่าง' },
   ].filter((tab) => hasAccess(PURCHASE_ACCESS_MAP[tab.path] || tab.path))
 
+  const productTabs = [
+    { path: '/products', label: 'รายการสินค้า' },
+    { path: '/products/inactive', label: 'รายการสินค้าไม่เคลื่อนไหว' },
+  ].filter((tab) => hasAccess(PRODUCT_ACCESS_MAP[tab.path] || tab.path))
+
   const activeSubTabs = location.pathname.startsWith('/warehouse')
     ? warehouseTabs
     : location.pathname.startsWith('/purchase')
       ? purchaseTabs
-      : []
+      : location.pathname.startsWith('/products')
+        ? productTabs
+        : []
 
   useEffect(() => {
-    const height = activeSubTabs.length > 0 ? '3rem' : '0rem'
+    const height = activeSubTabs.length > 0 ? '4.5rem' : '0rem'
     document.documentElement.style.setProperty('--subnav-height', height)
     return () => {
       document.documentElement.style.setProperty('--subnav-height', '0rem')
     }
   }, [activeSubTabs.length])
+
+  // Badge เมนู "รับสินค้าตีกลับ": แสดงเฉพาะสถานะรอดำเนินการ (pending)
+  useEffect(() => {
+    const loadWarehousePendingReturns = async () => {
+      try {
+        const { count, error } = await supabase
+          .from('inv_returns')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'pending')
+        if (error) throw error
+        setWarehousePendingReturnCount(count || 0)
+      } catch (error) {
+        console.error('Error loading pending return count:', error)
+      }
+    }
+
+    loadWarehousePendingReturns()
+    const channel = supabase
+      .channel('topbar-warehouse-returns-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => {
+        loadWarehousePendingReturns()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   return (
     <>
@@ -295,7 +343,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                   const isActive = location.pathname === tab.path
                   const badge = tab.path === '/warehouse' && belowOrderPointCount > 0
                     ? belowOrderPointCount
-                    : null
+                    : tab.path === '/warehouse/returns' && warehousePendingReturnCount > 0
+                      ? warehousePendingReturnCount
+                      : null
                   return (
                     <Link
                       key={tab.path}

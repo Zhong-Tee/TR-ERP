@@ -7,6 +7,7 @@ import ReviewSection from './ReviewSection'
 import KPISection from './KPISection'
 import RequisitionDashboard from './RequisitionDashboard'
 import ReturnRequisitionDashboard from './ReturnRequisitionDashboard'
+import BorrowRequisitionDashboard from './BorrowRequisitionDashboard'
 import NotificationSection from './NotificationSection'
 import SettingsSection from './SettingsSection'
 import { useWmsModal } from '../useWmsModal'
@@ -69,6 +70,7 @@ export default function AdminLayout() {
     { key: WMS_MENU_KEYS.KPI, label: 'KPI' },
     { key: WMS_MENU_KEYS.REQUISITION, label: 'รายการเบิก' },
     { key: WMS_MENU_KEYS.RETURN_REQUISITION, label: 'รายการคืน' },
+    { key: WMS_MENU_KEYS.BORROW_REQUISITION, label: 'รายการยืม' },
     { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
     ...(user?.role !== 'store' ? [{ key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
   ].filter((item) => hasAccess(item.key))
@@ -119,6 +121,7 @@ export default function AdminLayout() {
         {activeMenu === WMS_MENU_KEYS.KPI && <KPISection />}
         {activeMenu === WMS_MENU_KEYS.REQUISITION && <RequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.RETURN_REQUISITION && <ReturnRequisitionDashboard />}
+        {activeMenu === WMS_MENU_KEYS.BORROW_REQUISITION && <BorrowRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.NOTIF && <NotificationSection />}
         {activeMenu === WMS_MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
       </div>

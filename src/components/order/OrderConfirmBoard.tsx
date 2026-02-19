@@ -179,7 +179,10 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [chatLoading, setChatLoading] = useState(false)
   const [chatMessage, setChatMessage] = useState('')
   const [chatSending, setChatSending] = useState(false)
-  const [fromDate, setFromDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [fromDate, setFromDate] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
   const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
   const [viewMode, setViewMode] = useState<ViewMode>('default')
   const [sendOnEnter, setSendOnEnter] = useState(false)
@@ -191,6 +194,18 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey, fromDate, toDate])
+
+  // Realtime subscription: reload board when or_orders changes
+  useEffect(() => {
+    const channel = supabase
+      .channel('confirm-board-orders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadAll()
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate])
 
   // Realtime subscription for order chat logs → update unread counts
   useEffect(() => {

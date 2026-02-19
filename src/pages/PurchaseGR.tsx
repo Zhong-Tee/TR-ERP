@@ -5,9 +5,10 @@ import type { InventoryGR, InventoryPO } from '../types'
 import {
   loadGRList,
   loadGRDetail,
-  loadOrderedPOsWithoutGR,
+  loadPOsForGR,
   loadPOItemsForGR,
   receiveGR,
+  loadUserDisplayNames,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 
@@ -23,24 +24,24 @@ interface ReceiveItem {
   product_name: string
   qty_ordered: number
   qty_received: number
+  qty_already_received: number
   shortage_note: string
 }
 
 export default function PurchaseGR() {
   const { user } = useAuthContext()
 
-  // list
   const [grs, setGrs] = useState<InventoryGR[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
   const [search, setSearch] = useState('')
 
-  // POs waiting for GR
-  const [availablePOs, setAvailablePOs] = useState<InventoryPO[]>([])
+  const [newPOs, setNewPOs] = useState<InventoryPO[]>([])
+  const [partialPOs, setPartialPOs] = useState<InventoryPO[]>([])
 
-  // receive modal
   const [receiveOpen, setReceiveOpen] = useState(false)
   const [selectedPO, setSelectedPO] = useState<InventoryPO | null>(null)
+  const [isFollowUp, setIsFollowUp] = useState(false)
   const [receiveItems, setReceiveItems] = useState<ReceiveItem[]>([])
   const [domCompany, setDomCompany] = useState('')
   const [domCost, setDomCost] = useState('')
@@ -49,7 +50,8 @@ export default function PurchaseGR() {
   const [saving, setSaving] = useState(false)
   const [shippingExpanded, setShippingExpanded] = useState(false)
 
-  // detail modal
+  const [userMap, setUserMap] = useState<Record<string, string>>({})
+
   const [viewing, setViewing] = useState<InventoryGR | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
@@ -60,10 +62,17 @@ export default function PurchaseGR() {
     try {
       const [grData, poData] = await Promise.all([
         loadGRList({ status: statusFilter, search }),
-        loadOrderedPOsWithoutGR(),
+        loadPOsForGR(),
       ])
       setGrs(grData)
-      setAvailablePOs(poData)
+      setNewPOs(poData.newPOs)
+      setPartialPOs(poData.partialPOs)
+
+      const uids = grData.map((gr: any) => gr.received_by).filter(Boolean)
+      if (uids.length) {
+        const names = await loadUserDisplayNames(uids)
+        setUserMap((prev) => ({ ...prev, ...names }))
+      }
     } catch (e) {
       console.error('Load GR failed:', e)
     } finally {
@@ -71,8 +80,9 @@ export default function PurchaseGR() {
     }
   }
 
-  async function openReceive(po: InventoryPO) {
+  async function openReceive(po: InventoryPO, followUp: boolean) {
     setSelectedPO(po)
+    setIsFollowUp(followUp)
     setDomCompany('')
     setDomCost('')
     setGrNote('')
@@ -81,14 +91,29 @@ export default function PurchaseGR() {
 
     try {
       const poItems = await loadPOItemsForGR(po.id)
-      setReceiveItems(poItems.map((item: any) => ({
-        product_id: item.product_id,
-        product_code: item.pr_products?.product_code || '',
-        product_name: item.pr_products?.product_name || '',
-        qty_ordered: Number(item.qty),
-        qty_received: Number(item.qty),
-        shortage_note: '',
-      })))
+      const items: ReceiveItem[] = poItems
+        .filter((item: any) => {
+          if (!followUp) return true
+          const alreadyReceived = Number(item.qty_received_total) || 0
+          const resolvedQty = Number(item.resolution_qty) || 0
+          const remaining = Number(item.qty) - alreadyReceived - resolvedQty
+          return remaining > 0
+        })
+        .map((item: any) => {
+          const alreadyReceived = Number(item.qty_received_total) || 0
+          const resolvedQty = Number(item.resolution_qty) || 0
+          const remaining = Math.max(Number(item.qty) - alreadyReceived - resolvedQty, 0)
+          return {
+            product_id: item.product_id,
+            product_code: item.pr_products?.product_code || '',
+            product_name: item.pr_products?.product_name || '',
+            qty_ordered: remaining,
+            qty_received: remaining,
+            qty_already_received: alreadyReceived,
+            shortage_note: '',
+          }
+        })
+      setReceiveItems(items)
       setReceiveOpen(true)
     } catch (e) {
       console.error(e)
@@ -160,22 +185,63 @@ export default function PurchaseGR() {
     { key: 'received', label: 'รับครบ' },
   ]
 
+  const partialCount = partialPOs.length
+
   return (
     <div className="space-y-4 mt-12">
-      {/* ── POs waiting for GR ── */}
-      {availablePOs.length > 0 && (
+      {/* ── New POs waiting for first GR ── */}
+      {newPOs.length > 0 && (
         <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ที่รอรับเข้าคลัง ({availablePOs.length})</h3>
+          <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({newPOs.length})</h3>
           <div className="flex flex-wrap gap-2">
-            {availablePOs.map((po) => (
+            {newPOs.map((po) => (
               <button
                 key={po.id}
-                onClick={() => openReceive(po)}
+                onClick={() => openReceive(po, false)}
                 className="px-3 py-1.5 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors"
               >
                 {po.po_no} → รับเข้าคลัง
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Partial POs waiting for follow-up GR ── */}
+      {partialPOs.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+            PO รอรับเพิ่ม
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
+              {partialCount}
+            </span>
+          </h3>
+          <div className="space-y-2">
+            {partialPOs.map((po) => {
+              const items = (po.inv_po_items || []) as any[]
+              const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
+              const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
+              const outstanding = totalQty - totalRecv
+              return (
+                <div key={po.id} className="flex items-center justify-between bg-white border border-red-200 rounded-lg px-4 py-2.5">
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium text-gray-900 text-sm">{po.po_no}</span>
+                    <span className="text-xs text-gray-500">
+                      รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
+                    </span>
+                    <span className="inline-block px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">
+                      ค้างรับ {outstanding.toLocaleString()} ชิ้น
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => openReceive(po, true)}
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-semibold hover:bg-red-700 transition-colors"
+                  >
+                    รับเพิ่ม
+                  </button>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -225,25 +291,36 @@ export default function PurchaseGR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">PO</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">ต้นทุน/ชิ้น</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">การจัดการ</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {grs.map((gr) => {
+                  const items = (gr as any).inv_gr_items || []
+                  const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
+                  const grTotalReceived = items.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
                   const st = STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
                   return (
-                    <tr key={gr.id} className="hover:bg-gray-50/50 transition-colors">
+                    <tr key={gr.id} className={`hover:bg-gray-50/50 transition-colors ${gr.status === 'partial' ? 'bg-orange-50/30' : ''}`}>
                       <td className="px-4 py-3 font-medium text-gray-900">{gr.gr_no}</td>
                       <td className="px-4 py-3 text-gray-600">{(gr as any).inv_po?.po_no || '-'}</td>
                       <td className="px-4 py-3">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
                           {st.label}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-600">{gr.received_by ? userMap[gr.received_by] || '-' : '-'}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">
+                        <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : ''}>
+                          {grTotalOrdered}/{grTotalReceived}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
                         {gr.dom_shipping_cost != null ? Number(gr.dom_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' บาท' : '-'}
@@ -269,13 +346,16 @@ export default function PurchaseGR() {
       </div>
 
       {/* ── Receive GR Modal ── */}
-      <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
+      <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-6xl">
         <div className="p-6 space-y-5">
-          <h2 className="text-xl font-bold text-gray-900">ตรวจรับสินค้า (GR)</h2>
+          <h2 className="text-xl font-bold text-gray-900">
+            {isFollowUp ? 'รับสินค้าเพิ่ม (Follow-up GR)' : 'ตรวจรับสินค้า (GR)'}
+          </h2>
           {selectedPO && (
-            <div className="bg-orange-50 rounded-lg p-3 text-sm">
-              <span className="font-semibold text-orange-800">PO: {selectedPO.po_no}</span>
-              {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้จัดจำหน่าย: {selectedPO.supplier_name}</span>}
+            <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
+              <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
+              {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
+              {isFollowUp && <span className="ml-3 text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
             </div>
           )}
 
@@ -286,7 +366,10 @@ export default function PurchaseGR() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
-                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวนสั่ง</th>
+                  {isFollowUp && (
+                    <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">รับแล้ว</th>
+                  )}
+                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">{isFollowUp ? 'ค้างรับ' : 'จำนวนสั่ง'}</th>
                   <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-28">จำนวนรับ</th>
                   <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-20">ขาด</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-40">หมายเหตุขาดส่ง</th>
@@ -310,6 +393,9 @@ export default function PurchaseGR() {
                       <td className="px-3 py-2">
                         <div className="font-medium">{item.product_code} - {item.product_name}</div>
                       </td>
+                      {isFollowUp && (
+                        <td className="px-3 py-2 text-right text-blue-600 font-medium">{item.qty_already_received.toLocaleString()}</td>
+                      )}
                       <td className="px-3 py-2 text-right text-gray-600">{Number(item.qty_ordered).toLocaleString()}</td>
                       <td className="px-3 py-2">
                         <input
@@ -345,7 +431,7 @@ export default function PurchaseGR() {
               </tbody>
               <tfoot>
                 <tr className="bg-gray-50 border-t">
-                  <td colSpan={2} className="px-3 py-2.5 text-right font-semibold text-gray-700">รวม</td>
+                  <td colSpan={isFollowUp ? 3 : 2} className="px-3 py-2.5 text-right font-semibold text-gray-700">รวม</td>
                   <td className="px-3 py-2.5 text-right font-medium">{totalOrdered.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-medium">{totalReceived.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-semibold text-red-600">
@@ -402,6 +488,7 @@ export default function PurchaseGR() {
                       step={0.01}
                       value={domCost}
                       onChange={(e) => setDomCost(e.target.value)}
+                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       className="w-full px-3 py-2 border rounded-lg text-sm"
                       placeholder="0.00"
                     />
@@ -424,9 +511,10 @@ export default function PurchaseGR() {
             <textarea
               value={grNote}
               onChange={(e) => setGrNote(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
+              className="w-full px-3 py-2 border rounded-lg text-sm resize-y"
               rows={2}
               placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
+              onFocus={(e) => { if (e.target.rows < 4) e.target.rows = 4 }}
             />
           </div>
 
