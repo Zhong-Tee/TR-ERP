@@ -114,7 +114,7 @@ export default function PurchasePO() {
 
   // GR history for detail modal
   const [grHistory, setGrHistory] = useState<InventoryGR[]>([])
-  const [_grHistoryLoading, _setGrHistoryLoading] = useState(false)
+  // grHistoryLoading state removed (unused)
 
   // Resolution modal
   const [resolveOpen, setResolveOpen] = useState(false)
