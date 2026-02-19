@@ -1513,7 +1513,7 @@ export default function Packing() {
                   {queueItems.map((item) => {
                     const isSuccess = item.status === 'success'
                     const isFailed = item.status === 'failed'
-                    const isPending = item.status === 'pending'
+                    const _isPending = item.status === 'pending'
                     const isUploading = item.status === 'uploading'
                     const cardClass = isSuccess
                       ? 'bg-blue-50 border-blue-200 text-blue-900'
