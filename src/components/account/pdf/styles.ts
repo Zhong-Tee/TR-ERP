@@ -190,7 +190,10 @@ export function formatCurrency(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-/* ─── Company Data ─── */
+/**
+ * @deprecated Use bill_header_settings from DB instead.
+ * Kept as fallback until DB data is confirmed stable.
+ */
 export const companyData: Record<string, {
   name: string
   nameEn?: string

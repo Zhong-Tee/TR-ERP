@@ -41,6 +41,8 @@ type BillingRequestOrder = {
   status: string
   created_at: string
   billing_details: any
+  channel_code: string | null
+  channel_order_no: string | null
 }
 
 /** ดึงชื่อบัญชีผู้โอนจาก easyslip_response (data.sender.account.name.th / .en) */
@@ -159,6 +161,8 @@ export default function Account() {
   const [cashBillModal, setCashBillModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
   /** Modal เปิดใบกำกับภาษี */
   const [taxInvoiceModal, setTaxInvoiceModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
+  const [slipReceiverAccount, setSlipReceiverAccount] = useState<string | null>(null)
+  const [cashBillReceiverAccount, setCashBillReceiverAccount] = useState<string | null>(null)
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
   const [verifiedSlipsLoading, setVerifiedSlipsLoading] = useState(false)
@@ -445,13 +449,13 @@ export default function Account() {
       const [taxRes, cashRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_tax_invoice: true })
           .not('status', 'in', excludeBillingStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_cash_bill: true })
           .not('status', 'in', excludeBillingStatuses)
           .order('created_at', { ascending: false }),
@@ -531,13 +535,13 @@ export default function Account() {
       const [taxRes, cashRes, refundRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_tax_invoice: true })
           .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type')
+          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_cash_bill: true })
           .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
@@ -631,7 +635,18 @@ export default function Account() {
   }
 
   async function confirmTaxInvoice(order: BillingRequestOrder) {
+    setSlipReceiverAccount(null)
     setTaxInvoiceModal({ open: true, order, submitting: false, viewOnly: false })
+    const { data: slips } = await supabase
+      .from('ac_verified_slips')
+      .select('easyslip_receiver_account')
+      .eq('order_id', order.id)
+      .eq('is_deleted', false)
+      .not('easyslip_receiver_account', 'is', null)
+      .limit(1)
+    if (slips && slips.length > 0 && slips[0].easyslip_receiver_account) {
+      setSlipReceiverAccount(slips[0].easyslip_receiver_account)
+    }
   }
 
   /** เปิดใบกำกับภาษีแบบดูอย่างเดียว (จากเมนูรายการอนุมัติ) */
@@ -668,7 +683,18 @@ export default function Account() {
   }
 
   async function confirmCashBill(order: BillingRequestOrder) {
+    setCashBillReceiverAccount(null)
     setCashBillModal({ open: true, order, submitting: false, viewOnly: false })
+    const { data: slips } = await supabase
+      .from('ac_verified_slips')
+      .select('easyslip_receiver_account')
+      .eq('order_id', order.id)
+      .eq('is_deleted', false)
+      .not('easyslip_receiver_account', 'is', null)
+      .limit(1)
+    if (slips && slips.length > 0 && slips[0].easyslip_receiver_account) {
+      setCashBillReceiverAccount(slips[0].easyslip_receiver_account)
+    }
   }
 
   /** เปิดบิลเงินสดแบบดูอย่างเดียว (จากเมนูรายการอนุมัติ) */
@@ -1473,61 +1499,11 @@ export default function Account() {
                           <span className="ml-1 px-1 py-0.5 text-[10px] font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                         )}
                       </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-800">{o.customer_name || '–'}</span>
-                          {o.customer_name && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(o.customer_name || '') }}
-                              className="text-xs text-sky-600 hover:underline"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-700">{bd.tax_customer_name || '–'}</span>
-                          {bd.tax_customer_name && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_name || '') }}
-                              className="text-xs text-sky-600 hover:underline"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-700 tabular-nums">{bd.tax_id || '–'}</span>
-                          {bd.tax_id && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_id || '') }}
-                              className="text-xs text-sky-600 hover:underline"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 text-gray-600 max-w-[160px] text-xs whitespace-pre-wrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-start gap-1.5">
-                          <span className="truncate block" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</span>
-                          {bd.tax_customer_address && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_address || '') }}
-                              className="text-sky-600 hover:underline shrink-0 text-xs"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
+                      <td className="px-3 py-2.5 text-gray-800">{o.customer_name || '–'}</td>
+                      <td className="px-3 py-2.5 text-gray-700">{bd.tax_customer_name || '–'}</td>
+                      <td className="px-3 py-2.5 text-gray-700 tabular-nums">{bd.tax_id || '–'}</td>
+                      <td className="px-3 py-2.5 text-gray-600 max-w-[160px] text-xs whitespace-pre-wrap">
+                        <span className="truncate block" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</span>
                       </td>
                       <td className="px-3 py-2.5 text-gray-700 tabular-nums">
                         ฿{beforeVat ? beforeVat.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
@@ -1580,7 +1556,6 @@ export default function Account() {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบริษัท</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดสุทธิ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
@@ -1603,47 +1578,9 @@ export default function Account() {
                           <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                         )}
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          <span className="text-gray-800">{o.customer_name || '–'}</span>
-                          {o.customer_name && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(o.customer_name || '') }}
-                              className="text-sm text-sky-600 hover:underline"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          <span className="text-gray-700">{bd.tax_customer_name || '–'}</span>
-                          {bd.tax_customer_name && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_name || '') }}
-                              className="text-sm text-sky-600 hover:underline"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-start gap-2">
-                          <span className="truncate block" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</span>
-                          {bd.tax_customer_address && (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); copyToClipboard(bd.tax_customer_address || '') }}
-                              className="text-sky-600 hover:underline shrink-0 text-sm"
-                            >
-                              คัดลอก
-                            </button>
-                          )}
-                        </div>
+                      <td className="px-4 py-3 text-gray-800">{bd.tax_customer_name || o.customer_name || '–'}</td>
+                      <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap">
+                        <span className="truncate block" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</span>
                       </td>
                       <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       <td className="px-4 py-3">
@@ -1822,6 +1759,7 @@ export default function Account() {
         onConfirm={(o, invoiceNo) => submitCashBillConfirm(o as BillingRequestOrder, invoiceNo)}
         submitting={cashBillModal.submitting}
         hideConfirm={cashBillModal.viewOnly}
+        receiverAccount={cashBillReceiverAccount}
       />
 
       {/* Modal เปิดใบกำกับภาษี */}
@@ -1832,6 +1770,7 @@ export default function Account() {
         onConfirm={(o) => submitTaxInvoiceConfirm(o as BillingRequestOrder)}
         submitting={taxInvoiceModal.submitting}
         hideConfirm={taxInvoiceModal.viewOnly}
+        receiverAccount={slipReceiverAccount}
       />
 
       {/* Modal ยืนยัน ขอใบกำกับภาษี (ใช้สำหรับ tax-invoice เท่านั้น) */}

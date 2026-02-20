@@ -704,6 +704,22 @@ export interface VerifiedSlip {
   created_at: string
 }
 
+// Bill Header Settings Types
+export interface BillHeaderSetting {
+  id: string
+  company_key: string
+  bill_code: string | null
+  company_name: string
+  company_name_en: string | null
+  address: string
+  tax_id: string
+  branch: string | null
+  phone: string | null
+  logo_url: string | null
+  created_at: string
+  updated_at: string
+}
+
 // Bank Settings Types
 export interface BankSetting {
   id: string
@@ -712,6 +728,7 @@ export interface BankSetting {
   bank_name: string | null
   account_name: string | null
   is_active: boolean
+  bill_header_id: string | null
   created_at: string
   updated_at: string
   channels?: { channel_code: string; channel_name: string }[]

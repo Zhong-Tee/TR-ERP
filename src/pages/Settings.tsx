@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import type { User, BankSetting, OrderChatLog, IssueType } from '../types'
+import type { User, BankSetting, BillHeaderSetting, OrderChatLog, IssueType } from '../types'
 import { formatDateTime } from '../lib/utils'
 import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
@@ -74,6 +74,28 @@ export default function Settings() {
     is_active: true,
     selectedChannels: [] as string[],
   })
+
+  // Bill header settings state
+  const [bankSubTab, setBankSubTab] = useState<'bank-info' | 'bill-header'>('bank-info')
+  const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
+  const [billHeaderLoading, setBillHeaderLoading] = useState(false)
+  const [showBillHeaderForm, setShowBillHeaderForm] = useState(false)
+  const [editingBillHeader, setEditingBillHeader] = useState<BillHeaderSetting | null>(null)
+  const [billHeaderFormData, setBillHeaderFormData] = useState({
+    company_key: '',
+    bill_code: '',
+    company_name: '',
+    company_name_en: '',
+    address: '',
+    tax_id: '',
+    branch: 'สำนักงานใหญ่',
+    phone: '',
+    logo_url: '',
+    selectedBankIds: [] as string[],
+  })
+  const [billHeaderSaving, setBillHeaderSaving] = useState(false)
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoPreview, setLogoPreview] = useState<string | null>(null)
 
   // ตั้งค่าสินค้า: หมวดหมู่ + ฟิลด์ที่อนุญาตให้กรอก
   const PRODUCT_FIELD_KEYS = [
@@ -151,6 +173,7 @@ export default function Settings() {
     loadUsers()
     loadBankSettings()
     loadChannels()
+    loadBillHeaders()
   }, [])
 
   useEffect(() => {
@@ -389,6 +412,7 @@ export default function Settings() {
     { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
     { key: 'settings-role-settings', label: 'ตั้งค่า Role', group: 'settings' },
     { key: 'settings-banks', label: 'ตั้งค่าข้อมูลธนาคาร', group: 'settings' },
+    { key: 'settings-bill-header', label: 'ตั้งค่าหัวบิล', group: 'settings' },
     { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
     { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
     { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
@@ -1182,6 +1206,166 @@ export default function Settings() {
     }
   }
 
+  /* ─── Bill Header Settings CRUD ─── */
+  async function loadBillHeaders() {
+    setBillHeaderLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('bill_header_settings')
+        .select('*')
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      setBillHeaders(data || [])
+    } catch (error: any) {
+      console.error('Error loading bill headers:', error)
+    } finally {
+      setBillHeaderLoading(false)
+    }
+  }
+
+  async function openBillHeaderForm(header?: BillHeaderSetting) {
+    if (header) {
+      setEditingBillHeader(header)
+      const { data: linkedBanks } = await supabase
+        .from('bank_settings')
+        .select('id')
+        .eq('bill_header_id', header.id)
+      setBillHeaderFormData({
+        company_key: header.company_key,
+        bill_code: header.bill_code || '',
+        company_name: header.company_name,
+        company_name_en: header.company_name_en || '',
+        address: header.address,
+        tax_id: header.tax_id,
+        branch: header.branch || 'สำนักงานใหญ่',
+        phone: header.phone || '',
+        logo_url: header.logo_url || '',
+        selectedBankIds: (linkedBanks || []).map((b: any) => b.id),
+      })
+      setLogoPreview(header.logo_url || null)
+    } else {
+      setEditingBillHeader(null)
+      setBillHeaderFormData({
+        company_key: '',
+        bill_code: '',
+        company_name: '',
+        company_name_en: '',
+        address: '',
+        tax_id: '',
+        branch: 'สำนักงานใหญ่',
+        phone: '',
+        logo_url: '',
+        selectedBankIds: [],
+      })
+      setLogoPreview(null)
+    }
+    setLogoFile(null)
+    setShowBillHeaderForm(true)
+  }
+
+  function closeBillHeaderForm() {
+    setShowBillHeaderForm(false)
+    setEditingBillHeader(null)
+    setLogoFile(null)
+    setLogoPreview(null)
+  }
+
+  async function saveBillHeader() {
+    if (!billHeaderFormData.company_name || !billHeaderFormData.address || !billHeaderFormData.tax_id) {
+      showMessage({ message: 'กรุณากรอกชื่อบริษัท ที่อยู่ และเลขผู้เสียภาษี' })
+      return
+    }
+    if (!billHeaderFormData.company_key) {
+      showMessage({ message: 'กรุณากรอกรหัสบริษัท (company key)' })
+      return
+    }
+    setBillHeaderSaving(true)
+    try {
+      let logoUrl = billHeaderFormData.logo_url
+      if (logoFile) {
+        const ext = logoFile.name.split('.').pop() || 'png'
+        const filePath = `${billHeaderFormData.company_key}_${Date.now()}.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('bill-logos')
+          .upload(filePath, logoFile, { upsert: true })
+        if (uploadError) throw uploadError
+        const { data: urlData } = supabase.storage.from('bill-logos').getPublicUrl(filePath)
+        logoUrl = urlData.publicUrl
+      }
+
+      const payload = {
+        company_key: billHeaderFormData.company_key,
+        bill_code: billHeaderFormData.bill_code || null,
+        company_name: billHeaderFormData.company_name,
+        company_name_en: billHeaderFormData.company_name_en || null,
+        address: billHeaderFormData.address,
+        tax_id: billHeaderFormData.tax_id,
+        branch: billHeaderFormData.branch || null,
+        phone: billHeaderFormData.phone || null,
+        logo_url: logoUrl || null,
+        updated_at: new Date().toISOString(),
+      }
+
+      let headerId: string
+      if (editingBillHeader) {
+        const { error } = await supabase
+          .from('bill_header_settings')
+          .update(payload)
+          .eq('id', editingBillHeader.id)
+        if (error) throw error
+        headerId = editingBillHeader.id
+      } else {
+        const { data, error } = await supabase
+          .from('bill_header_settings')
+          .insert(payload)
+          .select()
+          .single()
+        if (error) throw error
+        headerId = data.id
+      }
+
+      // Unlink old banks from this header
+      await supabase
+        .from('bank_settings')
+        .update({ bill_header_id: null })
+        .eq('bill_header_id', headerId)
+
+      // Link selected banks
+      if (billHeaderFormData.selectedBankIds.length > 0) {
+        await supabase
+          .from('bank_settings')
+          .update({ bill_header_id: headerId })
+          .in('id', billHeaderFormData.selectedBankIds)
+      }
+
+      showMessage({ title: 'สำเร็จ', message: editingBillHeader ? 'อัปเดตหัวบิลสำเร็จ' : 'เพิ่มหัวบิลสำเร็จ' })
+      closeBillHeaderForm()
+      loadBillHeaders()
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error saving bill header:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setBillHeaderSaving(false)
+    }
+  }
+
+  async function deleteBillHeader(id: string) {
+    const ok = await showConfirm({ title: 'ลบหัวบิล', message: 'ต้องการลบหัวบิลนี้หรือไม่?' })
+    if (!ok) return
+    try {
+      await supabase.from('bank_settings').update({ bill_header_id: null }).eq('bill_header_id', id)
+      const { error } = await supabase.from('bill_header_settings').delete().eq('id', id)
+      if (error) throw error
+      showMessage({ title: 'สำเร็จ', message: 'ลบหัวบิลสำเร็จ' })
+      loadBillHeaders()
+      loadBankSettings()
+    } catch (error: any) {
+      console.error('Error deleting bill header:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
   // @ts-ignore TS6133 - kept for future use
   async function fixOrderStatuses() {
     const ok = await showConfirm({ title: 'แก้ไขสถานะบิล', message: 'ต้องการตรวจสอบและแก้ไขสถานะบิลทั้งหมดให้ถูกต้องตามข้อมูลในตารางหรือไม่?\n\nการดำเนินการนี้อาจใช้เวลาสักครู่' })
@@ -1727,6 +1911,26 @@ export default function Settings() {
       {/* Bank Settings Tab */}
       {activeTab === 'banks' && hasAccess('settings-banks') && (
         <div className="space-y-6">
+          {/* Sub-tab navigation */}
+          <div className="flex gap-2 border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setBankSubTab('bank-info')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${bankSubTab === 'bank-info' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ข้อมูลธนาคาร
+            </button>
+            <button
+              type="button"
+              onClick={() => setBankSubTab('bill-header')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${bankSubTab === 'bill-header' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ตั้งค่าหัวบิล
+            </button>
+          </div>
+
+          {/* Sub-tab: ข้อมูลธนาคาร */}
+          {bankSubTab === 'bank-info' && (<>
           <div className="bg-white p-6 rounded-lg shadow">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold">ข้อมูลธนาคารสำหรับตรวจสลิป</h2>
@@ -1959,6 +2163,250 @@ export default function Settings() {
                   </button>
                   <button
                     onClick={closeBankForm}
+                    className="flex-1 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
+                  >
+                    ยกเลิก
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+          </>)}
+
+          {/* Sub-tab: ตั้งค่าหัวบิล */}
+          {bankSubTab === 'bill-header' && (
+          <div className="bg-white p-6 rounded-lg shadow">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold">ตั้งค่าหัวบิล</h2>
+              <button
+                onClick={() => openBillHeaderForm()}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+              >
+                + เพิ่มบริษัท
+              </button>
+            </div>
+
+            {billHeaderLoading ? (
+              <div className="flex justify-center py-12">
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+              </div>
+            ) : billHeaders.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">ไม่พบข้อมูลหัวบิล</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="bg-blue-600 text-white">
+                      <th className="p-3 text-left font-semibold rounded-tl-xl w-16">โลโก้</th>
+                      <th className="p-3 text-left font-semibold">ชื่อบริษัท</th>
+                      <th className="p-3 text-left font-semibold">รหัสบิล</th>
+                      <th className="p-3 text-left font-semibold">เลขผู้เสียภาษี</th>
+                      <th className="p-3 text-left font-semibold">บัญชีธนาคารที่ผูก</th>
+                      <th className="p-3 text-left font-semibold rounded-tr-xl">การจัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {billHeaders.map((h, idx) => {
+                      const linkedBanks = bankSettings.filter(b => b.bill_header_id === h.id)
+                      return (
+                        <tr key={h.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                          <td className="p-3">
+                            {h.logo_url ? (
+                              <img src={h.logo_url} alt="logo" className="w-10 h-10 object-contain rounded" />
+                            ) : (
+                              <div className="w-10 h-10 bg-gray-100 rounded flex items-center justify-center text-gray-400 text-xs">N/A</div>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <div className="font-semibold text-sm">{h.company_name}</div>
+                            {h.company_name_en && <div className="text-xs text-gray-500">{h.company_name_en}</div>}
+                            <div className="text-xs text-gray-400 mt-0.5">{h.address}</div>
+                          </td>
+                          <td className="p-3 text-sm font-mono font-semibold text-blue-700">{h.bill_code || '-'}</td>
+                          <td className="p-3 text-sm">{h.tax_id}</td>
+                          <td className="p-3">
+                            {linkedBanks.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {linkedBanks.map(b => (
+                                  <span key={b.id} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                                    {b.account_name || b.account_number}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400 text-sm">-</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <button onClick={() => openBillHeaderForm(h)} className="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm mr-2">แก้ไข</button>
+                            <button onClick={() => deleteBillHeader(h.id)} className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm">ลบ</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          )}
+
+          {/* Bill Header Form Modal */}
+          {showBillHeaderForm && (
+            <Modal
+              open
+              onClose={closeBillHeaderForm}
+              contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
+                <h3 className="text-xl font-bold mb-4">
+                  {editingBillHeader ? 'แก้ไขหัวบิล' : 'เพิ่มหัวบิล'}
+                </h3>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">รหัสบริษัท <span className="text-red-500">*</span></label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.company_key}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_key: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เช่น tr, odf"
+                        disabled={!!editingBillHeader}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">รหัสบิล</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.bill_code}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, bill_code: e.target.value.toUpperCase() })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เช่น TR, ODF"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">ใช้นำหน้าเลขบิล เช่น TRIV...</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">เลขผู้เสียภาษี <span className="text-red-500">*</span></label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.tax_id}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, tax_id: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="เลขผู้เสียภาษี 13 หลัก"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ชื่อบริษัท (ไทย) <span className="text-red-500">*</span></label>
+                    <input
+                      type="text"
+                      value={billHeaderFormData.company_name}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_name: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="ชื่อบริษัทภาษาไทย"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ชื่อบริษัท (อังกฤษ)</label>
+                    <input
+                      type="text"
+                      value={billHeaderFormData.company_name_en}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, company_name_en: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      placeholder="Company name in English"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">ที่อยู่ <span className="text-red-500">*</span></label>
+                    <textarea
+                      value={billHeaderFormData.address}
+                      onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, address: e.target.value })}
+                      className="w-full px-3 py-2 border rounded-lg"
+                      rows={2}
+                      placeholder="ที่อยู่เต็มรูปแบบ"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">สาขา</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.branch}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, branch: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="สำนักงานใหญ่"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">เบอร์โทร</label>
+                      <input
+                        type="text"
+                        value={billHeaderFormData.phone}
+                        onChange={(e) => setBillHeaderFormData({ ...billHeaderFormData, phone: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="0XX-XXX-XXXX"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">โลโก้</label>
+                    <div className="flex items-center gap-4">
+                      {(logoPreview || billHeaderFormData.logo_url) && (
+                        <img src={logoPreview || billHeaderFormData.logo_url} alt="logo preview" className="w-16 h-16 object-contain border rounded" />
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) {
+                            setLogoFile(file)
+                            setLogoPreview(URL.createObjectURL(file))
+                          }
+                        }}
+                        className="text-sm"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">บัญชีธนาคารที่ผูก</label>
+                    <div className="max-h-40 overflow-y-auto border rounded-lg p-3 space-y-2">
+                      {bankSettings.length === 0 ? (
+                        <p className="text-gray-500 text-sm">ไม่มีบัญชีธนาคาร</p>
+                      ) : bankSettings.map((bank) => (
+                        <label key={bank.id} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={billHeaderFormData.selectedBankIds.includes(bank.id)}
+                            onChange={(e) => {
+                              const ids = [...billHeaderFormData.selectedBankIds]
+                              if (e.target.checked) {
+                                ids.push(bank.id)
+                              } else {
+                                const i = ids.indexOf(bank.id)
+                                if (i >= 0) ids.splice(i, 1)
+                              }
+                              setBillHeaderFormData({ ...billHeaderFormData, selectedBankIds: ids })
+                            }}
+                          />
+                          <span className="text-sm">{bank.account_name || bank.bank_name || bank.bank_code} ({bank.account_number})</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">เลือกบัญชีธนาคารที่ลูกค้าโอนเงินเข้า เพื่อผูกกับหัวบิลนี้</p>
+                  </div>
+                </div>
+                <div className="flex gap-4 mt-6">
+                  <button
+                    onClick={saveBillHeader}
+                    disabled={billHeaderSaving}
+                    className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    {billHeaderSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+                  </button>
+                  <button
+                    onClick={closeBillHeaderForm}
                     className="flex-1 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
                   >
                     ยกเลิก

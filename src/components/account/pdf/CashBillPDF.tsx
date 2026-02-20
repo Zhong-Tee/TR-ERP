@@ -1,6 +1,7 @@
-import { Document, Page, View, Text, StyleSheet } from '@react-pdf/renderer'
+import { Document, Page, View, Text, Image, StyleSheet } from '@react-pdf/renderer'
 import './fontConfig'
-import { mm, bahtText, formatCurrency, companyData } from './styles'
+import { mm, bahtText, formatCurrency } from './styles'
+import type { BillHeaderSetting } from '../../../types'
 
 /* ─── Bright blue color palette for Cash Bill ─── */
 const cbColors = {
@@ -26,7 +27,7 @@ export interface CashBillItem {
 }
 
 export interface CashBillPDFProps {
-  company: 'tr' | 'odf'
+  companyData: BillHeaderSetting
   invoiceNo: string
   refNo: string
   invoiceDate: string
@@ -61,10 +62,7 @@ const s = StyleSheet.create({
     marginBottom: mm(2),
   },
   companyBox: {
-    borderWidth: 0.5,
-    borderColor: cbColors.black,
     width: mm(70),
-    height: mm(32),
     padding: mm(2),
     justifyContent: 'center',
   },
@@ -150,49 +148,54 @@ const s = StyleSheet.create({
   /* Table */
   table: {
     width: '100%',
-    borderWidth: 0.5,
-    borderColor: cbColors.darkGray,
+    borderWidth: 1,
+    borderColor: cbColors.black,
   },
   tableHeaderRow: {
     flexDirection: 'row',
     backgroundColor: cbColors.brightBlue,
-    minHeight: 22,
-    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: cbColors.black,
   },
-  tableHeaderCell: {
-    color: cbColors.tableHeaderText,
+  thCell: {
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    borderRightWidth: 1,
+    borderRightColor: cbColors.black,
+  },
+  thCellLast: {
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+  },
+  thText: {
+    color: cbColors.white,
     fontSize: 8.5,
     fontWeight: 'bold',
     textAlign: 'center',
-    paddingVertical: 3,
-    paddingHorizontal: 2,
   },
-  tableBodyRow: {
+  tbRow: {
     flexDirection: 'row',
     minHeight: 18,
-    alignItems: 'center',
-    borderTopWidth: 0.3,
-    borderTopColor: '#ddd',
   },
-  tableBodyRowAlt: {
-    flexDirection: 'row',
-    minHeight: 18,
-    alignItems: 'center',
-    borderTopWidth: 0.3,
-    borderTopColor: '#ddd',
-    backgroundColor: cbColors.tableStripeBg,
-  },
-  tableCell: {
-    fontSize: 8.5,
+  tdCell: {
     paddingVertical: 2,
     paddingHorizontal: 3,
+    borderRightWidth: 1,
+    borderRightColor: cbColors.black,
+  },
+  tdCellLast: {
+    paddingVertical: 2,
+    paddingHorizontal: 3,
+  },
+  tdText: {
+    fontSize: 8.5,
   },
   tableFooterRow: {
     flexDirection: 'row',
     minHeight: 22,
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: cbColors.brightBlue,
+    borderTopColor: cbColors.black,
     backgroundColor: cbColors.summaryBg,
   },
   tableFooterCell: {
@@ -203,7 +206,8 @@ const s = StyleSheet.create({
   },
 
   /* Column widths */
-  colDesc: { width: '55%' },
+  colNo: { width: '8%' },
+  colDesc: { width: '47%' },
   colQty: { width: '15%' },
   colPrice: { width: '15%' },
   colAmount: { width: '15%' },
@@ -240,7 +244,7 @@ const Z = '\u200B'
 /* ─── Component ─── */
 export default function CashBillPDF(props: CashBillPDFProps) {
   const {
-    company,
+    companyData: comp,
     invoiceNo,
     refNo,
     invoiceDate,
@@ -250,8 +254,6 @@ export default function CashBillPDF(props: CashBillPDFProps) {
     items,
     grandTotal,
   } = props
-
-  const comp = companyData[company]
 
   /* Fill items to TOTAL_ROWS */
   const filledItems: CashBillItem[] = [...items]
@@ -275,9 +277,16 @@ export default function CashBillPDF(props: CashBillPDFProps) {
         <View style={s.header}>
           {/* Company Stamp */}
           <View style={s.companyBox}>
-            <Text style={s.companyName}>{comp.name + Z}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: mm(2), marginBottom: 2 }}>
+              {comp.logo_url && (
+                <Image src={comp.logo_url} style={{ width: mm(12), height: mm(12), objectFit: 'contain' as const }} />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={s.companyName}>{comp.company_name + Z}</Text>
+              </View>
+            </View>
             <Text style={s.companyDetail}>{comp.address + Z}</Text>
-            <Text style={s.companyDetail}>{'เบอร์โทร: ' + comp.phone + Z}</Text>
+            <Text style={s.companyDetail}>{'เบอร์โทร: ' + (comp.phone || '') + Z}</Text>
           </View>
 
           {/* Title + Bill Numbers */}
@@ -322,44 +331,34 @@ export default function CashBillPDF(props: CashBillPDFProps) {
         <View style={s.table}>
           {/* Header */}
           <View style={s.tableHeaderRow}>
-            <Text style={[s.tableHeaderCell, s.colDesc]}>{'รายการ / DESCRIPTION' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colQty]}>{'จำนวน' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colPrice]}>{'หน่วยละ' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colAmount]}>{'จำนวนเงิน' + Z}</Text>
+            <View style={[s.thCell, s.colNo]}><Text style={s.thText}>{'ลำดับ' + Z}</Text></View>
+            <View style={[s.thCell, s.colDesc]}><Text style={s.thText}>{'รายการ / DESCRIPTION' + Z}</Text></View>
+            <View style={[s.thCell, s.colQty]}><Text style={s.thText}>{'จำนวน' + Z}</Text></View>
+            <View style={[s.thCell, s.colPrice]}><Text style={s.thText}>{'หน่วยละ' + Z}</Text></View>
+            <View style={[s.thCellLast, s.colAmount]}><Text style={s.thText}>{'จำนวนเงิน' + Z}</Text></View>
           </View>
 
           {/* Body */}
           {filledItems.map((row, idx) => {
             const lineTotal = (row.qty || 0) * (row.price || 0)
-            const rowStyle = idx % 2 === 1 ? s.tableBodyRowAlt : s.tableBodyRow
+            const hasData = row.desc && row.qty > 0
             return (
-              <View key={idx} style={rowStyle}>
-                <Text style={[s.tableCell, s.colDesc, { paddingLeft: mm(4) }]}>
-                  {(row.desc || ' ') + Z}
-                </Text>
-                <Text style={[s.tableCell, s.colQty, { textAlign: 'center' }]}>
-                  {row.qty > 0 ? row.qty.toString() : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colPrice, { textAlign: 'center' }]}>
-                  {row.price > 0 ? formatCurrency(row.price) : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colAmount, { textAlign: 'right', paddingRight: mm(2) }]}>
-                  {lineTotal > 0 ? formatCurrency(lineTotal) : ' '}
-                </Text>
+              <View key={idx} style={s.tbRow}>
+                <View style={[s.tdCell, s.colNo]}><Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? String(idx + 1) : ' '}</Text></View>
+                <View style={[s.tdCell, s.colDesc]}><Text style={[s.tdText, { paddingLeft: mm(2) }]}>{(row.desc || ' ') + Z}</Text></View>
+                <View style={[s.tdCell, s.colQty]}><Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? row.qty.toString() : ' '}</Text></View>
+                <View style={[s.tdCell, s.colPrice]}><Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? formatCurrency(row.price) : ' '}</Text></View>
+                <View style={[s.tdCellLast, s.colAmount]}><Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? formatCurrency(lineTotal) : ' '}</Text></View>
               </View>
             )
           })}
 
           {/* Footer */}
           <View style={s.tableFooterRow}>
-            <Text style={[s.tableFooterCell, { width: '55%', textAlign: 'center', fontSize: 9 }]}>
-              {bahtText(grandTotal) + Z}
-            </Text>
-            <Text style={[s.tableFooterCell, { width: '15%' }]}> </Text>
-            <Text style={[s.tableFooterCell, { width: '15%', textAlign: 'center' }]}>{'รวมเงิน' + Z}</Text>
-            <Text style={[s.tableFooterCell, { width: '15%', textAlign: 'right', paddingRight: mm(2) }]}>
-              {grandTotal > 0 ? formatCurrency(grandTotal) : '0.00'}
-            </Text>
+            <View style={[s.tdCell, { width: '55%' }]}><Text style={[s.tableFooterCell, { textAlign: 'center' }]}>{bahtText(grandTotal) + Z}</Text></View>
+            <View style={[s.tdCell, { width: '15%' }]}><Text style={s.tableFooterCell}> </Text></View>
+            <View style={[s.tdCell, { width: '15%' }]}><Text style={[s.tableFooterCell, { textAlign: 'center' }]}>{'รวมเงิน' + Z}</Text></View>
+            <View style={[s.tdCellLast, { width: '15%' }]}><Text style={[s.tableFooterCell, { textAlign: 'center' }]}>{grandTotal > 0 ? formatCurrency(grandTotal) : '0.00'}</Text></View>
           </View>
         </View>
 

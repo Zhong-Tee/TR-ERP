@@ -1,6 +1,7 @@
-import { Document, Page, View, Text, StyleSheet } from '@react-pdf/renderer'
+import { Document, Page, View, Text, Image, StyleSheet } from '@react-pdf/renderer'
 import './fontConfig'
-import { mm, colors, bahtText, formatCurrency, companyData } from './styles'
+import { mm, colors, bahtText, formatCurrency } from './styles'
+import type { BillHeaderSetting } from '../../../types'
 
 /* ─── Types ─── */
 export interface TaxInvoiceItem {
@@ -11,27 +12,29 @@ export interface TaxInvoiceItem {
 }
 
 export interface TaxInvoicePDFProps {
-  company: 'tr' | 'odf'
+  companyData: BillHeaderSetting
   invoiceNo: string
   invoiceDate: string
-  dueDate?: string
-  paymentTerms?: string
+  orderNo?: string
   customerName: string
   customerAddress: string
   customerTaxId: string
   customerBranch?: string
   customerPhone?: string
-  customerEmail?: string
   items: TaxInvoiceItem[]
+  discount: number
   subtotal: number
+  netAmount: number
   vatRate: number
   vatAmount: number
   grandTotal: number
-  refBillNo?: string
+  refDocNo?: string
+  refDocDate?: string
   isCopy?: boolean
 }
 
-const TOTAL_ROWS = 10
+const TOTAL_ROWS = 18
+const BLUE = '#2980b9'
 
 /* ─── Styles ─── */
 const s = StyleSheet.create({
@@ -48,51 +51,63 @@ const s = StyleSheet.create({
     flexDirection: 'column',
   },
 
-  /* ─── Header / Title ─── */
+  /* Header */
   headerSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: mm(4),
   },
+  logoAndInfo: {
+    flexDirection: 'row',
+    width: '60%',
+    alignItems: 'flex-start',
+    gap: mm(3),
+  },
+  logo: {
+    width: mm(20),
+    height: mm(20),
+    objectFit: 'contain' as const,
+  },
   sellerBlock: {
-    width: '58%',
+    flex: 1,
   },
   sellerName: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 'bold',
     color: colors.accentDark,
-    marginBottom: 2,
+    marginBottom: 1,
   },
   sellerNameEn: {
-    fontSize: 9,
+    fontSize: 8,
     color: colors.mediumGray,
     marginBottom: 3,
   },
   sellerDetail: {
-    fontSize: 9,
-    lineHeight: 1.5,
+    fontSize: 8,
+    lineHeight: 1.8,
     color: colors.darkGray,
+    marginBottom: 1,
   },
   titleBlock: {
-    width: '40%',
+    width: '38%',
     alignItems: 'flex-end',
   },
   docTypeBadge: {
-    backgroundColor: colors.tableHeaderBg,
-    paddingHorizontal: mm(6),
+    backgroundColor: BLUE,
+    paddingHorizontal: mm(5),
     paddingVertical: mm(2),
     borderRadius: 3,
-    marginBottom: mm(2),
+    marginBottom: mm(1),
   },
   docTypeText: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: 'bold',
     color: colors.white,
     textAlign: 'center',
   },
   docTypeSubText: {
-    fontSize: 9,
+    fontSize: 8,
     color: colors.white,
     textAlign: 'center',
   },
@@ -101,142 +116,148 @@ const s = StyleSheet.create({
     color: colors.accent,
     fontWeight: 'bold',
     textAlign: 'right',
-    marginBottom: 3,
+    marginBottom: 2,
   },
-
-  /* ─── Document Info ─── */
-  docInfoSection: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginBottom: mm(3),
+  orderNoBlock: {
+    marginTop: mm(1),
+    alignItems: 'flex-end',
   },
-  docInfoTable: {
-    width: mm(75),
+  orderNoLabel: {
+    fontSize: 8,
+    color: colors.mediumGray,
   },
-  docInfoRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 0.3,
-    borderBottomColor: colors.border,
-    paddingVertical: 3,
-  },
-  docInfoLabel: {
-    fontSize: 9,
+  orderNoValue: {
+    fontSize: 10,
     fontWeight: 'bold',
-    width: mm(28),
-    color: colors.darkGray,
-  },
-  docInfoValue: {
-    fontSize: 9,
-    flex: 1,
-    textAlign: 'right',
   },
 
-  /* ─── Buyer Info ─── */
+  /* Document Info + Buyer side by side */
+  infoSection: {
+    flexDirection: 'row',
+    marginBottom: mm(3),
+    gap: mm(3),
+  },
   buyerSection: {
+    flex: 1,
     borderWidth: 0.5,
     borderColor: colors.border,
     borderRadius: 3,
     padding: mm(3),
-    marginBottom: mm(4),
     backgroundColor: '#fcfcfc',
   },
-  buyerTitle: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: colors.accent,
-    marginBottom: 4,
-  },
-  buyerGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  buyerRow: {
-    flexDirection: 'row',
-    width: '100%',
-    marginBottom: 3,
-  },
-  buyerHalfRow: {
-    flexDirection: 'row',
-    width: '50%',
-    marginBottom: 3,
-  },
-  buyerLabel: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    width: mm(24),
-    color: colors.mediumGray,
-  },
-  buyerHalfLabel: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    width: mm(20),
-    color: colors.mediumGray,
-  },
-  buyerValue: {
-    fontSize: 9,
-    flex: 1,
-  },
-
-  /* ─── Items Table ─── */
-  table: {
-    width: '100%',
+  docInfoBox: {
+    width: mm(65),
     borderWidth: 0.5,
     borderColor: colors.border,
-    borderRadius: 2,
-    overflow: 'hidden',
+    borderRadius: 3,
+    padding: mm(3),
+    backgroundColor: '#fcfcfc',
+  },
+  docInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+    borderBottomWidth: 0.3,
+    borderBottomColor: colors.border,
+  },
+  docInfoLabel: {
+    fontSize: 8,
+    fontWeight: 'bold',
+    color: colors.mediumGray,
+  },
+  docInfoValue: {
+    fontSize: 8,
+    textAlign: 'right',
+  },
+
+  /* Ref Doc */
+  refDocSection: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: mm(3),
+  },
+  refDocTable: {
+    width: mm(65),
+  },
+  refDocRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+    borderBottomWidth: 0.3,
+    borderBottomColor: colors.border,
+  },
+  refDocLabel: {
+    fontSize: 8,
+    fontWeight: 'bold',
+    color: colors.mediumGray,
+  },
+  refDocValue: {
+    fontSize: 8,
+    textAlign: 'right',
+  },
+
+  /* Items Table */
+  table: {
+    width: '100%',
+    borderWidth: 1,
+    borderColor: colors.black,
     marginBottom: mm(3),
   },
   tableHeaderRow: {
     flexDirection: 'row',
-    backgroundColor: colors.tableHeaderBg,
-    minHeight: 26,
-    alignItems: 'center',
+    backgroundColor: BLUE,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.black,
   },
-  tableHeaderCell: {
-    color: colors.tableHeaderText,
-    fontSize: 9,
-    fontWeight: 'bold',
-    textAlign: 'center',
+  thCell: {
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    borderRightWidth: 1,
+    borderRightColor: colors.black,
+  },
+  thCellLast: {
     paddingVertical: 5,
     paddingHorizontal: 3,
   },
-  tableBodyRow: {
-    flexDirection: 'row',
-    minHeight: 22,
-    alignItems: 'center',
-    borderTopWidth: 0.3,
-    borderTopColor: '#eee',
+  thText: {
+    color: colors.white,
+    fontSize: 8,
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
-  tableBodyRowAlt: {
+  tbRow: {
     flexDirection: 'row',
-    minHeight: 22,
-    alignItems: 'center',
-    borderTopWidth: 0.3,
-    borderTopColor: '#eee',
-    backgroundColor: '#f8f9fa',
+    minHeight: 18,
   },
-  tableCell: {
-    fontSize: 9,
-    paddingVertical: 3,
+  tdCell: {
+    paddingVertical: 2,
     paddingHorizontal: 4,
+    borderRightWidth: 1,
+    borderRightColor: colors.black,
+  },
+  tdCellLast: {
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+  },
+  tdText: {
+    fontSize: 8,
   },
 
   /* Column widths */
-  colNo: { width: '7%' },
-  colDesc: { width: '43%' },
+  colNo: { width: '8%' },
+  colDesc: { width: '42%' },
+  colUnit: { width: '18%' },
   colQty: { width: '12%' },
-  colUnit: { width: '13%' },
-  colAmount: { width: '13%' },
-  colVat: { width: '12%' },
+  colAmount: { width: '20%' },
 
-  /* ─── Summary ─── */
+  /* Summary */
   summarySection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: mm(5),
   },
   bahtTextBox: {
-    width: '55%',
+    width: '50%',
     borderWidth: 0.5,
     borderColor: colors.border,
     borderRadius: 3,
@@ -250,134 +271,83 @@ const s = StyleSheet.create({
     marginBottom: 2,
   },
   bahtTextValue: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 'bold',
     color: colors.accentDark,
   },
   summaryTable: {
-    width: '40%',
+    width: '45%',
   },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 3,
+    paddingVertical: 2.5,
     borderBottomWidth: 0.3,
     borderBottomColor: colors.border,
   },
   summaryLabel: {
-    fontSize: 9,
+    fontSize: 8,
     color: colors.darkGray,
   },
   summaryValue: {
-    fontSize: 9,
+    fontSize: 8,
     textAlign: 'right',
     fontWeight: 'bold',
   },
   grandTotalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 5,
-    backgroundColor: colors.tableHeaderBg,
+    paddingVertical: 4,
+    backgroundColor: BLUE,
     paddingHorizontal: mm(2),
     borderRadius: 2,
     marginTop: 2,
   },
   grandTotalLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 'bold',
     color: colors.white,
   },
   grandTotalValue: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 'bold',
     color: colors.white,
     textAlign: 'right',
   },
 
-  /* ─── Signature ─── */
-  signatureSection: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 'auto' as const,
-    paddingTop: mm(8),
-  },
-  signatureBlock: {
-    alignItems: 'center',
-    width: '35%',
-  },
-  signatureLine: {
-    width: '90%',
-    borderTopWidth: 0.5,
-    borderTopColor: colors.black,
-    borderTopStyle: 'dashed' as const,
-    marginTop: 28,
-    paddingTop: 4,
-  },
-  signatureLabel: {
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: colors.darkGray,
-    textAlign: 'center',
-  },
-  signatureSub: {
-    fontSize: 8,
-    color: colors.lightGray,
-    textAlign: 'center',
-  },
-
-  /* ─── Footer ─── */
-  pageFooter: {
-    position: 'absolute',
-    bottom: mm(5),
-    left: mm(15),
-    right: mm(15),
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    borderTopWidth: 0.5,
-    borderTopColor: colors.border,
-    paddingTop: 4,
-  },
-  footerText: {
-    fontSize: 7,
-    color: colors.lightGray,
-  },
 })
 
-/** Zero-width space — appended to Thai text to prevent last-char clipping in @react-pdf */
 const Z = '\u200B'
 
 /* ─── Component ─── */
 export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
   const {
-    company,
+    companyData: comp,
     invoiceNo,
     invoiceDate,
-    dueDate,
-    paymentTerms,
+    orderNo,
     customerName,
     customerAddress,
     customerTaxId,
     customerBranch,
     customerPhone,
-    customerEmail,
     items,
+    discount,
     subtotal,
+    netAmount,
     vatRate,
     vatAmount,
     grandTotal,
-    refBillNo,
+    refDocNo,
+    refDocDate,
     isCopy = false,
   } = props
 
-  const comp = companyData[company]
-
-  /* Fill items to TOTAL_ROWS */
   const filledItems: TaxInvoiceItem[] = [...items]
   while (filledItems.length < TOTAL_ROWS) {
     filledItems.push({ description: '', quantity: 0, unitPrice: 0, amount: 0 })
   }
 
-  /* Format date */
   const fmtDate = (d?: string) =>
     d
       ? new Date(d).toLocaleDateString('th-TH', {
@@ -392,90 +362,84 @@ export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
       <Page size="A4" style={s.page}>
         {/* ─── Header ─── */}
         <View style={s.headerSection}>
-          {/* Seller Info */}
-          <View style={s.sellerBlock}>
-            <Text style={s.sellerName}>{comp.name + Z}</Text>
-            {comp.nameEn && <Text style={s.sellerNameEn}>{comp.nameEn + Z}</Text>}
-            <Text style={s.sellerDetail}>{comp.address + Z}</Text>
-            <Text style={s.sellerDetail}>{'เลขประจำตัวผู้เสียภาษี: ' + comp.taxId + Z}</Text>
-            <Text style={s.sellerDetail}>
-              {comp.branch + ' | โทร: ' + comp.phone + Z}
-            </Text>
+          <View style={s.logoAndInfo}>
+            {comp.logo_url && (
+              <Image src={comp.logo_url} style={s.logo} />
+            )}
+            <View style={s.sellerBlock}>
+              <Text style={s.sellerName}>{comp.company_name + Z}</Text>
+              {comp.company_name_en && <Text style={s.sellerNameEn}>{comp.company_name_en + Z}</Text>}
+              <Text style={s.sellerDetail}>{comp.address + Z}</Text>
+              <Text style={s.sellerDetail}>{'เลขประจำตัวผู้เสียภาษีอากร ' + comp.tax_id + (comp.branch ? ' (' + comp.branch + ') ' : ' ') + Z}</Text>
+              {comp.phone && <Text style={s.sellerDetail}>{'โทร: ' + comp.phone + Z}</Text>}
+            </View>
           </View>
 
-          {/* Document Type Badge */}
           <View style={s.titleBlock}>
             <View style={s.docTypeBadge}>
-              <Text style={s.docTypeText}>{'ใบกำกับภาษี' + Z}</Text>
-              <Text style={s.docTypeSubText}>{'TAX INVOICE' + Z}</Text>
+              <Text style={s.docTypeText}>{'ใบเสร็จรับเงิน/ใบกำกับภาษี' + Z}</Text>
+              <Text style={s.docTypeSubText}>{'Receipt/Tax Invoice' + Z}</Text>
             </View>
             {isCopy && <Text style={s.copyBadge}>{'สำเนา / COPY' + Z}</Text>}
             {!isCopy && <Text style={s.copyBadge}>{'ต้นฉบับ / ORIGINAL' + Z}</Text>}
+            {orderNo && (
+              <View style={s.orderNoBlock}>
+                <Text style={s.orderNoLabel}>{'ใบสั่งซื้อเลขที่ / ORDER NO.' + Z}</Text>
+                <Text style={s.orderNoValue}>{orderNo + Z}</Text>
+              </View>
+            )}
           </View>
         </View>
 
-        {/* ─── Document Info ─── */}
-        <View style={s.docInfoSection}>
-          <View style={s.docInfoTable}>
+        {/* ─── Buyer Info + Doc Info ─── */}
+        <View style={s.infoSection}>
+          <View style={s.buyerSection}>
+            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
+              <Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.accent }}>{'ผู้ซื้อ / BUYER : ' + Z}</Text>
+              <Text style={{ fontSize: 8, flex: 1 }}>{customerName + Z}</Text>
+            </View>
+            <Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.mediumGray, marginBottom: 2 }}>{'ที่อยู่ / ADDRESS : ' + Z}</Text>
+            <Text style={{ fontSize: 8, lineHeight: 1.6, marginBottom: 4 }}>{customerAddress + Z}</Text>
+            <View style={{ flexDirection: 'row', marginBottom: 4 }}>
+              <View style={{ flexDirection: 'row', width: '50%' }}>
+                <Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.mediumGray }}>{'เลขผู้เสียภาษี : ' + Z}</Text>
+                <Text style={{ fontSize: 8 }}>{(customerTaxId || '-') + Z}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', width: '50%' }}>
+                <Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.mediumGray }}>{'สาขา : ' + Z}</Text>
+                <Text style={{ fontSize: 8 }}>{(customerBranch || 'สำนักงานใหญ่') + Z}</Text>
+              </View>
+            </View>
+            {customerPhone && (
+              <View style={{ flexDirection: 'row' }}>
+                <Text style={{ fontSize: 8, fontWeight: 'bold', color: colors.mediumGray }}>{'โทร : ' + Z}</Text>
+                <Text style={{ fontSize: 8 }}>{customerPhone + Z}</Text>
+              </View>
+            )}
+          </View>
+
+          <View style={s.docInfoBox}>
             <View style={s.docInfoRow}>
-              <Text style={s.docInfoLabel}>{'เลขที่ / No.' + Z}</Text>
+              <Text style={s.docInfoLabel}>{'เลขที่เอกสาร / NO.' + Z}</Text>
               <Text style={s.docInfoValue}>{invoiceNo + Z}</Text>
             </View>
             <View style={s.docInfoRow}>
-              <Text style={s.docInfoLabel}>{'วันที่ / Date' + Z}</Text>
+              <Text style={s.docInfoLabel}>{'วันที่ / DATE' + Z}</Text>
               <Text style={s.docInfoValue}>{fmtDate(invoiceDate) + Z}</Text>
             </View>
-            {dueDate && (
-              <View style={s.docInfoRow}>
-                <Text style={s.docInfoLabel}>{'ครบกำหนด / Due' + Z}</Text>
-                <Text style={s.docInfoValue}>{fmtDate(dueDate) + Z}</Text>
-              </View>
-            )}
-            {paymentTerms && (
-              <View style={s.docInfoRow}>
-                <Text style={s.docInfoLabel}>{'เงื่อนไข / Terms' + Z}</Text>
-                <Text style={s.docInfoValue}>{paymentTerms + Z}</Text>
-              </View>
-            )}
-            {refBillNo && (
-              <View style={s.docInfoRow}>
-                <Text style={s.docInfoLabel}>{'อ้างอิง / Ref.' + Z}</Text>
-                <Text style={s.docInfoValue}>{refBillNo + Z}</Text>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {/* ─── Buyer Info ─── */}
-        <View style={s.buyerSection}>
-          <Text style={s.buyerTitle}>{'ข้อมูลผู้ซื้อ / BUYER INFORMATION' + Z}</Text>
-          <View style={s.buyerGrid}>
-            <View style={s.buyerRow}>
-              <Text style={s.buyerLabel}>{'ชื่อ / Name:' + Z}</Text>
-              <Text style={s.buyerValue}>{customerName + Z}</Text>
-            </View>
-            <View style={s.buyerRow}>
-              <Text style={s.buyerLabel}>{'ที่อยู่ / Address:' + Z}</Text>
-              <Text style={s.buyerValue}>{customerAddress + Z}</Text>
-            </View>
-            <View style={s.buyerHalfRow}>
-              <Text style={s.buyerHalfLabel}>{'เลขผู้เสียภาษี:' + Z}</Text>
-              <Text style={s.buyerValue}>{(customerTaxId || '-') + Z}</Text>
-            </View>
-            <View style={s.buyerHalfRow}>
-              <Text style={s.buyerHalfLabel}>{'สาขา:' + Z}</Text>
-              <Text style={s.buyerValue}>{(customerBranch || 'สำนักงานใหญ่') + Z}</Text>
-            </View>
-            {(customerPhone || customerEmail) && (
+            {refDocNo && (
               <>
-                <View style={s.buyerHalfRow}>
-                  <Text style={s.buyerHalfLabel}>{'โทร:' + Z}</Text>
-                  <Text style={s.buyerValue}>{(customerPhone || '-') + Z}</Text>
+                <View style={{ marginTop: mm(2) }} />
+                <View style={s.docInfoRow}>
+                  <Text style={s.docInfoLabel}>{'อ้างอิงเอกสาร / REF. DOC NO.' + Z}</Text>
+                  <Text style={s.docInfoValue}>{refDocNo + Z}</Text>
                 </View>
-                <View style={s.buyerHalfRow}>
-                  <Text style={s.buyerHalfLabel}>{'อีเมล:' + Z}</Text>
-                  <Text style={s.buyerValue}>{(customerEmail || '-') + Z}</Text>
-                </View>
+                {refDocDate && (
+                  <View style={s.docInfoRow}>
+                    <Text style={s.docInfoLabel}>{'วันที่ / DATE' + Z}</Text>
+                    <Text style={s.docInfoValue}>{fmtDate(refDocDate) + Z}</Text>
+                  </View>
+                )}
               </>
             )}
           </View>
@@ -483,41 +447,33 @@ export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
 
         {/* ─── Items Table ─── */}
         <View style={s.table}>
-          {/* Header */}
           <View style={s.tableHeaderRow}>
-            <Text style={[s.tableHeaderCell, s.colNo]}>{'#' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colDesc]}>{'รายละเอียด / Description' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colQty]}>{'จำนวน' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colUnit]}>{'ราคาต่อหน่วย' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colAmount]}>{'จำนวนเงิน' + Z}</Text>
-            <Text style={[s.tableHeaderCell, s.colVat]}>{'ภาษี' + Z}</Text>
+            <View style={[s.thCell, s.colNo]}><Text style={s.thText}>{'ลำดับ\nITEM' + Z}</Text></View>
+            <View style={[s.thCell, s.colDesc]}><Text style={s.thText}>{'รายการ\nDESCRIPTION' + Z}</Text></View>
+            <View style={[s.thCell, s.colUnit]}><Text style={s.thText}>{'ราคาต่อหน่วย\nUNIT PRICE' + Z}</Text></View>
+            <View style={[s.thCell, s.colQty]}><Text style={s.thText}>{'จำนวน\nQUANTITY' + Z}</Text></View>
+            <View style={[s.thCellLast, s.colAmount]}><Text style={s.thText}>{'จำนวนเงิน\nAMOUNT' + Z}</Text></View>
           </View>
 
-          {/* Body */}
           {filledItems.map((row, idx) => {
             const hasData = row.description && row.quantity > 0
-            const rowStyle = idx % 2 === 1 ? s.tableBodyRowAlt : s.tableBodyRow
-            const rowVat = hasData ? (row.amount * vatRate) / 100 : 0
             return (
-              <View key={idx} style={rowStyle}>
-                <Text style={[s.tableCell, s.colNo, { textAlign: 'center' }]}>
-                  {hasData ? (idx + 1).toString() : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colDesc, { paddingLeft: mm(2) }]}>
-                  {(row.description || ' ') + Z}
-                </Text>
-                <Text style={[s.tableCell, s.colQty, { textAlign: 'center' }]}>
-                  {hasData ? row.quantity.toString() : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colUnit, { textAlign: 'right', paddingRight: mm(1) }]}>
-                  {hasData ? formatCurrency(row.unitPrice) : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colAmount, { textAlign: 'right', paddingRight: mm(1) }]}>
-                  {hasData ? formatCurrency(row.amount) : ' '}
-                </Text>
-                <Text style={[s.tableCell, s.colVat, { textAlign: 'right', paddingRight: mm(1) }]}>
-                  {hasData ? formatCurrency(rowVat) : ' '}
-                </Text>
+              <View key={idx} style={s.tbRow}>
+                <View style={[s.tdCell, s.colNo]}>
+                  <Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? String(idx + 1) : ' '}</Text>
+                </View>
+                <View style={[s.tdCell, s.colDesc]}>
+                  <Text style={s.tdText}>{(row.description || ' ') + Z}</Text>
+                </View>
+                <View style={[s.tdCell, s.colUnit]}>
+                  <Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? formatCurrency(row.unitPrice) : ' '}</Text>
+                </View>
+                <View style={[s.tdCell, s.colQty]}>
+                  <Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? String(row.quantity) : ' '}</Text>
+                </View>
+                <View style={[s.tdCellLast, s.colAmount]}>
+                  <Text style={[s.tdText, { textAlign: 'center' }]}>{hasData ? formatCurrency(row.amount) : ' '}</Text>
+                </View>
               </View>
             )
           })}
@@ -525,55 +481,37 @@ export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
 
         {/* ─── Summary ─── */}
         <View style={s.summarySection}>
-          {/* Baht Text */}
           <View style={s.bahtTextBox}>
             <Text style={s.bahtTextLabel}>{'จำนวนเงินรวมทั้งสิ้น (ตัวอักษร)' + Z}</Text>
             <Text style={s.bahtTextValue}>{bahtText(grandTotal) + Z}</Text>
           </View>
 
-          {/* Summary Table */}
           <View style={s.summaryTable}>
+            {discount > 0 && (
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>{'ส่วนลด / DISCOUNT' + Z}</Text>
+                <Text style={s.summaryValue}>{formatCurrency(discount) + Z}</Text>
+              </View>
+            )}
             <View style={s.summaryRow}>
-              <Text style={s.summaryLabel}>{'รวมเป็นเงิน / Subtotal' + Z}</Text>
-              <Text style={s.summaryValue}>{formatCurrency(subtotal) + ' บาท' + Z}</Text>
+              <Text style={s.summaryLabel}>{'รวมเป็นเงิน / AMOUNT' + Z}</Text>
+              <Text style={s.summaryValue}>{formatCurrency(subtotal) + Z}</Text>
             </View>
             <View style={s.summaryRow}>
-              <Text style={s.summaryLabel}>{'ภาษีมูลค่าเพิ่ม ' + vatRate + '%' + Z}</Text>
-              <Text style={s.summaryValue}>{formatCurrency(vatAmount) + ' บาท' + Z}</Text>
+              <Text style={s.summaryLabel}>{'มูลค่าสินค้าที่นำมาคิดภาษี / NET AMOUNT' + Z}</Text>
+              <Text style={s.summaryValue}>{formatCurrency(netAmount) + Z}</Text>
+            </View>
+            <View style={s.summaryRow}>
+              <Text style={s.summaryLabel}>{'ภาษีมูลค่าเพิ่ม / VAT ' + vatRate + '%' + Z}</Text>
+              <Text style={s.summaryValue}>{formatCurrency(vatAmount) + Z}</Text>
             </View>
             <View style={s.grandTotalRow}>
-              <Text style={s.grandTotalLabel}>{'จำนวนเงินรวมทั้งสิ้น' + Z}</Text>
-              <Text style={s.grandTotalValue}>{formatCurrency(grandTotal) + ' บาท' + Z}</Text>
+              <Text style={s.grandTotalLabel}>{'รวมจำนวนเงิน / TOTAL AMOUNT' + Z}</Text>
+              <Text style={s.grandTotalValue}>{formatCurrency(grandTotal) + Z}</Text>
             </View>
           </View>
         </View>
 
-        {/* ─── Signatures ─── */}
-        <View style={s.signatureSection}>
-          <View style={s.signatureBlock}>
-            <View style={s.signatureLine} />
-            <Text style={s.signatureLabel}>{'ผู้รับบริการ / ผู้ซื้อ' + Z}</Text>
-            <Text style={s.signatureSub}>{'Customer' + Z}</Text>
-          </View>
-          <View style={s.signatureBlock}>
-            <View style={s.signatureLine} />
-            <Text style={s.signatureLabel}>{'ผู้จัดทำ' + Z}</Text>
-            <Text style={s.signatureSub}>{'Prepared by' + Z}</Text>
-          </View>
-          <View style={s.signatureBlock}>
-            <View style={s.signatureLine} />
-            <Text style={s.signatureLabel}>{'ผู้อนุมัติ' + Z}</Text>
-            <Text style={s.signatureSub}>{'Approved by' + Z}</Text>
-          </View>
-        </View>
-
-        {/* ─── Page Footer ─── */}
-        <View style={s.pageFooter}>
-          <Text style={s.footerText}>
-            {comp.name + ' | เลขผู้เสียภาษี: ' + comp.taxId + Z}
-          </Text>
-          <Text style={s.footerText}>{'เอกสารนี้ออกโดยระบบอิเล็กทรอนิกส์' + Z}</Text>
-        </View>
       </Page>
     </Document>
   )

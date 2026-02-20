@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
-import { pdf } from '@react-pdf/renderer'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { pdf, PDFViewer } from '@react-pdf/renderer'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
 import CashBillPDF from './pdf/CashBillPDF'
+import type { BillHeaderSetting } from '../../types'
 
 /* ─── Types ─── */
 interface CashBillItem {
@@ -36,14 +37,13 @@ interface CashBillModalProps {
   open: boolean
   order: CashBillOrder | null
   onClose: () => void
-  /** เรียกเมื่อกดยืนยัน — ส่ง order + เลขบิลเงินสดที่สร้างอัตโนมัติ */
   onConfirm: (order: CashBillOrder, invoiceNo: string) => void
   submitting?: boolean
-  /** ซ่อนปุ่มยืนยัน — ใช้สำหรับดูบิลอย่างเดียว (เมนูรายการอนุมัติ) */
   hideConfirm?: boolean
+  receiverAccount?: string | null
 }
 
-const TOTAL_ROWS = 12
+const TOTAL_ROWS = 6
 
 /* ─── Auto-generate invoice number ─── */
 async function generateNextInvoiceNo(companyCode: string): Promise<string> {
@@ -78,8 +78,9 @@ async function generateNextInvoiceNo(companyCode: string): Promise<string> {
 }
 
 /* ─── Component ─── */
-export default function CashBillModal({ open, order, onClose, onConfirm, submitting, hideConfirm }: CashBillModalProps) {
-  const [company, setCompany] = useState('tr')
+export default function CashBillModal({ open, order, onClose, onConfirm, submitting, hideConfirm, receiverAccount }: CashBillModalProps) {
+  const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
+  const [selectedHeaderId, setSelectedHeaderId] = useState<string>('')
   const [invoiceNo, setInvoiceNo] = useState('')
   const [refNo, setRefNo] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().split('T')[0])
@@ -88,20 +89,51 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
   const [customerAddress2, setCustomerAddress2] = useState('')
   const [items, setItems] = useState<CashBillItem[]>([])
   const [exporting, setExporting] = useState(false)
+  const [mode, setMode] = useState<'edit' | 'preview'>('edit')
 
-  /* Auto-generate invoice number when company changes */
+  /* Load bill headers from DB */
   useEffect(() => {
-    if (!open || !order) return
-    const code = company === 'tr' ? 'TR' : 'ODF'
+    if (!open) return
+    ;(async () => {
+      const { data } = await supabase
+        .from('bill_header_settings')
+        .select('*')
+        .order('created_at', { ascending: true })
+      const headers = (data || []) as BillHeaderSetting[]
+      setBillHeaders(headers)
 
-    // ถ้า order เคยมีเลขบิลแล้ว (ดูซ้ำ) ให้ใช้เลขเดิม
+      if (receiverAccount && headers.length > 0) {
+        const { data: bankMatch } = await supabase
+          .from('bank_settings')
+          .select('bill_header_id')
+          .eq('account_number', receiverAccount)
+          .not('bill_header_id', 'is', null)
+          .limit(1)
+        if (bankMatch && bankMatch.length > 0 && bankMatch[0].bill_header_id) {
+          setSelectedHeaderId(bankMatch[0].bill_header_id)
+          return
+        }
+      }
+      if (headers.length > 0) {
+        setSelectedHeaderId(headers[0].id)
+      }
+    })()
+  }, [open, receiverAccount])
+
+  const selectedHeader = billHeaders.find(h => h.id === selectedHeaderId) || null
+
+  /* Auto-generate invoice number when selected header changes */
+  useEffect(() => {
+    if (!open || !order || !selectedHeader) return
+    const code = selectedHeader.company_key.toUpperCase()
+
     const existingNo = order.billing_details?.cash_bill_no
     if (existingNo && typeof existingNo === 'string' && existingNo.includes(code)) {
       setInvoiceNo(existingNo)
     } else {
       generateNextInvoiceNo(code).then(setInvoiceNo)
     }
-  }, [open, order, company])
+  }, [open, order, selectedHeader])
 
   /* Pre-fill data from order */
   useEffect(() => {
@@ -200,6 +232,31 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
 
   const grandTotal = filledItems.reduce((s, r) => s + (r.qty || 0) * (r.price || 0), 0)
 
+  const buildPdfElement = useCallback(() => {
+    const fallbackHeader: BillHeaderSetting = {
+      id: '', company_key: 'tr', bill_code: 'TR', company_name: 'ห้างหุ้นส่วนจำกัด ทีอาร์ คิดส์ช็อป',
+      company_name_en: 'TR Kidsshop Limited Partnership',
+      address: '1641,1643 ชั้นที่ 3 ถนนเพชรเกษม แขวงหลักสอง เขตบางแค กรุงเทพมหานคร 10160',
+      tax_id: '0103563005345', branch: 'สำนักงานใหญ่', phone: '082-934-1288',
+      logo_url: null, created_at: '', updated_at: '',
+    }
+    return (
+      <CashBillPDF
+        companyData={selectedHeader || fallbackHeader}
+        invoiceNo={invoiceNo}
+        refNo={refNo}
+        invoiceDate={invoiceDate}
+        customerName={customerName}
+        customerAddress1={customerAddress1}
+        customerAddress2={customerAddress2}
+        items={filledItems.filter((r) => r.desc || r.qty > 0 || r.price > 0)}
+        grandTotal={grandTotal}
+      />
+    )
+  }, [selectedHeader, invoiceNo, refNo, invoiceDate, customerName, customerAddress1, customerAddress2, filledItems, grandTotal])
+
+  const pdfDocument = useMemo(() => buildPdfElement(), [buildPdfElement])
+
   function handleItemChange(idx: number, field: keyof CashBillItem, value: string) {
     setItems(() => {
       const copy = [...filledItems]
@@ -214,29 +271,17 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
   async function handleExportPDF() {
     setExporting(true)
     try {
-      const blob = await pdf(
-        <CashBillPDF
-          company={company as 'tr' | 'odf'}
-          invoiceNo={invoiceNo}
-          refNo={refNo}
-          invoiceDate={invoiceDate}
-          customerName={customerName}
-          customerAddress1={customerAddress1}
-          customerAddress2={customerAddress2}
-          items={filledItems.filter((r) => r.desc || r.qty > 0 || r.price > 0)}
-          grandTotal={grandTotal}
-        />
-      ).toBlob()
-
+      const blob = await pdf(buildPdfElement()).toBlob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = `บิลเงินสด-${invoiceNo}.pdf`
       a.click()
       URL.revokeObjectURL(url)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Error generating PDF:', err)
-      alert('เกิดข้อผิดพลาดในการสร้าง PDF')
+      const msg = err instanceof Error ? err.message : String(err)
+      alert('เกิดข้อผิดพลาดในการสร้าง PDF:\n' + msg)
     } finally {
       setExporting(false)
     }
@@ -256,12 +301,14 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
           <div className="flex items-center gap-3">
             <label className="text-sm font-medium text-gray-600">บริษัท:</label>
             <select
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
+              value={selectedHeaderId}
+              onChange={(e) => setSelectedHeaderId(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-sky-400"
             >
-              <option value="tr">TRKidsshop</option>
-              <option value="odf">Ondemand Factory</option>
+              {billHeaders.map((h) => (
+                <option key={h.id} value={h.id}>{h.company_name}</option>
+              ))}
+              {billHeaders.length === 0 && <option value="">ไม่มีข้อมูลหัวบิล</option>}
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -305,7 +352,28 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
           </div>
         </div>
 
+        {/* ─── Mode Toggle ─── */}
+        <div className="flex rounded-lg bg-gray-100 p-0.5">
+          <button type="button" onClick={() => setMode('edit')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'edit' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>แก้ไข</button>
+          <button type="button" onClick={() => setMode('preview')} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${mode === 'preview' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>พรีวิว PDF</button>
+        </div>
+
+        {/* ─── Preview Mode ─── */}
+        {mode === 'preview' && (
+          <div className="bg-[#525659] rounded-xl p-3 flex justify-center">
+            <PDFViewer
+              width={420}
+              height={595}
+              showToolbar={false}
+              style={{ border: 'none', borderRadius: '8px', backgroundColor: '#fff' }}
+            >
+              {pdfDocument}
+            </PDFViewer>
+          </div>
+        )}
+
         {/* ─── Edit Form ─── */}
+        {mode === 'edit' && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-4">
           {/* Document Info */}
           <div className="grid grid-cols-3 gap-3">
@@ -397,6 +465,7 @@ export default function CashBillModal({ open, order, onClose, onConfirm, submitt
             </div>
           </div>
         </div>
+        )}
       </div>
     </Modal>
   )

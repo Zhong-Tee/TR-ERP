@@ -90,7 +90,7 @@ const QC_MENU_KEY_MAP: Record<string, string> = {
 export default function QC() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const isAdmin = user?.role === 'superadmin' || user?.role === 'admin-tr'
+  const isAdmin = user?.role === 'superadmin' || user?.role === 'admin'
   const canSkipQc = user?.role === 'superadmin' || user?.role === 'admin'
   const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
 
