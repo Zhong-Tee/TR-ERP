@@ -19,6 +19,8 @@ function pathToMenuKey(pathname: string): string | null {
   if (pathname.startsWith('/warehouse')) return 'warehouse'
   if (pathname.startsWith('/purchase')) return 'purchase'
   if (pathname.startsWith('/sales-reports')) return 'sales-reports'
+  if (pathname.startsWith('/kpi')) return 'kpi'
+  if (pathname.startsWith('/hr')) return 'hr'
   if (pathname.startsWith('/settings')) return 'settings'
   return null
 }
@@ -79,6 +81,15 @@ export default function ProtectedRoute({
   if (user.role === 'auditor') {
     const isAuditPath = location.pathname.startsWith('/warehouse/audit')
     if (!isAuditPath || (allowedRoles && !allowedRoles.includes('auditor'))) {
+      return <NoAccessFallback />
+    }
+    return <>{children}</>
+  }
+
+  // Employee role: bypass menuAccess, only allow /employee paths
+  if (user.role === 'employee') {
+    const isEmployeePath = location.pathname.startsWith('/employee')
+    if (!isEmployeePath || (allowedRoles && !allowedRoles.includes('employee'))) {
       return <NoAccessFallback />
     }
     return <>{children}</>

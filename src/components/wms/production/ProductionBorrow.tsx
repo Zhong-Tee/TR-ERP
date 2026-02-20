@@ -322,7 +322,7 @@ export default function ProductionBorrow() {
 
           {/* Product type filter */}
           <div className="flex gap-2">
-            {(['FG', 'RM'] as ProductType[]).map((pt) => (
+            {(['FG', 'RM', 'PP'] as ProductType[]).map((pt) => (
               <button
                 key={pt}
                 type="button"
@@ -331,7 +331,7 @@ export default function ProductionBorrow() {
                   productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-slate-700 text-gray-300'
                 }`}
               >
-                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : 'วัตถุดิบ'}
+                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : pt === 'RM' ? 'วัตถุดิบ' : 'สินค้าแปรรูป'}
               </button>
             ))}
           </div>

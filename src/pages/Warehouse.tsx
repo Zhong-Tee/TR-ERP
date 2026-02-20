@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
+import LotCostPopover from '../components/ui/LotCostPopover'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 
@@ -14,6 +15,12 @@ function toNumber(value: string | null | undefined): number | null {
   if (!value) return null
   const parsed = Number(String(value).replace(/,/g, '').trim())
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function defaultSalesFromDate(): string {
+  const d = new Date()
+  d.setDate(d.getDate() - 30)
+  return d.toISOString().slice(0, 10)
 }
 
 export default function Warehouse() {
@@ -30,6 +37,9 @@ export default function Warehouse() {
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
+  const [salesFromDate, setSalesFromDate] = useState(defaultSalesFromDate)
+  const [salesMap, setSalesMap] = useState<Record<string, number>>({})
+  const [salesLoading, setSalesLoading] = useState(false)
 
   useEffect(() => {
     loadProducts()
@@ -37,6 +47,10 @@ export default function Warehouse() {
     loadCategories()
     loadSellers()
   }, [])
+
+  useEffect(() => {
+    loadSalesData()
+  }, [salesFromDate])
 
   async function loadProducts() {
     setLoading(true)
@@ -100,6 +114,37 @@ export default function Warehouse() {
     } catch (e) {
       console.error('Load sellers failed:', e)
     }
+  }
+
+  async function loadSalesData() {
+    setSalesLoading(true)
+    try {
+      const { data, error } = await supabase.rpc('calc_avg_daily_sales', {
+        p_from_date: salesFromDate,
+      })
+      if (error) throw error
+      const map: Record<string, number> = {}
+      ;(data || []).forEach((row: { product_id: string; total_sold: number }) => {
+        map[row.product_id] = Number(row.total_sold)
+      })
+      setSalesMap(map)
+    } catch (e) {
+      console.error('Load sales data failed:', e)
+    } finally {
+      setSalesLoading(false)
+    }
+  }
+
+  function calcDaysRemaining(productId: string, onHand: number): number | null {
+    const totalSold = salesMap[productId]
+    if (!totalSold || totalSold <= 0) return null
+    const from = new Date(salesFromDate)
+    const today = new Date()
+    const diffMs = today.getTime() - from.getTime()
+    const diffDays = Math.max(diffMs / (1000 * 60 * 60 * 24), 1)
+    const avgPerDay = totalSold / diffDays
+    if (avgPerDay <= 0) return null
+    return Math.round(onHand / avgPerDay)
   }
 
   // คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ (ใช้ทั้งแสดงปุ่มและส่งไป Sidebar)
@@ -170,6 +215,7 @@ export default function Warehouse() {
               <option value="">ทุกประเภท</option>
               <option value="FG">FG - สินค้าสำเร็จรูป</option>
               <option value="RM">RM - วัตถุดิบ</option>
+              <option value="PP">PP - สินค้าแปรรูป</option>
             </select>
           </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
@@ -217,6 +263,21 @@ export default function Warehouse() {
               </span>
             )}
           </button>
+          <div className="flex items-center gap-2">
+            <label htmlFor="sales-from-date" className="text-sm text-gray-600 whitespace-nowrap">
+              คำนวณยอดขายตั้งแต่
+            </label>
+            <input
+              id="sales-from-date"
+              type="date"
+              value={salesFromDate}
+              onChange={(e) => setSalesFromDate(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-sm"
+            />
+            {salesLoading && (
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -238,7 +299,9 @@ export default function Warehouse() {
                   <th className="p-3 text-left font-semibold">ผู้ขาย</th>
                   <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>
                   <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
-                  <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>Safety stock</th>
+                  <th className="p-3 text-center font-semibold">Safety stock</th>
+                  <th className="p-3 text-center font-semibold">รวมในคลัง</th>
+                  <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>วันขายคงเหลือ</th>
                   {canSeeCost && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
                 </tr>
               </thead>
@@ -260,7 +323,9 @@ export default function Warehouse() {
                         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
                           product.product_type === 'RM'
                             ? 'bg-amber-100 text-amber-700'
-                            : 'bg-emerald-100 text-emerald-700'
+                            : product.product_type === 'PP'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-emerald-100 text-emerald-700'
                         }`}>
                           {product.product_type || 'FG'}
                         </span>
@@ -273,11 +338,31 @@ export default function Warehouse() {
                         {onHand.toLocaleString()}
                       </td>
                       <td className="p-3 text-center">{safetyStock !== null ? safetyStock.toLocaleString() : '-'}</td>
+                      <td className="p-3 text-center font-medium text-gray-700">
+                        {(onHand + (safetyStock ?? 0)).toLocaleString()}
+                      </td>
+                      <td className="p-3 text-center">
+                        {(() => {
+                          const days = calcDaysRemaining(product.id, onHand)
+                          if (days === null) return <span className="text-gray-400">-</span>
+                          const color =
+                            days <= 7
+                              ? 'text-red-600 font-bold'
+                              : days <= 14
+                                ? 'text-orange-600 font-semibold'
+                                : days <= 30
+                                  ? 'text-yellow-600 font-medium'
+                                  : 'text-green-600'
+                          return <span className={color}>{days} วัน</span>
+                        })()}
+                      </td>
                       {canSeeCost && (
                         <td className="p-3 text-right font-medium">
-                          {product.landed_cost != null && Number(product.landed_cost) > 0
-                            ? Number(product.landed_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
-                            : '-'}
+                          {product.landed_cost != null && Number(product.landed_cost) > 0 ? (
+                            <LotCostPopover productId={product.id} landedCost={Number(product.landed_cost)}>
+                              {Number(product.landed_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ฿
+                            </LotCostPopover>
+                          ) : '-'}
                         </td>
                       )}
                     </tr>

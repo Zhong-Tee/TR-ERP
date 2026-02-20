@@ -21,6 +21,7 @@ import {
   FiShoppingCart,
   FiBarChart2,
   FiSettings,
+  FiUsers,
 } from 'react-icons/fi'
 import { LuWarehouse, LuGauge } from 'react-icons/lu'
 
@@ -137,6 +138,13 @@ const menuItems: MenuItem[] = [
     icon: <LuGauge className="w-6 h-6" />,
     path: '/kpi',
     roles: ['superadmin', 'admin', 'admin-tr'],
+  },
+  {
+    key: 'hr',
+    label: 'HR',
+    icon: <FiUsers className="w-6 h-6" />,
+    path: '/hr',
+    roles: ['superadmin', 'admin', 'admin-tr', 'hr'],
   },
   {
     key: 'settings',

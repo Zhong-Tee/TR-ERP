@@ -39,15 +39,17 @@ export default function RequisitionList() {
 
       if (error) throw error
 
-      const requisitionsWithUsers = await Promise.all(
-        (data || []).map(async (req: any) => {
-          if (req.approved_by) {
-            const { data: userData } = await supabase.from('us_users').select('username').eq('id', req.approved_by).single()
-            return { ...req, approved_by_user: userData }
-          }
-          return req
-        })
-      )
+      const rows = data || []
+      const approverIds = [...new Set(rows.map((r: any) => r.approved_by).filter(Boolean))]
+      const userMap = new Map<string, string>()
+      if (approverIds.length > 0) {
+        const { data: users } = await supabase.from('us_users').select('id, username').in('id', approverIds)
+        for (const u of (users ?? []) as { id: string; username: string }[]) userMap.set(u.id, u.username)
+      }
+      const requisitionsWithUsers = rows.map((req: any) => ({
+        ...req,
+        approved_by_user: req.approved_by ? { username: userMap.get(req.approved_by) || '-' } : null,
+      }))
 
       setRequisitions(requisitionsWithUsers)
     } catch (error: any) {

@@ -99,16 +99,18 @@ export default function CreateRequisition() {
         .eq('created_by', user?.id || '')
         .order('created_at', { ascending: false })
         .limit(50)
-      const requisitionsWithUsers = await Promise.all(
-        (data || []).map(async (req: any) => {
-          if (req.approved_by) {
-            const { data: userData } = await supabase.from('us_users').select('username').eq('id', req.approved_by).single()
-            return { ...req, approved_by_user: userData }
-          }
-          return req
-        })
-      )
       if (error) throw error
+      const rows = data || []
+      const approverIds = [...new Set(rows.map((r: any) => r.approved_by).filter(Boolean))]
+      const userMap = new Map<string, string>()
+      if (approverIds.length > 0) {
+        const { data: users } = await supabase.from('us_users').select('id, username').in('id', approverIds)
+        for (const u of (users ?? []) as { id: string; username: string }[]) userMap.set(u.id, u.username)
+      }
+      const requisitionsWithUsers = rows.map((req: any) => ({
+        ...req,
+        approved_by_user: req.approved_by ? { username: userMap.get(req.approved_by) || '-' } : null,
+      }))
       setReqList(requisitionsWithUsers)
     } catch (e: any) {
       console.error('Load req list error:', e)
@@ -285,7 +287,7 @@ export default function CreateRequisition() {
 
           {/* Product type filter */}
           <div className="flex gap-2">
-            {(['FG', 'RM'] as ProductType[]).map((pt) => (
+            {(['FG', 'RM', 'PP'] as ProductType[]).map((pt) => (
               <button
                 key={pt}
                 type="button"
@@ -294,7 +296,7 @@ export default function CreateRequisition() {
                   productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-slate-700 text-gray-300'
                 }`}
               >
-                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : 'วัตถุดิบ'}
+                {pt === 'FG' ? 'สินค้าสำเร็จรูป' : pt === 'RM' ? 'วัตถุดิบ' : 'สินค้าแปรรูป'}
               </button>
             ))}
           </div>

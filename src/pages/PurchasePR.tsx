@@ -126,7 +126,7 @@ export default function PurchasePR() {
         _itemCount: pr.inv_pr_items?.length ?? 0,
       }))
       setPrs(mappedPrs)
-      if (!products.length) setProducts(prodData as any)
+      if (!products.length) setProducts((prodData as any[]).filter((p: any) => p.product_type === 'FG' || p.product_type === 'RM'))
       if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
 
       const uids = mappedPrs.map((pr: any) => pr.requested_by).filter(Boolean)
@@ -490,7 +490,7 @@ export default function PurchasePR() {
               >
                 <option value="">ประเภท: ทั้งหมด</option>
                 {uniqueTypes.map((t) => (
-                  <option key={t} value={t!}>{t === 'FG' ? 'FG (สินค้าสำเร็จรูป)' : t === 'RM' ? 'RM (วัตถุดิบ)' : t}</option>
+                  <option key={t} value={t!}>{t === 'FG' ? 'FG (สินค้าสำเร็จรูป)' : t === 'RM' ? 'RM (วัตถุดิบ)' : t === 'PP' ? 'PP (สินค้าแปรรูป)' : t}</option>
                 ))}
               </select>
               <select

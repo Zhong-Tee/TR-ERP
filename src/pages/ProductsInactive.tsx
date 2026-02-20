@@ -23,6 +23,7 @@ const DAYS_OPTIONS = [
 const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
   { value: 'RM', label: 'RM - วัตถุดิบ' },
+  { value: 'PP', label: 'PP - สินค้าแปรรูป' },
 ]
 
 interface InactiveProduct {
@@ -341,7 +342,9 @@ export default function ProductsInactive() {
                         className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
                           product.product_type === 'RM'
                             ? 'bg-orange-100 text-orange-700'
-                            : 'bg-green-100 text-green-700'
+                            : product.product_type === 'PP'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-green-100 text-green-700'
                         }`}
                       >
                         {product.product_type}

@@ -76,15 +76,18 @@ export default function RequisitionDashboard() {
       const { data, error } = await query
       if (error) throw error
 
-      const requisitionsWithUsers = await Promise.all(
-        (data || []).map(async (req: any) => {
-          const [createdByUser, approvedByUser] = await Promise.all([
-            supabase.from('us_users').select('username').eq('id', req.created_by).single(),
-            req.approved_by ? supabase.from('us_users').select('username').eq('id', req.approved_by).single() : Promise.resolve({ data: null }),
-          ])
-          return { ...req, created_by_user: createdByUser.data, approved_by_user: approvedByUser.data }
-        })
-      )
+      const rows = data || []
+      const userIds = [...new Set(rows.flatMap((r: any) => [r.created_by, r.approved_by].filter(Boolean)))]
+      const userMap = new Map<string, string>()
+      if (userIds.length > 0) {
+        const { data: users } = await supabase.from('us_users').select('id, username').in('id', userIds)
+        for (const u of (users ?? []) as { id: string; username: string }[]) userMap.set(u.id, u.username)
+      }
+      const requisitionsWithUsers = rows.map((req: any) => ({
+        ...req,
+        created_by_user: req.created_by ? { username: userMap.get(req.created_by) || '-' } : null,
+        approved_by_user: req.approved_by ? { username: userMap.get(req.approved_by) || '-' } : null,
+      }))
 
       setRequisitions(requisitionsWithUsers)
     } catch (error: any) {
@@ -521,10 +524,10 @@ export default function RequisitionDashboard() {
                 <div className="bg-white p-5 rounded-xl border shadow-sm space-y-3">
                   <h3 className="font-bold text-slate-800 text-base">ค้นหาสินค้า</h3>
                   <div className="flex gap-2">
-                    {(['FG', 'RM'] as ProductType[]).map((pt) => (
+                    {(['FG', 'RM', 'PP'] as ProductType[]).map((pt) => (
                       <button key={pt} type="button" onClick={() => { setCProductType(pt); loadCAllProducts(pt); setCProducts([]); setCSearchTerm('') }}
                         className={`flex-1 py-2 rounded-lg font-bold text-sm transition ${cProductType === pt ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                        {pt === 'FG' ? 'FG สินค้าสำเร็จรูป' : 'RM วัตถุดิบ'}
+                        {pt === 'FG' ? 'FG สินค้าสำเร็จรูป' : pt === 'RM' ? 'RM วัตถุดิบ' : 'PP สินค้าแปรรูป'}
                       </button>
                     ))}
                   </div>

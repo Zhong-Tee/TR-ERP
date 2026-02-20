@@ -100,6 +100,27 @@ export async function bulkUpdateSafetyStock(
   if (error) throw error
 }
 
+export interface StockLotRow {
+  id: string
+  created_at: string
+  qty_remaining: number
+  unit_cost: number
+  is_safety_stock: boolean
+  ref_type: string | null
+}
+
+export async function fetchProductLots(productId: string, limit = 5): Promise<StockLotRow[]> {
+  const { data, error } = await supabase
+    .from('inv_stock_lots')
+    .select('id, created_at, qty_remaining, unit_cost, is_safety_stock, ref_type')
+    .eq('product_id', productId)
+    .gt('qty_remaining', 0)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return (data || []) as StockLotRow[]
+}
+
 /**
  * อัปเดต order_point ใน pr_products ทั้ง batch ผ่าน RPC ครั้งเดียว
  */

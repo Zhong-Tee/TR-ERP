@@ -15,6 +15,9 @@ const WAREHOUSE_ACCESS_MAP: Record<string, string> = {
   '/warehouse/audit': 'warehouse-audit',
   '/warehouse/adjust': 'warehouse-adjust',
   '/warehouse/returns': 'warehouse-returns',
+  '/warehouse/production': 'warehouse-production',
+  '/warehouse/roll-calc': 'warehouse-roll-calc',
+  '/warehouse/sales-list': 'warehouse-sales-list',
 }
 const PURCHASE_ACCESS_MAP: Record<string, string> = {
   '/purchase/pr': 'purchase-pr',
@@ -93,6 +96,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (path.startsWith('/purchase')) return 'สั่งซื้อ'
     if (path.startsWith('/sales-reports')) return 'รายงานยอดขาย'
     if (path.startsWith('/kpi')) return 'KPI'
+    if (path.startsWith('/hr')) return 'HR'
     if (path.startsWith('/settings')) return 'ตั้งค่า'
     return 'เมนู'
   })()
@@ -212,6 +216,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
     { path: '/warehouse/returns', label: 'รับสินค้าตีกลับ' },
+    { path: '/warehouse/production', label: 'ผลิตภายใน' },
+    { path: '/warehouse/roll-calc', label: 'Roll Material Calculator' },
+    { path: '/warehouse/sales-list', label: 'รายการขายสินค้า' },
   ].filter((tab) => hasAccess(WAREHOUSE_ACCESS_MAP[tab.path] || tab.path))
 
   const purchaseTabs = [
@@ -226,13 +233,27 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/products/inactive', label: 'รายการสินค้าไม่เคลื่อนไหว' },
   ].filter((tab) => hasAccess(PRODUCT_ACCESS_MAP[tab.path] || tab.path))
 
+  const hrTabs = [
+    { path: '/hr', label: 'ทะเบียนพนักงาน' },
+    { path: '/hr/leave', label: 'ระบบลางาน' },
+    { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
+    { path: '/hr/attendance', label: 'เวลาทำงาน' },
+    { path: '/hr/contracts', label: 'สัญญาจ้าง' },
+    { path: '/hr/documents', label: 'กฏระเบียบ/SOP' },
+    { path: '/hr/onboarding', label: 'รับพนักงานใหม่' },
+    { path: '/hr/salary', label: 'เส้นทางเงินเดือน' },
+    { path: '/hr/settings', label: 'ตั้งค่า' },
+  ]
+
   const activeSubTabs = location.pathname.startsWith('/warehouse')
     ? warehouseTabs
     : location.pathname.startsWith('/purchase')
       ? purchaseTabs
       : location.pathname.startsWith('/products')
         ? productTabs
-        : []
+        : location.pathname.startsWith('/hr')
+          ? hrTabs
+          : []
 
   useEffect(() => {
     const height = activeSubTabs.length > 0 ? '4.5rem' : '0rem'

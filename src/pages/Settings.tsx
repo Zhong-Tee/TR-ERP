@@ -397,6 +397,9 @@ export default function Settings() {
     { key: 'warehouse-audit', label: 'Audit', group: 'warehouse' },
     { key: 'warehouse-adjust', label: 'ปรับสต๊อค', group: 'warehouse' },
     { key: 'warehouse-returns', label: 'รับสินค้าตีกลับ', group: 'warehouse' },
+    { key: 'warehouse-production', label: 'ผลิตภายใน', group: 'warehouse' },
+    { key: 'warehouse-roll-calc', label: 'Roll Material Calculator', group: 'warehouse' },
+    { key: 'warehouse-sales-list', label: 'รายการขายสินค้า', group: 'warehouse' },
     // ── สั่งซื้อ ──
     { key: 'purchase', label: 'สั่งซื้อ', group: '' },
     { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },
@@ -407,6 +410,17 @@ export default function Settings() {
     { key: 'sales-reports', label: 'รายงานยอดขาย', group: '' },
     // ── KPI ──
     { key: 'kpi', label: 'KPI', group: '' },
+    // ── HR ──
+    { key: 'hr', label: 'HR', group: '' },
+    { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
+    { key: 'hr-leave', label: 'ระบบลางาน', group: 'hr' },
+    { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
+    { key: 'hr-attendance', label: 'เวลาทำงาน', group: 'hr' },
+    { key: 'hr-contracts', label: 'สัญญาจ้าง', group: 'hr' },
+    { key: 'hr-documents', label: 'กฏระเบียบ/SOP', group: 'hr' },
+    { key: 'hr-onboarding', label: 'รับพนักงานใหม่', group: 'hr' },
+    { key: 'hr-salary', label: 'เส้นทางเงินเดือน', group: 'hr' },
+    { key: 'hr-settings', label: 'ตั้งค่า HR', group: 'hr' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },
     { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
@@ -1536,6 +1550,8 @@ export default function Settings() {
     'manager',
     'picker',
     'auditor',
+    'hr',
+    'employee',
   ]
   const settingsRoles = [
     'superadmin',
@@ -1548,6 +1564,7 @@ export default function Settings() {
     'account',
     'store',
     'production',
+    'hr',
   ]
 
   return (

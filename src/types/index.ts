@@ -22,6 +22,8 @@ export type UserRole =
   | 'manager'
   | 'picker'
   | 'auditor'
+  | 'hr'
+  | 'employee'
 
 // Order Types
 export type OrderStatus = 
@@ -212,8 +214,8 @@ export interface WorkOrder {
   updated_at: string
 }
 
-// Product Type: FG = Finished Goods, RM = Raw Material
-export type ProductType = 'FG' | 'RM'
+// Product Type: FG = Finished Goods, RM = Raw Material, PP = Processed Products
+export type ProductType = 'FG' | 'RM' | 'PP'
 
 // Product Types (รูปสินค้าดึงจาก Bucket product-images ชื่อไฟล์ = product_code)
 export interface Product {
@@ -720,6 +722,65 @@ export interface BillHeaderSetting {
   updated_at: string
 }
 
+// ── PP (Processed Products) ─────────────────────────────────
+export interface PpRecipe {
+  id: string
+  product_id: string
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PpRecipeInclude {
+  id: string
+  recipe_id: string
+  product_id: string
+  qty: number
+  created_at: string
+  product?: Product
+}
+
+export interface PpRecipeRemove {
+  id: string
+  recipe_id: string
+  product_id: string
+  qty: number
+  unit_cost: number
+  created_at: string
+  product?: Product
+}
+
+export type ProductionOrderStatus = 'open' | 'pending' | 'approved' | 'rejected'
+
+export interface PpProductionOrder {
+  id: string
+  doc_no: string
+  title: string | null
+  status: ProductionOrderStatus
+  note: string | null
+  created_by: string | null
+  approved_by: string | null
+  approved_at: string | null
+  rejected_by: string | null
+  rejected_at: string | null
+  rejection_reason: string | null
+  created_at: string
+  creator?: { display_name: string }
+  approver?: { display_name: string }
+  rejector?: { display_name: string }
+}
+
+export interface PpProductionOrderItem {
+  id: string
+  order_id: string
+  product_id: string
+  qty: number
+  unit_cost: number | null
+  total_cost: number | null
+  created_at: string
+  product?: Product
+}
+
 // Bank Settings Types
 export interface BankSetting {
   id: string
@@ -755,3 +816,457 @@ export const BANK_CODES = [
   { code: '073', name: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', abbreviation: 'LHFG' },
   { code: '098', name: 'ธนาคารพัฒนาวิสาหกิจขนาดกลางและขนาดย่อมแห่งประเทศไทย', abbreviation: 'SME' },
 ] as const
+
+// ── Roll Material Calculator ────────────────────────────────
+export interface RollMaterialCategory {
+  id: string
+  name: string
+  sort_order: number
+  created_at: string
+}
+
+export interface RollMaterialConfig {
+  id: string
+  fg_product_id: string
+  rm_product_id: string
+  category_id: string | null
+  sheets_per_roll: number | null
+  cost_per_sheet: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface RollCalcDashboardRow {
+  config_id: string
+  fg_product_id: string
+  fg_product_code: string
+  fg_product_name: string
+  fg_product_category: string | null
+  rm_product_id: string
+  rm_product_code: string
+  rm_product_name: string
+  rm_on_hand: number
+  category_id: string | null
+  category_name: string | null
+  sheets_per_roll: number | null
+  cost_per_sheet: number | null
+  calc_sheets_per_roll: number | null
+  calc_cost_per_sheet: number | null
+  calc_period_start: string | null
+  calc_period_end: string | null
+}
+
+// ─── HR Module Types ────────────────────────────────────────────────────────
+
+export interface HRDepartment {
+  id: string
+  name: string
+  description?: string
+  manager_id?: string
+  telegram_group_id?: string
+  created_at: string
+}
+
+export interface HRPosition {
+  id: string
+  name: string
+  department_id?: string
+  level: number
+  created_at: string
+}
+
+export interface HREmployee {
+  id: string
+  employee_code: string
+  citizen_id?: string
+  prefix?: string
+  first_name: string
+  last_name: string
+  first_name_en?: string
+  last_name_en?: string
+  nickname?: string
+  birth_date?: string
+  gender?: string
+  religion?: string
+  address?: Record<string, string>
+  current_address?: Record<string, string>
+  phone?: string
+  emergency_contact?: { name: string; phone: string; relationship: string }
+  photo_url?: string
+  department_id?: string
+  position_id?: string
+  salary?: number
+  hire_date?: string
+  probation_end_date?: string
+  employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
+  fingerprint_id_old?: string
+  fingerprint_id_new?: string
+  user_id?: string
+  telegram_chat_id?: string
+  documents?: { name: string; url: string; type: string; uploaded_at: string }[]
+  card_issue_date?: string
+  card_expiry_date?: string
+  created_at: string
+  updated_at: string
+  department?: HRDepartment
+  position?: HRPosition
+}
+
+export interface HRLeaveType {
+  id: string
+  name: string
+  max_days_per_year?: number
+  requires_doc: boolean
+  is_paid: boolean
+  created_at: string
+}
+
+export interface HRLeaveRequest {
+  id: string
+  employee_id: string
+  leave_type_id: string
+  start_date: string
+  end_date: string
+  total_days: number
+  reason?: string
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  approved_by?: string
+  approved_at?: string
+  reject_reason?: string
+  medical_cert_url?: string
+  notified_before: boolean
+  notified_morning: boolean
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  leave_type?: HRLeaveType
+}
+
+export interface HRLeaveBalance {
+  id: string
+  employee_id: string
+  leave_type_id: string
+  year: number
+  entitled_days: number
+  used_days: number
+  carried_days: number
+  leave_type_name?: string
+  remaining?: number
+}
+
+export interface HRCandidate {
+  id: string
+  citizen_id?: string
+  prefix?: string
+  first_name: string
+  last_name: string
+  first_name_en?: string
+  last_name_en?: string
+  birth_date?: string
+  gender?: string
+  religion?: string
+  address?: Record<string, string>
+  photo_url?: string
+  phone?: string
+  applied_position?: string
+  applied_department_id?: string
+  resume_url?: string
+  source?: string
+  status: 'new' | 'scheduled' | 'interviewed' | 'passed' | 'failed' | 'hired' | 'withdrawn'
+  custom_field_1?: string
+  custom_field_2?: string
+  custom_field_3?: string
+  custom_field_4?: string
+  raw_siam_data?: Record<string, string>
+  created_at: string
+  updated_at: string
+}
+
+export interface HRInterview {
+  id: string
+  candidate_id: string
+  interview_date: string
+  location?: string
+  interviewer_ids: string[]
+  status: 'scheduled' | 'completed' | 'cancelled' | 'no_show'
+  notes?: string
+  created_at: string
+  candidate?: HRCandidate
+}
+
+export interface HRInterviewScore {
+  id: string
+  interview_id: string
+  interviewer_id: string
+  criteria: { name: string; max_score: number; score: number; note?: string }[]
+  total_score: number
+  max_possible: number
+  recommendation: 'hire' | 'maybe' | 'reject'
+  comments?: string
+  created_at: string
+}
+
+export interface HRAttendanceUpload {
+  id: string
+  source: 'new_building' | 'old_building'
+  period_start: string
+  period_end: string
+  file_url?: string
+  uploaded_by?: string
+  row_count?: number
+  created_at: string
+}
+
+export interface HRAttendanceSummary {
+  id: string
+  upload_id: string
+  employee_id?: string
+  fingerprint_id?: string
+  employee_name?: string
+  department?: string
+  source: string
+  period_start: string
+  period_end: string
+  scheduled_hours?: number
+  actual_hours?: number
+  overtime_hours: number
+  late_count: number
+  late_minutes: number
+  early_leave_count: number
+  early_leave_minutes: number
+  absent_days: number
+  leave_days: number
+  work_days_required: number
+  work_days_actual: number
+  raw_data?: Record<string, unknown>
+  created_at: string
+}
+
+export interface HRAttendanceDaily {
+  id: string
+  upload_id: string
+  employee_id?: string
+  fingerprint_id?: string
+  employee_name?: string
+  source: string
+  work_date: string
+  shift_code?: string
+  clock_in?: string
+  clock_out?: string
+  clock_in_2?: string
+  clock_out_2?: string
+  late_minutes: number
+  early_minutes: number
+  is_absent: boolean
+  is_holiday: boolean
+  note?: string
+  created_at: string
+}
+
+export interface HRContractTemplate {
+  id: string
+  name: string
+  description?: string
+  template_content: string
+  placeholders: { key: string; label: string; source?: string }[]
+  is_active: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface HRContract {
+  id: string
+  employee_id: string
+  template_id?: string
+  contract_number?: string
+  content: string
+  start_date?: string
+  end_date?: string
+  salary?: number
+  position?: string
+  status: 'draft' | 'active' | 'expired' | 'terminated'
+  pdf_url?: string
+  signed_at?: string
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+}
+
+export interface HRDocumentCategory {
+  id: string
+  name: string
+  parent_id?: string
+  sort_order: number
+  created_at: string
+}
+
+export interface HRDocument {
+  id: string
+  category_id?: string
+  title: string
+  description?: string
+  file_url?: string
+  content?: string
+  department_id?: string
+  level?: string
+  version: string
+  is_active: boolean
+  requires_acknowledgment: boolean
+  created_at: string
+  updated_at: string
+  category?: HRDocumentCategory
+}
+
+export interface HRExam {
+  id: string
+  title: string
+  description?: string
+  department_id?: string
+  level?: string
+  passing_score: number
+  time_limit_minutes?: number
+  questions: { question: string; options: string[]; correct_answer: number; score: number }[]
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface HRExamResult {
+  id: string
+  exam_id: string
+  employee_id: string
+  answers: { question_idx: number; answer: number; is_correct: boolean }[]
+  score: number
+  max_score: number
+  percentage: number
+  passed: boolean
+  started_at?: string
+  completed_at?: string
+  created_at: string
+}
+
+export interface HROnboardingTemplate {
+  id: string
+  department_id?: string
+  position_id?: string
+  name: string
+  phases: {
+    name: string
+    day_start: number
+    day_end: number
+    tasks: {
+      title: string
+      description?: string
+      type: 'learn' | 'read_doc' | 'exam' | 'evaluate'
+      doc_id?: string
+      exam_id?: string
+      evaluator_role?: string
+      deadline_day: number
+      passing_score?: number
+    }[]
+  }[]
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface HROnboardingPlan {
+  id: string
+  employee_id: string
+  template_id?: string
+  mentor_id?: string
+  supervisor_id?: string
+  manager_id?: string
+  start_date: string
+  expected_end_date?: string
+  status: 'in_progress' | 'completed' | 'failed' | 'extended'
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  mentor?: HREmployee
+  supervisor?: HREmployee
+  manager?: HREmployee
+}
+
+export interface HROnboardingProgress {
+  id: string
+  plan_id: string
+  phase_index: number
+  task_index: number
+  status: 'pending' | 'in_progress' | 'completed' | 'failed'
+  score?: number
+  evaluated_by?: string
+  evaluated_at?: string
+  note?: string
+  due_date?: string
+  completed_at?: string
+  created_at: string
+}
+
+export interface HRCareerTrack {
+  id: string
+  name: string
+  department_id?: string
+  description?: string
+  created_at: string
+}
+
+export interface HRCareerLevel {
+  id: string
+  track_id: string
+  position_id?: string
+  level_order: number
+  title: string
+  salary_min: number
+  salary_max: number
+  salary_step?: number
+  requirements: { item: string; description: string }[]
+  created_at: string
+}
+
+export interface HREmployeeCareer {
+  id: string
+  employee_id: string
+  track_id: string
+  current_level_id: string
+  current_salary?: number
+  effective_date: string
+  created_at: string
+}
+
+export interface HRCareerHistory {
+  id: string
+  employee_id: string
+  from_level_id?: string
+  to_level_id: string
+  from_salary?: number
+  to_salary?: number
+  effective_date: string
+  reason?: string
+  approved_by?: string
+  created_at: string
+}
+
+export interface HRNotification {
+  id: string
+  employee_id: string
+  type: string
+  title: string
+  message?: string
+  link?: string
+  is_read: boolean
+  related_id?: string
+  created_at: string
+}
+
+export interface HRNotificationSettings {
+  id: string
+  bot_token: string
+  hr_group_chat_id?: string
+  manager_group_chat_id?: string
+  leave_notify_before_days: number
+  leave_notify_morning_time: string
+  created_at: string
+  updated_at: string
+}

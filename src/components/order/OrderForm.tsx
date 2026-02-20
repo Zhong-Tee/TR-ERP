@@ -1068,7 +1068,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   async function loadInitialData() {
     try {
       const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes] = await Promise.all([
-        supabase.from('pr_products').select('*').eq('is_active', true).eq('product_type', 'FG'),
+        supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),

@@ -28,11 +28,32 @@ import MobileCountView from './components/audit/MobileCountView'
 import AuditReviewView from './components/audit/AuditReviewView'
 import AuditorHome from './components/audit/AuditorHome'
 import WarehouseReturns from './pages/WarehouseReturns'
+import InternalProduction from './pages/InternalProduction'
+import RollMaterialCalc from './pages/RollMaterialCalc'
+import ProductSalesList from './pages/ProductSalesList'
 import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
 import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
+import { lazy, Suspense } from 'react'
+import EmployeePortal from './pages/EmployeePortal'
+
+const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
+const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
+const HRInterviewSchedule = lazy(() => import('./components/hr/InterviewSchedule'))
+const HRAttendanceCalc = lazy(() => import('./components/hr/AttendanceCalc'))
+const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates'))
+const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
+const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
+const HRSalaryPath = lazy(() => import('./components/hr/SalaryPath'))
+const HRSettings = lazy(() => import('./components/hr/HRSettings'))
+
+const HRLoading = () => (
+  <div className="flex items-center justify-center py-20">
+    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" />
+  </div>
+)
 
 const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
   { key: 'dashboard', path: '/dashboard', roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'] },
@@ -48,6 +69,7 @@ const MENU_PATH_ORDER: { key: string; path: string; roles: string[] }[] = [
   { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'admin-tr', 'store'] },
   { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'admin-tr'] },
   { key: 'kpi', path: '/kpi', roles: ['superadmin', 'admin', 'admin-tr'] },
+  { key: 'hr', path: '/hr', roles: ['superadmin', 'admin', 'admin-tr', 'hr'] },
   { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'admin-tr'] },
 ]
 
@@ -62,6 +84,8 @@ function SmartRedirect() {
 
   const WMS_MOBILE_ROLES = ['picker', 'production_mb', 'manager']
   if (WMS_MOBILE_ROLES.includes(user.role)) return <Navigate to="/wms" replace />
+
+  if (user.role === 'employee') return <Navigate to="/employee" replace />
 
   // Desktop roles: wait for menuAccess to determine first accessible page
   if (menuAccessLoading) {
@@ -137,6 +161,10 @@ function AppRoutes() {
 
   if (user && isWmsMobileRole && location.pathname !== '/wms') {
     return <Navigate to="/wms" replace />
+  }
+
+  if (user && user.role === 'employee' && !location.pathname.startsWith('/employee')) {
+    return <Navigate to="/employee" replace />
   }
 
   return (
@@ -328,6 +356,36 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/warehouse/production"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <InternalProduction />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/roll-calc"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <RollMaterialCalc />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/sales-list"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <ProductSalesList />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/purchase/pr"
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'store', 'account']}>
@@ -404,6 +462,86 @@ function AppRoutes() {
             <Layout>
               <Settings />
             </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HREmployeeRegistry /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/leave"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRLeaveManagement /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/interview"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRInterviewSchedule /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/attendance"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRAttendanceCalc /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/contracts"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRContractTemplates /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/documents"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRCompanyDocuments /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/onboarding"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HROnboardingPlan /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/salary"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRSalaryPath /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/settings"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'admin-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRSettings /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/employee/*"
+        element={
+          <ProtectedRoute allowedRoles={['employee']}>
+            <EmployeePortal />
           </ProtectedRoute>
         }
       />

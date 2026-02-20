@@ -61,6 +61,7 @@ async function uploadImageToBucket(file: File): Promise<void> {
 const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
   { value: 'RM', label: 'RM - วัตถุดิบ' },
+  { value: 'PP', label: 'PP - สินค้าแปรรูป' },
 ]
 
 const emptyForm = () => ({
@@ -380,7 +381,7 @@ export default function Products() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
-      const validTypes: ProductType[] = ['FG', 'RM']
+      const validTypes: ProductType[] = ['FG', 'RM', 'PP']
       const toInsert: Array<{
         product_code: string
         product_name: string
@@ -606,54 +607,50 @@ export default function Products() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-sm">
               <thead>
                 <tr className="bg-blue-600 text-white">
-                  <th className="px-2 py-2 text-left font-semibold rounded-tl-xl">รูป</th>
-                  <th className="px-2 py-2 text-left font-semibold">รหัสสินค้า</th>
-                  <th className="px-2 py-2 text-left font-semibold">ชื่อสินค้า</th>
-                  <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
-                  <th className="px-2 py-2 text-left font-semibold">ชื่อผู้ขาย</th>
-                  <th className="px-2 py-2 text-left font-semibold">ชื่อภาษาจีน</th>
-                  <th className="px-2 py-2 text-left font-semibold">จุดจัดเก็บ</th>
-                  <th className="px-2 py-2 text-left font-semibold">รหัสหน้ายาง</th>
-                  <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
-                  <th className="px-2 py-2 text-center font-semibold">จุดสั่งซื้อ</th>
-                  {canSeeCost && <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>}
-                  <th className="px-2 py-2 text-right font-semibold">Safety Stock</th>
-                  <th className="px-2 py-2 text-right font-semibold rounded-tr-xl">การจัดการ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="px-3 py-2.5 text-center font-semibold">ประเภท</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
+                  <th className="px-3 py-2.5 text-left font-semibold">หมวดหมู่</th>
+                  <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-3 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
                 {products.map((product, idx) => (
                   <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="px-2 py-1.5">
+                    <td className="px-3 py-2">
                       <ProductImage
                         code={product.product_code}
                         name={product.product_name}
                       />
                     </td>
-                    <td className="px-2 py-1.5 font-semibold text-surface-900">{product.product_code}</td>
-                    <td className="px-2 py-1.5 text-surface-800">{product.product_name}</td>
-                    <td className="px-2 py-1.5 text-center">
-                      <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
+                    <td className="px-3 py-2 font-semibold text-surface-900">{product.product_code}</td>
+                    <td className="px-3 py-2 text-surface-800">{product.product_name}</td>
+                    <td className="px-3 py-2 text-center">
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${product.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : product.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
                         {product.product_type}
                       </span>
                     </td>
-                    <td className="px-2 py-1.5 text-surface-700">{product.seller_name || '-'}</td>
-                    <td className="px-2 py-1.5 text-surface-700">{product.product_name_cn || '-'}</td>
-                    <td className="px-2 py-1.5 text-surface-700">{product.storage_location || '-'}</td>
-                    <td className="px-2 py-1.5 text-surface-700">{product.rubber_code || '-'}</td>
-                    <td className="px-2 py-1.5 text-surface-700">{product.product_category || '-'}</td>
-                    <td className="px-2 py-1.5 text-center text-surface-700">{product.order_point || '-'}</td>
-                    {canSeeCost && <td className="px-2 py-1.5 text-right text-surface-700">{product.unit_cost != null ? Number(product.unit_cost).toLocaleString() : '-'}</td>}
-                    <td className="px-2 py-1.5 text-right text-surface-700">{product.safety_stock != null ? Number(product.safety_stock).toLocaleString() : '-'}</td>
-                    <td className="px-2 py-1.5 text-right">
-                      <div className="flex gap-1.5 justify-end">
+                    <td className="px-3 py-2 text-surface-700">{product.seller_name || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.product_name_cn || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.storage_location || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>
+                    <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>
+                    <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex gap-2 justify-end">
                         <button
                           type="button"
                           onClick={() => openEdit(product)}
-                          className="px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-xs font-semibold"
+                          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
                         >
                           แก้ไข
                         </button>
@@ -661,7 +658,7 @@ export default function Products() {
                           type="button"
                           onClick={() => openDeleteConfirm(product)}
                           disabled={deletingId === product.id}
-                          className="px-2 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 text-xs font-semibold disabled:opacity-50"
+                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
                         >
                           {deletingId === product.id ? 'กำลังลบ...' : 'ลบ'}
                         </button>

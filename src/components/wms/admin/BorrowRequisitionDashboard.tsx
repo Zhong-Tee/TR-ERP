@@ -627,10 +627,10 @@ export default function BorrowRequisitionDashboard() {
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">ประเภทสินค้า</label>
                 <div className="flex gap-2">
-                  {(['FG', 'RM'] as ProductType[]).map((pt) => (
+                  {(['FG', 'RM', 'PP'] as ProductType[]).map((pt) => (
                     <button key={pt} type="button" onClick={() => { setCrProductType(pt); loadCrAllProducts(pt); setCrProducts([]); setCrSearchTerm('') }}
                       className={`flex-1 py-2 rounded-lg text-sm font-bold ${crProductType === pt ? 'bg-cyan-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
-                      {pt === 'FG' ? 'สินค้าสำเร็จรูป' : 'วัตถุดิบ'}
+                      {pt === 'FG' ? 'สินค้าสำเร็จรูป' : pt === 'RM' ? 'วัตถุดิบ' : 'สินค้าแปรรูป'}
                     </button>
                   ))}
                 </div>

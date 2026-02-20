@@ -316,8 +316,21 @@ export default function WarehouseAdjust() {
         )
       }
 
-      // อัปเดต safety_stock ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N queries)
+      // ตรวจสอบก่อนว่า on_hand เพียงพอสำหรับย้ายเข้า safety stock
       const safetyItems = (items || []).filter((i) => i.new_safety_stock != null)
+      for (const si of safetyItems) {
+        const curBal = balances[si.product_id]
+        const onHandAfterAdjust = (curBal?.on_hand ?? 0) + Number(qtyItems.find((q) => q.product_id === si.product_id)?.qty_delta ?? 0)
+        const curSafety = curBal?.safety_stock ?? 0
+        const newSafety = Number(si.new_safety_stock)
+        const delta = newSafety - curSafety
+        if (delta > 0 && delta > onHandAfterAdjust) {
+          showNotify('error', 'on_hand ไม่เพียงพอ', `สินค้า ${productIdMap[si.product_id]?.product_code || si.product_id} — ต้องการย้าย ${delta} แต่ on_hand หลังปรับมีเพียง ${onHandAfterAdjust}`)
+          setUpdating(null)
+          return
+        }
+      }
+
       if (safetyItems.length) {
         await bulkUpdateSafetyStock(
           safetyItems.map((item) => ({
@@ -694,14 +707,24 @@ const DraftItemsList = React.memo(function DraftItemsList({
             />
           </div>
           <div className="col-span-2">
-            <input
-              type="number"
-              min="0"
-              value={item.safety_stock ?? ''}
-              onChange={(e) => onUpdate(index, { safety_stock: e.target.value !== '' ? Number(e.target.value) : null })}
-              placeholder="0"
-              className="w-full px-3 py-2 border rounded-lg text-center text-sm"
-            />
+            {(() => {
+              const b = item.product_id ? balances[item.product_id] : null
+              const totalPhysical = (b?.on_hand ?? 0) + (b?.safety_stock ?? 0)
+              const overLimit = item.safety_stock != null && item.safety_stock > totalPhysical && totalPhysical > 0
+              return (
+                <>
+                  <input
+                    type="number"
+                    min="0"
+                    value={item.safety_stock ?? ''}
+                    onChange={(e) => onUpdate(index, { safety_stock: e.target.value !== '' ? Number(e.target.value) : null })}
+                    placeholder="0"
+                    className={`w-full px-3 py-2 border rounded-lg text-center text-sm ${overLimit ? 'border-red-400 bg-red-50' : ''}`}
+                  />
+                  {overLimit && <p className="text-xs text-red-500 mt-0.5 text-center">เกินสต๊อครวม ({totalPhysical})</p>}
+                </>
+              )
+            })()}
           </div>
           <div className="col-span-2">
             <input

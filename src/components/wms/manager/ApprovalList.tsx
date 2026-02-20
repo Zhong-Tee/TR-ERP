@@ -38,15 +38,18 @@ export default function ApprovalList() {
       const { data, error } = await query
       if (error) throw error
 
-      const requisitionsWithUsers = await Promise.all(
-        (data || []).map(async (req: any) => {
-          const [createdByUser, approvedByUser] = await Promise.all([
-            supabase.from('us_users').select('username').eq('id', req.created_by).single(),
-            req.approved_by ? supabase.from('us_users').select('username').eq('id', req.approved_by).single() : Promise.resolve({ data: null }),
-          ])
-          return { ...req, created_by_user: createdByUser.data, approved_by_user: approvedByUser.data }
-        })
-      )
+      const rows = data || []
+      const userIds = [...new Set(rows.flatMap((r: any) => [r.created_by, r.approved_by].filter(Boolean)))]
+      const userMap = new Map<string, string>()
+      if (userIds.length > 0) {
+        const { data: users } = await supabase.from('us_users').select('id, username').in('id', userIds)
+        for (const u of (users ?? []) as { id: string; username: string }[]) userMap.set(u.id, u.username)
+      }
+      const requisitionsWithUsers = rows.map((req: any) => ({
+        ...req,
+        created_by_user: req.created_by ? { username: userMap.get(req.created_by) || '-' } : null,
+        approved_by_user: req.approved_by ? { username: userMap.get(req.approved_by) || '-' } : null,
+      }))
 
       setRequisitions(requisitionsWithUsers)
     } catch (error: any) {
