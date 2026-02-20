@@ -76,7 +76,7 @@ export default function InterviewSchedule() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
   const [importOpen, setImportOpen] = useState(false)
-  const [importFile, setImportFile] = useState<File | null>(null)
+  const [, setImportFile] = useState<File | null>(null)
   const [parsedRecords, setParsedRecords] = useState<SiamIdRecord[]>([])
   const [selectedImportIds, setSelectedImportIds] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)

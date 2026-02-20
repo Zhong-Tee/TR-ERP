@@ -999,7 +999,7 @@ export function parseOldBuildingExcel(file: ArrayBuffer): ParsedAttendanceResult
       if (!row || !row[0]) continue
       const no = String(row[0])
       if (!/^\d+$/.test(no)) continue
-      const name = String(row[1] || '')
+      void String(row[1] || '')
 
       for (let d = 3; d < row.length; d++) {
         const dayNum = dayHeaders[d - 3]

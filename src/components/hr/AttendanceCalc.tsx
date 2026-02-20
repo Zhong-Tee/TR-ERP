@@ -86,10 +86,10 @@ function SummaryTable({
                       ? Number((row as Record<string, unknown>).actual_hours).toFixed(1)
                       : '-'}
                   </td>
-                  <td className="p-2">{(row as Record<string, unknown>).late_count ?? 0}</td>
-                  <td className="p-2">{(row as Record<string, unknown>).late_minutes ?? 0}</td>
-                  <td className="p-2">{(row as Record<string, unknown>).absent_days ?? 0}</td>
-                  <td className="p-2">{(row as Record<string, unknown>).leave_days ?? 0}</td>
+                  <td className="p-2">{Number((row as Record<string, unknown>).late_count ?? 0)}</td>
+                  <td className="p-2">{Number((row as Record<string, unknown>).late_minutes ?? 0)}</td>
+                  <td className="p-2">{Number((row as Record<string, unknown>).absent_days ?? 0)}</td>
+                  <td className="p-2">{Number((row as Record<string, unknown>).leave_days ?? 0)}</td>
                   <td className="p-2">
                     {(row as Record<string, unknown>).overtime_hours != null
                       ? Number((row as Record<string, unknown>).overtime_hours).toFixed(1)
@@ -114,7 +114,7 @@ function SummaryTable({
                             </tr>
                           </thead>
                           <tbody>
-                            {dailies.map((d: Record<string, unknown>) => (
+                            {dailies.map((d) => (
                               <tr key={String(d.work_date)} className="border-b border-emerald-100">
                                 <td className="py-1 pr-2">{String(d.work_date ?? '')}</td>
                                 <td className="py-1 pr-2">{String(d.shift_code ?? '-')}</td>

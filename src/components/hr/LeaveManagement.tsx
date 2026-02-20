@@ -53,7 +53,7 @@ function medicalCertUrl(url: string | undefined): string | null {
 
 export default function LeaveManagement() {
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
-  const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
+  const [, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'list' | 'approval'>('list')

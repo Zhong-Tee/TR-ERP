@@ -4,7 +4,6 @@ import {
   fetchEmployees,
   fetchDepartments,
   deleteEmployee,
-  uploadHRFile,
   getHRFileUrl,
 } from '../../lib/hrApi'
 import type { HREmployee, HRDepartment } from '../../types'

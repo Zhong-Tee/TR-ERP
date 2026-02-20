@@ -11,7 +11,7 @@ import {
   getHRFileUrl,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
-import type { HROnboardingPlan, HROnboardingProgress, HRExam, HRExamResult, HREmployee } from '../../../types'
+import type { HROnboardingPlan, HROnboardingProgress, HRExam, HREmployee } from '../../../types'
 
 const BUCKET_DOCS = 'hr-docs'
 

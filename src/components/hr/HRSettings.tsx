@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  fetchDepartments, upsertDepartment, deleteDepartment,
-  fetchPositions, upsertPosition, deletePosition,
-  fetchLeaveTypes, upsertLeaveType,
-  fetchCareerTracks, upsertCareerTrack, fetchCareerLevels, upsertCareerLevel, deleteCareerLevel,
-  fetchOnboardingTemplates, upsertOnboardingTemplate,
-  fetchNotificationSettings, upsertNotificationSettings,
+  fetchDepartments,
+  fetchPositions,
+  fetchLeaveTypes,
+  fetchCareerTracks, fetchCareerLevels,
+  fetchOnboardingTemplates,
+  fetchNotificationSettings,
   fetchEmployees,
 } from '../../lib/hrApi'
 import type { HRDepartment, HRPosition, HRLeaveType, HRCareerTrack, HRCareerLevel, HROnboardingTemplate, HRNotificationSettings } from '../../types'
@@ -25,7 +25,7 @@ export default function HRSettings() {
   const [levels, setLevels] = useState<HRCareerLevel[]>([])
   const [templates, setTemplates] = useState<HROnboardingTemplate[]>([])
   const [notifSettings, setNotifSettings] = useState<HRNotificationSettings | null>(null)
-  const [employees, setEmployees] = useState<Awaited<ReturnType<typeof fetchEmployees>>>([])
+  const [, setEmployees] = useState<Awaited<ReturnType<typeof fetchEmployees>>>([])
 
   const loadAll = useCallback(async () => {
     setLoading(true)

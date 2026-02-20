@@ -16,7 +16,7 @@ import {
   fetchRecipeProductIds,
   validateProductionItems,
 } from '../../lib/productionApi'
-import type { Product, PpProductionOrder, PpProductionOrderItem, ProductionOrderStatus } from '../../types'
+import type { Product, PpProductionOrder, PpProductionOrderItem } from '../../types'
 import ProductImageHover from '../ui/ProductImageHover'
 import Modal from '../ui/Modal'
 
