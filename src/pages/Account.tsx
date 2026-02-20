@@ -174,15 +174,6 @@ export default function Account() {
   /** ป้องกันกระพริบ: แสดง spinner เฉพาะครั้งแรกเท่านั้น */
   const initialLoadDone = useRef(false)
 
-  function copyToClipboard(text: string) {
-    if (!text) return
-    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch((err) => {
-        console.error('Failed to copy text:', err)
-      })
-    }
-  }
-
   async function fetchOrderForView(orderId: string) {
     setViewOrderLoading(true)
     setViewOrder(null)
