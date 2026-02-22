@@ -110,7 +110,8 @@ const emptyForm = () => ({
 
 export default function Products() {
   const { user } = useAuthContext()
-  const _canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
+  /* reserved for future cost visibility check */
+  void COST_VISIBLE_ROLES
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [searchInput, setSearchInput] = useState('')

@@ -167,7 +167,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       ])
       const issueIds = [...new Set((issues || []).map((r: any) => r.issue_id))]
       const orderIds = [...new Set((orders || []).map((r: any) => r.order_id))]
-      const promises: Promise<any>[] = []
+      const promises: PromiseLike<any>[] = []
       if (issueIds.length > 0) {
         promises.push(
           supabase.from('or_issue_reads').upsert(
