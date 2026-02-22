@@ -173,7 +173,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           supabase.from('or_issue_reads').upsert(
             issueIds.map((id) => ({ issue_id: id, user_id: user.id, last_read_at: now })),
             { onConflict: 'issue_id,user_id' }
-          )
+          ).then()
         )
       }
       if (orderIds.length > 0) {
@@ -181,7 +181,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           supabase.from('or_order_chat_reads').upsert(
             orderIds.map((id) => ({ order_id: id, user_id: user.id, last_read_at: now })),
             { onConflict: 'order_id,user_id' }
-          )
+          ).then()
         )
       }
       await Promise.all(promises)

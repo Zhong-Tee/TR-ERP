@@ -214,7 +214,7 @@ function getLatestActualEndSecForDept(job: PlanJob, dept: string): number {
   return (d.getTime() - dayStart.getTime()) / 1000
 }
 
-function getEarliestActualStartSecForDept(job: PlanJob, dept: string): number {
+export function getEarliestActualStartSecForDept(job: PlanJob, dept: string): number {
   const tracks = job.tracks?.[dept] || {}
   let earliestStart = ''
   Object.values(tracks).forEach((track) => {
@@ -228,7 +228,7 @@ function getEarliestActualStartSecForDept(job: PlanJob, dept: string): number {
   return (d.getTime() - dayStart.getTime()) / 1000
 }
 
-function getPlannedStartSecForDept(
+export function getPlannedStartSecForDept(
   dept: string,
   job: PlanJob,
   precomputed: Record<string, TimelineItem[]>

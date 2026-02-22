@@ -244,7 +244,7 @@ function getEarliestActualStartSecForDept(job: PlanJob, dept: string): number {
   return (d.getTime() - dayStart.getTime()) / 1000
 }
 
-function getPlannedStartSecForDept(
+function _getPlannedStartSecForDept(
   dept: string,
   job: PlanJob,
   precomputed: Record<string, { id: string; start: number; end: number; line: number }[]>
