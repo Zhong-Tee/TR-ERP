@@ -87,7 +87,7 @@ async function findOrCreateFolder(
     `name='${name}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
   )
   const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id)&pageSize=1`,
+    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id)&pageSize=1&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=allDrives`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   )
   if (searchRes.ok) {
@@ -95,7 +95,7 @@ async function findOrCreateFolder(
     if (files && files.length > 0) return files[0].id as string
   }
 
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+  const createRes = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -135,7 +135,7 @@ async function uploadFileToDrive(
   const body = new Blob([metaPart, filePart, blob, closing])
 
   const res = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink',
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true',
     {
       method: 'POST',
       headers: {

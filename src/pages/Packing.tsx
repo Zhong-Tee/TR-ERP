@@ -1083,7 +1083,10 @@ export default function Packing() {
       return false
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false,
+      })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -1134,7 +1137,10 @@ export default function Packing() {
 
       const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
-      const recorder = new MediaRecorder(streamRef.current, mimeType ? { mimeType } : undefined)
+      const recorder = new MediaRecorder(streamRef.current, {
+        mimeType: mimeType || undefined,
+        videoBitsPerSecond: 5_000_000,
+      })
       recorderRef.current = recorder
       recordingChunksRef.current = []
       recordingStartRef.current = Date.now()
