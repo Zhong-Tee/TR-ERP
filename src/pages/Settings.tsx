@@ -429,6 +429,8 @@ export default function Settings() {
     { key: 'hr-documents', label: 'กฏระเบียบ/SOP', group: 'hr' },
     { key: 'hr-onboarding', label: 'รับพนักงานใหม่', group: 'hr' },
     { key: 'hr-salary', label: 'เส้นทางเงินเดือน', group: 'hr' },
+    { key: 'hr-warnings', label: 'ใบเตือน', group: 'hr' },
+    { key: 'hr-certificates', label: 'ใบรับรอง', group: 'hr' },
     { key: 'hr-settings', label: 'ตั้งค่า HR', group: 'hr' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },
@@ -455,7 +457,7 @@ export default function Settings() {
       settingsRoles.forEach((role) => {
         map[role] = {}
         MENU_ROLE_OPTIONS.forEach((menu) => {
-          map[role][menu.key] = true
+          map[role][menu.key] = false
         })
       })
       ;(data || []).forEach((row: any) => {
@@ -1959,27 +1961,28 @@ export default function Settings() {
                   return (
                     <tr
                       key={menu.key}
-                      className={`transition-colors hover:bg-blue-50 ${
+                      className={`transition-colors duration-150 ${
                         isSub
-                          ? 'bg-gray-50/70'
-                          : 'bg-white border-t-2 border-gray-300'
+                          ? 'bg-gray-50/70 hover:bg-blue-100'
+                          : 'bg-white border-t-2 border-gray-300 hover:bg-blue-200/60'
                       }`}
                     >
                       <td
-                        className={`p-2 whitespace-nowrap sticky left-0 z-[5] ${
+                        className={`p-2 whitespace-nowrap sticky left-0 z-[5] transition-colors duration-150 ${
                           isSub
-                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 border-l-2 border-blue-200'
+                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 border-l-2 border-blue-200 group-hover:bg-blue-100'
                             : 'font-bold text-gray-800 bg-white'
                         }`}
+                        style={{ backgroundColor: 'inherit' }}
                       >
                         {isSub && <span className="text-blue-300 mr-1">└</span>}
                         {menu.label}
                       </td>
                       {settingsRoles.map((role) => (
-                        <td key={role} className={`p-2 text-center ${isSub ? 'bg-gray-50/70' : 'bg-white'}`}>
+                        <td key={role} className="p-2 text-center" style={{ backgroundColor: 'inherit' }}>
                           <input
                             type="checkbox"
-                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500"
+                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
                             checked={roleMenus?.[role]?.[menu.key] ?? false}
                             onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
                           />
