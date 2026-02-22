@@ -265,14 +265,14 @@ export default function ContractTemplates() {
 
   if (loading) {
     return (
-      <div className="rounded-xl bg-white p-6 shadow-soft">
+      <div className="mt-4 rounded-xl bg-white p-6 shadow-soft">
         <p className="text-emerald-600">กำลังโหลด...</p>
       </div>
     )
   }
 
   return (
-    <div className="flex gap-6 rounded-xl bg-white p-6 shadow-soft">
+    <div className="mt-4 flex gap-6 rounded-xl bg-white p-6 shadow-soft">
       <section className="w-72 shrink-0 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-emerald-900">เทมเพลตสัญญา</h2>

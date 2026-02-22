@@ -323,7 +323,7 @@ export default function AttendanceCalc() {
   })()
 
   return (
-    <div className="space-y-6 rounded-xl bg-white p-6 shadow-soft">
+    <div className="mt-4 space-y-6 rounded-xl bg-white p-6 shadow-soft">
       <h2 className="text-lg font-semibold text-emerald-900">คำนวณเวลาทำงาน (จากไฟล์สแกนลายนิ้วมือ)</h2>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

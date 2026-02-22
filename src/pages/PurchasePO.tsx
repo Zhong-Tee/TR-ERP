@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import html2canvas from 'html2canvas'
 import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
 import type { InventoryPO, InventoryPR } from '../types'
 import type { InventoryGR } from '../types'
@@ -10,6 +11,7 @@ import {
   loadApprovedPRsWithoutPO,
   convertPRtoPO,
   markPOOrdered,
+  updatePO,
   updatePOShipping,
   loadSellers,
   loadUserDisplayNames,
@@ -18,6 +20,7 @@ import {
   recalcPOLandedCost,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
+import ZoomImage from '../components/ui/ZoomImage'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   open: { label: 'เปิด', color: 'bg-blue-100 text-blue-800' },
@@ -35,35 +38,6 @@ const SHIPPING_METHODS = [
   { value: 'other', label: 'อื่นๆ' },
 ]
 
-function ZoomImage({ src }: { src: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
-
-  const handleEnter = () => {
-    if (!ref.current) return
-    const rect = ref.current.getBoundingClientRect()
-    setPos({ top: rect.top, left: rect.right + 8 })
-  }
-  const handleLeave = () => setPos(null)
-
-  return (
-    <div ref={ref} className="w-12 h-12 flex-shrink-0 cursor-pointer" onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
-      <div className="w-12 h-12 rounded-lg bg-gray-200 overflow-hidden">
-        <img src={src} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-      </div>
-      {pos && (
-        <img
-          src={src}
-          alt=""
-          className="fixed w-48 h-48 object-cover rounded-xl shadow-2xl border-2 border-white pointer-events-none"
-          style={{ top: pos.top, left: pos.left, zIndex: 9999 }}
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-        />
-      )}
-    </div>
-  )
-}
-
 interface PriceEdit {
   product_id: string
   unit_price: number | null
@@ -71,12 +45,16 @@ interface PriceEdit {
 
 export default function PurchasePO() {
   const { user } = useAuthContext()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   // list
   const [pos, setPos] = useState<InventoryPO[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` })
+  const [dateTo, setDateTo] = useState('')
 
   // create from PR
   const [availablePRs, setAvailablePRs] = useState<InventoryPR[]>([])
@@ -122,6 +100,14 @@ export default function PurchasePO() {
   const [resolutions, setResolutions] = useState<{ po_item_id: string; product_name: string; qty_outstanding: number; resolution_type: string; resolution_note: string }[]>([])
   const [resolveSaving, setResolveSaving] = useState(false)
 
+  // Edit PO modal
+  const [editOpen, setEditOpen] = useState(false)
+  const [editPO, setEditPO] = useState<InventoryPO | null>(null)
+  const [editItems, setEditItems] = useState<{ item_id: string; product_code: string; product_name: string; qty: number; unit_price: number | null; note: string }[]>([])
+  const [editNote, setEditNote] = useState('')
+  const [editArrival, setEditArrival] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+
   // Partial PO count for badge
   const partialCount = useMemo(() => pos.filter((p) => p.status === 'partial').length, [pos])
 
@@ -142,23 +128,32 @@ export default function PurchasePO() {
       link.click()
     } catch (e) {
       console.error('Export failed:', e)
-      alert('ดาวน์โหลดไม่สำเร็จ')
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ดาวน์โหลดไม่สำเร็จ' })
     } finally {
       setExporting(false)
     }
   }, [viewing])
 
-  useEffect(() => { loadAll() }, [statusFilter, search])
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 400)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => { loadAll() }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo])
 
   async function loadAll() {
     setLoading(true)
     try {
       const [poData, prData, sellerData] = await Promise.all([
-        loadPOList({ status: statusFilter, search }),
+        loadPOList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
         availablePRs.length ? Promise.resolve(availablePRs) : loadApprovedPRsWithoutPO(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
-      setPos(poData)
+      const filtered = typeFilter !== 'all'
+        ? poData.filter((po: any) => po.inv_pr?.pr_type === typeFilter)
+        : poData
+      setPos(filtered)
       if (!availablePRs.length) setAvailablePRs(prData)
       if (!sellers.length) setSellers(sellerData as any)
 
@@ -167,6 +162,7 @@ export default function PurchasePO() {
         const names = await loadUserDisplayNames(uids)
         setUserMap((prev) => ({ ...prev, ...names }))
       }
+      window.dispatchEvent(new CustomEvent('purchase-badge-refresh'))
     } catch (e) {
       console.error('Load PO failed:', e)
     } finally {
@@ -181,8 +177,13 @@ export default function PurchasePO() {
       product_id: i.product_id,
       unit_price: i.estimated_price ?? null,
     })))
-    setSelectedSellerId('')
-    setSelectedSellerName('')
+    if (pr.supplier_id && pr.supplier_name) {
+      setSelectedSellerId(pr.supplier_id)
+      setSelectedSellerName(pr.supplier_name)
+    } else {
+      setSelectedSellerId('')
+      setSelectedSellerName('')
+    }
     setPoNote('')
     setExpectedArrival('')
     setCreateOpen(true)
@@ -231,19 +232,21 @@ export default function PurchasePO() {
       setAvailablePRs([])
       await loadAll()
     } catch (e: any) {
-      alert('สร้าง PO ไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'สร้าง PO ไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setSaving(false)
     }
   }
 
   async function handleMarkOrdered(po: InventoryPO) {
+    const ok = await showConfirm({ title: 'สั่งซื้อแล้ว', message: `ยืนยันเปลี่ยนสถานะ PO ${po.po_no} เป็น "สั่งซื้อแล้ว" ?`, confirmText: 'ยืนยัน' })
+    if (!ok) return
     setUpdating(po.id)
     try {
       await markPOOrdered(po.id, user?.id || '')
       await loadAll()
     } catch (e: any) {
-      alert('ไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setUpdating(null)
     }
@@ -300,7 +303,7 @@ export default function PurchasePO() {
         intl_shipping_currency: shippingForm.currency,
         intl_exchange_rate: shippingForm.exchangeRate ? Number(shippingForm.exchangeRate) : undefined,
         intl_shipping_cost_thb: costThb || undefined,
-        grand_total: total + costThb || undefined,
+        grand_total: (total + costThb) > 0 ? total + costThb : undefined,
       })
       await recalcPOLandedCost(shippingPO.id)
       setShippingOpen(false)
@@ -310,7 +313,7 @@ export default function PurchasePO() {
       }
       await loadAll()
     } catch (e: any) {
-      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setShippingSaving(false)
     }
@@ -337,11 +340,64 @@ export default function PurchasePO() {
     setResolveOpen(true)
   }
 
+  function openEditPO(po: InventoryPO) {
+    setEditPO(po)
+    setEditNote(po.note || '')
+    setEditArrival(po.expected_arrival_date ? String(po.expected_arrival_date).split('T')[0] : '')
+    const items = (po.inv_po_items || []) as any[]
+    setEditItems(
+      items.map((item: any) => ({
+        item_id: item.id,
+        product_code: item.pr_products?.product_code || '',
+        product_name: item.pr_products?.product_name || '',
+        qty: Number(item.qty) || 0,
+        unit_price: item.unit_price != null ? Number(item.unit_price) : null,
+        note: item.note || '',
+      }))
+    )
+    setEditOpen(true)
+  }
+
+  const editTotalAmount = useMemo(() => {
+    return editItems.reduce((sum, item) => sum + (item.qty * (item.unit_price ?? 0)), 0)
+  }, [editItems])
+
+  async function handleSaveEditPO() {
+    if (!editPO) return
+    const ok = await showConfirm({ title: 'แก้ไข PO', message: `ยืนยันบันทึกการแก้ไข PO ${editPO.po_no} ?`, confirmText: 'บันทึก' })
+    if (!ok) return
+    setEditSaving(true)
+    try {
+      await updatePO({
+        poId: editPO.id,
+        note: editNote.trim() || undefined,
+        expectedArrivalDate: editArrival || null,
+        items: editItems.map((i) => ({
+          item_id: i.item_id,
+          unit_price: i.unit_price,
+          qty: i.qty,
+          note: i.note || undefined,
+        })),
+      })
+      setEditOpen(false)
+      setEditPO(null)
+      if (viewing && viewing.id === editPO.id) {
+        const detail = await loadPODetail(editPO.id)
+        setViewing(detail)
+      }
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'แก้ไข PO ไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
   async function handleSaveResolution() {
     if (!resolvePO) return
     const toResolve = resolutions.filter((r) => r.resolution_type !== 'waiting')
     if (toResolve.length === 0) {
-      alert('กรุณาเลือกวิธีจัดการอย่างน้อย 1 รายการ')
+      showMessage({ message: 'กรุณาเลือกวิธีจัดการอย่างน้อย 1 รายการ' })
       return
     }
     setResolveSaving(true)
@@ -368,7 +424,7 @@ export default function PurchasePO() {
       }
       await loadAll()
     } catch (e: any) {
-      alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setResolveSaving(false)
     }
@@ -431,6 +487,23 @@ export default function PurchasePO() {
               </button>
             ))}
           </div>
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: 'all', label: 'ทุกประเภท' },
+              { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
+              { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
           <div className="flex-1 min-w-[200px]">
             <input
               type="text"
@@ -440,6 +513,9 @@ export default function PurchasePO() {
               className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
             />
           </div>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ตั้งแต่วันที่" />
+          <span className="text-gray-400 text-sm">-</span>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ถึงวันที่" />
         </div>
       </div>
 
@@ -515,6 +591,12 @@ export default function PurchasePO() {
                           {po.status === 'open' && (
                             <>
                               <button
+                                onClick={async () => { const d = await loadPODetail(po.id); openEditPO(d) }}
+                                className="px-4 py-2 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"
+                              >
+                                แก้ไข
+                              </button>
+                              <button
                                 onClick={() => openShipping(po)}
                                 className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
                               >
@@ -555,25 +637,38 @@ export default function PurchasePO() {
 
           {selectedPR && (
             <>
-              <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                <span className="font-semibold text-blue-800">PR: {selectedPR.pr_no}</span>
+              <div className="bg-blue-50 rounded-lg p-3 text-sm space-y-1">
+                <div><span className="font-semibold text-blue-800">PR: {selectedPR.pr_no}</span></div>
+                {selectedPR.note && (
+                  <div className="text-blue-700"><span className="font-medium">หมายเหตุ:</span> {selectedPR.note}</div>
+                )}
+                {selectedPR.supplier_name && (
+                  <div className="text-blue-700"><span className="font-medium">ผู้ขาย:</span> {selectedPR.supplier_name}</div>
+                )}
               </div>
 
               {/* supplier selection */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">ผู้จัดจำหน่าย</label>
-                <select
-                  value={selectedSellerId}
-                  onChange={(e) => onSellerChange(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-                >
-                  <option value="">-- เลือกผู้จัดจำหน่าย --</option>
-                  {sellers.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} {s.name_cn ? `(${s.name_cn})` : ''}
-                    </option>
-                  ))}
-                </select>
+                {selectedPR?.supplier_id ? (
+                  <div className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-100 text-gray-700 font-medium">
+                    {selectedSellerName || '-'}
+                    <span className="text-xs text-gray-400 ml-2">(จาก PR)</span>
+                  </div>
+                ) : (
+                  <select
+                    value={selectedSellerId}
+                    onChange={(e) => onSellerChange(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                  >
+                    <option value="">-- เลือกผู้จัดจำหน่าย --</option>
+                    {sellers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.name_cn ? `(${s.name_cn})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* items with price edit */}
@@ -599,7 +694,7 @@ export default function PurchasePO() {
                         <tr key={item.id || item.product_id}>
                           <td className="px-3 py-2">
                             {imgUrl ? (
-                              <ZoomImage src={imgUrl} />
+                              <ZoomImage src={imgUrl} size="w-12 h-12" />
                             ) : (
                               <div className="w-12 h-12 rounded-lg bg-gray-200 flex items-center justify-center text-gray-400 text-[10px]">-</div>
                             )}
@@ -792,6 +887,7 @@ export default function PurchasePO() {
                           )}
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -847,6 +943,7 @@ export default function PurchasePO() {
                               )}
                               <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
                               <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                              <td className="px-3 py-2 text-gray-500 max-w-[140px] truncate text-xs">{item.note || '-'}</td>
                             </tr>
                           )
                         })}
@@ -939,7 +1036,7 @@ export default function PurchasePO() {
                               )}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle', fontSize: 16, fontWeight: 600 }}>
-                              {Number(item.qty).toLocaleString()} {item.unit || ''}
+                              {Number(item.qty).toLocaleString()}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{prod?.product_name_cn || '-'}</div>
@@ -953,6 +1050,15 @@ export default function PurchasePO() {
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t">
+                {viewing.status === 'open' && (
+                  <button
+                    onClick={() => openEditPO(viewing)}
+                    className="px-5 py-2.5 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"
+                  >
+                    <i className="fas fa-edit mr-1"></i>
+                    แก้ไข PO
+                  </button>
+                )}
                 <button
                   onClick={handleExportPNG}
                   disabled={exporting}
@@ -1155,6 +1261,119 @@ export default function PurchasePO() {
           </div>
         </div>
       </Modal>
+      {/* ── Edit PO Modal ── */}
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
+        <div className="p-6 space-y-5">
+          <h2 className="text-xl font-bold text-gray-900">แก้ไขใบสั่งซื้อ (PO)</h2>
+          {editPO && (
+            <>
+              <div className="bg-amber-50 rounded-lg p-3 text-sm">
+                <span className="font-semibold text-amber-800">PO: {editPO.po_no}</span>
+                {editPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {editPO.supplier_name}</span>}
+              </div>
+
+              <div className="overflow-x-auto border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b">
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รหัสสินค้า</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-40">หมายเหตุ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {editItems.map((item, idx) => {
+                      const subtotal = item.qty * (item.unit_price ?? 0)
+                      return (
+                        <tr key={item.item_id}>
+                          <td className="px-3 py-2 text-gray-600">{item.product_code}</td>
+                          <td className="px-3 py-2 font-medium">{item.product_name}</td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min={1}
+                              value={item.qty}
+                              onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, qty: Number(e.target.value) || 0 } : r))}
+                              className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step={0.01}
+                              value={item.unit_price ?? ''}
+                              onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, unit_price: e.target.value ? Number(e.target.value) : null } : r))}
+                              className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
+                              placeholder="0.00"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium">
+                            {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="text"
+                              value={item.note}
+                              onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, note: e.target.value } : r))}
+                              className="w-full px-2 py-1.5 border rounded-lg text-xs"
+                              placeholder="หมายเหตุ"
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-gray-50 border-t">
+                      <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                      <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
+                        {editTotalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">วันที่คาดการณ์เข้าไทย</label>
+                <input
+                  type="date"
+                  value={editArrival}
+                  onChange={(e) => setEditArrival(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุ PO</label>
+                <textarea
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                  rows={2}
+                  placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2 border-t">
+                <button onClick={() => setEditOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
+                  ยกเลิก
+                </button>
+                <button onClick={handleSaveEditPO} disabled={editSaving} className="px-5 py-2.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 text-sm font-semibold">
+                  {editSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

@@ -343,7 +343,7 @@ export default function InterviewSchedule() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="mt-4 space-y-6">
       <div className="rounded-xl bg-white shadow-soft border border-surface-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-200 flex flex-wrap items-center justify-between gap-4">
           <h2 className="text-lg font-semibold text-surface-800">สัมภาษณ์และคะแนน</h2>

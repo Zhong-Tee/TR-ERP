@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
 import type { InventoryGR, InventoryPO } from '../types'
 import {
@@ -26,15 +27,20 @@ interface ReceiveItem {
   qty_received: number
   qty_already_received: number
   shortage_note: string
+  item_note?: string
 }
 
 export default function PurchaseGR() {
   const { user } = useAuthContext()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   const [grs, setGrs] = useState<InventoryGR[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` })
+  const [dateTo, setDateTo] = useState('')
 
   const [newPOs, setNewPOs] = useState<InventoryPO[]>([])
   const [partialPOs, setPartialPOs] = useState<InventoryPO[]>([])
@@ -54,17 +60,28 @@ export default function PurchaseGR() {
 
   const [viewing, setViewing] = useState<InventoryGR | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const posCacheRef = useRef<{ newPOs: InventoryPO[]; partialPOs: InventoryPO[] } | null>(null)
 
-  useEffect(() => { loadAll() }, [statusFilter, search])
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 400)
+    return () => clearTimeout(timer)
+  }, [search])
 
-  async function loadAll() {
+  useEffect(() => { loadAll() }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo])
+
+  async function loadAll(forceRefreshPOs = false) {
     setLoading(true)
     try {
       const [grData, poData] = await Promise.all([
-        loadGRList({ status: statusFilter, search }),
-        loadPOsForGR(),
+        loadGRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
+        (!forceRefreshPOs && posCacheRef.current) ? Promise.resolve(posCacheRef.current) : loadPOsForGR(),
       ])
-      setGrs(grData)
+      const filtered = typeFilter !== 'all'
+        ? grData.filter((gr: any) => gr.inv_po?.inv_pr?.pr_type === typeFilter)
+        : grData
+      setGrs(filtered)
+      posCacheRef.current = poData
       setNewPOs(poData.newPOs)
       setPartialPOs(poData.partialPOs)
 
@@ -73,6 +90,7 @@ export default function PurchaseGR() {
         const names = await loadUserDisplayNames(uids)
         setUserMap((prev) => ({ ...prev, ...names }))
       }
+      window.dispatchEvent(new CustomEvent('purchase-badge-refresh'))
     } catch (e) {
       console.error('Load GR failed:', e)
     } finally {
@@ -111,13 +129,14 @@ export default function PurchaseGR() {
             qty_received: remaining,
             qty_already_received: alreadyReceived,
             shortage_note: '',
+            item_note: item.note || '',
           }
         })
       setReceiveItems(items)
       setReceiveOpen(true)
     } catch (e) {
       console.error(e)
-      alert('โหลดรายการ PO ไม่สำเร็จ')
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'โหลดรายการ PO ไม่สำเร็จ' })
     }
   }
 
@@ -135,9 +154,16 @@ export default function PurchaseGR() {
   async function handleReceive() {
     if (!selectedPO) return
     if (receiveItems.some((i) => i.qty_received < 0)) {
-      alert('จำนวนรับไม่สามารถติดลบได้')
+      showMessage({ message: 'จำนวนรับไม่สามารถติดลบได้' })
       return
     }
+    const totalRcv = receiveItems.reduce((s, i) => s + i.qty_received, 0)
+    const totalOrd = receiveItems.reduce((s, i) => s + i.qty_ordered, 0)
+    const confirmMsg = totalRcv < totalOrd
+      ? `ยืนยันรับสินค้าบางส่วน (${totalRcv}/${totalOrd} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
+      : `ยืนยันรับสินค้าครบ (${totalRcv} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
+    const ok = await showConfirm({ title: 'รับสินค้า', message: confirmMsg, confirmText: 'ยืนยันรับ' })
+    if (!ok) return
     setSaving(true)
     try {
       await receiveGR({
@@ -158,9 +184,9 @@ export default function PurchaseGR() {
       })
       setReceiveOpen(false)
       setSelectedPO(null)
-      await loadAll()
+      await loadAll(true)
     } catch (e: any) {
-      alert('รับเข้าคลังไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'รับเข้าคลังไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setSaving(false)
     }
@@ -262,6 +288,23 @@ export default function PurchaseGR() {
               </button>
             ))}
           </div>
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: 'all', label: 'ทุกประเภท' },
+              { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
+              { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
           <div className="flex-1 min-w-[200px]">
             <input
               type="text"
@@ -271,6 +314,9 @@ export default function PurchaseGR() {
               className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
             />
           </div>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ตั้งแต่วันที่" />
+          <span className="text-gray-400 text-sm">-</span>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ถึงวันที่" />
         </div>
       </div>
 
@@ -319,7 +365,7 @@ export default function PurchaseGR() {
                       <td className="px-4 py-3 text-gray-600">{gr.received_by ? userMap[gr.received_by] || '-' : '-'}</td>
                       <td className="px-4 py-3 text-center text-gray-600">
                         <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : ''}>
-                          {grTotalOrdered}/{grTotalReceived}
+                          {grTotalReceived}/{grTotalOrdered}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
@@ -352,11 +398,24 @@ export default function PurchaseGR() {
             {isFollowUp ? 'รับสินค้าเพิ่ม (Follow-up GR)' : 'ตรวจรับสินค้า (GR)'}
           </h2>
           {selectedPO && (
-            <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
-              <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
-              {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
-              {isFollowUp && <span className="ml-3 text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
-            </div>
+            <>
+              <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
+                <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
+                {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
+                {isFollowUp && <span className="ml-3 text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+              </div>
+              {(selectedPO.note || (selectedPO as any).inv_pr?.note) && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm space-y-1">
+                  <div className="font-semibold text-amber-800 text-xs">หมายเหตุจากเอกสาร</div>
+                  {(selectedPO as any).inv_pr?.note && (
+                    <div className="text-amber-700"><span className="font-medium">PR:</span> {(selectedPO as any).inv_pr.note}</div>
+                  )}
+                  {selectedPO.note && (
+                    <div className="text-amber-700"><span className="font-medium">PO:</span> {selectedPO.note}</div>
+                  )}
+                </div>
+              )}
+            </>
           )}
 
           {/* items table */}
@@ -392,6 +451,9 @@ export default function PurchaseGR() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="font-medium">{item.product_code} - {item.product_name}</div>
+                        {item.item_note && (
+                          <div className="text-xs text-amber-600 mt-0.5">* {item.item_note}</div>
+                        )}
                       </td>
                       {isFollowUp && (
                         <td className="px-3 py-2 text-right text-blue-600 font-medium">{item.qty_already_received.toLocaleString()}</td>
@@ -579,6 +641,12 @@ export default function PurchaseGR() {
                 )}
               </div>
 
+              {viewing.note && (
+                <div className="bg-blue-50 rounded-lg p-3 text-sm">
+                  <span className="text-blue-600 font-medium">หมายเหตุ GR:</span> {viewing.note}
+                </div>
+              )}
+
               {viewing.shortage_note && (
                 <div className="bg-red-50 rounded-lg p-3 text-sm">
                   <span className="text-red-600 font-medium">หมายเหตุของขาดส่ง:</span> {viewing.shortage_note}
@@ -643,6 +711,8 @@ export default function PurchaseGR() {
           ) : null}
         </div>
       </Modal>
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

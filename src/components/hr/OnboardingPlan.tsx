@@ -144,10 +144,10 @@ export default function OnboardingPlan() {
     return Math.round((done / total) * 100)
   }
 
-  if (loading) return (<div className="flex justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
+  if (loading) return (<div className="mt-4 flex justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
 
   return (
-    <div className="space-y-6">
+    <div className="mt-4 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold text-gray-900">แผนปฐมนิเทศ</h1>
         <button type="button" onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 shadow-soft"><FiPlus /> สร้างแผนใหม่</button>

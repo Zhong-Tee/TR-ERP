@@ -38,6 +38,8 @@ const HR_ACCESS_MAP: Record<string, string> = {
   '/hr/documents': 'hr-documents',
   '/hr/onboarding': 'hr-onboarding',
   '/hr/salary': 'hr-salary',
+  '/hr/warnings': 'hr-warnings',
+  '/hr/certificates': 'hr-certificates',
   '/hr/settings': 'hr-settings',
 }
 
@@ -54,6 +56,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
+  const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })
 
   // ── รับค่า warehouse count จาก Sidebar RPC (ลด 2 queries + 1 realtime channel ซ้ำ) ──
   useEffect(() => {
@@ -65,11 +68,17 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       const count = (e as CustomEvent).detail?.count
       if (typeof count === 'number') setWarehousePendingReturnCount(count)
     }
+    const onPurchaseBadge = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (detail) setPurchaseBadge(detail)
+    }
     window.addEventListener('sidebar-warehouse-count', onWarehouseCount)
     window.addEventListener('sidebar-pending-return-count', onPendingReturnCount)
+    window.addEventListener('sidebar-purchase-badge', onPurchaseBadge)
     return () => {
       window.removeEventListener('sidebar-warehouse-count', onWarehouseCount)
       window.removeEventListener('sidebar-pending-return-count', onPendingReturnCount)
+      window.removeEventListener('sidebar-purchase-badge', onPurchaseBadge)
     }
   }, [])
 
@@ -292,6 +301,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/documents', label: 'กฏระเบียบ/SOP' },
     { path: '/hr/onboarding', label: 'รับพนักงานใหม่' },
     { path: '/hr/salary', label: 'เส้นทางเงินเดือน' },
+    { path: '/hr/warnings', label: 'ใบเตือน' },
+    { path: '/hr/certificates', label: 'ใบรับรอง' },
     { path: '/hr/settings', label: 'ตั้งค่า' },
   ].filter((tab) => hasAccess(HR_ACCESS_MAP[tab.path] || tab.path))
 
@@ -427,7 +438,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                     ? belowOrderPointCount
                     : tab.path === '/warehouse/returns' && warehousePendingReturnCount > 0
                       ? warehousePendingReturnCount
-                      : null
+                      : tab.path === '/purchase/pr' && purchaseBadge.pr_pending > 0
+                        ? purchaseBadge.pr_pending
+                        : tab.path === '/purchase/po' && purchaseBadge.pr_approved_no_po > 0
+                          ? purchaseBadge.pr_approved_no_po
+                          : tab.path === '/purchase/gr' && purchaseBadge.po_waiting_gr > 0
+                            ? purchaseBadge.po_waiting_gr
+                            : null
                   return (
                     <Link
                       key={tab.path}

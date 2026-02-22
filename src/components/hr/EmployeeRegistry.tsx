@@ -131,7 +131,7 @@ export default function EmployeeRegistry() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 mt-4">
       {/* Stats cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl shadow-soft border border-gray-100 p-4">

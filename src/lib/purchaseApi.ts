@@ -66,6 +66,7 @@ export interface PRListFilters {
   search?: string
   dateFrom?: string
   dateTo?: string
+  prType?: string
 }
 
 export async function loadPRList(filters: PRListFilters = {}): Promise<InventoryPR[]> {
@@ -85,6 +86,9 @@ export async function loadPRList(filters: PRListFilters = {}): Promise<Inventory
   }
   if (filters.dateTo) {
     q = q.lte('created_at', filters.dateTo + 'T23:59:59')
+  }
+  if (filters.prType && filters.prType !== 'all') {
+    q = q.eq('pr_type', filters.prType)
   }
 
   const { data, error } = await q
@@ -119,6 +123,8 @@ export interface CreatePRInput {
   note?: string
   userId?: string
   prType?: string
+  supplierId?: string
+  supplierName?: string
 }
 
 export async function createPR(input: CreatePRInput) {
@@ -127,33 +133,55 @@ export async function createPR(input: CreatePRInput) {
     p_note: input.note || null,
     p_user_id: input.userId || null,
     p_pr_type: input.prType || 'normal',
+    p_supplier_id: input.supplierId || null,
+    p_supplier_name: input.supplierName || null,
   })
   if (error) throw error
   return data as { id: string; pr_no: string }
 }
 
 export async function approvePR(prId: string, userId: string) {
-  const { error } = await supabase
-    .from('inv_pr')
-    .update({
-      status: 'approved',
-      approved_by: userId,
-      approved_at: new Date().toISOString(),
-    })
-    .eq('id', prId)
+  const { error } = await supabase.rpc('rpc_approve_pr', {
+    p_pr_id: prId,
+    p_user_id: userId,
+  })
   if (error) throw error
 }
 
 export async function rejectPR(prId: string, userId: string, reason: string) {
+  const { error } = await supabase.rpc('rpc_reject_pr', {
+    p_pr_id: prId,
+    p_user_id: userId,
+    p_reason: reason,
+  })
+  if (error) throw error
+}
+
+export async function cancelPR(prId: string) {
   const { error } = await supabase
     .from('inv_pr')
-    .update({
-      status: 'rejected',
-      rejected_by: userId,
-      rejected_at: new Date().toISOString(),
-      rejection_reason: reason,
-    })
+    .update({ status: 'cancelled' })
     .eq('id', prId)
+    .eq('status', 'pending')
+  if (error) throw error
+}
+
+export async function updatePR(input: {
+  prId: string
+  items: { product_id: string; qty: number; unit?: string; estimated_price?: number | null; note?: string }[]
+  note?: string
+  prType?: string
+  supplierId?: string
+  supplierName?: string
+}) {
+  const { error } = await supabase.rpc('rpc_update_pr', {
+    p_pr_id: input.prId,
+    p_items: input.items,
+    p_note: input.note || null,
+    p_pr_type: input.prType || null,
+    p_supplier_id: input.supplierId || null,
+    p_supplier_name: input.supplierName || null,
+  })
   if (error) throw error
 }
 
@@ -169,7 +197,7 @@ export interface POListFilters {
 export async function loadPOList(filters: POListFilters = {}): Promise<InventoryPO[]> {
   let q = supabase
     .from('inv_po')
-    .select('*, inv_pr(pr_no), inv_po_items(id, qty)')
+    .select('*, inv_pr(pr_no, pr_type), inv_po_items(id, qty)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -237,14 +265,10 @@ export async function convertPRtoPO(input: ConvertPRtoPOInput) {
 }
 
 export async function markPOOrdered(poId: string, userId: string) {
-  const { error } = await supabase
-    .from('inv_po')
-    .update({
-      status: 'ordered',
-      ordered_by: userId,
-      ordered_at: new Date().toISOString(),
-    })
-    .eq('id', poId)
+  const { error } = await supabase.rpc('rpc_mark_po_ordered', {
+    p_po_id: poId,
+    p_user_id: userId,
+  })
   if (error) throw error
 }
 
@@ -270,6 +294,22 @@ export async function recalcPOLandedCost(poId: string) {
   if (error) throw error
 }
 
+export async function updatePO(input: {
+  poId: string
+  note?: string
+  expectedArrivalDate?: string | null
+  items: { item_id: string; unit_price: number | null; qty?: number; note?: string }[]
+}) {
+  const { data, error } = await supabase.rpc('rpc_update_po', {
+    p_po_id: input.poId,
+    p_note: input.note ?? null,
+    p_expected_arrival_date: input.expectedArrivalDate || null,
+    p_items: input.items,
+  })
+  if (error) throw error
+  return data as { total_amount: number }
+}
+
 /* ──────────────── GR (Goods Receipt) ──────────────── */
 
 export interface GRListFilters {
@@ -282,7 +322,7 @@ export interface GRListFilters {
 export async function loadGRList(filters: GRListFilters = {}): Promise<InventoryGR[]> {
   let q = supabase
     .from('inv_gr')
-    .select('*, inv_po(po_no), inv_gr_items(id, qty_ordered, qty_received)')
+    .select('*, inv_po(po_no, inv_pr(pr_type)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -440,6 +480,63 @@ export async function createSample(input: CreateSampleInput) {
   return data as { id: string; sample_no: string }
 }
 
+export async function updateSampleTest(
+  sampleId: string,
+  status: 'testing' | 'approved' | 'rejected',
+  opts?: {
+    userId?: string
+    testNote?: string
+    rejectionReason?: string
+    itemResults?: { item_id: string; result: string; note?: string }[]
+  }
+) {
+  const { error } = await supabase.rpc('rpc_update_sample_test', {
+    p_sample_id: sampleId,
+    p_status: status,
+    p_user_id: opts?.userId || null,
+    p_test_note: opts?.testNote || null,
+    p_rejection_reason: opts?.rejectionReason || null,
+    p_item_results: opts?.itemResults || [],
+  })
+  if (error) throw error
+}
+
+export async function convertSampleToProduct(input: {
+  sampleId: string
+  itemId: string
+  productCode: string
+  productName: string
+  productNameCn?: string
+  productType?: string
+  productCategory?: string
+  sellerName?: string
+  unitCost?: number
+  userId?: string
+}) {
+  const { data, error } = await supabase.rpc('rpc_convert_sample_to_product', {
+    p_sample_id: input.sampleId,
+    p_item_id: input.itemId,
+    p_product_code: input.productCode,
+    p_product_name: input.productName,
+    p_product_name_cn: input.productNameCn || null,
+    p_product_type: input.productType || 'FG',
+    p_product_category: input.productCategory || null,
+    p_seller_name: input.sellerName || null,
+    p_unit_cost: input.unitCost ?? null,
+    p_user_id: input.userId || null,
+  })
+  if (error) throw error
+  return data as string
+}
+
+/* ──────────────── Purchase Badge Counts ──────────────── */
+
+export async function loadPurchaseBadgeCounts(): Promise<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }> {
+  const { data, error } = await supabase.rpc('get_purchase_badge_counts')
+  if (error) throw error
+  return data as { pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }
+}
+
 /* ──────────────── Sellers ──────────────── */
 
 export async function loadSellers() {
@@ -477,7 +574,7 @@ export async function loadApprovedPRsWithoutPO(): Promise<InventoryPR[]> {
 export async function loadPOsForGR(): Promise<{ newPOs: InventoryPO[]; partialPOs: InventoryPO[] }> {
   const { data: allOrdered, error: poErr } = await supabase
     .from('inv_po')
-    .select('*, inv_po_items(id, product_id, qty, qty_received_total, unit_price, pr_products(product_code, product_name))')
+    .select('*, inv_pr(pr_no, note, supplier_name), inv_po_items(id, product_id, qty, qty_received_total, unit_price, note, pr_products(product_code, product_name))')
     .in('status', ['ordered', 'partial'])
     .order('created_at', { ascending: false })
   if (poErr) throw poErr

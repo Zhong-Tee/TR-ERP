@@ -7,6 +7,7 @@ import type {
   HRExam, HRExamResult, HROnboardingTemplate, HROnboardingPlan,
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
   HRNotification, HRNotificationSettings,
+  HRWarning, HRCertificate,
 } from '../types'
 import * as XLSX from 'xlsx'
 
@@ -1044,4 +1045,97 @@ function parseHoursToNumber(val: unknown): number | undefined {
   }
   const n = parseFloat(s)
   return isNaN(n) ? undefined : n
+}
+
+// =============================================================================
+// Warning Letters (ใบเตือน)
+// =============================================================================
+
+const WARNING_SELECT = `*, employee:hr_employees!hr_warnings_employee_id_fkey(id,employee_code,first_name,last_name,nickname,department_id,position_id), issuer:hr_employees!hr_warnings_issued_by_fkey(id,first_name,last_name), witness:hr_employees!hr_warnings_witness_id_fkey(id,first_name,last_name)`
+
+export async function fetchWarnings(filters?: { employeeId?: string; status?: string; level?: string }) {
+  let q = supabase.from('hr_warnings').select(WARNING_SELECT).order('created_at', { ascending: false })
+  if (filters?.employeeId) q = q.eq('employee_id', filters.employeeId)
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.level) q = q.eq('warning_level', filters.level)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRWarning[]
+}
+
+export async function fetchWarning(id: string) {
+  const { data, error } = await supabase.from('hr_warnings').select(WARNING_SELECT).eq('id', id).single()
+  if (error) pgError(error)
+  return data as HRWarning
+}
+
+export async function upsertWarning(w: Partial<HRWarning>) {
+  const payload = { ...w }
+  delete payload.employee
+  delete payload.issuer
+  delete payload.witness
+  if (payload.id) {
+    const { data, error } = await supabase.from('hr_warnings').update(payload).eq('id', payload.id).select(WARNING_SELECT).single()
+    if (error) pgError(error)
+    return data as HRWarning
+  }
+  const { data, error } = await supabase.from('hr_warnings').insert(payload).select(WARNING_SELECT).single()
+  if (error) pgError(error)
+  return data as HRWarning
+}
+
+export async function deleteWarning(id: string) {
+  const { error } = await supabase.from('hr_warnings').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function fetchEmployeeWarningCount(employeeId: string) {
+  const { count, error } = await supabase.from('hr_warnings')
+    .select('id', { count: 'exact', head: true })
+    .eq('employee_id', employeeId)
+    .in('status', ['issued', 'acknowledged'])
+  if (error) pgError(error)
+  return count ?? 0
+}
+
+// =============================================================================
+// Training Certificates (ใบรับรอง)
+// =============================================================================
+
+const CERT_SELECT = `*, employee:hr_employees!hr_certificates_employee_id_fkey(id,employee_code,first_name,last_name,nickname,department_id,position_id), issuer:hr_employees!hr_certificates_issued_by_fkey(id,first_name,last_name)`
+
+export async function fetchCertificates(filters?: { employeeId?: string; status?: string; passStatus?: string; trainingType?: string }) {
+  let q = supabase.from('hr_certificates').select(CERT_SELECT).order('created_at', { ascending: false })
+  if (filters?.employeeId) q = q.eq('employee_id', filters.employeeId)
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.passStatus) q = q.eq('pass_status', filters.passStatus)
+  if (filters?.trainingType) q = q.eq('training_type', filters.trainingType)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRCertificate[]
+}
+
+export async function fetchCertificate(id: string) {
+  const { data, error } = await supabase.from('hr_certificates').select(CERT_SELECT).eq('id', id).single()
+  if (error) pgError(error)
+  return data as HRCertificate
+}
+
+export async function upsertCertificate(c: Partial<HRCertificate>) {
+  const payload = { ...c }
+  delete payload.employee
+  delete payload.issuer
+  if (payload.id) {
+    const { data, error } = await supabase.from('hr_certificates').update(payload).eq('id', payload.id).select(CERT_SELECT).single()
+    if (error) pgError(error)
+    return data as HRCertificate
+  }
+  const { data, error } = await supabase.from('hr_certificates').insert(payload).select(CERT_SELECT).single()
+  if (error) pgError(error)
+  return data as HRCertificate
+}
+
+export async function deleteCertificate(id: string) {
+  const { error } = await supabase.from('hr_certificates').delete().eq('id', id)
+  if (error) pgError(error)
 }

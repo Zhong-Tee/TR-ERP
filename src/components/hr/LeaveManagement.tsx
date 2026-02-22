@@ -165,7 +165,7 @@ export default function LeaveManagement() {
   }, [successMessage])
 
   return (
-    <div className="space-y-6">
+    <div className="mt-4 space-y-6">
       <div className="rounded-xl bg-white shadow-soft border border-surface-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-200 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">

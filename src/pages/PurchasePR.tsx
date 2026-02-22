@@ -1,23 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
 import type { InventoryPR, InventoryPRItem, Product } from '../types'
 import {
   loadPRList,
   loadPRDetail,
   createPR,
+  updatePR,
   approvePR,
   rejectPR,
+  cancelPR,
   loadProductsWithLastPrice,
   loadStockBalances,
   loadUserDisplayNames,
+  loadSellers,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
+import ZoomImage from '../components/ui/ZoomImage'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   pending: { label: 'รออนุมัติ', color: 'bg-yellow-100 text-yellow-800' },
   approved: { label: 'อนุมัติแล้ว', color: 'bg-green-100 text-green-800' },
   rejected: { label: 'ไม่อนุมัติ', color: 'bg-red-100 text-red-800' },
+  cancelled: { label: 'ยกเลิก', color: 'bg-gray-200 text-gray-600' },
 }
 
 const APPROVE_ROLES = ['superadmin', 'admin', 'account']
@@ -31,37 +37,9 @@ interface DraftItem {
   note: string
 }
 
-function ZoomImage({ src }: { src: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
-
-  const handleEnter = () => {
-    if (!ref.current) return
-    const rect = ref.current.getBoundingClientRect()
-    setPos({ top: rect.top, left: rect.right + 8 })
-  }
-  const handleLeave = () => setPos(null)
-
-  return (
-    <div ref={ref} className="w-16 h-16 flex-shrink-0 cursor-pointer" onMouseEnter={handleEnter} onMouseLeave={handleLeave}>
-      <div className="w-16 h-16 rounded-lg bg-gray-200 overflow-hidden">
-        <img src={src} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
-      </div>
-      {pos && (
-        <img
-          src={src}
-          alt=""
-          className="fixed w-48 h-48 object-cover rounded-xl shadow-2xl border-2 border-white pointer-events-none"
-          style={{ top: pos.top, left: pos.left, zIndex: 9999 }}
-          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-        />
-      )}
-    </div>
-  )
-}
-
 export default function PurchasePR() {
   const { user } = useAuthContext()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   // list state
   const [prs, setPrs] = useState<(InventoryPR & { _itemCount?: number })[]>([])
@@ -69,11 +47,20 @@ export default function PurchasePR() {
   const [stockBalances, setStockBalances] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` })
+  const [dateTo, setDateTo] = useState('')
 
-  // create modal
+  // sellers list
+  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn?: string | null }[]>([])
+
+  // create / edit modal
   const [createOpen, setCreateOpen] = useState(false)
+  const [editingPrId, setEditingPrId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [selectedSupplierId, setSelectedSupplierId] = useState('')
+  const [selectedSupplierName, setSelectedSupplierName] = useState('')
   const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
   const [note, setNote] = useState('')
   const [prType, setPrType] = useState<'normal' | 'urgent'>('normal')
@@ -109,17 +96,24 @@ export default function PurchasePR() {
     return () => window.removeEventListener('purchase-pr-create', handleCreateFromTopBar)
   }, [handleCreateFromTopBar])
 
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 400)
+    return () => clearTimeout(timer)
+  }, [search])
+
   useEffect(() => {
     loadAll()
-  }, [statusFilter, search])
+  }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo])
 
   async function loadAll() {
     setLoading(true)
     try {
-      const [prData, prodData, stockData] = await Promise.all([
-        loadPRList({ status: statusFilter, search }),
+      const [prData, prodData, stockData, sellerData] = await Promise.all([
+        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: typeFilter !== 'all' ? typeFilter : undefined }),
         products.length ? Promise.resolve(products) : loadProductsWithLastPrice(),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
+        sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
       const mappedPrs = prData.map((pr: any) => ({
         ...pr,
@@ -128,12 +122,14 @@ export default function PurchasePR() {
       setPrs(mappedPrs)
       if (!products.length) setProducts((prodData as any[]).filter((p: any) => p.product_type === 'FG' || p.product_type === 'RM'))
       if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
+      if (!sellers.length) setSellers(sellerData as { id: string; name: string; name_cn?: string | null }[])
 
       const uids = mappedPrs.map((pr: any) => pr.requested_by).filter(Boolean)
       if (uids.length) {
         const names = await loadUserDisplayNames(uids)
         setUserMap((prev) => ({ ...prev, ...names }))
       }
+      window.dispatchEvent(new CustomEvent('purchase-badge-refresh'))
     } catch (e) {
       console.error('Load PR failed:', e)
     } finally {
@@ -157,6 +153,7 @@ export default function PurchasePR() {
 
   const filteredProducts = useMemo(() => {
     let filtered = products
+    if (selectedSupplierName) filtered = filtered.filter((p) => p.seller_name === selectedSupplierName)
     if (productSearch.trim()) {
       const s = productSearch.toLowerCase()
       filtered = filtered.filter(
@@ -171,7 +168,7 @@ export default function PurchasePR() {
     if (filterSeller) filtered = filtered.filter((p) => p.seller_name === filterSeller)
     if (filterCategory) filtered = filtered.filter((p) => p.product_category === filterCategory)
     return filtered
-  }, [products, productSearch, filterType, filterSeller, filterCategory])
+  }, [products, productSearch, filterType, filterSeller, filterCategory, selectedSupplierName])
 
   /* ── Supplier panel products ── */
   const supplierProducts = useMemo(() => {
@@ -192,7 +189,7 @@ export default function PurchasePR() {
 
   function onSelectProduct(index: number, productId: string) {
     if (productId && draftItems.some((d, i) => i !== index && d.product_id === productId)) {
-      alert('สินค้านี้ถูกเพิ่มในรายการแล้ว')
+      showMessage({ message: 'สินค้านี้ถูกเพิ่มในรายการแล้ว' })
       return
     }
     const prod = productMap.get(productId)
@@ -223,7 +220,7 @@ export default function PurchasePR() {
     const prod = item.product_id ? productMap.get(item.product_id) : null
     const seller = prod?.seller_name
     if (!seller) {
-      alert('สินค้านี้ไม่มีข้อมูลผู้ขาย')
+      showMessage({ message: 'สินค้านี้ไม่มีข้อมูลผู้ขาย' })
       return
     }
     setSupplierPanelSeller(seller)
@@ -237,9 +234,11 @@ export default function PurchasePR() {
 
   /* ── Pull reorder-point items ── */
   function loadReorderPointItems() {
+    if (!selectedSupplierName) { showMessage({ message: 'กรุณาเลือกผู้ขายก่อน' }); return }
     const existingProductIds = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
     const reorderItems: DraftItem[] = []
     for (const prod of products) {
+      if (prod.seller_name !== selectedSupplierName) continue
       if (!prod.order_point) continue
       if (existingProductIds.has(prod.id)) continue
       const op = parseFloat(String(prod.order_point).replace(/,/g, ''))
@@ -256,7 +255,7 @@ export default function PurchasePR() {
       }
     }
     if (reorderItems.length === 0) {
-      alert('ไม่มีรายการที่ถึงจุดสั่งซื้อ')
+      showMessage({ message: 'ไม่มีรายการที่ถึงจุดสั่งซื้อสำหรับผู้ขายนี้' })
       return
     }
     setDraftItems((prev) => {
@@ -267,6 +266,9 @@ export default function PurchasePR() {
 
   function closeCreate() {
     setCreateOpen(false)
+    setEditingPrId(null)
+    setSelectedSupplierId('')
+    setSelectedSupplierName('')
     setSupplierPanelSeller('')
     setSupplierPanelIndex(-1)
     setProductSearch('')
@@ -275,34 +277,81 @@ export default function PurchasePR() {
     setFilterCategory('')
   }
 
-  /* ── Create PR ── */
+  function handleSupplierChange(sellerId: string) {
+    const seller = sellers.find((s) => s.id === sellerId)
+    setSelectedSupplierId(sellerId)
+    setSelectedSupplierName(seller?.name || '')
+    setDraftItems([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
+    setSupplierPanelSeller('')
+    setSupplierPanelIndex(-1)
+  }
+
+  /* ── Open Edit PR ── */
+  function openEditPR(pr: InventoryPR, items: any[]) {
+    setEditingPrId(pr.id)
+    const sellerId = pr.supplier_id || ''
+    const sellerName = pr.supplier_name || ''
+    setSelectedSupplierId(sellerId)
+    setSelectedSupplierName(sellerName)
+    setNote(pr.note || '')
+    setPrType((pr.pr_type as 'normal' | 'urgent') || 'normal')
+    setDraftItems(
+      items.map((item: any) => ({
+        product_id: item.product_id,
+        qty: Number(item.qty) || 1,
+        unit: item.unit || 'ชิ้น',
+        estimated_price: item.estimated_price != null ? Number(item.estimated_price) : null,
+        note: item.note || '',
+      }))
+    )
+    setViewing(null)
+    setCreateOpen(true)
+  }
+
+  /* ── Create / Update PR ── */
   async function handleCreatePR() {
-    if (!note.trim()) { alert('กรุณาระบุหัวข้อขอซื้อ'); return }
+    if (!selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
+    if (!note.trim()) { showMessage({ message: 'กรุณาระบุหมายเหตุ' }); return }
     const valid = draftItems.filter((i) => i.product_id && i.qty > 0)
-    if (!valid.length) { alert('กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return }
+    if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
     const ids = valid.map((i) => i.product_id)
-    if (new Set(ids).size !== ids.length) { alert('พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง'); return }
+    if (new Set(ids).size !== ids.length) { showMessage({ message: 'พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง' }); return }
     setSaving(true)
     try {
-      await createPR({
-        items: valid.map((i) => ({
-          product_id: i.product_id,
-          qty: i.qty,
-          unit: i.unit,
-          estimated_price: i.estimated_price,
-          note: i.note || undefined,
-        })),
-        note: note.trim(),
-        userId: user?.id,
-        prType,
-      })
+      const itemPayload = valid.map((i) => ({
+        product_id: i.product_id,
+        qty: i.qty,
+        unit: i.unit,
+        estimated_price: i.estimated_price,
+        note: i.note || undefined,
+      }))
+
+      if (editingPrId) {
+        await updatePR({
+          prId: editingPrId,
+          items: itemPayload,
+          note: note.trim(),
+          prType,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplierName,
+        })
+      } else {
+        await createPR({
+          items: itemPayload,
+          note: note.trim(),
+          userId: user?.id,
+          prType,
+          supplierId: selectedSupplierId,
+          supplierName: selectedSupplierName,
+        })
+      }
       setDraftItems([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
       setNote('')
       setPrType('normal')
       closeCreate()
       await loadAll()
     } catch (e: any) {
-      alert('สร้าง PR ไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: (editingPrId ? 'แก้ไข' : 'สร้าง') + ' PR ไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setSaving(false)
     }
@@ -326,20 +375,22 @@ export default function PurchasePR() {
   /* ── Approve / Reject ── */
   async function handleApprove() {
     if (!viewing) return
+    const ok = await showConfirm({ title: 'อนุมัติ PR', message: `ยืนยันอนุมัติ PR ${viewing.pr_no} ?`, confirmText: 'อนุมัติ' })
+    if (!ok) return
     setUpdating(true)
     try {
       await approvePR(viewing.id, user?.id || '')
       setViewing(null)
       await loadAll()
     } catch (e: any) {
-      alert('อนุมัติไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'อนุมัติไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setUpdating(false)
     }
   }
 
   async function handleReject() {
-    if (!viewing || !rejectReason.trim()) { alert('กรุณาระบุเหตุผล'); return }
+    if (!viewing || !rejectReason.trim()) { showMessage({ message: 'กรุณาระบุเหตุผล' }); return }
     setUpdating(true)
     try {
       await rejectPR(viewing.id, user?.id || '', rejectReason.trim())
@@ -348,7 +399,23 @@ export default function PurchasePR() {
       setViewing(null)
       await loadAll()
     } catch (e: any) {
-      alert('ปฏิเสธไม่สำเร็จ: ' + (e?.message || e))
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ปฏิเสธไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  async function handleCancel() {
+    if (!viewing) return
+    const ok = await showConfirm({ title: 'ยกเลิก PR', message: `ยืนยันยกเลิก PR ${viewing.pr_no} ?`, confirmText: 'ยกเลิก PR' })
+    if (!ok) return
+    setUpdating(true)
+    try {
+      await cancelPR(viewing.id)
+      setViewing(null)
+      await loadAll()
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ยกเลิกไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setUpdating(false)
     }
@@ -359,6 +426,7 @@ export default function PurchasePR() {
     { key: 'pending', label: 'รออนุมัติ' },
     { key: 'approved', label: 'อนุมัติแล้ว' },
     { key: 'rejected', label: 'ไม่อนุมัติ' },
+    { key: 'cancelled', label: 'ยกเลิก' },
   ]
 
   return (
@@ -380,6 +448,24 @@ export default function PurchasePR() {
               </button>
             ))}
           </div>
+          {/* type filter */}
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+            {[
+              { key: 'all', label: 'ทุกประเภท' },
+              { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
+              { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
           {/* search */}
           <div className="flex-1 min-w-[200px]">
             <input
@@ -390,6 +476,9 @@ export default function PurchasePR() {
               className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
             />
           </div>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ตั้งแต่วันที่" />
+          <span className="text-gray-400 text-sm">-</span>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ถึงวันที่" />
         </div>
       </div>
 
@@ -408,10 +497,11 @@ export default function PurchasePR() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ PR</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ประเภท PR</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้ขาย</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หัวข้อขอซื้อ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
@@ -428,6 +518,7 @@ export default function PurchasePR() {
                           {isUrgent ? 'ด่วน' : 'ปกติ'}
                         </span>
                       </td>
+                      <td className="px-4 py-3 text-gray-600 max-w-[120px] truncate">{pr.supplier_name || '-'}</td>
                       <td className="px-4 py-3 text-gray-600">
                         {pr.requested_at ? new Date(pr.requested_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
                       </td>
@@ -459,16 +550,27 @@ export default function PurchasePR() {
       {/* ── Create PR Full-Screen ── */}
       {createOpen && (
         <div className="fixed right-0 bottom-0 z-50 flex flex-col bg-white" style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }}>
-          {/* Search + Filters */}
+          {/* Supplier selector + Search + Filters */}
           <div className="px-6 pt-5 pb-3 border-b bg-gray-50 shrink-0 space-y-2">
             <div className="flex gap-3 items-center">
+              <select
+                value={selectedSupplierId}
+                onChange={(e) => handleSupplierChange(e.target.value)}
+                className={`w-56 px-3 py-2 border rounded-lg text-sm bg-white font-semibold focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none ${!selectedSupplierId ? 'border-red-300 text-red-600' : 'border-emerald-400 text-emerald-800'}`}
+              >
+                <option value="">-- เลือกผู้ขาย (บังคับ) --</option>
+                {sellers.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}{s.name_cn ? ` (${s.name_cn})` : ''}</option>
+                ))}
+              </select>
               <div className="flex-1">
                 <input
                   type="text"
-                  placeholder="ค้นหาสินค้า... (รหัส, ชื่อ, ชื่อจีน, ผู้จัดจำหน่าย)"
+                  placeholder="ค้นหาสินค้า... (รหัส, ชื่อ, ชื่อจีน)"
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                  disabled={!selectedSupplierId}
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-400"
                 />
               </div>
               <button
@@ -685,14 +787,14 @@ export default function PurchasePR() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    หัวข้อขอซื้อ <span className="text-red-500">*</span>
+                    หมายเหตุ <span className="text-red-500">*</span>
                   </label>
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
                     className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none ${!note.trim() ? 'border-red-300' : ''}`}
                     rows={2}
-                    placeholder="ระบุหัวข้อขอซื้อ (บังคับ)"
+                    placeholder="ระบุหมายเหตุ (บังคับ)"
                     required
                   />
                 </div>
@@ -769,7 +871,7 @@ export default function PurchasePR() {
                 ยกเลิก
               </button>
               <button onClick={handleCreatePR} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold transition-colors">
-                {saving ? 'กำลังบันทึก...' : 'บันทึก PR'}
+                {saving ? 'กำลังบันทึก...' : editingPrId ? 'บันทึกการแก้ไข PR' : 'บันทึก PR'}
               </button>
             </div>
           </div>
@@ -800,6 +902,10 @@ export default function PurchasePR() {
 
               {/* meta */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ผู้ขาย</div>
+                  <div className="font-medium">{viewing.supplier_name || '-'}</div>
+                </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <div className="text-gray-500 text-xs">วันที่สร้าง</div>
                   <div className="font-medium">{viewing.requested_at ? new Date(viewing.requested_at).toLocaleString('th-TH') : '-'}</div>
@@ -832,7 +938,7 @@ export default function PurchasePR() {
 
               {viewing.note && (
                 <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                  <span className="text-blue-600 font-medium">หัวข้อขอซื้อ:</span> {viewing.note}
+                  <span className="text-blue-600 font-medium">หมายเหตุ:</span> {viewing.note}
                 </div>
               )}
 
@@ -903,6 +1009,15 @@ export default function PurchasePR() {
 
               {/* actions */}
               <div className="flex justify-end gap-3 pt-3 border-t">
+                {viewing.status === 'pending' && !rejectOpen && (
+                  <button
+                    onClick={() => openEditPR(viewing, viewItems)}
+                    className="px-5 py-2.5 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"
+                  >
+                    <i className="fas fa-edit mr-1"></i>
+                    แก้ไข PR
+                  </button>
+                )}
                 {canApprove && viewing.status === 'pending' && !rejectOpen && (
                   <>
                     <button
@@ -949,6 +1064,15 @@ export default function PurchasePR() {
                     </button>
                   </div>
                 )}
+                {viewing.status === 'pending' && !rejectOpen && (
+                  <button
+                    onClick={handleCancel}
+                    disabled={updating}
+                    className="px-5 py-2.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 text-sm font-semibold disabled:opacity-50 transition-colors"
+                  >
+                    ยกเลิก PR
+                  </button>
+                )}
                 <button
                   onClick={() => { setViewing(null); setRejectOpen(false) }}
                   className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium"
@@ -960,6 +1084,8 @@ export default function PurchasePR() {
           ) : null}
         </div>
       </Modal>
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

@@ -6,6 +6,7 @@ import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
+import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
 import {
   FiPackage,
   FiCheckCircle,
@@ -161,12 +162,12 @@ interface SidebarProps {
 }
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
-const MENU_KEYS_WITH_COUNT = ['orders', 'admin-qc', 'account', 'wms', 'qc', 'packing', 'warehouse'] as const
+const MENU_KEYS_WITH_COUNT = ['orders', 'admin-qc', 'account', 'wms', 'qc', 'packing', 'warehouse', 'purchase'] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
-  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0 })
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0, purchase: 0 })
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const { menuAccess: dbMenuAccess } = useMenuAccess()
 
@@ -177,17 +178,19 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
         ? (user.username ?? user.email ?? '')
         : ''
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes] = await Promise.all([
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge] = await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
         loadWmsTabCounts(),
         supabase.from('inv_returns').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+        loadPurchaseBadgeCounts().catch(() => ({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })),
       ])
 
       const c = rpcRes.data || {}
       const accountTotal = (c.refund_pending || 0) + (c.tax_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
       const qcTotal = qcWoCount + (c.qc_reject || 0)
+      const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
 
       setMenuCounts({
         orders: c.orders || 0,
@@ -197,7 +200,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         qc: qcTotal,
         packing: c.packing || 0,
         warehouse: c.warehouse || 0,
+        purchase: purchaseTotal,
       })
+
+      window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
       const pendingReturnCount = pendingReturnsRes.count || 0
       setWarehousePendingReturnCount(pendingReturnCount)
 
@@ -234,7 +240,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_skip_logs' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => debouncedLoadCounts())
-      // ไม่ subscribe inv_stock_balances — ใช้ event dispatch จากหน้าที่ปรับสต๊อคแทน เพื่อป้องกัน cascade
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_pr' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_po' }, () => debouncedLoadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
@@ -255,7 +262,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account, wms, packing เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {
-    if (['/orders', '/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse'].includes(location.pathname)) {
+    if (['/orders', '/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse', '/purchase/pr', '/purchase/po', '/purchase/gr'].includes(location.pathname)) {
       loadCounts()
     }
   }, [location.pathname, loadCounts])
@@ -299,6 +306,13 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     window.addEventListener('packing-ready-count', onPackingCount)
     return () => window.removeEventListener('packing-ready-count', onPackingCount)
   }, [])
+
+  // ฟัง event จากหน้าจัดซื้อเมื่อมีการเปลี่ยนแปลงข้อมูล
+  useEffect(() => {
+    const onPurchaseRefresh = () => loadCounts()
+    window.addEventListener('purchase-badge-refresh', onPurchaseRefresh)
+    return () => window.removeEventListener('purchase-badge-refresh', onPurchaseRefresh)
+  }, [loadCounts])
 
   // ฟัง event จากหน้า Warehouse เมื่อจำนวนสินค้าต่ำกว่าจุดสั่งซื้อเปลี่ยน
   useEffect(() => {

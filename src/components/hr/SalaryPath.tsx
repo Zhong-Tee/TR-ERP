@@ -59,10 +59,10 @@ export default function SalaryPath() {
   const sortedLevels = [...levels].sort((a, b) => a.level_order - b.level_order)
   const currentLevelId = pathData?.career?.[0]?.current_level_id
 
-  if (loading) return (<div className="flex justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
+  if (loading) return (<div className="mt-4 flex justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
 
   return (
-    <div className="space-y-6">
+    <div className="mt-4 space-y-6">
       {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm">{error}</div>}
       <div className="flex gap-6 rounded-xl shadow-soft border border-surface-200 bg-surface-50 overflow-hidden">
         <aside className="w-56 shrink-0 border-r border-surface-200 bg-white p-3">

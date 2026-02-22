@@ -269,6 +269,8 @@ export interface InventoryPR {
   pr_no: string
   status: string
   pr_type?: string | null
+  supplier_id?: string | null
+  supplier_name?: string | null
   requested_by?: string | null
   requested_at?: string | null
   approved_by?: string | null
@@ -385,6 +387,11 @@ export interface InventorySample {
   received_at?: string | null
   supplier_name?: string | null
   note?: string | null
+  tested_by?: string | null
+  tested_at?: string | null
+  test_result?: string | null
+  test_note?: string | null
+  rejection_reason?: string | null
   created_at: string
   updated_at: string
   /** joined */
@@ -398,6 +405,9 @@ export interface InventorySampleItem {
   product_name_manual?: string | null
   qty: number
   note?: string | null
+  converted_product_id?: string | null
+  item_test_result?: string | null
+  item_test_note?: string | null
   created_at: string
   /** joined product */
   pr_products?: Product | null
@@ -1272,4 +1282,51 @@ export interface HRNotificationSettings {
   leave_notify_morning_time: string
   created_at: string
   updated_at: string
+}
+
+export interface HRWarning {
+  id: string
+  warning_number: string
+  employee_id: string
+  warning_level: 'verbal' | 'written_1' | 'written_2' | 'final'
+  subject: string
+  description?: string
+  incident_date: string
+  issued_date: string
+  issued_by?: string
+  witness_id?: string
+  employee_response?: string
+  status: 'draft' | 'issued' | 'acknowledged' | 'appealed' | 'resolved'
+  resolution_note?: string
+  resolved_at?: string
+  attachment_urls: string[]
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  issuer?: HREmployee
+  witness?: HREmployee
+}
+
+export interface HRCertificate {
+  id: string
+  certificate_number: string
+  employee_id: string
+  training_name: string
+  training_type: 'internal' | 'external'
+  description?: string
+  trainer?: string
+  training_start_date: string
+  training_end_date?: string
+  training_hours?: number
+  score?: number
+  pass_status: 'passed' | 'failed' | 'pending'
+  certificate_date?: string
+  expiry_date?: string
+  issued_by?: string
+  status: 'draft' | 'issued'
+  attachment_urls: string[]
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  issuer?: HREmployee
 }

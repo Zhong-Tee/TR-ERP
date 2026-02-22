@@ -170,10 +170,10 @@ export default function CompanyDocuments() {
     } catch (e) { setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ') } finally { setExamSaving(false) }
   }
 
-  if (loading) return (<div className="flex items-center justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
+  if (loading) return (<div className="mt-4 flex items-center justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>)
 
   return (
-    <div className="space-y-6">
+    <div className="mt-4 space-y-6">
       <h1 className="text-2xl font-semibold text-gray-900">เอกสารบริษัท และข้อสอบ</h1>
       {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm">{error}</div>}
       <div className="flex gap-2 border-b border-surface-200">
