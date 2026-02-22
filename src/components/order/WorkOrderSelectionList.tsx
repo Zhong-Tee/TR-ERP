@@ -4,6 +4,9 @@ import { Order } from '../../types'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 
+const WO_PREFIX_MAP: Record<string, string> = { OFFICE: 'OF' }
+function woPrefix(channelCode: string) { return WO_PREFIX_MAP[channelCode] || channelCode }
+
 interface WorkOrderSelectionListProps {
   searchTerm?: string
   channelFilter?: string
@@ -201,17 +204,18 @@ export default function WorkOrderSelectionList({
       let nextOrderIndex = (maxOrder?.[0]?.order_index ?? -1) + 1
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
+        const prefix = woPrefix(channelCode)
         const { data: existing } = await supabase
           .from('or_work_orders')
           .select('work_order_name')
-          .like('work_order_name', `${channelCode}-${datePart}-%`)
+          .like('work_order_name', `${prefix}-${datePart}-%`)
           .order('work_order_name', { ascending: false })
           .limit(1)
 
         const lastName = (existing && existing[0]?.work_order_name) || ''
-        const match = lastName.match(new RegExp(`${channelCode}-${datePart}-R(\\d+)`))
+        const match = lastName.match(new RegExp(`${prefix}-${datePart}-R(\\d+)`))
         const nextBatch = match ? parseInt(match[1], 10) + 1 : 1
-        const workOrderName = `${channelCode}-${datePart}-R${nextBatch}`
+        const workOrderName = `${prefix}-${datePart}-R${nextBatch}`
 
         const { error: insertError } = await supabase.from('or_work_orders').insert({
           work_order_name: workOrderName,

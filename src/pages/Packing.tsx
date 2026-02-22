@@ -143,6 +143,8 @@ export default function Packing() {
     shippedTime: string
   } | null>(null)
 
+  const [billingCheckConfirmed, setBillingCheckConfirmed] = useState(false)
+
   // Ink types for color display
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
 
@@ -568,7 +570,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('work_order_name, tracking_number, packing_meta, or_order_items(packing_status)')
+            .select('id, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(packing_status)')
             .in('work_order_name', names),
           supabase
             .from('qc_sessions')
@@ -620,6 +622,19 @@ export default function Packing() {
           }
         })
         setWorkOrderStatus(statusMap)
+
+        // OFFICE: auto-ship เมื่อ QC เสร็จ (ไม่ต้องจัดส่งจริง)
+        for (const wo of orders) {
+          const st = statusMap[wo.work_order_name]
+          if (!st || !(st.qcCompleted || st.qcSkipped)) continue
+          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_name === wo.work_order_name)
+          const allOffice = ordersInWo.length > 0 && ordersInWo.every((o: any) => o.channel_code === 'OFFICE')
+          if (!allOffice) continue
+          const officeIds = ordersInWo.map((o: any) => o.id as string)
+          const shippedBy = user?.username || user?.email || 'system'
+          await supabase.from('or_orders').update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() }).in('id', officeIds)
+          await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', wo.work_order_name)
+        }
 
         const { data: planJobs } = await supabase
           .from('plan_jobs')
@@ -727,7 +742,7 @@ export default function Packing() {
           parcelScanned: isParcelScanned,
           isOrderComplete: isOrderShipped,
           needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
-          needsCashBill: order.billing_details?.request_cash_bill || false,
+          needsCashBill: false,
           claim_type: order.claim_type,
           claim_details: order.claim_details,
           file_attachment: item.file_attachment,
@@ -896,6 +911,14 @@ export default function Packing() {
       )
       if (updatedGroup.every((item) => item.scanned)) {
         clearInactivityTimer()
+        const needsBilling = updatedGroup[0].needsTaxInvoice || updatedGroup[0].needsCashBill
+        if (needsBilling && !billingCheckConfirmed) {
+          const billType = updatedGroup[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+          playErrorSound()
+          setStatusMessage({ text: `⚠️ ยังไม่ได้ยืนยันว่าใส่${billType}แล้ว`, type: 'error' })
+          openAlert(`สแกนครบแล้ว แต่ยังไม่ได้ติ๊กยืนยันว่าใส่${billType}ในกล่องแล้ว\nกรุณาติ๊กยืนยันก่อนจบการแพ็ค`, `⚠️ ลืมใส่${billType}`)
+          return
+        }
         setStatusMessage({ text: '✅ สแกนครบแล้ว!', type: 'success' })
         openConfirm(
           'สแกนสินค้าครบแล้ว แพ็คเสร็จเรียบร้อยใช่ไหม?',
@@ -1026,6 +1049,7 @@ export default function Packing() {
       }
     }
     setCurrentIndex(index)
+    setBillingCheckConfirmed(false)
   }
 
   function getRecordingLabel() {
@@ -1818,14 +1842,32 @@ export default function Packing() {
                           </div>
                         )}
                         {currentGroup[0].needsTaxInvoice && (
-                          <div className="bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
-                            ‼️ โปรดทราบ: ออร์เดอร์นี้ต้องการใบกำกับภาษี
-                          </div>
+                          <label className={`flex items-center gap-4 rounded-lg p-4 cursor-pointer select-none border-2 transition-colors ${billingCheckConfirmed ? 'bg-green-50 border-green-400' : 'bg-red-50 border-red-300 animate-pulse'}`}>
+                            <input
+                              type="checkbox"
+                              checked={billingCheckConfirmed}
+                              onChange={(e) => setBillingCheckConfirmed(e.target.checked)}
+                              className="w-8 h-8 rounded border-red-400 text-green-600 focus:ring-green-500 shrink-0"
+                            />
+                            <div>
+                              <div className="font-bold text-base text-red-800">‼️ ใบกำกับภาษี</div>
+                              <div className="text-sm text-red-700">กรุณาติ๊กยืนยันว่าใส่ใบกำกับภาษีในกล่องแล้ว</div>
+                            </div>
+                          </label>
                         )}
                         {!currentGroup[0].needsTaxInvoice && currentGroup[0].needsCashBill && (
-                          <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded p-3 text-sm">
-                            ‼️ โปรดทราบ: ออร์เดอร์นี้ต้องการบิลเงินสด
-                          </div>
+                          <label className={`flex items-center gap-4 rounded-lg p-4 cursor-pointer select-none border-2 transition-colors ${billingCheckConfirmed ? 'bg-green-50 border-green-400' : 'bg-blue-50 border-blue-300 animate-pulse'}`}>
+                            <input
+                              type="checkbox"
+                              checked={billingCheckConfirmed}
+                              onChange={(e) => setBillingCheckConfirmed(e.target.checked)}
+                              className="w-8 h-8 rounded border-blue-400 text-green-600 focus:ring-green-500 shrink-0"
+                            />
+                            <div>
+                              <div className="font-bold text-base text-blue-800">‼️ บิลเงินสด</div>
+                              <div className="text-sm text-blue-700">กรุณาติ๊กยืนยันว่าใส่บิลเงินสดในกล่องแล้ว</div>
+                            </div>
+                          </label>
                         )}
                       </div>
                     )}

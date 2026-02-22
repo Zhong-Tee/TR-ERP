@@ -54,12 +54,24 @@ export default function ProductionReturn() {
   const generateReturnNo = async () => {
     const date = new Date()
     const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
-    const { count } = await supabase
+    const prefix = `RET-${dateStr}-`
+
+    const { data } = await supabase
       .from('wms_return_requisitions')
-      .select('*', { count: 'exact', head: true })
-      .like('return_no', `RET-${dateStr}-%`)
-    const seq = ((count || 0) + 1).toString().padStart(3, '0')
-    setReturnNo(`RET-${dateStr}-${seq}`)
+      .select('return_no')
+      .like('return_no', `${prefix}%`)
+
+    let maxNum = 0
+    if (data) {
+      for (const row of data) {
+        const suffix = row.return_no.replace(prefix, '')
+        if (/^\d{3}$/.test(suffix)) {
+          const num = parseInt(suffix, 10)
+          if (num > maxNum) maxNum = num
+        }
+      }
+    }
+    setReturnNo(`${prefix}${String(maxNum + 1).padStart(3, '0')}`)
   }
 
   const loadTopics = async () => {

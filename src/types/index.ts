@@ -195,6 +195,7 @@ export interface IssueMessage {
   sender_name: string
   message: string
   source_scope?: 'orders' | 'plan'
+  is_hidden?: boolean
   created_at: string
 }
 
@@ -232,6 +233,8 @@ export interface Product {
   unit_cost: number | null
   landed_cost: number | null
   safety_stock: number | null
+  unit_name: string | null
+  unit_multiplier: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket product-images ตาม product_code */
   image_url?: string | null
   is_active: boolean

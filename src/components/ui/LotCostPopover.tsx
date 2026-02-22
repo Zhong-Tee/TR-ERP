@@ -55,7 +55,7 @@ export default function LotCostPopover({ productId, landedCost, children }: LotC
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="cursor-pointer hover:text-blue-600 transition-colors underline decoration-dotted underline-offset-2"
+        className="cursor-pointer hover:text-blue-600 transition-colors"
         title="คลิกเพื่อดู Lot ล่าสุด"
       >
         {children}

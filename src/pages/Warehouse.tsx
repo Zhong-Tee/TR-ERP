@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
 import LotCostPopover from '../components/ui/LotCostPopover'
+import * as XLSX from 'xlsx'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 
@@ -15,12 +16,6 @@ function toNumber(value: string | null | undefined): number | null {
   if (!value) return null
   const parsed = Number(String(value).replace(/,/g, '').trim())
   return Number.isFinite(parsed) ? parsed : null
-}
-
-function defaultSalesFromDate(): string {
-  const d = new Date()
-  d.setDate(d.getDate() - 30)
-  return d.toISOString().slice(0, 10)
 }
 
 export default function Warehouse() {
@@ -37,7 +32,7 @@ export default function Warehouse() {
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
-  const [salesFromDate, setSalesFromDate] = useState(defaultSalesFromDate)
+  const [salesFromDate, setSalesFromDate] = useState('')
   const [salesMap, setSalesMap] = useState<Record<string, number>>({})
   const [salesLoading, setSalesLoading] = useState(false)
 
@@ -117,6 +112,10 @@ export default function Warehouse() {
   }
 
   async function loadSalesData() {
+    if (!salesFromDate) {
+      setSalesMap({})
+      return
+    }
     setSalesLoading(true)
     try {
       const { data, error } = await supabase.rpc('calc_avg_daily_sales', {
@@ -135,7 +134,8 @@ export default function Warehouse() {
     }
   }
 
-  function calcDaysRemaining(productId: string, onHand: number): number | null {
+  function calcAvgDailySales(productId: string): number | null {
+    if (!salesFromDate) return null
     const totalSold = salesMap[productId]
     if (!totalSold || totalSold <= 0) return null
     const from = new Date(salesFromDate)
@@ -143,8 +143,13 @@ export default function Warehouse() {
     const diffMs = today.getTime() - from.getTime()
     const diffDays = Math.max(diffMs / (1000 * 60 * 60 * 24), 1)
     const avgPerDay = totalSold / diffDays
-    if (avgPerDay <= 0) return null
-    return Math.round(onHand / avgPerDay)
+    return avgPerDay > 0 ? Math.round(avgPerDay * 100) / 100 : null
+  }
+
+  function calcDaysRemaining(productId: string, onHand: number): number | null {
+    const avg = calcAvgDailySales(productId)
+    if (!avg || avg <= 0) return null
+    return Math.round(onHand / avg)
   }
 
   // คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ (ใช้ทั้งแสดงปุ่มและส่งไป Sidebar)
@@ -187,6 +192,40 @@ export default function Warehouse() {
       return matchTerm && matchCategory && matchSeller && matchProductType && matchOrderPoint
     })
   }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances])
+
+  const handleDownloadExcel = useCallback(() => {
+    const rows = filteredProducts.map((p) => {
+      const balance = balances[p.id]
+      const onHand = Number(balance?.on_hand || 0)
+      const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
+      const avg = calcAvgDailySales(p.id)
+      const days = calcDaysRemaining(p.id, onHand)
+      const row: Record<string, unknown> = {
+        'รหัสสินค้า': p.product_code,
+        'ประเภท': p.product_type || 'FG',
+        'หมวดหมู่': p.product_category || '-',
+        'ชื่อสินค้า': p.product_name,
+        'ผู้ขาย': p.seller_name || '-',
+        'จุดสั่งซื้อ': p.order_point || '-',
+        'จำนวนคงเหลือ': onHand,
+        'Safety stock': safetyStock ?? '-',
+        'รวมในคลัง': onHand + (safetyStock ?? 0),
+        'การใช้ (ชิ้น/วัน)': avg !== null ? avg : '-',
+        'วันขายคงเหลือ': days !== null ? days : '-',
+      }
+      if (canSeeCost) {
+        row['ต้นทุนสินค้า'] = p.landed_cost != null && Number(p.landed_cost) > 0
+          ? Number(p.landed_cost)
+          : '-'
+      }
+      return row
+    })
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'คลังสินค้า')
+    const today = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `คลังสินค้า_${today}.xlsx`)
+  }, [filteredProducts, balances, salesMap, canSeeCost]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-6 mt-4">
@@ -278,6 +317,14 @@ export default function Warehouse() {
               <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
             )}
           </div>
+          <button
+            type="button"
+            onClick={handleDownloadExcel}
+            className="px-4 py-2.5 rounded-xl font-semibold text-sm border border-green-500 bg-green-500 text-white hover:bg-green-600 transition-colors whitespace-nowrap flex items-center gap-1.5"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+            ดาวน์โหลด Excel
+          </button>
         </div>
 
         {loading ? (
@@ -301,6 +348,7 @@ export default function Warehouse() {
                   <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
                   <th className="p-3 text-center font-semibold">Safety stock</th>
                   <th className="p-3 text-center font-semibold">รวมในคลัง</th>
+                  <th className="p-3 text-center font-semibold">การใช้</th>
                   <th className={`p-3 text-center font-semibold ${!canSeeCost ? 'rounded-tr-xl' : ''}`}>วันขายคงเหลือ</th>
                   {canSeeCost && <th className="p-3 text-right font-semibold rounded-tr-xl">ต้นทุนสินค้า</th>}
                 </tr>
@@ -340,6 +388,13 @@ export default function Warehouse() {
                       <td className="p-3 text-center">{safetyStock !== null ? safetyStock.toLocaleString() : '-'}</td>
                       <td className="p-3 text-center font-medium text-gray-700">
                         {(onHand + (safetyStock ?? 0)).toLocaleString()}
+                      </td>
+                      <td className="p-3 text-center text-sm text-gray-600">
+                        {(() => {
+                          const avg = calcAvgDailySales(product.id)
+                          if (avg === null) return <span className="text-gray-400">-</span>
+                          return <span>{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        })()}
                       </td>
                       <td className="p-3 text-center">
                         {(() => {

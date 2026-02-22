@@ -45,6 +45,10 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   const [createTitle, setCreateTitle] = useState('')
   const [createTypeId, setCreateTypeId] = useState('')
   const [ordersForWorkOrder, setOrdersForWorkOrder] = useState<Order[]>([])
+  const [billSearch, setBillSearch] = useState('')
+  const [billSearchResults, setBillSearchResults] = useState<Order[]>([])
+  const [billSearching, setBillSearching] = useState(false)
+  const billSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
   const [fromDate, setFromDate] = useState(() => {
     const now = new Date()
@@ -81,6 +85,25 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b))
   }, [workOrders])
 
+  const [allWorkOrderNames, setAllWorkOrderNames] = useState<string[]>([])
+
+  async function loadAllWorkOrderNames() {
+    try {
+      const { data, error } = await supabase
+        .from('or_work_orders')
+        .select('work_order_name')
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (error) throw error
+      const names = (data || []).map((w: any) => w.work_order_name).filter(Boolean)
+      setAllWorkOrderNames(Array.from(new Set(names)) as string[])
+    } catch (err) {
+      console.error('Error loading work orders:', err)
+    }
+  }
+
+  const availableWorkOrders = scope === 'plan' ? workOrderOptions : allWorkOrderNames
+
   useEffect(() => {
     loadTypes()
   }, [])
@@ -113,7 +136,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         setNewChatCount((prev) => prev + 1)
         if (chatIssue && chatIssue.id === row.issue_id) {
           setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
-          if (user && !(user.role === 'superadmin' || user.role === 'admin')) {
+          if (user) {
             supabase.from('or_issue_reads').upsert({
               issue_id: row.issue_id,
               user_id: user.id,
@@ -222,7 +245,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     try {
       const [{ data: reads }, { data: messages }] = await Promise.all([
         supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
-        supabase.from('or_issue_messages').select('issue_id, created_at').in('issue_id', issueIds),
+        supabase.from('or_issue_messages').select('issue_id, created_at').eq('is_hidden', false).in('issue_id', issueIds),
       ])
       const readMap = new Map(
         (reads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
@@ -241,28 +264,26 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     }
   }
 
-  const isAdminRole = user?.role === 'superadmin' || user?.role === 'admin'
-
   async function openChat(issue: IssueWithOrder) {
     setChatIssue(issue)
     setChatMessage('')
     setChatLogs([])
-    if (!isAdminRole) window.dispatchEvent(new CustomEvent('issue-chat-read'))
     setChatLoading(true)
     try {
-      // Mark as read (ข้าม superadmin/admin เพื่อไม่ให้ badge ลด)
-      if (user && !isAdminRole) {
+      if (user) {
         await supabase.from('or_issue_reads').upsert({
           issue_id: issue.id,
           user_id: user.id,
           last_read_at: new Date().toISOString(),
         })
         setUnreadByIssue((prev) => ({ ...prev, [issue.id]: 0 }))
+        window.dispatchEvent(new CustomEvent('issue-chat-read'))
       }
       const { data, error } = await supabase
         .from('or_issue_messages')
         .select('*')
         .eq('issue_id', issue.id)
+        .eq('is_hidden', false)
         .order('created_at', { ascending: true })
       if (error) throw error
       setChatLogs((data || []) as IssueMessage[])
@@ -301,6 +322,20 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     } finally {
       setChatSending(false)
+    }
+  }
+
+  async function handleHideIssueChat(chatId: string) {
+    try {
+      const { error } = await supabase
+        .from('or_issue_messages')
+        .update({ is_hidden: true })
+        .eq('id', chatId)
+      if (error) throw error
+      setChatLogs((prev) => prev.filter((log) => log.id !== chatId))
+    } catch (error: any) {
+      console.error('Error hiding issue chat:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     }
   }
 
@@ -345,17 +380,41 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
     }
   }
 
+  function handleBillSearch(term: string) {
+    setBillSearch(term)
+    if (billSearchRef.current) clearTimeout(billSearchRef.current)
+    const q = term.trim()
+    if (!q) { setBillSearchResults([]); return }
+    setBillSearching(true)
+    billSearchRef.current = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('or_orders')
+          .select('id, bill_no, customer_name, work_order_name')
+          .or(`bill_no.ilike.%${q}%,customer_name.ilike.%${q}%`)
+          .order('created_at', { ascending: false })
+          .limit(20)
+        if (error) throw error
+        setBillSearchResults((data || []) as Order[])
+      } catch (err) {
+        console.error('Bill search error:', err)
+      } finally {
+        setBillSearching(false)
+      }
+    }, 400)
+  }
+
   async function createIssue() {
     if (!user) return
-    if (!createWorkOrder || !createOrderId || !createTitle.trim()) {
-      alert('กรุณากรอกข้อมูลให้ครบ')
+    if (!createOrderId || !createTitle.trim()) {
+      alert('กรุณาเลือกบิลและกรอกหัวข้อ')
       return
     }
     setCreating(true)
     try {
       const payload = {
         order_id: createOrderId,
-        work_order_name: createWorkOrder,
+        work_order_name: createWorkOrder || null,
         type_id: createTypeId || null,
         title: createTitle.trim(),
         status: 'On',
@@ -365,8 +424,11 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
       if (error) throw error
       setCreateOpen(false)
       setCreateOrderId('')
+      setCreateWorkOrder('')
       setCreateTitle('')
       setCreateTypeId('')
+      setBillSearch('')
+      setBillSearchResults([])
       await loadIssues()
     } catch (error: any) {
       console.error('Error creating issue:', error)
@@ -439,15 +501,13 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
             onChange={(e) => setToDate(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
           />
-          {scope === 'plan' && (
-            <button
-              type="button"
-              onClick={() => setCreateOpen(true)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              เปิด Ticket
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => { setCreateOpen(true); setCreateOrderId(''); setCreateWorkOrder(''); setCreateTitle(''); setCreateTypeId(''); setBillSearch(''); setBillSearchResults([]); if (scope !== 'plan') loadAllWorkOrderNames() }}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            เปิด Ticket
+          </button>
         </div>
       </div>
       <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -456,83 +516,85 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
             <div className="p-6 text-center text-gray-500">ไม่พบรายการ</div>
           ) : (
             (activeTab === 'on' ? issuesOn : issuesClosed).map((issue) => (
-              <div key={issue.id} className="p-5 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
+              <div key={issue.id} className="p-5 flex gap-4">
+                {/* ฝั่งซ้าย — เนื้อหาหลัก */}
+                <div className="flex-1 min-w-0 space-y-3">
+                  <div>
                     <div className="text-lg font-bold text-blue-700 truncate">{issue.order?.bill_no || '-'}</div>
                     <div className="text-base text-gray-800 mt-1">
                       <span className="font-semibold text-gray-500">หัวข้อ:</span>{' '}
                       {issue.title}
                     </div>
                   </div>
-                  <div className="text-right shrink-0 space-y-1">
-                    <div className="text-sm text-gray-500">{formatDateTime(issue.created_at)}</div>
-                    <div className="text-center">
-                      <div className="text-[10px] text-gray-400 mb-0.5">ระยะเวลาปิด Ticket</div>
-                      <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm font-mono font-bold ${
-                        issue.status === 'On'
-                          ? 'bg-orange-100 text-orange-700'
-                          : 'bg-gray-100 text-gray-600'
-                      }`}>
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        {formatElapsed(issue)}
-                      </div>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    {issue.type && (
+                      <span
+                        className="px-3 py-1.5 rounded-lg font-bold text-white"
+                        style={{ backgroundColor: issue.type.color }}
+                      >
+                        {issue.type.name}
+                      </span>
+                    )}
+                    <span className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-800 font-medium">
+                      ผู้ลงออเดอร์: {issue.order?.admin_user || '-'}
+                    </span>
+                    <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-medium">
+                      ผู้เปิด Ticket: {issue.creatorName || '-'}
+                    </span>
+                    {issue.work_order_name && (
+                      <span className="px-3 py-1.5 rounded-lg bg-green-100 text-green-800 font-medium">
+                        {issue.work_order_name}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeTab === 'on' && (
+                      <button
+                        type="button"
+                        onClick={() => setDetailIssue(issue)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500 text-white rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
+                      >
+                        <FiCheckCircle className="w-4 h-4" />
+                        สถานะ
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => openOrderDetail(issue)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
+                    >
+                      <FiInfo className="w-4 h-4" />
+                      รายละเอียด
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openChat(issue)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-colors"
+                    >
+                      <FiMessageCircle className="w-4 h-4" />
+                      Chat
+                    </button>
+                    {(unreadByIssue[issue.id] || 0) > 0 && (
+                      <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                        {unreadByIssue[issue.id]}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  {issue.type && (
-                    <span
-                      className="px-3 py-1.5 rounded-lg font-bold text-white"
-                      style={{ backgroundColor: issue.type.color }}
-                    >
-                      {issue.type.name}
-                    </span>
-                  )}
-                  <span className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-800 font-medium">
-                    ผู้ลงออเดอร์: {issue.order?.admin_user || '-'}
-                  </span>
-                  <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-medium">
-                    ผู้เปิด Ticket: {issue.creatorName || '-'}
-                  </span>
-                  {issue.work_order_name && (
-                    <span className="px-3 py-1.5 rounded-lg bg-green-100 text-green-800 font-medium">
-                      {issue.work_order_name}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDetailIssue(issue)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500 text-white rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
-                  >
-                    <FiCheckCircle className="w-4 h-4" />
-                    สถานะ
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openOrderDetail(issue)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors"
-                  >
-                    <FiInfo className="w-4 h-4" />
-                    รายละเอียด
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openChat(issue)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700 transition-colors"
-                  >
-                    <FiMessageCircle className="w-4 h-4" />
-                    Chat
-                  </button>
-                  {(unreadByIssue[issue.id] || 0) > 0 && (
-                    <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
-                      {unreadByIssue[issue.id]}
-                    </span>
-                  )}
+                {/* ฝั่งขวา — วันที่ + ระยะเวลา จัดชิดล่าง */}
+                <div className="shrink-0 flex flex-col items-end justify-end text-right space-y-1">
+                  <div className="text-sm text-gray-500">{formatDateTime(issue.created_at)}</div>
+                  <div className="text-xs text-gray-500">ระยะเวลาปิด Ticket</div>
+                  <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-lg font-mono font-bold ${
+                    issue.status === 'On'
+                      ? 'bg-orange-100 text-orange-700'
+                      : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {formatElapsed(issue)}
+                  </div>
                 </div>
               </div>
             ))
@@ -547,61 +609,83 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         }}
         contentClassName="max-w-lg w-full"
       >
-        {detailIssue && (
-          <div className="p-6 space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">รายละเอียด Ticket</h3>
-              <p className="text-sm text-gray-600 mt-1">{detailIssue.order?.bill_no || '-'}</p>
-            </div>
-            <div className="text-sm text-gray-700 space-y-1">
-              <div>หัวข้อ: <span className="font-medium">{detailIssue.title}</span></div>
-              <div>สถานะ: <span className="font-medium">{detailIssue.status}</span></div>
-              {detailIssue.work_order_name && <div>ใบงาน: {detailIssue.work_order_name}</div>}
-              <div>ผู้เปิดบิล: <span className="font-medium">{detailIssue.order?.admin_user || '-'}</span></div>
-              <div>ผู้สร้าง Ticket: <span className="font-medium">{detailIssue.creatorName || '-'}</span></div>
-              <div>ระยะเวลา: <span className="font-mono font-bold text-orange-600">{formatElapsed(detailIssue)}</span></div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">สถานะ Ticket</label>
-              <select
-                value={detailIssue.status}
-                onChange={(e) => setDetailIssue((prev) => (prev ? { ...prev, status: e.target.value as 'On' | 'Close' } : prev))}
-                className="w-full px-3 py-2 border rounded-lg bg-white"
-              >
-                <option value="On">On</option>
-                <option value="Close">Close</option>
-              </select>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDetailIssue(null)}
-                disabled={updatingIssue}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                onClick={() => updateIssueStatus(detailIssue, detailIssue.status)}
-                disabled={updatingIssue}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {updatingIssue ? 'กำลังบันทึก...' : 'บันทึก'}
-              </button>
-              {detailIssue.status === 'On' && (
-                <button
-                  type="button"
-                  onClick={() => updateIssueStatus(detailIssue, 'Close')}
-                  disabled={updatingIssue}
-                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
-                >
-                  ปิด Ticket
-                </button>
+        {detailIssue && (() => {
+          const canManageTicket = user?.id === detailIssue.created_by || user?.role === 'superadmin'
+          return (
+            <div className="p-6 space-y-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">รายละเอียด Ticket</h3>
+                <p className="text-sm text-gray-600 mt-1">{detailIssue.order?.bill_no || '-'}</p>
+              </div>
+              <div className="text-sm text-gray-700 space-y-1">
+                <div>หัวข้อ: <span className="font-medium">{detailIssue.title}</span></div>
+                <div>สถานะ: <span className="font-medium">{detailIssue.status}</span></div>
+                {detailIssue.work_order_name && <div>ใบงาน: {detailIssue.work_order_name}</div>}
+                <div>ผู้เปิดบิล: <span className="font-medium">{detailIssue.order?.admin_user || '-'}</span></div>
+                <div>ผู้สร้าง Ticket: <span className="font-medium">{detailIssue.creatorName || '-'}</span></div>
+                <div>ระยะเวลา: <span className="font-mono font-bold text-orange-600 text-lg">{formatElapsed(detailIssue)}</span></div>
+              </div>
+              {canManageTicket ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">สถานะ Ticket</label>
+                    <select
+                      value={detailIssue.status}
+                      onChange={(e) => setDetailIssue((prev) => (prev ? { ...prev, status: e.target.value as 'On' | 'Close' } : prev))}
+                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                    >
+                      <option value="On">On</option>
+                      <option value="Close">Close</option>
+                    </select>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDetailIssue(null)}
+                      disabled={updatingIssue}
+                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateIssueStatus(detailIssue, detailIssue.status)}
+                      disabled={updatingIssue}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {updatingIssue ? 'กำลังบันทึก...' : 'บันทึก'}
+                    </button>
+                    {detailIssue.status === 'On' && (
+                      <button
+                        type="button"
+                        onClick={() => updateIssueStatus(detailIssue, 'Close')}
+                        disabled={updatingIssue}
+                        className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50"
+                      >
+                        ปิด Ticket
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    เฉพาะผู้เปิด Ticket เท่านั้นที่สามารถปิดหรือเปลี่ยนสถานะได้
+                  </p>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setDetailIssue(null)}
+                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      ปิด
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
-          </div>
-        )}
+          )
+        })()}
       </Modal>
 
       <Modal
@@ -641,13 +725,13 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
                   const isRight = isPlan
                   const scopeLabel = isPlan ? 'Plan' : 'ออเดอร์'
                   return (
-                    <div key={log.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'}`}>
+                    <div key={log.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
                       <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
                         isRight
                           ? 'bg-emerald-500 text-white rounded-br-sm'
                           : 'bg-white text-gray-900 border border-gray-200 rounded-bl-sm'
                       }`}>
-                        <div className={`flex items-center justify-between gap-3 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
+                        <div className={`flex items-center gap-3 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
                           <span className={`text-xs font-bold ${isRight ? 'text-emerald-100' : 'text-blue-600'}`}>
                             {log.sender_name}
                             <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${isRight ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-100 text-blue-600'}`}>{scopeLabel}</span>
@@ -655,6 +739,18 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
                           <span className={`text-xs ${isRight ? 'text-emerald-200' : 'text-gray-400'}`}>
                             {formatDateTime(log.created_at)}
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => handleHideIssueChat(log.id)}
+                            title="ซ่อนข้อความนี้"
+                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                              isRight ? 'text-emerald-200 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                            }`}
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
                         </div>
                         <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
                       </div>
@@ -731,6 +827,60 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
       >
         <div className="p-6 space-y-4">
           <h3 className="text-lg font-semibold text-gray-900">เปิด Ticket</h3>
+
+          {/* ค้นหาบิล */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">ค้นหาบิล</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={billSearch}
+                onChange={(e) => handleBillSearch(e.target.value)}
+                placeholder="พิมพ์เลขบิลหรือชื่อลูกค้า..."
+                className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+                disabled={!!createOrderId}
+              />
+              {createOrderId && (
+                <button
+                  type="button"
+                  onClick={() => { setCreateOrderId(''); setBillSearch(''); setBillSearchResults([]); setCreateWorkOrder(''); setOrdersForWorkOrder([]) }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-red-500 hover:text-red-700 bg-white px-1"
+                >
+                  ล้าง
+                </button>
+              )}
+            </div>
+            {billSearching && <p className="text-xs text-gray-400 mt-1">กำลังค้นหา...</p>}
+            {billSearchResults.length > 0 && !createOrderId && (
+              <div className="mt-1 border rounded-lg max-h-40 overflow-y-auto bg-white shadow-sm">
+                {billSearchResults.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => {
+                      setCreateOrderId(o.id)
+                      setBillSearch(o.bill_no || '')
+                      setBillSearchResults([])
+                      if (o.work_order_name) setCreateWorkOrder(o.work_order_name)
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-b-0"
+                  >
+                    <span className="font-semibold text-blue-600">{o.bill_no}</span>
+                    {o.customer_name && <span className="text-gray-500 ml-2">{o.customer_name}</span>}
+                    {o.work_order_name && <span className="text-gray-400 ml-2 text-xs">[{o.work_order_name}]</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="relative flex items-center">
+            <hr className="flex-grow border-gray-200" />
+            <span className="px-2 text-xs text-gray-400">หรือเลือกจากใบงาน</span>
+            <hr className="flex-grow border-gray-200" />
+          </div>
+
+          {/* ใบงาน */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">ใบงาน</label>
             <select
@@ -739,25 +889,32 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
                 const next = e.target.value
                 setCreateWorkOrder(next)
                 setCreateOrderId('')
+                setBillSearch('')
+                setBillSearchResults([])
                 loadOrdersForSelectedWorkOrder(next)
               }}
-              className="w-full px-3 py-2 border rounded-lg bg-white"
+              className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+              disabled={!!createOrderId}
             >
               <option value="">-- เลือกใบงาน --</option>
-              {workOrderOptions.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
+              {availableWorkOrders.map((name) => (
+                <option key={name} value={name}>{name}</option>
               ))}
             </select>
           </div>
+
+          {/* บิล */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">บิล</label>
             <select
               value={createOrderId}
-              onChange={(e) => setCreateOrderId(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg bg-white"
-              disabled={!createWorkOrder}
+              onChange={(e) => {
+                setCreateOrderId(e.target.value)
+                const matched = ordersForWorkOrder.find((o) => o.id === e.target.value)
+                if (matched?.bill_no) setBillSearch(matched.bill_no)
+              }}
+              className="w-full px-3 py-2 border rounded-lg bg-white disabled:bg-gray-100"
+              disabled={!createWorkOrder || !!createOrderId}
             >
               <option value="">-- เลือกบิล --</option>
               {ordersForWorkOrder.map((o) => (
@@ -776,9 +933,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
             >
               <option value="">-- ไม่ระบุ --</option>
               {types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
+                <option key={t.id} value={t.id}>{t.name}</option>
               ))}
             </select>
           </div>

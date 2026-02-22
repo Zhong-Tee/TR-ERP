@@ -22,13 +22,30 @@ interface MatchedOrder {
   }>
 }
 
-function generateCode(prefix: string) {
+async function generateCode(prefix: string) {
   const date = new Date()
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
-  const rand = Math.floor(Math.random() * 9000) + 1000
-  return `${prefix}-${y}${m}${d}-${rand}`
+  const dayPrefix = `${prefix}-${y}${m}${d}-`
+
+  const { data } = await supabase
+    .from('inv_returns')
+    .select('return_no')
+    .like('return_no', `${dayPrefix}%`)
+
+  let maxNum = 0
+  if (data) {
+    for (const row of data) {
+      const suffix = row.return_no.replace(dayPrefix, '')
+      if (/^\d{3}$/.test(suffix)) {
+        const num = parseInt(suffix, 10)
+        if (num > maxNum) maxNum = num
+      }
+    }
+  }
+
+  return `${dayPrefix}${String(maxNum + 1).padStart(3, '0')}`
 }
 
 export default function WarehouseReturns() {
@@ -108,6 +125,7 @@ export default function WarehouseReturns() {
         .from('or_orders')
         .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
         .eq('tracking_number', trimmed)
+        .eq('status', 'จัดส่งแล้ว')
         .limit(1)
       if (error) throw error
 
@@ -165,7 +183,7 @@ export default function WarehouseReturns() {
 
     setSaving(true)
     try {
-      const returnNo = generateCode('RTN')
+      const returnNo = await generateCode('RTN')
       const { data: retData, error: retErr } = await supabase
         .from('inv_returns')
         .insert({
@@ -464,8 +482,8 @@ export default function WarehouseReturns() {
             {notFound && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
                 <i className="fas fa-exclamation-triangle text-red-400 text-2xl mb-2"></i>
-                <div className="text-red-600 font-bold">ไม่พบเลขพัสดุนี้ในระบบ</div>
-                <div className="text-sm text-red-400 mt-1">กรุณาตรวจสอบเลขพัสดุอีกครั้ง</div>
+                <div className="text-red-600 font-bold">ไม่พบเลขพัสดุนี้ในบิลที่จัดส่งแล้ว</div>
+                <div className="text-sm text-red-400 mt-1">ค้นหาเฉพาะบิลสถานะ "จัดส่งแล้ว" เท่านั้น</div>
               </div>
             )}
 

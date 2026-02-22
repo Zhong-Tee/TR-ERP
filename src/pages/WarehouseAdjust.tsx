@@ -21,13 +21,30 @@ interface StockBalance {
 
 const TEMPLATE_HEADERS = ['product_code', 'qty', 'safety_stock', 'order_point'] as const
 
-function generateCode(prefix: string) {
+async function generateCode(prefix: string) {
   const date = new Date()
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
   const d = String(date.getDate()).padStart(2, '0')
-  const rand = Math.floor(Math.random() * 9000) + 1000
-  return `${prefix}-${y}${m}${d}-${rand}`
+  const dayPrefix = `${prefix}-${y}${m}${d}-`
+
+  const { data } = await supabase
+    .from('inv_adjustments')
+    .select('adjust_no')
+    .like('adjust_no', `${dayPrefix}%`)
+
+  let maxNum = 0
+  if (data) {
+    for (const row of data) {
+      const suffix = row.adjust_no.replace(dayPrefix, '')
+      if (/^\d{3}$/.test(suffix)) {
+        const num = parseInt(suffix, 10)
+        if (num > maxNum) maxNum = num
+      }
+    }
+  }
+
+  return `${dayPrefix}${String(maxNum + 1).padStart(3, '0')}`
 }
 
 export default function WarehouseAdjust() {
@@ -239,7 +256,7 @@ export default function WarehouseAdjust() {
     }
     setSaving(true)
     try {
-      const adjustNo = generateCode('ADJ')
+      const adjustNo = await generateCode('ADJ')
       const { data: adjustData, error: adjustError } = await supabase
         .from('inv_adjustments')
         .insert({

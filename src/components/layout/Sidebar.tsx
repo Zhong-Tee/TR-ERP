@@ -53,7 +53,7 @@ const menuItems: MenuItem[] = [
     label: 'รอตรวจคำสั่งซื้อ',
     icon: <FiCheckCircle className="w-6 h-6" />,
     path: '/admin-qc',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin_qc'],
+    roles: ['superadmin', 'admin', 'admin_qc'],
   },
   {
     key: 'plan',
@@ -185,7 +185,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       ])
 
       const c = rpcRes.data || {}
-      const accountTotal = (c.refund_pending || 0) + (c.tax_pending || 0) + (c.cash_pending || 0)
+      const accountTotal = (c.refund_pending || 0) + (c.tax_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
       const qcTotal = qcWoCount + (c.qc_reject || 0)
 

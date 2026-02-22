@@ -285,7 +285,7 @@ export default function WorkOrderManageList({
         updates.work_order_name = null
       }
       if (newStatus === 'ยกเลิก') {
-        updates.work_order_name = null
+        // คง work_order_name ไว้เพื่อให้ Plan dashboard แสดง badge สีแดงได้
       }
       const { error } = await supabase.from('or_orders').update(updates).in('id', ids)
       if (error) throw error

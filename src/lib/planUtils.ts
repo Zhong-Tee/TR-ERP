@@ -325,20 +325,12 @@ export function computePlanTimeline(
     const li = j.line_assignments?.[dept] ?? 0
     const prevJobsOnLine = results.filter((r) => r.line === li)
     let prevEnd = lineLastEnd[li]
-    const jHasActual = Object.values(j.tracks?.[dept] || {}).some((t) => t?.start || t?.end)
 
     if (prevJobsOnLine.length > 0) {
       const lastRes = prevJobsOnLine[prevJobsOnLine.length - 1]
       const lastJob = jobs.find((jb) => jb.id === lastRes.id)
       const actualLastEnd = lastJob ? getLatestActualEndSecForDept(lastJob, dept) : 0
-      const flowDepts = ['QC', 'STAMP', 'LASER']
-      if (flowDepts.includes(dept)) {
-        prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
-      } else if (jHasActual) {
-        prevEnd = lastRes.end
-      } else {
-        prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
-      }
+      prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
     }
 
     let stdDuration = calcPlanFor(dept, j, settings)
@@ -375,14 +367,9 @@ export function computePlanTimeline(
         }
       }
       if (dept === 'PACK') {
-        const qcActStart = getEarliestActualStartSecForDept(j, 'QC')
-        const qcPlanStart = getPlannedStartSecForDept('QC', j, precomputed)
-        const qcStartSec = qcActStart > 0 ? qcActStart : qcPlanStart
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)
-        if (qcStartSec > 0 && qcFinishSec > 0) {
-          base = Math.max(base, qcStartSec + 300)
-          const targetEnd = qcFinishSec + 300
-          finalDur = Math.max(stdDuration, targetEnd - base)
+        if (qcFinishSec > 0) {
+          base = Math.max(base, qcFinishSec + 300)
         }
       }
     }

@@ -59,6 +59,7 @@ export default function ProductionParcelReturn() {
         .from('or_orders')
         .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
         .eq('tracking_number', trimmed)
+        .eq('status', 'จัดส่งแล้ว')
         .limit(1)
       if (error) throw error
 
@@ -124,8 +125,24 @@ export default function ProductionParcelReturn() {
     try {
       const date = new Date()
       const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
-      const rand = Math.floor(Math.random() * 9000) + 1000
-      const returnNo = `RTN-${dateStr}-${rand}`
+      const rtnPrefix = `RTN-${dateStr}-`
+
+      const { data: existingRtn } = await supabase
+        .from('inv_returns')
+        .select('return_no')
+        .like('return_no', `${rtnPrefix}%`)
+
+      let rtnMax = 0
+      if (existingRtn) {
+        for (const row of existingRtn) {
+          const suffix = row.return_no.replace(rtnPrefix, '')
+          if (/^\d{3}$/.test(suffix)) {
+            const num = parseInt(suffix, 10)
+            if (num > rtnMax) rtnMax = num
+          }
+        }
+      }
+      const returnNo = `${rtnPrefix}${String(rtnMax + 1).padStart(3, '0')}`
 
       const { data: retData, error: retErr } = await supabase
         .from('inv_returns')
@@ -211,8 +228,8 @@ export default function ProductionParcelReturn() {
 
       {notFound && (
         <div className="rounded-xl bg-red-900/30 border border-red-700 p-4 text-center">
-          <div className="text-red-400 font-bold text-sm">ไม่พบเลขพัสดุนี้ในระบบ</div>
-          <div className="text-xs text-gray-400 mt-1">กรุณาตรวจสอบเลขพัสดุอีกครั้ง</div>
+          <div className="text-red-400 font-bold text-sm">ไม่พบเลขพัสดุนี้ในบิลที่จัดส่งแล้ว</div>
+          <div className="text-xs text-gray-400 mt-1">ค้นหาเฉพาะบิลสถานะ "จัดส่งแล้ว" เท่านั้น</div>
         </div>
       )}
 

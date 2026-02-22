@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -20,6 +20,17 @@ type ManualSlipRow = {
   reviewed_at: string | null
 }
 
+type OrderGroup = {
+  order_id: string
+  bill_no: string | null
+  status: ManualSlipRow['status']
+  submitted_by: string
+  submitted_at: string
+  reviewed_by: string | null
+  reviewed_at: string | null
+  entries: ManualSlipRow[]
+}
+
 type EditingCell = {
   rowId: string
   field: 'transfer_date' | 'transfer_time' | 'transfer_amount'
@@ -31,31 +42,22 @@ export default function ManualSlipCheckSection() {
   const [loading, setLoading] = useState(true)
   const [filterTab, setFilterTab] = useState<'pending' | 'done'>('pending')
 
-  // Detail view
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  // Slip images for a row
-  const [, setSlipImagesOrderId] = useState<string | null>(null)
-  const [, setSlipUrls] = useState<string[]>([])
-  const [, setSlipUrlsLoading] = useState(false)
   const [zoomImage, setZoomImage] = useState<string | null>(null)
 
-  // Check result
   const [checkResult, setCheckResult] = useState<{ open: boolean; message: string; type: 'success' | 'warning' | 'info' }>({ open: false, message: '', type: 'info' })
-  const [checkingId, setCheckingId] = useState<string | null>(null)
+  const [checkingOrderId, setCheckingOrderId] = useState<string | null>(null)
 
-  // Approve/Reject popup
-  const [actionModal, setActionModal] = useState<{ open: boolean; row: ManualSlipRow | null }>({ open: false, row: null })
+  const [actionModal, setActionModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
   const [actionSubmitting, setActionSubmitting] = useState(false)
 
-  // Inline editing state
   const [editingCell, setEditingCell] = useState<EditingCell>(null)
   const [editValue, setEditValue] = useState<string>('')
   const [editSaving, setEditSaving] = useState(false)
   const editInputRef = useRef<HTMLInputElement>(null)
 
-  // Focus input when entering edit mode
   useEffect(() => {
     if (editingCell && editInputRef.current) {
       editInputRef.current.focus()
@@ -63,42 +65,35 @@ export default function ManualSlipCheckSection() {
     }
   }, [editingCell])
 
-  // Start editing a cell on double-click
-  const startEditing = useCallback((rowId: string, field: EditingCell extends null ? never : NonNullable<EditingCell>['field'], currentValue: string | number) => {
+  const startEditing = useCallback((rowId: string, field: NonNullable<EditingCell>['field'], currentValue: string | number) => {
     setEditingCell({ rowId, field })
     setEditValue(String(currentValue))
   }, [])
 
-  // Cancel editing
   const cancelEditing = useCallback(() => {
     setEditingCell(null)
     setEditValue('')
   }, [])
 
-  // Save edited value to database
   const saveEdit = useCallback(async () => {
     if (!editingCell || editSaving) return
     const { rowId, field } = editingCell
     const row = rows.find(r => r.id === rowId)
     if (!row) { cancelEditing(); return }
 
-    // Get original value for comparison
     const originalValue = field === 'transfer_amount' ? String(row[field]) : row[field]
     if (editValue.trim() === String(originalValue)) {
       cancelEditing()
       return
     }
 
-    // Validate
     let updateValue: string | number = editValue.trim()
     if (field === 'transfer_date') {
-      // Expect YYYY-MM-DD format
       if (!/^\d{4}-\d{2}-\d{2}$/.test(updateValue)) {
         setCheckResult({ open: true, message: 'รูปแบบวันที่ไม่ถูกต้อง (YYYY-MM-DD)', type: 'warning' })
         return
       }
     } else if (field === 'transfer_time') {
-      // Expect HH:MM format
       if (!/^\d{2}:\d{2}$/.test(updateValue)) {
         setCheckResult({ open: true, message: 'รูปแบบเวลาไม่ถูกต้อง (HH:MM)', type: 'warning' })
         return
@@ -119,8 +114,6 @@ export default function ManualSlipCheckSection() {
         .update({ [field]: updateValue })
         .eq('id', rowId)
       if (error) throw error
-
-      // Update local state
       setRows(prev => prev.map(r => r.id === rowId ? { ...r, [field]: updateValue } : r))
       cancelEditing()
     } catch (e: any) {
@@ -130,9 +123,7 @@ export default function ManualSlipCheckSection() {
     }
   }, [editingCell, editValue, editSaving, rows, cancelEditing])
 
-  useEffect(() => {
-    loadRows()
-  }, [])
+  useEffect(() => { loadRows() }, [])
 
   async function loadRows() {
     setLoading(true)
@@ -150,7 +141,36 @@ export default function ManualSlipCheckSection() {
     }
   }
 
-  // Load order detail
+  const orderGroups = useMemo(() => {
+    const map = new Map<string, OrderGroup>()
+    for (const row of rows) {
+      const existing = map.get(row.order_id)
+      if (existing) {
+        existing.entries.push(row)
+      } else {
+        map.set(row.order_id, {
+          order_id: row.order_id,
+          bill_no: row.bill_no,
+          status: row.status,
+          submitted_by: row.submitted_by,
+          submitted_at: row.submitted_at,
+          reviewed_by: row.reviewed_by,
+          reviewed_at: row.reviewed_at,
+          entries: [row],
+        })
+      }
+    }
+    return Array.from(map.values())
+  }, [rows])
+
+  const filteredGroups = useMemo(() => {
+    if (filterTab === 'pending') return orderGroups.filter(g => g.entries.some(e => e.status === 'pending'))
+    return orderGroups.filter(g => g.entries.every(e => e.status === 'approved' || e.status === 'rejected'))
+  }, [orderGroups, filterTab])
+
+  const pendingCount = useMemo(() => orderGroups.filter(g => g.entries.some(e => e.status === 'pending')).length, [orderGroups])
+  const doneCount = useMemo(() => orderGroups.filter(g => g.entries.every(e => e.status === 'approved' || e.status === 'rejected')).length, [orderGroups])
+
   async function handleViewDetail(orderId: string) {
     setDetailLoading(true)
     try {
@@ -170,118 +190,87 @@ export default function ManualSlipCheckSection() {
     }
   }
 
-  // Load slip images for an order
-  // @ts-ignore TS6133 - kept for future use
-  async function handleViewSlips(orderId: string) {
-    setSlipImagesOrderId(orderId)
-    setSlipUrls([])
-    setSlipUrlsLoading(true)
+  async function handleCheckAllSlips(group: OrderGroup) {
+    setCheckingOrderId(group.order_id)
     try {
-      const { data } = await supabase
-        .from('ac_verified_slips')
-        .select('slip_image_url, slip_storage_path')
-        .eq('order_id', orderId)
-        .or('is_deleted.is.null,is_deleted.eq.false')
-        .order('created_at', { ascending: true })
-      const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
-      const urls: string[] = []
-      for (const r of rows) {
-        if (r.slip_storage_path) {
-          const parts = r.slip_storage_path.split('/')
-          const bucket = parts[0] || 'slip-images'
-          const filePath = parts.slice(1).join('/')
-          const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 3600)
-          if (signed?.signedUrl) { urls.push(signed.signedUrl); continue }
-          const retry = await supabase.storage.from('slip-images').createSignedUrl(filePath || r.slip_storage_path, 3600)
-          if (retry.data?.signedUrl) { urls.push(retry.data.signedUrl); continue }
-        }
-        if (r.slip_image_url) urls.push(r.slip_image_url)
-      }
-      setSlipUrls(urls)
-    } catch (e) {
-      console.error('Error loading slips:', e)
-    } finally {
-      setSlipUrlsLoading(false)
-    }
-  }
-
-  // เช็คสลิป — check if transfer_date + transfer_time + transfer_amount already exist in ac_verified_slips
-  async function handleCheckSlip(row: ManualSlipRow) {
-    setCheckingId(row.id)
-    try {
-      // Check in ac_verified_slips for matching date + amount
       const { data, error } = await supabase
         .from('ac_verified_slips')
         .select('id, order_id, verified_amount, easyslip_date, easyslip_response, or_orders!inner(bill_no)')
         .or('is_deleted.is.null,is_deleted.eq.false')
-
       if (error) throw error
 
-      const transferAmount = Number(row.transfer_amount)
-      const transferDate = row.transfer_date
-      const transferTime = row.transfer_time
+      const allResults: string[] = []
+      let totalFound = 0
 
-      // Match: date + time + amount (แปลง easyslip_date เป็นเวลาไทย GMT+7 ก่อนเทียบ)
-      const matches = (data || []).filter((slip: any) => {
-        if (!slip.easyslip_date) return false
-        // แปลงเป็น Date object แล้วแสดงเวลาไทย
-        const d = new Date(slip.easyslip_date)
-        if (isNaN(d.getTime())) return false
-        // ใช้ toLocaleString เพื่อแปลงเป็นเวลาไทย (Asia/Bangkok = UTC+7)
-        const thaiDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' }) // YYYY-MM-DD
-        const thaiHours = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false }) // HH:MM
-        const slipAmount = Number(slip.verified_amount) || 0
-        const dateMatch = thaiDate === transferDate
-        const timeMatch = thaiHours === transferTime
-        const amountMatch = Math.abs(slipAmount - transferAmount) <= 0.01
-        return dateMatch && timeMatch && amountMatch
-      })
+      for (let i = 0; i < group.entries.length; i++) {
+        const entry = group.entries[i]
+        const transferAmount = Number(entry.transfer_amount)
+        const transferDate = entry.transfer_date
+        const transferTime = entry.transfer_time
 
-      if (matches.length > 0) {
-        const details = matches.map((m: any) => {
-          const billNo = m.or_orders?.bill_no || '-'
-          const d = new Date(m.easyslip_date)
-          const thaiDate = d.toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: '2-digit', year: 'numeric' })
-          const thaiTime = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
-          const amount = Number(m.verified_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })
-          return `• บิล ${billNo} — วันที่ ${thaiDate} เวลา ${thaiTime} ยอด ฿${amount}`
-        }).join('\n')
-        setCheckResult({ open: true, message: `พบข้อมูลซ้ำ (${matches.length} รายการ) — สลิปนี้อาจเคยถูกใช้แล้ว\n\n${details}`, type: 'warning' })
-      } else {
-        setCheckResult({ open: true, message: 'ข้อมูลไม่ซ้ำ — ไม่พบรายการที่ตรงกันในระบบ', type: 'success' })
+        const matches = (data || []).filter((slip: any) => {
+          if (!slip.easyslip_date) return false
+          const d = new Date(slip.easyslip_date)
+          if (isNaN(d.getTime())) return false
+          const thaiDate = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+          const thaiHours = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
+          const slipAmount = Number(slip.verified_amount) || 0
+          return thaiDate === transferDate && thaiHours === transferTime && Math.abs(slipAmount - transferAmount) <= 0.01
+        })
+
+        const label = `สลิปที่ ${i + 1} (${transferDate} ${transferTime} ฿${transferAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })})`
+        if (matches.length > 0) {
+          totalFound += matches.length
+          const details = matches.map((m: any) => {
+            const billNo = m.or_orders?.bill_no || '-'
+            const d = new Date(m.easyslip_date)
+            const thaiDate = d.toLocaleDateString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: '2-digit', year: 'numeric' })
+            const thaiTime = d.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', hour12: false })
+            const amount = Number(m.verified_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })
+            return `  บิล ${billNo} — ${thaiDate} ${thaiTime} ฿${amount}`
+          }).join('\n')
+          allResults.push(`⚠️ ${label}\n  → พบซ้ำ ${matches.length} รายการ:\n${details}`)
+        } else {
+          allResults.push(`✅ ${label}\n  → ไม่พบข้อมูลซ้ำ`)
+        }
       }
+
+      const type = totalFound > 0 ? 'warning' : 'success'
+      const header = totalFound > 0
+        ? `พบข้อมูลซ้ำ ${totalFound} รายการ — สลิปอาจเคยถูกใช้แล้ว`
+        : 'ข้อมูลไม่ซ้ำทั้งหมด — ไม่พบรายการที่ตรงกันในระบบ'
+      setCheckResult({ open: true, message: `${header}\n\n${allResults.join('\n\n')}`, type })
     } catch (e: any) {
       setCheckResult({ open: true, message: 'ตรวจสอบไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
     } finally {
-      setCheckingId(null)
+      setCheckingOrderId(null)
     }
   }
 
-  // Approve or Reject
   async function handleAction(action: 'approved' | 'rejected') {
-    if (!actionModal.row) return
+    if (!actionModal.group) return
     setActionSubmitting(true)
     try {
-      // Update the manual slip check status
+      const reviewData = {
+        status: action,
+        reviewed_by: user?.username || user?.email || 'unknown',
+        reviewed_at: new Date().toISOString(),
+      }
       const { error: updateErr } = await supabase
         .from('ac_manual_slip_checks')
-        .update({
-          status: action,
-          reviewed_by: user?.username || user?.email || 'unknown',
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq('id', actionModal.row.id)
+        .update(reviewData)
+        .eq('order_id', actionModal.group.order_id)
+        .eq('status', 'pending')
       if (updateErr) throw updateErr
 
-      // Update the order status based on action
       const newOrderStatus = action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'
       const { error: orderErr } = await supabase
         .from('or_orders')
         .update({ status: newOrderStatus })
-        .eq('id', actionModal.row.order_id)
+        .eq('id', actionModal.group.order_id)
       if (orderErr) throw orderErr
 
-      setActionModal({ open: false, row: null })
+      setActionModal({ open: false, group: null })
       await loadRows()
       setCheckResult({
         open: true,
@@ -306,6 +295,43 @@ export default function ManualSlipCheckSection() {
     return 'รอตรวจสอบ'
   }
 
+  function renderEditable(row: ManualSlipRow, field: NonNullable<EditingCell>['field'], type: string, displayValue: string) {
+    const isEditing = editingCell?.rowId === row.id && editingCell.field === field
+    if (isEditing) {
+      return (
+        <input
+          ref={editInputRef}
+          type={type}
+          step={type === 'number' ? '0.01' : undefined}
+          min={type === 'number' ? '0' : undefined}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onWheel={type === 'number' ? (e) => e.currentTarget.blur() : undefined}
+          onBlur={() => saveEdit()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') saveEdit()
+            if (e.key === 'Escape') cancelEditing()
+          }}
+          disabled={editSaving}
+          className={`inline-block px-1.5 py-0.5 border border-blue-400 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50 ${
+            type === 'date' ? 'w-[140px]' : type === 'time' ? 'w-[100px]' : 'w-[120px]'
+          } ${field === 'transfer_amount' ? 'font-bold text-blue-600' : 'font-semibold'}`}
+        />
+      )
+    }
+    return (
+      <span
+        className={`cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none ${
+          field === 'transfer_amount' ? 'font-bold text-blue-600' : 'font-semibold'
+        }`}
+        onDoubleClick={() => row.status === 'pending' && startEditing(row.id, field, field === 'transfer_amount' ? row.transfer_amount : row[field])}
+        title={row.status === 'pending' ? 'ดับเบิ้ลคลิกเพื่อแก้ไข' : ''}
+      >
+        {displayValue}
+      </span>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
@@ -327,7 +353,7 @@ export default function ManualSlipCheckSection() {
           >
             รายการใหม่
             <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'pending' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
-              {rows.filter(r => r.status === 'pending').length}
+              {pendingCount}
             </span>
           </button>
           <button
@@ -336,133 +362,68 @@ export default function ManualSlipCheckSection() {
           >
             เสร็จสิ้น
             <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${filterTab === 'done' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'}`}>
-              {rows.filter(r => r.status === 'approved' || r.status === 'rejected').length}
+              {doneCount}
             </span>
           </button>
         </div>
 
-        {(() => {
-          const filteredRows = filterTab === 'pending'
-            ? rows.filter(r => r.status === 'pending')
-            : rows.filter(r => r.status === 'approved' || r.status === 'rejected')
-          return loading ? (
+        {loading ? (
           <div className="flex justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
           </div>
-        ) : filteredRows.length === 0 ? (
+        ) : filteredGroups.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <i className="fas fa-inbox text-4xl mb-3 block"></i>
             <p>{filterTab === 'pending' ? 'ไม่มีรายการใหม่' : 'ไม่มีรายการที่เสร็จสิ้น'}</p>
           </div>
         ) : (
           <div className="divide-y">
-            {filteredRows.map((row) => (
-              <div key={row.id} className="px-6 py-4 hover:bg-gray-50/50 transition">
+            {filteredGroups.map((group) => (
+              <div key={group.order_id} className="px-6 py-4 hover:bg-gray-50/50 transition">
                 <div className="flex flex-wrap items-start gap-4">
                   {/* Slip thumbnails */}
                   <div className="shrink-0">
-                    <SlipThumbnails
-                      orderId={row.order_id}
-                      onZoom={(url) => setZoomImage(url)}
-                    />
+                    <SlipThumbnails orderId={group.order_id} onZoom={(url) => setZoomImage(url)} />
                   </div>
 
                   {/* Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-mono font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => handleViewDetail(row.order_id)}>
-                        {row.bill_no || '-'}
+                      <span className="font-mono font-bold text-blue-600 cursor-pointer hover:underline" onClick={() => handleViewDetail(group.order_id)}>
+                        {group.bill_no || '-'}
                       </span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor(row.status)}`}>
-                        {statusLabel(row.status)}
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor(group.status)}`}>
+                        {statusLabel(group.status)}
                       </span>
                     </div>
-                    <div className="grid grid-cols-3 gap-3 text-sm mt-2">
-                      <div>
-                        <span className="text-gray-500">วันที่โอน:</span>{' '}
-                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_date' ? (
-                          <input
-                            ref={editInputRef}
-                            type="date"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => saveEdit()}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveEdit()
-                              if (e.key === 'Escape') cancelEditing()
-                            }}
-                            disabled={editSaving}
-                            className="inline-block w-[140px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
-                          />
-                        ) : (
-                          <span
-                            className="font-semibold cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
-                            onDoubleClick={() => startEditing(row.id, 'transfer_date', row.transfer_date)}
-                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
-                          >
-                            {row.transfer_date}
-                          </span>
-                        )}
-                      </div>
-                      <div>
-                        <span className="text-gray-500">เวลาโอน:</span>{' '}
-                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_time' ? (
-                          <input
-                            ref={editInputRef}
-                            type="time"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => saveEdit()}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveEdit()
-                              if (e.key === 'Escape') cancelEditing()
-                            }}
-                            disabled={editSaving}
-                            className="inline-block w-[100px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
-                          />
-                        ) : (
-                          <span
-                            className="font-semibold cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
-                            onDoubleClick={() => startEditing(row.id, 'transfer_time', row.transfer_time)}
-                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
-                          >
-                            {row.transfer_time}
-                          </span>
-                        )}
-                      </div>
-                      <div>
-                        <span className="text-gray-500">ยอดโอน:</span>{' '}
-                        {editingCell?.rowId === row.id && editingCell.field === 'transfer_amount' ? (
-                          <input
-                            ref={editInputRef}
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => saveEdit()}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') saveEdit()
-                              if (e.key === 'Escape') cancelEditing()
-                            }}
-                            disabled={editSaving}
-                            className="inline-block w-[120px] px-1.5 py-0.5 border border-blue-400 rounded text-sm font-bold text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300 bg-blue-50"
-                          />
-                        ) : (
-                          <span
-                            className="font-bold text-blue-600 cursor-pointer hover:bg-yellow-100 hover:text-yellow-800 px-1 py-0.5 rounded transition select-none"
-                            onDoubleClick={() => startEditing(row.id, 'transfer_amount', row.transfer_amount)}
-                            title="ดับเบิ้ลคลิกเพื่อแก้ไข"
-                          >
-                            ฿{Number(row.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                          </span>
-                        )}
-                      </div>
+
+                    {/* Slip entries — one row per slip */}
+                    <div className="space-y-1 mt-2">
+                      {group.entries.map((entry, idx) => (
+                        <div key={entry.id} className="grid grid-cols-[auto_1fr_1fr_1fr] gap-3 text-sm items-center">
+                          <span className="text-xs text-gray-400 font-bold w-4 text-right">{idx + 1}.</span>
+                          <div>
+                            <span className="text-gray-500">วันที่โอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_date', 'date', entry.transfer_date)}
+                          </div>
+                          <div>
+                            <span className="text-gray-500">เวลาโอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_time', 'time', entry.transfer_time)}
+                          </div>
+                          <div>
+                            <span className="text-gray-500">ยอดโอน:</span>{' '}
+                            {renderEditable(entry, 'transfer_amount', 'number',
+                              `฿${Number(entry.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}`
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
+
                     <div className="text-xs text-gray-400 mt-1">
-                      ส่งโดย: {row.submitted_by} — {formatDateTime(row.submitted_at)}
-                      {row.reviewed_by && (
-                        <span className="ml-3">| ตรวจโดย: {row.reviewed_by} — {row.reviewed_at ? formatDateTime(row.reviewed_at) : ''}</span>
+                      ส่งโดย: {group.submitted_by} — {formatDateTime(group.submitted_at)}
+                      {group.reviewed_by && (
+                        <span className="ml-3">| ตรวจโดย: {group.reviewed_by} — {group.reviewed_at ? formatDateTime(group.reviewed_at) : ''}</span>
                       )}
                     </div>
                   </div>
@@ -470,26 +431,26 @@ export default function ManualSlipCheckSection() {
                   {/* Actions */}
                   <div className="flex items-center gap-2 shrink-0">
                     <button
-                      onClick={() => handleViewDetail(row.order_id)}
+                      onClick={() => handleViewDetail(group.order_id)}
                       className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
                     >
                       <i className="fas fa-eye mr-1"></i> ดูบิล
                     </button>
-                    {row.status === 'pending' && (
+                    {group.status === 'pending' && (
                       <>
                         <button
-                          onClick={() => handleCheckSlip(row)}
-                          disabled={checkingId === row.id}
+                          onClick={() => handleCheckAllSlips(group)}
+                          disabled={checkingOrderId === group.order_id}
                           className="px-3 py-1.5 bg-sky-500 text-white rounded-lg text-xs font-bold hover:bg-sky-600 transition disabled:opacity-50"
                         >
-                          {checkingId === row.id ? (
+                          {checkingOrderId === group.order_id ? (
                             <span className="flex items-center gap-1"><span className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></span> ตรวจ...</span>
                           ) : (
                             <><i className="fas fa-search mr-1"></i> เช็คสลิป</>
                           )}
                         </button>
                         <button
-                          onClick={() => setActionModal({ open: true, row })}
+                          onClick={() => setActionModal({ open: true, group })}
                           className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition"
                         >
                           <i className="fas fa-check-circle mr-1"></i> ยืนยันการโอน
@@ -501,8 +462,7 @@ export default function ManualSlipCheckSection() {
               </div>
             ))}
           </div>
-        )
-        })()}
+        )}
       </div>
 
       {/* Order Detail Modal */}
@@ -510,7 +470,6 @@ export default function ManualSlipCheckSection() {
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
       </Modal>
 
-      {/* Loading overlay for detail */}
       {detailLoading && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
           <div className="bg-white rounded-xl p-8 flex flex-col items-center gap-3">
@@ -549,19 +508,19 @@ export default function ManualSlipCheckSection() {
       </Modal>
 
       {/* Approve/Reject confirmation modal */}
-      <Modal open={actionModal.open} onClose={() => { if (!actionSubmitting) setActionModal({ open: false, row: null }) }} contentClassName="max-w-md">
-        {actionModal.row && (
+      <Modal open={actionModal.open} onClose={() => { if (!actionSubmitting) setActionModal({ open: false, group: null }) }} contentClassName="max-w-md">
+        {actionModal.group && (
           <div className="p-6">
             <h3 className="text-lg font-bold text-gray-800 mb-2">ยืนยันการตรวจสอบ</h3>
             <p className="text-gray-600 text-sm mb-1">
-              บิล <span className="font-mono font-bold text-blue-600">{actionModal.row.bill_no}</span>
+              บิล <span className="font-mono font-bold text-blue-600">{actionModal.group.bill_no}</span>
             </p>
             <p className="text-gray-600 text-sm mb-4">
-              ยอดโอน ฿{Number(actionModal.row.transfer_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })} — ต้องการดำเนินการอย่างไร?
+              จำนวน {actionModal.group.entries.length} สลิป — ยอดรวม ฿{actionModal.group.entries.reduce((sum, e) => sum + Number(e.transfer_amount), 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
             </p>
             <div className="flex gap-3">
               <button
-                onClick={() => setActionModal({ open: false, row: null })}
+                onClick={() => setActionModal({ open: false, group: null })}
                 disabled={actionSubmitting}
                 className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition disabled:opacity-50"
               >

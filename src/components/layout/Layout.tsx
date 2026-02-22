@@ -30,7 +30,7 @@ export default function Layout({ children }: LayoutProps) {
         <TopBar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
         <main
           className="flex-1 min-h-0 overflow-auto flex flex-col px-6 pb-6 bg-transparent relative z-0"
-          style={{ paddingTop: 'calc(4rem + var(--subnav-height, 0rem) + 1rem)' }}
+          style={{ paddingTop: 'calc(4rem + var(--subnav-height, 0rem))' }}
         >
           {children}
         </main>

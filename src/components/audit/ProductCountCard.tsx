@@ -133,21 +133,23 @@ export default function ProductCountCard({ item, onSave, onCancel, saving }: Pro
           )}
         </div>
 
-        {/* Safety Stock Check */}
-        <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-1">
-            Safety Stock ที่นับได้ <span className="text-gray-400 font-normal">(ถ้ามี)</span>
-          </label>
-          <input
-            type="number"
-            inputMode="numeric"
-            min="0"
-            value={countedSafetyStock}
-            onChange={(e) => setCountedSafetyStock(e.target.value)}
-            placeholder="กรอกจำนวน Safety Stock"
-            className="w-full px-4 py-3 border-2 rounded-xl text-center font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
-          />
-        </div>
+        {/* Safety Stock Check — แสดงเฉพาะสินค้าที่มี safety stock ในระบบ */}
+        {item.system_safety_stock != null && item.system_safety_stock > 0 && (
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1">
+              Safety Stock ที่นับได้ <span className="text-gray-400 font-normal">(ถ้ามี)</span>
+            </label>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="0"
+              value={countedSafetyStock}
+              onChange={(e) => setCountedSafetyStock(e.target.value)}
+              placeholder="กรอกจำนวน Safety Stock"
+              className="w-full px-4 py-3 border-2 rounded-xl text-center font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"
+            />
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">

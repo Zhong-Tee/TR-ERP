@@ -3,13 +3,30 @@ import type { AuditType, InventoryAudit, InventoryAuditItem } from '../types'
 
 // ── Helpers ──────────────────────────────────────────────────
 
-export function generateAuditNo() {
+export async function generateAuditNo() {
   const d = new Date()
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
-  const rand = Math.floor(Math.random() * 9000) + 1000
-  return `AUDIT-${y}${m}${day}-${rand}`
+  const prefix = `AUDIT-${y}${m}${day}-`
+
+  const { data } = await supabase
+    .from('inv_audits')
+    .select('audit_no')
+    .like('audit_no', `${prefix}%`)
+
+  let maxNum = 0
+  if (data) {
+    for (const row of data) {
+      const suffix = row.audit_no.replace(prefix, '')
+      if (/^\d{3}$/.test(suffix)) {
+        const num = parseInt(suffix, 10)
+        if (num > maxNum) maxNum = num
+      }
+    }
+  }
+
+  return `${prefix}${String(maxNum + 1).padStart(3, '0')}`
 }
 
 // ── Fetch Helpers ────────────────────────────────────────────
@@ -65,7 +82,7 @@ interface CreateAuditInput {
 }
 
 export async function createAudit(input: CreateAuditInput) {
-  const auditNo = generateAuditNo()
+  const auditNo = await generateAuditNo()
 
   // 1. สร้าง audit header
   const { data: audit, error: auditErr } = await supabase
@@ -293,7 +310,23 @@ export async function createAdjustmentFromAudit(auditId: string, userId: string)
   }
 
   const d = new Date()
-  const adjustNo = `ADJ-AUDIT-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${Math.floor(Math.random() * 9000) + 1000}`
+  const adjPrefix = `ADJ-AUDIT-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-`
+  const { data: lastAdj } = await supabase
+    .from('inv_adjustments')
+    .select('adjust_no')
+    .like('adjust_no', `${adjPrefix}%`)
+
+  let adjMax = 0
+  if (lastAdj) {
+    for (const row of lastAdj) {
+      const suffix = row.adjust_no.replace(adjPrefix, '')
+      if (/^\d{3}$/.test(suffix)) {
+        const num = parseInt(suffix, 10)
+        if (num > adjMax) adjMax = num
+      }
+    }
+  }
+  const adjustNo = `${adjPrefix}${String(adjMax + 1).padStart(3, '0')}`
 
   // Fetch audit info
   const audit = await fetchAuditById(auditId)

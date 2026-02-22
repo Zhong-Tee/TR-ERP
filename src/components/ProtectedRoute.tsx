@@ -3,8 +3,34 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { UserRole } from '../types'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 
+/** sub-path → menu_key mapping (ตรวจก่อน main path เพื่อให้ได้ key ที่เจาะจงกว่า) */
+const SUB_PATH_MAP: Record<string, string> = {
+  '/warehouse/audit': 'warehouse-audit',
+  '/warehouse/adjust': 'warehouse-adjust',
+  '/warehouse/returns': 'warehouse-returns',
+  '/warehouse/production': 'warehouse-production',
+  '/warehouse/roll-calc': 'warehouse-roll-calc',
+  '/warehouse/sales-list': 'warehouse-sales-list',
+  '/purchase/pr': 'purchase-pr',
+  '/purchase/po': 'purchase-po',
+  '/purchase/gr': 'purchase-gr',
+  '/purchase/sample': 'purchase-sample',
+  '/products/inactive': 'products-inactive',
+  '/hr/leave': 'hr-leave',
+  '/hr/interview': 'hr-interview',
+  '/hr/attendance': 'hr-attendance',
+  '/hr/contracts': 'hr-contracts',
+  '/hr/documents': 'hr-documents',
+  '/hr/onboarding': 'hr-onboarding',
+  '/hr/salary': 'hr-salary',
+  '/hr/settings': 'hr-settings',
+}
+
 /** แปลง pathname → menu_key สำหรับตรวจสอบสิทธิ์จาก st_user_menus */
 function pathToMenuKey(pathname: string): string | null {
+  for (const [subPath, key] of Object.entries(SUB_PATH_MAP)) {
+    if (pathname.startsWith(subPath)) return key
+  }
   if (pathname.startsWith('/dashboard')) return 'dashboard'
   if (pathname.startsWith('/orders')) return 'orders'
   if (pathname.startsWith('/admin-qc')) return 'admin-qc'
@@ -16,10 +42,12 @@ function pathToMenuKey(pathname: string): string | null {
   if (pathname.startsWith('/transport')) return 'transport'
   if (pathname.startsWith('/products')) return 'products'
   if (pathname.startsWith('/cartoon-patterns')) return 'cartoon-patterns'
+  if (pathname === '/warehouse') return 'warehouse-stock'
   if (pathname.startsWith('/warehouse')) return 'warehouse'
   if (pathname.startsWith('/purchase')) return 'purchase'
   if (pathname.startsWith('/sales-reports')) return 'sales-reports'
   if (pathname.startsWith('/kpi')) return 'kpi'
+  if (pathname === '/hr') return 'hr-employees'
   if (pathname.startsWith('/hr')) return 'hr'
   if (pathname.startsWith('/settings')) return 'settings'
   return null

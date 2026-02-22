@@ -63,7 +63,7 @@ export default function OrderList({
 
   // ส่งตรวจสลิป modal
   const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
-  const [slipCheckForm, setSlipCheckForm] = useState({ transfer_date: '', transfer_time: '', transfer_amount: '' })
+  const [slipCheckForms, setSlipCheckForms] = useState<{ transfer_date: string; transfer_time: string; transfer_amount: string }[]>([])
   const [slipCheckSubmitting, setSlipCheckSubmitting] = useState(false)
   const [slipCheckSlipUrls, setSlipCheckSlipUrls] = useState<string[]>([])
   const [slipCheckSlipLoading, setSlipCheckSlipLoading] = useState(false)
@@ -72,7 +72,7 @@ export default function OrderList({
 
   async function openSlipCheckModal(order: Order) {
     setSlipCheckOrder(order)
-    setSlipCheckForm({ transfer_date: '', transfer_time: '', transfer_amount: '' })
+    setSlipCheckForms([])
     setSlipCheckSlipUrls([])
     setSlipCheckSlipLoading(true)
     try {
@@ -97,27 +97,35 @@ export default function OrderList({
         if (r.slip_image_url) urls.push(r.slip_image_url)
       }
       setSlipCheckSlipUrls(urls)
+      const count = Math.max(urls.length, 1)
+      setSlipCheckForms(Array.from({ length: count }, () => ({ transfer_date: '', transfer_time: '', transfer_amount: '' })))
     } catch (e) {
       console.error('Error loading slips:', e)
+      setSlipCheckForms([{ transfer_date: '', transfer_time: '', transfer_amount: '' }])
     } finally {
       setSlipCheckSlipLoading(false)
     }
   }
 
   async function handleSlipCheckSubmit() {
-    if (!slipCheckOrder || !slipCheckForm.transfer_date || !slipCheckForm.transfer_time || !slipCheckForm.transfer_amount) return
+    if (!slipCheckOrder) return
+    const filledForms = slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount)
+    if (filledForms.length === 0) return
     setSlipCheckSubmitting(true)
     try {
-      const { error } = await supabase.from('ac_manual_slip_checks').insert({
+      await supabase.from('ac_manual_slip_checks').delete().eq('order_id', slipCheckOrder.id)
+
+      const payload = filledForms.map(f => ({
         order_id: slipCheckOrder.id,
         bill_no: slipCheckOrder.bill_no,
-        transfer_date: slipCheckForm.transfer_date,
-        transfer_time: slipCheckForm.transfer_time,
-        transfer_amount: parseFloat(slipCheckForm.transfer_amount),
+        transfer_date: f.transfer_date,
+        transfer_time: f.transfer_time,
+        transfer_amount: parseFloat(f.transfer_amount),
         submitted_by: user?.username || user?.email || 'unknown',
-      })
+      }))
+      const { error } = await supabase.from('ac_manual_slip_checks').insert(payload)
       if (error) throw error
-      setSlipCheckResult({ open: true, success: true, message: 'ส่งตรวจสลิปเรียบร้อยแล้ว' })
+      setSlipCheckResult({ open: true, success: true, message: `ส่งตรวจสลิปเรียบร้อย ${filledForms.length} รายการ` })
       setSlipCheckOrder(null)
     } catch (e: any) {
       setSlipCheckResult({ open: true, success: false, message: 'ส่งไม่สำเร็จ: ' + (e?.message || e) })
@@ -395,11 +403,6 @@ export default function OrderList({
                     {order.billing_details.request_tax_invoice && (
                       <span className="px-2.5 py-1 bg-primary-100 text-primary-900 rounded-full text-sm font-semibold">
                         ขอใบกำกับภาษี
-                      </span>
-                    )}
-                    {order.billing_details.request_cash_bill && (
-                      <span className="px-2.5 py-1 bg-secondary-200 text-secondary-900 rounded-full text-sm font-semibold">
-                        ขอบิลเงินสด
                       </span>
                     )}
                   </>
@@ -704,88 +707,111 @@ export default function OrderList({
       </Modal>
 
       {/* ส่งตรวจสลิป Modal */}
-      <Modal open={!!slipCheckOrder} onClose={() => setSlipCheckOrder(null)} contentClassName="max-w-3xl w-full">
+      <Modal open={!!slipCheckOrder} onClose={() => setSlipCheckOrder(null)} contentClassName="max-w-4xl w-full">
         {slipCheckOrder && (
-          <div className="p-6">
-            <h3 className="text-xl font-bold text-gray-800 mb-1">ส่งตรวจสลิป</h3>
-            <p className="text-sm text-gray-500 mb-4">บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Left: Slip images */}
-              <div>
-                <p className="text-sm font-semibold text-gray-700 mb-2">รูปสลิปโอน</p>
-                {slipCheckSlipLoading ? (
-                  <div className="flex justify-center py-12">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                  </div>
-                ) : slipCheckSlipUrls.length === 0 ? (
-                  <div className="text-center py-8 text-gray-400 border rounded-xl bg-gray-50">
-                    <i className="fas fa-image text-3xl mb-2 block"></i>
-                    <p>ไม่พบรูปสลิป</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 max-h-[450px] overflow-y-auto">
-                    {slipCheckSlipUrls.map((url, idx) => (
-                      <img
-                        key={idx}
-                        src={url}
-                        alt={`สลิป ${idx + 1}`}
-                        className="w-full object-contain rounded-lg border cursor-pointer hover:border-blue-400 transition bg-gray-50"
-                        onClick={() => setSlipCheckImageZoom(url)}
-                        onError={(e) => { e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23eee" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="12" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eโหลดไม่ได้%3C/text%3E%3C/svg%3E' }}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-              {/* Right: Form fields */}
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่โอน</label>
-                  <input
-                    type="date"
-                    value={slipCheckForm.transfer_date}
-                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_date: e.target.value }))}
-                    className="w-full border rounded-lg px-3 py-2 text-sm"
-                  />
+          <div className="flex flex-col max-h-[90vh]">
+            <div className="p-6 border-b border-gray-200 shrink-0">
+              <h3 className="text-xl font-bold text-gray-800 mb-1">ส่งตรวจสลิป</h3>
+              <p className="text-sm text-gray-500">
+                บิล <span className="font-mono font-bold text-blue-600">{slipCheckOrder.bill_no}</span> — ยอดรวม ฿{slipCheckOrder.total_amount?.toLocaleString()}
+                {slipCheckSlipUrls.length > 0 && <span className="ml-2 text-gray-400">({slipCheckSlipUrls.length} สลิป)</span>}
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {slipCheckSlipLoading ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
                 </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-600 mb-1">เวลาโอน</label>
-                  <input
-                    type="time"
-                    value={slipCheckForm.transfer_time}
-                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_time: e.target.value }))}
-                    className="w-full border rounded-lg px-3 py-2 text-sm"
-                  />
+              ) : slipCheckForms.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">
+                  <i className="fas fa-image text-3xl mb-2 block"></i>
+                  <p>ไม่พบรูปสลิป</p>
                 </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-600 mb-1">ยอดโอน (บาท)</label>
-                  <input
-                    type="number"
-                    value={slipCheckForm.transfer_amount}
-                    onChange={(e) => setSlipCheckForm(f => ({ ...f, transfer_amount: e.target.value }))}
-                    placeholder="0.00"
-                    className="w-full border rounded-lg px-3 py-2 text-sm"
-                    step="0.01"
-                    min="0"
-                  />
+              ) : (
+                slipCheckForms.map((form, idx) => (
+                  <div key={idx} className="border rounded-xl overflow-hidden bg-white shadow-sm">
+                    <div className="bg-gray-50 px-4 py-2 border-b flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">{idx + 1}</span>
+                      <span className="text-sm font-bold text-gray-700">สลิปที่ {idx + 1}</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
+                      <div className="flex justify-center">
+                        {slipCheckSlipUrls[idx] ? (
+                          <img
+                            src={slipCheckSlipUrls[idx]}
+                            alt={`สลิป ${idx + 1}`}
+                            className="max-h-[300px] w-auto object-contain rounded-lg border cursor-pointer hover:border-blue-400 transition bg-gray-50"
+                            onClick={() => setSlipCheckImageZoom(slipCheckSlipUrls[idx])}
+                            onError={(e) => { e.currentTarget.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Crect fill="%23eee" width="200" height="200"/%3E%3Ctext fill="%23999" font-family="sans-serif" font-size="12" x="50%25" y="50%25" text-anchor="middle" dy=".3em"%3Eโหลดไม่ได้%3C/text%3E%3C/svg%3E' }}
+                          />
+                        ) : (
+                          <div className="w-full h-32 bg-gray-50 border rounded-lg flex items-center justify-center text-gray-400 text-sm">
+                            <i className="fas fa-image mr-2"></i>ไม่มีรูปสลิป
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่โอน</label>
+                          <input
+                            type="date"
+                            value={form.transfer_date}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_date: e.target.value } : f))}
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">เวลาโอน</label>
+                          <input
+                            type="time"
+                            value={form.transfer_time}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_time: e.target.value } : f))}
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">ยอดโอน (บาท)</label>
+                          <input
+                            type="number"
+                            value={form.transfer_amount}
+                            onChange={(e) => setSlipCheckForms(prev => prev.map((f, i) => i === idx ? { ...f, transfer_amount: e.target.value } : f))}
+                            onWheel={(e) => e.currentTarget.blur()}
+                            placeholder="0.00"
+                            className="w-full border rounded-lg px-3 py-2 text-sm"
+                            step="0.01"
+                            min="0"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {slipCheckForms.length > 0 && (
+              <div className="p-4 border-t border-gray-200 shrink-0 bg-white flex items-center justify-between gap-4">
+                <div className="text-sm text-gray-500">
+                  กรอกข้อมูลแล้ว {slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} / {slipCheckForms.length} รายการ
                 </div>
-                <div className="flex gap-3 pt-2">
+                <div className="flex gap-3">
                   <button
                     onClick={() => setSlipCheckOrder(null)}
-                    className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition"
+                    className="px-5 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition"
                   >
                     ยกเลิก
                   </button>
                   <button
                     onClick={handleSlipCheckSubmit}
-                    disabled={slipCheckSubmitting || !slipCheckForm.transfer_date || !slipCheckForm.transfer_time || !slipCheckForm.transfer_amount}
-                    className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50"
+                    disabled={slipCheckSubmitting || slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length === 0}
+                    className="px-5 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50"
                   >
-                    {slipCheckSubmitting ? 'กำลังส่ง...' : 'ยืนยัน'}
+                    {slipCheckSubmitting ? 'กำลังส่ง...' : `ยืนยัน (${slipCheckForms.filter(f => f.transfer_date && f.transfer_time && f.transfer_amount).length} รายการ)`}
                   </button>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         )}
       </Modal>

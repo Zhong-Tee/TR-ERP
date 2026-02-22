@@ -165,7 +165,19 @@ export default function ProductionWorkQueue() {
         showAlert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
         return
       }
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      const deptTracks = newTracks?.[dept] || {}
+      const stillHasStart = Object.entries(deptTracks)
+        .filter(([key]) => key !== 'เตรียมไฟล์')
+        .some(([, t]: [string, any]) => t?.start)
+
+      if (!stillHasStart && job.locked_plans?.[dept]) {
+        const newLocked = { ...(job.locked_plans || {}) }
+        delete newLocked[dept]
+        await supabase.from('plan_jobs').update({ locked_plans: newLocked }).eq('id', jobId)
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks, locked_plans: newLocked } : j)))
+      } else {
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      }
     },
     [jobs, settings, showConfirm, showAlert]
   )

@@ -3,8 +3,6 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
-import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
-import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
 import { Order } from '../types'
@@ -17,14 +15,11 @@ type Tab =
   | 'verified'
   | 'confirm'
   | 'issue'
-  | 'work-orders'
-  | 'work-orders-manage'
   | 'data-error'
   | 'shipped'
   | 'cancelled'
-  
 
-const ALL_TABS: Tab[] = ['create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'work-orders', 'work-orders-manage', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
 
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
@@ -40,8 +35,6 @@ export default function Orders() {
   const [cancelledCount, setCancelledCount] = useState(0)
   
   const [confirmCount, setConfirmCount] = useState(0)
-  const [workOrdersCount, setWorkOrdersCount] = useState(0)
-  const [workOrdersManageCount, setWorkOrdersManageCount] = useState(0)
   const [shippedCount, setShippedCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
@@ -98,10 +91,12 @@ export default function Orders() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
       )
 
-      // Load verified count
-      const { count: verifiedCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
-      )
+      // Load verified count (OFFICE: เฉพาะ superadmin/admin เห็น)
+      let verifiedQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
+      if (!['superadmin', 'admin'].includes(user?.role || '')) {
+        verifiedQuery = verifiedQuery.neq('channel_code', 'OFFICE')
+      }
+      const { count: verifiedCount } = await applyOwnerFilter(verifiedQuery)
 
       // Load data error count
       const { count: dataErrorCount } = await applyOwnerFilter(
@@ -125,27 +120,6 @@ export default function Orders() {
           .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
       )
 
-      // Load work orders count (ใบสั่งงาน)
-      const { count: workOrdersPumpCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true })
-          .eq('channel_code', 'PUMP')
-          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
-          .is('work_order_name', null)
-      )
-      const { count: workOrdersOtherCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true })
-          .neq('channel_code', 'PUMP')
-          .eq('status', 'ใบสั่งงาน')
-          .is('work_order_name', null)
-      )
-      const workOrdersTotal = (workOrdersPumpCount ?? 0) + (workOrdersOtherCount ?? 0)
-
-      // Load work orders manage count (จำนวนใบงานทั้งหมด)
-      const { count: workOrdersManageCount } = await supabase
-        .from('or_work_orders')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'กำลังผลิต')
-
       // Load issue count (On) — issue นับตาม role (RLS จะกรองให้)
       const { count: issueCount } = await supabase
         .from('or_issues')
@@ -158,8 +132,6 @@ export default function Orders() {
       setDataErrorCount(dataErrorCount || 0)
       setCancelledCount(cancelledCount || 0)
       setConfirmCount(confirmCountTotal ?? 0)
-      setWorkOrdersCount(workOrdersTotal)
-      setWorkOrdersManageCount(workOrdersManageCount || 0)
       setShippedCount(shippedCount || 0)
       setIssueCount(issueCount || 0)
       // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
@@ -298,8 +270,6 @@ export default function Orders() {
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
               { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
               { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
-              { id: 'work-orders', label: 'ใบสั่งงาน', count: workOrdersCount, countColor: 'text-blue-600' },
-              { id: 'work-orders-manage', label: 'จัดการใบงาน', count: workOrdersManageCount, countColor: 'text-blue-600' },
               { id: 'shipped', label: 'จัดส่งแล้ว', count: shippedCount, countColor: 'text-blue-600' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
@@ -428,18 +398,6 @@ export default function Orders() {
           <OrderConfirmBoard onCountChange={setConfirmCount} />
         ) : activeTab === 'issue' ? (
           <IssueBoard scope="orders" onOpenCountChange={setIssueCount} />
-        ) : activeTab === 'work-orders' ? (
-          <WorkOrderSelectionList
-            searchTerm={searchTerm}
-            channelFilter={channelFilter}
-            onOrderClick={handleOrderClick}
-          />
-        ) : activeTab === 'work-orders-manage' ? (
-          <WorkOrderManageList
-            searchTerm={searchTerm}
-            channelFilter={channelFilter}
-            onRefresh={() => setListRefreshKey((k) => k + 1)}
-          />
         ) : activeTab === 'data-error' ? (
           <OrderList
             status="ลงข้อมูลผิด"

@@ -7,6 +7,7 @@ import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerifi
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
+import { useAuthContext } from '../contexts/AuthContext'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -22,6 +23,7 @@ const SETTINGS_TABS = [
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
 
 export default function Settings() {
+  const { user: currentUser } = useAuthContext()
   const { hasAccess, refreshMenuAccess } = useMenuAccess()
   const [users, setUsers] = useState<User[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
@@ -145,13 +147,19 @@ export default function Settings() {
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
   const [chatLoading, setChatLoading] = useState(false)
-  const [chatFromDate, setChatFromDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [chatFromDate, setChatFromDate] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 7)
+    return d.toISOString().split('T')[0]
+  })
   const [chatToDate, setChatToDate] = useState(() => new Date().toISOString().split('T')[0])
   const [chatSource, setChatSource] = useState<'all' | 'confirm' | 'issue'>('all')
   // Issue messages merged into a unified format
-  const [issueChatLogs, setIssueChatLogs] = useState<(OrderChatLog & { _source: 'issue'; _issueTitle?: string })[]>([])
+  const [issueChatLogs, setIssueChatLogs] = useState<(OrderChatLog & { _source: 'issue'; _issueTitle?: string; _sourceScope?: 'plan' | 'orders' })[]>([])
   // Bill-level grouping
   const [selectedChatBill, setSelectedChatBill] = useState<string | null>(null)
+  const [selectedBillMessages, setSelectedBillMessages] = useState<(OrderChatLog & { _source: 'confirm' | 'issue'; _issueTitle?: string; _sourceScope?: 'plan' | 'orders' })[]>([])
+  const [selectedBillLoading, setSelectedBillLoading] = useState(false)
   const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
   const [issueTypeName, setIssueTypeName] = useState('')
   const [issueTypeColor, setIssueTypeColor] = useState('#3B82F6')
@@ -334,8 +342,6 @@ export default function Settings() {
     { key: 'orders-complete', label: 'ตรวจสอบไม่ผ่าน', group: 'orders' },
     { key: 'orders-verified', label: 'ตรวจสอบแล้ว', group: 'orders' },
     { key: 'orders-confirm', label: 'Confirm', group: 'orders' },
-    { key: 'orders-work-orders', label: 'ใบสั่งงาน', group: 'orders' },
-    { key: 'orders-work-orders-manage', label: 'จัดการใบงาน', group: 'orders' },
     { key: 'orders-shipped', label: 'จัดส่งแล้ว', group: 'orders' },
     { key: 'orders-cancelled', label: 'ยกเลิก', group: 'orders' },
     { key: 'orders-issue', label: 'Issue', group: 'orders' },
@@ -344,6 +350,8 @@ export default function Settings() {
     // ── Plan ──
     { key: 'plan', label: 'Plan', group: '' },
     { key: 'plan-dash', label: 'Dashboard (Master Plan)', group: 'plan' },
+    { key: 'orders-work-orders', label: 'ใบสั่งงาน', group: 'plan' },
+    { key: 'orders-work-orders-manage', label: 'จัดการใบงาน', group: 'plan' },
     { key: 'plan-dept', label: 'หน้าแผนก (คิวงาน)', group: 'plan' },
     { key: 'plan-jobs', label: 'ใบงานทั้งหมด', group: 'plan' },
     { key: 'plan-form', label: 'สร้าง/แก้ไขใบงาน', group: 'plan' },
@@ -380,10 +388,11 @@ export default function Settings() {
     { key: 'account-slip-verification', label: 'รายการการตรวจสลิป', group: 'account' },
     { key: 'account-manual-slip-check', label: 'ตรวจสลิปมือ', group: 'account' },
     { key: 'account-bill-edit', label: 'แก้ไขบิล', group: 'account' },
+    { key: 'account-amendment', label: 'ขอยกเลิกบิล', group: 'account' },
+    { key: 'account-amendment-approve', label: 'อนุมัติยกเลิกบิล', group: 'account' },
     { key: 'account-slip-age', label: 'อายุสลิป', group: 'account' },
     { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
-    { key: 'account-cash-bill', label: 'ขอบิลเงินสด', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     { key: 'account-trial-balance', label: 'งบทดลอง', group: 'account' },
     // ── สินค้า ──
@@ -467,6 +476,7 @@ export default function Settings() {
       let confirmQuery = supabase
         .from('or_order_chat_logs')
         .select('*')
+        .eq('is_hidden', false)
         .order('created_at', { ascending: false })
       if (chatFromDate) confirmQuery = confirmQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
       if (chatToDate) confirmQuery = confirmQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
@@ -478,6 +488,7 @@ export default function Settings() {
       let issueQuery = supabase
         .from('or_issue_messages')
         .select('*, or_issues!inner(id, title, order_id)')
+        .eq('is_hidden', false)
         .order('created_at', { ascending: false })
       if (chatFromDate) issueQuery = issueQuery.gte('created_at', `${chatFromDate}T00:00:00.000Z`)
       if (chatToDate) issueQuery = issueQuery.lte('created_at', `${chatToDate}T23:59:59.999Z`)
@@ -505,6 +516,7 @@ export default function Settings() {
         created_at: m.created_at,
         _source: 'issue' as const,
         _issueTitle: m.or_issues?.title,
+        _sourceScope: m.source_scope as 'plan' | 'orders' | undefined,
       }))
       setIssueChatLogs(mapped)
     } catch (error: any) {
@@ -515,16 +527,73 @@ export default function Settings() {
     }
   }
 
-  async function deleteChatLog(id: string) {
+  async function loadAllMessagesForBill(billNo: string) {
+    setSelectedBillLoading(true)
+    setSelectedBillMessages([])
+    try {
+      // Confirm chat for this bill
+      const { data: confirmData } = await supabase
+        .from('or_order_chat_logs')
+        .select('*')
+        .eq('bill_no', billNo)
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: true })
+      const confirmMsgs: typeof selectedBillMessages = (confirmData || []).map((l: any) => ({ ...l, _source: 'confirm' as const }))
+
+      // Issue chat for this bill
+      const { data: orderData } = await supabase
+        .from('or_orders')
+        .select('id')
+        .eq('bill_no', billNo)
+        .limit(1)
+        .single()
+      let issueMsgs: typeof selectedBillMessages = []
+      if (orderData?.id) {
+        const { data: issueData } = await supabase
+          .from('or_issue_messages')
+          .select('*, or_issues!inner(id, title, order_id)')
+          .eq('or_issues.order_id', orderData.id)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: true })
+        issueMsgs = (issueData || []).map((m: any) => ({
+          id: m.id,
+          order_id: m.or_issues?.order_id || '',
+          bill_no: billNo,
+          sender_id: m.sender_id,
+          sender_name: m.sender_name,
+          message: m.message,
+          created_at: m.created_at,
+          _source: 'issue' as const,
+          _issueTitle: m.or_issues?.title,
+          _sourceScope: m.source_scope as 'plan' | 'orders' | undefined,
+        }))
+      }
+
+      const all = [...confirmMsgs, ...issueMsgs].sort((a, b) => a.created_at.localeCompare(b.created_at))
+      setSelectedBillMessages(all)
+    } catch (error) {
+      console.error('Error loading all messages for bill:', error)
+    } finally {
+      setSelectedBillLoading(false)
+    }
+  }
+
+  async function deleteChatLog(id: string, source: 'confirm' | 'issue' = 'confirm') {
     const ok = await showConfirm({ title: 'ลบข้อความ', message: 'ต้องการลบข้อความนี้หรือไม่?' })
     if (!ok) return
     try {
+      const table = source === 'issue' ? 'or_issue_messages' : 'or_order_chat_logs'
       const { error } = await supabase
-        .from('or_order_chat_logs')
+        .from(table)
         .delete()
         .eq('id', id)
       if (error) throw error
-      setChatLogs((prev) => prev.filter((log) => log.id !== id))
+      if (source === 'issue') {
+        setIssueChatLogs((prev) => prev.filter((log) => log.id !== id))
+      } else {
+        setChatLogs((prev) => prev.filter((log) => log.id !== id))
+      }
+      setSelectedBillMessages((prev) => prev.filter((log) => log.id !== id))
     } catch (error: any) {
       console.error('Error deleting chat log:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการลบ: ' + error.message })
@@ -2875,11 +2944,6 @@ export default function Settings() {
         })
         const billList = Object.values(billGroups).sort((a, b) => b.lastDate.localeCompare(a.lastDate))
 
-        // ข้อความของบิลที่เลือก เรียงตาม created_at ascending (เก่าสุดก่อน)
-        const selectedMessages = selectedChatBill
-          ? allChats.filter((c) => c.bill_no === selectedChatBill).sort((a, b) => a.created_at.localeCompare(b.created_at))
-          : []
-
         return (
         <div className="bg-white rounded-xl shadow space-y-0 overflow-hidden">
           {/* ── Filter Bar ── */}
@@ -2924,7 +2988,7 @@ export default function Settings() {
                   <button
                     key={bill.bill_no}
                     type="button"
-                    onClick={() => setSelectedChatBill(bill.bill_no)}
+                    onClick={() => { setSelectedChatBill(bill.bill_no); loadAllMessagesForBill(bill.bill_no) }}
                     className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-blue-50 transition-colors ${selectedChatBill === bill.bill_no ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -2960,7 +3024,7 @@ export default function Settings() {
                     <div className="px-5 py-3 bg-white border-b border-gray-200 flex items-center justify-between shrink-0">
                       <div>
                         <h4 className="font-bold text-gray-900 text-sm">{selectedChatBill}</h4>
-                        <p className="text-xs text-gray-500">{selectedMessages.length} ข้อความ</p>
+                        <p className="text-xs text-gray-500">{selectedBillMessages.length} ข้อความ (ทั้งหมด)</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
@@ -2973,42 +3037,73 @@ export default function Settings() {
                           </svg>
                           ลบทั้งบิล
                         </button>
-                        <button type="button" onClick={() => setSelectedChatBill(null)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
+                        <button type="button" onClick={() => { setSelectedChatBill(null); setSelectedBillMessages([]) }} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
                           ปิด
                         </button>
                       </div>
                     </div>
 
                     {/* Chat Messages */}
-                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3" style={{ maxHeight: '55vh' }}>
-                      {selectedMessages.map((msg) => (
-                        <div key={msg.id} className="group">
-                          <div className="bg-white rounded-xl px-4 py-3 shadow-sm border border-gray-100 max-w-xl">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-sm font-semibold text-gray-900">{msg.sender_name}</span>
-                              {msg._source === 'issue' ? (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Issue</span>
-                              ) : (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 font-medium">Confirm</span>
-                              )}
-                              <span className="text-[11px] text-gray-400 ml-auto">{formatDateTime(msg.created_at)}</span>
-                            </div>
-                            <p className="text-sm text-gray-700 whitespace-pre-wrap select-text">{msg.message}</p>
-                          </div>
-                          {/* Delete button (confirm chat only) */}
-                          {msg._source === 'confirm' && (
-                            <div className="mt-1 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                onClick={() => deleteChatLog(msg.id)}
-                                className="text-[11px] text-red-400 hover:text-red-600 transition-colors"
-                              >
-                                ลบข้อความ
-                              </button>
-                            </div>
-                          )}
+                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50" style={{ maxHeight: '55vh' }}>
+                      {selectedBillLoading ? (
+                        <div className="flex justify-center items-center py-8">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
                         </div>
-                      ))}
+                      ) : selectedBillMessages.map((msg) => {
+                        const isIssue = msg._source === 'issue'
+                        const isPlan = isIssue && (msg as any)._sourceScope === 'plan'
+                        const isMe = !!currentUser && msg.sender_id === currentUser.id
+                        const isRight = isIssue ? isPlan : isMe
+                        const sourceLabel = isIssue
+                          ? (isPlan ? 'Issue · Plan' : 'Issue · ออเดอร์')
+                          : 'Confirm'
+                        return (
+                          <div key={msg.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
+                            <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                              isRight
+                                ? isIssue
+                                  ? 'bg-emerald-500 text-white rounded-br-sm'
+                                  : 'bg-blue-500 text-white rounded-br-sm'
+                                : isIssue
+                                  ? 'bg-white text-gray-900 border border-amber-200 rounded-bl-sm'
+                                  : 'bg-white text-gray-900 border border-blue-200 rounded-bl-sm'
+                            }`}>
+                              <div className={`flex items-center gap-2 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
+                                <span className={`text-xs font-bold ${
+                                  isRight ? (isIssue ? 'text-emerald-100' : 'text-blue-100') : isIssue ? 'text-amber-700' : 'text-blue-600'
+                                }`}>
+                                  {msg.sender_name}
+                                  <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${
+                                    isRight
+                                      ? isIssue ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-600/50 text-blue-100'
+                                      : isIssue
+                                        ? 'bg-amber-100 text-amber-700'
+                                        : 'bg-blue-100 text-blue-600'
+                                  }`}>
+                                    {sourceLabel}
+                                  </span>
+                                </span>
+                                <span className={`text-xs ${isRight ? (isIssue ? 'text-emerald-200' : 'text-blue-200') : 'text-gray-400'}`}>
+                                  {formatDateTime(msg.created_at)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteChatLog(msg.id, msg._source)}
+                                  title="ลบข้อความนี้"
+                                  className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                                    isRight ? (isIssue ? 'text-emerald-200 hover:text-red-200' : 'text-blue-200 hover:text-red-200') : 'text-gray-400 hover:text-red-500'
+                                  }`}
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              </div>
+                              <p className={`text-sm whitespace-pre-wrap select-text leading-relaxed ${isRight ? '' : 'text-gray-700'}`}>{msg.message}</p>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </>
                 )}

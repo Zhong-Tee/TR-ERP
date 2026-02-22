@@ -366,11 +366,11 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
           )
         })()}
 
-        {/* ── ข้อมูลใบกำกับ/บิลเงินสด ── */}
-        {billing && (billing.request_tax_invoice || billing.request_cash_bill) && (
+        {/* ── ข้อมูลใบกำกับภาษี ── */}
+        {billing && billing.request_tax_invoice && (
           <section>
             <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">
-              {billing.request_tax_invoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'}
+              ใบกำกับภาษี
             </h4>
             <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
               <InfoRow label="ชื่อ" value={billing.tax_customer_name} />

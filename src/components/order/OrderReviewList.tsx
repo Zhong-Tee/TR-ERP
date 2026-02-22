@@ -126,7 +126,10 @@ function getVisibleErrorFieldsForOrder(
   const hasItems = items.length > 0
 
   const channelCode = (order as any).channel_code || ''
-  const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = CHANNELS_ORDER_NO.includes(channelCode)
+  const CHANNELS_SKIP_ORDER_FIELDS = ['OFFICE']
+  const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = CHANNELS_SKIP_ORDER_FIELDS.includes(channelCode)
+    ? []
+    : CHANNELS_ORDER_NO.includes(channelCode)
     ? [
         { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
         { key: 'tracking_number', label: 'เลขพัสดุ' },
@@ -185,11 +188,11 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [channelFilter, setChannelFilter] = useState<string>('')
   const [productImageMap, setProductImageMap] = useState<Record<string, { product_code?: string; product_name?: string }>>({})
   const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string; line_count?: number | null }>>({})
-  /** ระดับบิล: ชื่อช่องทาง, ชื่อลูกค้า, ที่อยู่ */
+  /** ระดับบิล: checked = ถูกต้อง, unchecked = ผิด */
   const [rejectErrorFieldsOrder, setRejectErrorFieldsOrder] = useState<Record<string, boolean>>(
     ORDER_LEVEL_KEYS.reduce((acc, key) => ({ ...acc, [key]: false }), {} as Record<string, boolean>)
   )
-  /** ระดับรายการ: items[index][fieldKey] = true ถ้าฟิลด์นั้นผิดที่รายการที่ index */
+  /** ระดับรายการ: items[index][fieldKey] = true ถ้าฟิลด์ถูกต้อง, false ถ้าผิด */
   const [rejectErrorFieldsByItem, setRejectErrorFieldsByItem] = useState<Record<number, Record<string, boolean>>>({})
   const [rejectRemarks, setRejectRemarks] = useState('')
   /** Modal แจ้งเตือน/ผลลัพธ์ (แทน alert): กรุณาติ๊กหรือกรอกหมายเหตุ, ยืนยันสำเร็จ, เกิดข้อผิดพลาด */
@@ -352,14 +355,34 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     loadItemImages()
   }, [selectedOrder?.id])
 
-  // รีเซ็ตกล่องติ๊กและหมายเหตุเมื่อเปลี่ยนบิลที่เลือก
+  // รีเซ็ตกล่องติ๊กและหมายเหตุเมื่อเปลี่ยนบิลหรือ settings โหลดเสร็จ (เริ่มต้นไม่ติ๊ก)
   useEffect(() => {
     if (selectedOrder) {
-      setRejectErrorFieldsOrder(ORDER_LEVEL_KEYS.reduce((acc, key) => ({ ...acc, [key]: false }), {} as Record<string, boolean>))
-      setRejectErrorFieldsByItem({})
+      const { orderLevel, itemLevel: _il } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+      setRejectErrorFieldsOrder(orderLevel.reduce((acc, { key }) => ({ ...acc, [key]: false }), {} as Record<string, boolean>))
+      const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
+      const channelCode = (selectedOrder as any)?.channel_code || ''
+      const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
+      const initItems: Record<number, Record<string, boolean>> = {}
+      orderItems.forEach((item: any, index: number) => {
+        const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+        const perItemFields = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
+        const pk = item.cartoon_pattern || ''
+        const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
+        const filteredFields = perItemFields.filter(({ key }) => {
+          if (lc == null) return true
+          if (key === 'line_1') return lc >= 1
+          if (key === 'line_2') return lc >= 2
+          if (key === 'line_3') return lc >= 3
+          return true
+        })
+        initItems[index] = filteredFields.reduce((acc, { key }) => ({ ...acc, [key]: false }), {} as Record<string, boolean>)
+      })
+      setRejectErrorFieldsByItem(initItems)
       setRejectRemarks('')
     }
-  }, [selectedOrder?.id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrder?.id, categoryFieldSettings, productCategoryByProductId, productFieldOverrides, cartoonPatternImageMap])
 
   // ปุ่มลูกศร ขึ้น/ลง เพื่อเลื่อนรายการบิล
   const navigateOrder = useCallback(
@@ -400,7 +423,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         .select('*, or_order_items(*)')
         .eq('status', 'ตรวจสอบแล้ว')
         .neq('channel_code', 'PUMP')
-        .order('created_at', { ascending: false })
+        .order('created_at', { ascending: true })
+      if (!['superadmin', 'admin'].includes(user?.role || '')) {
+        query = query.neq('channel_code', 'OFFICE')
+      }
       if (channelFilter && channelFilter.trim() !== '') {
         query = query.eq('channel_code', channelFilter.trim())
       }
@@ -429,6 +455,36 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   async function handleApproveConfirm() {
     if (!selectedOrder) return
 
+    const { orderLevel, itemLevel: _il } = getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+    const visibleOrderKeys = new Set(orderLevel.map((f) => f.key))
+    const allOrderChecked = [...visibleOrderKeys].every((key) => rejectErrorFieldsOrder[key])
+
+    const checkItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
+    const channelCode = (selectedOrder as any)?.channel_code || ''
+    const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode) ? [...ORDER_LEVEL_KEYS, 'unit_price'] : ORDER_LEVEL_KEYS
+    const allItemsChecked = checkItems.every((item: any, i: number) => {
+      const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+      const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
+      const pk = item.cartoon_pattern || ''
+      const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
+      const visibleFields = perItemLevel.filter(({ key }) => {
+        if (lc == null) return true
+        if (key === 'line_1') return lc >= 1
+        if (key === 'line_2') return lc >= 2
+        if (key === 'line_3') return lc >= 3
+        return true
+      })
+      return visibleFields.every(({ key }) => (rejectErrorFieldsByItem[i] || {})[key])
+    })
+    if (!allOrderChecked || !allItemsChecked) {
+      setMessageModal({
+        open: true,
+        title: 'ตรวจสอบไม่ครบ',
+        message: 'กรุณาติ๊กถูกต้องให้ครบทุกรายการก่อนกดอนุมัติ',
+      })
+      return
+    }
+
     setUpdating(true)
     try {
       const nextStatus = selectedOrder.channel_code === 'PUMP' ? 'รอคอนเฟิร์ม' : 'ใบสั่งงาน'
@@ -455,27 +511,28 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   async function handleRejectSubmit() {
     if (!selectedOrder || !user?.id) return
 
-    // ตรวจสอบว่ามีติ๊กระดับบิลหรือไม่ — ใช้ทุก key ใน rejectErrorFieldsOrder (รวม unit_price ที่อาจอยู่ระดับบิลสำหรับบางช่องทาง)
-    const hasOrderChecked = Object.keys(rejectErrorFieldsOrder).some((key) => !!rejectErrorFieldsOrder[key])
+    // ช่องที่ไม่ได้ติ๊ก (ไม่ถูก) = ผิด
+    const hasOrderUnchecked = Object.keys(rejectErrorFieldsOrder).some((key) => !rejectErrorFieldsOrder[key])
     const items: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
-    const hasItemChecked = items.some((_, i) => {
+    const hasItemUnchecked = items.some((_, i) => {
       const itemFields = rejectErrorFieldsByItem[i]
-      return itemFields && Object.keys(itemFields).some((k) => !!itemFields[k])
+      return itemFields && Object.keys(itemFields).some((k) => !itemFields[k])
     })
     const hasRemarks = (rejectRemarks || '').trim().length > 0
-    if (!hasOrderChecked && !hasItemChecked && !hasRemarks) {
+    if (!hasOrderUnchecked && !hasItemUnchecked && !hasRemarks) {
       setMessageModal({
         open: true,
         title: 'กรุณาระบุรายการที่ผิด',
         message:
-          'กรุณาติ๊กเลือกรายการที่ผิด หรือกรอกหมายเหตุ (ข้อความที่ต้องแก้ไข) อย่างน้อยหนึ่งอย่าง',
+          'กรุณาเอาติ๊กออกจากรายการที่ผิด หรือกรอกหมายเหตุ (ข้อความที่ต้องแก้ไข) อย่างน้อยหนึ่งอย่าง',
       })
       return
     }
 
+    // ฟิลด์ที่ไม่ได้ติ๊ก = error fields
     const errorFieldsObj: Record<string, unknown> = {}
     Object.keys(rejectErrorFieldsOrder).forEach((key) => {
-      if (rejectErrorFieldsOrder[key]) (errorFieldsObj as Record<string, boolean>)[key] = true
+      if (!rejectErrorFieldsOrder[key]) (errorFieldsObj as Record<string, boolean>)[key] = true
     })
     if (items.length > 0) {
       const itemsArray = items.map((_: any, i: number) => {
@@ -483,7 +540,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         if (!itemFields) return {}
         const out: Record<string, boolean> = {}
         Object.keys(itemFields).forEach((k) => {
-          if (itemFields[k]) out[k] = true
+          if (!itemFields[k]) out[k] = true
         })
         return out
       })
@@ -828,9 +885,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       {selectedOrder.billing_details.request_tax_invoice && (
                         <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">ขอใบกำกับภาษี</span>
                       )}
-                      {selectedOrder.billing_details.request_cash_bill && (
-                        <span className="px-2 py-1 bg-green-100 text-green-700 rounded">ขอบิลเงินสด</span>
-                      )}
                     </div>
                   </div>
                 )}
@@ -860,8 +914,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           <>
             <div className="flex-1 overflow-y-auto p-4 min-h-0">
               <div className="space-y-4">
-                <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                  <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับบิล — เลือกรายการที่ผิด</h3>
+                {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides).orderLevel.length > 0 && (
+                <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <h3 className="text-sm font-semibold text-green-900 mb-2">ระดับบิล — ติ๊กรายการที่ถูกต้อง</h3>
                   <div className="grid grid-cols-1 gap-2">
                     {getOrderLevelAndItemLevelErrorFields(selectedOrder, categoryFieldSettings, productCategoryByProductId, productFieldOverrides).orderLevel.map(({ key, label }) => (
                       <label key={key} className="flex items-center gap-2 cursor-pointer">
@@ -869,13 +924,14 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           type="checkbox"
                           checked={!!rejectErrorFieldsOrder[key]}
                           onChange={(e) => setRejectErrorFieldsOrder((prev) => ({ ...prev, [key]: e.target.checked }))}
-                          className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                          className="rounded border-gray-300 text-green-600 focus:ring-green-500"
                         />
-                        <span className="text-gray-800 text-sm">{label}</span>
+                        <span className={`text-sm ${rejectErrorFieldsOrder[key] ? 'text-gray-800' : 'text-red-600 font-semibold'}`}>{label}{!rejectErrorFieldsOrder[key] && ' ✗'}</span>
                       </label>
                     ))}
                   </div>
                 </div>
+                )}
                 {(() => {
                   const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
                   if (orderItems.length === 0) return null
@@ -886,8 +942,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     : ORDER_LEVEL_KEYS
 
                   return (
-                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                      <h3 className="text-sm font-semibold text-amber-900 mb-2">ระดับรายการ — เลือกรายการที่ผิดต่อรายการ</h3>
+                    <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <h3 className="text-sm font-semibold text-green-900 mb-2">ระดับรายการ — ติ๊กฟิลด์ที่ถูกต้องต่อรายการ</h3>
                       <div className="space-y-4">
                         {orderItems.map((item: any, index: number) => {
                           const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
@@ -895,8 +951,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                             .filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
                           if (perItemLevel.length === 0) return null
                           return (
-                          <div key={item.id || index} className="border border-amber-200 rounded-lg p-3 bg-white/60">
-                            <div className="text-sm font-medium text-amber-900 mb-2">
+                          <div key={item.id || index} className="border border-green-200 rounded-lg p-3 bg-white/60">
+                            <div className="text-sm font-medium text-green-900 mb-2">
                               รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
                               {item.is_free && (
                                 <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300">สินค้าแถม</span>
@@ -924,9 +980,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                         [index]: { ...(prev[index] || {}), [key]: e.target.checked },
                                       }))
                                     }}
-                                    className="rounded border-gray-300 text-red-600 focus:ring-red-500"
+                                    className="rounded border-gray-300 text-green-600 focus:ring-green-500"
                                   />
-                                  <span className="text-gray-800 text-sm">{label}</span>
+                                  <span className={`text-sm ${(rejectErrorFieldsByItem[index] || {})[key] ? 'text-gray-800' : 'text-red-600 font-semibold'}`}>{label}{!(rejectErrorFieldsByItem[index] || {})[key] && ' ✗'}</span>
                                 </label>
                               ))}
                             </div>

@@ -37,6 +37,7 @@ export interface WorkOrderWithProgress extends WorkOrder {
   remaining: number
   pass_items: number
   fail_items: number
+  reject_items: number
   total_bills: number
   pass_bills: number
   fail_bills: number
@@ -74,6 +75,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       remaining: 0,
       pass_items: 0,
       fail_items: 0,
+      reject_items: 0,
       total_bills: 0,
       pass_bills: 0,
       fail_bills: 0,
@@ -126,19 +128,20 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   // ดึง qc_records พร้อม item_uid + status เพื่อคำนวณ pass/fail ทั้ง item level และ bill level
   const allSessionIds = (allSessions || []).map((s) => s.id)
-  // mapping: item_uid → status (ล่าสุด)
+  // mapping: item_uid → status (ล่าสุด), item_uid → is_rejected
   const itemStatusMap: Record<string, string> = {}
+  const itemRejectedMap: Record<string, boolean> = {}
   let qcPassBySession: Record<string, number> = {}
   if (allSessionIds.length > 0) {
     const { data: records, error: recErr } = await supabase
       .from('qc_records')
-      .select('session_id, item_uid, status, created_at')
+      .select('session_id, item_uid, status, is_rejected, created_at')
       .in('session_id', allSessionIds)
       .order('created_at', { ascending: true })
     if (!recErr && records?.length) {
       records.forEach((r) => {
-        // เก็บ status ล่าสุดของแต่ละ item_uid
         itemStatusMap[r.item_uid] = r.status
+        if (r.is_rejected) itemRejectedMap[r.item_uid] = true
         if (r.status === 'pass') {
           qcPassBySession[r.session_id] = (qcPassBySession[r.session_id] || 0) + 1
         }
@@ -159,15 +162,16 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     const orderIds = orderIdsByWo[woName] || []
     const total_bills = orderIds.length
 
-    // คำนวณ pass/fail ระดับ item
     let pass_items = 0
     let fail_items = 0
+    let reject_items = 0
     orderIds.forEach((orderId) => {
       const uids = itemUidsByOrderId[orderId] || []
       uids.forEach((uid) => {
         const st = itemStatusMap[uid]
         if (st === 'pass') pass_items++
         else if (st === 'fail') fail_items++
+        if (itemRejectedMap[uid]) reject_items++
       })
     })
     const remaining = Math.max(0, total_items - pass_items - fail_items)
@@ -184,7 +188,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     })
     const remaining_bills = total_bills - pass_bills - fail_bills
 
-    return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, total_bills, pass_bills, fail_bills, remaining_bills }
+    return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, reject_items, total_bills, pass_bills, fail_bills, remaining_bills }
   })
 
   // ไม่กรองออกถ้ายังมี session เปิดอยู่ (ยังไม่กด Finish Job) แม้ remaining จะ = 0

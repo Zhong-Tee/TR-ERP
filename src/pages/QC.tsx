@@ -199,6 +199,10 @@ export default function QC() {
   const [checklistItems, setChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
 
+  // Checklist for Reject view
+  const [rejectChecklistItems, setRejectChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
+  const [rejectCheckedIds, setRejectCheckedIds] = useState<Set<string>>(new Set())
+
   // Delete reason confirm modal
   const [deleteReasonModalOpen, setDeleteReasonModalOpen] = useState(false)
   const [deleteReasonTarget, setDeleteReasonTarget] = useState<{ id: string; name: string } | null>(null)
@@ -369,6 +373,17 @@ export default function QC() {
       setChecklistItems([])
     }
   }, [currentItem?.product_code])
+
+  useEffect(() => {
+    setRejectCheckedIds(new Set())
+    if (currentRejectItem?.product_code) {
+      fetchChecklistForProduct(currentRejectItem.product_code)
+        .then(setRejectChecklistItems)
+        .catch(() => setRejectChecklistItems([]))
+    } else {
+      setRejectChecklistItems([])
+    }
+  }, [currentRejectItem?.product_code])
 
   const allChecklistChecked = checklistItems.length === 0 || checklistItems.every((item) => checkedIds.has(item.id))
 
@@ -674,7 +689,8 @@ export default function QC() {
       }
       setLoading(true)
       try {
-        await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+        const { error: passError } = await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+        if (passError) throw passError
 
         // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
         setQcData((prev) => ({
@@ -1198,6 +1214,11 @@ export default function QC() {
                                   ✓ QC ครบ
                                 </span>
                               )}
+                              {wo.reject_items > 0 && (
+                                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-red-500 text-white shadow-sm">
+                                  Reject {wo.reject_items}
+                                </span>
+                              )}
                             </div>
                             <div className="text-sm text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                               <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining}</span>
@@ -1416,25 +1437,31 @@ export default function QC() {
                           )}
                         </div>
                         )}
-                        <div className="grid grid-cols-3 gap-2 mb-4">
+                        {(() => {
+                          const hasInk = !!currentItem.ink_color
+                          const hasFont = !!currentItem.font
+                          const cols = 1 + (hasInk ? 1 : 0) + (hasFont ? 1 : 0)
+                          return (
+                        <div className={`grid gap-2 mb-4 ${cols === 3 ? 'grid-cols-3' : cols === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          {hasInk && (
                           <div className="bg-white p-2 rounded border">
                             <div className="text-xs text-gray-400">สีหมึก</div>
                             <div className="flex items-center gap-2">
                               <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentItem.ink_color) }} />
-                              <span className="font-bold truncate flex-1">{currentItem.ink_color || '-'}</span>
-                              {currentItem.ink_color && currentItem.ink_color.includes('กระดาษ') && (
+                              <span className="font-bold truncate flex-1">{currentItem.ink_color}</span>
+                              {currentItem.ink_color.includes('กระดาษ') && (
                                 <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
                                   <path d="M5.625 1.5H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" fill="#DBEAFE" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
                                   <path d="M10.5 2.25H8.25m2.25 0v1.5a3.375 3.375 0 0 0 3.375 3.375h1.5A1.125 1.125 0 0 0 16.5 6V4.5" fill="#93C5FD" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
                                   <path d="M8.25 13.5h7.5M8.25 16.5H12" stroke="#3B82F6" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                               )}
-                              {currentItem.ink_color && currentItem.ink_color.includes('ผ้า') && (
+                              {currentItem.ink_color.includes('ผ้า') && (
                                 <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
                                   <path d="M6.75 3 3 5.25v3h3l.75 1.5v8.25a1.5 1.5 0 0 0 1.5 1.5h7.5a1.5 1.5 0 0 0 1.5-1.5V9.75L18 8.25h3V5.25L17.25 3h-3a2.25 2.25 0 0 1-4.5 0h-3Z" fill="#FDE68A" stroke="#F59E0B" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
                                 </svg>
                               )}
-                              {currentItem.ink_color && currentItem.ink_color.includes('พลาสติก') && (
+                              {currentItem.ink_color.includes('พลาสติก') && (
                                 <svg className="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none">
                                   <path d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5m4.75-11.396c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082" fill="#D1FAE5" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
                                   <path d="M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" fill="#A7F3D0" stroke="#10B981" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
@@ -1442,15 +1469,20 @@ export default function QC() {
                               )}
                             </div>
                           </div>
+                          )}
+                          {hasFont && (
                           <div className="bg-white p-2 rounded border">
                             <div className="text-xs text-gray-400">ฟอนต์</div>
-                            <div className="font-bold">{currentItem.font || '-'}</div>
+                            <div className="font-bold">{currentItem.font}</div>
                           </div>
+                          )}
                           <div className="bg-white p-2 rounded border">
                             <div className="text-xs text-gray-400">จำนวน</div>
                             <div className="text-2xl font-bold">{currentItem.qty || 1} pcs</div>
                           </div>
                         </div>
+                          )
+                        })()}
                         {currentItem.file_attachment && currentItem.file_attachment.trim() !== '' && (
                           <div className="bg-white p-2 rounded border mb-4">
                             <div className="text-xs text-gray-400 mb-1">ไฟล์แนบ</div>
@@ -1838,6 +1870,92 @@ export default function QC() {
                   ) : (
                     <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
                       <p className="text-lg">Select item to process</p>
+                    </div>
+                  )}
+                </div>
+                {/* Checklist Card (4th column) — Reject */}
+                <div className="w-72 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col min-h-0 overflow-hidden">
+                  <div className="p-3 border-b bg-green-50">
+                    <h3 className="font-bold text-green-800 text-sm flex items-center gap-2">
+                      <i className="fas fa-clipboard-check"></i>
+                      เช็คลิส หัวข้อการตรวจเช็ค
+                    </h3>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {!currentRejectItem ? (
+                      <div className="py-8 text-center text-gray-400 text-sm">เลือกรายการเพื่อดูเช็คลิส</div>
+                    ) : rejectChecklistItems.length === 0 ? (
+                      <div className="py-8 text-center text-gray-400 text-sm">ไม่มีรายการเช็คลิสสำหรับสินค้านี้</div>
+                    ) : (
+                      (() => {
+                        const grouped: Record<string, (QCChecklistItem & { topic_name: string })[]> = {}
+                        rejectChecklistItems.forEach((item) => {
+                          if (!grouped[item.topic_name]) grouped[item.topic_name] = []
+                          grouped[item.topic_name].push(item)
+                        })
+                        return Object.entries(grouped).map(([topicName, items]) => (
+                          <div key={topicName} className="mb-2">
+                            <div className="text-xs font-bold text-gray-500 uppercase px-1 py-1 border-b border-gray-100">{topicName}</div>
+                            {items.map((item) => (
+                              <label
+                                key={item.id}
+                                className={`flex items-center gap-2 px-2 py-2 rounded cursor-pointer hover:bg-gray-50 ${
+                                  rejectCheckedIds.has(item.id) ? 'bg-green-50' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={rejectCheckedIds.has(item.id)}
+                                  onChange={() => {
+                                    setRejectCheckedIds((prev) => {
+                                      const next = new Set(prev)
+                                      if (next.has(item.id)) next.delete(item.id)
+                                      else next.add(item.id)
+                                      return next
+                                    })
+                                  }}
+                                  className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 shrink-0"
+                                />
+                                <span className={`flex-1 text-sm ${rejectCheckedIds.has(item.id) ? 'line-through text-gray-400' : 'text-gray-700'}`}>
+                                  {item.title}
+                                </span>
+                                {item.file_url && (
+                                  <a
+                                    href={item.file_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center hover:bg-blue-200"
+                                    title="ดูคู่มือตรวจ QC"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <i className="fas fa-info text-[10px]"></i>
+                                  </a>
+                                )}
+                              </label>
+                            ))}
+                          </div>
+                        ))
+                      })()
+                    )}
+                  </div>
+                  {rejectChecklistItems.length > 0 && (
+                    <div className="shrink-0 p-2 border-t bg-gray-50">
+                      <button
+                        onClick={() => {
+                          if (rejectCheckedIds.size === rejectChecklistItems.length) {
+                            setRejectCheckedIds(new Set())
+                          } else {
+                            setRejectCheckedIds(new Set(rejectChecklistItems.map((i) => i.id)))
+                          }
+                        }}
+                        className={`w-full py-2 rounded-lg font-bold text-sm ${
+                          rejectCheckedIds.size === rejectChecklistItems.length
+                            ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                            : 'bg-green-500 text-white hover:bg-green-600'
+                        }`}
+                      >
+                        {rejectCheckedIds.size === rejectChecklistItems.length ? 'ยกเลิกทั้งหมด' : 'ผ่านทั้งหมด'}
+                      </button>
                     </div>
                   )}
                 </div>

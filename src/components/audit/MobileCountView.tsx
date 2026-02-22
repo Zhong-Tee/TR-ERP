@@ -154,7 +154,7 @@ export default function MobileCountView() {
   // If an item is selected, show the count card
   if (selectedItem) {
     return (
-      <div className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
+      <div className="min-h-screen bg-slate-200 p-4 max-w-lg mx-auto">
         <ProductCountCard
           item={selectedItem}
           onSave={handleSaveCount}
@@ -168,18 +168,18 @@ export default function MobileCountView() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-slate-200 flex flex-col">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b sticky top-0 z-10">
+      <div className="bg-slate-700 text-white shadow-md sticky top-0 z-10">
         <div className="max-w-lg mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs text-gray-500">Audit</div>
-              <div className="font-bold text-gray-900">{audit.audit_no}</div>
+              <div className="text-xs text-slate-300">Audit</div>
+              <div className="font-bold text-white">{audit.audit_no}</div>
             </div>
             <button
               onClick={() => navigate('/warehouse/audit')}
-              className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50"
+              className="px-3 py-1.5 text-sm border border-slate-500 rounded-lg hover:bg-slate-600 text-white"
             >
               กลับ
             </button>
@@ -273,7 +273,7 @@ export default function MobileCountView() {
                         )}
                       </div>
                     ) : (
-                      <span className="text-xs font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">
+                      <span className="text-xs font-bold text-orange-700 bg-orange-100 border border-orange-300 px-2.5 py-1 rounded-full">
                         ยังไม่นับ
                       </span>
                     )}

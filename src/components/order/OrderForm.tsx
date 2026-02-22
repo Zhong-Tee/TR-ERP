@@ -530,9 +530,11 @@ const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
 const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
 /** ช่องทางที่เมื่อบันทึก "ข้อมูลครบ" ให้เคลื่อนสถานะไปที่ "ตรวจสอบแล้ว" โดยตรง (ไม่ต้องรอตรวจสลิป) */
-const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
+const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP', 'OFFICE']
 /** ช่องทางที่เปิดปุ่มอัพโหลดสลิป (นอกจากช่องทางที่อยู่ใน bank_settings_channels) */
 const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
+/** ช่องทาง OFFICE — ไม่ต้องกรอก: ชื่อ, ที่อยู่, เลขพัสดุ, ชื่อช่องทาง, โปรโมชั่น, สลิป */
+const CHANNELS_SKIP_CUSTOMER_FIELDS = ['OFFICE']
 
 /** แมปสีหมึกพลาสติก → รหัสสินค้าหมึกแฟลชพลาสติกที่แถม */
 const PLASTIC_INK_BONUS_MAP: Record<string, { product_code: string; product_name: string }> = {
@@ -553,7 +555,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
   const [items, setItems] = useState<Partial<OrderItem>[]>([])
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
-  const [showCashBill, setShowCashBill] = useState(false)
   const [productSearchTerm, setProductSearchTerm] = useState<{ [key: number]: string }>({})
   const [patternSearchTerm, setPatternSearchTerm] = useState<{ [key: number]: string }>({})
   const [fontSearchTerm, setFontSearchTerm] = useState<{ [key: number]: string }>({})
@@ -654,12 +655,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     company_name: '',
     address: '',
     tax_id: '',
-    items_note: '',
-  })
-  const [cashBillData, setCashBillData] = useState({
-    company_name: '',
-    address: '',
-    mobile_phone: '',
     items_note: '',
   })
   const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
@@ -869,21 +864,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         if (order.billing_details) {
           const bd = order.billing_details
           setShowTaxInvoice(bd.request_tax_invoice || false)
-          setShowCashBill(bd.request_cash_bill || false)
           if (bd.request_tax_invoice) {
             setTaxInvoiceData({
               company_name: bd.tax_customer_name || '',
               address: bd.tax_customer_address || '',
               tax_id: bd.tax_id || '',
-              items_note: '',
-            })
-          }
-          if (bd.request_cash_bill) {
-            const bdTyped = bd as { tax_customer_phone?: string | null }
-            setCashBillData({
-              company_name: bd.tax_customer_name || '',
-              address: bd.tax_customer_address || '',
-              mobile_phone: bdTyped.tax_customer_phone ?? bd.mobile_phone ?? '',
               items_note: '',
             })
           }
@@ -1208,12 +1193,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       const basePrice = isManual ? (prev.price || 0) : itemsTotal
       let subtotal: number
       
-      // หากมีการกดปุ่มขอใบกำกับภาษี ยอดสุทธิจะใช้ยอดเงินที่ต้องชำระ (รวมภาษีแล้ว)
       if (showTaxInvoice) {
-        // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
-        subtotal = basePrice * 1.07
+        // ราคารวม VAT แล้ว — ไม่ต้องบวกเพิ่ม
+        subtotal = basePrice
       } else {
-        // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
         const discountBaht = getDiscountInBaht(basePrice, prev.discount || 0, discountType)
         subtotal = basePrice + (prev.shipping_cost || 0) - discountBaht
       }
@@ -1405,12 +1388,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       const billingDetails = {
         ...(order?.billing_details && typeof order.billing_details === 'object' ? order.billing_details : {}),
         request_tax_invoice: showTaxInvoice,
-        request_cash_bill: showCashBill,
-        tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : (showCashBill ? cashBillData.company_name : null),
-        tax_customer_address: showTaxInvoice ? taxInvoiceData.address : (showCashBill ? cashBillData.address : null),
-        tax_customer_phone: showCashBill ? (cashBillData.mobile_phone?.trim() || null) : (order?.billing_details && typeof order.billing_details === 'object' ? (order.billing_details as { tax_customer_phone?: string | null }).tax_customer_phone ?? null : null),
+        request_cash_bill: false,
+        tax_customer_name: showTaxInvoice ? taxInvoiceData.company_name : null,
+        tax_customer_address: showTaxInvoice ? taxInvoiceData.address : null,
         tax_id: showTaxInvoice ? taxInvoiceData.tax_id : null,
-        tax_items: (showTaxInvoice || showCashBill) ? itemsToSave
+        tax_items: showTaxInvoice ? itemsToSave
           .filter(item => item.product_id && !(item as { is_free?: boolean }).is_free)
           .map(item => ({
             product_name: item.product_name || '',
@@ -1469,7 +1451,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         status: statusToSave,
         admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
-        billing_details: (showTaxInvoice || showCashBill || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
+        billing_details: (showTaxInvoice || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
         scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
       }
 
@@ -1822,7 +1804,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       const verifiedBy = user?.id || null
 
       // ระบบป้องกันสลิปซ้ำ: สลิปถือว่าซ้ำเมื่อพบในออเดอร์อื่นที่สถานะ "ไม่ใช่" ต่อไปนี้ (สถานะที่ไม่นับว่าซ้ำ: รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน)
-      const SLIP_NOT_USED_STATUSES = ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน'] as const
+      const SLIP_NOT_USED_STATUSES = ['รอลงข้อมูล', 'ลงข้อมูลผิด', 'ตรวจสอบไม่ผ่าน', 'ยกเลิก'] as const
       const isSlipUsedByOrder = (status: string | null | undefined) =>
         status != null && !SLIP_NOT_USED_STATUSES.includes(status as any)
 
@@ -3545,11 +3527,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           </div>
         </div>
         {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | ชื่อช่องทาง/เลขคำสั่งซื้อ + เลขพัสดุ + โปรโมชั่น (ขวา) — ซ่อนเมื่อยังไม่สร้างบิล */}
-        {!order?.bill_no && !formDisabled && (
+        {!order?.bill_no && !formDisabled && !CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code) && (
           <div className="mt-4 p-4 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center text-gray-500 text-sm">
             กรุณาเลือกช่องทาง แล้วกด <span className="font-semibold text-blue-600">สร้างบิล</span> เพื่อกรอกข้อมูลที่อยู่ลูกค้า
           </div>
         )}
+        {!CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code) && (
         <div className={`mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 ${!order?.bill_no && !formDisabled ? 'hidden' : ''}`}>
           {/* ที่อยู่ลูกค้า — ฝั่งซ้าย */}
           <div>
@@ -3821,6 +3804,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* ขยายเต็มความกว้างของพื้นที่เนื้อหา (ไม่กระทบเมนูซ้าย) */}
@@ -4456,9 +4440,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
       <div className="bg-white p-6 rounded-lg shadow">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน — แสดงเฉพาะเมื่อช่องทางอยู่ใน bank_settings_channels */}
+          {/* ฝั่งซ้าย: อัพโหลดสลิปโอนเงิน — แสดงเฉพาะเมื่อช่องทางอยู่ใน bank_settings_channels (ซ่อนสำหรับ OFFICE) */}
           <div>
             {(() => {
+              if (CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code)) {
+                return <div className="text-gray-400 text-sm italic">ช่องทาง Office ไม่ต้องอัพโหลดสลิป</div>
+              }
               const channelCode = formData.channel_code?.trim() || ''
               const channelRequiresSlip = formData.payment_method === 'โอน' && (channelCodesWithSlipVerification.has(channelCode) || CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode))
               const hasExistingSlips = uploadedSlipPaths.length > 0
@@ -4663,10 +4650,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         <div className="flex gap-4 mb-4">
           <button
             type="button"
-            onClick={() => {
-              setShowTaxInvoice(!showTaxInvoice)
-              setShowCashBill(false)
-            }}
+            onClick={() => setShowTaxInvoice(!showTaxInvoice)}
             className={`px-6 py-2 rounded-lg font-medium transition-colors ${
               showTaxInvoice
                 ? 'bg-blue-600 text-white'
@@ -4674,32 +4658,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             }`}
           >
             ขอใบกำกับภาษี
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const willShow = !showCashBill
-              setShowCashBill(willShow)
-              setShowTaxInvoice(false)
-              if (willShow) {
-                const composedAddress = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
-                const addressForBill = composedAddress || formData.customer_address || ''
-                const customerNameForBill = CHANNELS_SHOW_CHANNEL_NAME.includes(formData.channel_code) ? formData.recipient_name : formData.customer_name
-                setCashBillData(prev => ({
-                  ...prev,
-                  company_name: customerNameForBill?.trim() || prev.company_name,
-                  address: addressForBill || prev.address,
-                  mobile_phone: formData.mobile_phone?.trim() || prev.mobile_phone,
-                }))
-              }
-            }}
-            className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-              showCashBill
-                ? 'bg-green-600 text-white'
-                : 'bg-green-100 text-green-600 hover:bg-green-200'
-            }`}
-          >
-            ขอบิลเงินสด
           </button>
         </div>
 
@@ -4769,22 +4727,22 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       </tbody>
                       <tfoot>
                         {(() => {
-                          const totalAmount = items
+                          const grandTotal = items
                             .filter(item => item.product_id || item.product_name)
                             .reduce((sum, item) => {
                               const quantity = item.quantity || 1
                               const unitPrice = item.unit_price || 0
                               return sum + (quantity * unitPrice)
                             }, 0)
-                          const vatAmount = totalAmount * 0.07
-                          const grandTotal = totalAmount + vatAmount
+                          const netAmount = grandTotal / 1.07
+                          const vatAmount = grandTotal - netAmount
                           
                           return (
                             <>
-                              <tr className="border-t font-bold">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">รวมทั้งสิ้น:</td>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาก่อนภาษี:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
-                                  {totalAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                  {netAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                                 </td>
                               </tr>
                               <tr className="border-t">
@@ -4794,7 +4752,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                                 </td>
                               </tr>
                               <tr className="border-t font-bold text-lg">
-                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดเงินที่ต้องชำระ:</td>
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ยอดรวม (รวม VAT):</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
                                   {grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
                                 </td>
@@ -4820,101 +4778,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           </div>
         )}
 
-        {showCashBill && (
-          <div className="border-2 border-green-200 rounded-lg p-4 bg-green-50">
-            <h4 className="font-semibold text-green-800 mb-3">ข้อมูลสำหรับบิลเงินสด</h4>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium mb-1">ชื่อลูกค้า/บริษัท</label>
-                <input
-                  type="text"
-                  value={cashBillData.company_name}
-                  onChange={(e) => setCashBillData({ ...cashBillData, company_name: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">ที่อยู่</label>
-                <textarea
-                  value={cashBillData.address}
-                  onChange={(e) => setCashBillData({ ...cashBillData, address: e.target.value })}
-                  rows={3}
-                  className="w-full px-3 py-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">เบอร์โทร</label>
-                <input
-                  type="text"
-                  value={cashBillData.mobile_phone}
-                  onChange={(e) => setCashBillData({ ...cashBillData, mobile_phone: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-lg"
-                  placeholder="เบอร์โทรศัพท์"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">รายการสินค้าในบิล</label>
-                <div className="border rounded-lg p-3 bg-gray-50 max-h-48 overflow-y-auto">
-                  {items.filter(item => item.product_id || item.product_name).length > 0 ? (
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b">
-                          <th className="text-center p-2" style={{ width: '8%' }}>ลำดับ</th>
-                          <th className="text-left p-2">ชื่อสินค้า</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '15%' }}>จำนวน</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>ราคา/หน่วย</th>
-                          <th className="text-right p-2 pl-2 pr-4" style={{ width: '20%' }}>รวม</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {items
-                          .filter(item => item.product_id || item.product_name)
-                          .map((item, idx) => {
-                            const quantity = item.quantity || 1
-                            const unitPrice = item.unit_price || 0
-                            const total = quantity * unitPrice
-                            return (
-                              <tr key={idx} className="border-b">
-                                <td className="p-2 text-center">{idx + 1}</td>
-                                <td className="p-2">{item.product_name || '-'}</td>
-                                <td className="p-2 pl-2 pr-4 text-right">{quantity}</td>
-                                <td className="p-2 pl-2 pr-4 text-right">{unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-                                <td className="p-2 pl-2 pr-4 text-right font-semibold">{total.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
-                              </tr>
-                            )
-                          })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t font-bold">
-                          <td colSpan={4} className="p-2 pl-2 pr-4 text-right">รวมทั้งสิ้น:</td>
-                          <td className="p-2 pl-2 pr-4 text-right">
-                            {items
-                              .filter(item => item.product_id || item.product_name)
-                              .reduce((sum, item) => {
-                                const quantity = item.quantity || 1
-                                const unitPrice = item.unit_price || 0
-                                return sum + (quantity * unitPrice)
-                              }, 0)
-                              .toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  ) : (
-                    <p className="text-gray-500 text-sm">ยังไม่มีรายการสินค้า กรุณาเพิ่มรายการสินค้าก่อน</p>
-                  )}
-                </div>
-                <textarea
-                  value={cashBillData.items_note}
-                  onChange={(e) => setCashBillData({ ...cashBillData, items_note: e.target.value })}
-                  rows={2}
-                  className="w-full px-3 py-2 border rounded-lg mt-2"
-                  placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
-                />
-              </div>
-            </div>
-          </div>
-        )}
       </div>
       )}
 
@@ -5008,9 +4871,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               }
 
               const isAddressBlockedSave = CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)
+              const isSkipCustomerFields = CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code)
               const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
               const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
-              if (!isAddressBlockedSave && !hasAddressSave) {
+              if (!isAddressBlockedSave && !isSkipCustomerFields && !hasAddressSave) {
                 setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill' })
                 return
               }

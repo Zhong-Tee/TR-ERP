@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { FiMessageCircle } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Order, OrderStatus, OrderChatLog } from '../../types'
@@ -216,7 +217,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         // ถ้า chat เปิดอยู่สำหรับ order นี้ → เพิ่ม message เข้า log ทันที + mark read
         if (chatOrder && chatOrder.id === row.order_id) {
           setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
-          if (user && !(user.role === 'superadmin' || user.role === 'admin')) {
+          if (user) {
             supabase.from('or_order_chat_reads').upsert({
               order_id: row.order_id,
               user_id: user.id,
@@ -269,27 +270,47 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
+  async function autoCompleteShippedOrders(shippedOrders: Order[]): Promise<Order[]> {
+    if (shippedOrders.length === 0) return []
+    const ids = shippedOrders.map((o) => o.id)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'เสร็จสิ้น' })
+        .in('id', ids)
+      if (error) throw error
+      return shippedOrders.map((o) => ({ ...o, status: 'เสร็จสิ้น' as any }))
+    } catch (err) {
+      console.error('Error auto-completing shipped orders:', err)
+      return []
+    }
+  }
+
   async function loadAll() {
     setLoading(true)
     try {
-      const [newOrders, designOrders, designedOrders, waitingOrders, confirmedOrders, completedOrders] =
+      const [newOrders, designOrders, designedOrders, waitingOrders, confirmedOrders, shippedOrders, completedOrders] =
         await Promise.all([
           loadOrdersByStatus('ตรวจสอบแล้ว'),
           loadOrdersByStatus('รอออกแบบ'),
           loadOrdersByStatus('ออกแบบแล้ว'),
           loadOrdersByStatus('รอคอนเฟิร์ม'),
           loadOrdersByStatus('คอนเฟิร์มแล้ว'),
+          loadOrdersByStatus('จัดส่งแล้ว'),
           loadOrdersByStatus('เสร็จสิ้น'),
         ])
+
+      const movedToComplete = await autoCompleteShippedOrders(shippedOrders)
+      const actualCompleted = [...movedToComplete, ...completedOrders]
+
       setOrdersByKey({
         new: newOrders,
         design: designOrders,
         designed: designedOrders,
         waiting: waitingOrders,
         confirmed: confirmedOrders,
-        completed: completedOrders,
+        completed: actualCompleted,
       })
-      // รายงานจำนวนจริงกลับไปที่ tab (ไม่รวมเสร็จสิ้น)
       onCountChange?.(newOrders.length + designOrders.length + designedOrders.length + waitingOrders.length + confirmedOrders.length)
     } catch (error) {
       console.error('Error loading confirm orders:', error)
@@ -304,7 +325,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       .select('*, or_order_items(*)')
       .eq('channel_code', CHANNEL_CODE)
       .eq('status', status)
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: true })
 
     if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
     if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
@@ -322,16 +343,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     setStatusModal({ order, targetStatus, label })
   }
 
-  const isAdminRole = user?.role === 'superadmin' || user?.role === 'admin'
-
   async function openChat(order: Order) {
     setChatOrder(order)
     setChatMessage('')
     setChatLogs([])
     setChatLoading(true)
     try {
-      // Mark as read (ข้าม superadmin/admin เพื่อไม่ให้ badge ลด)
-      if (user && !isAdminRole) {
+      if (user) {
         await supabase.from('or_order_chat_reads').upsert({
           order_id: order.id,
           user_id: user.id,
@@ -376,14 +394,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       if (error) throw error
       if (data) setChatLogs((prev) => [...prev, data as OrderChatLog])
       setChatMessage('')
-      // Mark as read after sending (ข้าม superadmin/admin)
-      if (!isAdminRole) {
-        await supabase.from('or_order_chat_reads').upsert({
-          order_id: chatOrder.id,
-          user_id: user.id,
-          last_read_at: new Date().toISOString(),
-        })
-      }
+      await supabase.from('or_order_chat_reads').upsert({
+        order_id: chatOrder.id,
+        user_id: user.id,
+        last_read_at: new Date().toISOString(),
+      })
     } catch (error: any) {
       console.error('Error sending chat:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
@@ -591,49 +606,45 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                       )}
 
                       {/* Action Buttons */}
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
-                        {/* ดูรายละเอียด */}
+                      <div className="mt-2 flex flex-wrap gap-1">
                         <button
                           type="button"
                           onClick={() => setDetailOrder(order)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                          className="inline-flex items-center gap-0.5 px-2 py-1 bg-white border border-gray-200 rounded-md text-[11px] font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
                         >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                           </svg>
-                          ดูรายละเอียด
+                          รายละเอียด
                         </button>
 
-                        {/* Column action button */}
                         {column.actionTargetStatus && column.actionLabel && (
                           <button
                             type="button"
                             onClick={() => openStatusModal(order, column.actionTargetStatus as OrderStatus, column.actionLabel as string)}
-                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${column.actionBtn}`}
+                            className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[11px] font-medium transition-all ${column.actionBtn}`}
                           >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                             </svg>
                             {column.actionLabel}
                           </button>
                         )}
 
-                        {/* Change status (confirmed column) */}
                         {column.key === 'confirmed' && (
                           <button
                             type="button"
                             onClick={() => openStatusModal(order, 'รอคอนเฟิร์ม', 'เปลี่ยนสถานะ')}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white rounded-lg text-xs font-medium shadow-sm transition-all"
+                            className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
                           >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                             </svg>
-                            เปลี่ยนสถานะ
+                            ย้อนสถานะ
                           </button>
                         )}
 
-                        {/* File attachment */}
                         {['design', 'designed', 'waiting', 'confirmed'].includes(column.key) && (() => {
                           const orderItems = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null }>
                           const fileLinks = orderItems.map((i) => i.file_attachment).filter((f): f is string => !!f && f.trim() !== '')
@@ -643,9 +654,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               key={fi}
                               type="button"
                               onClick={() => window.open(link, '_blank')}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-lg text-xs font-medium shadow-sm transition-all"
+                              className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
                             >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                               </svg>
                               ไฟล์{fileLinks.length > 1 ? ` ${fi + 1}` : ''}
@@ -653,21 +664,20 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           ))
                         })()}
 
-                        {/* Chat */}
                         {column.key !== 'new' && (
-                          <div className="inline-flex items-center gap-1">
+                          <div className="inline-flex items-center gap-0.5">
                             <button
                               type="button"
                               onClick={() => openChat(order)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-lg text-xs font-medium shadow-sm transition-all"
+                              className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
                             >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                               </svg>
                               Chat
                             </button>
                             {(unreadByOrder[order.id] || 0) > 0 && (
-                              <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
+                              <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white animate-pulse">
                                 {unreadByOrder[order.id]}
                               </span>
                             )}
@@ -744,19 +754,21 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       >
         {chatOrder && (
           <div className="flex flex-col max-h-[80vh]">
-            <div className="p-4 border-b bg-gradient-to-r from-gray-700 to-gray-800 text-white flex items-center justify-between">
+            <div className="p-4 border-b bg-emerald-600 flex items-center justify-between rounded-t-xl">
               <div>
-                <h3 className="text-lg font-bold">Chat</h3>
-                <p className="text-sm text-gray-300">บิล {chatOrder.bill_no}</p>
+                <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                  <FiMessageCircle className="w-5 h-5" /> Chat
+                </h3>
+                <p className="text-sm text-emerald-100">บิล {chatOrder.bill_no}</p>
               </div>
-              <button type="button" onClick={() => setChatOrder(null)} className="px-3 py-1.5 border border-gray-500 rounded-lg text-sm font-medium text-white hover:bg-gray-600 transition-colors">
+              <button type="button" onClick={() => setChatOrder(null)} className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors">
                 ปิดหน้าต่าง
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
               {chatLoading ? (
                 <div className="flex justify-center items-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-4 border-blue-200 border-t-blue-500" />
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
                 </div>
               ) : chatLogs.length === 0 ? (
                 <div className="flex flex-col items-center py-8 text-gray-400">
@@ -766,27 +778,40 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   <p className="text-sm">ยังไม่มีข้อความ</p>
                 </div>
               ) : (
-                chatLogs.map((log) => (
-                  <div key={log.id} className="bg-white border border-gray-200 rounded-xl p-3 shadow-sm group">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-gray-900">{log.sender_name}</div>
-                      <div className="flex items-center gap-2">
-                        <div className="text-xs text-gray-400">{formatDateTime(log.created_at)}</div>
-                        <button
-                          type="button"
-                          onClick={() => handleHideChat(log.id)}
-                          title="ซ่อนข้อความนี้"
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 transition-all"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
+                chatLogs.map((log) => {
+                  const isMe = log.sender_id === user?.id
+                  return (
+                    <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
+                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                        isMe
+                          ? 'bg-emerald-500 text-white rounded-br-sm'
+                          : 'bg-white text-gray-900 border border-gray-200 rounded-bl-sm'
+                      }`}>
+                        <div className={`flex items-center gap-3 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                          <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-600'}`}>
+                            {log.sender_name}
+                          </span>
+                          <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-400'}`}>
+                            {formatDateTime(log.created_at)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleHideChat(log.id)}
+                            title="ซ่อนข้อความนี้"
+                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                              isMe ? 'text-emerald-200 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                            }`}
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        </div>
+                        <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
                       </div>
                     </div>
-                    <div className="mt-1.5 text-sm text-gray-700 whitespace-pre-wrap">{log.message}</div>
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
             <div className="p-4 border-t bg-white space-y-3">
@@ -836,11 +861,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   type="button"
                   onClick={handleSendChat}
                   disabled={chatSending || chatMessage.trim() === ''}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl text-sm font-semibold disabled:opacity-50 shadow-sm transition-all"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 font-semibold transition-colors"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
+                  <FiMessageCircle className="w-4 h-4" />
                   {chatSending ? 'กำลังส่ง...' : 'ส่งข้อความ'}
                 </button>
               </div>

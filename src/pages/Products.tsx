@@ -30,6 +30,32 @@ const PRODUCT_TEMPLATE_HEADERS = [
   'storage_location',
 ] as const
 
+const INIT_IMPORT_HEADERS = [
+  'product_code',
+  'product_name',
+  'product_category',
+  'product_type',
+  'seller_name',
+  'unit_cost',
+  'initial_stock',
+  'safety_stock',
+  'order_point',
+  'storage_location',
+] as const
+
+interface InitImportRow {
+  product_code: string
+  product_name: string
+  product_category: string
+  product_type: string
+  seller_name: string
+  unit_cost: number
+  initial_stock: number
+  safety_stock: number
+  order_point: string
+  storage_location: string
+}
+
 /** อัปโหลดไฟล์รูปไป bucket product-images ชื่อไฟล์ = productCode + นามสกุล จากไฟล์ */
 async function uploadProductImage(file: File, productCode: string): Promise<string> {
   const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '.jpg'
@@ -64,6 +90,8 @@ const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'PP', label: 'PP - สินค้าแปรรูป' },
 ]
 
+const UNIT_PRESETS = ['ชิ้น', 'คู่', 'แพ็ค', 'กล่อง', 'ชุด', 'ม้วน']
+
 const emptyForm = () => ({
   product_code: '',
   product_name: '',
@@ -76,6 +104,8 @@ const emptyForm = () => ({
   storage_location: '',
   unit_cost: '',
   safety_stock: '',
+  unit_name: 'ชิ้น',
+  unit_multiplier: '1',
 })
 
 export default function Products() {
@@ -109,6 +139,16 @@ export default function Products() {
   function showNotify(type: 'success' | 'error' | 'warning', title: string, message: string = '') {
     setNotifyModal({ open: true, type, title, message })
   }
+
+  const isSuperAdmin = user?.role === 'superadmin'
+
+  // Init import state
+  const [initImportOpen, setInitImportOpen] = useState(false)
+  const [initImportRows, setInitImportRows] = useState<InitImportRow[]>([])
+  const [initImportDupCodes, setInitImportDupCodes] = useState<Set<string>>(new Set())
+  const [initImportErrors, setInitImportErrors] = useState<string[]>([])
+  const [initImporting, setInitImporting] = useState(false)
+  const initImportInputRef = useRef<HTMLInputElement>(null)
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -228,6 +268,8 @@ export default function Products() {
       storage_location: product.storage_location || '',
       unit_cost: product.unit_cost != null ? String(product.unit_cost) : '',
       safety_stock: product.safety_stock != null ? String(product.safety_stock) : '',
+      unit_name: product.unit_name || 'ชิ้น',
+      unit_multiplier: product.unit_multiplier != null ? String(product.unit_multiplier) : '1',
     })
     setUploadFile(null)
     setUploadPreview(null)
@@ -265,6 +307,9 @@ export default function Products() {
       if (uploadFile) {
         await uploadProductImage(uploadFile, code)
       }
+      const parsedMultiplier = parseFloat(form.unit_multiplier) || 1
+      const unitMultiplier = parsedMultiplier > 0 ? parsedMultiplier : 1
+
       if (modalMode === 'add') {
         const { error } = await supabase.from('pr_products').insert({
           product_code: code,
@@ -278,6 +323,8 @@ export default function Products() {
           storage_location: form.storage_location.trim() || null,
           unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
           safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
+          unit_name: form.unit_name.trim() || 'ชิ้น',
+          unit_multiplier: unitMultiplier,
           is_active: true,
         })
         if (error) throw error
@@ -297,6 +344,8 @@ export default function Products() {
             storage_location: form.storage_location.trim() || null,
             unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
             safety_stock: form.safety_stock.trim() ? Number(form.safety_stock.trim()) : 0,
+            unit_name: form.unit_name.trim() || 'ชิ้น',
+            unit_multiplier: unitMultiplier,
           })
           .eq('id', editingProduct.id)
         if (error) throw error
@@ -495,6 +544,162 @@ export default function Products() {
     }
   }
 
+  // ── Init Import: Download Template ──
+
+  function downloadInitTemplate() {
+    const ws = XLSX.utils.aoa_to_sheet([
+      [...INIT_IMPORT_HEADERS],
+      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A'],
+      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', ''],
+    ])
+    ws['!cols'] = [
+      { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 12 },
+      { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 },
+    ]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'สินค้า+สต๊อค')
+    XLSX.writeFile(wb, 'Template_สินค้า_สต๊อคเริ่มต้น.xlsx')
+  }
+
+  // ── Init Import: Parse Excel → preview ──
+
+  async function handleInitImportFile(file: File) {
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const firstSheet = wb.SheetNames[0]
+      if (!firstSheet) throw new Error('ไม่มีชีตในไฟล์')
+      const sheet = wb.Sheets[firstSheet]
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+      if (!rawRows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+
+      const validTypes: ProductType[] = ['FG', 'RM', 'PP']
+      const errors: string[] = []
+      const parsed: InitImportRow[] = []
+      const seenCodes = new Set<string>()
+
+      for (let i = 0; i < rawRows.length; i++) {
+        const row = rawRows[i]
+        const rowNum = i + 2
+        const code = String(row.product_code ?? '').trim()
+        const name = String(row.product_name ?? '').trim()
+        if (!code) { errors.push(`แถว ${rowNum}: ไม่มี product_code`); continue }
+        if (!name) { errors.push(`แถว ${rowNum}: ไม่มี product_name`); continue }
+        if (seenCodes.has(code.toLowerCase())) {
+          errors.push(`แถว ${rowNum}: product_code "${code}" ซ้ำในไฟล์`)
+          continue
+        }
+        seenCodes.add(code.toLowerCase())
+
+        const rawType = String(row.product_type ?? '').trim().toUpperCase()
+        const unitCost = Number(row.unit_cost ?? 0)
+        const initialStock = Number(row.initial_stock ?? 0)
+        const safetyStock = Number(row.safety_stock ?? 0)
+
+        if (isNaN(unitCost) || unitCost < 0) { errors.push(`แถว ${rowNum}: unit_cost ไม่ถูกต้อง`); continue }
+        if (isNaN(initialStock) || initialStock < 0) { errors.push(`แถว ${rowNum}: initial_stock ไม่ถูกต้อง`); continue }
+        if (isNaN(safetyStock) || safetyStock < 0) { errors.push(`แถว ${rowNum}: safety_stock ไม่ถูกต้อง`); continue }
+
+        parsed.push({
+          product_code: code,
+          product_name: name,
+          product_category: String(row.product_category ?? '').trim(),
+          product_type: validTypes.includes(rawType as ProductType) ? rawType : 'FG',
+          seller_name: String(row.seller_name ?? '').trim(),
+          unit_cost: unitCost,
+          initial_stock: initialStock,
+          safety_stock: Math.min(safetyStock, initialStock),
+          order_point: String(row.order_point ?? '').trim(),
+          storage_location: String(row.storage_location ?? '').trim(),
+        })
+      }
+
+      if (!parsed.length && errors.length) {
+        showNotify('error', 'ไม่มีข้อมูลที่ถูกต้อง', errors.slice(0, 5).join('\n'))
+        return
+      }
+
+      // Check against existing products
+      const { data: existing } = await supabase
+        .from('pr_products')
+        .select('product_code')
+        .eq('is_active', true)
+      const existingCodes = new Set(
+        (existing || []).map((p: { product_code: string }) => p.product_code.toLowerCase())
+      )
+      const dupCodes = new Set<string>()
+      parsed.forEach((r) => { if (existingCodes.has(r.product_code.toLowerCase())) dupCodes.add(r.product_code) })
+
+      setInitImportRows(parsed)
+      setInitImportDupCodes(dupCodes)
+      setInitImportErrors(errors)
+      setInitImportOpen(true)
+    } catch (err: any) {
+      console.error('Init import parse error:', err)
+      showNotify('error', 'อ่านไฟล์ไม่สำเร็จ', err?.message || String(err))
+    } finally {
+      if (initImportInputRef.current) initImportInputRef.current.value = ''
+    }
+  }
+
+  // ── Init Import: Confirm → RPC ──
+
+  async function confirmInitImport() {
+    const newRows = initImportRows.filter((r) => !initImportDupCodes.has(r.product_code))
+    if (!newRows.length) {
+      showNotify('warning', 'ไม่มีสินค้าใหม่ที่จะนำเข้า', 'สินค้าทั้งหมดมีอยู่ในระบบแล้ว')
+      return
+    }
+
+    setInitImporting(true)
+    try {
+      const payload = newRows.map((r) => ({
+        product_code: r.product_code,
+        product_name: r.product_name,
+        product_category: r.product_category || null,
+        product_type: r.product_type || 'FG',
+        seller_name: r.seller_name || null,
+        product_name_cn: null,
+        unit_cost: r.unit_cost,
+        initial_stock: r.initial_stock,
+        safety_stock: r.safety_stock,
+        order_point: r.order_point || null,
+        rubber_code: null,
+        storage_location: r.storage_location || null,
+      }))
+
+      const { data, error } = await supabase.rpc('rpc_bulk_import_products_with_stock', {
+        items: payload,
+      })
+      if (error) throw error
+
+      const result = data as { imported: number; skipped: number; errors: Array<{ product_code: string; error: string }> }
+      const msgs: string[] = []
+      msgs.push(`นำเข้าสำเร็จ ${result.imported} รายการ`)
+      if (result.skipped > 0) msgs.push(`ข้าม ${result.skipped} รายการ (มีอยู่แล้ว)`)
+      if (result.errors?.length > 0) msgs.push(`ผิดพลาด ${result.errors.length} รายการ`)
+
+      showNotify(
+        result.errors?.length ? 'warning' : 'success',
+        'ผลการนำเข้าสินค้า + สต๊อค',
+        msgs.join(', ')
+      )
+
+      setInitImportOpen(false)
+      setInitImportRows([])
+      setInitImportDupCodes(new Set())
+      setInitImportErrors([])
+      loadProducts()
+      loadCategories()
+    } catch (err: any) {
+      console.error('Init import error:', err)
+      showNotify('error', 'นำเข้าล้มเหลว', err?.message || String(err))
+    } finally {
+      setInitImporting(false)
+    }
+  }
+
   return (
     <div className="space-y-6 mt-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -527,6 +732,30 @@ export default function Products() {
               }}
             />
           </label>
+          {isSuperAdmin && (
+            <>
+              <button
+                type="button"
+                onClick={downloadInitTemplate}
+                className="px-3 py-2 rounded-xl bg-teal-600 text-white hover:bg-teal-700 text-sm font-semibold"
+              >
+                Template สต๊อคเริ่มต้น
+              </button>
+              <label className="px-3 py-2 rounded-xl bg-orange-600 text-white hover:bg-orange-700 text-sm font-semibold cursor-pointer inline-block">
+                Import สินค้า + สต๊อคเริ่มต้น
+                <input
+                  ref={initImportInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) handleInitImportFile(file)
+                  }}
+                />
+              </label>
+            </>
+          )}
           <label className="px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700 text-sm font-semibold cursor-pointer inline-block">
             {uploadingImages ? 'กำลังอัปโหลด...' : 'อัปโหลดรูป'}
             <input
@@ -620,6 +849,7 @@ export default function Products() {
                   <th className="px-3 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
                   <th className="px-3 py-2.5 text-left font-semibold">หมวดหมู่</th>
                   <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-3 py-2.5 text-center font-semibold">หน่วย</th>
                   <th className="px-3 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
@@ -645,6 +875,12 @@ export default function Products() {
                     <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>
                     <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>
                     <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>
+                    <td className="px-3 py-2 text-center text-surface-700">
+                      {product.unit_name || 'ชิ้น'}
+                      {product.unit_multiplier != null && product.unit_multiplier > 1 && (
+                        <span className="text-xs text-gray-400 ml-1">(x{product.unit_multiplier})</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right">
                       <div className="flex gap-2 justify-end">
                         <button
@@ -837,33 +1073,57 @@ export default function Products() {
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               />
             </div>
-            {/* ต้นทุนสินค้า */}
-            {canSeeCost && (
+            {/* ต้นทุนสินค้า — ซ่อนฟิลด์นี้เพราะ landed_cost คำนวณจาก Lot อัตโนมัติ */}
+            {/* Safety Stock — ปรับผ่านหน้า คลัง > ปรับสต๊อค เท่านั้น (โยก lot จริงผ่าน FIFO) */}
+            {/* ─── หน่วยสินค้า (2 ช่องบรรทัดเดียวกัน) ─── */}
             <div>
-              <label className="block text-sm font-semibold text-surface-700 mb-1">ต้นทุนสินค้า</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.unit_cost}
-                onChange={(e) => setForm((f) => ({ ...f, unit_cost: e.target.value }))}
-                placeholder="0.00"
-                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
-              />
+              <label className="block text-sm font-semibold text-surface-700 mb-1">หน่วย</label>
+              <div className="flex gap-2">
+                <select
+                  value={UNIT_PRESETS.includes(form.unit_name) ? form.unit_name : '__custom__'}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setForm((f) => ({ ...f, unit_name: '' }))
+                    } else {
+                      setForm((f) => ({ ...f, unit_name: e.target.value }))
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+                >
+                  {UNIT_PRESETS.map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                  <option value="__custom__">อื่นๆ...</option>
+                </select>
+                {!UNIT_PRESETS.includes(form.unit_name) && (
+                  <input
+                    type="text"
+                    value={form.unit_name}
+                    onChange={(e) => setForm((f) => ({ ...f, unit_name: e.target.value }))}
+                    placeholder="พิมพ์ชื่อหน่วย"
+                    className="flex-1 px-3 py-2 border border-surface-300 rounded-xl text-base"
+                  />
+                )}
+              </div>
             </div>
-            )}
-            {/* Safety Stock */}
             <div>
-              <label className="block text-sm font-semibold text-surface-700 mb-1">Safety Stock</label>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ชิ้น/หน่วย</label>
               <input
                 type="number"
-                min="0"
-                step="1"
-                value={form.safety_stock}
-                onChange={(e) => setForm((f) => ({ ...f, safety_stock: e.target.value }))}
-                placeholder="0"
+                min={1}
+                step="any"
+                value={form.unit_multiplier}
+                onChange={(e) => setForm((f) => ({ ...f, unit_multiplier: e.target.value }))}
+                onBlur={() => {
+                  const v = parseFloat(form.unit_multiplier)
+                  if (!v || v <= 0) setForm((f) => ({ ...f, unit_multiplier: '1' }))
+                }}
+                placeholder="1"
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               />
+              <p className="text-xs text-surface-500 mt-1">
+                เช่น คู่ = 2, แพ็ค 12 ชิ้น = 12
+              </p>
             </div>
             {/* รูปสินค้า */}
             <div className="sm:col-span-2">
@@ -947,6 +1207,123 @@ export default function Products() {
               {deletingId === productToDelete?.id ? 'กำลังลบ...' : 'ปิดการใช้งาน'}
             </button>
           </div>
+        </div>
+      </Modal>
+
+      {/* Init Import Preview Modal */}
+      <Modal
+        open={initImportOpen}
+        onClose={() => { if (!initImporting) { setInitImportOpen(false); setInitImportRows([]); setInitImportDupCodes(new Set()); setInitImportErrors([]) } }}
+        closeOnBackdropClick={false}
+        contentClassName="max-w-5xl !overflow-hidden flex flex-col"
+      >
+        <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
+          <h2 className="text-2xl font-semibold">ตรวจสอบข้อมูลก่อนนำเข้า</h2>
+          <p className="text-sm text-surface-500 mt-1">กรุณาตรวจสอบข้อมูลด้านล่างให้ถูกต้อง แล้วกด "ยืนยันนำเข้า"</p>
+        </div>
+
+        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+          {/* Summary */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-blue-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-blue-700">{initImportRows.length}</div>
+              <div className="text-xs text-blue-600">ทั้งหมดในไฟล์</div>
+            </div>
+            <div className="bg-green-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-green-700">{initImportRows.length - initImportDupCodes.size}</div>
+              <div className="text-xs text-green-600">สินค้าใหม่ (จะนำเข้า)</div>
+            </div>
+            <div className="bg-amber-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-amber-700">{initImportDupCodes.size}</div>
+              <div className="text-xs text-amber-600">ซ้ำกับในระบบ (ข้าม)</div>
+            </div>
+            <div className="bg-red-50 rounded-xl p-3 text-center">
+              <div className="text-2xl font-bold text-red-700">{initImportErrors.length}</div>
+              <div className="text-xs text-red-600">แถวที่มีปัญหา</div>
+            </div>
+          </div>
+
+          {/* Errors */}
+          {initImportErrors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+              <h4 className="text-sm font-semibold text-red-700 mb-1">แถวที่มีปัญหา (ไม่ถูกนำเข้า)</h4>
+              <ul className="text-xs text-red-600 space-y-0.5 max-h-24 overflow-y-auto">
+                {initImportErrors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Data Table */}
+          {initImportRows.length > 0 && (
+            <div className="overflow-x-auto border border-surface-200 rounded-xl">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-100">
+                    <th className="px-2 py-2 text-left font-semibold">สถานะ</th>
+                    <th className="px-2 py-2 text-left font-semibold">รหัสสินค้า</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อสินค้า</th>
+                    <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
+                    <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
+                    <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
+                    <th className="px-2 py-2 text-right font-semibold">สต๊อครวม</th>
+                    <th className="px-2 py-2 text-right font-semibold">Safety</th>
+                    <th className="px-2 py-2 text-right font-semibold">On Hand</th>
+                    <th className="px-2 py-2 text-left font-semibold">จุดสั่งซื้อ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {initImportRows.map((row, idx) => {
+                    const isDup = initImportDupCodes.has(row.product_code)
+                    const onHand = row.initial_stock - row.safety_stock
+                    return (
+                      <tr key={idx} className={`border-t ${isDup ? 'bg-amber-50 text-amber-700 line-through opacity-60' : idx % 2 === 0 ? 'bg-white' : 'bg-surface-50'}`}>
+                        <td className="px-2 py-1.5">
+                          {isDup ? (
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-200 text-amber-800">ข้าม</span>
+                          ) : (
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-green-200 text-green-800">ใหม่</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 font-mono font-semibold">{row.product_code}</td>
+                        <td className="px-2 py-1.5 max-w-[200px] truncate">{row.product_name}</td>
+                        <td className="px-2 py-1.5">{row.product_category || '-'}</td>
+                        <td className="px-2 py-1.5 text-center">
+                          <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${row.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : row.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
+                            {row.product_type}
+                          </span>
+                        </td>
+                        <td className="px-2 py-1.5 text-right">{row.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="px-2 py-1.5 text-right font-semibold">{row.initial_stock.toLocaleString()}</td>
+                        <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>
+                        <td className="px-2 py-1.5 text-right">{onHand.toLocaleString()}</td>
+                        <td className="px-2 py-1.5">{row.order_point || '-'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-surface-200 flex gap-2 justify-end shrink-0">
+          <button
+            type="button"
+            onClick={() => { setInitImportOpen(false); setInitImportRows([]); setInitImportDupCodes(new Set()); setInitImportErrors([]) }}
+            disabled={initImporting}
+            className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100 disabled:opacity-50"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={confirmInitImport}
+            disabled={initImporting || (initImportRows.length - initImportDupCodes.size) === 0}
+            className="px-4 py-2 bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-50 font-semibold"
+          >
+            {initImporting ? 'กำลังนำเข้า...' : `ยืนยันนำเข้า (${initImportRows.length - initImportDupCodes.size} รายการ)`}
+          </button>
         </div>
       </Modal>
 

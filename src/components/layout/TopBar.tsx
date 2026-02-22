@@ -29,6 +29,17 @@ const PRODUCT_ACCESS_MAP: Record<string, string> = {
   '/products': 'products',
   '/products/inactive': 'products-inactive',
 }
+const HR_ACCESS_MAP: Record<string, string> = {
+  '/hr': 'hr-employees',
+  '/hr/leave': 'hr-leave',
+  '/hr/interview': 'hr-interview',
+  '/hr/attendance': 'hr-attendance',
+  '/hr/contracts': 'hr-contracts',
+  '/hr/documents': 'hr-documents',
+  '/hr/onboarding': 'hr-onboarding',
+  '/hr/salary': 'hr-salary',
+  '/hr/settings': 'hr-settings',
+}
 
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { user, signOut } = useAuthContext()
@@ -39,6 +50,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [newChatCount, setNewChatCount] = useState(0)
   const [menuCount, setMenuCount] = useState<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [clearingChat, setClearingChat] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
@@ -144,6 +156,44 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [user, canSeeChat])
 
+  const clearAllChatNotifications = useCallback(async () => {
+    if (!user) return
+    setClearingChat(true)
+    try {
+      const now = new Date().toISOString()
+      const [{ data: issues }, { data: orders }] = await Promise.all([
+        supabase.from('or_issue_messages').select('issue_id'),
+        supabase.from('or_order_chat_logs').select('order_id').eq('is_hidden', false),
+      ])
+      const issueIds = [...new Set((issues || []).map((r: any) => r.issue_id))]
+      const orderIds = [...new Set((orders || []).map((r: any) => r.order_id))]
+      const promises: Promise<any>[] = []
+      if (issueIds.length > 0) {
+        promises.push(
+          supabase.from('or_issue_reads').upsert(
+            issueIds.map((id) => ({ issue_id: id, user_id: user.id, last_read_at: now })),
+            { onConflict: 'issue_id,user_id' }
+          )
+        )
+      }
+      if (orderIds.length > 0) {
+        promises.push(
+          supabase.from('or_order_chat_reads').upsert(
+            orderIds.map((id) => ({ order_id: id, user_id: user.id, last_read_at: now })),
+            { onConflict: 'order_id,user_id' }
+          )
+        )
+      }
+      await Promise.all(promises)
+      setNewChatCount(0)
+      await loadChatCounts()
+    } catch (error) {
+      console.error('Error clearing chat notifications:', error)
+    } finally {
+      setClearingChat(false)
+    }
+  }, [user, loadChatCounts])
+
   const debouncedLoadChatCounts = useCallback(() => {
     if (chatDebounceRef.current) clearTimeout(chatDebounceRef.current)
     chatDebounceRef.current = setTimeout(() => loadChatCounts(), 2_000)
@@ -170,14 +220,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   // ── เมื่อ user อ่านแชทแล้ว → รีเฟรช count ──
   useEffect(() => {
     if (!canSeeChat) return
-    const onChatRead = () => { if (user && !isAdminRole) loadChatCounts() }
+    const onChatRead = () => { if (user) loadChatCounts() }
     window.addEventListener('issue-chat-read', onChatRead)
     window.addEventListener('order-chat-read', onChatRead)
     return () => {
       window.removeEventListener('issue-chat-read', onChatRead)
       window.removeEventListener('order-chat-read', onChatRead)
     }
-  }, [user, canSeeChat, isAdminRole, loadChatCounts])
+  }, [user, canSeeChat, loadChatCounts])
 
   const issueTabs = [
     { key: 'on', label: `New Issue (${issueOnCount})` },
@@ -243,7 +293,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/onboarding', label: 'รับพนักงานใหม่' },
     { path: '/hr/salary', label: 'เส้นทางเงินเดือน' },
     { path: '/hr/settings', label: 'ตั้งค่า' },
-  ]
+  ].filter((tab) => hasAccess(HR_ACCESS_MAP[tab.path] || tab.path))
 
   const activeSubTabs = location.pathname.startsWith('/warehouse')
     ? warehouseTabs
@@ -332,6 +382,17 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                 {tab.label}
               </button>
             ))}
+            {canSeeChat && isAdminRole && newChatCount > 0 && (
+              <button
+                type="button"
+                onClick={clearAllChatNotifications}
+                disabled={clearingChat}
+                title="ล้างแจ้งเตือนแชททั้งหมด"
+                className="px-2 py-1.5 rounded-full text-xs font-semibold bg-white/20 text-white hover:bg-white/30 transition-colors disabled:opacity-50"
+              >
+                {clearingChat ? '...' : 'ล้าง'}
+              </button>
+            )}
           </div>
         </div>
 
