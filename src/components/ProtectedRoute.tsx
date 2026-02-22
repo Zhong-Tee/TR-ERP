@@ -23,7 +23,45 @@ const SUB_PATH_MAP: Record<string, string> = {
   '/hr/documents': 'hr-documents',
   '/hr/onboarding': 'hr-onboarding',
   '/hr/salary': 'hr-salary',
+  '/hr/warnings': 'hr-warnings',
+  '/hr/certificates': 'hr-certificates',
   '/hr/settings': 'hr-settings',
+}
+
+/** sub-pages ของแต่ละเมนูหลัก สำหรับ redirect ไปหน้าแรกที่มีสิทธิ์ */
+const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> = {
+  '/warehouse': [
+    { path: '/warehouse', key: 'warehouse-stock' },
+    { path: '/warehouse/audit', key: 'warehouse-audit' },
+    { path: '/warehouse/adjust', key: 'warehouse-adjust' },
+    { path: '/warehouse/returns', key: 'warehouse-returns' },
+    { path: '/warehouse/production', key: 'warehouse-production' },
+    { path: '/warehouse/roll-calc', key: 'warehouse-roll-calc' },
+    { path: '/warehouse/sales-list', key: 'warehouse-sales-list' },
+  ],
+  '/hr': [
+    { path: '/hr', key: 'hr-employees' },
+    { path: '/hr/leave', key: 'hr-leave' },
+    { path: '/hr/interview', key: 'hr-interview' },
+    { path: '/hr/attendance', key: 'hr-attendance' },
+    { path: '/hr/contracts', key: 'hr-contracts' },
+    { path: '/hr/documents', key: 'hr-documents' },
+    { path: '/hr/onboarding', key: 'hr-onboarding' },
+    { path: '/hr/salary', key: 'hr-salary' },
+    { path: '/hr/warnings', key: 'hr-warnings' },
+    { path: '/hr/certificates', key: 'hr-certificates' },
+    { path: '/hr/settings', key: 'hr-settings' },
+  ],
+  '/purchase': [
+    { path: '/purchase/pr', key: 'purchase-pr' },
+    { path: '/purchase/po', key: 'purchase-po' },
+    { path: '/purchase/gr', key: 'purchase-gr' },
+    { path: '/purchase/sample', key: 'purchase-sample' },
+  ],
+  '/products': [
+    { path: '/products', key: 'products' },
+    { path: '/products/inactive', key: 'products-inactive' },
+  ],
 }
 
 /** แปลง pathname → menu_key สำหรับตรวจสอบสิทธิ์จาก st_user_menus */
@@ -50,6 +88,23 @@ function pathToMenuKey(pathname: string): string | null {
   if (pathname === '/hr') return 'hr-employees'
   if (pathname.startsWith('/hr')) return 'hr'
   if (pathname.startsWith('/settings')) return 'settings'
+  return null
+}
+
+/** หา path ของ parent menu แล้วหา sub-page แรกที่ user มีสิทธิ์ */
+function findFirstAccessibleSubPage(
+  pathname: string,
+  hasAccess: (key: string) => boolean,
+): string | null {
+  for (const [parentPath, subPages] of Object.entries(PARENT_SUB_PAGES)) {
+    const isExactParent = pathname === parentPath
+    const isDefaultSubPath =
+      parentPath === '/purchase' && pathname === '/purchase/pr'
+    if (!isExactParent && !isDefaultSubPath) continue
+
+    const first = subPages.find((sp) => hasAccess(sp.key))
+    if (first && first.path !== pathname) return first.path
+  }
   return null
 }
 
@@ -146,8 +201,9 @@ export default function ProtectedRoute({
   const menuKey = pathToMenuKey(location.pathname)
 
   if (menuAccess !== null) {
-    // มีข้อมูลจาก DB (superadmin ตั้งค่าแล้ว) → ใช้ DB เป็น single source of truth
     if (menuKey && !hasAccess(menuKey)) {
+      const redirectPath = findFirstAccessibleSubPage(location.pathname, hasAccess)
+      if (redirectPath) return <Navigate to={redirectPath} replace />
       return <NoAccessFallback />
     }
   } else {

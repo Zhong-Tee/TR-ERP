@@ -28,6 +28,10 @@ const PRODUCT_TEMPLATE_HEADERS = [
   'product_type',
   'rubber_code',
   'storage_location',
+  'safety_stock',
+  'unit_cost',
+  'unit_name',
+  'unit_multiplier',
 ] as const
 
 const INIT_IMPORT_HEADERS = [
@@ -41,6 +45,8 @@ const INIT_IMPORT_HEADERS = [
   'safety_stock',
   'order_point',
   'storage_location',
+  'unit_name',
+  'unit_multiplier',
 ] as const
 
 interface InitImportRow {
@@ -54,6 +60,8 @@ interface InitImportRow {
   safety_stock: number
   order_point: string
   storage_location: string
+  unit_name: string
+  unit_multiplier: number
 }
 
 /** อัปโหลดไฟล์รูปไป bucket product-images ชื่อไฟล์ = productCode + นามสกุล จากไฟล์ */
@@ -389,7 +397,7 @@ export default function Products() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PRODUCT_TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'FG', 'R001', 'A-1'],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -401,7 +409,7 @@ export default function Products() {
       const { data, error } = await supabase
         .from('pr_products')
         .select(
-          'product_code, product_name, seller_name, product_name_cn, order_point, product_category, product_type, rubber_code, storage_location'
+          'product_code, product_name, seller_name, product_name_cn, order_point, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
         )
         .eq('is_active', true)
         .order('product_code', { ascending: true })
@@ -442,6 +450,10 @@ export default function Products() {
         product_type: ProductType
         rubber_code: string | null
         storage_location: string | null
+        safety_stock: number
+        unit_cost: number
+        unit_name: string
+        unit_multiplier: number
         is_active: boolean
       }> = []
       for (let i = 0; i < rows.length; i++) {
@@ -451,6 +463,11 @@ export default function Products() {
         if (!code || !name) continue
         const rawType = String(row.product_type ?? '').trim().toUpperCase()
         const productType: ProductType = validTypes.includes(rawType as ProductType) ? (rawType as ProductType) : 'FG'
+        const safetyStock = Number(row.safety_stock ?? 0)
+        const unitCost = Number(row.unit_cost ?? 0)
+        const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
+        const rawMultiplier = Number(row.unit_multiplier ?? 1)
+        const unitMultiplier = isNaN(rawMultiplier) || rawMultiplier <= 0 ? 1 : rawMultiplier
         toInsert.push({
           product_code: code,
           product_name: name,
@@ -461,6 +478,10 @@ export default function Products() {
           product_type: productType,
           rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
           storage_location: (row.storage_location != null && String(row.storage_location).trim()) || null,
+          safety_stock: isNaN(safetyStock) ? 0 : safetyStock,
+          unit_cost: isNaN(unitCost) ? 0 : unitCost,
+          unit_name: unitName,
+          unit_multiplier: unitMultiplier,
           is_active: true,
         })
       }
@@ -476,7 +497,7 @@ export default function Products() {
       })
       const dupInFile = toInsert.length - deduped.length
 
-      // ตรวจสอบรหัสสินค้าซ้ำกับข้อมูลในระบบ
+      // แยกสินค้าใหม่ vs สินค้าเดิม (เพื่อ insert ใหม่ + update เดิม)
       const { data: existingProducts } = await supabase
         .from('pr_products')
         .select('product_code')
@@ -485,24 +506,43 @@ export default function Products() {
         (existingProducts || []).map((p: { product_code: string }) => p.product_code.toLowerCase())
       )
       const newItems = deduped.filter((item) => !existingCodes.has(item.product_code.toLowerCase()))
-      const dupInDb = deduped.length - newItems.length
+      const updateItems = deduped.filter((item) => existingCodes.has(item.product_code.toLowerCase()))
 
-      if (!newItems.length) {
-        const msgs: string[] = []
-        if (dupInFile > 0) msgs.push(`ซ้ำในไฟล์ ${dupInFile} รายการ`)
-        if (dupInDb > 0) msgs.push(`ซ้ำกับข้อมูลในระบบ ${dupInDb} รายการ`)
-        showNotify('warning', 'ไม่มีสินค้าใหม่ที่จะนำเข้า', msgs.join(', '))
+      if (!newItems.length && !updateItems.length) {
+        showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', dupInFile > 0 ? `ซ้ำในไฟล์ ${dupInFile} รายการ` : '')
         loadProducts()
         loadCategories()
         return
       }
 
-      const { error } = await supabase.from('pr_products').insert(newItems)
-      if (error) throw error
+      let insertedCount = 0
+      let updatedCount = 0
 
-      const msgs: string[] = [`นำเข้าสินค้าใหม่ ${newItems.length} รายการเรียบร้อย`]
+      if (newItems.length) {
+        const { error } = await supabase.from('pr_products').insert(newItems)
+        if (error) throw error
+        insertedCount = newItems.length
+      }
+
+      if (updateItems.length) {
+        for (const item of updateItems) {
+          const { is_active, ...updateData } = item
+          const { error } = await supabase
+            .from('pr_products')
+            .update(updateData)
+            .eq('product_code', item.product_code)
+          if (error) {
+            console.error(`Update failed for ${item.product_code}:`, error)
+            continue
+          }
+          updatedCount++
+        }
+      }
+
+      const msgs: string[] = []
+      if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
+      if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
       if (dupInFile > 0) msgs.push(`ข้ามรายการซ้ำในไฟล์ ${dupInFile} รายการ`)
-      if (dupInDb > 0) msgs.push(`ข้ามรายการที่มีอยู่แล้วในระบบ ${dupInDb} รายการ`)
       showNotify('success', 'นำเข้าสินค้าสำเร็จ', msgs.join(', '))
       loadProducts()
       loadCategories()
@@ -550,13 +590,13 @@ export default function Products() {
   function downloadInitTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       [...INIT_IMPORT_HEADERS],
-      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A'],
-      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', ''],
+      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A', 'ชิ้น', 1],
+      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', '', 'แพ็ค', 12],
     ])
     ws['!cols'] = [
       { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
-      { wch: 12 }, { wch: 14 },
+      { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
     ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า+สต๊อค')
@@ -597,6 +637,9 @@ export default function Products() {
         const unitCost = Number(row.unit_cost ?? 0)
         const initialStock = Number(row.initial_stock ?? 0)
         const safetyStock = Number(row.safety_stock ?? 0)
+        const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
+        const rawMult = Number(row.unit_multiplier ?? 1)
+        const unitMultiplier = isNaN(rawMult) || rawMult <= 0 ? 1 : rawMult
 
         if (isNaN(unitCost) || unitCost < 0) { errors.push(`แถว ${rowNum}: unit_cost ไม่ถูกต้อง`); continue }
         if (isNaN(initialStock) || initialStock < 0) { errors.push(`แถว ${rowNum}: initial_stock ไม่ถูกต้อง`); continue }
@@ -613,6 +656,8 @@ export default function Products() {
           safety_stock: Math.min(safetyStock, initialStock),
           order_point: String(row.order_point ?? '').trim(),
           storage_location: String(row.storage_location ?? '').trim(),
+          unit_name: unitName,
+          unit_multiplier: unitMultiplier,
         })
       }
 
@@ -648,41 +693,77 @@ export default function Products() {
 
   async function confirmInitImport() {
     const newRows = initImportRows.filter((r) => !initImportDupCodes.has(r.product_code))
-    if (!newRows.length) {
-      showNotify('warning', 'ไม่มีสินค้าใหม่ที่จะนำเข้า', 'สินค้าทั้งหมดมีอยู่ในระบบแล้ว')
+    const updateRows = initImportRows.filter((r) => initImportDupCodes.has(r.product_code))
+
+    if (!newRows.length && !updateRows.length) {
+      showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', 'ไม่พบข้อมูลใหม่หรือข้อมูลที่ต้องอัปเดต')
       return
     }
 
     setInitImporting(true)
     try {
-      const payload = newRows.map((r) => ({
-        product_code: r.product_code,
-        product_name: r.product_name,
-        product_category: r.product_category || null,
-        product_type: r.product_type || 'FG',
-        seller_name: r.seller_name || null,
-        product_name_cn: null,
-        unit_cost: r.unit_cost,
-        initial_stock: r.initial_stock,
-        safety_stock: r.safety_stock,
-        order_point: r.order_point || null,
-        rubber_code: null,
-        storage_location: r.storage_location || null,
-      }))
+      let insertedCount = 0
+      let updatedCount = 0
+      const rpcErrors: Array<{ product_code: string; error: string }> = []
 
-      const { data, error } = await supabase.rpc('rpc_bulk_import_products_with_stock', {
-        items: payload,
-      })
-      if (error) throw error
+      if (newRows.length) {
+        const payload = newRows.map((r) => ({
+          product_code: r.product_code,
+          product_name: r.product_name,
+          product_category: r.product_category || null,
+          product_type: r.product_type || 'FG',
+          seller_name: r.seller_name || null,
+          product_name_cn: null,
+          unit_cost: r.unit_cost,
+          initial_stock: r.initial_stock,
+          safety_stock: r.safety_stock,
+          order_point: r.order_point || null,
+          rubber_code: null,
+          storage_location: r.storage_location || null,
+          unit_name: r.unit_name || 'ชิ้น',
+          unit_multiplier: r.unit_multiplier || 1,
+        }))
 
-      const result = data as { imported: number; skipped: number; errors: Array<{ product_code: string; error: string }> }
+        const { data, error } = await supabase.rpc('rpc_bulk_import_products_with_stock', {
+          items: payload,
+        })
+        if (error) throw error
+        const result = data as { imported: number; skipped: number; errors: Array<{ product_code: string; error: string }> }
+        insertedCount = result.imported
+        if (result.errors?.length) rpcErrors.push(...result.errors)
+      }
+
+      for (const r of updateRows) {
+        const { error } = await supabase
+          .from('pr_products')
+          .update({
+            product_name: r.product_name,
+            product_category: r.product_category || null,
+            product_type: r.product_type || 'FG',
+            seller_name: r.seller_name || null,
+            unit_cost: r.unit_cost,
+            safety_stock: r.safety_stock,
+            order_point: r.order_point || null,
+            storage_location: r.storage_location || null,
+            unit_name: r.unit_name || 'ชิ้น',
+            unit_multiplier: r.unit_multiplier || 1,
+          })
+          .eq('product_code', r.product_code)
+        if (error) {
+          console.error(`Update failed for ${r.product_code}:`, error)
+          rpcErrors.push({ product_code: r.product_code, error: error.message })
+          continue
+        }
+        updatedCount++
+      }
+
       const msgs: string[] = []
-      msgs.push(`นำเข้าสำเร็จ ${result.imported} รายการ`)
-      if (result.skipped > 0) msgs.push(`ข้าม ${result.skipped} รายการ (มีอยู่แล้ว)`)
-      if (result.errors?.length > 0) msgs.push(`ผิดพลาด ${result.errors.length} รายการ`)
+      if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
+      if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
+      if (rpcErrors.length > 0) msgs.push(`ผิดพลาด ${rpcErrors.length} รายการ`)
 
       showNotify(
-        result.errors?.length ? 'warning' : 'success',
+        rpcErrors.length ? 'warning' : 'success',
         'ผลการนำเข้าสินค้า + สต๊อค',
         msgs.join(', ')
       )
@@ -1236,7 +1317,7 @@ export default function Products() {
             </div>
             <div className="bg-amber-50 rounded-xl p-3 text-center">
               <div className="text-2xl font-bold text-amber-700">{initImportDupCodes.size}</div>
-              <div className="text-xs text-amber-600">ซ้ำกับในระบบ (ข้าม)</div>
+              <div className="text-xs text-amber-600">มีอยู่ในระบบ (อัปเดต)</div>
             </div>
             <div className="bg-red-50 rounded-xl p-3 text-center">
               <div className="text-2xl font-bold text-red-700">{initImportErrors.length}</div>
@@ -1270,6 +1351,8 @@ export default function Products() {
                     <th className="px-2 py-2 text-right font-semibold">Safety</th>
                     <th className="px-2 py-2 text-right font-semibold">On Hand</th>
                     <th className="px-2 py-2 text-left font-semibold">จุดสั่งซื้อ</th>
+                    <th className="px-2 py-2 text-center font-semibold">หน่วย</th>
+                    <th className="px-2 py-2 text-right font-semibold">ชิ้น/หน่วย</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1277,10 +1360,10 @@ export default function Products() {
                     const isDup = initImportDupCodes.has(row.product_code)
                     const onHand = row.initial_stock - row.safety_stock
                     return (
-                      <tr key={idx} className={`border-t ${isDup ? 'bg-amber-50 text-amber-700 line-through opacity-60' : idx % 2 === 0 ? 'bg-white' : 'bg-surface-50'}`}>
+                      <tr key={idx} className={`border-t ${isDup ? 'bg-amber-50' : idx % 2 === 0 ? 'bg-white' : 'bg-surface-50'}`}>
                         <td className="px-2 py-1.5">
                           {isDup ? (
-                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-200 text-amber-800">ข้าม</span>
+                            <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-200 text-amber-800">อัปเดต</span>
                           ) : (
                             <span className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-green-200 text-green-800">ใหม่</span>
                           )}
@@ -1298,6 +1381,8 @@ export default function Products() {
                         <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>
                         <td className="px-2 py-1.5 text-right">{onHand.toLocaleString()}</td>
                         <td className="px-2 py-1.5">{row.order_point || '-'}</td>
+                        <td className="px-2 py-1.5 text-center">{row.unit_name || 'ชิ้น'}</td>
+                        <td className="px-2 py-1.5 text-right">{row.unit_multiplier}</td>
                       </tr>
                     )
                   })}
@@ -1320,10 +1405,10 @@ export default function Products() {
           <button
             type="button"
             onClick={confirmInitImport}
-            disabled={initImporting || (initImportRows.length - initImportDupCodes.size) === 0}
+            disabled={initImporting || initImportRows.length === 0}
             className="px-4 py-2 bg-orange-600 text-white rounded-xl hover:bg-orange-700 disabled:opacity-50 font-semibold"
           >
-            {initImporting ? 'กำลังนำเข้า...' : `ยืนยันนำเข้า (${initImportRows.length - initImportDupCodes.size} รายการ)`}
+            {initImporting ? 'กำลังนำเข้า...' : `ยืนยันนำเข้า (${initImportRows.length} รายการ)`}
           </button>
         </div>
       </Modal>

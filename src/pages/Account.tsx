@@ -108,11 +108,24 @@ function formatRefundReason(reason: string): string {
     .replace('ยอดสลิป:', 'สลิป:')
 }
 
+const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
+  'dashboard', 'slip-verification', 'manual-slip-check',
+  'bill-edit', 'amendment', 'slip-age', 'trial-balance',
+]
+
 export default function Account() {
   const { user } = useAuthContext()
-  const { hasAccess } = useMenuAccess()
+  const { hasAccess, menuAccessLoading } = useMenuAccess()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(`account-${accountSection}`)) {
+      const first = ALL_ACCOUNT_SECTIONS.find((s) => hasAccess(`account-${s}`))
+      if (first) setAccountSection(first)
+    }
+  }, [menuAccessLoading])
 
   const [orderToAmend, setOrderToAmend] = useState<(Order & { order_items?: any[] }) | null>(null)
   const [refunds, setRefunds] = useState<Refund[]>([])

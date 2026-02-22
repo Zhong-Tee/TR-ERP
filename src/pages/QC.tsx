@@ -94,8 +94,18 @@ export default function QC() {
   const canSkipQc = user?.role === 'superadmin' || user?.role === 'admin'
   const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
 
+  const { menuAccessLoading } = useMenuAccess()
   const [currentView, setCurrentView] = useState<QCView>('qc')
   const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    const menuKey = QC_MENU_KEY_MAP[currentView] || currentView
+    if (!hasAccess(menuKey)) {
+      const first = MENUS.find((m) => (!m.adminOnly || isAdmin) && hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
+      if (first) setCurrentView(first.id)
+    }
+  }, [menuAccessLoading])
 
   // QC Operation
   const [workOrdersWithProgress, setWorkOrdersWithProgress] = useState<WorkOrderWithProgress[]>([])

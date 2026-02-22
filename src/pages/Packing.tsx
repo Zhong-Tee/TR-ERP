@@ -92,8 +92,17 @@ export default function Packing() {
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
+  const { menuAccessLoading } = useMenuAccess()
   const [view, setView] = useState<'selection' | 'main'>('selection')
   const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue'>('new')
+
+  useEffect(() => {
+    if (menuAccessLoading) return
+    if (!hasAccess(`packing-${selectionTab}`)) {
+      const first = (['new', 'shipped', 'queue'] as const).find((t) => hasAccess(`packing-${t}`))
+      if (first) setSelectionTab(first)
+    }
+  }, [menuAccessLoading])
   const [shippedOrders, setShippedOrders] = useState<
     Array<{
       id: string
