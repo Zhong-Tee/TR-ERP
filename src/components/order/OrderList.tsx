@@ -5,6 +5,7 @@ import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
+import { resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 
 interface OrderListProps {
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
@@ -170,11 +171,9 @@ export default function OrderList({
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
         }
-        // admin-pump / admin-tr: เห็นเฉพาะบิลของตัวเอง
-        if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
-          const adminName = user.username ?? user.email ?? ''
-          if (adminName) query = query.eq('admin_user', adminName)
-        }
+        // sales-pump / sales-tr: เห็นเฉพาะบิลของตัวเอง
+        const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
+        if (adminName) query = query.eq('admin_user', adminName)
         const { data, error } = await query.limit(100)
         if (error) throw error
         filteredData = data || []
@@ -207,11 +206,9 @@ export default function OrderList({
         if (dateTo) {
           query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
         }
-        // admin-pump / admin-tr: เห็นเฉพาะบิลของตัวเอง
-        if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
-          const adminName = user.username ?? user.email ?? ''
-          if (adminName) query = query.eq('admin_user', adminName)
-        }
+        // sales-pump / sales-tr: เห็นเฉพาะบิลของตัวเอง
+        const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
+        if (adminName) query = query.eq('admin_user', adminName)
 
         const { data, error } = await query.limit(100)
 

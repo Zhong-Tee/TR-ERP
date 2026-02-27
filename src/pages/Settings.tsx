@@ -8,6 +8,7 @@ import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
+import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -15,6 +16,7 @@ const SETTINGS_TABS = [
   { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
   { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
   { key: 'sellers', label: 'ผู้ขาย' },
+  { key: 'promotions', label: 'โปรโมชั่น' },
   { key: 'issue-types', label: 'ประเภท Issue' },
   { key: 'chat-history', label: 'ประวัติแชท' },
   { key: 'easyslip', label: 'API EasySlip' },
@@ -174,6 +176,11 @@ export default function Settings() {
   const [sellerPurchaseChannel, setSellerPurchaseChannel] = useState('')
   const [sellerSaving, setSellerSaving] = useState(false)
   const [sellerEditingId, setSellerEditingId] = useState<string | null>(null)
+  // โปรโมชั่น (Promotions)
+  const [promotionsList, setPromotionsList] = useState<{ id: string; name: string; is_active: boolean }[]>([])
+  const [promotionName, setPromotionName] = useState('')
+  const [promotionSaving, setPromotionSaving] = useState(false)
+  const [promotionEditingId, setPromotionEditingId] = useState<string | null>(null)
 
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
@@ -202,6 +209,9 @@ export default function Settings() {
     }
     if (activeTab === 'sellers') {
       loadSellers()
+    }
+    if (activeTab === 'promotions') {
+      loadPromotions()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
@@ -290,7 +300,7 @@ export default function Settings() {
         .order('created_at', { ascending: false })
 
       if (error) throw error
-      setUsers(data || [])
+      setUsers(((data || []) as User[]).map((u) => ({ ...u, role: normalizeRole(u.role) as User['role'] })))
     } catch (error: any) {
       console.error('Error loading users:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message })
@@ -440,6 +450,7 @@ export default function Settings() {
     { key: 'settings-bill-header', label: 'ตั้งค่าหัวบิล', group: 'settings' },
     { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
     { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
+    { key: 'settings-promotions', label: 'โปรโมชั่น', group: 'settings' },
     { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
     { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
     { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
@@ -450,7 +461,10 @@ export default function Settings() {
       const { data, error } = await supabase
         .from('st_user_menus')
         .select('role, menu_key, has_access')
-        .in('role', settingsRoles)
+        .in(
+          'role',
+          Array.from(new Set(settingsRoles.flatMap((role) => getRoleLookupCandidates(role)))),
+        )
         .limit(5000)
       if (error) throw error
       const map: Record<string, Record<string, boolean>> = {}
@@ -461,8 +475,9 @@ export default function Settings() {
         })
       })
       ;(data || []).forEach((row: any) => {
-        if (!map[row.role]) map[row.role] = {}
-        map[row.role][row.menu_key] = row.has_access === true
+        const roleKey = normalizeRole(row.role)
+        if (!map[roleKey]) map[roleKey] = {}
+        map[roleKey][row.menu_key] = row.has_access === true
       })
       setRoleMenus(map)
     } catch (error: any) {
@@ -747,6 +762,68 @@ export default function Settings() {
       setSellers((prev) => prev.filter((s) => s.id !== id))
     } catch (error: any) {
       console.error('Error deleting seller:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  // ===== Promotions CRUD =====
+  async function loadPromotions() {
+    try {
+      const { data, error } = await supabase
+        .from('promotion')
+        .select('*')
+        .eq('is_active', true)
+        .order('name')
+      if (error) throw error
+      setPromotionsList(data || [])
+    } catch (error: any) {
+      console.error('Error loading promotions:', error)
+    }
+  }
+
+  async function savePromotion() {
+    if (!promotionName.trim()) {
+      showMessage({ message: 'กรุณากรอกชื่อโปรโมชั่น' })
+      return
+    }
+    setPromotionSaving(true)
+    try {
+      const payload = { name: promotionName.trim() }
+      if (promotionEditingId) {
+        const { error } = await supabase
+          .from('promotion')
+          .update(payload)
+          .eq('id', promotionEditingId)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('promotion')
+          .insert(payload)
+        if (error) throw error
+      }
+      setPromotionName('')
+      setPromotionEditingId(null)
+      loadPromotions()
+    } catch (error: any) {
+      console.error('Error saving promotion:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setPromotionSaving(false)
+    }
+  }
+
+  async function deletePromotion(id: string) {
+    const ok = await showConfirm({ title: 'ลบโปรโมชั่น', message: 'ต้องการลบโปรโมชั่นนี้หรือไม่?' })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('promotion')
+        .update({ is_active: false })
+        .eq('id', id)
+      if (error) throw error
+      setPromotionsList((prev) => prev.filter((p) => p.id !== id))
+    } catch (error: any) {
+      console.error('Error deleting promotion:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
@@ -1609,9 +1686,9 @@ export default function Settings() {
   const allRoles = [
     'superadmin',
     'admin',
-    'admin-tr',
-    'admin_qc',
-    'admin-pump',
+    'sales-tr',
+    'qc_order',
+    'sales-pump',
     'qc_staff',
     'packing_staff',
     'account',
@@ -1627,9 +1704,9 @@ export default function Settings() {
   const settingsRoles = [
     'superadmin',
     'admin',
-    'admin-tr',
-    'admin_qc',
-    'admin-pump',
+    'sales-tr',
+    'qc_order',
+    'sales-pump',
     'qc_staff',
     'packing_staff',
     'account',
@@ -1637,6 +1714,9 @@ export default function Settings() {
     'production',
     'hr',
   ]
+  const roleLabel = (role: string) => {
+    return normalizeRole(role)
+  }
 
   return (
     <div className="space-y-6">
@@ -1836,7 +1916,7 @@ export default function Settings() {
       {activeTab === 'users' && hasAccess('settings-users') && (() => {
         const filteredUsers = userRoleFilter === 'all'
           ? users
-          : users.filter((u) => u.role === userRoleFilter)
+          : users.filter((u) => normalizeRole(u.role) === normalizeRole(userRoleFilter))
         return (
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="flex items-center justify-between mb-4">
@@ -1850,10 +1930,10 @@ export default function Settings() {
               >
                 <option value="all">ทั้งหมด ({users.length})</option>
                 {allRoles.map((role) => {
-                  const count = users.filter((u) => u.role === role).length
+                  const count = users.filter((u) => normalizeRole(u.role) === normalizeRole(role)).length
                   return (
                     <option key={role} value={role}>
-                      {role} ({count})
+                      {roleLabel(role)} ({count})
                     </option>
                   )
                 })}
@@ -1911,13 +1991,13 @@ export default function Settings() {
                     </td>
                     <td className="p-3">
                       <select
-                        value={user.role}
+                        value={normalizeRole(user.role)}
                         onChange={(e) => updateUserRole(user.id, e.target.value)}
                         className="px-3 py-1 border rounded"
                       >
                         {allRoles.map((role) => (
                           <option key={role} value={role}>
-                            {role}
+                            {roleLabel(role)}
                           </option>
                         ))}
                       </select>
@@ -1951,7 +2031,7 @@ export default function Settings() {
                 <tr className="bg-blue-600 text-white">
                   <th className="p-2 text-left font-semibold rounded-tl-xl sticky left-0 z-20 bg-blue-600 min-w-[180px]">เมนู</th>
                   {settingsRoles.map((role, i) => (
-                    <th key={role} className={`p-2 text-center text-xs font-semibold whitespace-nowrap ${i === settingsRoles.length - 1 ? 'rounded-tr-xl' : ''}`}>{role}</th>
+                    <th key={role} className={`p-2 text-center text-xs font-semibold whitespace-nowrap ${i === settingsRoles.length - 1 ? 'rounded-tr-xl' : ''}`}>{roleLabel(role)}</th>
                   ))}
                 </tr>
               </thead>
@@ -2809,6 +2889,80 @@ export default function Settings() {
                         </button>
                         <button
                           onClick={() => deleteSeller(s.id)}
+                          className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs font-semibold"
+                        >
+                          ลบ
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* โปรโมชั่น Tab */}
+      {activeTab === 'promotions' && hasAccess('settings-promotions') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold">จัดการโปรโมชั่น</h2>
+          </div>
+          <div className="flex gap-2 items-end flex-wrap">
+            <div className="flex-1 min-w-[220px]">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อโปรโมชั่น</label>
+              <input
+                type="text"
+                value={promotionName}
+                onChange={(e) => setPromotionName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') savePromotion() }}
+                placeholder="กรอกชื่อโปรโมชั่น"
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+              />
+            </div>
+            <button
+              onClick={savePromotion}
+              disabled={promotionSaving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
+            >
+              {promotionSaving ? 'กำลังบันทึก...' : promotionEditingId ? 'อัปเดต' : 'เพิ่ม'}
+            </button>
+            {promotionEditingId && (
+              <button
+                onClick={() => { setPromotionEditingId(null); setPromotionName('') }}
+                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100"
+              >
+                ยกเลิก
+              </button>
+            )}
+          </div>
+          {promotionsList.length === 0 ? (
+            <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลโปรโมชั่น</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-blue-600 text-white">
+                  <th className="px-4 py-2.5 text-left font-semibold rounded-tl-xl w-12">#</th>
+                  <th className="px-4 py-2.5 text-left font-semibold">ชื่อโปรโมชั่น</th>
+                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl w-40">การจัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {promotionsList.map((p, idx) => (
+                  <tr key={p.id} className={`border-t hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
+                    <td className="px-4 py-2.5 font-semibold">{p.name}</td>
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => { setPromotionEditingId(p.id); setPromotionName(p.name) }}
+                          className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
+                        >
+                          แก้ไข
+                        </button>
+                        <button
+                          onClick={() => deletePromotion(p.id)}
                           className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs font-semibold"
                         >
                           ลบ

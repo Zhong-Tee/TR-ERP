@@ -121,6 +121,33 @@ export async function fetchProductLots(productId: string, limit = 5): Promise<St
   return (data || []) as StockLotRow[]
 }
 
+export interface AdjustmentReconcileRow {
+  adjustment_id: string
+  adjust_no: string
+  status: string
+  adjustment_type: string
+  adjustment_item_id: string
+  product_id: string
+  product_code: string
+  qty_delta: number
+  new_safety_stock: number | null
+  before_total_qty: number | null
+  after_total_qty: number | null
+  balance_total_qty: number | null
+  movement_total_cost_impact: number | null
+  lot_qty_remaining: number | null
+  lot_total_value: number | null
+  qty_consistent: boolean
+}
+
+export async function fetchAdjustmentReconcile(adjustmentId?: string): Promise<AdjustmentReconcileRow[]> {
+  const { data, error } = await supabase.rpc('fn_inventory_adjustment_reconcile', {
+    p_adjustment_id: adjustmentId || null,
+  })
+  if (error) throw error
+  return (data || []) as AdjustmentReconcileRow[]
+}
+
 /**
  * อัปเดต order_point ใน pr_products ทั้ง batch ผ่าน RPC ครั้งเดียว
  */

@@ -270,7 +270,7 @@ export default function BorrowRequisitionDashboard() {
       .select('*', { count: 'exact', head: true })
       .like('borrow_no', `BOR-${dateStr}-%`)
     setCrBorrowNo(`BOR-${dateStr}-${((count || 0) + 1).toString().padStart(3, '0')}`)
-    const { data: topics } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+    const { data: topics } = await supabase.from('wms_borrow_topics').select('*').order('topic_name')
     setCrTopics(topics || [])
     loadCrAllProducts('FG')
   }

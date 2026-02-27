@@ -514,7 +514,11 @@ export default function CartoonPatterns() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-end gap-2 mt-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
+          <div className="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-sm text-blue-700 whitespace-nowrap">
+            ลายทั้งหมด <span className="font-bold tabular-nums">{totalCount.toLocaleString()}</span> รายการ
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={downloadPatternsExcel}
@@ -567,6 +571,7 @@ export default function CartoonPatterns() {
           >
             + เพิ่มลายการ์ตูน
           </button>
+          </div>
       </div>
 
       <div className="bg-white p-6 rounded-lg shadow">

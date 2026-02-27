@@ -72,7 +72,7 @@ export default function ProductionBorrow() {
 
   const loadTopics = async () => {
     try {
-      const { data } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+      const { data } = await supabase.from('wms_borrow_topics').select('*').order('topic_name')
       setRequisitionTopics(data || [])
     } catch {}
   }

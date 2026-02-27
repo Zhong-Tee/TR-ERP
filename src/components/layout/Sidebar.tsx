@@ -7,6 +7,7 @@ import { supabase } from '../../lib/supabase'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
+import { isRoleAllowedForMenuFallback, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 import {
   FiPackage,
   FiCheckCircle,
@@ -40,119 +41,119 @@ const menuItems: MenuItem[] = [
     label: 'Dashboard',
     icon: <FiHome className="w-6 h-6" />,
     path: '/dashboard',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'],
   },
   {
     key: 'orders',
     label: 'ออเดอร์',
     icon: <FiPackage className="w-6 h-6" />,
     path: '/orders',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'admin_qc', 'account'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'],
   },
   {
     key: 'admin-qc',
     label: 'รอตรวจคำสั่งซื้อ',
     icon: <FiCheckCircle className="w-6 h-6" />,
     path: '/admin-qc',
-    roles: ['superadmin', 'admin', 'admin_qc'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'qc_order'],
   },
   {
     key: 'plan',
     label: 'Plan',
     icon: <FiClipboard className="w-6 h-6" />,
     path: '/plan',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
   },
   {
     key: 'wms',
     label: 'จัดสินค้า',
     icon: <FiGrid className="w-6 h-6" />,
     path: '/wms',
-    roles: ['superadmin', 'admin', 'admin-tr', 'store', 'production'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production'],
   },
   {
     key: 'qc',
     label: 'QC',
     icon: <FiSearch className="w-6 h-6" />,
     path: '/qc',
-    roles: ['superadmin', 'admin', 'admin-tr', 'qc_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'qc_staff'],
   },
   {
     key: 'packing',
     label: 'จัดของ',
     icon: <FiArchive className="w-6 h-6" />,
     path: '/packing',
-    roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'],
   },
   {
     key: 'transport',
     label: 'ทวนสอบขนส่ง',
     icon: <FiTruck className="w-6 h-6" />,
     path: '/transport',
-    roles: ['superadmin', 'admin', 'admin-tr', 'packing_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'],
   },
   {
     key: 'account',
     label: 'บัญชี',
     icon: <FiDollarSign className="w-6 h-6" />,
     path: '/account',
-    roles: ['superadmin', 'admin', 'admin-tr', 'account'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'account'],
   },
   {
     key: 'products',
     label: 'สินค้า',
     icon: <FiShoppingBag className="w-6 h-6" />,
     path: '/products',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
   },
   {
     key: 'cartoon-patterns',
     label: 'ลายการ์ตูน',
     icon: <FiImage className="w-6 h-6" />,
     path: '/cartoon-patterns',
-    roles: ['superadmin', 'admin', 'admin-tr', 'admin-pump'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
   },
   {
     key: 'warehouse',
     label: 'คลัง',
     icon: <LuWarehouse className="w-6 h-6" />,
     path: '/warehouse',
-    roles: ['superadmin', 'admin', 'admin-tr', 'store'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'store'],
   },
   {
     key: 'purchase',
     label: 'สั่งซื้อ',
     icon: <FiShoppingCart className="w-6 h-6" />,
     path: '/purchase/pr',
-    roles: ['superadmin', 'admin', 'admin-tr', 'store', 'account'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'store', 'account'],
   },
   {
     key: 'sales-reports',
     label: 'รายงานยอดขาย',
     icon: <FiBarChart2 className="w-6 h-6" />,
     path: '/sales-reports',
-    roles: ['superadmin', 'admin', 'admin-tr'],
+    roles: ['superadmin', 'admin', 'sales-tr'],
   },
   {
     key: 'kpi',
     label: 'KPI',
     icon: <LuGauge className="w-6 h-6" />,
     path: '/kpi',
-    roles: ['superadmin', 'admin', 'admin-tr'],
+    roles: ['superadmin', 'admin', 'sales-tr'],
   },
   {
     key: 'hr',
     label: 'HR',
     icon: <FiUsers className="w-6 h-6" />,
     path: '/hr',
-    roles: ['superadmin', 'admin', 'admin-tr', 'hr'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'hr'],
   },
   {
     key: 'settings',
     label: 'ตั้งค่า',
     icon: <FiSettings className="w-6 h-6" />,
     path: '/settings',
-    roles: ['superadmin', 'admin', 'admin-tr'],
+    roles: ['superadmin', 'admin', 'sales-tr'],
   },
 ]
 
@@ -174,10 +175,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   const loadCounts = useCallback(async () => {
     try {
       // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
-      // ส่ง username + role เพื่อให้ admin-tr / admin-pump เห็นเฉพาะ orders ของตัวเอง
-      const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
-        ? (user.username ?? user.email ?? '')
-        : ''
+      // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
+      const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
       const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge] = await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
@@ -333,7 +332,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       return dbMenuAccess[item.key] === true
     }
     // ยังไม่มีข้อมูลจาก DB สำหรับ role นี้ → fallback ใช้ hardcoded roles
-    return item.roles.includes(user.role)
+    return isRoleAllowedForMenuFallback(item.key, user.role)
   })
 
   return (

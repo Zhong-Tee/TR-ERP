@@ -4,43 +4,11 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
+import { canClearAllChats, canUseIssueChat, resolveMenuKeyFromPath } from '../../config/accessPolicy'
 
 interface TopBarProps {
   sidebarOpen: boolean
   onToggleSidebar?: () => void
-}
-
-const WAREHOUSE_ACCESS_MAP: Record<string, string> = {
-  '/warehouse': 'warehouse-stock',
-  '/warehouse/audit': 'warehouse-audit',
-  '/warehouse/adjust': 'warehouse-adjust',
-  '/warehouse/returns': 'warehouse-returns',
-  '/warehouse/production': 'warehouse-production',
-  '/warehouse/roll-calc': 'warehouse-roll-calc',
-  '/warehouse/sales-list': 'warehouse-sales-list',
-}
-const PURCHASE_ACCESS_MAP: Record<string, string> = {
-  '/purchase/pr': 'purchase-pr',
-  '/purchase/po': 'purchase-po',
-  '/purchase/gr': 'purchase-gr',
-  '/purchase/sample': 'purchase-sample',
-}
-const PRODUCT_ACCESS_MAP: Record<string, string> = {
-  '/products': 'products',
-  '/products/inactive': 'products-inactive',
-}
-const HR_ACCESS_MAP: Record<string, string> = {
-  '/hr': 'hr-employees',
-  '/hr/leave': 'hr-leave',
-  '/hr/interview': 'hr-interview',
-  '/hr/attendance': 'hr-attendance',
-  '/hr/contracts': 'hr-contracts',
-  '/hr/documents': 'hr-documents',
-  '/hr/onboarding': 'hr-onboarding',
-  '/hr/salary': 'hr-salary',
-  '/hr/warnings': 'hr-warnings',
-  '/hr/certificates': 'hr-certificates',
-  '/hr/settings': 'hr-settings',
 }
 
 export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
@@ -136,10 +104,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   }
 
   // Role ที่เห็นแชท/issue
-  const CHAT_ROLES = ['superadmin', 'admin', 'admin-tr', 'admin-pump', 'production']
-  const ADMIN_ROLES = ['superadmin', 'admin']
-  const canSeeChat = CHAT_ROLES.includes(user?.role || '')
-  const isAdminRole = ADMIN_ROLES.includes(user?.role || '')
+  const canSeeChat = canUseIssueChat(user?.role)
+  const isAdminRole = canClearAllChats(user?.role)
 
   // ── RPC: ดึง issue count + unread chat ใน 1 query (แทน 8-10 queries เดิม) ──
   const chatDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -278,19 +244,28 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse/production', label: 'ผลิตภายใน' },
     { path: '/warehouse/roll-calc', label: 'Roll Material Calculator' },
     { path: '/warehouse/sales-list', label: 'รายการขายสินค้า' },
-  ].filter((tab) => hasAccess(WAREHOUSE_ACCESS_MAP[tab.path] || tab.path))
+  ].filter((tab) => {
+    const menuKey = resolveMenuKeyFromPath(tab.path)
+    return menuKey ? hasAccess(menuKey) : false
+  })
 
   const purchaseTabs = [
     { path: '/purchase/pr', label: 'PR (ใบขอซื้อ)' },
     { path: '/purchase/po', label: 'PO (ใบสั่งซื้อ)' },
     { path: '/purchase/gr', label: 'GR (ใบรับสินค้า)' },
     { path: '/purchase/sample', label: 'สินค้าตัวอย่าง' },
-  ].filter((tab) => hasAccess(PURCHASE_ACCESS_MAP[tab.path] || tab.path))
+  ].filter((tab) => {
+    const menuKey = resolveMenuKeyFromPath(tab.path)
+    return menuKey ? hasAccess(menuKey) : false
+  })
 
   const productTabs = [
     { path: '/products', label: 'รายการสินค้า' },
     { path: '/products/inactive', label: 'รายการสินค้าไม่เคลื่อนไหว' },
-  ].filter((tab) => hasAccess(PRODUCT_ACCESS_MAP[tab.path] || tab.path))
+  ].filter((tab) => {
+    const menuKey = resolveMenuKeyFromPath(tab.path)
+    return menuKey ? hasAccess(menuKey) : false
+  })
 
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
@@ -304,7 +279,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/warnings', label: 'ใบเตือน' },
     { path: '/hr/certificates', label: 'ใบรับรอง' },
     { path: '/hr/settings', label: 'ตั้งค่า' },
-  ].filter((tab) => hasAccess(HR_ACCESS_MAP[tab.path] || tab.path))
+  ].filter((tab) => {
+    const menuKey = resolveMenuKeyFromPath(tab.path)
+    return menuKey ? hasAccess(menuKey) : false
+  })
 
   const activeSubTabs = location.pathname.startsWith('/warehouse')
     ? warehouseTabs
@@ -315,6 +293,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
         : location.pathname.startsWith('/hr')
           ? hrTabs
           : []
+  const showProductsSubBarCount = location.pathname.startsWith('/products') && menuCount !== null
 
   useEffect(() => {
     const height = activeSubTabs.length > 0 ? '4.5rem' : '0rem'
@@ -374,7 +353,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           )}
           <h2 className="text-2xl font-semibold text-white">
             {menuTitle}
-            {menuCount !== null && (
+            {menuCount !== null && !location.pathname.startsWith('/products') && (
               <span className="ml-2 text-xl font-semibold text-emerald-100 tabular-nums">({menuCount})</span>
             )}
           </h2>
@@ -465,6 +444,12 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                   )
                 })}
               </nav>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {showProductsSubBarCount && (
+                  <div className="px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-100 text-sm text-blue-700 whitespace-nowrap">
+                    สินค้าทั้งหมด <span className="font-bold tabular-nums">{menuCount?.toLocaleString()}</span> รายการ
+                  </div>
+                )}
               {location.pathname === '/purchase/pr' && (
                 <button
                   type="button"
@@ -483,6 +468,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                   + รับสินค้าตัวอย่าง
                 </button>
               )}
+              </div>
             </div>
           </div>
         </div>

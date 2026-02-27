@@ -34,7 +34,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
       <div className="bg-white p-10 rounded-2xl shadow-2xl w-full max-w-md border-t-4 border-blue-500">
         <div className="text-center mb-6">
           <h1 className="text-3xl font-bold text-gray-800 mb-2">TR-ERP</h1>
-          <p className="text-gray-600">ระบบจัดการออเดอร์และ QC</p>
+          <p className="text-gray-600">บริษัท ออนดีมานด์ แฟคตอรี่ จำกัด</p>
         </div>
         
         <form onSubmit={handleSubmit} autoComplete="on" className="space-y-4">

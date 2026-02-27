@@ -137,7 +137,9 @@ export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalP
                           </div>
                         </td>
                         <td className="p-3 text-red-600 font-bold">{item.location || '-'}</td>
-                        <td className="p-3 text-center font-bold">{item.qty}</td>
+                        <td className="p-3 text-center font-bold">
+                          {item.qty} {item.unit_name || 'ชิ้น'}
+                        </td>
                         <td className="p-3">
                           <select
                             value={item.status}

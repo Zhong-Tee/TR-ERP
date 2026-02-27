@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -1163,6 +1163,23 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return v === true || v === 'true'
   }
 
+  const defaultFontName = useMemo(() => {
+    if (!fonts.length) return ''
+    const f01 = fonts.find((f) => String(f.font_code || '').trim().toUpperCase() === 'F01')
+    return (f01?.font_name || fonts[0]?.font_name || '').trim()
+  }, [fonts])
+
+  useEffect(() => {
+    if (!defaultFontName || items.length === 0) return
+    const nextItems = items.map((item, index) => {
+      if (!isFieldEnabled(index, 'font')) return item
+      if (String(item.font || '').trim()) return item
+      return { ...item, font: defaultFontName }
+    })
+    const changed = nextItems.some((item, index) => item !== items[index])
+    if (changed) setItems(nextItems)
+  }, [items, defaultFontName, categoryFieldSettings, productFieldOverrides, products]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // คำนวณราคารวมจากรายการสินค้า
   function calculateItemsTotal() {
     const total = items.reduce((sum, item) => {
@@ -1192,14 +1209,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       const isManual = CHANNELS_MANUAL_PRICE.includes(prev.channel_code || '')
       const basePrice = isManual ? (prev.price || 0) : itemsTotal
       let subtotal: number
-      
-      if (showTaxInvoice) {
-        // ราคารวม VAT แล้ว — ไม่ต้องบวกเพิ่ม
-        subtotal = basePrice
-      } else {
-        const discountBaht = getDiscountInBaht(basePrice, prev.discount || 0, discountType)
-        subtotal = basePrice + (prev.shipping_cost || 0) - discountBaht
-      }
+      const discountBaht = getDiscountInBaht(basePrice, prev.discount || 0, discountType)
+      // ยอดที่ใช้ชำระเป็นยอดรวมภาษีอยู่แล้ว จึงไม่บวก VAT ซ้ำอีก
+      subtotal = basePrice + (prev.shipping_cost || 0) - discountBaht
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       subtotal = Math.round(subtotal * 100) / 100
@@ -1344,6 +1356,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       setLoading(false)
       return
     }
+    if (Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim()) {
+      setMessageModal({
+        open: true,
+        title: 'แจ้งเตือน',
+        message: 'กรุณาเลือกโปรโมชั่นเมื่อมีการกรอกส่วนลด',
+      })
+      return
+    }
 
     setLoading(true)
     try {
@@ -1361,13 +1381,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       // คำนวณยอดสุทธิ (เหมือนกับ calculateTotal)
       const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
       let calculatedTotal: number
-      if (showTaxInvoice) {
-        // คำนวณยอดรวมภาษี 7% (ยอดเงินที่ต้องชำระ)
-        calculatedTotal = calculatedPrice * 1.07
-      } else {
-        // คำนวณยอดปกติ (รวมค่าขนส่ง ลบส่วนลด)
-        calculatedTotal = calculatedPrice + formData.shipping_cost - discountBahtForSave
-      }
+      // ใช้ยอดเดียวกับหน้าจอ: รวมภาษีแล้ว ไม่บวก VAT เพิ่ม
+      calculatedTotal = calculatedPrice + formData.shipping_cost - discountBahtForSave
       
       // ปัดเศษให้เป็น 2 ทศนิยมเพื่อหลีกเลี่ยง floating point error
       calculatedTotal = Math.round(calculatedTotal * 100) / 100
@@ -3405,6 +3420,41 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
   }
 
+  function handleLine1Paste(startIndex: number, text: string): boolean {
+    const lines = text
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+
+    // บรรทัดเดียวให้ทำงานแบบ paste ปกติ
+    if (lines.length <= 1) return false
+
+    // กันกรณีฟอร์มเป็นโหมดอ่านอย่างเดียว
+    if (formDisabled) return true
+
+    const newItems = [...items]
+    let rowIndex = startIndex
+    let lineIndex = 0
+
+    while (rowIndex < newItems.length && lineIndex < lines.length) {
+      const row = newItems[rowIndex]
+      const lineLimit = getLineCountForPattern(row.cartoon_pattern)
+      const blocked =
+        !isFieldEnabled(rowIndex, 'line_1') ||
+        !!(row as { no_name_line?: boolean }).no_name_line ||
+        (lineLimit != null && lineLimit < 1)
+
+      if (!blocked) {
+        newItems[rowIndex] = { ...row, line_1: lines[lineIndex] }
+        lineIndex += 1
+      }
+      rowIndex += 1
+    }
+
+    setItems(newItems)
+    return true
+  }
+
   function getFilteredPatterns(category: string | null, searchTerm: string) {
     const searchLower = searchTerm.trim().toLowerCase()
     let list = cartoonPatterns
@@ -3526,7 +3576,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             )}
           </div>
         </div>
-        {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | ชื่อช่องทาง/เลขคำสั่งซื้อ + เลขพัสดุ + โปรโมชั่น (ขวา) — ซ่อนเมื่อยังไม่สร้างบิล */}
+        {/* แถวที่ 2: ที่อยู่ลูกค้า (ซ้าย) | ชื่อช่องทาง/เลขคำสั่งซื้อ + เลขพัสดุ (ขวา) — ซ่อนเมื่อยังไม่สร้างบิล */}
         {!order?.bill_no && !formDisabled && !CHANNELS_SKIP_CUSTOMER_FIELDS.includes(formData.channel_code) && (
           <div className="mt-4 p-4 bg-gray-50 border border-dashed border-gray-300 rounded-lg text-center text-gray-500 text-sm">
             กรุณาเลือกช่องทาง แล้วกด <span className="font-semibold text-blue-600">สร้างบิล</span> เพื่อกรอกข้อมูลที่อยู่ลูกค้า
@@ -3786,22 +3836,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">โปรโมชั่น</label>
-              <select
-                value={formData.promotion}
-                onChange={(e) => setFormData({ ...formData, promotion: e.target.value })}
-                disabled={formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
-              >
-                <option value="">-- เลือกโปรโมชั่น --</option>
-                {promotions.map((p) => (
-                  <option key={p.id} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
         </div>
         )}
@@ -3865,6 +3899,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             <thead>
               <tr className="bg-gray-100">
                 <th className="border p-1 text-center w-10 text-[10px] leading-tight whitespace-nowrap">ฟรี</th>
+                <th className="border p-1 text-center w-10 text-[10px] leading-tight whitespace-nowrap">#</th>
                 <th className="border p-1.5 ">ชื่อสินค้า</th>
                 <th className="border p-1.5 w-32">สีหมึก</th>
                 <th className="border p-1.5 w-16">ชั้น</th>
@@ -3902,6 +3937,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         className="w-4 h-4 rounded border-gray-300 accent-green-500"
                       />
                     </div>
+                  </td>
+                  <td className="border p-1 text-center align-middle">
+                    <span className="inline-flex items-center justify-center min-h-[28px] text-xs font-semibold text-gray-600">
+                      {index + 1}
+                    </span>
                   </td>
                   <td className="border p-1.5">
                     <div className="relative">
@@ -4240,6 +4280,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       type="text"
                       value={item.line_1 || ''}
                       onChange={(e) => updateItem(index, 'line_1', e.target.value)}
+                      onPaste={(e) => {
+                        const text = e.clipboardData.getData('text')
+                        const handled = handleLine1Paste(index, text)
+                        if (handled) e.preventDefault()
+                      }}
                       disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)}
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
@@ -4620,7 +4665,28 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               )}
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">ยอดสุทธิ</label>
+              <label className="block text-sm font-medium mb-1">โปรโมชั่น</label>
+              <select
+                value={formData.promotion}
+                onChange={(e) => setFormData({ ...formData, promotion: e.target.value })}
+                disabled={formDisabled}
+                className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+              >
+                <option value="">-- เลือกโปรโมชั่น --</option>
+                {promotions.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              {Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim() && (
+                <p className="text-xs text-amber-600 font-medium mt-1">กรุณาเลือกโปรโมชั่นเมื่อมีส่วนลด</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                {showTaxInvoice ? 'ยอดรวมภาษี (รวมแล้ว)' : 'ยอดสุทธิ'}
+              </label>
               <input
                 type="text"
                 value={formData.total_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

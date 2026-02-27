@@ -330,7 +330,7 @@ export default function ReturnRequisitionDashboard() {
   }
 
   const loadCrTopics = async () => {
-    const { data } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+    const { data } = await supabase.from('wms_return_topics').select('*').order('topic_name')
     setCrTopics(data || [])
   }
 

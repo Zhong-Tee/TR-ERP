@@ -56,7 +56,7 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
                         {item.product_name}
                       </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase">
-                        จุดเก็บ: <span className="text-red-500">{item.location}</span> | จำนวน: {item.qty}
+                        จุดเก็บ: <span className="text-red-500">{item.location}</span> | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
                     </div>
                   </div>

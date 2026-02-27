@@ -16,6 +16,7 @@ import {
   updateQueueItem,
   type UploadQueueItem,
 } from '../lib/packingQueue'
+import { isAdminOrSuperadmin } from '../config/accessPolicy'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -52,6 +53,7 @@ type WorkOrderStatus = {
   isPartiallyPacked: boolean
   qcCompleted: boolean
   qcSkipped: boolean
+  readyBills: number
   totalItems: number
   packedItems: number
   totalBills: number
@@ -87,7 +89,7 @@ function naturalSortCompare(a: string, b: string) {
 export default function Packing() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
+  const isViewOnly = isAdminOrSuperadmin(user?.role)
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
@@ -213,16 +215,16 @@ export default function Packing() {
     if (error) console.error('PACK checkAndMarkPackEnd error:', error.message)
   }
 
-  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, qcReady: boolean) => {
+  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasReadyBills: boolean) => {
     if (!hasTracking) {
       openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
       return
     }
-    if (!qcReady) {
-      openAlert('ใบงานนี้ยัง QC ไม่ครบ ไม่สามารถจัดของได้')
+    if (!hasReadyBills) {
+      openAlert('ใบงานนี้ยังไม่มีบิลที่ QC พร้อมแพ็ค')
       return
     }
-    const skipTrack = user?.role === 'superadmin' || user?.role === 'admin'
+    const skipTrack = isAdminOrSuperadmin(user?.role)
     if (!skipTrack) await ensurePlanDeptStart(workOrderName)
 
     let startTime: Date = new Date()
@@ -249,6 +251,17 @@ export default function Packing() {
   }, [aggregatedData])
 
   const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
+
+  const isOrderQcReady = (order: OrderWithItems, qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) => {
+    const items = order.or_order_items || (order.order_items || [])
+    if (items.length === 0) return false
+    return items.every((item) => {
+      const uid = item.item_uid
+      if (!uid) return false
+      const status = qcStatusMap[uid]
+      return status === 'pass' || status === 'skip'
+    })
+  }
 
   const goToNextGroup = () => {
     const nextIndex = aggregatedDataRef.current.findIndex(
@@ -579,7 +592,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(packing_status)')
+            .select('id, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(item_uid, packing_status)')
             .in('work_order_name', names),
           supabase
             .from('qc_sessions')
@@ -599,6 +612,11 @@ export default function Packing() {
           (skipLogsData || []).map((s: any) => s.work_order_name as string)
         )
 
+        const allItemUids = (allProductionOrders || []).flatMap((o: any) =>
+          (o.or_order_items || []).map((oi: any) => oi.item_uid).filter(Boolean)
+        )
+        const qcStatusMap = await fetchQcStatusMap(allItemUids)
+
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
           const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_name === wo.work_order_name)
@@ -610,11 +628,19 @@ export default function Packing() {
           )
           let totalItems = 0
           let packedItems = 0
+          let readyBills = 0
           let packedBills = 0
           const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
           billsWithTracking.forEach((o: any) => {
             const items = o.or_order_items || []
             totalItems += items.length
+            const isReady = items.length > 0 && items.every((oi: any) => {
+              const uid = oi.item_uid
+              if (!uid) return false
+              const status = qcStatusMap[uid]
+              return status === 'pass' || status === 'skip'
+            })
+            if (isReady) readyBills++
             const scannedCount = items.filter((oi: any) => oi.packing_status === 'สแกนแล้ว').length
             packedItems += scannedCount
             if (items.length > 0 && scannedCount === items.length) packedBills++
@@ -624,6 +650,7 @@ export default function Packing() {
             isPartiallyPacked,
             qcCompleted: finishedWoSet.has(wo.work_order_name),
             qcSkipped: skippedWoSet.has(wo.work_order_name),
+            readyBills,
             totalItems,
             packedItems,
             totalBills: billsWithTracking.length,
@@ -692,7 +719,8 @@ export default function Packing() {
         (order.or_order_items || order.order_items || []).map((item) => item.item_uid).filter(Boolean)
       )
       const qcStatusMap = await fetchQcStatusMap(itemUids)
-      prepareDataForPacking(ordersWithTracking, qcStatusMap)
+      const readyOrders = ordersWithTracking.filter((order) => isOrderQcReady(order, qcStatusMap))
+      prepareDataForPacking(readyOrders, qcStatusMap)
       setView('main')
     } catch (error: any) {
       openAlert('ดึงข้อมูลไม่ได้: ' + error.message)
@@ -1326,7 +1354,8 @@ export default function Packing() {
                   const isPartiallyPacked = status?.isPartiallyPacked ?? false
                   const qcCompleted = status?.qcCompleted ?? false
                   const qcSkipped = status?.qcSkipped ?? false
-                  const qcReady = qcCompleted || qcSkipped
+                  const readyBills = status?.readyBills ?? 0
+                  const qcReady = qcCompleted || qcSkipped || readyBills > 0
                   const canSelect = hasTracking && qcReady
 
                   // สีตามสถานะ — ให้ความสำคัญกับ QC ก่อน, แล้วดู tracking
@@ -1342,6 +1371,11 @@ export default function Packing() {
                       ? 'bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100 hover:shadow-md'
                       : 'bg-emerald-50/60 border-emerald-200'
                     borderLeftColor = 'border-l-emerald-500'
+                  } else if (readyBills > 0) {
+                    cardClass = canSelect
+                      ? 'bg-blue-50/80 border-blue-200 hover:bg-blue-100 hover:shadow-md'
+                      : 'bg-blue-50/60 border-blue-200'
+                    borderLeftColor = 'border-l-blue-500'
                   } else if (!hasTracking) {
                     cardClass = 'bg-amber-50/60 border-amber-200'
                     borderLeftColor = 'border-l-amber-400'
@@ -1357,7 +1391,7 @@ export default function Packing() {
                       className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
                       disabled={!canSelect}
                       onClick={() => {
-                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, qcReady)
+                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, readyBills > 0 || qcSkipped || qcCompleted)
                       }}
                     >
                       <div className="flex items-center justify-between gap-3">
@@ -1372,6 +1406,10 @@ export default function Packing() {
                             ) : qcCompleted ? (
                               <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
                                 ✓ Pass ครบ
+                              </span>
+                            ) : readyBills > 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-blue-500 text-white shadow-sm">
+                                ✓ พร้อมแพ็ค {readyBills}/{status?.totalBills ?? 0} บิล
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold bg-red-500 text-white shadow-sm">
@@ -1819,7 +1857,7 @@ export default function Packing() {
                       {recordingState.status === 'error' && (
                         <p className="text-sm text-red-600">{recordingState.error}</p>
                       )}
-                      <p className="text-xs text-gray-500">ไฟล์จะถูกอัปโหลดไปที่ Supabase เมื่อหยุดบันทึก</p>
+                      <p className="text-xs text-gray-500">ไฟล์จะถูกอัปโหลดไปที่ Google Drive เมื่อหยุดบันทึก</p>
                     </div>
                   </div>
 

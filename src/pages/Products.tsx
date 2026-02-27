@@ -24,6 +24,7 @@ const PRODUCT_TEMPLATE_HEADERS = [
   'seller_name',
   'product_name_cn',
   'order_point',
+  'order_point_days',
   'product_category',
   'product_type',
   'rubber_code',
@@ -106,6 +107,7 @@ const emptyForm = () => ({
   seller_name: '',
   product_name_cn: '',
   order_point: '',
+  order_point_days: '',
   product_category: '',
   product_type: 'FG' as ProductType,
   rubber_code: '',
@@ -180,6 +182,10 @@ export default function Products() {
   useEffect(() => {
     loadProducts()
   }, [appliedSearch, categoryFilter, productTypeFilter, page])
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('topbar-menu-count', { detail: { count: totalCount } }))
+  }, [totalCount])
 
   useEffect(() => {
     loadCategories()
@@ -271,6 +277,7 @@ export default function Products() {
       seller_name: product.seller_name || '',
       product_name_cn: product.product_name_cn || '',
       order_point: product.order_point || '',
+      order_point_days: product.order_point_days != null ? String(product.order_point_days) : '',
       product_category: product.product_category || '',
       product_type: product.product_type || 'FG',
       rubber_code: product.rubber_code || '',
@@ -318,6 +325,13 @@ export default function Products() {
       }
       const parsedMultiplier = parseFloat(form.unit_multiplier) || 1
       const unitMultiplier = parsedMultiplier > 0 ? parsedMultiplier : 1
+      const parsedOrderPointDays = Number(form.order_point_days.trim())
+      const orderPointDays =
+        form.order_point_days.trim() === ''
+          ? null
+          : Number.isFinite(parsedOrderPointDays) && parsedOrderPointDays >= 0
+            ? Math.floor(parsedOrderPointDays)
+            : null
 
       if (modalMode === 'add') {
         const { error } = await supabase.from('pr_products').insert({
@@ -326,6 +340,7 @@ export default function Products() {
           seller_name: form.seller_name.trim() || null,
           product_name_cn: form.product_name_cn.trim() || null,
           order_point: form.order_point.trim() || null,
+          order_point_days: orderPointDays,
           product_category: form.product_category.trim() || null,
           product_type: form.product_type || 'FG',
           rubber_code: form.rubber_code.trim() || null,
@@ -347,6 +362,7 @@ export default function Products() {
             seller_name: form.seller_name.trim() || null,
             product_name_cn: form.product_name_cn.trim() || null,
             order_point: form.order_point.trim() || null,
+            order_point_days: orderPointDays,
             product_category: form.product_category.trim() || null,
             product_type: form.product_type || 'FG',
             rubber_code: form.rubber_code.trim() || null,
@@ -397,7 +413,7 @@ export default function Products() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PRODUCT_TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -409,7 +425,7 @@ export default function Products() {
       const { data, error } = await supabase
         .from('pr_products')
         .select(
-          'product_code, product_name, seller_name, product_name_cn, order_point, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
+          'product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
         )
         .eq('is_active', true)
         .order('product_code', { ascending: true })
@@ -446,6 +462,7 @@ export default function Products() {
         seller_name: string | null
         product_name_cn: string | null
         order_point: string | null
+        order_point_days: number | null
         product_category: string | null
         product_type: ProductType
         rubber_code: string | null
@@ -465,6 +482,7 @@ export default function Products() {
         const productType: ProductType = validTypes.includes(rawType as ProductType) ? (rawType as ProductType) : 'FG'
         const safetyStock = Number(row.safety_stock ?? 0)
         const unitCost = Number(row.unit_cost ?? 0)
+        const rawOrderPointDays = Number(row.order_point_days ?? '')
         const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
         const rawMultiplier = Number(row.unit_multiplier ?? 1)
         const unitMultiplier = isNaN(rawMultiplier) || rawMultiplier <= 0 ? 1 : rawMultiplier
@@ -474,6 +492,7 @@ export default function Products() {
           seller_name: (row.seller_name != null && String(row.seller_name).trim()) || null,
           product_name_cn: (row.product_name_cn != null && String(row.product_name_cn).trim()) || null,
           order_point: (row.order_point != null && String(row.order_point).trim()) || null,
+          order_point_days: Number.isFinite(rawOrderPointDays) && rawOrderPointDays >= 0 ? Math.floor(rawOrderPointDays) : null,
           product_category: (row.product_category != null && String(row.product_category).trim()) || null,
           product_type: productType,
           rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
@@ -1106,6 +1125,19 @@ export default function Products() {
                 value={form.order_point}
                 onChange={(e) => setForm((f) => ({ ...f, order_point: e.target.value }))}
                 placeholder="จุดสั่งซื้อ"
+                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+              />
+            </div>
+            {/* จุดสั่งซื้อ(วัน) */}
+            <div>
+              <label className="block text-sm font-semibold text-surface-700 mb-1">จุดสั่งซื้อ(วัน)</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={form.order_point_days}
+                onChange={(e) => setForm((f) => ({ ...f, order_point_days: e.target.value }))}
+                placeholder="เช่น 14"
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               />
             </div>

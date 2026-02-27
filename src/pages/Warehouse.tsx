@@ -24,6 +24,7 @@ export default function Warehouse() {
 
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
+  const [pendingPoMap, setPendingPoMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -32,13 +33,18 @@ export default function Warehouse() {
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
-  const [salesFromDate, setSalesFromDate] = useState('')
+  const [salesFromDate, setSalesFromDate] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 14)
+    return d.toISOString().split('T')[0]
+  })
   const [salesMap, setSalesMap] = useState<Record<string, number>>({})
   const [salesLoading, setSalesLoading] = useState(false)
 
   useEffect(() => {
     loadProducts()
     loadBalances()
+    loadPendingPoMap()
     loadCategories()
     loadSellers()
   }, [])
@@ -52,7 +58,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, product_type, order_point, seller_name, landed_cost')
+        .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -77,6 +83,21 @@ export default function Warehouse() {
       setBalances(map)
     } catch (e) {
       console.error('Load stock balances failed:', e)
+    }
+  }
+
+  async function loadPendingPoMap() {
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_pending_po_by_product')
+      if (error) throw error
+      const map: Record<string, number> = {}
+      ;(data || []).forEach((row: { product_id: string; pending_qty: number | null }) => {
+        map[row.product_id] = Number(row.pending_qty || 0)
+      })
+      setPendingPoMap(map)
+    } catch (e) {
+      console.error('Load pending PO qty failed:', e)
+      setPendingPoMap({})
     }
   }
 
@@ -152,15 +173,35 @@ export default function Warehouse() {
     return Math.round(onHand / avg)
   }
 
+  function isBelowReorderThreshold(product: Product, onHand: number): boolean {
+    const pendingQty = Number(pendingPoMap[product.id] || 0)
+    const availableSoon = onHand + pendingQty
+    const orderPoint = toNumber(product.order_point)
+    const byQty = orderPoint !== null && orderPoint > 0 && availableSoon < orderPoint
+
+    const orderPointDaysRaw = Number(product.order_point_days)
+    const orderPointDays =
+      product.order_point_days == null || !Number.isFinite(orderPointDaysRaw)
+        ? null
+        : orderPointDaysRaw
+    const daysRemaining = calcDaysRemaining(product.id, onHand)
+    const byDays =
+      orderPointDays !== null &&
+      orderPointDays > 0 &&
+      daysRemaining !== null &&
+      daysRemaining < orderPointDays
+
+    return byQty || byDays
+  }
+
   // คำนวณจำนวนสินค้าที่ต่ำกว่าจุดสั่งซื้อ (ใช้ทั้งแสดงปุ่มและส่งไป Sidebar)
   const belowOrderPointCount = useMemo(() => {
     return products.filter((p) => {
       const balance = balances[p.id]
       const onHand = Number(balance?.on_hand || 0)
-      const orderPoint = toNumber(p.order_point)
-      return orderPoint !== null && orderPoint > 0 && onHand < orderPoint
+      return isBelowReorderThreshold(p, onHand)
     }).length
-  }, [products, balances])
+  }, [products, balances, pendingPoMap, salesFromDate, salesMap])
 
   // ส่งจำนวนไป Sidebar ทุกครั้งที่เปลี่ยน
   useEffect(() => {
@@ -185,19 +226,19 @@ export default function Warehouse() {
       if (onlyBelowOrderPoint) {
         const balance = balances[p.id]
         const onHand = Number(balance?.on_hand || 0)
-        const orderPoint = toNumber(p.order_point)
-        matchOrderPoint = orderPoint !== null && orderPoint > 0 && onHand < orderPoint
+        matchOrderPoint = isBelowReorderThreshold(p, onHand)
       }
 
       return matchTerm && matchCategory && matchSeller && matchProductType && matchOrderPoint
     })
-  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances])
+  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances, pendingPoMap, salesFromDate, salesMap])
 
   const handleDownloadExcel = useCallback(() => {
     const rows = filteredProducts.map((p) => {
       const balance = balances[p.id]
       const onHand = Number(balance?.on_hand || 0)
       const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
+      const pendingQty = Number(pendingPoMap[p.id] || 0)
       const avg = calcAvgDailySales(p.id)
       const days = calcDaysRemaining(p.id, onHand)
       const row: Record<string, unknown> = {
@@ -208,6 +249,7 @@ export default function Warehouse() {
         'ผู้ขาย': p.seller_name || '-',
         'จุดสั่งซื้อ': p.order_point || '-',
         'จำนวนคงเหลือ': onHand,
+        'รอรับเข้า': pendingQty > 0 ? pendingQty : '-',
         'Safety stock': safetyStock ?? '-',
         'รวมในคลัง': onHand + (safetyStock ?? 0),
         'การใช้ (ชิ้น/วัน)': avg !== null ? avg : '-',
@@ -225,7 +267,7 @@ export default function Warehouse() {
     XLSX.utils.book_append_sheet(wb, ws, 'คลังสินค้า')
     const today = new Date().toISOString().slice(0, 10)
     XLSX.writeFile(wb, `คลังสินค้า_${today}.xlsx`)
-  }, [filteredProducts, balances, salesMap, canSeeCost]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filteredProducts, balances, pendingPoMap, salesMap, canSeeCost]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-6 mt-4">
@@ -346,6 +388,7 @@ export default function Warehouse() {
                   <th className="p-3 text-left font-semibold">ผู้ขาย</th>
                   <th className="p-3 text-center font-semibold">จุดสั่งซื้อ</th>
                   <th className="p-3 text-center font-semibold">จำนวนคงเหลือ</th>
+                  <th className="p-3 text-center font-semibold">รอรับเข้า</th>
                   <th className="p-3 text-center font-semibold">Safety stock</th>
                   <th className="p-3 text-center font-semibold">รวมในคลัง</th>
                   <th className="p-3 text-center font-semibold">การใช้</th>
@@ -357,10 +400,9 @@ export default function Warehouse() {
                 {filteredProducts.map((product, idx) => {
                   const balance = balances[product.id]
                   const onHand = Number(balance?.on_hand || 0)
+                  const pendingQty = Number(pendingPoMap[product.id] || 0)
                   const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
-                  const orderPoint = toNumber(product.order_point)
-                  const isLow =
-                    orderPoint !== null && orderPoint > 0 && onHand < orderPoint
+                  const isLow = isBelowReorderThreshold(product, onHand)
                   return (
                     <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3">
@@ -385,6 +427,7 @@ export default function Warehouse() {
                       <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
                         {onHand.toLocaleString()}
                       </td>
+                      <td className="p-3 text-center">{pendingQty > 0 ? pendingQty.toLocaleString() : '-'}</td>
                       <td className="p-3 text-center">{safetyStock !== null ? safetyStock.toLocaleString() : '-'}</td>
                       <td className="p-3 text-center font-medium text-gray-700">
                         {(onHand + (safetyStock ?? 0)).toLocaleString()}

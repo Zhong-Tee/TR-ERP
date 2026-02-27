@@ -45,6 +45,7 @@ import type { WorkOrderWithProgress } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import Papa from 'papaparse'
+import { isAdminOrSuperadmin } from '../config/accessPolicy'
 
 type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
 type QCStep = 'select' | 'working'
@@ -90,9 +91,9 @@ const QC_MENU_KEY_MAP: Record<string, string> = {
 export default function QC() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const isAdmin = user?.role === 'superadmin' || user?.role === 'admin'
-  const canSkipQc = user?.role === 'superadmin' || user?.role === 'admin'
-  const isViewOnly = user?.role === 'superadmin' || user?.role === 'admin'
+  const isAdmin = isAdminOrSuperadmin(user?.role)
+  const canSkipQc = isAdminOrSuperadmin(user?.role)
+  const isViewOnly = isAdminOrSuperadmin(user?.role)
 
   const { menuAccessLoading } = useMenuAccess()
   const [currentView, setCurrentView] = useState<QCView>('qc')
@@ -402,7 +403,7 @@ export default function QC() {
     setLoading(true)
     setQcCategoryFilter('')
     try {
-      const skipTrack = user?.role === 'superadmin' || user?.role === 'admin'
+      const skipTrack = isAdminOrSuperadmin(user?.role)
       if (!skipTrack) await ensurePlanDeptStart(woName)
       const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
@@ -414,6 +415,17 @@ export default function QC() {
       const filename = `WO-${woName}`
       let sessionId: string | null = null
       let startTime: Date = new Date()
+      let planStart: string | null = null
+
+      const { data: planJob } = await supabase
+        .from('plan_jobs')
+        .select('tracks')
+        .eq('name', woName)
+        .order('date', { ascending: false })
+        .limit(1)
+        .single()
+      planStart = planJob?.tracks?.QC?.['เริ่มQC']?.start ?? null
+      if (planStart) startTime = new Date(planStart)
 
       const openSession = await fetchOpenSessionForWo(woName)
       if (openSession) {
@@ -431,32 +443,28 @@ export default function QC() {
           }
         })
       } else {
-        const { data: newSession, error: sessErr } = await supabase
-          .from('qc_sessions')
-          .insert({
-            username: qcUsername,
-            filename,
-            start_time: startTime.toISOString(),
-            end_time: null,
-            total_items: 0,
-            pass_count: 0,
-            fail_count: 0,
-          })
-          .select('id')
-          .single()
-        if (sessErr) throw sessErr
-        sessionId = newSession?.id ?? null
+        if (!skipTrack) {
+          const { data: newSession, error: sessErr } = await supabase
+            .from('qc_sessions')
+            .insert({
+              username: qcUsername,
+              filename,
+              start_time: startTime.toISOString(),
+              end_time: null,
+              total_items: 0,
+              pass_count: 0,
+              fail_count: 0,
+            })
+            .select('id')
+            .single()
+          if (sessErr) throw sessErr
+          sessionId = newSession?.id ?? null
+        } else {
+          // superadmin/admin: view-only — ไม่สร้าง session ใหม่
+          sessionId = null
+          if (!planStart) startTime = new Date()
+        }
       }
-
-      const { data: planJob } = await supabase
-        .from('plan_jobs')
-        .select('tracks')
-        .eq('name', woName)
-        .order('date', { ascending: false })
-        .limit(1)
-        .single()
-      const planStart = planJob?.tracks?.QC?.['เริ่มQC']?.start
-      if (planStart) startTime = new Date(planStart)
 
       setQcData({ items })
       setQcState({ step: 'working', startTime, filename, sessionId })
@@ -934,7 +942,7 @@ export default function QC() {
         .is('end_time', null)
 
       // อัปเดต plan — superadmin/admin ไม่บันทึกเวลาเริ่ม
-      const skipTrackEnd = user?.role === 'superadmin' || user?.role === 'admin'
+      const skipTrackEnd = isAdminOrSuperadmin(user?.role)
       if (!skipTrackEnd) await ensurePlanDeptStart(woName)
       await ensurePlanDeptEnd(woName)
 
@@ -1286,7 +1294,7 @@ export default function QC() {
                       <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
                     </div>
                   </div>
-                  {qcState.startTime && !isViewOnly && (
+                  {qcState.startTime && (
                     <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2">
                       <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
                       <span className="text-lg font-bold text-indigo-700">

@@ -179,7 +179,11 @@ export default function Account() {
   /** ตัวกรองรายการตรวจสลิป */
   const [slipFilterOrderTaker, setSlipFilterOrderTaker] = useState<string>('')
   const [slipFilterChannel, setSlipFilterChannel] = useState<string>('')
-  const [slipFilterDate, setSlipFilterDate] = useState<string>(() => new Date().toISOString().split('T')[0])
+  const [slipFilterDateFrom, setSlipFilterDateFrom] = useState<string>(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
+  const [slipFilterDateTo, setSlipFilterDateTo] = useState<string>(() => new Date().toISOString().split('T')[0])
 
   /** ป้องกันกระพริบ: แสดง spinner เฉพาะครั้งแรกเท่านั้น */
   const initialLoadDone = useRef(false)
@@ -248,7 +252,7 @@ export default function Account() {
     if (accountSection === 'slip-verification') loadVerifiedSlipsList()
   }, [accountSection])
 
-  /** รายการตรวจสลิปหลังกรอง (ผู้ลงออเดอร์, ช่องทาง, วันที่) */
+  /** รายการตรวจสลิปหลังกรอง (ผู้ลงออเดอร์, ช่องทาง, ช่วงวันที่) */
   const filteredSlipsList = useMemo(() => {
     let list = verifiedSlipsList
     if (slipFilterOrderTaker.trim()) {
@@ -259,7 +263,7 @@ export default function Account() {
       const q = slipFilterChannel.trim().toLowerCase()
       list = list.filter((r) => (r.or_orders?.channel_code ?? '').toLowerCase().includes(q))
     }
-    if (slipFilterDate) {
+    if (slipFilterDateFrom || slipFilterDateTo) {
       list = list.filter((r) => {
         const dt = r.easyslip_date || r.verified_at || ''
         if (!dt) return false
@@ -267,11 +271,14 @@ export default function Account() {
         const y = d.getFullYear()
         const m = String(d.getMonth() + 1).padStart(2, '0')
         const day = String(d.getDate()).padStart(2, '0')
-        return `${y}-${m}-${day}` === slipFilterDate
+        const dateOnly = `${y}-${m}-${day}`
+        if (slipFilterDateFrom && dateOnly < slipFilterDateFrom) return false
+        if (slipFilterDateTo && dateOnly > slipFilterDateTo) return false
+        return true
       })
     }
     return list
-  }, [verifiedSlipsList, slipFilterOrderTaker, slipFilterChannel, slipFilterDate])
+  }, [verifiedSlipsList, slipFilterOrderTaker, slipFilterChannel, slipFilterDateFrom, slipFilterDateTo])
 
   /** ค่าที่ใช้ใน dropdown ตัวกรอง (ผู้ลงออเดอร์, ช่องทาง) */
   const slipFilterOrderTakerOptions = useMemo(() => {
@@ -716,7 +723,7 @@ export default function Account() {
               ดาวน์โหลด Excel
             </button>
           </div>
-          {/* ตัวกรอง: ผู้ลงออเดอร์, ช่องทาง, วันที่ */}
+          {/* ตัวกรอง: ผู้ลงออเดอร์, ช่องทาง, ช่วงวันที่ */}
           <div className="px-6 py-3 border-b border-gray-100 bg-gray-50/30 flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <span className="whitespace-nowrap">ผู้ลงออเดอร์</span>
@@ -748,15 +755,30 @@ export default function Account() {
               <span className="whitespace-nowrap">วันที่</span>
               <input
                 type="date"
-                value={slipFilterDate}
-                onChange={(e) => setSlipFilterDate(e.target.value)}
+                value={slipFilterDateFrom}
+                onChange={(e) => setSlipFilterDateFrom(e.target.value)}
                 className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm bg-white"
               />
             </label>
-            {(slipFilterOrderTaker || slipFilterChannel || slipFilterDate) && (
+            <span className="text-gray-400 text-sm">ถึง</span>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="date"
+                value={slipFilterDateTo}
+                onChange={(e) => setSlipFilterDateTo(e.target.value)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm bg-white"
+              />
+            </label>
+            {(slipFilterOrderTaker || slipFilterChannel || slipFilterDateFrom || slipFilterDateTo) && (
               <button
                 type="button"
-                onClick={() => { setSlipFilterOrderTaker(''); setSlipFilterChannel(''); setSlipFilterDate('') }}
+                onClick={() => {
+                  const now = new Date()
+                  setSlipFilterOrderTaker('')
+                  setSlipFilterChannel('')
+                  setSlipFilterDateFrom(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
+                  setSlipFilterDateTo(now.toISOString().split('T')[0])
+                }}
                 className="text-sm text-blue-600 hover:underline"
               >
                 ล้างตัวกรอง

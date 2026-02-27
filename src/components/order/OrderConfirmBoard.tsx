@@ -566,7 +566,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     {orders.length}
                   </span>
                 </div>
-                <p className="text-xs text-white/70 mt-1">ช่องทาง: {CHANNEL_CODE}</p>
+                <p className="text-sm font-medium text-white/80 mt-1">ช่องทาง: {CHANNEL_CODE}</p>
               </div>
 
               {/* Column Body */}

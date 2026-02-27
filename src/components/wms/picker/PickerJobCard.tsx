@@ -89,7 +89,10 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
 
           <div className="bg-slate-50 px-6 py-2 rounded-2xl border flex items-center justify-between">
             <span className="text-[18.66px] text-gray-400 font-bold uppercase">จำนวนเบิก</span>
-            <span className="text-4xl font-black text-slate-900">{item.qty}</span>
+            <span className="text-4xl font-black text-slate-900">
+              {item.qty}
+              <span className="ml-2 text-base font-bold text-slate-500">{item.unit_name || 'ชิ้น'}</span>
+            </span>
           </div>
         </div>
       </div>

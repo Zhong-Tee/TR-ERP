@@ -161,14 +161,20 @@ export default function NewOrdersSection() {
       }
 
       const productIds = Array.from(new Set(items.map((i: any) => i.product_id).filter(Boolean)))
-      let productMap: Record<string, { product_code?: string; storage_location?: string; product_category?: string; rubber_code?: string }> = {}
+      let productMap: Record<string, { product_code?: string; storage_location?: string; product_category?: string; rubber_code?: string; unit_name?: string }> = {}
       if (productIds.length > 0) {
         const { data: products } = await supabase
           .from('pr_products')
-          .select('id, product_code, storage_location, product_category, rubber_code')
+          .select('id, product_code, storage_location, product_category, rubber_code, unit_name')
           .in('id', productIds)
         productMap = (products || []).reduce((acc: Record<string, any>, p: any) => {
-          acc[p.id] = { product_code: p.product_code, storage_location: p.storage_location, product_category: p.product_category, rubber_code: p.rubber_code }
+          acc[p.id] = {
+            product_code: p.product_code,
+            storage_location: p.storage_location,
+            product_category: p.product_category,
+            rubber_code: p.rubber_code,
+            unit_name: p.unit_name,
+          }
           return acc
         }, {})
       }
@@ -201,6 +207,7 @@ export default function NewOrdersSection() {
           product_name: group.product_name,
           location: productMap[group.product_id]?.storage_location || '',
           qty,
+          unit_name: productMap[group.product_id]?.unit_name || 'ชิ้น',
           assigned_to: selectedPickerId,
           status: 'pending',
         }
@@ -221,6 +228,7 @@ export default function NewOrdersSection() {
         product_name: `หน้ายาง+โฟม ${rc}`,
         location: 'อะไหล่',
         qty: spareQty,
+        unit_name: 'ชิ้น',
         assigned_to: selectedPickerId,
         status: 'pending',
       }))

@@ -6,6 +6,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
+import { getIssueVisibilityScope, isSuperadmin } from '../../config/accessPolicy'
 
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
@@ -209,15 +210,18 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
         creatorName: creatorMap.get(i.created_by),
       }))
-      // admin-pump / admin-tr: เห็นเฉพาะ issue ของบิลตัวเอง
+      // sales-pump / sales-tr: เห็นเฉพาะ issue ของบิลตัวเอง
       // production: เห็นเฉพาะ issue ที่ตัวเองสร้าง หรือเป็นเจ้าของบิล
       // superadmin / admin: เห็นทั้งหมด
       // role อื่นๆ: ไม่เห็นเลย
-      if (user?.role === 'admin-pump' || user?.role === 'admin-tr') {
-        const me = user.username || user.email || ''
-        withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === me)
-      } else if (user?.role === 'production') {
-        withOrder = withOrder.filter((i) => i.created_by === user.id || (i.order?.admin_user || '') === (user.username || user.email || ''))
+      const visibilityScope = getIssueVisibilityScope(user?.role)
+      const ownerName = user?.username || user?.email || ''
+      if (visibilityScope === 'ownerOrders') {
+        withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === ownerName)
+      } else if (visibilityScope === 'creatorOrOwner') {
+        withOrder = withOrder.filter((i) => i.created_by === user?.id || (i.order?.admin_user || '') === ownerName)
+      } else if (visibilityScope === 'none') {
+        withOrder = []
       }
 
       const onList = withOrder.filter((i) => i.status === 'On')
@@ -610,7 +614,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         contentClassName="max-w-lg w-full"
       >
         {detailIssue && (() => {
-          const canManageTicket = user?.id === detailIssue.created_by || user?.role === 'superadmin'
+          const canManageTicket = user?.id === detailIssue.created_by || isSuperadmin(user?.role)
           return (
             <div className="p-6 space-y-4">
               <div>

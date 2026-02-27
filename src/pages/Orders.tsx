@@ -7,6 +7,7 @@ import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
 import { Order } from '../types'
 import { supabase } from '../lib/supabase'
+import { canSeeOfficeChannel, resolveOwnerScopeAdminName } from '../config/accessPolicy'
 
 type Tab =
   | 'create'
@@ -72,10 +73,8 @@ export default function Orders() {
   }
 
   async function refreshCounts() {
-    // Helper: เพิ่มเงื่อนไข admin_user สำหรับ admin-pump / admin-tr
-    const adminName = (user?.role === 'admin-pump' || user?.role === 'admin-tr')
-      ? (user.username ?? user.email ?? '')
-      : ''
+    // Helper: เพิ่มเงื่อนไข admin_user สำหรับ sales-pump / sales-tr
+    const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
     function applyOwnerFilter(query: any) {
       return adminName ? query.eq('admin_user', adminName) : query
     }
@@ -93,7 +92,7 @@ export default function Orders() {
 
       // Load verified count (OFFICE: เฉพาะ superadmin/admin เห็น)
       let verifiedQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
-      if (!['superadmin', 'admin'].includes(user?.role || '')) {
+      if (!canSeeOfficeChannel(user?.role)) {
         verifiedQuery = verifiedQuery.neq('channel_code', 'OFFICE')
       }
       const { count: verifiedCount } = await applyOwnerFilter(verifiedQuery)

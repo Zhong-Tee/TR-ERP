@@ -338,7 +338,7 @@ export function computePlanTimeline(
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
 
-    const delayDepts = ['เบิก', 'STK', 'CTT', 'TUBE']
+    const delayDepts = ['เบิก', 'TUBE']
     if (delayDepts.includes(dept) && cutSec !== -Infinity) {
       base = Math.max(base, cutSec + 300)
     }

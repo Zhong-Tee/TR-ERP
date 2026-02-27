@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
+import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryAdjustment, InventoryAdjustmentItem, Product } from '../types'
-import { adjustStockBalancesBulkRPC, bulkUpdateSafetyStock, bulkUpdateOrderPoint } from '../lib/inventory'
+import { adjustStockBalancesBulkRPC, bulkUpdateSafetyStock } from '../lib/inventory'
 
 interface DraftItem {
   product_id: string
@@ -18,6 +19,8 @@ interface StockBalance {
   on_hand: number
   safety_stock: number | null
 }
+
+type AdjustmentType = 'audit_adjustment' | 'safety_reclass'
 
 const TEMPLATE_HEADERS = ['product_code', 'qty', 'safety_stock', 'order_point'] as const
 
@@ -59,8 +62,12 @@ export default function WarehouseAdjust() {
   const [saving, setSaving] = useState(false)
   const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 0, safety_stock: null, order_point: null }])
   const [note, setNote] = useState('')
+  const [adjustmentType, setAdjustmentType] = useState<AdjustmentType>('audit_adjustment')
+  const [reasonCode, setReasonCode] = useState('')
+  const [productSearch, setProductSearch] = useState('')
   const [viewing, setViewing] = useState<InventoryAdjustment | null>(null)
   const [viewItems, setViewItems] = useState<InventoryAdjustmentItem[]>([])
+  const [viewBalanceMap, setViewBalanceMap] = useState<Record<string, StockBalance>>({})
   const [updating, setUpdating] = useState<string | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
 
@@ -82,7 +89,7 @@ export default function WarehouseAdjust() {
     try {
       const [adjustRes, productRes, balanceRes, usersRes, itemCountRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
-        supabase.from('pr_products').select('id, product_code, product_name, order_point').eq('is_active', true).order('product_code', { ascending: true }),
+        supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_cost, landed_cost').eq('is_active', true).order('product_code', { ascending: true }),
         supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
         supabase.from('us_users').select('id, username'),
         supabase.from('inv_adjustment_items').select('adjustment_id'),
@@ -125,6 +132,12 @@ export default function WarehouseAdjust() {
       })),
     [products]
   )
+
+  const filteredProductOptions = useMemo(() => {
+    const keyword = productSearch.trim().toLowerCase()
+    if (!keyword) return productOptions
+    return productOptions.filter((opt) => opt.label.toLowerCase().includes(keyword))
+  }, [productOptions, productSearch])
 
   const productCodeMap = useMemo(() => {
     const map: Record<string, Product> = {}
@@ -239,16 +252,16 @@ export default function WarehouseAdjust() {
       showNotify('warning', 'กรุณากรอกหัวข้อการปรับ')
       return
     }
-    // กรองรายการที่มีสินค้า และมีการเปลี่ยนแปลง (สต๊อค, safety stock, หรือ order_point)
+    // กรองรายการที่มีสินค้า และมีการเปลี่ยนแปลงตามประเภทเอกสาร
     const validItems = draftItems.filter((i) => {
       if (!i.product_id) return false
       const currentOnHand = balances[i.product_id]?.on_hand ?? 0
-      const currentSafety = balances[i.product_id]?.safety_stock
-      const currentOrderPoint = productIdMap[i.product_id]?.order_point != null ? Number(productIdMap[i.product_id].order_point) : null
+      const currentSafety = balances[i.product_id]?.safety_stock ?? 0
+      const targetSafety = i.safety_stock ?? 0
       const qtyChanged = i.qty !== currentOnHand
-      const safetyChanged = i.safety_stock !== null && i.safety_stock !== (currentSafety ?? 0)
-      const orderPointChanged = i.order_point !== null && i.order_point !== (currentOrderPoint ?? 0)
-      return qtyChanged || safetyChanged || orderPointChanged
+      const safetyChanged = targetSafety !== currentSafety
+      if (adjustmentType === 'safety_reclass') return safetyChanged
+      return qtyChanged || safetyChanged
     })
     if (!validItems.length) {
       showNotify('warning', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการที่มีค่าเปลี่ยนแปลง')
@@ -262,6 +275,8 @@ export default function WarehouseAdjust() {
         .insert({
           adjust_no: adjustNo,
           status: 'pending',
+          adjustment_type: adjustmentType,
+          reason_code: reasonCode.trim() || null,
           created_by: user?.id || null,
           note: note.trim(),
         })
@@ -269,16 +284,30 @@ export default function WarehouseAdjust() {
         .single()
       if (adjustError) throw adjustError
 
-      // เก็บ delta + safety_stock + order_point ไว้ใน items ทั้งหมด (รออนุมัติ)
+      // เก็บ target + snapshot ไว้ใน items ทั้งหมด (รออนุมัติ)
       const itemsPayload = validItems.map((item) => {
         const currentOnHand = balances[item.product_id]?.on_hand ?? 0
-        const delta = item.qty - currentOnHand
+        const currentSafety = balances[item.product_id]?.safety_stock ?? 0
+        const targetSafety = item.safety_stock ?? 0
+        const qtyDelta = adjustmentType === 'safety_reclass' ? 0 : item.qty - currentOnHand
+        const nextOnHand = adjustmentType === 'safety_reclass'
+          ? currentOnHand - (targetSafety - currentSafety)
+          : currentOnHand + qtyDelta
+        const unitCost = Number(productIdMap[item.product_id]?.landed_cost ?? productIdMap[item.product_id]?.unit_cost ?? 0)
         return {
           adjustment_id: adjustData.id,
           product_id: item.product_id,
-          qty_delta: delta,
-          new_safety_stock: item.safety_stock,
-          new_order_point: item.order_point != null ? String(item.order_point) : null,
+          qty_delta: qtyDelta,
+          new_safety_stock: targetSafety,
+          new_order_point: null,
+          before_on_hand: currentOnHand,
+          after_on_hand: nextOnHand,
+          before_safety_stock: currentSafety,
+          after_safety_stock: targetSafety,
+          before_total_qty: currentOnHand + currentSafety,
+          after_total_qty: nextOnHand + targetSafety,
+          estimated_unit_cost: unitCost,
+          estimated_total_cost_impact: qtyDelta * unitCost,
         }
       })
       const { error: itemError } = await supabase.from('inv_adjustment_items').insert(itemsPayload)
@@ -288,6 +317,9 @@ export default function WarehouseAdjust() {
 
       setDraftItems([{ product_id: '', qty: 0, safety_stock: null, order_point: null }])
       setNote('')
+      setAdjustmentType('audit_adjustment')
+      setReasonCode('')
+      setProductSearch('')
       setCreateOpen(false)
       await loadAll()
       showNotify('success', 'สร้างใบปรับสต๊อคเรียบร้อย', `${validItems.length} รายการ — รออนุมัติ`)
@@ -304,7 +336,7 @@ export default function WarehouseAdjust() {
     try {
       const { data: items, error: itemsError } = await supabase
         .from('inv_adjustment_items')
-        .select('product_id, qty_delta, new_safety_stock, new_order_point')
+        .select('id, product_id, qty_delta, new_safety_stock, new_order_point')
         .eq('adjustment_id', adjustment.id)
       if (itemsError) throw itemsError
 
@@ -357,16 +389,33 @@ export default function WarehouseAdjust() {
         )
       }
 
-      // อัปเดต order_point ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N queries)
-      const orderPointItems = (items || []).filter((i) => i.new_order_point != null)
-      if (orderPointItems.length) {
-        await bulkUpdateOrderPoint(
-          orderPointItems.map((item) => ({
-            productId: item.product_id,
-            orderPoint: String(item.new_order_point),
-          }))
-        )
-      }
+      // บันทึกต้นทุนที่เกิดขึ้นจริงจาก movement ของใบปรับนี้
+      const { data: costRows } = await supabase
+        .from('inv_stock_movements')
+        .select('product_id, qty, total_cost')
+        .eq('ref_type', 'inv_adjustments')
+        .eq('ref_id', adjustment.id)
+
+      const costMap = new Map<string, { qty: number; total: number }>()
+      ;(costRows || []).forEach((row: any) => {
+        const cur = costMap.get(row.product_id) || { qty: 0, total: 0 }
+        cur.qty += Number(row.qty || 0)
+        cur.total += Number(row.total_cost || 0)
+        costMap.set(row.product_id, cur)
+      })
+
+      const updates = (items || []).map((item: any) => {
+        const cost = costMap.get(item.product_id) || { qty: 0, total: 0 }
+        const approvedUnitCost = Number(item.qty_delta) !== 0 ? Math.abs(cost.total / Number(item.qty_delta)) : 0
+        return supabase
+          .from('inv_adjustment_items')
+          .update({
+            approved_unit_cost: approvedUnitCost,
+            approved_total_cost_impact: cost.total,
+          })
+          .eq('id', item.id)
+      })
+      if (updates.length) await Promise.all(updates)
 
       await loadAll()
       // แจ้ง Sidebar ให้อัปเดตจำนวนสินค้าต่ำกว่าจุดสั่งซื้อ
@@ -384,10 +433,37 @@ export default function WarehouseAdjust() {
     setViewing(adjustment)
     const { data, error } = await supabase
       .from('inv_adjustment_items')
-      .select('id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, pr_products(product_code, product_name)')
+      .select('id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock, estimated_total_cost_impact, approved_total_cost_impact, pr_products(product_code, product_name)')
       .eq('adjustment_id', adjustment.id)
     if (!error) {
-      setViewItems((data || []) as unknown as InventoryAdjustmentItem[])
+      const rows = (data || []) as unknown as InventoryAdjustmentItem[]
+      setViewItems(rows)
+
+      const productIds = [...new Set(rows.map((r: any) => r.product_id).filter(Boolean))]
+      if (!productIds.length) {
+        setViewBalanceMap({})
+        return
+      }
+
+      const { data: bRows, error: bError } = await supabase
+        .from('inv_stock_balances')
+        .select('product_id, on_hand, safety_stock')
+        .in('product_id', productIds)
+
+      if (bError) {
+        setViewBalanceMap({})
+        return
+      }
+
+      const map: Record<string, StockBalance> = {}
+      ;(bRows || []).forEach((row: any) => {
+        map[row.product_id] = {
+          product_id: row.product_id,
+          on_hand: Number(row.on_hand || 0),
+          safety_stock: row.safety_stock != null ? Number(row.safety_stock) : 0,
+        }
+      })
+      setViewBalanceMap(map)
     }
   }
 
@@ -444,6 +520,7 @@ export default function WarehouseAdjust() {
               <thead>
                 <tr className="bg-blue-600 text-white">
                   <th className="p-3 text-left font-semibold rounded-tl-xl">เลขที่ปรับสต๊อค</th>
+                  <th className="p-3 text-left font-semibold">ประเภท</th>
                   <th className="p-3 text-left font-semibold">หัวข้อการปรับ</th>
                   <th className="p-3 text-left font-semibold">สถานะ</th>
                   <th className="p-3 text-left font-semibold">วันที่สร้าง</th>
@@ -457,6 +534,9 @@ export default function WarehouseAdjust() {
                 {adjustments.map((adjustment, idx) => (
                   <tr key={adjustment.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3 font-medium">{adjustment.adjust_no}</td>
+                    <td className="p-3 text-sm text-gray-700">
+                      {adjustment.adjustment_type === 'safety_reclass' ? 'โยก Safety' : 'Audit ปรับจำนวน'}
+                    </td>
                     <td className="p-3 text-sm text-gray-700">{adjustment.note || '-'}</td>
                     <td className="p-3">
                       <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${
@@ -502,8 +582,32 @@ export default function WarehouseAdjust() {
         {/* Sticky Header */}
         <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
           <h2 className="text-xl font-bold">สร้างใบปรับสต๊อค</h2>
-          <p className="text-sm text-gray-500 mt-1">กรอกจำนวนสต๊อคที่ต้องการตั้งค่า (ระบบจะเปลี่ยนสต๊อคเป็นตัวเลขที่กรอก) — รายการทั้งหมด {draftItems.length} รายการ</p>
+          <p className="text-sm text-gray-500 mt-1">กรอกเป้าหมายสต๊อคปัจจุบัน (เคลื่อนไหว + Safety Stock) ระบบคำนวณผลรวมและส่วนต่างให้อัตโนมัติ — รายการทั้งหมด {draftItems.length} รายการ</p>
           {/* หัวข้อการปรับ (บังคับกรอก) */}
+          <div className="mt-3 grid grid-cols-12 gap-2">
+            <div className="col-span-4">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทใบปรับ</label>
+              <select
+                value={adjustmentType}
+                onChange={(e) => setAdjustmentType(e.target.value as AdjustmentType)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              >
+                <option value="audit_adjustment">Audit ปรับจำนวนจริง (มีผลมูลค่า)</option>
+                <option value="safety_reclass">โยก On-hand &lt;-&gt; Safety (ไม่เปลี่ยนมูลค่ารวม)</option>
+              </select>
+            </div>
+            <div className="col-span-8">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">Reason Code (ไม่บังคับ)</label>
+              <input
+                type="text"
+                value={reasonCode}
+                onChange={(e) => setReasonCode(e.target.value)}
+                placeholder="เช่น audit_count_mismatch, damaged, safety_rebalance"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              />
+            </div>
+          </div>
+
           <div className="mt-3">
             <div className="flex items-center gap-2">
               <label className="text-sm font-semibold text-gray-700 whitespace-nowrap">หัวข้อการปรับ <span className="text-red-500">*</span></label>
@@ -516,12 +620,25 @@ export default function WarehouseAdjust() {
               />
             </div>
           </div>
+          <div className="mt-3">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-semibold text-gray-700 whitespace-nowrap">ค้นหาสินค้า</label>
+              <input
+                type="text"
+                value={productSearch}
+                onChange={(e) => setProductSearch(e.target.value)}
+                placeholder="ค้นหารหัสหรือชื่อสินค้า เช่น P001, แก้ว 16oz"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              />
+              <span className="text-xs text-gray-500 whitespace-nowrap">{filteredProductOptions.length} รายการ</span>
+            </div>
+          </div>
           {/* Column Headers */}
           <div className="grid grid-cols-12 gap-2 items-center text-sm font-semibold text-gray-600 mt-3">
             <div className="col-span-4">สินค้า</div>
-            <div className="col-span-2 text-center">จุดสั่งซื้อ</div>
+            <div className="col-span-2 text-center">สต๊อคเคลื่อนไหว</div>
             <div className="col-span-2 text-center">Safety Stock</div>
-            <div className="col-span-2 text-center">จำนวนสต๊อค</div>
+            <div className="col-span-2 text-center">ยอดคงเหลือรวม</div>
             <div className="col-span-2 text-center">จัดการ</div>
           </div>
         </div>
@@ -529,9 +646,10 @@ export default function WarehouseAdjust() {
         <div className="px-6 py-4 overflow-y-auto flex-1">
           <DraftItemsList
             items={draftItems}
-            productOptions={productOptions}
+            productOptions={filteredProductOptions}
             balances={balances}
             productIdMap={productIdMap}
+            adjustmentType={adjustmentType}
             onUpdate={updateDraftItem}
             onRemove={removeDraftItem}
           />
@@ -580,31 +698,64 @@ export default function WarehouseAdjust() {
               <thead className="bg-gray-100">
                 <tr>
                   <th className="p-2 text-left">สินค้า</th>
-                  <th className="p-2 text-right">จุดสั่งซื้อ</th>
-                  <th className="p-2 text-right">Safety Stock</th>
+                  <th className="p-2 text-center">สต๊อคเคลื่อนไหว (เดิม -&gt; ใหม่)</th>
+                  <th className="p-2 text-right">Safety Stock (เดิม -&gt; ใหม่)</th>
                   <th className="p-2 text-right">จำนวนที่ปรับ</th>
+                  <th className="p-2 text-right">ผลกระทบมูลค่า</th>
                 </tr>
               </thead>
               <tbody>
                 {viewItems.map((item: any) => (
                   <tr key={item.id} className="border-t">
                     <td className="p-2">
-                      {item.pr_products?.product_code} - {item.pr_products?.product_name}
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={getProductImageUrl(item.pr_products?.product_code)}
+                          alt={item.pr_products?.product_name || 'product'}
+                          className="w-10 h-10 rounded-md object-cover border bg-gray-100 shrink-0"
+                          onError={(e) => {
+                            const target = e.currentTarget
+                            target.style.display = 'none'
+                          }}
+                        />
+                        <span>
+                          {item.pr_products?.product_code} - {item.pr_products?.product_name}
+                        </span>
+                      </div>
+                    </td>
+                    <td className={`p-2 text-center font-medium ${Number(item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {(() => {
+                        const oldOnHand = item.before_on_hand != null
+                          ? Number(item.before_on_hand)
+                          : Number(viewBalanceMap[item.product_id]?.on_hand || 0) - Number(item.qty_delta || 0)
+                        const newOnHand = item.after_on_hand != null
+                          ? Number(item.after_on_hand)
+                          : oldOnHand + Number(item.qty_delta || 0)
+                        return `${oldOnHand.toLocaleString()} -> ${newOnHand.toLocaleString()}`
+                      })()}
                     </td>
                     <td className="p-2 text-right text-gray-600">
-                      {item.new_order_point != null ? item.new_order_point : '-'}
-                    </td>
-                    <td className="p-2 text-right text-gray-600">
-                      {item.new_safety_stock != null ? Number(item.new_safety_stock).toLocaleString() : '-'}
+                      {(() => {
+                        const oldSafety = item.before_safety_stock != null
+                          ? Number(item.before_safety_stock)
+                          : Number(viewBalanceMap[item.product_id]?.safety_stock || 0)
+                        const newSafety = item.after_safety_stock != null
+                          ? Number(item.after_safety_stock)
+                          : Number(item.new_safety_stock ?? oldSafety)
+                        return `${oldSafety.toLocaleString()} -> ${newSafety.toLocaleString()}`
+                      })()}
                     </td>
                     <td className={`p-2 text-right font-medium ${Number(item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                       {Number(item.qty_delta) > 0 ? '+' : ''}{Number(item.qty_delta).toLocaleString()}
+                    </td>
+                    <td className="p-2 text-right font-medium text-gray-700">
+                      {Number(item.approved_total_cost_impact ?? item.estimated_total_cost_impact ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                   </tr>
                 ))}
                 {!viewItems.length && (
                   <tr>
-                    <td className="p-2 text-center text-gray-500" colSpan={4}>
+                    <td className="p-2 text-center text-gray-500" colSpan={5}>
                       ไม่มีรายการ
                     </td>
                   </tr>
@@ -677,6 +828,7 @@ const DraftItemsList = React.memo(function DraftItemsList({
   productOptions,
   balances,
   productIdMap,
+  adjustmentType,
   onUpdate,
   onRemove,
 }: {
@@ -684,85 +836,110 @@ const DraftItemsList = React.memo(function DraftItemsList({
   productOptions: { value: string; label: string }[]
   balances: Record<string, StockBalance>
   productIdMap: Record<string, Product>
+  adjustmentType: AdjustmentType
   onUpdate: (index: number, patch: Partial<DraftItem>) => void
   onRemove: (index: number) => void
 }) {
   return (
     <div className="space-y-3">
       {items.map((item, index) => (
-        <div key={`draft-${index}`} className="grid grid-cols-12 gap-2 items-center">
-          <div className="col-span-4">
-            <select
-              value={item.product_id}
-              onChange={(e) => {
-                const pid = e.target.value
-                const b = pid ? balances[pid] : null
-                const p = pid ? productIdMap[pid] : null
-                onUpdate(index, {
-                  product_id: pid,
-                  qty: b ? b.on_hand : 0,
-                  safety_stock: b?.safety_stock ?? null,
-                  order_point: p?.order_point != null ? (Number(p.order_point) || null) : null,
-                })
-              }}
-              className="w-full px-3 py-2 border rounded-lg bg-white text-sm"
-            >
-              <option value="">เลือกสินค้า</option>
-              {productOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+        <div key={`draft-${index}`} className="space-y-1">
+          <div className="grid grid-cols-12 gap-2 items-center">
+            <div className="col-span-4">
+              {(() => {
+                const selectedProduct = item.product_id ? productIdMap[item.product_id] : null
+                const selectedOpt = selectedProduct
+                  ? { value: selectedProduct.id, label: `${selectedProduct.product_code} - ${selectedProduct.product_name}` }
+                  : null
+                const rowOptions = selectedOpt && !productOptions.some((opt) => opt.value === item.product_id)
+                  ? [selectedOpt, ...productOptions]
+                  : productOptions
+                return (
+              <select
+                value={item.product_id}
+                onChange={(e) => {
+                  const pid = e.target.value
+                  const b = pid ? balances[pid] : null
+                  const p = pid ? productIdMap[pid] : null
+                  onUpdate(index, {
+                    product_id: pid,
+                    qty: b ? b.on_hand : 0,
+                    safety_stock: b?.safety_stock ?? 0,
+                    order_point: p?.order_point != null ? (Number(p.order_point) || null) : null,
+                  })
+                }}
+                className="w-full px-3 py-2 border rounded-lg bg-white text-sm"
+              >
+                <option value="">เลือกสินค้า</option>
+                {rowOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+                )
+              })()}
+            </div>
+            <div className="col-span-2">
+              <input
+                type="number"
+                min="0"
+                value={item.qty}
+                onChange={(e) => onUpdate(index, { qty: Number(e.target.value) || 0 })}
+                placeholder="จำนวนใช้งานที่ต้องการให้เป็นตอนนี้"
+                disabled={adjustmentType === 'safety_reclass'}
+                className="w-full px-3 py-2 border rounded-lg text-center text-sm disabled:bg-gray-100 disabled:text-gray-400"
+              />
+            </div>
+            <div className="col-span-2">
+              <input
+                type="number"
+                min="0"
+                value={item.safety_stock ?? ''}
+                onChange={(e) => onUpdate(index, { safety_stock: e.target.value !== '' ? Number(e.target.value) : null })}
+                placeholder="จำนวนสำรองที่ต้องการให้เป็นตอนนี้"
+                className="w-full px-3 py-2 border rounded-lg text-center text-sm"
+              />
+            </div>
+            <div className="col-span-2">
+              <input
+                type="text"
+                readOnly
+                value={((item.qty || 0) + (item.safety_stock ?? 0)).toLocaleString()}
+                className="w-full px-3 py-2 border rounded-lg text-center text-sm bg-gray-50 text-gray-700"
+              />
+            </div>
+            <div className="col-span-2">
+              <button
+                type="button"
+                onClick={() => onRemove(index)}
+                disabled={items.length === 1}
+                className="px-3 py-2 bg-red-100 text-red-600 rounded hover:bg-red-200 disabled:opacity-50 w-full text-sm"
+              >
+                ลบ
+              </button>
+            </div>
           </div>
-          <div className="col-span-2">
-            <input
-              type="number"
-              min="0"
-              value={item.order_point ?? ''}
-              onChange={(e) => onUpdate(index, { order_point: e.target.value !== '' ? Number(e.target.value) : null })}
-              placeholder="0"
-              className="w-full px-3 py-2 border rounded-lg text-center text-sm"
-            />
-          </div>
-          <div className="col-span-2">
-            {(() => {
-              const b = item.product_id ? balances[item.product_id] : null
-              const totalPhysical = (b?.on_hand ?? 0) + (b?.safety_stock ?? 0)
-              const overLimit = item.safety_stock != null && item.safety_stock > totalPhysical && totalPhysical > 0
-              return (
-                <>
-                  <input
-                    type="number"
-                    min="0"
-                    value={item.safety_stock ?? ''}
-                    onChange={(e) => onUpdate(index, { safety_stock: e.target.value !== '' ? Number(e.target.value) : null })}
-                    placeholder="0"
-                    className={`w-full px-3 py-2 border rounded-lg text-center text-sm ${overLimit ? 'border-red-400 bg-red-50' : ''}`}
-                  />
-                  {overLimit && <p className="text-xs text-red-500 mt-0.5 text-center">เกินสต๊อครวม ({totalPhysical})</p>}
-                </>
-              )
-            })()}
-          </div>
-          <div className="col-span-2">
-            <input
-              type="number"
-              min="0"
-              value={item.qty}
-              onChange={(e) => onUpdate(index, { qty: Number(e.target.value) || 0 })}
-              placeholder="0"
-              className="w-full px-3 py-2 border rounded-lg text-center text-sm"
-            />
-          </div>
-          <div className="col-span-2">
-            <button
-              type="button"
-              onClick={() => onRemove(index)}
-              disabled={items.length === 1}
-              className="px-3 py-2 bg-red-100 text-red-600 rounded hover:bg-red-200 disabled:opacity-50 w-full text-sm"
-            >
-              ลบ
-            </button>
-          </div>
+
+          {item.product_id && (() => {
+            const currentOnHand = balances[item.product_id]?.on_hand ?? 0
+            const currentSafety = balances[item.product_id]?.safety_stock ?? 0
+            const currentTotal = currentOnHand + currentSafety
+            const targetOnHand = adjustmentType === 'safety_reclass'
+              ? currentOnHand - ((item.safety_stock ?? 0) - currentSafety)
+              : (item.qty || 0)
+            const targetSafety = item.safety_stock ?? 0
+            const targetTotal = targetOnHand + targetSafety
+            const deltaOnHand = targetOnHand - currentOnHand
+            const deltaSafety = targetSafety - currentSafety
+            const formatDelta = (value: number) => `${value > 0 ? '+' : ''}${value.toLocaleString()}`
+
+            return (
+              <p className="text-xs text-gray-500">
+                ปัจจุบัน: เคลื่อนไหว {currentOnHand.toLocaleString()} | Safety {currentSafety.toLocaleString()} | รวม {currentTotal.toLocaleString()} {' '}
+                • หลังปรับ: เคลื่อนไหว {targetOnHand.toLocaleString()} | Safety {targetSafety.toLocaleString()} | รวม {targetTotal.toLocaleString()} {' '}
+                • ระบบจะปรับ: เคลื่อนไหว {formatDelta(deltaOnHand)} | Safety {formatDelta(deltaSafety)}
+              </p>
+            )
+          })()}
         </div>
       ))}
     </div>

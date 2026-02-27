@@ -5,6 +5,7 @@ import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import { canSeeOfficeChannel } from '../../config/accessPolicy'
 
 const PRODUCT_IMAGES_BUCKET = 'product-images'
 
@@ -424,7 +425,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         .eq('status', 'ตรวจสอบแล้ว')
         .neq('channel_code', 'PUMP')
         .order('created_at', { ascending: true })
-      if (!['superadmin', 'admin'].includes(user?.role || '')) {
+      if (!canSeeOfficeChannel(user?.role)) {
         query = query.neq('channel_code', 'OFFICE')
       }
       if (channelFilter && channelFilter.trim() !== '') {

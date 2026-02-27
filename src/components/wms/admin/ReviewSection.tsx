@@ -3,6 +3,15 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
+const normalizeOrderId = (value: unknown) =>
+  String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/\s+/g, '')
+    .trim()
+    .toUpperCase()
+
 /** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
 const ensurePlanDeptEnd = async (workOrderName: string) => {
   if (!workOrderName) return
@@ -23,7 +32,11 @@ const ensurePlanDeptEnd = async (workOrderName: string) => {
 export default function ReviewSection() {
   const [reviewDate, setReviewDate] = useState('')
   const [reviewOrderSelect, setReviewOrderSelect] = useState('')
-  const [orderOptions, setOrderOptions] = useState<{ value: string; label: string; hasUnchecked?: boolean }[]>([])
+  const [reviewOrderActualId, setReviewOrderActualId] = useState('')
+  const [orderOptions, setOrderOptions] = useState<Array<{ value: string; normKey?: string; label: string; hasUnchecked?: boolean }>>([])
+  const [rowsByOrderRaw, setRowsByOrderRaw] = useState<Record<string, any[]>>({})
+  const [rowsByOrderNorm, setRowsByOrderNorm] = useState<Record<string, any[]>>({})
+  const [reviewPendingOrders, setReviewPendingOrders] = useState<Array<{ id: string; total: number; unchecked: number }>>([])
   const [inspectItems, setInspectItems] = useState<any[]>([])
   const [currentTab, setCurrentTab] = useState('all')
   const [showCounter, setShowCounter] = useState(false)
@@ -48,6 +61,7 @@ export default function ReviewSection() {
     setShowTabs(false)
     setInspectItems([])
     setCurrentTab('all')
+    setReviewOrderActualId('')
   }
 
   const loadReviewDropdown = async (skipReset = true) => {
@@ -56,65 +70,177 @@ export default function ReviewSection() {
 
     const { data } = await supabase
       .from('wms_orders')
-      .select('order_id, status')
+      .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
       .gte('created_at', reviewDate + 'T00:00:00')
       .lte('created_at', reviewDate + 'T23:59:59')
 
     if (!data) return
 
-    const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
-      if (!acc[obj.order_id]) {
-        acc[obj.order_id] = { id: obj.order_id, picked: 0, oos: 0, total: 0, finished_count: 0 }
-      }
-      acc[obj.order_id].total++
-      if (['picked'].includes(obj.status)) acc[obj.order_id].picked++
-      if (obj.status === 'out_of_stock') acc[obj.order_id].oos++
-      const isFinished = ['picked', 'correct', 'wrong', 'not_find', 'out_of_stock'].includes(obj.status)
-      if (isFinished) acc[obj.order_id].finished_count++
-      return acc
-    }, {})
+    const groupedRowsByNorm: Record<string, any[]> = {}
+    const groupedRowsByRaw: Record<string, any[]> = {}
+    ;(data as any[]).forEach((obj) => {
+      const norm = normalizeOrderId(obj.order_id)
+      if (!groupedRowsByNorm[norm]) groupedRowsByNorm[norm] = []
+      groupedRowsByNorm[norm].push(obj)
+      const raw = String(obj.order_id || '')
+      if (!groupedRowsByRaw[raw]) groupedRowsByRaw[raw] = []
+      groupedRowsByRaw[raw].push(obj)
+    })
 
-    const completed = Object.values(grouped).filter((o: any) => o.finished_count === o.total)
+    setRowsByOrderRaw(groupedRowsByRaw)
+    setRowsByOrderNorm(groupedRowsByNorm)
+
+    const grouped = Object.entries(groupedRowsByRaw).map(([rawId, rows]) => {
+      const first = rows[0] || {}
+      const total = rows.length
+      const picked = rows.filter((r) => r.status === 'picked').length
+      const pending = rows.filter((r) => r.status === 'pending').length
+      return {
+        key: rawId,
+        normKey: normalizeOrderId(rawId),
+        id: String(first.order_id || rawId),
+        total,
+        picked,
+        pending,
+      }
+    })
+
+    // ใบงานที่พร้อมเข้าเมนูตรวจ: ต้องไม่มี pending
+    // หมายเหตุ: รวมทั้งใบงานที่ "ตรวจเสร็จแล้ว" เพื่อให้เปิดมาเช็คซ้ำได้
+    const completed = grouped.filter((o) => o.pending === 0)
     const currentSelected = reviewOrderSelect
 
     setOrderOptions(
       completed.length
         ? [
             { value: '', label: '-- เลือกใบงานที่จัดเสร็จแล้ว --' },
-            ...completed.map((o: any) => ({
+            ...completed.map((o) => ({
               value: o.id,
-              label: `${o.id} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.picked} รายการ]`,
+              normKey: o.normKey,
+              label:
+                o.picked > 0
+                  ? `${o.id} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.picked} รายการ]`
+                  : `${o.id} (${o.total} รายการ) [ตรวจเสร็จแล้ว]`,
               hasUnchecked: o.picked > 0,
             })),
           ]
         : [{ value: '', label: 'ไม่มีใบงานที่พร้อมตรวจ' }]
     )
+    setReviewPendingOrders(
+      completed
+        .filter((o) => o.picked > 0)
+        .sort((a, b) => b.picked - a.picked)
+        .map((o) => ({ id: o.id, total: o.total, unchecked: o.picked }))
+    )
 
-    if (currentSelected) {
+    if (currentSelected && completed.some((o) => o.id === currentSelected)) {
       setReviewOrderSelect(currentSelected)
+    } else if (currentSelected) {
+      setReviewOrderSelect('')
     }
   }
 
-  const startInspection = async () => {
-    if (!reviewOrderSelect) {
+  const startInspection = async (selectedOrderId?: string) => {
+    const selectedRawId = String(selectedOrderId || reviewOrderSelect || '')
+    if (!selectedRawId) {
       showMessage({ message: 'โปรดเลือกใบงานที่ต้องการตรวจ!' })
       return
     }
 
-    const { data, error } = await supabase.from('wms_orders').select('*').eq('order_id', reviewOrderSelect)
+    const rawTarget = selectedRawId
+    const trimmedTarget = rawTarget.trim()
+    const normalizedTarget = normalizeOrderId(rawTarget)
+    let rows: any[] = rowsByOrderRaw[rawTarget]
+      ? [...rowsByOrderRaw[rawTarget]]
+      : (rowsByOrderNorm[normalizedTarget] ? [...rowsByOrderNorm[normalizedTarget]] : [])
 
-    if (error || !data || data.length === 0) {
+    let error: any = null
+    if (rows.length === 0) {
+      const { data, error: firstErr } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .eq('order_id', rawTarget)
+      error = firstErr
+      if (!firstErr && data && data.length > 0) rows = data
+    }
+
+    // fallback 1: ลองเทียบด้วยค่าที่ trim แล้ว (กันเคสช่องว่างหัว/ท้าย)
+    if (rows.length === 0 && trimmedTarget !== rawTarget) {
+      const { data: trimData, error: trimErr } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .eq('order_id', trimmedTarget)
+      if (!trimErr && trimData && trimData.length > 0) {
+        rows = trimData
+      }
+    }
+
+    // fallback 2: ค้นหาแบบ ilike เมื่อรูปแบบรหัสมีความต่างเล็กน้อย
+    if (rows.length === 0 && trimmedTarget) {
+      const likeTarget = trimmedTarget.replace(/\s+/g, '%')
+      const { data: fuzzyData, error: fuzzyErr } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .ilike('order_id', `%${likeTarget}%`)
+      if (!fuzzyErr && fuzzyData && fuzzyData.length > 0) {
+        rows = fuzzyData.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
+      }
+    }
+
+    // fallback สำหรับเคส order_id มีช่องว่าง/รูปแบบต่างกันเล็กน้อย
+    if (rows.length === 0 && reviewDate) {
+      const { data: dayRows, error: dayErr } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .gte('created_at', reviewDate + 'T00:00:00')
+        .lte('created_at', reviewDate + 'T23:59:59')
+
+      if (!dayErr && dayRows) {
+        rows = dayRows.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
+      }
+    }
+
+    // fallback สุดท้าย: ดึงข้อมูลช่วงล่าสุดเผื่อเคสวันที่คลาดจาก timezone แต่รหัสตรงจริง
+    if (rows.length === 0) {
+      const start = new Date(reviewDate || new Date().toISOString().split('T')[0])
+      start.setDate(start.getDate() - 7)
+      const startDate = start.toISOString().split('T')[0]
+      const { data: recentRows, error: recentErr } = await supabase
+        .from('wms_orders')
+        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .gte('created_at', `${startDate}T00:00:00`)
+        .lte('created_at', `${reviewDate || new Date().toISOString().split('T')[0]}T23:59:59`)
+
+      if (!recentErr && recentRows) {
+        rows = recentRows.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
+      }
+    }
+
+    if ((error && rows.length === 0) || rows.length === 0) {
+      const debugEnabled = typeof window !== 'undefined' && window.localStorage.getItem('debug_wms_review') === '1'
+      if (debugEnabled) {
+        console.warn('[WMS Review] startInspection not found', {
+          selectedRawId: rawTarget,
+          normalizedTarget,
+          rawKeys: Object.keys(rowsByOrderRaw).length,
+          normKeys: Object.keys(rowsByOrderNorm).length,
+          sampleRawKeys: Object.keys(rowsByOrderRaw).slice(0, 10),
+        })
+      }
       showMessage({ message: 'ไม่พบข้อมูลรายการในใบงานนี้' })
       return
     }
 
-    const hasUnfinishedItems = data.some((item) => item.status === 'pending')
+    const canonicalOrderId = String(rows[0]?.order_id || rawTarget)
+    const hasUnfinishedItems = rows.some((item) => item.status === 'pending')
     if (hasUnfinishedItems) {
       showMessage({ message: 'ไม่อนุญาตให้ตรวจเนื่องจากใบงานนี้ยังจัดไม่เสร็จสิ้น (มีรายการค้างจัด)' })
       return
     }
 
-    const sortedData = sortOrderItems(data)
+    const sortedData = sortOrderItems(rows)
+    setReviewOrderSelect(canonicalOrderId)
+    setReviewOrderActualId(canonicalOrderId)
     setInspectItems(sortedData)
     setShowCounter(true)
     setShowTabs(true)
@@ -134,7 +260,8 @@ export default function ReviewSection() {
 
     await supabase.from('wms_orders').update(updateData).eq('id', id)
 
-    const { data } = await supabase.from('wms_orders').select('*').eq('order_id', reviewOrderSelect)
+    const currentOrderId = reviewOrderActualId || reviewOrderSelect
+    const { data } = await supabase.from('wms_orders').select('*').eq('order_id', currentOrderId)
 
     if (data) {
       const sortedData = sortOrderItems(data)
@@ -147,14 +274,14 @@ export default function ReviewSection() {
         await supabase
           .from('wms_orders')
           .update({ end_time: new Date().toISOString() })
-          .eq('order_id', reviewOrderSelect)
+          .eq('order_id', currentOrderId)
 
-        try { await saveFirstCheckSummary(reviewOrderSelect, sortedData) } catch (e) { console.error('saveFirstCheckSummary error:', e) }
+        try { await saveFirstCheckSummary(currentOrderId, sortedData) } catch (e) { console.error('saveFirstCheckSummary error:', e) }
       }
 
       const allCorrect = sortedData.length > 0 && sortedData.every((i) => i.status === 'correct')
       if (allCorrect) {
-        await ensurePlanDeptEnd(reviewOrderSelect)
+        await ensurePlanDeptEnd(currentOrderId)
       }
     }
 
@@ -224,6 +351,7 @@ export default function ReviewSection() {
                 onChange={(e) => {
                   setReviewDate(e.target.value)
                   setReviewOrderSelect('')
+                  setReviewOrderActualId('')
                 }}
                 className="border px-2 rounded-lg text-sm shadow-sm outline-none h-[42px]"
               />
@@ -246,7 +374,7 @@ export default function ReviewSection() {
               </select>
             </div>
             <button
-              onClick={startInspection}
+              onClick={() => startInspection()}
               className="bg-blue-600 text-white px-6 h-[42px] rounded-lg font-bold shadow-md hover:bg-blue-700"
             >
               เริ่มเช็คสินค้า
@@ -262,6 +390,28 @@ export default function ReviewSection() {
           </div>
         )}
       </div>
+      {reviewPendingOrders.length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+          <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+            รายการใบงานที่ต้องตรวจเพิ่มเติม
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
+              {reviewPendingOrders.length}
+            </span>
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {reviewPendingOrders.map((o) => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => startInspection(o.id)}
+                className="px-3 py-1.5 bg-white border border-red-300 rounded-lg text-sm text-red-700 hover:bg-red-100 font-medium transition-colors"
+              >
+                {o.id} → ตรวจเพิ่ม ({o.unchecked}/{o.total})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {showTabs && (
         <div className="flex gap-4 border-b mb-4 px-4 overflow-x-auto">
           <div
@@ -333,7 +483,7 @@ export default function ReviewSection() {
                     <div>
                       <div className="text-[18.66px] font-black text-slate-800 leading-tight mb-1">{item.product_name}</div>
                       <div className="text-[16px] font-bold text-gray-400">
-                        จุดจัดเก็บ: {item.location || '-'} | จำนวน: {item.qty}
+                        จุดจัดเก็บ: {item.location || '-'} | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
                     </div>
                   </div>

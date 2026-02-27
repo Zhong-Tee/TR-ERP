@@ -24,6 +24,6 @@ export default function Wms() {
     return <ManagerLayout />
   }
 
-  // Desktop roles: admin-tr, store, superadmin, production, account และ role อื่นๆ ทั้งหมด
+  // Desktop roles: sales-tr, store, superadmin, production, account และ role อื่นๆ ทั้งหมด
   return <AdminLayout />
 }

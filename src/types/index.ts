@@ -10,9 +10,9 @@ export interface User {
 export type UserRole = 
   | 'superadmin' 
   | 'admin'
-  | 'admin-tr' 
-  | 'admin_qc' 
-  | 'admin-pump' 
+  | 'sales-tr'
+  | 'qc_order'
+  | 'sales-pump'
   | 'qc_staff' 
   | 'packing_staff' 
   | 'account' 
@@ -226,6 +226,7 @@ export interface Product {
   seller_name: string | null
   product_name_cn: string | null
   order_point: string | null
+  order_point_days: number | null
   product_category: string | null
   product_type: ProductType
   rubber_code: string | null
@@ -363,7 +364,11 @@ export interface InventoryGR {
   updated_at: string
   /** joined */
   inv_gr_items?: InventoryGRItem[]
-  inv_po?: { po_no: string } | null
+  inv_po?: {
+    po_no: string
+    expected_arrival_date?: string | null
+    inv_pr?: { pr_type?: string | null } | null
+  } | null
 }
 
 export interface InventoryGRItem {
@@ -385,10 +390,16 @@ export interface InventorySample {
   status: string
   received_by?: string | null
   received_at?: string | null
+  sample_label?: string | null
+  testing_by_name?: string | null
+  testing_started_by?: string | null
+  testing_started_at?: string | null
   supplier_name?: string | null
   note?: string | null
   tested_by?: string | null
   tested_at?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
   test_result?: string | null
   test_note?: string | null
   rejection_reason?: string | null
@@ -403,6 +414,7 @@ export interface InventorySampleItem {
   sample_id: string
   product_id?: string | null
   product_name_manual?: string | null
+  image_url?: string | null
   qty: number
   note?: string | null
   converted_product_id?: string | null
@@ -483,6 +495,8 @@ export interface InventoryAdjustment {
   id: string
   adjust_no: string
   status: string
+  adjustment_type?: 'audit_adjustment' | 'safety_reclass'
+  reason_code?: string | null
   created_by?: string | null
   created_at: string
   approved_by?: string | null
@@ -497,6 +511,16 @@ export interface InventoryAdjustmentItem {
   qty_delta: number
   new_safety_stock?: number | null
   new_order_point?: string | null
+  before_on_hand?: number | null
+  after_on_hand?: number | null
+  before_safety_stock?: number | null
+  after_safety_stock?: number | null
+  before_total_qty?: number | null
+  after_total_qty?: number | null
+  estimated_unit_cost?: number | null
+  estimated_total_cost_impact?: number | null
+  approved_unit_cost?: number | null
+  approved_total_cost_impact?: number | null
   created_at: string
 }
 

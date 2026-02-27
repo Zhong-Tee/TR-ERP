@@ -11,6 +11,7 @@ import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
+import { isAdminOrSuperadmin } from '../config/accessPolicy'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
@@ -351,7 +352,7 @@ function computePlanTimeline(
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
 
-    const delayDepts = ['เบิก', 'STK', 'CTT', 'TUBE']
+    const delayDepts = ['เบิก', 'TUBE']
     if (delayDepts.includes(dept) && cutSec !== -Infinity) {
       base = Math.max(base, cutSec + 300)
     }
@@ -396,20 +397,23 @@ function computePlanTimeline(
 
 function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettingsData): { actualStart: string; actualEnd: string; startDayOffset: number; endDayOffset: number } {
   const tracks = job.tracks?.[dept] || {}
-  const entries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
-  if (entries.length === 0) return { actualStart: '-', actualEnd: '-', startDayOffset: 0, endDayOffset: 0 }
+  const allEntries = Object.entries(tracks)
+  const processEntries = allEntries.filter(([key]) => key !== 'เตรียมไฟล์')
+  if (allEntries.length === 0) return { actualStart: '-', actualEnd: '-', startDayOffset: 0, endDayOffset: 0 }
   let firstStart: Date | null = null
   let lastEnd: Date | null = null
-  let allFinished = true
-  for (const [, t] of entries) {
+  const allFinished = processEntries.length > 0 && processEntries.every(([, t]) => !!t?.end)
+  for (const [, t] of allEntries) {
     if (t?.start) {
       const d = new Date(t.start)
       if (!firstStart || d < firstStart) firstStart = d
     }
+  }
+  for (const [, t] of processEntries) {
     if (t?.end) {
       const d = new Date(t.end)
       if (!lastEnd || d > lastEnd) lastEnd = d
-    } else allFinished = false
+    }
   }
   const planDateStart = new Date(`${job.date}T00:00:00`)
   const dayDiffStart = firstStart ? Math.floor((firstStart.getTime() - planDateStart.getTime()) / 86400000) : 0
@@ -444,7 +448,7 @@ const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'work-orders', 'work-orders-manage', 
 export default function Plan() {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
-  const unlocked = user?.role === 'superadmin' || user?.role === 'admin'
+  const unlocked = isAdminOrSuperadmin(user?.role)
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -927,11 +931,20 @@ export default function Plan() {
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (t?.start && !window.confirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?')) return
+      const now = nowISO()
+      const firstProc = (settings.processes[dept] || [])[0]?.name
+      const patch: Record<string, Record<string, string>> = {
+        [proc]: { start: now },
+      }
+      // เมื่อเริ่มหัวข้อแรก ให้ stamp "เตรียมไฟล์" ทันทีด้วย (ถ้ายังไม่มีเวลา)
+      if (firstProc && proc === firstProc) {
+        patch['เตรียมไฟล์'] = { start_if_null: now }
+      }
       setDbStatus('กำลังอัปเดต...')
       const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
         p_job_id: jobId,
         p_dept: dept,
-        p_patch: { [proc]: { start: nowISO() } },
+        p_patch: patch,
       })
       if (error) {
         setDbStatus('อัปเดตล้มเหลว')
@@ -941,7 +954,7 @@ export default function Plan() {
       setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
       setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs]
+    [jobs, settings.processes]
   )
 
   const markEnd = useCallback(

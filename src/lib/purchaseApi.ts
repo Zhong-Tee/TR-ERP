@@ -322,7 +322,7 @@ export interface GRListFilters {
 export async function loadGRList(filters: GRListFilters = {}): Promise<InventoryGR[]> {
   let q = supabase
     .from('inv_gr')
-    .select('*, inv_po(po_no, inv_pr(pr_type)), inv_gr_items(id, qty_ordered, qty_received)')
+    .select('*, inv_po(po_no, expected_arrival_date, inv_pr(pr_type)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -348,7 +348,7 @@ export async function loadGRDetail(grId: string) {
     .from('inv_gr')
     .select(`
       *,
-      inv_po(po_no),
+      inv_po(po_no, expected_arrival_date),
       inv_gr_items(
         *,
         pr_products(id, product_code, product_name, product_name_cn, seller_name)
@@ -448,7 +448,7 @@ export async function loadSampleDetail(sampleId: string) {
       *,
       inv_sample_items(
         *,
-        pr_products(id, product_code, product_name, product_name_cn)
+        pr_products:pr_products!inv_sample_items_product_id_fkey(id, product_code, product_name, product_name_cn)
       )
     `)
     .eq('id', sampleId)
@@ -459,12 +459,12 @@ export async function loadSampleDetail(sampleId: string) {
 
 export interface CreateSampleInput {
   items: {
-    product_id?: string | null
     product_name_manual?: string
+    image_url?: string
     qty: number
     note?: string
   }[]
-  supplierName?: string
+  sampleLabel: string
   note?: string
   userId?: string
 }
@@ -472,7 +472,7 @@ export interface CreateSampleInput {
 export async function createSample(input: CreateSampleInput) {
   const { data, error } = await supabase.rpc('rpc_create_sample', {
     p_items: input.items,
-    p_supplier_name: input.supplierName || null,
+    p_sample_label: input.sampleLabel,
     p_note: input.note || null,
     p_user_id: input.userId || null,
   })
@@ -485,6 +485,7 @@ export async function updateSampleTest(
   status: 'testing' | 'approved' | 'rejected',
   opts?: {
     userId?: string
+    testingByName?: string
     testNote?: string
     rejectionReason?: string
     itemResults?: { item_id: string; result: string; note?: string }[]
@@ -494,6 +495,7 @@ export async function updateSampleTest(
     p_sample_id: sampleId,
     p_status: status,
     p_user_id: opts?.userId || null,
+    p_testing_by_name: opts?.testingByName || null,
     p_test_note: opts?.testNote || null,
     p_rejection_reason: opts?.rejectionReason || null,
     p_item_results: opts?.itemResults || [],
@@ -510,7 +512,6 @@ export async function convertSampleToProduct(input: {
   productType?: string
   productCategory?: string
   sellerName?: string
-  unitCost?: number
   userId?: string
 }) {
   const { data, error } = await supabase.rpc('rpc_convert_sample_to_product', {
@@ -522,11 +523,37 @@ export async function convertSampleToProduct(input: {
     p_product_type: input.productType || 'FG',
     p_product_category: input.productCategory || null,
     p_seller_name: input.sellerName || null,
-    p_unit_cost: input.unitCost ?? null,
     p_user_id: input.userId || null,
   })
   if (error) throw error
   return data as string
+}
+
+export async function getNextProductCode(productType: 'FG' | 'RM') {
+  const { data, error } = await supabase.rpc('rpc_get_next_product_code', {
+    p_product_type: productType,
+  })
+  if (error) throw error
+  return String(data || '')
+}
+
+export async function createSeller(input: { name: string; nameCn?: string }) {
+  const { data, error } = await supabase.rpc('rpc_create_pr_seller', {
+    p_name: input.name.trim(),
+    p_name_cn: input.nameCn?.trim() || null,
+  })
+  if (error) throw error
+  return data as { id: string; name: string; name_cn: string | null }
+}
+
+export async function loadProductCategoryOptions(): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('pr_products')
+    .select('product_category')
+    .not('product_category', 'is', null)
+    .order('product_category')
+  if (error) throw error
+  return [...new Set((data || []).map((d: any) => String(d.product_category || '').trim()).filter(Boolean))]
 }
 
 /* ──────────────── Purchase Badge Counts ──────────────── */

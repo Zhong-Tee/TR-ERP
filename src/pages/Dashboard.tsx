@@ -171,7 +171,7 @@ export default function Dashboard() {
       const cat = p.product_category || 'ไม่ระบุ'
       map[cat] = (map[cat] || 0) + 1
     })
-    return Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 6)
+    return Object.entries(map).sort((a, b) => b[1] - a[1])
   }, [products])
 
   const totalCategoryProducts = useMemo(

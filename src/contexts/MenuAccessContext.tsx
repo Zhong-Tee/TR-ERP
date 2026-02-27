@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuthContext } from './AuthContext'
+import { getMenuAccessCandidates, getRoleLookupCandidates } from '../config/accessPolicy'
 
 interface MenuAccessContextType {
   /** Raw map from DB — null = role has no config yet */
@@ -37,10 +38,11 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
     }
     if (showLoading) setLoaded(false)
     try {
+      const roleCandidates = getRoleLookupCandidates(user.role)
       const { data, error } = await supabase
         .from('st_user_menus')
         .select('menu_key, has_access')
-        .eq('role', user.role)
+        .in('role', roleCandidates.length > 0 ? roleCandidates : [user.role])
       if (error) {
         console.error('MenuAccess load error:', error)
         if (showLoading) setLoaded(true)
@@ -71,12 +73,11 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
   const hasAccess = useCallback(
     (menuKey: string): boolean => {
       if (accessMap === null) return true
-      if (menuKey in accessMap) return accessMap[menuKey] === true
-      // key ใหม่ที่ยังไม่อยู่ใน DB → fallback ตาม parent key (e.g. "products-inactive" → "products")
-      const dash = menuKey.lastIndexOf('-')
-      if (dash > 0) {
-        const parentKey = menuKey.substring(0, dash)
-        if (parentKey in accessMap) return accessMap[parentKey] === true
+      const candidates = getMenuAccessCandidates(menuKey)
+      for (const candidate of candidates) {
+        if (candidate in accessMap) {
+          return accessMap[candidate] === true
+        }
       }
       return false
     },

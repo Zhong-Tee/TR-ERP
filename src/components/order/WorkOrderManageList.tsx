@@ -6,6 +6,7 @@ import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
+import { isRoleInAllowedList } from '../../config/accessPolicy'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
@@ -1125,7 +1126,7 @@ export default function WorkOrderManageList({
             const isExpanded = expandedWo === wo.work_order_name
             const channelCode = channelByWo[wo.work_order_name] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
-            const canCancelWorkOrder = user?.role === 'superadmin' || user?.role === 'admin-tr'
+            const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
 
             return (
               <div key={wo.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">

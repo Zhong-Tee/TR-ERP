@@ -145,6 +145,10 @@ export default function ProductsInactive() {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE)
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('topbar-menu-count', { detail: { count: totalCount } }))
+  }, [totalCount])
+
   function formatDate(dateStr: string | null) {
     if (!dateStr) return 'ไม่เคยขาย'
     const d = new Date(dateStr)

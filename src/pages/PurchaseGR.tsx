@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -28,6 +28,40 @@ interface ReceiveItem {
   qty_already_received: number
   shortage_note: string
   item_note?: string
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function toDateOnly(value?: string | null) {
+  if (!value) return null
+  const dateOnly = String(value).split('T')[0]
+  const parsed = new Date(`${dateOnly}T00:00:00`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function formatDateThai(value?: string | null) {
+  const d = toDateOnly(value)
+  if (!d) return '-'
+  return d.toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+function getEtaMeta(value?: string | null) {
+  const eta = toDateOnly(value)
+  if (!eta) {
+    return { label: 'ไม่ระบุวันที่เข้า', color: 'bg-gray-100 text-gray-600', sortValue: 999999 }
+  }
+  const today = toDateOnly(new Date().toISOString())!
+  const daysDiff = Math.round((eta.getTime() - today.getTime()) / DAY_MS)
+  if (daysDiff < 0) {
+    return { label: `เลยกำหนด ${Math.abs(daysDiff)} วัน`, color: 'bg-red-100 text-red-700', sortValue: daysDiff }
+  }
+  if (daysDiff === 0) {
+    return { label: 'กำหนดเข้า: วันนี้', color: 'bg-orange-100 text-orange-700', sortValue: daysDiff }
+  }
+  if (daysDiff <= 3) {
+    return { label: `ใกล้ถึง: อีก ${daysDiff} วัน`, color: 'bg-amber-100 text-amber-700', sortValue: daysDiff }
+  }
+  return { label: `อีก ${daysDiff} วัน`, color: 'bg-blue-100 text-blue-700', sortValue: daysDiff }
 }
 
 export default function PurchaseGR() {
@@ -211,30 +245,49 @@ export default function PurchaseGR() {
     { key: 'received', label: 'รับครบ' },
   ]
 
+  const sortedNewPOs = useMemo(
+    () => [...newPOs].sort((a, b) => getEtaMeta(a.expected_arrival_date).sortValue - getEtaMeta(b.expected_arrival_date).sortValue),
+    [newPOs]
+  )
+  const sortedPartialPOs = useMemo(
+    () => [...partialPOs].sort((a, b) => getEtaMeta(a.expected_arrival_date).sortValue - getEtaMeta(b.expected_arrival_date).sortValue),
+    [partialPOs]
+  )
   const partialCount = partialPOs.length
 
   return (
     <div className="space-y-4 mt-12">
       {/* ── New POs waiting for first GR ── */}
-      {newPOs.length > 0 && (
+      {sortedNewPOs.length > 0 && (
         <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({newPOs.length})</h3>
+          <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})</h3>
           <div className="flex flex-wrap gap-2">
-            {newPOs.map((po) => (
+            {sortedNewPOs.map((po) => {
+              const eta = getEtaMeta(po.expected_arrival_date)
+              return (
               <button
                 key={po.id}
                 onClick={() => openReceive(po, false)}
-                className="px-3 py-1.5 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors"
+                className="px-3 py-2 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors text-left"
               >
-                {po.po_no} → รับเข้าคลัง
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{po.po_no}</span>
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-sm font-semibold ${eta.color}`}>
+                    {eta.label}
+                  </span>
+                </div>
+                <div className="text-sm text-gray-600 mt-1 font-medium">
+                  กำหนดเข้า: {formatDateThai(po.expected_arrival_date)}
+                </div>
               </button>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
 
       {/* ── Partial POs waiting for follow-up GR ── */}
-      {partialPOs.length > 0 && (
+      {sortedPartialPOs.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
             PO รอรับเพิ่ม
@@ -243,11 +296,12 @@ export default function PurchaseGR() {
             </span>
           </h3>
           <div className="space-y-2">
-            {partialPOs.map((po) => {
+            {sortedPartialPOs.map((po) => {
               const items = (po.inv_po_items || []) as any[]
               const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
               const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
               const outstanding = totalQty - totalRecv
+              const eta = getEtaMeta(po.expected_arrival_date)
               return (
                 <div key={po.id} className="flex items-center justify-between bg-white border border-red-200 rounded-lg px-4 py-2.5">
                   <div className="flex items-center gap-3">
@@ -257,6 +311,12 @@ export default function PurchaseGR() {
                     </span>
                     <span className="inline-block px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">
                       ค้างรับ {outstanding.toLocaleString()} ชิ้น
+                    </span>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
+                      {formatDateThai(po.expected_arrival_date)}
+                    </span>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
+                      {eta.label}
                     </span>
                   </div>
                   <button
@@ -335,6 +395,7 @@ export default function PurchaseGR() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">เลขที่ GR</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">PO</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">กำหนดเข้า</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
@@ -350,10 +411,19 @@ export default function PurchaseGR() {
                   const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
                   const grTotalReceived = items.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
                   const st = STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
+                  const eta = getEtaMeta(gr.inv_po?.expected_arrival_date)
                   return (
                     <tr key={gr.id} className={`hover:bg-gray-50/50 transition-colors ${gr.status === 'partial' ? 'bg-orange-50/30' : ''}`}>
                       <td className="px-4 py-3 font-medium text-gray-900">{gr.gr_no}</td>
-                      <td className="px-4 py-3 text-gray-600">{(gr as any).inv_po?.po_no || '-'}</td>
+                      <td className="px-4 py-3 text-gray-600">{gr.inv_po?.po_no || '-'}</td>
+                      <td className="px-4 py-3 text-gray-600">
+                        <div className="flex flex-col gap-1">
+                          <span>{formatDateThai(gr.inv_po?.expected_arrival_date)}</span>
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold w-fit ${eta.color}`}>
+                            {eta.label}
+                          </span>
+                        </div>
+                      </td>
                       <td className="px-4 py-3">
                         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
                           {st.label}
@@ -402,6 +472,7 @@ export default function PurchaseGR() {
               <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
                 <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
                 {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
+                <span className="ml-3 text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
                 {isFollowUp && <span className="ml-3 text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
               </div>
               {(selectedPO.note || (selectedPO as any).inv_pr?.note) && (
@@ -620,6 +691,10 @@ export default function PurchaseGR() {
                 <div className="bg-gray-50 rounded-lg p-3">
                   <div className="text-gray-500 text-xs">วันที่รับ</div>
                   <div className="font-medium">{viewing.received_at ? new Date(viewing.received_at).toLocaleString('th-TH') : '-'}</div>
+                </div>
+                <div className="bg-amber-50 rounded-lg p-3">
+                  <div className="text-amber-700 text-xs">กำหนดเข้า (จาก PO)</div>
+                  <div className="font-medium text-amber-800">{formatDateThai(viewing.inv_po?.expected_arrival_date)}</div>
                 </div>
                 {viewing.dom_shipping_company && (
                   <div className="bg-blue-50 rounded-lg p-3">
