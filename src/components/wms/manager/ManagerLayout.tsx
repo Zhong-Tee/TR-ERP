@@ -2,12 +2,14 @@ import { useState } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import ApprovalList from './ApprovalList'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
+import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
 
-type ViewKey = 'menu' | 'approval' | 'parcel-return'
+type ViewKey = 'menu' | 'approval' | 'parcel-return' | 'gr-receive'
 
 const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; color: string }[] = [
   { key: 'approval', label: 'อนุมัติเบิก', icon: 'fas fa-clipboard-check', desc: 'ตรวจสอบและอนุมัติใบเบิกสินค้า', color: 'from-emerald-600 to-emerald-800' },
+  { key: 'gr-receive', label: 'รับ GR', icon: 'fas fa-truck-ramp-box', desc: 'ตรวจรับสินค้าเข้าคลัง', color: 'from-blue-600 to-blue-800' },
   { key: 'parcel-return', label: 'รับสินค้าตีกลับ', icon: 'fas fa-barcode', desc: 'สแกนเลขพัสดุรับคืนจากลูกค้า', color: 'from-purple-600 to-purple-800' },
 ]
 
@@ -89,6 +91,7 @@ export default function ManagerLayout() {
         )}
 
         {activeView === 'approval' && <ApprovalList />}
+        {activeView === 'gr-receive' && <PurchaseGR />}
         {activeView === 'parcel-return' && <ProductionParcelReturn />}
       </div>
       {MessageModal}

@@ -19,9 +19,10 @@ import {
   getLatestSiamIdRecords,
   siamIdToCandidate,
   fetchEmployees,
+  fetchPositions,
   type SiamIdRecord,
 } from '../../lib/hrApi'
-import type { HRCandidate, HRInterview, HRInterviewScore, HREmployee } from '../../types'
+import type { HRCandidate, HRInterview, HRInterviewScore, HREmployee, HRPosition } from '../../types'
 import Modal from '../ui/Modal'
 
 type CandidateStatus = HRCandidate['status']
@@ -70,10 +71,12 @@ export default function InterviewSchedule() {
   const [candidates, setCandidates] = useState<HRCandidate[]>([])
   const [interviews, setInterviews] = useState<HRInterview[]>([])
   const [employees, setEmployees] = useState<HREmployee[]>([])
+  const [positions, setPositions] = useState<HRPosition[]>([])
   const [statusFilter, setStatusFilter] = useState<CandidateStatus | ''>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [savingCandidatePositionId, setSavingCandidatePositionId] = useState<string | null>(null)
 
   const [importOpen, setImportOpen] = useState(false)
   const [, setImportFile] = useState<File | null>(null)
@@ -104,14 +107,16 @@ export default function InterviewSchedule() {
     setLoading(true)
     setError(null)
     try {
-      const [cand, ints, emps] = await Promise.all([
+      const [cand, ints, emps, pos] = await Promise.all([
         fetchCandidates(),
         fetchInterviews(),
         fetchEmployees({ status: 'active' }),
+        fetchPositions(),
       ])
       setCandidates(cand)
       setInterviews(ints)
       setEmployees(emps)
+      setPositions(pos)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
     } finally {
@@ -127,6 +132,19 @@ export default function InterviewSchedule() {
     if (!statusFilter) return candidates
     return candidates.filter((c) => c.status === statusFilter)
   }, [candidates, statusFilter])
+
+  const positionOptions = useMemo(() => {
+    const names = new Set<string>()
+    for (const p of positions) {
+      const n = p.name?.trim()
+      if (n) names.add(n)
+    }
+    for (const c of candidates) {
+      const n = c.applied_position?.trim()
+      if (n) names.add(n)
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'th'))
+  }, [positions, candidates])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -331,6 +349,30 @@ export default function InterviewSchedule() {
     }
   }
 
+  const handleAppliedPositionChange = async (candidate: HRCandidate, nextPosition: string) => {
+    const trimmed = nextPosition.trim()
+    setSavingCandidatePositionId(candidate.id)
+    setError(null)
+    try {
+      await upsertCandidate({
+        id: candidate.id,
+        applied_position: trimmed || undefined,
+      })
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.id === candidate.id
+            ? { ...c, applied_position: trimmed || undefined }
+            : c
+        )
+      )
+      setSuccessMessage('อัปเดตตำแหน่งที่สมัครแล้ว')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'อัปเดตตำแหน่งที่สมัครไม่สำเร็จ')
+    } finally {
+      setSavingCandidatePositionId(null)
+    }
+  }
+
   useEffect(() => {
     if (!successMessage) return
     const t = setTimeout(() => setSuccessMessage(null), 3000)
@@ -418,7 +460,21 @@ export default function InterviewSchedule() {
                     filteredCandidates.map((c) => (
                       <tr key={c.id} className="border-b border-surface-100 hover:bg-surface-50/50">
                         <td className="px-6 py-3 text-sm text-surface-800">{candidateName(c)}</td>
-                        <td className="px-6 py-3 text-sm text-surface-700">{c.applied_position ?? '-'}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          <select
+                            value={c.applied_position ?? ''}
+                            onChange={(e) => void handleAppliedPositionChange(c, e.target.value)}
+                            disabled={savingCandidatePositionId === c.id}
+                            className="min-w-[180px] rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm disabled:opacity-60"
+                          >
+                            <option value="">- เลือกตำแหน่งที่สมัคร -</option>
+                            {positionOptions.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
                         <td className="px-6 py-3">
                           <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-medium bg-surface-100 text-surface-700 border border-surface-200">
                             {statusLabel(c.status)}

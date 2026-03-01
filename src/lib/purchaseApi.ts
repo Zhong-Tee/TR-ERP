@@ -351,7 +351,8 @@ export async function loadGRDetail(grId: string) {
       inv_po(po_no, expected_arrival_date),
       inv_gr_items(
         *,
-        pr_products(id, product_code, product_name, product_name_cn, seller_name)
+        pr_products(id, product_code, product_name, product_name_cn, seller_name),
+        inv_gr_item_images(*)
       )
     `)
     .eq('id', grId)
@@ -367,6 +368,14 @@ export interface ReceiveGRInput {
     qty_received: number
     qty_ordered: number
     shortage_note?: string
+    images?: {
+      storage_bucket?: string
+      storage_path: string
+      file_name?: string
+      mime_type?: string
+      size_bytes?: number
+      sort_order?: number
+    }[]
   }[]
   shipping?: {
     dom_shipping_company?: string

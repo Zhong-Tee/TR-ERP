@@ -382,6 +382,20 @@ export interface InventoryGRItem {
   created_at: string
   /** joined product */
   pr_products?: Product | null
+  /** joined images */
+  inv_gr_item_images?: InventoryGRItemImage[]
+}
+
+export interface InventoryGRItemImage {
+  id: string
+  gr_item_id: string
+  storage_bucket: string
+  storage_path: string
+  file_name?: string | null
+  mime_type?: string | null
+  size_bytes?: number | null
+  sort_order?: number | null
+  created_at: string
 }
 
 export interface InventorySample {

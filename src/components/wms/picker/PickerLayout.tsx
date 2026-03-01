@@ -6,12 +6,14 @@ import PickerOrderList from './PickerOrderList'
 import PickerJobCard from './PickerJobCard'
 import SentAlertsModal from './SentAlertsModal'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
+import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
 
-type ViewKey = 'menu' | 'pick' | 'parcel-return'
+type ViewKey = 'menu' | 'pick' | 'parcel-return' | 'gr-receive'
 
 const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; color: string }[] = [
   { key: 'pick', label: 'หยิบของ', icon: 'fas fa-hand-holding-box fa-hand-paper', desc: 'หยิบสินค้าตามใบงาน', color: 'from-blue-600 to-blue-800' },
+  { key: 'gr-receive', label: 'รับ GR', icon: 'fas fa-truck-ramp-box', desc: 'ตรวจรับสินค้าเข้าคลัง', color: 'from-emerald-600 to-emerald-800' },
   { key: 'parcel-return', label: 'รับสินค้าตีกลับ', icon: 'fas fa-barcode', desc: 'สแกนเลขพัสดุรับคืนจากลูกค้า', color: 'from-purple-600 to-purple-800' },
 ]
 
@@ -351,6 +353,7 @@ export default function PickerLayout() {
         )}
 
         {activeView === 'parcel-return' && <ProductionParcelReturn />}
+        {activeView === 'gr-receive' && <PurchaseGR />}
       </div>
       {showSentAlertsModal && user?.id && (
         <SentAlertsModal pickerId={user.id} onClose={() => setShowSentAlertsModal(false)} />

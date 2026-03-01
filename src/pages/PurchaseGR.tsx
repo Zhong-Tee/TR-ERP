@@ -12,6 +12,7 @@ import {
   loadUserDisplayNames,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
+import { supabase } from '../lib/supabase'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   pending: { label: 'รอรับ', color: 'bg-yellow-100 text-yellow-800' },
@@ -24,13 +25,27 @@ interface ReceiveItem {
   product_code: string
   product_name: string
   qty_ordered: number
-  qty_received: number
+  qty_received: number | ''
   qty_already_received: number
   shortage_note: string
   item_note?: string
+  images: ReceiveItemImageDraft[]
+}
+
+interface ReceiveItemImageDraft {
+  id: string
+  file: File
+  previewUrl: string
+}
+
+interface PendingImageSelection {
+  itemIndex: number
+  drafts: ReceiveItemImageDraft[]
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const GR_ITEM_IMAGES_BUCKET = 'gr-item-images'
+const MAX_ITEM_IMAGES = 5
 
 function toDateOnly(value?: string | null) {
   if (!value) return null
@@ -64,6 +79,12 @@ function getEtaMeta(value?: string | null) {
   return { label: `อีก ${daysDiff} วัน`, color: 'bg-blue-100 text-blue-700', sortValue: daysDiff }
 }
 
+function getStoragePublicUrl(bucket: string | undefined, path: string | undefined) {
+  if (!path) return ''
+  const { data } = supabase.storage.from(bucket || GR_ITEM_IMAGES_BUCKET).getPublicUrl(path)
+  return data.publicUrl
+}
+
 export default function PurchaseGR() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
@@ -73,8 +94,8 @@ export default function PurchaseGR() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01` })
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
 
   const [newPOs, setNewPOs] = useState<InventoryPO[]>([])
   const [partialPOs, setPartialPOs] = useState<InventoryPO[]>([])
@@ -95,6 +116,10 @@ export default function PurchaseGR() {
   const [viewing, setViewing] = useState<InventoryGR | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const posCacheRef = useRef<{ newPOs: InventoryPO[]; partialPOs: InventoryPO[] } | null>(null)
+  const receiveItemsRef = useRef<ReceiveItem[]>([])
+  const pendingImageSelectionRef = useRef<PendingImageSelection | null>(null)
+  const [pendingImageSelection, setPendingImageSelection] = useState<PendingImageSelection | null>(null)
+  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null)
 
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
@@ -103,6 +128,43 @@ export default function PurchaseGR() {
   }, [search])
 
   useEffect(() => { loadAll() }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo])
+
+  useEffect(() => {
+    receiveItemsRef.current = receiveItems
+  }, [receiveItems])
+
+  useEffect(() => {
+    pendingImageSelectionRef.current = pendingImageSelection
+  }, [pendingImageSelection])
+
+  useEffect(() => {
+    return () => {
+      revokeDraftImages(receiveItemsRef.current)
+      if (pendingImageSelectionRef.current) {
+        revokeImageDraftList(pendingImageSelectionRef.current.drafts)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const uid = viewing?.received_by
+    if (!uid || userMap[uid]) return
+    let isMounted = true
+    loadUserDisplayNames([uid])
+      .then((names) => {
+        if (!isMounted) return
+        const displayName = names?.[uid]
+        if (displayName) {
+          setUserMap((prev) => ({ ...prev, [uid]: displayName }))
+        }
+      })
+      .catch((e) => {
+        console.error('Load received_by display name failed:', e)
+      })
+    return () => {
+      isMounted = false
+    }
+  }, [viewing?.received_by, userMap])
 
   async function loadAll(forceRefreshPOs = false) {
     setLoading(true)
@@ -133,6 +195,8 @@ export default function PurchaseGR() {
   }
 
   async function openReceive(po: InventoryPO, followUp: boolean) {
+    revokeDraftImages(receiveItems)
+    closePendingImageSelection()
     setSelectedPO(po)
     setIsFollowUp(followUp)
     setDomCompany('')
@@ -164,6 +228,7 @@ export default function PurchaseGR() {
             qty_already_received: alreadyReceived,
             shortage_note: '',
             item_note: item.note || '',
+            images: [],
           }
         })
       setReceiveItems(items)
@@ -180,34 +245,166 @@ export default function PurchaseGR() {
     )
   }
 
-  const totalReceived = receiveItems.reduce((s, i) => s + i.qty_received, 0)
+  function setReceiveQtyFromInput(index: number, value: string) {
+    if (value === '') {
+      updateReceiveItem(index, { qty_received: '' })
+      return
+    }
+    updateReceiveItem(index, { qty_received: Number(value) || 0 })
+  }
+
+  function revokeDraftImages(items: ReceiveItem[]) {
+    items.forEach((item) => {
+      item.images.forEach((img) => URL.revokeObjectURL(img.previewUrl))
+    })
+  }
+
+  function revokeImageDraftList(images: ReceiveItemImageDraft[]) {
+    images.forEach((img) => URL.revokeObjectURL(img.previewUrl))
+  }
+
+  function closePendingImageSelection() {
+    if (pendingImageSelection) {
+      revokeImageDraftList(pendingImageSelection.drafts)
+    }
+    setPendingImageSelection(null)
+  }
+
+  function clearReceiveDraft() {
+    revokeDraftImages(receiveItems)
+    closePendingImageSelection()
+    setReceiveItems([])
+    setReceiveOpen(false)
+    setSelectedPO(null)
+  }
+
+  function addReceiveItemImages(index: number, files: FileList | null) {
+    if (!files || files.length === 0) return
+    const target = receiveItems[index]
+    if (!target) return
+    const remain = Math.max(MAX_ITEM_IMAGES - target.images.length, 0)
+    if (remain === 0) return
+
+    const drafts = Array.from(files)
+      .slice(0, remain)
+      .map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }))
+    if (drafts.length === 0) return
+
+    if (pendingImageSelection) {
+      revokeImageDraftList(pendingImageSelection.drafts)
+    }
+    setPendingImageSelection({ itemIndex: index, drafts })
+  }
+
+  function confirmPendingImageSelection() {
+    if (!pendingImageSelection) return
+    const { itemIndex, drafts } = pendingImageSelection
+    setReceiveItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== itemIndex) return item
+        const remain = Math.max(MAX_ITEM_IMAGES - item.images.length, 0)
+        return { ...item, images: [...item.images, ...drafts.slice(0, remain)] }
+      })
+    )
+    setPendingImageSelection(null)
+  }
+
+  function removeReceiveItemImage(index: number, imageId: string) {
+    setReceiveItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item
+        const target = item.images.find((img) => img.id === imageId)
+        if (target) URL.revokeObjectURL(target.previewUrl)
+        return { ...item, images: item.images.filter((img) => img.id !== imageId) }
+      })
+    )
+  }
+
+  function reorderReceiveItemImage(index: number, imageId: string, direction: -1 | 1) {
+    setReceiveItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item
+        const currentIndex = item.images.findIndex((img) => img.id === imageId)
+        if (currentIndex < 0) return item
+        const nextIndex = currentIndex + direction
+        if (nextIndex < 0 || nextIndex >= item.images.length) return item
+        const cloned = [...item.images]
+        const [moved] = cloned.splice(currentIndex, 1)
+        cloned.splice(nextIndex, 0, moved)
+        return { ...item, images: cloned }
+      })
+    )
+  }
+
+  async function uploadReceiveItemImages(
+    poId: string,
+    item: ReceiveItem,
+    itemIndex: number,
+    uploadedRefs: Array<{ bucket: string; path: string }>
+  ) {
+    const uploaded = await Promise.all(
+      item.images.map(async (img, imageIndex) => {
+        const ext = img.file.name.split('.').pop() || 'jpg'
+        const path = `${poId}/${item.product_id}/${Date.now()}-${itemIndex + 1}-${imageIndex + 1}-${crypto.randomUUID()}.${ext}`
+        const { error } = await supabase.storage.from(GR_ITEM_IMAGES_BUCKET).upload(path, img.file, { upsert: false })
+        if (error) throw error
+        uploadedRefs.push({ bucket: GR_ITEM_IMAGES_BUCKET, path })
+        return {
+          storage_bucket: GR_ITEM_IMAGES_BUCKET,
+          storage_path: path,
+          file_name: img.file.name,
+          mime_type: img.file.type || undefined,
+          size_bytes: img.file.size,
+          sort_order: imageIndex + 1,
+        }
+      })
+    )
+    return uploaded
+  }
+
+  const totalReceived = receiveItems.reduce((s, i) => s + (Number(i.qty_received) || 0), 0)
   const totalOrdered = receiveItems.reduce((s, i) => s + i.qty_ordered, 0)
-  const hasShortage = receiveItems.some((i) => i.qty_received < i.qty_ordered)
+  const totalShortage = receiveItems.reduce((s, i) => s + Math.max(i.qty_ordered - (Number(i.qty_received) || 0), 0), 0)
+  const totalExcess = receiveItems.reduce((s, i) => s + Math.max((Number(i.qty_received) || 0) - i.qty_ordered, 0), 0)
+  const hasShortage = receiveItems.some((i) => (Number(i.qty_received) || 0) < i.qty_ordered)
+  const hasExcess = receiveItems.some((i) => (Number(i.qty_received) || 0) > i.qty_ordered)
   const costPerPiece = totalReceived > 0 && Number(domCost) > 0 ? Number(domCost) / totalReceived : 0
 
   async function handleReceive() {
     if (!selectedPO) return
-    if (receiveItems.some((i) => i.qty_received < 0)) {
+    if (receiveItems.some((i) => (Number(i.qty_received) || 0) < 0)) {
       showMessage({ message: 'จำนวนรับไม่สามารถติดลบได้' })
       return
     }
-    const totalRcv = receiveItems.reduce((s, i) => s + i.qty_received, 0)
+    const totalRcv = receiveItems.reduce((s, i) => s + (Number(i.qty_received) || 0), 0)
     const totalOrd = receiveItems.reduce((s, i) => s + i.qty_ordered, 0)
-    const confirmMsg = totalRcv < totalOrd
-      ? `ยืนยันรับสินค้าบางส่วน (${totalRcv}/${totalOrd} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
-      : `ยืนยันรับสินค้าครบ (${totalRcv} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
+    const confirmMsg = hasExcess
+      ? `ยืนยันรับสินค้าเกิน (${totalRcv}/${totalOrd} ชิ้น, เกิน ${totalExcess} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
+      : totalRcv < totalOrd
+        ? `ยืนยันรับสินค้าบางส่วน (${totalRcv}/${totalOrd} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
+        : `ยืนยันรับสินค้าครบ (${totalRcv} ชิ้น) สำหรับ PO ${selectedPO.po_no} ?`
     const ok = await showConfirm({ title: 'รับสินค้า', message: confirmMsg, confirmText: 'ยืนยันรับ' })
     if (!ok) return
     setSaving(true)
+    const uploadedRefs: Array<{ bucket: string; path: string }> = []
     try {
-      await receiveGR({
-        poId: selectedPO.id,
-        items: receiveItems.map((i) => ({
+      const itemPayload = await Promise.all(
+        receiveItems.map(async (i, idx) => ({
           product_id: i.product_id,
-          qty_received: i.qty_received,
+          qty_received: Number(i.qty_received) || 0,
           qty_ordered: i.qty_ordered,
           shortage_note: i.shortage_note || undefined,
-        })),
+          images: await uploadReceiveItemImages(selectedPO.id, i, idx, uploadedRefs),
+        }))
+      )
+
+      await receiveGR({
+        poId: selectedPO.id,
+        items: itemPayload,
         shipping: {
           dom_shipping_company: domCompany || undefined,
           dom_shipping_cost: domCost ? Number(domCost) : undefined,
@@ -216,10 +413,20 @@ export default function PurchaseGR() {
         },
         userId: user?.id,
       })
-      setReceiveOpen(false)
-      setSelectedPO(null)
+      clearReceiveDraft()
       await loadAll(true)
     } catch (e: any) {
+      if (uploadedRefs.length > 0) {
+        await Promise.all(
+          uploadedRefs.map(async (ref) => {
+            try {
+              await supabase.storage.from(ref.bucket).remove([ref.path])
+            } catch {
+              // Ignore cleanup failures; DB transaction is still safe.
+            }
+          })
+        )
+      }
       showMessage({ title: 'เกิดข้อผิดพลาด', message: 'รับเข้าคลังไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setSaving(false)
@@ -256,19 +463,19 @@ export default function PurchaseGR() {
   const partialCount = partialPOs.length
 
   return (
-    <div className="space-y-4 mt-12">
+    <div className="space-y-4 mt-4 md:mt-12">
       {/* ── New POs waiting for first GR ── */}
       {sortedNewPOs.length > 0 && (
-        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+        <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 md:p-4">
           <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})</h3>
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-1 md:flex md:flex-wrap gap-2">
             {sortedNewPOs.map((po) => {
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
               <button
                 key={po.id}
                 onClick={() => openReceive(po, false)}
-                className="px-3 py-2 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors text-left"
+                className="w-full md:w-auto px-3 py-2 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors text-left"
               >
                 <div className="flex items-center gap-2">
                   <span className="text-base">{po.po_no}</span>
@@ -288,7 +495,7 @@ export default function PurchaseGR() {
 
       {/* ── Partial POs waiting for follow-up GR ── */}
       {sortedPartialPOs.length > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 md:p-4">
           <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
             PO รอรับเพิ่ม
             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
@@ -303,8 +510,8 @@ export default function PurchaseGR() {
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
-                <div key={po.id} className="flex items-center justify-between bg-white border border-red-200 rounded-lg px-4 py-2.5">
-                  <div className="flex items-center gap-3">
+                <div key={po.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white border border-red-200 rounded-lg px-3 md:px-4 py-2.5">
+                  <div className="flex flex-wrap items-center gap-2 md:gap-3">
                     <span className="font-medium text-gray-900 text-sm">{po.po_no}</span>
                     <span className="text-xs text-gray-500">
                       รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
@@ -321,7 +528,7 @@ export default function PurchaseGR() {
                   </div>
                   <button
                     onClick={() => openReceive(po, true)}
-                    className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-semibold hover:bg-red-700 transition-colors"
+                    className="self-end md:self-auto px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-semibold hover:bg-red-700 transition-colors"
                   >
                     รับเพิ่ม
                   </button>
@@ -334,7 +541,7 @@ export default function PurchaseGR() {
 
       {/* ── Filter Bar ── */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col md:flex-row md:flex-wrap md:items-center gap-3">
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             {statusTabs.map((t) => (
               <button
@@ -365,18 +572,20 @@ export default function PurchaseGR() {
               </button>
             ))}
           </div>
-          <div className="flex-1 min-w-[200px]">
+          <div className="w-full md:flex-1 md:min-w-[200px]">
             <input
               type="text"
               placeholder="ค้นหาเลขที่ GR..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
             />
           </div>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ตั้งแต่วันที่" />
-          <span className="text-gray-400 text-sm">-</span>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm" title="ถึงวันที่" />
+          <div className="w-full md:w-auto flex items-center gap-2">
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ตั้งแต่วันที่" />
+            <span className="text-gray-400 text-sm">-</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ถึงวันที่" />
+          </div>
         </div>
       </div>
 
@@ -389,7 +598,35 @@ export default function PurchaseGR() {
         ) : grs.length === 0 ? (
           <div className="text-center py-16 text-gray-400">ไม่พบรายการ GR</div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          <div className="md:hidden divide-y">
+            {grs.map((gr) => {
+              const items = (gr as any).inv_gr_items || []
+              const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
+              const grTotalReceived = items.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
+              const st = STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
+              return (
+                <div key={gr.id} className="p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold text-gray-900 text-sm">{gr.gr_no}</div>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${st.color}`}>{st.label}</span>
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    <div>PO: {gr.inv_po?.po_no || '-'}</div>
+                    <div>วันที่รับ: {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</div>
+                    <div>จำนวน: <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : ''}>{grTotalReceived}/{grTotalOrdered}</span></div>
+                  </div>
+                  <button
+                    onClick={() => openDetail(gr)}
+                    className="w-full px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold"
+                  >
+                    ดูรายละเอียด
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b">
@@ -458,22 +695,25 @@ export default function PurchaseGR() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
 
       {/* ── Receive GR Modal ── */}
-      <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-6xl">
-        <div className="p-6 space-y-5">
-          <h2 className="text-xl font-bold text-gray-900">
+      <Modal open={receiveOpen} onClose={clearReceiveDraft} closeOnBackdropClick={false} contentClassName="max-w-6xl">
+        <div className="p-4 md:p-6 space-y-5">
+          <h2 className="text-lg md:text-xl font-bold text-gray-900">
             {isFollowUp ? 'รับสินค้าเพิ่ม (Follow-up GR)' : 'ตรวจรับสินค้า (GR)'}
           </h2>
           {selectedPO && (
             <>
               <div className={`rounded-lg p-3 text-sm ${isFollowUp ? 'bg-red-50' : 'bg-orange-50'}`}>
-                <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
-                {selectedPO.supplier_name && <span className="ml-3 text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
-                <span className="ml-3 text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
-                {isFollowUp && <span className="ml-3 text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className={`font-semibold ${isFollowUp ? 'text-red-800' : 'text-orange-800'}`}>PO: {selectedPO.po_no}</span>
+                  {selectedPO.supplier_name && <span className="text-gray-600">ผู้ขาย: {selectedPO.supplier_name}</span>}
+                  <span className="text-gray-600">กำหนดเข้า: {formatDateThai(selectedPO.expected_arrival_date)}</span>
+                  {isFollowUp && <span className="text-red-600 font-medium">รับรอบถัดไป (แสดงเฉพาะยอดค้างรับ)</span>}
+                </div>
               </div>
               {(selectedPO.note || (selectedPO as any).inv_pr?.note) && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm space-y-1">
@@ -490,7 +730,165 @@ export default function PurchaseGR() {
           )}
 
           {/* items table */}
-          <div className="overflow-x-auto border rounded-lg">
+          <div className="md:hidden space-y-3">
+            {receiveItems.map((item, index) => {
+              const qtyReceived = Number(item.qty_received) || 0
+              const shortage = Math.max(item.qty_ordered - qtyReceived, 0)
+              const imgUrl = getPublicUrl('product-images', item.product_code)
+              return (
+                <div key={`mobile-${item.product_id}-${index}`} className={`border rounded-lg p-3 space-y-3 ${shortage > 0 ? 'bg-red-50/40 border-red-200' : 'bg-white'}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => { if (imgUrl) setZoomImageUrl(imgUrl) }}
+                      className="w-12 h-12 rounded bg-gray-200 overflow-hidden shrink-0 border"
+                    >
+                      {imgUrl ? (
+                        <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                      )}
+                    </button>
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm">{item.product_code} - {item.product_name}</div>
+                      {item.item_note && <div className="text-xs text-amber-600 mt-0.5">* {item.item_note}</div>}
+                    </div>
+                    </div>
+                    <div className="flex items-start gap-2 text-xs shrink-0">
+                      {isFollowUp && (
+                        <div className="rounded bg-blue-50 px-2.5 py-1.5 text-center min-w-[66px]">
+                          <div className="text-gray-500 leading-tight">รับแล้ว</div>
+                          <div className="font-bold text-blue-700 mt-0.5 leading-tight">{item.qty_already_received.toLocaleString()}</div>
+                        </div>
+                      )}
+                      <div className="rounded bg-gray-50 px-2.5 py-1.5 text-center min-w-[72px]">
+                        <div className="text-gray-500 leading-tight">{isFollowUp ? 'ค้างรับ' : 'สั่ง'}</div>
+                        <div className="font-bold mt-0.5 leading-tight text-gray-900">{Number(item.qty_ordered).toLocaleString()}</div>
+                      </div>
+                      <div className="rounded bg-red-50 px-2.5 py-1.5 text-center min-w-[56px]">
+                        <div className="text-gray-500 leading-tight">ขาด</div>
+                        <div className="font-bold text-red-600 mt-0.5 leading-tight">{shortage.toLocaleString()}</div>
+                      </div>
+                      <div className="rounded bg-emerald-50 px-2.5 py-1.5 text-center min-w-[56px]">
+                        <div className="text-gray-500 leading-tight">เกิน</div>
+                        <div className="font-bold text-emerald-700 mt-0.5 leading-tight">{Math.max(qtyReceived - item.qty_ordered, 0).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">รับ</label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      min={0}
+                      step={1}
+                      value={item.qty_received}
+                      onFocus={() => {
+                        if (item.qty_received === 0) updateReceiveItem(index, { qty_received: '' })
+                      }}
+                      onBlur={() => {
+                        if (item.qty_received === '') updateReceiveItem(index, { qty_received: 0 })
+                      }}
+                      onChange={(e) => setReceiveQtyFromInput(index, e.target.value)}
+                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                      className="w-full px-3 py-2 border rounded-lg text-sm text-right bg-white text-gray-900 caret-gray-900"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-gray-600">รูป GR (สูงสุด 5)</label>
+                      <span className="text-[11px] text-gray-500">{item.images.length}/{MAX_ITEM_IMAGES}</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label htmlFor={`camera-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                        ถ่ายรูป
+                      </label>
+                      <input
+                        id={`camera-mobile-${index}`}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => {
+                          addReceiveItemImages(index, e.target.files)
+                          e.target.value = ''
+                        }}
+                        className="hidden"
+                      />
+                      <label htmlFor={`gallery-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                        เลือกรูป
+                      </label>
+                      <input
+                        id={`gallery-mobile-${index}`}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={(e) => {
+                          addReceiveItemImages(index, e.target.files)
+                          e.target.value = ''
+                        }}
+                        className="hidden"
+                      />
+                    </div>
+                    {item.images.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {item.images.map((image, imageIndex) => (
+                          <div key={image.id} className="relative">
+                            <button type="button" onClick={() => setZoomImageUrl(image.previewUrl)} className="block">
+                              <img src={image.previewUrl} alt="" className="w-16 h-16 rounded border object-cover" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeReceiveItemImage(index, image.id)}
+                              className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white text-[10px]"
+                              title="ลบรูป"
+                            >
+                              ×
+                            </button>
+                            <div className="mt-1 flex justify-center gap-1">
+                              <button
+                                type="button"
+                                disabled={imageIndex === 0}
+                                onClick={() => reorderReceiveItemImage(index, image.id, -1)}
+                                className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                              >
+                                ←
+                              </button>
+                              <button
+                                type="button"
+                                disabled={imageIndex === item.images.length - 1}
+                                onClick={() => reorderReceiveItemImage(index, image.id, 1)}
+                                className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                              >
+                                →
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {shortage > 0 && (
+                    <div>
+                      <label className="block text-xs text-red-600 mb-1">หมายเหตุขาดส่ง</label>
+                      <input
+                        type="text"
+                        value={item.shortage_note}
+                        onChange={(e) => updateReceiveItem(index, { shortage_note: e.target.value })}
+                        className="w-full px-2 py-1.5 border rounded-lg text-xs border-red-200"
+                        placeholder="ระบุเหตุผล..."
+                      />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <div className="hidden md:block overflow-x-auto border rounded-lg">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b">
@@ -499,18 +897,22 @@ export default function PurchaseGR() {
                   {isFollowUp && (
                     <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">รับแล้ว</th>
                   )}
-                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">{isFollowUp ? 'ค้างรับ' : 'จำนวนสั่ง'}</th>
-                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-28">จำนวนรับ</th>
+                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">{isFollowUp ? 'ค้างรับ' : 'สั่ง'}</th>
+                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-28">รับ</th>
                   <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-20">ขาด</th>
+                  <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-20">เกิน</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-72">รูป GR (สูงสุด 5)</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-40">หมายเหตุขาดส่ง</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {receiveItems.map((item, index) => {
-                  const shortage = Math.max(item.qty_ordered - item.qty_received, 0)
+                  const qtyReceived = Number(item.qty_received) || 0
+                  const shortage = Math.max(item.qty_ordered - qtyReceived, 0)
+                  const excess = Math.max(qtyReceived - item.qty_ordered, 0)
                   const imgUrl = getPublicUrl('product-images', item.product_code)
                   return (
-                    <tr key={item.product_id} className={shortage > 0 ? 'bg-red-50/50' : ''}>
+                    <tr key={`${item.product_id}-${index}`} className={shortage > 0 ? 'bg-red-50/50' : ''}>
                       <td className="px-3 py-2">
                         <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
                           {imgUrl ? (
@@ -533,11 +935,20 @@ export default function PurchaseGR() {
                       <td className="px-3 py-2">
                         <input
                           type="number"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           min={0}
-                          max={item.qty_ordered}
+                          step={1}
                           value={item.qty_received}
-                          onChange={(e) => updateReceiveItem(index, { qty_received: Number(e.target.value) || 0 })}
-                          className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
+                          onFocus={() => {
+                            if (item.qty_received === 0) updateReceiveItem(index, { qty_received: '' })
+                          }}
+                          onBlur={() => {
+                            if (item.qty_received === '') updateReceiveItem(index, { qty_received: 0 })
+                          }}
+                          onChange={(e) => setReceiveQtyFromInput(index, e.target.value)}
+                          onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                          className="w-full px-2 py-1.5 border rounded-lg text-sm text-right bg-white text-gray-900 caret-gray-900"
                         />
                       </td>
                       <td className="px-3 py-2 text-right">
@@ -546,6 +957,89 @@ export default function PurchaseGR() {
                         ) : (
                           <span className="text-green-600">-</span>
                         )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {excess > 0 ? (
+                          <span className="text-emerald-700 font-semibold">{excess.toLocaleString()}</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <label htmlFor={`camera-desktop-${index}`} className="px-2 py-1.5 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                              ถ่ายรูป
+                            </label>
+                            <input
+                              id={`camera-desktop-${index}`}
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={(e) => {
+                                addReceiveItemImages(index, e.target.files)
+                                e.target.value = ''
+                              }}
+                              className="hidden"
+                            />
+                            <label htmlFor={`gallery-desktop-${index}`} className="px-2 py-1.5 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                              เลือกรูป
+                            </label>
+                            <input
+                              id={`gallery-desktop-${index}`}
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              onChange={(e) => {
+                                addReceiveItemImages(index, e.target.files)
+                                e.target.value = ''
+                              }}
+                              className="hidden"
+                            />
+                            <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                              {item.images.length}/{MAX_ITEM_IMAGES}
+                            </span>
+                          </div>
+                          {item.images.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {item.images.map((image, imageIndex) => (
+                                <div key={image.id} className="relative">
+                                  <img src={image.previewUrl} alt="" className="w-14 h-14 rounded border object-cover" />
+                                  <div className="absolute -top-1 -right-1 flex gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeReceiveItemImage(index, image.id)}
+                                      className="w-5 h-5 rounded-full bg-red-600 text-white text-[10px]"
+                                      title="ลบรูป"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                  <div className="mt-1 flex justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={imageIndex === 0}
+                                      onClick={() => reorderReceiveItemImage(index, image.id, -1)}
+                                      className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                                      title="เลื่อนซ้าย"
+                                    >
+                                      ←
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={imageIndex === item.images.length - 1}
+                                      onClick={() => reorderReceiveItemImage(index, image.id, 1)}
+                                      className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                                      title="เลื่อนขวา"
+                                    >
+                                      →
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2">
                         {shortage > 0 && (
@@ -568,8 +1062,12 @@ export default function PurchaseGR() {
                   <td className="px-3 py-2.5 text-right font-medium">{totalOrdered.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-medium">{totalReceived.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-semibold text-red-600">
-                    {hasShortage ? (totalOrdered - totalReceived).toLocaleString() : '-'}
+                    {hasShortage ? totalShortage.toLocaleString() : '-'}
                   </td>
+                  <td className="px-3 py-2.5 text-right font-semibold text-emerald-700">
+                    {hasExcess ? totalExcess.toLocaleString() : '-'}
+                  </td>
+                  <td></td>
                   <td></td>
                 </tr>
               </tfoot>
@@ -602,7 +1100,7 @@ export default function PurchaseGR() {
             </button>
             {shippingExpanded && (
               <div className="px-4 pb-4 space-y-3 border-t">
-                <div className="grid grid-cols-2 gap-3 pt-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">ชื่อบริษัทขนส่ง</label>
                     <input
@@ -652,11 +1150,11 @@ export default function PurchaseGR() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setReceiveOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
+            <button onClick={clearReceiveDraft} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
               ยกเลิก
             </button>
             <button onClick={handleReceive} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
-              {saving ? 'กำลังบันทึก...' : hasShortage ? 'รับบางส่วน' : 'รับเข้าคลัง'}
+              {saving ? 'กำลังบันทึก...' : hasExcess ? 'รับเกิน' : hasShortage ? 'รับบางส่วน' : 'รับเข้าคลัง'}
             </button>
           </div>
         </div>
@@ -674,14 +1172,16 @@ export default function PurchaseGR() {
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียด GR</h2>
-                  <p className="text-sm text-gray-500 mt-1">
+                  <div className="text-sm text-gray-500 mt-1">
                     เลขที่: <span className="font-semibold text-gray-800">{viewing.gr_no}</span>
-                    {(viewing as any).inv_po?.po_no && (
-                      <span className="ml-3">PO: <span className="font-semibold">{(viewing as any).inv_po.po_no}</span></span>
-                    )}
-                  </p>
+                  </div>
+                  {(viewing as any).inv_po?.po_no && (
+                    <div className="text-sm text-gray-500">
+                      PO: <span className="font-semibold text-gray-800">{(viewing as any).inv_po.po_no}</span>
+                    </div>
+                  )}
                 </div>
-                <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
+                <span className={`inline-flex items-center justify-center text-center leading-tight px-3 py-1 rounded-full text-xs font-semibold shrink-0 min-w-[64px] ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
                   {(STATUS_MAP[viewing.status] || { label: viewing.status }).label}
                 </span>
               </div>
@@ -690,28 +1190,32 @@ export default function PurchaseGR() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
                   <div className="text-gray-500 text-xs">วันที่รับ</div>
-                  <div className="font-medium">{viewing.received_at ? new Date(viewing.received_at).toLocaleString('th-TH') : '-'}</div>
+                  <div className="font-medium text-gray-900">{viewing.received_at ? new Date(viewing.received_at).toLocaleString('th-TH') : '-'}</div>
                 </div>
                 <div className="bg-amber-50 rounded-lg p-3">
                   <div className="text-amber-700 text-xs">กำหนดเข้า (จาก PO)</div>
                   <div className="font-medium text-amber-800">{formatDateThai(viewing.inv_po?.expected_arrival_date)}</div>
                 </div>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <div className="text-gray-500 text-xs">ผู้รับสินค้า</div>
+                  <div className="font-medium text-gray-900">{viewing.received_by ? userMap[viewing.received_by] || '-' : '-'}</div>
+                </div>
                 {viewing.dom_shipping_company && (
                   <div className="bg-blue-50 rounded-lg p-3">
                     <div className="text-blue-600 text-xs">บริษัทขนส่ง</div>
-                    <div className="font-medium">{viewing.dom_shipping_company}</div>
+                    <div className="font-medium text-blue-900">{viewing.dom_shipping_company}</div>
                   </div>
                 )}
                 {viewing.dom_shipping_cost != null && (
                   <div className="bg-blue-50 rounded-lg p-3">
                     <div className="text-blue-600 text-xs">ค่าขนส่งในประเทศ</div>
-                    <div className="font-medium">{Number(viewing.dom_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div>
+                    <div className="font-medium text-blue-900">{Number(viewing.dom_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div>
                   </div>
                 )}
                 {viewing.dom_cost_per_piece != null && (
                   <div className="bg-blue-50 rounded-lg p-3">
                     <div className="text-blue-600 text-xs">ต้นทุนต่อชิ้น</div>
-                    <div className="font-bold">{Number(viewing.dom_cost_per_piece).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท</div>
+                    <div className="font-bold text-gray-900">{Number(viewing.dom_cost_per_piece).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท</div>
                   </div>
                 )}
               </div>
@@ -729,15 +1233,82 @@ export default function PurchaseGR() {
               )}
 
               {/* items */}
-              <div className="overflow-x-auto border rounded-lg">
+              <div className="md:hidden space-y-3">
+                {(viewing.inv_gr_items || []).map((item: any) => {
+                  const prod = item.pr_products
+                  const productImageUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                  const orderQty = Number(item.qty_ordered || 0)
+                  const receivedQty = Number(item.qty_received || 0)
+                  const shortage = Number(item.qty_shortage || 0)
+                  const excess = Math.max(receivedQty - orderQty, 0)
+                  const receiveImages = [...(item.inv_gr_item_images || [])].sort((a: any, b: any) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+                  return (
+                    <div key={item.id} className="border rounded-lg p-3 bg-white space-y-3">
+                      <div className="flex items-start gap-3">
+                        <div className="w-12 h-12 rounded bg-gray-200 overflow-hidden border shrink-0">
+                          {productImageUrl ? (
+                            <img src={productImageUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-gray-900 text-sm">{prod?.product_code || '-'}</div>
+                          <div className="font-medium text-gray-800 text-sm break-words">{prod?.product_name || '-'}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">{item.shortage_note || item.note || '-'}</div>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2 text-xs">
+                        <div className="rounded bg-gray-50 p-2 text-center">
+                          <div className="text-gray-500">สั่ง</div>
+                          <div className="font-semibold text-gray-900">{orderQty.toLocaleString()}</div>
+                        </div>
+                        <div className="rounded bg-blue-50 p-2 text-center">
+                          <div className="text-blue-700">รับ</div>
+                          <div className="font-semibold text-blue-900">{receivedQty.toLocaleString()}</div>
+                        </div>
+                        <div className="rounded bg-red-50 p-2 text-center">
+                          <div className="text-red-600">ขาด</div>
+                          <div className="font-semibold text-red-700">{shortage.toLocaleString()}</div>
+                        </div>
+                        <div className="rounded bg-emerald-50 p-2 text-center">
+                          <div className="text-emerald-700">เกิน</div>
+                          <div className="font-semibold text-emerald-800">{excess.toLocaleString()}</div>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-600 mb-1">รูปตรวจรับ</div>
+                        {receiveImages.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {receiveImages.map((image: any) => (
+                              <img
+                                key={image.id}
+                                src={getStoragePublicUrl(image.storage_bucket, image.storage_path)}
+                                alt=""
+                                className="w-14 h-14 rounded border object-cover cursor-zoom-in"
+                                onClick={() => setZoomImageUrl(getStoragePublicUrl(image.storage_bucket, image.storage_path))}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="hidden md:block overflow-x-auto border rounded-lg">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 border-b">
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวนสั่ง</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวนรับ</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">สั่ง</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รับ</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ขาด</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">เกิน</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รูปตรวจรับ</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
                     </tr>
                   </thead>
@@ -745,7 +1316,15 @@ export default function PurchaseGR() {
                     {(viewing.inv_gr_items || []).map((item: any) => {
                       const prod = item.pr_products
                       const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                      const orderQty = Number(item.qty_ordered || 0)
+                      const receivedQty = Number(item.qty_received || 0)
                       const shortage = Number(item.qty_shortage || 0)
+                      const excess = Math.max(receivedQty - orderQty, 0)
+                      const receiveImages = [...(item.inv_gr_item_images || [])].sort((a: any, b: any) => {
+                        const aOrder = Number(a.sort_order) || 0
+                        const bOrder = Number(b.sort_order) || 0
+                        return aOrder - bOrder
+                      })
                       return (
                         <tr key={item.id} className={shortage > 0 ? 'bg-red-50/50' : ''}>
                           <td className="px-3 py-2">
@@ -758,15 +1337,45 @@ export default function PurchaseGR() {
                             </div>
                           </td>
                           <td className="px-3 py-2">
-                            <div className="font-medium">{prod?.product_code} - {prod?.product_name}</div>
+                            <div className="font-medium text-gray-900">{prod?.product_code || '-'}</div>
+                            <div className="text-sm text-gray-700 break-words">{prod?.product_name || '-'}</div>
                           </td>
-                          <td className="px-3 py-2 text-right text-gray-600">{item.qty_ordered != null ? Number(item.qty_ordered).toLocaleString() : '-'}</td>
-                          <td className="px-3 py-2 text-right font-medium">{Number(item.qty_received).toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right text-gray-600">{item.qty_ordered != null ? orderQty.toLocaleString() : '-'}</td>
+                          <td className="px-3 py-2 text-right font-medium">{receivedQty.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right">
                             {shortage > 0 ? (
                               <span className="text-red-600 font-semibold">{shortage.toLocaleString()}</span>
                             ) : (
                               <span className="text-green-600">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            {excess > 0 ? (
+                              <span className="text-emerald-700 font-semibold">{excess.toLocaleString()}</span>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            {receiveImages.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {receiveImages.map((image: any) => (
+                                  <button
+                                    key={image.id}
+                                    type="button"
+                                    className="rounded border"
+                                    onClick={() => setZoomImageUrl(getStoragePublicUrl(image.storage_bucket, image.storage_path))}
+                                  >
+                                    <img
+                                      src={getStoragePublicUrl(image.storage_bucket, image.storage_path)}
+                                      alt=""
+                                      className="w-12 h-12 rounded object-cover cursor-zoom-in"
+                                    />
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">-</span>
                             )}
                           </td>
                           <td className="px-3 py-2 text-xs text-gray-500">{item.shortage_note || ''}</td>
@@ -778,12 +1387,48 @@ export default function PurchaseGR() {
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t">
-                <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
-                  ปิด
+                <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg bg-white text-gray-700 hover:bg-gray-50 text-sm font-medium">
+                  ปิดหน้าต่าง
                 </button>
               </div>
             </>
           ) : null}
+        </div>
+      </Modal>
+
+      <Modal open={!!pendingImageSelection} onClose={closePendingImageSelection} closeOnBackdropClick={false} contentClassName="max-w-lg">
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-bold text-gray-900">ตรวจสอบรูปก่อนเพิ่ม</h3>
+          <p className="text-xs text-gray-500">ตรวจสอบรูปให้ถูกต้อง แล้วกดเพิ่มรูป</p>
+          <div className="grid grid-cols-3 gap-2 max-h-[45vh] overflow-y-auto">
+            {(pendingImageSelection?.drafts || []).map((img) => (
+              <img key={img.id} src={img.previewUrl} alt="" className="w-full aspect-square object-cover rounded border" />
+            ))}
+          </div>
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <button onClick={closePendingImageSelection} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-50">
+              ยกเลิก
+            </button>
+            <button onClick={confirmPendingImageSelection} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700">
+              เพิ่มรูป
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!zoomImageUrl} onClose={() => setZoomImageUrl(null)} closeOnBackdropClick contentClassName="max-w-3xl">
+        <div className="p-3 relative">
+          <button
+            type="button"
+            onClick={() => setZoomImageUrl(null)}
+            className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 text-white text-lg leading-none"
+            aria-label="ปิดรูปขยาย"
+          >
+            ×
+          </button>
+          {zoomImageUrl && (
+            <img src={zoomImageUrl} alt="" className="w-full max-h-[75vh] object-contain rounded" />
+          )}
         </div>
       </Modal>
       {MessageModal}

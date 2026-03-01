@@ -606,7 +606,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 </select>
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (เก่า)</span>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ตึกเก่า)</span>
                 <input
                   type="text"
                   value={fingerprint_id_old}
@@ -615,7 +615,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 />
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ใหม่)</span>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ตึกใหม่)</span>
                 <input
                   type="text"
                   value={fingerprint_id_new}

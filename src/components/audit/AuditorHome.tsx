@@ -3,13 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchAuditorAssignedAudits } from '../../lib/auditApi'
 import ProductionParcelReturn from '../wms/production/ProductionParcelReturn'
+import PurchaseGR from '../../pages/PurchaseGR'
 import { useWmsModal } from '../wms/useWmsModal'
 import type { InventoryAudit } from '../../types'
 
-type ViewKey = 'menu' | 'audit' | 'parcel-return'
+type ViewKey = 'menu' | 'audit' | 'parcel-return' | 'gr-receive'
 
 const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; color: string }[] = [
   { key: 'audit', label: 'Audit', icon: 'fas fa-clipboard-check', desc: 'ตรวจนับสินค้าที่ได้รับมอบหมาย', color: 'from-blue-600 to-blue-800' },
+  { key: 'gr-receive', label: 'รับ GR', icon: 'fas fa-truck-ramp-box', desc: 'ตรวจรับสินค้าเข้าคลัง', color: 'from-emerald-600 to-emerald-800' },
   { key: 'parcel-return', label: 'รับสินค้าตีกลับ', icon: 'fas fa-barcode', desc: 'สแกนเลขพัสดุรับคืนจากลูกค้า', color: 'from-purple-600 to-purple-800' },
 ]
 
@@ -92,7 +94,7 @@ export default function AuditorHome() {
     )
   }
 
-  if (activeView === 'parcel-return') {
+  if (activeView === 'parcel-return' || activeView === 'gr-receive') {
     return (
       <div className="min-h-screen w-full bg-slate-900 text-white flex flex-col overflow-hidden rounded-none">
         <header className="p-3 border-b border-slate-800 flex justify-between items-center bg-slate-900/90 sticky top-0 z-20">
@@ -122,7 +124,7 @@ export default function AuditorHome() {
         </header>
 
         <div className="flex-1 overflow-y-auto">
-          <ProductionParcelReturn />
+          {activeView === 'parcel-return' ? <ProductionParcelReturn /> : <PurchaseGR />}
         </div>
         {MessageModal}
         {ConfirmModal}
