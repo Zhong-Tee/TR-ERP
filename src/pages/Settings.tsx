@@ -441,6 +441,7 @@ export default function Settings() {
     { key: 'hr-salary', label: 'เส้นทางเงินเดือน', group: 'hr' },
     { key: 'hr-warnings', label: 'ใบเตือน', group: 'hr' },
     { key: 'hr-certificates', label: 'ใบรับรอง', group: 'hr' },
+    { key: 'hr-assets', label: 'ทะเบียนทรัพย์สิน', group: 'hr' },
     { key: 'hr-settings', label: 'ตั้งค่า HR', group: 'hr' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },

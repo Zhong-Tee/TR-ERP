@@ -7,7 +7,7 @@ import type {
   HRExam, HRExamResult, HROnboardingTemplate, HROnboardingPlan,
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
   HRNotification, HRNotificationSettings,
-  HRWarning, HRCertificate,
+  HRWarning, HRCertificate, HRAsset,
 } from '../types'
 import * as XLSX from 'xlsx'
 
@@ -1137,5 +1137,55 @@ export async function upsertCertificate(c: Partial<HRCertificate>) {
 
 export async function deleteCertificate(id: string) {
   const { error } = await supabase.from('hr_certificates').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+// =============================================================================
+// Asset Registry (ทะเบียนทรัพย์สิน)
+// =============================================================================
+
+const ASSET_SELECT = `*, department:hr_departments!department_id(id,name), assigned_employee:hr_employees!assigned_employee_id(id,employee_code,first_name,last_name,nickname,department_id,position_id)`
+
+export async function fetchAssets(filters?: {
+  status?: string
+  departmentId?: string
+  assignedEmployeeId?: string
+  search?: string
+}) {
+  let q = supabase.from('hr_assets').select(ASSET_SELECT).order('created_at', { ascending: false })
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.departmentId) q = q.eq('department_id', filters.departmentId)
+  if (filters?.assignedEmployeeId) q = q.eq('assigned_employee_id', filters.assignedEmployeeId)
+  if (filters?.search?.trim()) {
+    const term = filters.search.trim()
+    q = q.or(`name.ilike.%${term}%,asset_code.ilike.%${term}%,category.ilike.%${term}%,location.ilike.%${term}%`)
+  }
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRAsset[]
+}
+
+export async function fetchAsset(id: string) {
+  const { data, error } = await supabase.from('hr_assets').select(ASSET_SELECT).eq('id', id).single()
+  if (error) pgError(error)
+  return data as HRAsset
+}
+
+export async function upsertAsset(asset: Partial<HRAsset>) {
+  const payload = { ...asset }
+  delete payload.department
+  delete payload.assigned_employee
+  if (payload.id) {
+    const { data, error } = await supabase.from('hr_assets').update(payload).eq('id', payload.id).select(ASSET_SELECT).single()
+    if (error) pgError(error)
+    return data as HRAsset
+  }
+  const { data, error } = await supabase.from('hr_assets').insert(payload).select(ASSET_SELECT).single()
+  if (error) pgError(error)
+  return data as HRAsset
+}
+
+export async function deleteAsset(id: string) {
+  const { error } = await supabase.from('hr_assets').delete().eq('id', id)
   if (error) pgError(error)
 }

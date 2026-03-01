@@ -1368,3 +1368,24 @@ export interface HRCertificate {
   employee?: HREmployee
   issuer?: HREmployee
 }
+
+export interface HRAsset {
+  id: string
+  asset_code?: string
+  name: string
+  category?: string
+  description?: string
+  department_id?: string
+  location?: string
+  purchase_date?: string
+  purchase_cost?: number
+  current_value?: number
+  status: 'active' | 'maintenance' | 'retired' | 'lost'
+  assigned_employee_id?: string
+  images: string[]
+  notes?: string
+  created_at: string
+  updated_at: string
+  department?: HRDepartment
+  assigned_employee?: HREmployee
+}

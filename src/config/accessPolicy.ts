@@ -63,6 +63,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/hr/salary', key: 'hr-salary' },
   { prefix: '/hr/warnings', key: 'hr-warnings' },
   { prefix: '/hr/certificates', key: 'hr-certificates' },
+  { prefix: '/hr/assets', key: 'hr-assets' },
   { prefix: '/hr/settings', key: 'hr-settings' },
 ]
 
@@ -87,6 +88,7 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
     { path: '/hr/salary', key: 'hr-salary' },
     { path: '/hr/warnings', key: 'hr-warnings' },
     { path: '/hr/certificates', key: 'hr-certificates' },
+    { path: '/hr/assets', key: 'hr-assets' },
     { path: '/hr/settings', key: 'hr-settings' },
   ],
   '/purchase': [
@@ -131,6 +133,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'hr-salary': 'hr',
   'hr-warnings': 'hr',
   'hr-certificates': 'hr',
+  'hr-assets': 'hr',
   'hr-settings': 'hr',
   'settings-users': 'settings',
   'settings-role-settings': 'settings',

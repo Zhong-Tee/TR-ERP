@@ -278,6 +278,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/salary', label: 'เส้นทางเงินเดือน' },
     { path: '/hr/warnings', label: 'ใบเตือน' },
     { path: '/hr/certificates', label: 'ใบรับรอง' },
+    { path: '/hr/assets', label: 'ทะเบียนทรัพย์สิน' },
     { path: '/hr/settings', label: 'ตั้งค่า' },
   ].filter((tab) => {
     const menuKey = resolveMenuKeyFromPath(tab.path)
