@@ -51,6 +51,8 @@ const INIT_IMPORT_HEADERS = [
   'unit_multiplier',
 ] as const
 
+type ChannelOption = { channel_code: string; channel_name: string }
+
 interface InitImportRow {
   product_code: string
   product_name: string
@@ -64,6 +66,7 @@ interface InitImportRow {
   storage_location: string
   unit_name: string
   unit_multiplier: number
+  channel_prices: Record<string, number>
 }
 
 /** อัปโหลดไฟล์รูปไป bucket product-images ชื่อไฟล์ = productCode + นามสกุล จากไฟล์ */
@@ -130,13 +133,16 @@ export default function Products() {
   const [appliedSearch, setAppliedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
+  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
+  const [hiddenCount, setHiddenCount] = useState(0)
+  const [channels, setChannels] = useState<ChannelOption[]>([])
+  const [channelPrices, setChannelPrices] = useState<Record<string, string>>({})
   const [categories, setCategories] = useState<string[]>([])
   const [modalMode, setModalMode] = useState<'add' | 'edit' | null>(null)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [form, setForm] = useState(emptyForm())
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [productToDelete, setProductToDelete] = useState<Product | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadPreview, setUploadPreview] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
@@ -179,11 +185,11 @@ export default function Products() {
 
   useEffect(() => {
     setPage(1)
-  }, [categoryFilter, productTypeFilter])
+  }, [categoryFilter, productTypeFilter, productVisibilityFilter])
 
   useEffect(() => {
     loadProducts()
-  }, [appliedSearch, categoryFilter, productTypeFilter, page])
+  }, [appliedSearch, categoryFilter, productTypeFilter, productVisibilityFilter, page])
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('topbar-menu-count', { detail: { count: totalCount } }))
@@ -192,14 +198,18 @@ export default function Products() {
   useEffect(() => {
     loadCategories()
     loadSellerOptions()
+    loadChannels()
   }, [])
+
+  function getChannelPriceHeaders(list: ChannelOption[]) {
+    return list.map((ch) => `price_${ch.channel_code}`)
+  }
 
   async function loadCategories() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
         .select('product_category')
-        .eq('is_active', true)
         .not('product_category', 'is', null)
       if (error) throw error
       const list = (data || [])
@@ -225,6 +235,19 @@ export default function Products() {
     }
   }
 
+  async function loadChannels() {
+    try {
+      const { data, error } = await supabase
+        .from('channels')
+        .select('channel_code, channel_name')
+        .order('channel_code', { ascending: true })
+      if (error) throw error
+      setChannels((data || []) as ChannelOption[])
+    } catch (e) {
+      console.error('Error loading channels:', e)
+    }
+  }
+
   async function loadProducts() {
     setLoading(true)
     try {
@@ -234,9 +257,18 @@ export default function Products() {
       let query = supabase
         .from('pr_products')
         .select('*', { count: 'exact' })
-        .eq('is_active', true)
         .order('product_code', { ascending: true })
         .range(from, to)
+      const hiddenCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', false)
+
+      if (productVisibilityFilter === 'active') {
+        query = query.eq('is_active', true)
+      } else if (productVisibilityFilter === 'hidden') {
+        query = query.eq('is_active', false)
+      }
 
       if (appliedSearch) {
         query = query.or(
@@ -250,11 +282,16 @@ export default function Products() {
         query = query.eq('product_type', productTypeFilter)
       }
 
-      const { data, error, count } = await query
+      const [{ data, error, count }, { count: hiddenTotal, error: hiddenErr }] = await Promise.all([
+        query,
+        hiddenCountQuery,
+      ])
 
       if (error) throw error
+      if (hiddenErr) throw hiddenErr
       setProducts(data || [])
       setTotalCount(count || 0)
+      setHiddenCount(hiddenTotal || 0)
     } catch (error: any) {
       console.error('Error loading products:', error)
       showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
@@ -276,6 +313,7 @@ export default function Products() {
 
   function openAdd() {
     setForm(emptyForm())
+    setChannelPrices({})
     setEditingProduct(null)
     setUploadFile(null)
     setUploadPreview(null)
@@ -304,6 +342,7 @@ export default function Products() {
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('edit')
+    void loadProductChannelPrices(product.id)
   }
 
   function closeModal() {
@@ -311,8 +350,56 @@ export default function Products() {
     setModalMode(null)
     setEditingProduct(null)
     setForm(emptyForm())
+    setChannelPrices({})
     setUploadFile(null)
     setUploadPreview(null)
+  }
+
+  async function loadProductChannelPrices(productId: string) {
+    try {
+      const { data, error } = await supabase
+        .from('pr_product_channel_prices')
+        .select('channel_code, sale_price')
+        .eq('product_id', productId)
+      if (error) throw error
+      const map: Record<string, string> = {}
+      ;(data || []).forEach((row: { channel_code: string; sale_price: number }) => {
+        map[row.channel_code] = String(row.sale_price ?? '')
+      })
+      setChannelPrices(map)
+    } catch (error) {
+      console.error('Error loading channel prices:', error)
+      setChannelPrices({})
+    }
+  }
+
+  async function saveProductChannelPrices(productId: string) {
+    const rows = channels
+      .map((ch) => {
+        const raw = String(channelPrices[ch.channel_code] ?? '').trim()
+        if (raw === '') return null
+        const price = Number(raw)
+        if (!Number.isFinite(price) || price < 0) return null
+        return {
+          product_id: productId,
+          channel_code: ch.channel_code,
+          sale_price: Number(price.toFixed(2)),
+        }
+      })
+      .filter(Boolean) as Array<{ product_id: string; channel_code: string; sale_price: number }>
+
+    const { error: delErr } = await supabase
+      .from('pr_product_channel_prices')
+      .delete()
+      .eq('product_id', productId)
+    if (delErr) throw delErr
+
+    if (rows.length > 0) {
+      const { error: insErr } = await supabase
+        .from('pr_product_channel_prices')
+        .insert(rows)
+      if (insErr) throw insErr
+    }
   }
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -352,7 +439,7 @@ export default function Products() {
           : (form.product_type || 'FG')
 
       if (modalMode === 'add') {
-        const { error } = await supabase.from('pr_products').insert({
+        const { data: createdProduct, error } = await supabase.from('pr_products').insert({
           product_code: code,
           product_name: name,
           seller_name: form.seller_name.trim() || null,
@@ -368,8 +455,9 @@ export default function Products() {
           unit_name: form.unit_name.trim() || 'ชิ้น',
           unit_multiplier: unitMultiplier,
           is_active: true,
-        })
+        }).select('id').single()
         if (error) throw error
+        await saveProductChannelPrices(createdProduct.id)
         showNotify('success', 'เพิ่มสินค้าเรียบร้อย')
       } else if (modalMode === 'edit' && editingProduct) {
         const { error } = await supabase
@@ -392,6 +480,7 @@ export default function Products() {
           })
           .eq('id', editingProduct.id)
         if (error) throw error
+        await saveProductChannelPrices(editingProduct.id)
         showNotify('success', 'แก้ไขสินค้าเรียบร้อย')
       }
       closeModal()
@@ -405,23 +494,18 @@ export default function Products() {
     }
   }
 
-  function openDeleteConfirm(product: Product) {
-    setProductToDelete(product)
-  }
-
-  async function confirmDelete() {
-    if (!productToDelete) return
-    setDeletingId(productToDelete.id)
+  async function toggleProductVisibility(product: Product) {
+    setDeletingId(product.id)
     try {
       const { error } = await supabase
         .from('pr_products')
-        .update({ is_active: false })
-        .eq('id', productToDelete.id)
+        .update({ is_active: !product.is_active })
+        .eq('id', product.id)
       if (error) throw error
-      setProductToDelete(null)
+      showNotify('success', product.is_active ? 'ซ่อนสินค้าเรียบร้อย' : 'ยกเลิกซ่อนสินค้าเรียบร้อย')
       loadProducts()
     } catch (error: any) {
-      console.error('Error deactivating product:', error)
+      console.error('Error toggling product visibility:', error)
       showNotify('error', 'เกิดข้อผิดพลาด', error.message)
     } finally {
       setDeletingId(null)
@@ -429,9 +513,11 @@ export default function Products() {
   }
 
   function downloadTemplate() {
+    const channelPriceHeaders = getChannelPriceHeaders(channels)
+    const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
-      PRODUCT_TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1],
+      headers as unknown as string[],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -443,14 +529,31 @@ export default function Products() {
       const { data, error } = await supabase
         .from('pr_products')
         .select(
-          'product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
+          'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
         )
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
-      const headers = [...PRODUCT_TEMPLATE_HEADERS]
+      const productIds = (data || []).map((p: { id: string }) => p.id)
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
+      const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
+      const priceMapByProductId: Record<string, Record<string, number>> = {}
+      if (productIds.length > 0) {
+        const { data: priceRows, error: priceErr } = await supabase
+          .from('pr_product_channel_prices')
+          .select('product_id, channel_code, sale_price')
+          .in('product_id', productIds)
+        if (priceErr) throw priceErr
+        ;(priceRows || []).forEach((row: { product_id: string; channel_code: string; sale_price: number }) => {
+          if (!priceMapByProductId[row.product_id]) priceMapByProductId[row.product_id] = {}
+          priceMapByProductId[row.product_id][`price_${row.channel_code}`] = row.sale_price
+        })
+      }
       const rows = (data || []).map((p) =>
-        headers.map((h) => (p as Record<string, unknown>)[h] ?? '')
+        headers.map((h) => {
+          if (h.startsWith('price_')) return priceMapByProductId[(p as { id: string }).id]?.[h] ?? ''
+          return (p as Record<string, unknown>)[h] ?? ''
+        })
       )
       const wb = XLSX.utils.book_new()
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
@@ -474,6 +577,7 @@ export default function Products() {
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
       const validTypes: ProductType[] = ['FG', 'RM', 'PP']
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
       const toInsert: Array<{
         product_code: string
         product_name: string
@@ -490,6 +594,7 @@ export default function Products() {
         unit_name: string
         unit_multiplier: number
         is_active: boolean
+        channel_prices: Record<string, number>
       }> = []
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i]
@@ -504,6 +609,16 @@ export default function Products() {
         const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
         const rawMultiplier = Number(row.unit_multiplier ?? 1)
         const unitMultiplier = isNaN(rawMultiplier) || rawMultiplier <= 0 ? 1 : rawMultiplier
+        const channelPricesForRow: Record<string, number> = {}
+        for (const header of channelPriceHeaders) {
+          const rawPrice = String(row[header] ?? '').trim()
+          if (!rawPrice) continue
+          const parsedPrice = Number(rawPrice)
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+            throw new Error(`ราคา ${header} ไม่ถูกต้อง (แถว ${i + 2})`)
+          }
+          channelPricesForRow[header.replace('price_', '')] = Number(parsedPrice.toFixed(2))
+        }
         toInsert.push({
           product_code: code,
           product_name: name,
@@ -520,6 +635,7 @@ export default function Products() {
           unit_name: unitName,
           unit_multiplier: unitMultiplier,
           is_active: true,
+          channel_prices: channelPricesForRow,
         })
       }
       if (!toInsert.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี product_code และ product_name)')
@@ -537,10 +653,12 @@ export default function Products() {
       // แยกสินค้าใหม่ vs สินค้าเดิม (เพื่อ insert ใหม่ + update เดิม)
       const { data: existingProducts } = await supabase
         .from('pr_products')
-        .select('product_code')
-        .eq('is_active', true)
+        .select('id, product_code')
       const existingCodes = new Set(
-        (existingProducts || []).map((p: { product_code: string }) => p.product_code.toLowerCase())
+        (existingProducts || []).map((p: { id: string; product_code: string }) => p.product_code.toLowerCase())
+      )
+      const productIdByCode = new Map(
+        (existingProducts || []).map((p: { id: string; product_code: string }) => [p.product_code.toLowerCase(), p.id])
       )
       const newItems = deduped.filter((item) => !existingCodes.has(item.product_code.toLowerCase()))
       const updateItems = deduped.filter((item) => existingCodes.has(item.product_code.toLowerCase()))
@@ -556,14 +674,16 @@ export default function Products() {
       let updatedCount = 0
 
       if (newItems.length) {
-        const { error } = await supabase.from('pr_products').insert(newItems)
+        const payload = newItems.map(({ channel_prices, ...rest }) => rest)
+        const { error } = await supabase.from('pr_products').insert(payload)
         if (error) throw error
-        insertedCount = newItems.length
+        insertedCount = payload.length
       }
 
       if (updateItems.length) {
         for (const item of updateItems) {
           const { is_active, ...updateData } = item
+          delete (updateData as { channel_prices?: Record<string, number> }).channel_prices
           const { error } = await supabase
             .from('pr_products')
             .update(updateData)
@@ -573,6 +693,38 @@ export default function Products() {
             continue
           }
           updatedCount++
+        }
+      }
+
+      const allCodes = deduped.map((i) => i.product_code)
+      if (allCodes.length > 0) {
+        const { data: productsWithIds, error: idErr } = await supabase
+          .from('pr_products')
+          .select('id, product_code')
+          .in('product_code', allCodes)
+        if (idErr) throw idErr
+        ;(productsWithIds || []).forEach((p: { id: string; product_code: string }) => {
+          productIdByCode.set(p.product_code.toLowerCase(), p.id)
+        })
+      }
+      for (const item of deduped) {
+        const productId = productIdByCode.get(item.product_code.toLowerCase())
+        if (!productId) continue
+        const rows = Object.entries(item.channel_prices || {}).map(([channelCode, price]) => ({
+          product_id: productId,
+          channel_code: channelCode,
+          sale_price: Number(price) || 0,
+        }))
+        const { error: delErr } = await supabase
+          .from('pr_product_channel_prices')
+          .delete()
+          .eq('product_id', productId)
+        if (delErr) throw delErr
+        if (rows.length > 0) {
+          const { error: insErr } = await supabase
+            .from('pr_product_channel_prices')
+            .insert(rows)
+          if (insErr) throw insErr
         }
       }
 
@@ -625,15 +777,18 @@ export default function Products() {
   // ── Init Import: Download Template ──
 
   function downloadInitTemplate() {
+    const channelPriceHeaders = getChannelPriceHeaders(channels)
+    const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
-      [...INIT_IMPORT_HEADERS],
-      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A', 'ชิ้น', 1],
-      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', '', 'แพ็ค', 12],
+      headers,
+      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
     ])
     ws['!cols'] = [
       { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
       { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+      ...channelPriceHeaders.map(() => ({ wch: 14 })),
     ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า+สต๊อค')
@@ -653,6 +808,7 @@ export default function Products() {
       if (!rawRows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
       const validTypes: ProductType[] = ['FG', 'RM', 'PP']
+      const channelPriceHeaders = getChannelPriceHeaders(channels)
       const errors: string[] = []
       const parsed: InitImportRow[] = []
       const seenCodes = new Set<string>()
@@ -677,6 +833,17 @@ export default function Products() {
         const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
         const rawMult = Number(row.unit_multiplier ?? 1)
         const unitMultiplier = isNaN(rawMult) || rawMult <= 0 ? 1 : rawMult
+        const channelPricesForRow: Record<string, number> = {}
+        for (const header of channelPriceHeaders) {
+          const rawPrice = String(row[header] ?? '').trim()
+          if (!rawPrice) continue
+          const parsedPrice = Number(rawPrice)
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+            errors.push(`แถว ${rowNum}: ${header} ไม่ถูกต้อง`)
+            continue
+          }
+          channelPricesForRow[header.replace('price_', '')] = Number(parsedPrice.toFixed(2))
+        }
 
         if (isNaN(unitCost) || unitCost < 0) { errors.push(`แถว ${rowNum}: unit_cost ไม่ถูกต้อง`); continue }
         if (isNaN(initialStock) || initialStock < 0) { errors.push(`แถว ${rowNum}: initial_stock ไม่ถูกต้อง`); continue }
@@ -695,6 +862,7 @@ export default function Products() {
           storage_location: String(row.storage_location ?? '').trim(),
           unit_name: unitName,
           unit_multiplier: unitMultiplier,
+          channel_prices: channelPricesForRow,
         })
       }
 
@@ -707,7 +875,6 @@ export default function Products() {
       const { data: existing } = await supabase
         .from('pr_products')
         .select('product_code')
-        .eq('is_active', true)
       const existingCodes = new Set(
         (existing || []).map((p: { product_code: string }) => p.product_code.toLowerCase())
       )
@@ -792,6 +959,39 @@ export default function Products() {
           continue
         }
         updatedCount++
+      }
+
+      // save channel prices for both inserted and updated rows
+      const allRows = [...newRows, ...updateRows]
+      const allCodes = allRows.map((r) => r.product_code)
+      if (allCodes.length > 0) {
+        const { data: productRows, error: productRowsErr } = await supabase
+          .from('pr_products')
+          .select('id, product_code')
+          .in('product_code', allCodes)
+        if (productRowsErr) throw productRowsErr
+        const idMap = new Map<string, string>()
+        ;(productRows || []).forEach((p: { id: string; product_code: string }) => idMap.set(p.product_code.toLowerCase(), p.id))
+        for (const row of allRows) {
+          const productId = idMap.get(row.product_code.toLowerCase())
+          if (!productId) continue
+          const priceRows = Object.entries(row.channel_prices || {}).map(([channelCode, price]) => ({
+            product_id: productId,
+            channel_code: channelCode,
+            sale_price: Number(price) || 0,
+          }))
+          const { error: delErr } = await supabase
+            .from('pr_product_channel_prices')
+            .delete()
+            .eq('product_id', productId)
+          if (delErr) throw delErr
+          if (priceRows.length > 0) {
+            const { error: insErr } = await supabase
+              .from('pr_product_channel_prices')
+              .insert(priceRows)
+            if (insErr) throw insErr
+          }
+        }
       }
 
       const msgs: string[] = []
@@ -943,6 +1143,20 @@ export default function Products() {
               ))}
             </select>
           </div>
+          <div className="w-full sm:w-auto sm:min-w-[190px]">
+            <label htmlFor="products-visibility" className="sr-only">สถานะสินค้า</label>
+            <select
+              id="products-visibility"
+              value={productVisibilityFilter}
+              onChange={(e) => setProductVisibilityFilter(e.target.value as 'active' | 'hidden' | 'all')}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
+            >
+              <option value="active">ใช้งานอยู่</option>
+              <option value="hidden">ที่ซ่อนอยู่</option>
+              <option value="all">ทั้งหมด</option>
+            </select>
+            <p className="text-xs text-surface-500 mt-1">ซ่อนอยู่ {hiddenCount} รายการ</p>
+          </div>
         </div>
 
         {loading ? (
@@ -1001,7 +1215,7 @@ export default function Products() {
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <div className="flex gap-2 justify-end">
+                      <div className="flex gap-2 justify-end items-center">
                         <button
                           type="button"
                           onClick={() => openEdit(product)}
@@ -1011,12 +1225,22 @@ export default function Products() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => openDeleteConfirm(product)}
+                          onClick={() => toggleProductVisibility(product)}
                           disabled={deletingId === product.id}
-                          className="px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm font-semibold disabled:opacity-50"
+                          className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors disabled:opacity-50 ${
+                            product.is_active ? 'bg-emerald-500' : 'bg-gray-400'
+                          }`}
+                          title={product.is_active ? 'กดเพื่อซ่อนสินค้า' : 'กดเพื่อยกเลิกซ่อนสินค้า'}
                         >
-                          {deletingId === product.id ? 'กำลังลบ...' : 'ลบ'}
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                              product.is_active ? 'translate-x-8' : 'translate-x-1'
+                            }`}
+                          />
                         </button>
+                        <span className={`text-xs font-semibold ${product.is_active ? 'text-emerald-700' : 'text-gray-500'}`}>
+                          {deletingId === product.id ? 'กำลังบันทึก...' : product.is_active ? 'เปิด' : 'ซ่อน'}
+                        </span>
                       </div>
                     </td>
                   </tr>
@@ -1201,6 +1425,35 @@ export default function Products() {
                 <p className="text-xs text-surface-500 mt-1">สินค้า PP สร้างจากเมนู คลัง &gt; ผลิตภายใน</p>
               )}
             </div>
+            {/* ราคาขายรายช่องทาง */}
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-surface-700 mb-1">ราคาขายรายช่องทาง</label>
+              {channels.length === 0 ? (
+                <div className="text-sm text-surface-500 border border-surface-200 rounded-xl px-3 py-2">
+                  ไม่พบข้อมูลช่องทางขาย
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 border border-surface-200 rounded-xl p-3 bg-surface-50">
+                  {channels.map((ch) => (
+                    <div key={ch.channel_code} className="flex items-center gap-2">
+                      <span className="w-28 text-xs font-semibold text-surface-600 truncate" title={ch.channel_name}>
+                        {ch.channel_code}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={channelPrices[ch.channel_code] ?? ''}
+                        onChange={(e) => setChannelPrices((prev) => ({ ...prev, [ch.channel_code]: e.target.value }))}
+                        placeholder="ราคา"
+                        className="w-full px-2 py-1.5 border border-surface-300 rounded-lg text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-surface-500 mt-1">เว้นว่างได้ หากไม่กำหนดราคาช่องทางนั้น</p>
+            </div>
             {/* รหัสหน้ายาง */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสหน้ายาง</label>
@@ -1311,41 +1564,6 @@ export default function Products() {
           >
             {saving ? 'กำลังบันทึก...' : modalMode === 'add' ? 'เพิ่มสินค้า' : 'บันทึก'}
           </button>
-        </div>
-      </Modal>
-
-      <Modal
-        open={productToDelete !== null}
-        onClose={() => setProductToDelete(null)}
-        closeOnBackdropClick={true}
-        contentClassName="max-w-md"
-      >
-        <div className="p-6">
-          <h2 className="text-2xl font-semibold mb-3 text-surface-900">ยืนยันปิดการใช้งานสินค้า</h2>
-          {productToDelete && (
-            <p className="text-surface-700 mb-4">
-              ต้องการปิดการใช้งานสินค้า <strong>"{productToDelete.product_name}"</strong> (รหัส {productToDelete.product_code}) ใช่หรือไม่?
-              <br />
-              <span className="text-sm text-surface-500">สินค้าจะไม่แสดงในรายการแต่ยังอยู่ในระบบ</span>
-            </p>
-          )}
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => setProductToDelete(null)}
-              className="px-4 py-2 border border-surface-300 rounded-xl hover:bg-surface-100"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
-              onClick={confirmDelete}
-              disabled={deletingId === productToDelete?.id}
-              className="px-4 py-2 bg-accent-200 text-surface-900 rounded-xl hover:bg-accent-300 disabled:opacity-50 font-semibold"
-            >
-              {deletingId === productToDelete?.id ? 'กำลังลบ...' : 'ปิดการใช้งาน'}
-            </button>
-          </div>
         </div>
       </Modal>
 

@@ -1366,7 +1366,12 @@ export default function QC() {
                       </span>
                     </div>
                   )}
-                  <div className="flex gap-2 items-center">
+                  <div className="flex gap-2 items-center flex-wrap">
+                    {qcState.filename && (
+                      <div className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-sm font-semibold whitespace-nowrap">
+                        ใบงาน: {qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : qcState.filename}
+                      </div>
+                    )}
                     <input
                       ref={barcodeInputRef}
                       type="text"

@@ -519,6 +519,13 @@ type ImportedOrder = {
   items: ImportedOrderItem[]
 }
 
+type ProductStockSnapshot = {
+  on_hand: number
+  reserved: number
+  safety_stock: number
+  available_to_sell: number
+}
+
 /** ช่องทางที่บล็อกที่อยู่ลูกค้า (SHOP PICKUP=SHOPP บล็อกที่อยู่ ปิดเลขพัสดุ; SHOP SHIPPING=SHOP แสดงที่อยู่+ชื่อช่องทาง ปิดเลขพัสดุ) */
 const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 /** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" (SHOP + SHOPP) */
@@ -548,6 +555,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
+  const [productStockMap, setProductStockMap] = useState<Record<string, ProductStockSnapshot>>({})
+  const [productChannelPriceMap, setProductChannelPriceMap] = useState<Record<string, number>>({})
   const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
@@ -606,6 +615,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [claimFilterSearch, setClaimFilterSearch] = useState('')
   const undoStackRef = useRef<Array<{ formData: typeof formData; items: Partial<OrderItem>[] }>>([])
   const undoingRef = useRef(false)
+  const prevChannelRef = useRef<string>('')
   const [claimFilterChannel, setClaimFilterChannel] = useState('')
   const [selectedClaimRefOrder, setSelectedClaimRefOrder] = useState<Order | null>(null)
   const [claimTypes, setClaimTypes] = useState<{ code: string; name: string }[]>([])
@@ -1052,7 +1062,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, channelPricesRes, stockBalancesRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
@@ -1061,14 +1071,40 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         supabase.from('pr_category_field_settings').select('*'),
         supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
         supabase.from('pr_product_field_overrides').select('*'),
+        supabase.from('pr_product_channel_prices').select('product_id, channel_code, sale_price'),
+        supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock'),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
+      if (stockBalancesRes.data) {
+        const nextStockMap: Record<string, ProductStockSnapshot> = {}
+        ;(stockBalancesRes.data || []).forEach((row: { product_id: string; on_hand: number | null; reserved: number | null; safety_stock: number | null }) => {
+          const onHand = Number(row.on_hand || 0)
+          const reserved = Number(row.reserved || 0)
+          const safety = Number(row.safety_stock || 0)
+          nextStockMap[String(row.product_id)] = {
+            on_hand: onHand,
+            reserved,
+            safety_stock: safety,
+            available_to_sell: onHand - reserved,
+          }
+        })
+        setProductStockMap(nextStockMap)
+      } else {
+        setProductStockMap({})
+      }
       if (patternsRes.data) setCartoonPatterns(patternsRes.data)
       if (channelsRes.data) setChannels(channelsRes.data)
       if (promotionsRes.data) setPromotions(promotionsRes.data)
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
+      if (channelPricesRes.data) {
+        const nextMap: Record<string, number> = {}
+        ;(channelPricesRes.data || []).forEach((row: { product_id: string; channel_code: string; sale_price: number }) => {
+          nextMap[`${row.product_id}__${row.channel_code}`] = Number(row.sale_price) || 0
+        })
+        setProductChannelPriceMap(nextMap)
+      }
       
       // โหลดการตั้งค่าฟิลด์ต่อหมวดหมู่ (แปลงเป็น boolean จริง เพื่อกันค่า string "false" ที่เป็น truthy)
       const settingsMap: Record<string, Record<string, boolean>> = {}
@@ -1192,6 +1228,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
 
+  function getAutoProductPrice(productId?: string | null, channelCode?: string | null) {
+    if (!productId || !channelCode) return 0
+    return productChannelPriceMap[`${productId}__${channelCode}`] ?? 0
+  }
+
   // คำนวณส่วนลดเป็นบาท (รองรับทั้งบาทและ %)
   function getDiscountInBaht(basePrice: number, discountValue: number, type: 'baht' | 'percent'): number {
     if (type === 'percent') {
@@ -1227,6 +1268,23 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   useEffect(() => {
     calculateTotal()
   }, [items, formData.shipping_cost, formData.discount, discountType, showTaxInvoice, formData.price, formData.channel_code])
+
+  useEffect(() => {
+    const currentChannel = formData.channel_code || ''
+    const prevChannel = prevChannelRef.current
+    if (currentChannel === prevChannel) return
+    prevChannelRef.current = currentChannel
+    if (!currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
+
+    setItems((prev) =>
+      prev.map((item) => {
+        if (!item.product_id) return item
+        const autoPrice = getAutoProductPrice(String(item.product_id), currentChannel)
+        if ((item.unit_price || 0) === autoPrice) return item
+        return { ...item, unit_price: autoPrice }
+      })
+    )
+  }, [formData.channel_code, productChannelPriceMap])
 
   useEffect(() => {
     if (undoingRef.current) return
@@ -1361,6 +1419,16 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         open: true,
         title: 'แจ้งเตือน',
         message: 'กรุณาเลือกโปรโมชั่นเมื่อมีการกรอกส่วนลด',
+      })
+      return
+    }
+
+    const stockErrors = validateItemsAgainstStock(itemsToSave)
+    if (stockErrors.length > 0) {
+      setMessageModal({
+        open: true,
+        title: 'สต๊อกไม่เพียงพอ',
+        message: `ไม่สามารถเปิดบิลได้ เนื่องจากสต๊อกไม่พอ\n\n${stockErrors.slice(0, 6).join('\n')}${stockErrors.length > 6 ? '\n...' : ''}`,
       })
       return
     }
@@ -3214,6 +3282,59 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     )
   }
 
+  function getStockSnapshot(productId?: string | null): ProductStockSnapshot {
+    if (!productId) {
+      return { on_hand: 0, reserved: 0, safety_stock: 0, available_to_sell: 0 }
+    }
+    return (
+      productStockMap[String(productId)] || {
+        on_hand: 0,
+        reserved: 0,
+        safety_stock: 0,
+        available_to_sell: 0,
+      }
+    )
+  }
+
+  function validateItemsAgainstStock(itemsToValidate: Partial<OrderItem>[]): string[] {
+    const requestedByProduct = new Map<string, { productName: string; qty: number }>()
+
+    itemsToValidate.forEach((item) => {
+      if (!item.product_id) return
+      const qty = Number(item.quantity || 0)
+      if (!Number.isFinite(qty) || qty <= 0) return
+      const key = String(item.product_id)
+      const existing = requestedByProduct.get(key)
+      if (existing) {
+        existing.qty += qty
+      } else {
+        requestedByProduct.set(key, {
+          productName: item.product_name || key,
+          qty,
+        })
+      }
+    })
+
+    const errors: string[] = []
+    requestedByProduct.forEach((requested, productId) => {
+      const stock = getStockSnapshot(productId)
+      const available = Number(stock.available_to_sell || 0)
+      if (available <= 0) {
+        errors.push(
+          `${requested.productName}: คงเหลือขายได้ 0`
+        )
+        return
+      }
+      if (requested.qty > available) {
+        errors.push(
+          `${requested.productName}: ต้องการ ${requested.qty.toLocaleString()} แต่คงเหลือขายได้ ${available.toLocaleString()}`
+        )
+      }
+    })
+
+    return errors
+  }
+
   function ensureCondoRows(index: number, product: Product) {
     const layers = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
 
@@ -3901,12 +4022,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 <th className="border p-1 text-center w-10 text-[10px] leading-tight whitespace-nowrap">ฟรี</th>
                 <th className="border p-1 text-center w-10 text-[10px] leading-tight whitespace-nowrap">#</th>
                 <th className="border p-1.5 ">ชื่อสินค้า</th>
+                <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">OH</th>
                 <th className="border p-1.5 w-32">สีหมึก</th>
                 <th className="border p-1.5 w-16">ชั้น</th>
-                <th className="border p-1.5 w-20">ลาย</th>
+                <th className="border p-1.5 w-24">ลาย</th>
                 {/* คอลัมน์เส้นซ่อนไว้ — เปิดใช้งานได้ในอนาคต */}
                 {/* <th className="border p-1.5 w-16">เส้น</th> */}
-                <th className="border p-1.5 w-20">ฟอนต์</th>
+                <th className="border p-1.5 w-16">ฟอนต์</th>
                 <th className="border p-1 text-center w-14 text-[10px] leading-tight whitespace-nowrap">ไม่รับชื่อ</th>
                 <th className="border p-1.5">บรรทัด 1</th>
                 <th className="border p-1.5">บรรทัด 2</th>
@@ -3924,6 +4046,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 const patternInputValue =
                   patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
                 const lineLimit = getLineCountForPattern(item.cartoon_pattern)
+                const stock = getStockSnapshot(item.product_id || null)
+                const onHandQty = Number(stock.on_hand || 0)
+                const isOutOfStock = Boolean(item.product_id) && onHandQty <= 0
                 return (
                 <tr key={index} className={(item as { is_free?: boolean }).is_free ? 'bg-green-50' : ''}>
                   <td className="border p-1 align-middle">
@@ -3958,11 +4083,16 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           const matchedProduct = findMatchedProduct(searchTerm)
                           
                           if (matchedProduct) {
+                            const autoPrice = isManualPriceChannel ? (item.unit_price || 0) : getAutoProductPrice(String(matchedProduct.id), formData.channel_code)
                             if (isCondoProduct(matchedProduct.product_name)) {
                               ensureCondoRows(index, matchedProduct)
+                              if (!isManualPriceChannel) updateItem(index, 'unit_price', autoPrice)
                             } else {
-                              updateItem(index, 'product_id', matchedProduct.id)
-                              updateItem(index, 'product_name', matchedProduct.product_name)
+                              updateItemFields(index, {
+                                product_id: matchedProduct.id,
+                                product_name: matchedProduct.product_name,
+                                unit_price: autoPrice,
+                              })
                               setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
                             }
                           } else if (searchTerm === '') {
@@ -3987,11 +4117,16 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           
                           if (matchedProduct) {
                             // อัพเดตให้ตรงกับสินค้าที่เลือก
+                            const autoPrice = isManualPriceChannel ? (item.unit_price || 0) : getAutoProductPrice(String(matchedProduct.id), formData.channel_code)
                             if (isCondoProduct(matchedProduct.product_name)) {
                               ensureCondoRows(index, matchedProduct)
+                              if (!isManualPriceChannel) updateItem(index, 'unit_price', autoPrice)
                             } else {
-                              updateItem(index, 'product_id', matchedProduct.id)
-                              updateItem(index, 'product_name', matchedProduct.product_name)
+                              updateItemFields(index, {
+                                product_id: matchedProduct.id,
+                                product_name: matchedProduct.product_name,
+                                unit_price: autoPrice,
+                              })
                               setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
                             }
                           } else if (item.product_id) {
@@ -4042,6 +4177,15 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         })()}
                       </datalist>
                     </div>
+                  </td>
+                  <td className="border p-1 text-center align-middle">
+                    {!item.product_id ? (
+                      <span className="text-xs text-gray-400">-</span>
+                    ) : (
+                      <span className={`text-xs font-semibold ${isOutOfStock ? 'text-red-600' : 'text-emerald-700'}`}>
+                        {onHandQty.toLocaleString()}
+                      </span>
+                    )}
                   </td>
                   <td className="border p-1.5">
                     <select
@@ -4175,7 +4319,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                           }
                         }}
                         disabled={formDisabled || !isFieldEnabled(index, 'cartoon_pattern')}
-                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[10rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 max-w-[12rem] ${(formDisabled || !isFieldEnabled(index, 'cartoon_pattern')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['cartoon_pattern'] ?? reviewErrorFields?.cartoon_pattern) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         placeholder="ลาย"
                         autoComplete="off"
                       />
@@ -4970,7 +5114,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   }
                   if (matchedProduct) {
                     hasUpdates = true
-                    return { ...item, product_id: matchedProduct.id, product_name: matchedProduct.product_name }
+                    const autoPrice = isManualPriceChannel
+                      ? (item.unit_price || 0)
+                      : getAutoProductPrice(String(matchedProduct.id), formData.channel_code)
+                    return { ...item, product_id: matchedProduct.id, product_name: matchedProduct.product_name, unit_price: autoPrice }
                   }
                 }
                 return item
