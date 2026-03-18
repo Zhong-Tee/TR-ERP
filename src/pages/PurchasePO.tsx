@@ -109,7 +109,7 @@ export default function PurchasePO() {
   const [editSaving, setEditSaving] = useState(false)
 
   // Partial PO count for badge
-  const partialCount = useMemo(() => pos.filter((p) => p.status === 'partial').length, [pos])
+  const [partialCount, setPartialCount] = useState(0)
 
   const handleExportPNG = useCallback(async () => {
     if (!viewing || !exportRef.current) return
@@ -145,8 +145,9 @@ export default function PurchasePO() {
   async function loadAll() {
     setLoading(true)
     try {
-      const [poData, prData, sellerData] = await Promise.all([
+      const [poData, partialPoData, prData, sellerData] = await Promise.all([
         loadPOList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
+        loadPOList({ status: 'partial', search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
         availablePRs.length ? Promise.resolve(availablePRs) : loadApprovedPRsWithoutPO(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
@@ -154,6 +155,10 @@ export default function PurchasePO() {
         ? poData.filter((po: any) => po.inv_pr?.pr_type === typeFilter)
         : poData
       setPos(filtered)
+      const partialFiltered = typeFilter !== 'all'
+        ? partialPoData.filter((po: any) => po.inv_pr?.pr_type === typeFilter)
+        : partialPoData
+      setPartialCount(partialFiltered.length)
       if (!availablePRs.length) setAvailablePRs(prData)
       if (!sellers.length) setSellers(sellerData as any)
 

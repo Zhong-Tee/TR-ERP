@@ -10,6 +10,7 @@ import {
   loadPOItemsForGR,
   receiveGR,
   loadUserDisplayNames,
+  updatePOExpectedArrivalDate,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
@@ -18,6 +19,29 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   pending: { label: 'รอรับ', color: 'bg-yellow-100 text-yellow-800' },
   partial: { label: 'รับบางส่วน', color: 'bg-orange-100 text-orange-800' },
   received: { label: 'รับครบ', color: 'bg-green-100 text-green-800' },
+}
+
+const CLOSED_PO_RESOLUTION_MAP: Record<string, { label: string; color: string }> = {
+  refund: { label: 'คืนเงิน', color: 'bg-blue-100 text-blue-800' },
+  wrong_item: { label: 'สินค้าผิด', color: 'bg-amber-100 text-amber-800' },
+  cancelled: { label: 'ยกเลิก', color: 'bg-red-100 text-red-800' },
+}
+
+function getGRDisplayStatus(gr: InventoryGR) {
+  const poStatus = (gr.inv_po as any)?.status
+  const poItems = ((gr.inv_po as any)?.inv_po_items || []) as Array<{ resolution_type?: string | null }>
+  if (poStatus === 'closed') {
+    const types = [...new Set(poItems.map((i) => i?.resolution_type).filter(Boolean) as string[])]
+    if (types.length === 1) {
+      return CLOSED_PO_RESOLUTION_MAP[types[0]] || { label: 'ปิด PO', color: 'bg-gray-100 text-gray-700' }
+    }
+    if (types.length > 1) {
+      const labels = types.map((t) => CLOSED_PO_RESOLUTION_MAP[t]?.label || t)
+      return { label: labels.join('/'), color: 'bg-purple-100 text-purple-800' }
+    }
+    return { label: 'ปิด PO', color: 'bg-gray-100 text-gray-700' }
+  }
+  return STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
 }
 
 interface ReceiveItem {
@@ -76,7 +100,7 @@ function getEtaMeta(value?: string | null) {
   if (daysDiff <= 3) {
     return { label: `ใกล้ถึง: อีก ${daysDiff} วัน`, color: 'bg-amber-100 text-amber-700', sortValue: daysDiff }
   }
-  return { label: `อีก ${daysDiff} วัน`, color: 'bg-blue-100 text-blue-700', sortValue: daysDiff }
+  return { label: `อีก ${daysDiff} วัน`, color: 'bg-red-100 text-red-700', sortValue: daysDiff }
 }
 
 function getStoragePublicUrl(bucket: string | undefined, path: string | undefined) {
@@ -119,7 +143,12 @@ export default function PurchaseGR() {
   const receiveItemsRef = useRef<ReceiveItem[]>([])
   const pendingImageSelectionRef = useRef<PendingImageSelection | null>(null)
   const [pendingImageSelection, setPendingImageSelection] = useState<PendingImageSelection | null>(null)
-  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null)
+  const [zoomGallery, setZoomGallery] = useState<{ images: string[]; index: number } | null>(null)
+  const [etaEditOpen, setEtaEditOpen] = useState(false)
+  const [etaEditPO, setEtaEditPO] = useState<InventoryPO | null>(null)
+  const [etaEditDate, setEtaEditDate] = useState('')
+  const [etaSaving, setEtaSaving] = useState(false)
+  const [mobileSection, setMobileSection] = useState<'receive' | 'list'>('receive')
 
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
@@ -136,6 +165,27 @@ export default function PurchaseGR() {
   useEffect(() => {
     pendingImageSelectionRef.current = pendingImageSelection
   }, [pendingImageSelection])
+
+  const activeZoomImageUrl = zoomGallery ? zoomGallery.images[zoomGallery.index] : null
+
+  function openZoomGallery(images: string[], startIndex = 0) {
+    const filtered = images.filter((img) => !!img)
+    if (filtered.length === 0) return
+    const safeIndex = Math.min(Math.max(startIndex, 0), filtered.length - 1)
+    setZoomGallery({ images: filtered, index: safeIndex })
+  }
+
+  function closeZoomGallery() {
+    setZoomGallery(null)
+  }
+
+  function moveZoomGallery(step: -1 | 1) {
+    setZoomGallery((prev) => {
+      if (!prev || prev.images.length <= 1) return prev
+      const nextIndex = (prev.index + step + prev.images.length) % prev.images.length
+      return { ...prev, index: nextIndex }
+    })
+  }
 
   useEffect(() => {
     return () => {
@@ -276,6 +326,35 @@ export default function PurchaseGR() {
     setReceiveItems([])
     setReceiveOpen(false)
     setSelectedPO(null)
+  }
+
+  function openEtaEdit(po: InventoryPO) {
+    setEtaEditPO(po)
+    setEtaEditDate(po.expected_arrival_date ? String(po.expected_arrival_date).split('T')[0] : '')
+    setEtaEditOpen(true)
+  }
+
+  async function saveEtaEdit() {
+    if (!etaEditPO) return
+    if (!etaEditDate) {
+      showMessage({ message: 'กรุณาเลือกวันที่กำหนดเข้า' })
+      return
+    }
+    setEtaSaving(true)
+    try {
+      await updatePOExpectedArrivalDate({
+        poId: etaEditPO.id,
+        expectedArrivalDate: etaEditDate,
+        userId: user?.id,
+      })
+      setEtaEditOpen(false)
+      setEtaEditPO(null)
+      await loadAll(true)
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'แก้ไขกำหนดเข้าไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setEtaSaving(false)
+    }
   }
 
   function addReceiveItemImages(index: number, files: FileList | null) {
@@ -461,32 +540,134 @@ export default function PurchaseGR() {
     [partialPOs]
   )
   const partialCount = partialPOs.length
+  const receiveQueueCount = sortedNewPOs.length + sortedPartialPOs.length
+  const grRowsWithGroup = useMemo(() => {
+    let lastPoNo = ''
+    let groupIndex = -1
+    return grs.map((gr) => {
+      const poNo = gr.inv_po?.po_no || '-'
+      if (poNo !== lastPoNo) {
+        groupIndex += 1
+        lastPoNo = poNo
+      }
+      return { gr, groupIndex }
+    })
+  }, [grs])
+
+  useEffect(() => {
+    if (mobileSection === 'receive' && receiveQueueCount === 0) {
+      setMobileSection('list')
+    }
+  }, [mobileSection, receiveQueueCount])
 
   return (
     <div className="space-y-4 mt-4 md:mt-12">
+      <div className="md:hidden bg-white rounded-xl shadow-sm border p-2">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => setMobileSection('receive')}
+            className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              mobileSection === 'receive'
+                ? 'bg-emerald-600 text-white'
+                : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            รับเข้า
+            {receiveQueueCount > 0 && (
+              <span className={`ml-1.5 inline-flex items-center justify-center min-w-[1.1rem] h-5 px-1.5 rounded-full text-[11px] font-bold ${
+                mobileSection === 'receive' ? 'bg-white text-emerald-700' : 'bg-red-500 text-white'
+              }`}>
+                {receiveQueueCount}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setMobileSection('list')}
+            className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              mobileSection === 'list'
+                ? 'bg-emerald-600 text-white'
+                : 'bg-gray-100 text-gray-600'
+            }`}
+          >
+            รายการ
+          </button>
+        </div>
+      </div>
+
       {/* ── New POs waiting for first GR ── */}
       {sortedNewPOs.length > 0 && (
-        <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 md:p-4">
-          <h3 className="text-sm font-semibold text-orange-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})</h3>
-          <div className="grid grid-cols-1 md:flex md:flex-wrap gap-2">
+        <div className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block bg-blue-50 border border-blue-200 rounded-xl p-3 md:p-4`}>
+          <h3 className="text-sm font-semibold text-blue-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})</h3>
+
+          <div className="md:hidden space-y-2">
             {sortedNewPOs.map((po) => {
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
-              <button
-                key={po.id}
-                onClick={() => openReceive(po, false)}
-                className="w-full md:w-auto px-3 py-2 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors text-left"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-base">{po.po_no}</span>
-                  <span className={`inline-block px-2 py-0.5 rounded-full text-sm font-semibold ${eta.color}`}>
-                    {eta.label}
-                  </span>
+                <div
+                  key={po.id}
+                  className="rounded-xl bg-white border border-blue-200 p-3 text-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-gray-900">{po.po_no}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
+                          {formatDateThai(po.expected_arrival_date)}
+                        </span>
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
+                          {eta.label}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => openEtaEdit(po)}
+                      className="px-2.5 py-1.5 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-xs font-semibold whitespace-nowrap"
+                    >
+                      แก้ไขวันที่
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => openReceive(po, false)}
+                    className="mt-2 w-full px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold"
+                  >
+                    รับเข้าคลัง
+                  </button>
                 </div>
-                <div className="text-sm text-gray-600 mt-1 font-medium">
-                  กำหนดเข้า: {formatDateThai(po.expected_arrival_date)}
+              )
+            })}
+          </div>
+
+          <div className="hidden md:flex md:flex-wrap gap-2">
+            {sortedNewPOs.map((po) => {
+              const eta = getEtaMeta(po.expected_arrival_date)
+              return (
+                <div
+                  key={po.id}
+                  className="w-full md:w-auto px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm text-blue-700"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <button
+                      onClick={() => openReceive(po, false)}
+                      className="text-left font-medium hover:text-blue-800 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">{po.po_no}</span>
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-sm font-semibold ${eta.color}`}>
+                          {eta.label}
+                        </span>
+                      </div>
+                      <div className="text-sm text-gray-600 mt-1 font-medium">
+                        กำหนดเข้า: {formatDateThai(po.expected_arrival_date)}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => openEtaEdit(po)}
+                      className="px-2.5 py-1.5 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition-colors whitespace-nowrap"
+                    >
+                      แก้ไขกำหนดเข้า
+                    </button>
+                  </div>
                 </div>
-              </button>
               )
             })}
           </div>
@@ -495,14 +676,15 @@ export default function PurchaseGR() {
 
       {/* ── Partial POs waiting for follow-up GR ── */}
       {sortedPartialPOs.length > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 md:p-4">
-          <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+        <div className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block bg-amber-50 border border-amber-200 rounded-xl p-3 md:p-4`}>
+          <h3 className="text-sm font-semibold text-amber-800 mb-3 flex items-center gap-2">
             PO รอรับเพิ่ม
-            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-600 text-white text-xs font-bold">
               {partialCount}
             </span>
           </h3>
-          <div className="space-y-2">
+
+          <div className="md:hidden space-y-2">
             {sortedPartialPOs.map((po) => {
               const items = (po.inv_po_items || []) as any[]
               const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
@@ -510,13 +692,52 @@ export default function PurchaseGR() {
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
-                <div key={po.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white border border-red-200 rounded-lg px-3 md:px-4 py-2.5">
+                <div key={po.id} className="bg-white border border-amber-200 rounded-xl p-3 space-y-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-gray-900">{po.po_no}</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
+                      </div>
+                    </div>
+                    <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-xs font-semibold whitespace-nowrap">
+                      ค้างรับ {outstanding.toLocaleString()} ชิ้น
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
+                      {formatDateThai(po.expected_arrival_date)}
+                    </span>
+                    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
+                      {eta.label}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => openReceive(po, true)}
+                    className="w-full px-3 py-2 bg-amber-600 text-white rounded-lg text-sm font-semibold"
+                  >
+                    รับเพิ่ม
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="hidden md:block space-y-2">
+            {sortedPartialPOs.map((po) => {
+              const items = (po.inv_po_items || []) as any[]
+              const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
+              const totalRecv = items.reduce((s: number, i: any) => s + (Number(i.qty_received_total) || 0), 0)
+              const outstanding = totalQty - totalRecv
+              const eta = getEtaMeta(po.expected_arrival_date)
+              return (
+                <div key={po.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white border border-amber-200 rounded-lg px-3 md:px-4 py-2.5">
                   <div className="flex flex-wrap items-center gap-2 md:gap-3">
                     <span className="font-medium text-gray-900 text-sm">{po.po_no}</span>
                     <span className="text-xs text-gray-500">
                       รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
                     </span>
-                    <span className="inline-block px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-semibold">
+                    <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-xs font-semibold">
                       ค้างรับ {outstanding.toLocaleString()} ชิ้น
                     </span>
                     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${eta.color}`}>
@@ -528,7 +749,7 @@ export default function PurchaseGR() {
                   </div>
                   <button
                     onClick={() => openReceive(po, true)}
-                    className="self-end md:self-auto px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-semibold hover:bg-red-700 transition-colors"
+                    className="self-end md:self-auto px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 transition-colors"
                   >
                     รับเพิ่ม
                   </button>
@@ -540,8 +761,55 @@ export default function PurchaseGR() {
       )}
 
       {/* ── Filter Bar ── */}
-      <div className="bg-white rounded-xl shadow-sm border p-4">
-        <div className="flex flex-col md:flex-row md:flex-wrap md:items-center gap-3">
+      <div className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block bg-white rounded-xl shadow-sm border p-4`}>
+        <div className="md:hidden space-y-2.5">
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto">
+            {statusTabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setStatusFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors whitespace-nowrap ${
+                  statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto">
+            {[
+              { key: 'all', label: 'ทุกประเภท' },
+              { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
+              { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors whitespace-nowrap ${
+                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div>
+            <input
+              type="text"
+              placeholder="ค้นหาเลขที่ GR..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+            />
+          </div>
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ตั้งแต่วันที่" />
+            <span className="text-gray-400 text-sm">-</span>
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ถึงวันที่" />
+          </div>
+        </div>
+
+        <div className="hidden md:flex md:flex-wrap md:items-center gap-3">
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             {statusTabs.map((t) => (
               <button
@@ -590,7 +858,7 @@ export default function PurchaseGR() {
       </div>
 
       {/* ── GR List ── */}
-      <div className="bg-white rounded-xl shadow-sm border">
+      <div className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block bg-white rounded-xl shadow-sm border`}>
         {loading ? (
           <div className="flex justify-center items-center py-16">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
@@ -600,25 +868,41 @@ export default function PurchaseGR() {
         ) : (
           <>
           <div className="md:hidden divide-y">
-            {grs.map((gr) => {
+            {grRowsWithGroup.map(({ gr, groupIndex }) => {
               const items = (gr as any).inv_gr_items || []
               const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
               const grTotalReceived = items.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
-              const st = STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
+              const st = getGRDisplayStatus(gr)
+              const eta = getEtaMeta(gr.inv_po?.expected_arrival_date)
+              const poStatus = (gr.inv_po as any)?.status
+              const showEtaCountdown = gr.status !== 'received' && poStatus !== 'received' && poStatus !== 'closed'
+              const rowBg = groupIndex % 2 === 0 ? 'bg-blue-200' : 'bg-white'
               return (
-                <div key={gr.id} className="p-3 space-y-2">
+                <div key={gr.id} className={`p-3 space-y-2 ${rowBg}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-semibold text-gray-900 text-sm">{gr.gr_no}</div>
+                    <div className="font-semibold text-gray-900">{gr.gr_no}</div>
                     <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${st.color}`}>{st.label}</span>
                   </div>
-                  <div className="text-xs text-gray-600">
-                    <div>PO: {gr.inv_po?.po_no || '-'}</div>
+                  <div className="space-y-1 text-xs text-gray-700">
+                    <div>PO: <span className="font-medium">{gr.inv_po?.po_no || '-'}</span></div>
                     <div>วันที่รับ: {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</div>
-                    <div>จำนวน: <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : ''}>{grTotalReceived}/{grTotalOrdered}</span></div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white/80 text-gray-700 border border-gray-200">
+                        กำหนดเข้า: {formatDateThai(gr.inv_po?.expected_arrival_date)}
+                      </span>
+                      {showEtaCountdown && (
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full font-semibold ${eta.color}`}>
+                          {eta.label}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      จำนวน: <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : 'font-semibold'}>{grTotalReceived}/{grTotalOrdered}</span>
+                    </div>
                   </div>
                   <button
                     onClick={() => openDetail(gr)}
-                    className="w-full px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold"
+                    className="w-full px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-sm font-semibold"
                   >
                     ดูรายละเอียด
                   </button>
@@ -643,22 +927,27 @@ export default function PurchaseGR() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {grs.map((gr) => {
+                {grRowsWithGroup.map(({ gr, groupIndex }) => {
                   const items = (gr as any).inv_gr_items || []
                   const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
                   const grTotalReceived = items.reduce((s: number, i: any) => s + (Number(i.qty_received) || 0), 0)
-                  const st = STATUS_MAP[gr.status] || { label: gr.status, color: 'bg-gray-100 text-gray-700' }
+                  const st = getGRDisplayStatus(gr)
                   const eta = getEtaMeta(gr.inv_po?.expected_arrival_date)
+                  const poStatus = (gr.inv_po as any)?.status
+                  const showEtaCountdown = gr.status !== 'received' && poStatus !== 'received' && poStatus !== 'closed'
+                  const rowBg = groupIndex % 2 === 0 ? 'bg-blue-200' : 'bg-white'
                   return (
-                    <tr key={gr.id} className={`hover:bg-gray-50/50 transition-colors ${gr.status === 'partial' ? 'bg-orange-50/30' : ''}`}>
+                    <tr key={gr.id} className={rowBg}>
                       <td className="px-4 py-3 font-medium text-gray-900">{gr.gr_no}</td>
                       <td className="px-4 py-3 text-gray-600">{gr.inv_po?.po_no || '-'}</td>
                       <td className="px-4 py-3 text-gray-600">
                         <div className="flex flex-col gap-1">
                           <span>{formatDateThai(gr.inv_po?.expected_arrival_date)}</span>
-                          <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold w-fit ${eta.color}`}>
-                            {eta.label}
-                          </span>
+                          {showEtaCountdown && (
+                            <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold w-fit ${eta.color}`}>
+                              {eta.label}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -741,7 +1030,7 @@ export default function PurchaseGR() {
                     <div className="flex items-start gap-3 min-w-0">
                     <button
                       type="button"
-                      onClick={() => { if (imgUrl) setZoomImageUrl(imgUrl) }}
+                      onClick={() => { if (imgUrl) openZoomGallery([imgUrl], 0) }}
                       className="w-12 h-12 rounded bg-gray-200 overflow-hidden shrink-0 border"
                     >
                       {imgUrl ? (
@@ -837,7 +1126,11 @@ export default function PurchaseGR() {
                       <div className="flex flex-wrap gap-2">
                         {item.images.map((image, imageIndex) => (
                           <div key={image.id} className="relative">
-                            <button type="button" onClick={() => setZoomImageUrl(image.previewUrl)} className="block">
+                            <button
+                              type="button"
+                              onClick={() => openZoomGallery(item.images.map((img) => img.previewUrl), imageIndex)}
+                              className="block"
+                            >
                               <img src={image.previewUrl} alt="" className="w-16 h-16 rounded border object-cover" />
                             </button>
                             <button
@@ -1280,13 +1573,18 @@ export default function PurchaseGR() {
                         <div className="text-xs text-gray-600 mb-1">รูปตรวจรับ</div>
                         {receiveImages.length > 0 ? (
                           <div className="flex flex-wrap gap-2">
-                            {receiveImages.map((image: any) => (
+                            {receiveImages.map((image: any, imageIndex: number) => (
                               <img
                                 key={image.id}
                                 src={getStoragePublicUrl(image.storage_bucket, image.storage_path)}
                                 alt=""
                                 className="w-14 h-14 rounded border object-cover cursor-zoom-in"
-                                onClick={() => setZoomImageUrl(getStoragePublicUrl(image.storage_bucket, image.storage_path))}
+                                onClick={() =>
+                                  openZoomGallery(
+                                    receiveImages.map((img: any) => getStoragePublicUrl(img.storage_bucket, img.storage_path)),
+                                    imageIndex
+                                  )
+                                }
                               />
                             ))}
                           </div>
@@ -1359,12 +1657,17 @@ export default function PurchaseGR() {
                           <td className="px-3 py-2">
                             {receiveImages.length > 0 ? (
                               <div className="flex flex-wrap gap-2">
-                                {receiveImages.map((image: any) => (
+                                {receiveImages.map((image: any, imageIndex: number) => (
                                   <button
                                     key={image.id}
                                     type="button"
                                     className="rounded border"
-                                    onClick={() => setZoomImageUrl(getStoragePublicUrl(image.storage_bucket, image.storage_path))}
+                                    onClick={() =>
+                                      openZoomGallery(
+                                        receiveImages.map((img: any) => getStoragePublicUrl(img.storage_bucket, img.storage_path)),
+                                        imageIndex
+                                      )
+                                    }
                                   >
                                     <img
                                       src={getStoragePublicUrl(image.storage_bucket, image.storage_path)}
@@ -1416,19 +1719,73 @@ export default function PurchaseGR() {
         </div>
       </Modal>
 
-      <Modal open={!!zoomImageUrl} onClose={() => setZoomImageUrl(null)} closeOnBackdropClick contentClassName="max-w-3xl">
+      <Modal open={!!zoomGallery} onClose={closeZoomGallery} closeOnBackdropClick contentClassName="max-w-3xl">
         <div className="p-3 relative">
           <button
             type="button"
-            onClick={() => setZoomImageUrl(null)}
+            onClick={closeZoomGallery}
             className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 text-white text-lg leading-none"
             aria-label="ปิดรูปขยาย"
           >
             ×
           </button>
-          {zoomImageUrl && (
-            <img src={zoomImageUrl} alt="" className="w-full max-h-[75vh] object-contain rounded" />
+          {zoomGallery && zoomGallery.images.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={() => moveZoomGallery(-1)}
+                className="absolute left-2 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-black/60 text-white text-lg leading-none"
+                aria-label="รูปก่อนหน้า"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                onClick={() => moveZoomGallery(1)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 z-10 w-9 h-9 rounded-full bg-black/60 text-white text-lg leading-none"
+                aria-label="รูปถัดไป"
+              >
+                ›
+              </button>
+              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 px-2.5 py-1 rounded-full bg-black/60 text-white text-xs">
+                {zoomGallery.index + 1}/{zoomGallery.images.length}
+              </div>
+            </>
           )}
+          {activeZoomImageUrl && (
+            <img src={activeZoomImageUrl} alt="" className="w-full max-h-[75vh] object-contain rounded" />
+          )}
+        </div>
+      </Modal>
+      <Modal open={etaEditOpen} onClose={() => setEtaEditOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-md">
+        <div className="p-6 space-y-4">
+          <h2 className="text-lg font-bold text-gray-900">แก้ไขกำหนดรับเข้า</h2>
+          {etaEditPO && (
+            <div className="bg-orange-50 rounded-lg p-3 text-sm text-orange-800">
+              PO: <span className="font-semibold">{etaEditPO.po_no}</span>
+            </div>
+          )}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">วันที่กำหนดเข้า</label>
+            <input
+              type="date"
+              value={etaEditDate}
+              onChange={(e) => setEtaEditDate(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            />
+          </div>
+          <div className="flex justify-end gap-3 pt-2 border-t">
+            <button onClick={() => setEtaEditOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm">
+              ยกเลิก
+            </button>
+            <button
+              onClick={saveEtaEdit}
+              disabled={etaSaving}
+              className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 text-sm font-semibold"
+            >
+              {etaSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
         </div>
       </Modal>
       {MessageModal}

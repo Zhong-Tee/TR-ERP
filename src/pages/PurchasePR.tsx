@@ -26,8 +26,9 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   cancelled: { label: 'ยกเลิก', color: 'bg-gray-200 text-gray-600' },
 }
 
-const APPROVE_ROLES = ['superadmin', 'admin', 'account']
-const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
+const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'store', 'account']
+const APPROVE_ROLES = PR_ALLOWED_ROLES
+const PRICE_VISIBLE_ROLES = PR_ALLOWED_ROLES
 
 interface DraftItem {
   product_id: string
@@ -88,6 +89,7 @@ export default function PurchasePR() {
 
   const canApprove = APPROVE_ROLES.includes(user?.role || '')
   const canSeePrice = PRICE_VISIBLE_ROLES.includes(user?.role || '')
+  const canManagePR = PR_ALLOWED_ROLES.includes(user?.role || '')
 
   const handleCreateFromTopBar = useCallback(() => setCreateOpen(true), [])
 
@@ -143,6 +145,12 @@ export default function PurchasePR() {
     return m
   }, [products])
 
+  function getEstimatedCost(product?: (Product & { last_price?: number | null }) | null): number | null {
+    const raw = product?.landed_cost
+    const n = raw != null ? Number(raw) : NaN
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
   /* ── Filter options extracted from products ── */
   const uniqueTypes = useMemo(() => [...new Set(products.map((p) => p.product_type).filter(Boolean))].sort(), [products])
   const uniqueSellers = useMemo(() => [...new Set(products.map((p) => p.seller_name).filter(Boolean) as string[])].sort(), [products])
@@ -195,7 +203,7 @@ export default function PurchasePR() {
     const prod = productMap.get(productId)
     updateDraftItem(index, {
       product_id: productId,
-      estimated_price: canSeePrice ? (prod?.last_price ?? prod?.unit_cost ?? null) : null,
+      estimated_price: canSeePrice ? getEstimatedCost(prod) : null,
     })
   }
 
@@ -206,7 +214,7 @@ export default function PurchasePR() {
       product_id: productId,
       qty: 1,
       unit: 'ชิ้น',
-      estimated_price: canSeePrice ? (prod?.last_price ?? prod?.unit_cost ?? null) : null,
+      estimated_price: canSeePrice ? getEstimatedCost(prod) : null,
       note: '',
     }
     setDraftItems((prev) => {
@@ -249,7 +257,7 @@ export default function PurchasePR() {
           product_id: prod.id,
           qty: Math.ceil(op - onHand),
           unit: 'ชิ้น',
-          estimated_price: canSeePrice ? ((prod as any).last_price ?? prod.unit_cost ?? null) : null,
+          estimated_price: canSeePrice ? getEstimatedCost(prod as any) : null,
           note: `คงเหลือ ${onHand} / จุดสั่งซื้อ ${prod.order_point}`,
         })
       }
@@ -296,13 +304,16 @@ export default function PurchasePR() {
     setNote(pr.note || '')
     setPrType((pr.pr_type as 'normal' | 'urgent') || 'normal')
     setDraftItems(
-      items.map((item: any) => ({
-        product_id: item.product_id,
-        qty: Number(item.qty) || 1,
-        unit: item.unit || 'ชิ้น',
-        estimated_price: item.estimated_price != null ? Number(item.estimated_price) : null,
-        note: item.note || '',
-      }))
+      items.map((item: any) => {
+        const currentProduct = productMap.get(item.product_id)
+        return {
+          product_id: item.product_id,
+          qty: Number(item.qty) || 1,
+          unit: item.unit || 'ชิ้น',
+          estimated_price: getEstimatedCost(currentProduct) ?? (item.estimated_price != null ? Number(item.estimated_price) : null),
+          note: item.note || '',
+        }
+      })
     )
     setViewing(null)
     setCreateOpen(true)
@@ -310,27 +321,30 @@ export default function PurchasePR() {
 
   /* ── Create / Update PR ── */
   async function handleCreatePR() {
+    if (!PR_ALLOWED_ROLES.includes(user?.role || '')) { showMessage({ message: 'ไม่มีสิทธิ์ทำรายการนี้' }); return }
     if (!selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
-    if (!note.trim()) { showMessage({ message: 'กรุณาระบุหมายเหตุ' }); return }
     const valid = draftItems.filter((i) => i.product_id && i.qty > 0)
     if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
     const ids = valid.map((i) => i.product_id)
     if (new Set(ids).size !== ids.length) { showMessage({ message: 'พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง' }); return }
     setSaving(true)
     try {
-      const itemPayload = valid.map((i) => ({
-        product_id: i.product_id,
-        qty: i.qty,
-        unit: i.unit,
-        estimated_price: i.estimated_price,
-        note: i.note || undefined,
-      }))
+      const itemPayload = valid.map((i) => {
+        const estimated = getEstimatedCost(productMap.get(i.product_id))
+        return {
+          product_id: i.product_id,
+          qty: i.qty,
+          unit: i.unit,
+          estimated_price: estimated != null ? Number(estimated) : null,
+          note: i.note || undefined,
+        }
+      })
 
       if (editingPrId) {
         await updatePR({
           prId: editingPrId,
           items: itemPayload,
-          note: note.trim(),
+          note: note.trim() || undefined,
           prType,
           supplierId: selectedSupplierId,
           supplierName: selectedSupplierName,
@@ -338,7 +352,7 @@ export default function PurchasePR() {
       } else {
         await createPR({
           items: itemPayload,
-          note: note.trim(),
+          note: note.trim() || undefined,
           userId: user?.id,
           prType,
           supplierId: selectedSupplierId,
@@ -687,8 +701,8 @@ export default function PurchasePR() {
                               {prod.product_name_cn && <span>ชื่อจีน: {prod.product_name_cn}</span>}
                               {prod.seller_name && <span>ผู้จัดจำหน่าย: {prod.seller_name}</span>}
                               {prod.product_category && <span>หมวด: {prod.product_category}</span>}
-                              {canSeePrice && prod.last_price != null && (
-                                <span className="text-blue-600 font-medium">ราคาซื้อล่าสุด: {Number(prod.last_price).toLocaleString()} บาท</span>
+                              {canSeePrice && getEstimatedCost(prod) != null && (
+                                <span className="text-blue-600 font-medium">ต้นทุนเฉลี่ย: {Number(getEstimatedCost(prod)).toLocaleString()} บาท</span>
                               )}
                               <span className="text-orange-600 font-medium">
                                 คงเหลือ: {(stockBalances[prod.id] ?? 0).toLocaleString()}
@@ -721,15 +735,11 @@ export default function PurchasePR() {
                             {canSeePrice && (
                               <div>
                                 <label className="block text-xs text-gray-500 mb-0.5">ราคาประเมิน</label>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={0.01}
-                                  value={item.estimated_price ?? ''}
-                                  onChange={(e) => updateDraftItem(index, { estimated_price: e.target.value ? Number(e.target.value) : null })}
-                                  className="w-full px-2 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
-                                  placeholder="0.00"
-                                />
+                                <div className="w-full px-2 py-1.5 border rounded-lg text-sm bg-gray-50 text-gray-700 min-h-[34px] flex items-center">
+                                  {item.estimated_price != null
+                                    ? Number(item.estimated_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                    : '-'}
+                                </div>
                               </div>
                             )}
                             <div className="flex items-end">
@@ -787,15 +797,14 @@ export default function PurchasePR() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    หมายเหตุ <span className="text-red-500">*</span>
+                    หมายเหตุ
                   </label>
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
-                    className={`w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none ${!note.trim() ? 'border-red-300' : ''}`}
+                    className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
                     rows={2}
-                    placeholder="ระบุหมายเหตุ (บังคับ)"
-                    required
+                    placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
                   />
                 </div>
               </div>
@@ -1009,7 +1018,7 @@ export default function PurchasePR() {
 
               {/* actions */}
               <div className="flex justify-end gap-3 pt-3 border-t">
-                {viewing.status === 'pending' && !rejectOpen && (
+                {canManagePR && viewing.status === 'pending' && !rejectOpen && (
                   <button
                     onClick={() => openEditPR(viewing, viewItems)}
                     className="px-5 py-2.5 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"

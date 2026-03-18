@@ -310,6 +310,19 @@ export async function updatePO(input: {
   return data as { total_amount: number }
 }
 
+export async function updatePOExpectedArrivalDate(input: {
+  poId: string
+  expectedArrivalDate: string
+  userId?: string
+}) {
+  const { error } = await supabase.rpc('rpc_update_po_expected_arrival_date', {
+    p_po_id: input.poId,
+    p_expected_arrival_date: input.expectedArrivalDate,
+    p_user_id: input.userId || null,
+  })
+  if (error) throw error
+}
+
 /* ──────────────── GR (Goods Receipt) ──────────────── */
 
 export interface GRListFilters {
@@ -322,7 +335,7 @@ export interface GRListFilters {
 export async function loadGRList(filters: GRListFilters = {}): Promise<InventoryGR[]> {
   let q = supabase
     .from('inv_gr')
-    .select('*, inv_po(po_no, expected_arrival_date, inv_pr(pr_type)), inv_gr_items(id, qty_ordered, qty_received)')
+    .select('*, inv_po(po_no, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {

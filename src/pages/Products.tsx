@@ -39,6 +39,7 @@ const PRODUCT_TEMPLATE_HEADERS = [
 const INIT_IMPORT_HEADERS = [
   'product_code',
   'product_name',
+  'product_name_cn',
   'product_category',
   'product_type',
   'seller_name',
@@ -57,6 +58,7 @@ type ChannelOption = { channel_code: string; channel_name: string }
 interface InitImportRow {
   product_code: string
   product_name: string
+  product_name_cn: string
   product_category: string
   product_type: string
   seller_name: string
@@ -783,11 +785,11 @@ export default function Products() {
     const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
       headers,
-      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
-      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
+      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
     ])
     ws['!cols'] = [
-      { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 12 },
+      { wch: 14 }, { wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
       { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
       ...channelPriceHeaders.map(() => ({ wch: 14 })),
@@ -859,6 +861,7 @@ export default function Products() {
         parsed.push({
           product_code: code,
           product_name: name,
+          product_name_cn: String(row.product_name_cn ?? '').trim(),
           product_category: String(row.product_category ?? '').trim(),
           product_type: validTypes.includes(rawType as ProductType) ? rawType : 'FG',
           seller_name: String(row.seller_name ?? '').trim(),
@@ -925,7 +928,7 @@ export default function Products() {
           product_category: r.product_category || null,
           product_type: r.product_type || 'FG',
           seller_name: r.seller_name || null,
-          product_name_cn: null,
+          product_name_cn: r.product_name_cn || null,
           unit_cost: r.unit_cost,
           initial_stock: r.initial_stock,
           safety_stock: r.safety_stock,
@@ -951,6 +954,7 @@ export default function Products() {
           .from('pr_products')
           .update({
             product_name: r.product_name,
+            product_name_cn: r.product_name_cn || null,
             product_category: r.product_category || null,
             product_type: r.product_type || 'FG',
             seller_name: r.seller_name || null,

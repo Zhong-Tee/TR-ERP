@@ -18,6 +18,9 @@ import {
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
 
+const SAMPLE_IMAGES_BUCKET = 'sample-images'
+const PRODUCT_IMAGES_BUCKET = 'product-images'
+
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   received: { label: 'รับแล้ว', color: 'bg-blue-100 text-blue-800' },
   testing: { label: 'กำลังทดสอบ', color: 'bg-yellow-100 text-yellow-800' },
@@ -100,6 +103,8 @@ export default function PurchaseSample() {
     productNameCn: '', productType: 'FG', productCategory: '',
     sellerName: '',
   })
+  const [convertImageFile, setConvertImageFile] = useState<File | null>(null)
+  const [convertImagePreview, setConvertImagePreview] = useState('')
 
   const handleCreateFromTopBar = useCallback(() => setCreateOpen(true), [])
   useEffect(() => {
@@ -158,9 +163,9 @@ export default function PurchaseSample() {
         if (item.image_file) {
           const ext = item.image_file.name.split('.').pop() || 'jpg'
           const fileName = `sample-${Date.now()}-${crypto.randomUUID()}.${ext}`
-          const { error } = await supabase.storage.from('product-images').upload(fileName, item.image_file, { upsert: false })
+          const { error } = await supabase.storage.from(SAMPLE_IMAGES_BUCKET).upload(fileName, item.image_file, { upsert: false })
           if (error) throw error
-          const { data } = supabase.storage.from('product-images').getPublicUrl(fileName)
+          const { data } = supabase.storage.from(SAMPLE_IMAGES_BUCKET).getPublicUrl(fileName)
           imageUrl = data.publicUrl
         }
         return {
@@ -291,19 +296,44 @@ export default function PurchaseSample() {
       productCategory: item.pr_products?.product_category || '',
       sellerName: viewing?.supplier_name || item.pr_products?.seller_name || '',
     })
+    setConvertImageFile(null)
+    setConvertImagePreview('')
     setConvertOpen(true)
+  }
+
+  async function uploadProductImageForConvert(file: File, productCode: string): Promise<string> {
+    const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '.jpg'
+    const fileName = `${productCode.trim()}${ext}`
+    const { error } = await supabase.storage
+      .from(PRODUCT_IMAGES_BUCKET)
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: file.type || `image/${ext.replace('.', '')}`,
+      })
+    if (error) throw error
+    const { data } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(fileName)
+    return data.publicUrl
+  }
+
+  function closeConvertModal() {
+    if (convertImagePreview) URL.revokeObjectURL(convertImagePreview)
+    setConvertImageFile(null)
+    setConvertImagePreview('')
+    setConvertOpen(false)
   }
 
   async function handleConvertToProduct() {
     if (!viewing) return
-    if (!convertForm.productCode.trim()) { showMessage({ message: 'กรุณาระบุรหัสสินค้า' }); return }
+    const productCode = convertForm.productCode.trim()
+    if (!productCode) { showMessage({ message: 'กรุณาระบุรหัสสินค้า' }); return }
     if (!convertForm.productName.trim()) { showMessage({ message: 'กรุณาระบุชื่อสินค้า' }); return }
     setActionSaving(true)
     try {
       await convertSampleToProduct({
         sampleId: viewing.id,
         itemId: convertForm.itemId,
-        productCode: convertForm.productCode.trim(),
+        productCode,
         productName: convertForm.productName.trim(),
         productNameCn: convertForm.productNameCn.trim() || undefined,
         productType: convertForm.productType,
@@ -311,7 +341,10 @@ export default function PurchaseSample() {
         sellerName: convertForm.sellerName.trim() || undefined,
         userId: user?.id,
       })
-      setConvertOpen(false)
+      if (convertImageFile) {
+        await uploadProductImageForConvert(convertImageFile, productCode)
+      }
+      closeConvertModal()
       await refreshDetail()
       await loadAll()
     } catch (e: any) {
@@ -599,7 +632,7 @@ export default function PurchaseSample() {
                   <tbody className="divide-y">
                     {(viewing.inv_sample_items || []).map((item: any) => {
                       const prod = item.pr_products
-                      const imgUrl = item.image_url || (prod ? getPublicUrl('product-images', prod.product_code) : '')
+                      const imgUrl = item.image_url || (prod ? getPublicUrl(PRODUCT_IMAGES_BUCKET, prod.product_code) : '')
                       const displayName = prod
                         ? `${prod.product_code} - ${prod.product_name}`
                         : item.product_name_manual || '-'
@@ -767,7 +800,7 @@ export default function PurchaseSample() {
       </Modal>
 
       {/* Convert to Product Modal */}
-      <Modal open={convertOpen} onClose={() => setConvertOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-lg">
+      <Modal open={convertOpen} onClose={closeConvertModal} closeOnBackdropClick={false} contentClassName="max-w-lg">
         <div className="p-6 space-y-4">
           <h2 className="text-xl font-bold text-gray-900">นำเข้าระบบสินค้า</h2>
           <div className="bg-blue-50 rounded-lg p-3 text-sm text-blue-800">
@@ -805,6 +838,33 @@ export default function PurchaseSample() {
           <div>
             <label className="block text-xs text-gray-500 mb-1">ชื่อจีน</label>
             <input type="text" value={convertForm.productNameCn} onChange={(e) => setConvertForm((f) => ({ ...f, productNameCn: e.target.value }))} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="ถ้ามี" />
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">รูปสินค้าสำหรับระบบสินค้า</label>
+            <p className="text-[11px] text-gray-400 mb-1">
+              หากอัปโหลด ระบบจะบันทึกลง bucket <span className="font-medium">product-images</span> โดยใช้ชื่อไฟล์เป็นรหัสสินค้า
+            </p>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                if (convertImagePreview) URL.revokeObjectURL(convertImagePreview)
+                if (!file) {
+                  setConvertImageFile(null)
+                  setConvertImagePreview('')
+                  return
+                }
+                setConvertImageFile(file)
+                setConvertImagePreview(URL.createObjectURL(file))
+                e.target.value = ''
+              }}
+              className="w-full text-xs"
+            />
+            {convertImagePreview && (
+              <img src={convertImagePreview} alt="" className="mt-2 w-20 h-20 object-cover rounded border" />
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -855,7 +915,7 @@ export default function PurchaseSample() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setConvertOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
+            <button onClick={closeConvertModal} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button onClick={handleConvertToProduct} disabled={actionSaving} className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-semibold">
               {actionSaving ? 'กำลังบันทึก...' : 'สร้างสินค้าและนำเข้า'}
             </button>
