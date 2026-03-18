@@ -50,24 +50,48 @@ export async function upsertRollConfig(params: {
   rm_product_ids: string[]
   category_id?: string | null
   sheets_per_roll?: number | null
-  cost_per_sheet?: number | null
 }): Promise<string> {
-  const rmIds = params.rm_product_ids ?? []
-  const { data, error } = await supabase.rpc('fn_upsert_roll_config', {
-    p_fg_product_id: params.fg_product_id,
-    p_rm_product_id: rmIds[0] ?? null,
-    p_rm_product_ids: rmIds,
-    p_category_id: params.category_id ?? null,
-    p_sheets: params.sheets_per_roll ?? null,
-    p_cost: params.cost_per_sheet ?? null,
-  })
-  if (error) throw error
-  return data as string
+  const rmIds = (params.rm_product_ids ?? []).filter(Boolean)
+  if (!params.fg_product_id || rmIds.length === 0) {
+    throw new Error('ต้องเลือก FG และ RM อย่างน้อย 1 รายการ')
+  }
+
+  const { data: cfg, error: upsertError } = await supabase
+    .from('roll_material_configs')
+    .upsert(
+      {
+        fg_product_id: params.fg_product_id,
+        rm_product_id: rmIds[0],
+        category_id: params.category_id ?? null,
+        sheets_per_roll: params.sheets_per_roll ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'fg_product_id' },
+    )
+    .select('id')
+    .single()
+
+  if (upsertError) throw upsertError
+  const configId = cfg?.id as string
+
+  const { error: deleteMapError } = await supabase
+    .from('roll_material_config_rms')
+    .delete()
+    .eq('config_id', configId)
+  if (deleteMapError) throw deleteMapError
+
+  const mapRows = rmIds.map((rmId) => ({ config_id: configId, rm_product_id: rmId }))
+  const { error: insertMapError } = await supabase
+    .from('roll_material_config_rms')
+    .insert(mapRows)
+  if (insertMapError) throw insertMapError
+
+  return configId
 }
 
 export async function updateRollConfigField(
   configId: string,
-  field: 'sheets_per_roll' | 'cost_per_sheet' | 'category_id',
+  field: 'sheets_per_roll' | 'category_id',
   value: number | string | null,
 ): Promise<void> {
   const { error } = await supabase
@@ -111,20 +135,3 @@ export async function fetchAvailableRmProducts(): Promise<Product[]> {
   return (data ?? []) as Product[]
 }
 
-// ── Manual usage log ────────────────────────────────────
-
-export async function addManualUsageLog(
-  rmProductId: string,
-  qty: number,
-  eventDate?: string,
-): Promise<void> {
-  const { error } = await supabase
-    .from('roll_usage_logs')
-    .insert({
-      rm_product_id: rmProductId,
-      qty,
-      source_type: 'manual',
-      event_date: eventDate || new Date().toISOString(),
-    })
-  if (error) throw error
-}

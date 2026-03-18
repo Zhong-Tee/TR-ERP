@@ -901,7 +901,6 @@ export interface RollCalcDashboardRow {
   category_id: string | null
   category_name: string | null
   sheets_per_roll: number | null
-  cost_per_sheet: number | null
 }
 
 // ─── HR Module Types ────────────────────────────────────────────────────────

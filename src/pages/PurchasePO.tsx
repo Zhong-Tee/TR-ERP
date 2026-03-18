@@ -664,7 +664,7 @@ export default function PurchasePO() {
                     <option value="">-- เลือกผู้จัดจำหน่าย --</option>
                     {sellers.map((s) => (
                       <option key={s.id} value={s.id}>
-                        {s.name} {s.name_cn ? `(${s.name_cn})` : ''}
+                        {s.name}
                       </option>
                     ))}
                   </select>

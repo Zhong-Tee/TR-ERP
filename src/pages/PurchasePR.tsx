@@ -560,7 +560,7 @@ export default function PurchasePR() {
               >
                 <option value="">-- เลือกผู้ขาย (บังคับ) --</option>
                 {sellers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}{s.name_cn ? ` (${s.name_cn})` : ''}</option>
+                  <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
               <div className="flex-1">

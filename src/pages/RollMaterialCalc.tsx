@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import Modal from '../components/ui/Modal'
 import ProductImageHover from '../components/ui/ProductImageHover'
-import { useAuthContext } from '../contexts/AuthContext'
 import {
   fetchRollCalcDashboard,
   upsertRollConfig,
@@ -9,16 +8,10 @@ import {
   deleteRollConfig,
   fetchAvailableFgProducts,
   fetchAvailableRmProducts,
-  addManualUsageLog,
 } from '../lib/rollCalcApi'
 import type { RollCalcDashboardRow, Product } from '../types'
 
-const todayStr = () => new Date().toISOString().slice(0, 10)
-
 export default function RollMaterialCalc() {
-  const { user } = useAuthContext()
-  const canPickFuture = user?.role === 'superadmin' || user?.role === 'admin'
-
   // ── Data ─────────────────────────────────────────────
   const [rows, setRows] = useState<RollCalcDashboardRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -28,15 +21,6 @@ export default function RollMaterialCalc() {
 
   // ── Modals ──────────────────────────────────────────
   const [showPairModal, setShowPairModal] = useState(false)
-
-  // ── Manual log modal ────────────────────────────────
-  const [showLogModal, setShowLogModal] = useState(false)
-  const [logRmId, setLogRmId] = useState('')
-  const [logRmCode, setLogRmCode] = useState('')
-  const [logRmName, setLogRmName] = useState('')
-  const [logQty, setLogQty] = useState('1')
-  const [logDate, setLogDate] = useState(todayStr())
-  const [logSaving, setLogSaving] = useState(false)
 
   // ── Pair modal state ─────────────────────────────────
   const [fgProducts, setFgProducts] = useState<Product[]>([])
@@ -52,7 +36,7 @@ export default function RollMaterialCalc() {
   const rmRef = useRef<HTMLDivElement>(null)
 
   // ── Inline edit debounce ─────────────────────────────
-  const [editingValues, setEditingValues] = useState<Record<string, { sheets?: string; cost?: string }>>({})
+  const [editingValues, setEditingValues] = useState<Record<string, { sheets?: string }>>({})
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set())
 
@@ -65,9 +49,10 @@ export default function RollMaterialCalc() {
       setLoading(true)
       const dashData = await fetchRollCalcDashboard()
       setRows(dashData)
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(err)
-      setNotify({ type: 'error', message: 'โหลดข้อมูลไม่สำเร็จ' })
+      const message = err instanceof Error ? err.message : 'unknown error'
+      setNotify({ type: 'error', message: `โหลดข้อมูลไม่สำเร็จ: ${message}` })
     } finally {
       setLoading(false)
     }
@@ -125,8 +110,9 @@ export default function RollMaterialCalc() {
       setShowPairModal(false)
       setNotify({ type: 'success', message: 'จับคู่สินค้าสำเร็จ' })
       await loadAll()
-    } catch {
-      setNotify({ type: 'error', message: 'จับคู่สินค้าไม่สำเร็จ' })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'unknown error'
+      setNotify({ type: 'error', message: `จับคู่สินค้าไม่สำเร็จ: ${message}` })
     } finally {
       setPairSaving(false)
     }
@@ -145,38 +131,38 @@ export default function RollMaterialCalc() {
   }
 
   // ── Inline edit ──────────────────────────────────────
-  const getEditValue = (configId: string, field: 'sheets' | 'cost') => {
-    const local = editingValues[configId]?.[field]
+  const getEditValue = (configId: string) => {
+    const local = editingValues[configId]?.sheets
     if (local !== undefined) return local
     const row = rows.find((r) => r.config_id === configId)
     if (!row) return ''
-    const val = field === 'sheets' ? row.sheets_per_roll : row.cost_per_sheet
+    const val = row.sheets_per_roll
     return val != null ? String(val) : ''
   }
 
-  const handleInlineChange = (configId: string, field: 'sheets' | 'cost', value: string) => {
+  const handleInlineChange = (configId: string, value: string) => {
     setEditingValues((prev) => ({
       ...prev,
-      [configId]: { ...prev[configId], [field]: value },
+      [configId]: { ...prev[configId], sheets: value },
     }))
 
-    const timerKey = `${configId}_${field}`
+    const timerKey = `${configId}_sheets`
     if (debounceTimers.current[timerKey]) clearTimeout(debounceTimers.current[timerKey])
 
     debounceTimers.current[timerKey] = setTimeout(async () => {
-      const dbField = field === 'sheets' ? 'sheets_per_roll' : 'cost_per_sheet'
+      const dbField = 'sheets_per_roll'
       const numVal = value === '' ? null : Number(value)
       try {
         setSavingIds((prev) => new Set(prev).add(configId))
-        await updateRollConfigField(configId, dbField as 'sheets_per_roll' | 'cost_per_sheet', numVal)
+        await updateRollConfigField(configId, dbField, numVal)
         setRows((prev) =>
           prev.map((r) => (r.config_id === configId ? { ...r, [dbField]: numVal } : r)),
         )
         setEditingValues((prev) => {
           const copy = { ...prev }
           if (copy[configId]) {
-            delete copy[configId][field]
-            if (!copy[configId].sheets && !copy[configId].cost) delete copy[configId]
+            delete copy[configId].sheets
+            if (!copy[configId].sheets) delete copy[configId]
           }
           return copy
         })
@@ -191,35 +177,6 @@ export default function RollMaterialCalc() {
       }
     }, 800)
   }
-
-  // ── Manual usage log ─────────────────────────────────
-  const openLogModal = (rmProductId: string, rmCode: string, rmName: string) => {
-    setLogRmId(rmProductId)
-    setLogRmCode(rmCode)
-    setLogRmName(rmName)
-    setLogQty('1')
-    setLogDate(todayStr())
-    setShowLogModal(true)
-  }
-
-  const handleLogSave = async () => {
-    const n = Number(logQty)
-    if (isNaN(n) || n <= 0) return
-    try {
-      setLogSaving(true)
-      const eventDate = new Date(logDate + 'T00:00:00').toISOString()
-      await addManualUsageLog(logRmId, n, eventDate)
-      setShowLogModal(false)
-      setNotify({ type: 'success', message: `บันทึกการเบิก ${logRmCode} ${n} ม้วน` })
-      await loadAll()
-    } catch {
-      setNotify({ type: 'error', message: 'บันทึกไม่สำเร็จ' })
-    } finally {
-      setLogSaving(false)
-    }
-  }
-
-  const isBackdate = logDate < todayStr()
 
   // ── Helpers ──────────────────────────────────────────
   const fmtNum = (n: number | null | undefined, digits = 2) =>
@@ -320,14 +277,13 @@ export default function RollMaterialCalc() {
               <th className="p-3 text-left text-xs">RM ที่ผูก</th>
               <th className="p-3 text-right">สต๊อคคงเหลือ</th>
               <th className="p-3 text-center">แผ่น/ม้วน</th>
-              <th className="p-3 text-center">ต้นทุน/แผ่น</th>
               <th className="p-3 text-center rounded-tr-lg w-24">จัดการ</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-center py-12 text-gray-400">
+                <td colSpan={7} className="text-center py-12 text-gray-400">
                   <i className="fas fa-box-open text-4xl mb-3 block"></i>
                   {rows.length === 0 ? 'ยังไม่มีการจับคู่สินค้า กดปุ่ม "จับคู่สินค้า" เพื่อเริ่มต้น' : 'ไม่พบรายการที่ตรงกับการค้นหา'}
                 </td>
@@ -358,8 +314,38 @@ export default function RollMaterialCalc() {
 
                     {/* RM linked */}
                     <td className="p-3 text-xs text-gray-500">
-                      <span className="font-mono">{r.rm_product_code}</span>
-                      <div className="text-gray-400 whitespace-pre-line">{r.rm_product_name}</div>
+                      {(() => {
+                        const rmCodes = r.rm_product_code
+                          .split('\n')
+                          .map((x) => x.trim())
+                          .filter((x) => x && x !== '-')
+                        const rmNames = r.rm_product_name
+                          .split('\n')
+                          .map((x) => x.trim())
+                          .filter((x) => x && x !== '-')
+                        const firstRmCode = rmCodes[0] ?? ''
+                        const firstRmName = rmNames[0] ?? ''
+                        return (
+                          <div className="flex items-start gap-2">
+                            {firstRmCode ? (
+                              <ProductImageHover productCode={firstRmCode} productName={firstRmName} size="sm" />
+                            ) : (
+                              <div className="w-14 h-14 bg-gray-100 rounded-lg border border-gray-200 flex items-center justify-center text-gray-400 text-[10px]">
+                                ไม่มีรูป
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <span className="font-mono whitespace-pre-line">{r.rm_product_code}</span>
+                              <div className="text-gray-400 whitespace-pre-line">{r.rm_product_name}</div>
+                              {rmCodes.length > 1 && (
+                                <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px]">
+                                  ผูก {rmCodes.length} รายการ
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })()}
                     </td>
 
                     {/* Stock (computed) */}
@@ -381,25 +367,9 @@ export default function RollMaterialCalc() {
                           type="number"
                           min="0"
                           step="1"
-                          value={getEditValue(r.config_id, 'sheets')}
-                          onChange={(e) => handleInlineChange(r.config_id, 'sheets', e.target.value)}
+                          value={getEditValue(r.config_id)}
+                          onChange={(e) => handleInlineChange(r.config_id, e.target.value)}
                           className="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-center text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
-                          placeholder="-"
-                        />
-                        {isSaving && <i className="fas fa-spinner fa-spin text-blue-400 text-xs"></i>}
-                      </div>
-                    </td>
-
-                    {/* Cost per sheet (manual input) */}
-                    <td className="p-3 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={getEditValue(r.config_id, 'cost')}
-                          onChange={(e) => handleInlineChange(r.config_id, 'cost', e.target.value)}
-                          className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-center text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
                           placeholder="-"
                         />
                         {isSaving && <i className="fas fa-spinner fa-spin text-blue-400 text-xs"></i>}
@@ -409,14 +379,6 @@ export default function RollMaterialCalc() {
                     {/* Actions */}
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <button
-                          onClick={() => r.rm_product_id && openLogModal(r.rm_product_id, r.rm_product_code, r.rm_product_name)}
-                          disabled={!r.rm_product_id}
-                          className="p-2 text-blue-500 bg-blue-50 hover:text-white hover:bg-blue-600 rounded-lg transition"
-                          title="บันทึกการเบิกด้วยมือ"
-                        >
-                          <i className="fas fa-clipboard-list text-base"></i>
-                        </button>
                         <button
                           onClick={() => handleDeleteConfig(r.config_id)}
                           className="p-2 text-red-400 bg-red-50 hover:text-white hover:bg-red-500 rounded-lg transition"
@@ -442,8 +404,8 @@ export default function RollMaterialCalc() {
       {/* ════════════════════════════════════════════════ */}
       {/* Pair Modal                                      */}
       {/* ════════════════════════════════════════════════ */}
-      <Modal open={showPairModal} onClose={() => setShowPairModal(false)} contentClassName="max-w-5xl w-[95vw] !overflow-y-hidden">
-        <div className="p-6 space-y-5 min-h-[70vh]">
+      <Modal open={showPairModal} onClose={() => setShowPairModal(false)} contentClassName="max-w-5xl w-[95vw] max-h-[90vh]">
+        <div className="p-6 space-y-5 min-h-[72vh]">
           <h3 className="text-lg font-bold text-gray-800">
             <i className="fas fa-link mr-2 text-blue-500"></i>จับคู่สินค้า FG กับ RM
           </h3>
@@ -475,7 +437,7 @@ export default function RollMaterialCalc() {
                   />
                 )}
                 {fgDropOpen && !selectedFg && (
-                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[32rem] overflow-y-auto">
+                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[30rem] overflow-y-auto">
                     {filteredFg.length === 0 ? (
                       <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
                     ) : (
@@ -532,7 +494,7 @@ export default function RollMaterialCalc() {
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
                 />
                 {rmDropOpen && (
-                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[32rem] overflow-y-auto">
+                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[30rem] overflow-y-auto">
                     {filteredRm.length === 0 ? (
                       <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
                     ) : (
@@ -577,75 +539,6 @@ export default function RollMaterialCalc() {
                 <><i className="fas fa-spinner fa-spin mr-2"></i>กำลังบันทึก...</>
               ) : (
                 <><i className="fas fa-check mr-2"></i>จับคู่</>
-              )}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* ════════════════════════════════════════════════ */}
-      {/* Manual Log Modal                                */}
-      {/* ════════════════════════════════════════════════ */}
-      <Modal open={showLogModal} onClose={() => setShowLogModal(false)} contentClassName="max-w-sm">
-        <div className="p-6 space-y-4">
-          <h3 className="text-lg font-bold text-gray-800">
-            <i className="fas fa-clipboard-list mr-2 text-blue-500"></i>บันทึกการเบิก RM
-          </h3>
-
-          <div className="bg-gray-50 rounded-lg px-3 py-2">
-            <div className="text-xs text-gray-400">สินค้า RM</div>
-            <div className="text-sm font-mono font-semibold text-gray-800">{logRmCode}</div>
-            <div className="text-xs text-gray-500">{logRmName}</div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">จำนวนม้วน</label>
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={logQty}
-              onChange={(e) => setLogQty(e.target.value)}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none text-center text-lg font-semibold"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">วันที่เบิก</label>
-            <input
-              type="date"
-              value={logDate}
-              onChange={(e) => setLogDate(e.target.value)}
-              max={canPickFuture ? undefined : todayStr()}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
-            />
-          </div>
-
-          {isBackdate && (
-            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              <i className="fas fa-exclamation-triangle text-amber-500 mt-0.5"></i>
-              <p className="text-xs text-amber-700">
-                การเลือกวันย้อนหลังอาจมีผลต่อค่าคำนวณ "แผ่น/ม้วน" เพราะระบบจะเปลี่ยนช่วงเวลาที่ใช้คำนวณ
-              </p>
-            </div>
-          )}
-
-          <div className="flex justify-end gap-3 pt-1">
-            <button
-              onClick={() => setShowLogModal(false)}
-              className="px-5 py-2.5 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition font-medium"
-            >
-              ยกเลิก
-            </button>
-            <button
-              onClick={handleLogSave}
-              disabled={logSaving || !logQty || Number(logQty) <= 0 || !logDate}
-              className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium shadow-sm"
-            >
-              {logSaving ? (
-                <><i className="fas fa-spinner fa-spin mr-2"></i>กำลังบันทึก...</>
-              ) : (
-                <><i className="fas fa-check mr-2"></i>บันทึก</>
               )}
             </button>
           </div>
