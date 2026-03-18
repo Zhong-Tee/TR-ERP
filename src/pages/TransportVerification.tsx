@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -9,6 +9,15 @@ type MessageModal = { open: boolean; title: string; message: string }
 type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void }
 
 const PARCEL_TYPES = ['กล่อง', 'ซองกระดาษ', 'ซองบับเบิล', 'ถุงพัสดุ'] as const
+type ParcelType = (typeof PARCEL_TYPES)[number]
+
+function normalizeParcelType(value: string | null | undefined): ParcelType {
+  const v = String(value || '').trim()
+  if (v === 'ซองกระดาษ' || v === 'ซอง') return 'ซองกระดาษ'
+  if (v === 'ซองบับเบิล' || v === 'บับเบิล') return 'ซองบับเบิล'
+  if (v === 'ถุงพัสดุ' || v === 'ถุง') return 'ถุงพัสดุ'
+  return 'กล่อง'
+}
 
 function formatTime(iso?: string | null) {
   if (!iso) return '-'
@@ -137,7 +146,7 @@ export default function TransportVerification() {
       if (!isTodayVer) return
       const carrier = getCarrierName(o.channel_code)
       const ch = (o.channel_code || 'N/A').toUpperCase()
-      const pType = o.transport_meta?.parcel_type || 'กล่อง'
+      const pType = normalizeParcelType(o.transport_meta?.parcel_type)
       if (!nested[carrier]) nested[carrier] = {}
       if (!nested[carrier][ch]) {
         nested[carrier][ch] = { กล่อง: 0, ซองกระดาษ: 0, ซองบับเบิล: 0, ถุงพัสดุ: 0, total: 0 }
@@ -476,8 +485,23 @@ export default function TransportVerification() {
                       const channelsByCarrier = summaryData[carrier]
                       const channelKeys = Object.keys(channelsByCarrier).sort()
                       const subtotal = { กล่อง: 0, ซองกระดาษ: 0, ซองบับเบิล: 0, ถุงพัสดุ: 0, total: 0 }
+                      channelKeys.forEach((ch) => {
+                        const s = channelsByCarrier[ch]
+                        subtotal.กล่อง += s.กล่อง || 0
+                        subtotal.ซองกระดาษ += s['ซองกระดาษ'] || 0
+                        subtotal.ซองบับเบิล += s['ซองบับเบิล'] || 0
+                        subtotal.ถุงพัสดุ += s['ถุงพัสดุ'] || 0
+                        subtotal.total += s.total || 0
+                      })
+
+                      grand.กล่อง += subtotal.กล่อง
+                      grand.ซองกระดาษ += subtotal['ซองกระดาษ']
+                      grand.ซองบับเบิล += subtotal['ซองบับเบิล']
+                      grand.ถุงพัสดุ += subtotal['ถุงพัสดุ']
+                      grand.total += subtotal.total
+
                       return (
-                        <tbody key={carrier}>
+                        <Fragment key={carrier}>
                           <tr className="bg-gray-50">
                             <td colSpan={6} className="p-2 font-semibold text-blue-600">
                               🚚 ขนส่ง: {carrier}
@@ -485,11 +509,6 @@ export default function TransportVerification() {
                           </tr>
                           {channelKeys.map((ch) => {
                             const s = channelsByCarrier[ch]
-                            subtotal.กล่อง += s.กล่อง || 0
-                            subtotal.ซองกระดาษ += s['ซองกระดาษ'] || 0
-                            subtotal.ซองบับเบิล += s['ซองบับเบิล'] || 0
-                            subtotal.ถุงพัสดุ += s['ถุงพัสดุ'] || 0
-                            subtotal.total += s.total || 0
                             return (
                               <tr key={`${carrier}-${ch}`}>
                                 <td className="p-2 text-left pl-6 text-gray-600">└ {ch}</td>
@@ -509,15 +528,7 @@ export default function TransportVerification() {
                             <td className="p-2 text-center">{subtotal['ถุงพัสดุ']}</td>
                             <td className="p-2 text-center text-blue-600">{subtotal.total}</td>
                           </tr>
-                          {(() => {
-                            grand.กล่อง += subtotal.กล่อง
-                            grand.ซองกระดาษ += subtotal['ซองกระดาษ']
-                            grand.ซองบับเบิล += subtotal['ซองบับเบิล']
-                            grand.ถุงพัสดุ += subtotal['ถุงพัสดุ']
-                            grand.total += subtotal.total
-                            return null
-                          })()}
-                        </tbody>
+                        </Fragment>
                       )
                     })}
                     <tr className="bg-gray-900 text-white font-bold">

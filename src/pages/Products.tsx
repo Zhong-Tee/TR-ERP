@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import { getPublicUrl } from '../lib/qcApi'
+import { getNextProductCode } from '../lib/purchaseApi'
 import Modal from '../components/ui/Modal'
 import { Product, ProductType } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -98,6 +99,7 @@ const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'RM', label: 'RM - วัตถุดิบ' },
   { value: 'PP', label: 'PP - สินค้าแปรรูป' },
 ]
+const ADD_PRODUCT_TYPE_OPTIONS = PRODUCT_TYPE_OPTIONS.filter((opt) => opt.value !== 'PP')
 
 const UNIT_PRESETS = ['ชิ้น', 'คู่', 'แพ็ค', 'กล่อง', 'ชุด', 'ม้วน']
 
@@ -261,12 +263,24 @@ export default function Products() {
     }
   }
 
+  async function autoGenerateProductCodeByType(productType: ProductType) {
+    if (productType !== 'FG' && productType !== 'RM') return
+    try {
+      const nextCode = await getNextProductCode(productType)
+      setForm((prev) => (prev.product_type === productType ? { ...prev, product_code: nextCode } : prev))
+    } catch (error: any) {
+      console.error('Error generating product code:', error)
+      showNotify('warning', 'ไม่สามารถรันรหัสสินค้าอัตโนมัติได้', error?.message || 'กรุณากรอกรหัสสินค้าเอง')
+    }
+  }
+
   function openAdd() {
     setForm(emptyForm())
     setEditingProduct(null)
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('add')
+    void autoGenerateProductCodeByType('FG')
   }
 
   function openEdit(product: Product) {
@@ -332,6 +346,10 @@ export default function Products() {
           : Number.isFinite(parsedOrderPointDays) && parsedOrderPointDays >= 0
             ? Math.floor(parsedOrderPointDays)
             : null
+      const productTypeToSave: ProductType =
+        modalMode === 'add' && form.product_type === 'PP'
+          ? 'FG'
+          : (form.product_type || 'FG')
 
       if (modalMode === 'add') {
         const { error } = await supabase.from('pr_products').insert({
@@ -342,7 +360,7 @@ export default function Products() {
           order_point: form.order_point.trim() || null,
           order_point_days: orderPointDays,
           product_category: form.product_category.trim() || null,
-          product_type: form.product_type || 'FG',
+          product_type: productTypeToSave,
           rubber_code: form.rubber_code.trim() || null,
           storage_location: form.storage_location.trim() || null,
           unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
@@ -364,7 +382,7 @@ export default function Products() {
             order_point: form.order_point.trim() || null,
             order_point_days: orderPointDays,
             product_category: form.product_category.trim() || null,
-            product_type: form.product_type || 'FG',
+            product_type: productTypeToSave,
             rubber_code: form.rubber_code.trim() || null,
             storage_location: form.storage_location.trim() || null,
             unit_cost: form.unit_cost.trim() ? Number(form.unit_cost.trim()) : 0,
@@ -1168,13 +1186,20 @@ export default function Products() {
               <label className="block text-sm font-semibold text-surface-700 mb-1">ประเภทสินค้า</label>
               <select
                 value={form.product_type}
-                onChange={(e) => setForm((f) => ({ ...f, product_type: e.target.value as ProductType }))}
+                onChange={(e) => {
+                  const nextType = e.target.value as ProductType
+                  setForm((f) => ({ ...f, product_type: nextType }))
+                  if (modalMode === 'add') void autoGenerateProductCodeByType(nextType)
+                }}
                 className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
               >
-                {PRODUCT_TYPE_OPTIONS.map((opt) => (
+                {(modalMode === 'add' ? ADD_PRODUCT_TYPE_OPTIONS : PRODUCT_TYPE_OPTIONS).map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
+              {modalMode === 'add' && (
+                <p className="text-xs text-surface-500 mt-1">สินค้า PP สร้างจากเมนู คลัง &gt; ผลิตภายใน</p>
+              )}
             </div>
             {/* รหัสหน้ายาง */}
             <div>

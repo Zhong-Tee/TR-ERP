@@ -54,7 +54,7 @@ export default function ProtectedRoute({
 }: ProtectedRouteProps) {
   const { user, loading } = useAuthContext()
   const location = useLocation()
-  const { menuAccess, menuAccessLoading, hasAccess } = useMenuAccess()
+  const { menuAccessLoading, hasAccess } = useMenuAccess()
 
   if (loading) {
     return (
@@ -111,17 +111,10 @@ export default function ProtectedRoute({
 
   const menuKey = resolveMenuKeyFromPath(location.pathname)
 
-  if (menuAccess !== null) {
-    if (menuKey && !hasAccess(menuKey)) {
-      const redirectPath = findFirstAccessibleSubPage(location.pathname, hasAccess)
-      if (redirectPath) return <Navigate to={redirectPath} replace />
-      return <NoAccessFallback />
-    }
-  } else {
-    // ยังไม่มีข้อมูลจาก DB สำหรับ role นี้ → fallback ใช้ allowedRoles
-    if (allowedRoles && !isRoleInAllowedList(user.role, allowedRoles)) {
-      return <NoAccessFallback />
-    }
+  if (menuKey && !hasAccess(menuKey)) {
+    const redirectPath = findFirstAccessibleSubPage(location.pathname, hasAccess)
+    if (redirectPath) return <Navigate to={redirectPath} replace />
+    return <NoAccessFallback />
   }
 
   return <>{children}</>

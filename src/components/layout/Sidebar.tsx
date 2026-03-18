@@ -7,7 +7,7 @@ import { supabase } from '../../lib/supabase'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
-import { isRoleAllowedForMenuFallback, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
+import { resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 import {
   FiPackage,
   FiCheckCircle,
@@ -170,7 +170,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   const { user } = useAuthContext()
   const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0, purchase: 0 })
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
-  const { menuAccess: dbMenuAccess } = useMenuAccess()
+  const { hasAccess } = useMenuAccess()
 
   const loadCounts = useCallback(async () => {
     try {
@@ -327,12 +327,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (!user?.role) return false
-    if (dbMenuAccess !== null) {
-      // มีข้อมูลจาก DB (superadmin ตั้งค่าแล้ว) → ใช้ DB เป็น single source of truth
-      return dbMenuAccess[item.key] === true
-    }
-    // ยังไม่มีข้อมูลจาก DB สำหรับ role นี้ → fallback ใช้ hardcoded roles
-    return isRoleAllowedForMenuFallback(item.key, user.role)
+    return hasAccess(item.key)
   })
 
   return (

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useAuthContext } from '../../../contexts/AuthContext'
 import { useMenuAccess } from '../../../contexts/MenuAccessContext'
 import { supabase } from '../../../lib/supabase'
 import UploadSection from './UploadSection'
@@ -15,7 +14,6 @@ import NewOrdersSection from './NewOrdersSection'
 import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 
 export default function AdminLayout() {
-  const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const [activeMenu, setActiveMenu] = useState<string>('')
   const { MessageModal, ConfirmModal } = useWmsModal()
@@ -72,7 +70,7 @@ export default function AdminLayout() {
     { key: WMS_MENU_KEYS.RETURN_REQUISITION, label: 'รายการคืน' },
     { key: WMS_MENU_KEYS.BORROW_REQUISITION, label: 'รายการยืม' },
     { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
-    ...(user?.role !== 'store' ? [{ key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' }] : []),
+    { key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' },
   ].filter((item) => hasAccess(item.key))
 
   useEffect(() => {
@@ -123,7 +121,7 @@ export default function AdminLayout() {
         {activeMenu === WMS_MENU_KEYS.RETURN_REQUISITION && <ReturnRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.BORROW_REQUISITION && <BorrowRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.NOTIF && <NotificationSection />}
-        {activeMenu === WMS_MENU_KEYS.SETTINGS && user?.role !== 'store' && <SettingsSection />}
+        {activeMenu === WMS_MENU_KEYS.SETTINGS && <SettingsSection />}
       </div>
       {MessageModal}
       {ConfirmModal}

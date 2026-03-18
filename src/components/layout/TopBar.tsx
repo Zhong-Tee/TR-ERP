@@ -379,7 +379,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                 onClick={clearAllChatNotifications}
                 disabled={clearingChat}
                 title="ล้างแจ้งเตือนแชททั้งหมด"
-                className="px-2 py-1.5 rounded-full text-xs font-semibold bg-white/20 text-white hover:bg-white/30 transition-colors disabled:opacity-50"
+                className="px-2 py-1.5 rounded-full text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors disabled:opacity-50"
               >
                 {clearingChat ? '...' : 'ล้าง'}
               </button>

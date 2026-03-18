@@ -1,14 +1,14 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuthContext } from './AuthContext'
-import { getMenuAccessCandidates, getRoleLookupCandidates } from '../config/accessPolicy'
+import { getMenuAccessCandidates, isDesktopDbManagedRole, isSuperadmin, normalizeRole } from '../config/accessPolicy'
 
 interface MenuAccessContextType {
-  /** Raw map from DB — null = role has no config yet */
+  /** Raw map from DB. */
   menuAccess: Record<string, boolean> | null
   /** true while loading menu access from DB */
   menuAccessLoading: boolean
-  /** Check if a menu key is accessible. Returns true only when no DB config exists (fallback). */
+  /** Check if a menu key is accessible. */
   hasAccess: (menuKey: string) => boolean
   /** Force reload from DB (e.g. after saving role settings) */
   refreshMenuAccess: () => void
@@ -36,20 +36,29 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
       setLoaded(true)
       return
     }
+    if (isSuperadmin(user.role)) {
+      setAccessMap(null)
+      setLoaded(true)
+      return
+    }
+    if (!isDesktopDbManagedRole(user.role)) {
+      setAccessMap(null)
+      setLoaded(true)
+      return
+    }
     if (showLoading) setLoaded(false)
     try {
-      const roleCandidates = getRoleLookupCandidates(user.role)
       const { data, error } = await supabase
         .from('st_user_menus')
         .select('menu_key, has_access')
-        .in('role', roleCandidates.length > 0 ? roleCandidates : [user.role])
+        .eq('role', normalizeRole(user.role))
       if (error) {
         console.error('MenuAccess load error:', error)
         if (showLoading) setLoaded(true)
         return
       }
       if (!data || data.length === 0) {
-        setAccessMap(null)
+        setAccessMap({})
       } else {
         const map: Record<string, boolean> = {}
         data.forEach((row: { menu_key: string; has_access: boolean }) => {
@@ -70,9 +79,31 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
 
   const refreshMenuAccess = useCallback(() => fetchAndApply(false), [fetchAndApply])
 
+  useEffect(() => {
+    if (!user?.role) return
+    if (isSuperadmin(user.role)) return
+    if (!isDesktopDbManagedRole(user.role)) return
+    const role = normalizeRole(user.role)
+    const channel = supabase
+      .channel(`menu-access-${role}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'st_user_menus', filter: `role=eq.${role}` },
+        () => {
+          fetchAndApply(false)
+        },
+      )
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [user?.role, fetchAndApply])
+
   const hasAccess = useCallback(
     (menuKey: string): boolean => {
-      if (accessMap === null) return true
+      if (isSuperadmin(user?.role)) return true
+      if (!isDesktopDbManagedRole(user?.role)) return false
+      if (accessMap === null) return false
       const candidates = getMenuAccessCandidates(menuKey)
       for (const candidate of candidates) {
         if (candidate in accessMap) {
@@ -81,7 +112,7 @@ export function MenuAccessProvider({ children }: { children: ReactNode }) {
       }
       return false
     },
-    [accessMap],
+    [accessMap, user?.role],
   )
 
   return (

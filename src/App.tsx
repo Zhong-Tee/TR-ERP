@@ -61,7 +61,7 @@ const HRLoading = () => (
 
 function SmartRedirect() {
   const { user, signOut } = useAuthContext()
-  const { menuAccess, menuAccessLoading, hasAccess } = useMenuAccess()
+  const { menuAccessLoading, hasAccess } = useMenuAccess()
 
   if (!user) return <Navigate to="/" replace />
 
@@ -86,13 +86,7 @@ function SmartRedirect() {
 
   // หา menu แรกที่ role มีสิทธิ์เข้าถึง
   for (const menu of DESKTOP_MENU_PATH_ORDER) {
-    if (menuAccess !== null) {
-      // มีข้อมูลจาก DB → ใช้ DB เป็น single source of truth
-      if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
-    } else {
-      // ยังไม่มีข้อมูลจาก DB → fallback ใช้ hardcoded roles
-      if (menu.roles.includes(user.role)) return <Navigate to={menu.path} replace />
-    }
+    if (hasAccess(menu.key)) return <Navigate to={menu.path} replace />
   }
 
   return (

@@ -5,6 +5,19 @@ export type MaybeRole = UserRole | string | null | undefined
 export const SUPERADMIN_ROLE: UserRole = 'superadmin'
 export const ADMIN_ROLE: UserRole = 'admin'
 export const WMS_MOBILE_SPECIAL_ROLES: UserRole[] = ['picker', 'production_mb', 'manager']
+export const DESKTOP_DB_MANAGED_ROLES: UserRole[] = [
+  'superadmin',
+  'admin',
+  'sales-tr',
+  'qc_order',
+  'sales-pump',
+  'qc_staff',
+  'packing_staff',
+  'account',
+  'store',
+  'production',
+  'hr',
+]
 export const SALES_TR_ROLE_ALIASES: UserRole[] = ['sales-tr']
 export const SALES_PUMP_ROLE_ALIASES: UserRole[] = ['sales-pump']
 
@@ -224,6 +237,10 @@ export function isRoleAllowedForMenuFallback(menuKey: string, role: MaybeRole): 
 
 export function isSuperadmin(role: MaybeRole): boolean {
   return role === SUPERADMIN_ROLE
+}
+
+export function isDesktopDbManagedRole(role: MaybeRole): boolean {
+  return isRoleInAllowedList(role, DESKTOP_DB_MANAGED_ROLES)
 }
 
 export function isAdminOrSuperadmin(role: MaybeRole): boolean {

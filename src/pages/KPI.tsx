@@ -66,8 +66,27 @@ interface AuditRow {
   completed_at: string | null
   created_at: string
 }
+interface Requisition {
+  requisition_id: string
+  status: string
+  created_at: string
+  approved_at: string | null
+  notes: string | null
+}
+interface RequisitionItem {
+  requisition_id: string
+  product_code: string
+  product_name: string
+  qty: number
+  requisition_topic: string | null
+  created_at: string
+}
+interface ProductTypeRow {
+  product_code: string
+  product_type: string | null
+}
 
-type TabKey = 'overview' | 'sales' | 'warehouse' | 'qc' | 'packing' | 'production' | 'issues' | 'audit'
+type TabKey = 'overview' | 'sales' | 'warehouse' | 'requisition' | 'qc' | 'packing' | 'production' | 'issues' | 'audit'
 type PresetKey = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear'
 
 /* ================================================================== */
@@ -127,6 +146,13 @@ function delta(curr: number, prev: number) {
   return ((curr - prev) / prev) * 100
 }
 
+function normalizeWithdrawProductType(value: string | null | undefined): 'FG' | 'RM' | 'OTHER' {
+  const v = String(value || '').toUpperCase()
+  if (v === 'FG') return 'FG'
+  if (v === 'RM') return 'RM'
+  return 'OTHER'
+}
+
 /* ================================================================== */
 /*  Component                                                          */
 /* ================================================================== */
@@ -157,13 +183,19 @@ export default function KPIDashboard() {
   const [prevIssueData, setPrevIssueData] = useState<IssueRow[]>([])
   const [auditData, setAuditData] = useState<AuditRow[]>([])
   const [prevAuditData, setPrevAuditData] = useState<AuditRow[]>([])
+  const [reqData, setReqData] = useState<Requisition[]>([])
+  const [prevReqData, setPrevReqData] = useState<Requisition[]>([])
+  const [reqItems, setReqItems] = useState<RequisitionItem[]>([])
+  const [prevReqItems, setPrevReqItems] = useState<RequisitionItem[]>([])
+  const [reqProductTypes, setReqProductTypes] = useState<ProductTypeRow[]>([])
+  const [prevReqProductTypes, setPrevReqProductTypes] = useState<ProductTypeRow[]>([])
 
   /* ---------- Fetch helpers ---------- */
   const fetchRange = useCallback(async (from: string, to: string) => {
     const tsFrom = from + 'T00:00:00'
     const tsTo = to + 'T23:59:59'
 
-    const [sales, wms, wmsOrd, qc, pack, prod, issues, audits] = await Promise.all([
+    const [sales, wms, wmsOrd, qc, pack, prod, issues, audits, requisitions, requisitionItems] = await Promise.all([
       supabase.from('or_orders')
         .select('channel_code, total_amount, entry_date, admin_user, status, or_order_items(quantity, unit_price, is_free)')
         .gte('entry_date', from).lte('entry_date', to).in('status', ['จัดส่งแล้ว', 'เสร็จสิ้น']),
@@ -189,7 +221,25 @@ export default function KPIDashboard() {
       supabase.from('inv_audits')
         .select('accuracy_percent, location_accuracy_percent, safety_stock_accuracy_percent, total_items, status, completed_at, created_at')
         .gte('created_at', tsFrom).lte('created_at', tsTo),
+      supabase.from('wms_requisitions')
+        .select('requisition_id, status, created_at, approved_at, notes')
+        .gte('created_at', tsFrom).lte('created_at', tsTo),
+      supabase.from('wms_requisition_items')
+        .select('requisition_id, product_code, product_name, qty, requisition_topic, created_at')
+        .gte('created_at', tsFrom).lte('created_at', tsTo),
     ])
+
+    const requisitionItemsData = (requisitionItems.data || []) as RequisitionItem[]
+    const productCodes = [...new Set(requisitionItemsData.map((r) => r.product_code).filter(Boolean))]
+    let requisitionProductTypes: ProductTypeRow[] = []
+    if (productCodes.length > 0) {
+      const { data: productTypeRows, error: productTypeErr } = await supabase
+        .from('pr_products')
+        .select('product_code, product_type')
+        .in('product_code', productCodes)
+      if (productTypeErr) throw productTypeErr
+      requisitionProductTypes = (productTypeRows || []) as ProductTypeRow[]
+    }
 
     return {
       sales: (sales.data || []) as SalesOrder[],
@@ -200,6 +250,9 @@ export default function KPIDashboard() {
       prod: (prod.data || []) as PlanJob[],
       issues: (issues.data || []) as unknown as IssueRow[],
       audits: (audits.data || []) as AuditRow[],
+      requisitions: (requisitions.data || []) as Requisition[],
+      requisitionItems: requisitionItemsData,
+      requisitionProductTypes,
     }
   }, [])
 
@@ -216,6 +269,9 @@ export default function KPIDashboard() {
       setProdData(curr.prod)
       setIssueData(curr.issues); setPrevIssueData(prev.issues)
       setAuditData(curr.audits); setPrevAuditData(prev.audits)
+      setReqData(curr.requisitions); setPrevReqData(prev.requisitions)
+      setReqItems(curr.requisitionItems); setPrevReqItems(prev.requisitionItems)
+      setReqProductTypes(curr.requisitionProductTypes); setPrevReqProductTypes(prev.requisitionProductTypes)
       setLoaded(true)
     } catch (err: any) {
       console.error(err)
@@ -324,6 +380,97 @@ export default function KPIDashboard() {
     })
     return Object.values(m).sort((a, b) => (b.orders ? b.sumAcc / b.orders : 0) - (a.orders ? a.sumAcc / a.orders : 0))
   }, [wmsData, wmsTimeMap])
+
+  // --- Requisition (Withdraw) ---
+  const reqProductTypeMap = useMemo(() => {
+    const m: Record<string, 'FG' | 'RM' | 'OTHER'> = {}
+    reqProductTypes.forEach((r) => {
+      m[r.product_code] = normalizeWithdrawProductType(r.product_type)
+    })
+    return m
+  }, [reqProductTypes])
+
+  const prevReqProductTypeMap = useMemo(() => {
+    const m: Record<string, 'FG' | 'RM' | 'OTHER'> = {}
+    prevReqProductTypes.forEach((r) => {
+      m[r.product_code] = normalizeWithdrawProductType(r.product_type)
+    })
+    return m
+  }, [prevReqProductTypes])
+
+  function calcReqKpi(
+    requisitions: Requisition[],
+    items: RequisitionItem[],
+    typeMap: Record<string, 'FG' | 'RM' | 'OTHER'>
+  ) {
+    let totalQty = 0
+    let fgQty = 0
+    let rmQty = 0
+    let otherQty = 0
+    items.forEach((item) => {
+      const qty = Number(item.qty) || 0
+      totalQty += qty
+      const pt = typeMap[item.product_code] || 'OTHER'
+      if (pt === 'FG') fgQty += qty
+      else if (pt === 'RM') rmQty += qty
+      else otherQty += qty
+    })
+    const approved = requisitions.filter((r) => r.status === 'approved').length
+    const pending = requisitions.filter((r) => r.status === 'pending').length
+    const rejected = requisitions.filter((r) => r.status === 'rejected').length
+    return {
+      totalReq: requisitions.length,
+      approved,
+      pending,
+      rejected,
+      totalLines: items.length,
+      totalQty,
+      fgQty,
+      rmQty,
+      otherQty,
+      approveRate: requisitions.length > 0 ? (approved / requisitions.length) * 100 : 0,
+    }
+  }
+
+  const reqKpi = useMemo(() => calcReqKpi(reqData, reqItems, reqProductTypeMap), [reqData, reqItems, reqProductTypeMap])
+  const prevReqKpi = useMemo(() => calcReqKpi(prevReqData, prevReqItems, prevReqProductTypeMap), [prevReqData, prevReqItems, prevReqProductTypeMap])
+
+  const reqByTopic = useMemo(() => {
+    const m: Record<string, { topic: string; lines: number; qty: number; fgQty: number; rmQty: number; otherQty: number }> = {}
+    reqItems.forEach((item) => {
+      const topic = (item.requisition_topic || '').trim() || 'ไม่ระบุหัวข้อ'
+      if (!m[topic]) m[topic] = { topic, lines: 0, qty: 0, fgQty: 0, rmQty: 0, otherQty: 0 }
+      const qty = Number(item.qty) || 0
+      const pt = reqProductTypeMap[item.product_code] || 'OTHER'
+      m[topic].lines += 1
+      m[topic].qty += qty
+      if (pt === 'FG') m[topic].fgQty += qty
+      else if (pt === 'RM') m[topic].rmQty += qty
+      else m[topic].otherQty += qty
+    })
+    return Object.values(m).sort((a, b) => b.qty - a.qty)
+  }, [reqItems, reqProductTypeMap])
+
+  const reqByProduct = useMemo(() => {
+    const m: Record<string, { code: string; name: string; type: 'FG' | 'RM' | 'OTHER'; lines: number; qty: number }> = {}
+    reqItems.forEach((item) => {
+      const code = item.product_code || 'N/A'
+      const key = `${code}::${item.product_name || '-'}`
+      const pt = reqProductTypeMap[item.product_code] || 'OTHER'
+      if (!m[key]) {
+        m[key] = {
+          code,
+          name: item.product_name || '-',
+          type: pt,
+          lines: 0,
+          qty: 0,
+        }
+      }
+      m[key].lines += 1
+      m[key].qty += Number(item.qty) || 0
+    })
+    return Object.values(m).sort((a, b) => b.qty - a.qty)
+  }, [reqItems, reqProductTypeMap])
 
   // --- QC ---
   function calcQcKpi(data: QcSession[]) {
@@ -484,7 +631,28 @@ export default function KPIDashboard() {
     wmsByPicker.forEach((r) => wr.push([r.name, r.orders as any, r.orders ? ((r.sumAcc / r.orders).toFixed(2)) as any : 0, r.countTime ? fmtDuration(r.totalMs / r.countTime) : '-', r.correct as any, r.wrong as any, r.notFind as any]))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wr), 'คลังจัดสินค้า')
 
-    // Sheet 4: QC
+    // Sheet 4: Requisition
+    const rq = [
+      ['ตัวชี้วัดการเบิก', 'ค่า'],
+      ['จำนวนใบเบิกทั้งหมด', reqKpi.totalReq],
+      ['อนุมัติแล้ว', reqKpi.approved],
+      ['รออนุมัติ', reqKpi.pending],
+      ['ปฏิเสธ', reqKpi.rejected],
+      ['จำนวนรายการเบิก', reqKpi.totalLines],
+      ['จำนวนชิ้นเบิกทั้งหมด', reqKpi.totalQty],
+      ['FG (ชิ้น)', reqKpi.fgQty],
+      ['RM (ชิ้น)', reqKpi.rmQty],
+      ['อื่นๆ (ชิ้น)', reqKpi.otherQty],
+      ['อัตราอนุมัติ (%)', reqKpi.approveRate.toFixed(2)],
+      [],
+      ['หัวข้อการเบิก', 'จำนวนรายการ', 'จำนวนชิ้น', 'FG', 'RM', 'อื่นๆ'],
+    ]
+    reqByTopic.forEach((r) => {
+      rq.push([r.topic, r.lines as any, r.qty as any, r.fgQty as any, r.rmQty as any, r.otherQty as any])
+    })
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rq), 'การเบิก')
+
+    // Sheet 5: QC
     const qr = [['พนักงาน', 'เซสชัน', 'รายการ', 'Pass', 'Fail', 'อัตรา Pass(%)', 'คะแนนเฉลี่ย(นาที/ชิ้น)']]
     qcByStaff.forEach((r) => {
       const pr = (r.pass + r.fail) > 0 ? ((r.pass / (r.pass + r.fail)) * 100).toFixed(2) : '0'
@@ -493,22 +661,22 @@ export default function KPIDashboard() {
     })
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(qr), 'QC')
 
-    // Sheet 5: Packing
+    // Sheet 6: Packing
     const pk = [['พนักงาน', 'จำนวนสแกน', 'จำนวนออเดอร์']]
     packByPacker.forEach((r) => pk.push([r.name, r.logs as any, r.orders as any]))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pk), 'แพ็คสินค้า')
 
-    // Sheet 6: Production
+    // Sheet 7: Production
     const pd = [['แผนก', 'จำนวนงาน', 'เวลาเฉลี่ย']]
     prodByDept.forEach((r) => pd.push([r.dept, r.jobs as any, r.countTime ? fmtDuration(r.totalMs / r.countTime) : '-']))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pd), 'การผลิต')
 
-    // Sheet 7: Issues
+    // Sheet 8: Issues
     const is = [['ประเภท', 'ทั้งหมด', 'เปิดอยู่', 'ปิดแล้ว', 'เวลาแก้เฉลี่ย']]
     issueByType.forEach((r) => is.push([r.type, r.total as any, r.open as any, r.closed as any, r.countMin ? fmtMinutes(r.totalMin / r.countMin) : '-']))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(is), 'ปัญหา')
 
-    // Sheet 8: Audit
+    // Sheet 9: Audit
     const au = [['ตัวชี้วัด', 'ค่า'],
       ['จำนวนครั้งตรวจนับ', auditKpi.totalAudits],
       ['สำเร็จ', auditKpi.completed],
@@ -534,7 +702,7 @@ export default function KPIDashboard() {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'overview', label: 'ภาพรวม' }, { key: 'sales', label: 'ยอดขาย' },
-    { key: 'warehouse', label: 'คลังจัดสินค้า' }, { key: 'qc', label: 'QC' },
+    { key: 'warehouse', label: 'คลังจัดสินค้า' }, { key: 'requisition', label: 'การเบิก' }, { key: 'qc', label: 'QC' },
     { key: 'packing', label: 'แพ็คสินค้า' }, { key: 'production', label: 'การผลิต' },
     { key: 'issues', label: 'ปัญหา' }, { key: 'audit', label: 'ตรวจนับสต็อก' },
   ]
@@ -794,6 +962,99 @@ export default function KPIDashboard() {
                       r.correct, r.wrong, r.notFind
                     ])}
                     colorFrom="from-cyan-600" colorTo="to-cyan-700" />
+                </div>
+              )}
+
+              {/* ===== REQUISITION TAB ===== */}
+              {tab === 'requisition' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+                    <KpiCard label="ใบเบิกทั้งหมด" value={reqKpi.totalReq} prev={prevReqKpi.totalReq} colorClass="text-blue-600" />
+                    <KpiCard label="อนุมัติแล้ว" value={reqKpi.approved} prev={prevReqKpi.approved} colorClass="text-emerald-600" />
+                    <KpiCard label="รออนุมัติ" value={reqKpi.pending} prev={prevReqKpi.pending} colorClass="text-amber-600" />
+                    <KpiCard label="ปฏิเสธ" value={reqKpi.rejected} prev={prevReqKpi.rejected} colorClass="text-rose-600" />
+                    <KpiCard label="จำนวนรายการเบิก" value={reqKpi.totalLines} prev={prevReqKpi.totalLines} colorClass="text-indigo-600" />
+                    <KpiCard label="จำนวนชิ้นเบิกรวม" value={reqKpi.totalQty} prev={prevReqKpi.totalQty} colorClass="text-cyan-600" />
+                    <KpiCard label="FG (ชิ้น)" value={reqKpi.fgQty} prev={prevReqKpi.fgQty} colorClass="text-green-600" />
+                    <KpiCard label="RM (ชิ้น)" value={reqKpi.rmQty} prev={prevReqKpi.rmQty} colorClass="text-orange-600" />
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <RankTable
+                      title="สรุปตามหัวข้อการเบิก"
+                      headers={['หัวข้อ', 'จำนวนรายการ', 'จำนวนชิ้น', 'FG', 'RM', 'อื่นๆ']}
+                      rows={reqByTopic.map((r) => [r.topic, r.lines, r.qty, r.fgQty, r.rmQty, r.otherQty])}
+                      colorFrom="from-emerald-600"
+                      colorTo="to-emerald-700"
+                    />
+
+                    <RankTable
+                      title="สรุปตามสินค้า (Top 20)"
+                      headers={['สินค้า', 'ประเภท', 'จำนวนรายการ', 'จำนวนชิ้น']}
+                      rows={reqByProduct.slice(0, 20).map((r) => [
+                        `${r.code} - ${r.name}`,
+                        r.type,
+                        r.lines,
+                        r.qty,
+                      ])}
+                      colorFrom="from-sky-600"
+                      colorTo="to-sky-700"
+                    />
+                  </div>
+
+                  <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100">
+                      <h3 className="text-base font-bold text-gray-700">รายละเอียดรายการเบิก</h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-base">
+                        <thead>
+                          <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                            <th className="p-2.5 text-left font-semibold">วันที่</th>
+                            <th className="p-2.5 text-left font-semibold">เลขใบเบิก</th>
+                            <th className="p-2.5 text-left font-semibold">หัวข้อการเบิก</th>
+                            <th className="p-2.5 text-left font-semibold">สินค้า</th>
+                            <th className="p-2.5 text-center font-semibold">ประเภท</th>
+                            <th className="p-2.5 text-right font-semibold">จำนวน</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reqItems.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="p-6 text-center text-gray-400">ไม่มีข้อมูล</td>
+                            </tr>
+                          ) : (
+                            reqItems
+                              .slice()
+                              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                              .map((item, idx) => {
+                                const pt = reqProductTypeMap[item.product_code] || 'OTHER'
+                                return (
+                                  <tr key={`${item.requisition_id}-${item.product_code}-${idx}`} className={`border-t border-gray-100 hover:bg-gray-50 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                                    <td className="p-2.5 text-gray-600">{new Date(item.created_at).toLocaleString('th-TH')}</td>
+                                    <td className="p-2.5 font-medium">{item.requisition_id}</td>
+                                    <td className="p-2.5">{(item.requisition_topic || '').trim() || 'ไม่ระบุหัวข้อ'}</td>
+                                    <td className="p-2.5">{item.product_code} - {item.product_name}</td>
+                                    <td className="p-2.5 text-center">
+                                      <span className={`inline-block px-2 py-0.5 rounded-full text-sm font-bold ${
+                                        pt === 'FG'
+                                          ? 'bg-green-100 text-green-700'
+                                          : pt === 'RM'
+                                            ? 'bg-orange-100 text-orange-700'
+                                            : 'bg-gray-100 text-gray-600'
+                                      }`}>
+                                        {pt}
+                                      </span>
+                                    </td>
+                                    <td className="p-2.5 text-right font-semibold">{fmtInt(Number(item.qty) || 0)}</td>
+                                  </tr>
+                                )
+                              })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               )}
 

@@ -91,6 +91,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
             {loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
           </button>
         </form>
+        <p className="text-center text-xs text-gray-400 mt-4">Version {__APP_VERSION__}</p>
       </div>
     </div>
   )

@@ -50,12 +50,12 @@ import { isAdminOrSuperadmin } from '../config/accessPolicy'
 type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
 type QCStep = 'select' | 'working'
 
-const MENUS: { id: QCView; label: string; adminOnly?: boolean }[] = [
+const MENUS: { id: QCView; label: string }[] = [
   { id: 'qc', label: 'QC Operation' },
   { id: 'reject', label: 'Reject' },
-  { id: 'report', label: 'Reports & KPI', adminOnly: true },
+  { id: 'report', label: 'Reports & KPI' },
   { id: 'history', label: 'History Check' },
-  { id: 'settings', label: 'Settings', adminOnly: true },
+  { id: 'settings', label: 'Settings' },
 ]
 
 function formatDate(d: string | Date | null): string {
@@ -91,7 +91,6 @@ const QC_MENU_KEY_MAP: Record<string, string> = {
 export default function QC() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const isAdmin = isAdminOrSuperadmin(user?.role)
   const canSkipQc = isAdminOrSuperadmin(user?.role)
   const isViewOnly = isAdminOrSuperadmin(user?.role)
 
@@ -103,7 +102,7 @@ export default function QC() {
     if (menuAccessLoading) return
     const menuKey = QC_MENU_KEY_MAP[currentView] || currentView
     if (!hasAccess(menuKey)) {
-      const first = MENUS.find((m) => (!m.adminOnly || isAdmin) && hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
+      const first = MENUS.find((m) => hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
       if (first) setCurrentView(first.id)
     }
   }, [menuAccessLoading])
@@ -225,7 +224,7 @@ export default function QC() {
   const [failReasonStep, setFailReasonStep] = useState<1 | 2>(1)
   const [selectedParentReason, setSelectedParentReason] = useState<SettingsReason | null>(null)
 
-  const filteredMenus = MENUS.filter((m) => (!m.adminOnly || isAdmin) && hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
+  const filteredMenus = MENUS.filter((m) => hasAccess(QC_MENU_KEY_MAP[m.id] || m.id))
 
   const qcUsername = user?.username || user?.email || 'unknown'
 
@@ -397,6 +396,11 @@ export default function QC() {
   }, [currentRejectItem?.product_code])
 
   const allChecklistChecked = checklistItems.length === 0 || checklistItems.every((item) => checkedIds.has(item.id))
+  const focusBarcodeInput = useCallback(() => {
+    setTimeout(() => {
+      barcodeInputRef.current?.focus()
+    }, 0)
+  }, [])
 
   async function handleLoadWo(woName: string) {
     if (!woName) return
@@ -470,6 +474,7 @@ export default function QC() {
       setQcState({ step: 'working', startTime, filename, sessionId })
       const first = items.find((i) => i.status === 'pending') || items[0]
       setCurrentItem(first)
+      focusBarcodeInput()
     } catch (e: any) {
       alert('โหลดไม่สำเร็จ: ' + (e?.message || e))
     } finally {
@@ -559,9 +564,11 @@ export default function QC() {
     const nextIdx = qcData.items.indexOf(currentItem) + 1
     if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
     setBarcodeQuery('')
+    focusBarcodeInput()
   }
 
   async function applyFailReasonReject(reason: string) {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!currentRejectItem) return
     const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
     const updates: Partial<QCRecord> = {
@@ -597,6 +604,10 @@ export default function QC() {
       alert('กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อนกด ผ่าน')
       return
     }
+    if (status === 'pass' && currentItem.status === 'fail') {
+      alert('รายการนี้ถูก Reject แล้ว กรุณาไปกด QC PASS ที่เมนู Reject')
+      return
+    }
     if (status === 'pass') {
       if (qcState.sessionId) {
         try {
@@ -614,6 +625,7 @@ export default function QC() {
       const nextIdx = qcData.items.indexOf(currentItem) + 1
       if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
       setBarcodeQuery('')
+      focusBarcodeInput()
     } else {
       openFailReasonModal('qc')
     }
@@ -695,6 +707,7 @@ export default function QC() {
   }
 
   async function markRejectStatus(status: 'pass' | 'fail') {
+    if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!currentRejectItem) return
     if (status === 'pass') {
       const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
@@ -1158,6 +1171,57 @@ export default function QC() {
     }
   }
 
+  useEffect(() => {
+    if (currentView === 'qc' && qcState.step === 'working' && !failReasonModalOpen) {
+      focusBarcodeInput()
+    }
+  }, [currentView, qcState.step, currentItem?.uid, failReasonModalOpen, focusBarcodeInput])
+
+  useEffect(() => {
+    const onGlobalKeydown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const tagName = (target?.tagName || '').toUpperCase()
+      const isInputLike = ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName) || !!target?.isContentEditable
+      const isBarcodeInputFocused = target === barcodeInputRef.current
+      const isSpace = e.key === ' ' || e.code === 'Space'
+      const isZero = e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0'
+      const isShortcut = isSpace || isZero
+
+      if (!isShortcut) return
+      if (failReasonModalOpen || loading) return
+
+      // อนุญาตคีย์ลัดตอนโฟกัสช่องสแกนเฉพาะเมื่อยังไม่ได้พิมพ์/สแกนค่าใด ๆ
+      if (isInputLike && !(isBarcodeInputFocused && barcodeQuery.trim() === '')) return
+
+      if (currentView === 'qc' && qcState.step === 'working' && currentItem) {
+        e.preventDefault()
+        if (isSpace) void markStatus('pass')
+        else if (isZero) void markStatus('fail')
+        return
+      }
+
+      if (currentView === 'reject' && currentRejectItem && activeRejectTab !== 'queue') {
+        e.preventDefault()
+        if (isSpace) void markRejectStatus('pass')
+        else if (isZero) void markRejectStatus('fail')
+      }
+    }
+
+    window.addEventListener('keydown', onGlobalKeydown)
+    return () => {
+      window.removeEventListener('keydown', onGlobalKeydown)
+    }
+  }, [
+    currentView,
+    qcState.step,
+    currentItem,
+    currentRejectItem,
+    activeRejectTab,
+    failReasonModalOpen,
+    loading,
+    barcodeQuery,
+  ])
+
   return (
     <div className="w-full flex-1 min-h-0 flex flex-col outline-none" onKeyDown={handleKeydown} tabIndex={0}>
       {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
@@ -1535,19 +1599,25 @@ export default function QC() {
                               onClick={() => markStatus('fail')}
                               className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold hover:bg-red-600"
                             >
-                              ไม่ผ่าน
+                              ไม่ผ่าน (0)
                             </button>
                             <button
                               onClick={() => markStatus('pass')}
-                              disabled={!allChecklistChecked}
-                              title={!allChecklistChecked ? 'กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อน' : ''}
+                              disabled={!allChecklistChecked || currentItem.status === 'fail'}
+                              title={
+                                currentItem.status === 'fail'
+                                  ? 'รายการนี้ถูก Reject แล้ว กรุณาไปกด QC PASS ที่เมนู Reject'
+                                  : !allChecklistChecked
+                                    ? 'กรุณาตรวจเช็คเช็คลิสให้ครบทุกหัวข้อก่อน'
+                                    : ''
+                              }
                               className={`flex-1 py-3 rounded-xl font-bold ${
-                                allChecklistChecked
+                                allChecklistChecked && currentItem.status !== 'fail'
                                   ? 'bg-green-500 text-white hover:bg-green-600'
                                   : 'bg-green-300 text-white cursor-not-allowed opacity-60'
                               }`}
                             >
-                              ผ่าน
+                              ผ่าน (Space)
                             </button>
                           </div>
                           )}
@@ -1864,15 +1934,33 @@ export default function QC() {
                         </div>
                       </div>
                       <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
+                        {isViewOnly && (
+                          <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
+                            โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถทำ QC ได้)
+                          </div>
+                        )}
                         <div className="flex gap-4">
                           <button
                             onClick={() => markRejectStatus('fail')}
-                            className="flex-1 py-3 border-2 border-red-500 text-red-500 rounded-xl font-bold hover:bg-red-50"
+                            disabled={isViewOnly}
+                            className={`flex-1 py-3 border-2 rounded-xl font-bold ${
+                              isViewOnly
+                                ? 'border-red-300 text-red-300 cursor-not-allowed opacity-60'
+                                : 'border-red-500 text-red-500 hover:bg-red-50'
+                            }`}
                           >
-                            FAIL (NEXT REJECT)
+                            FAIL (NEXT REJECT) (0)
                           </button>
-                          <button onClick={() => markRejectStatus('pass')} className="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600">
-                            QC PASS
+                          <button
+                            onClick={() => markRejectStatus('pass')}
+                            disabled={isViewOnly}
+                            className={`flex-1 py-3 rounded-xl font-bold ${
+                              isViewOnly
+                                ? 'bg-green-300 text-white cursor-not-allowed opacity-60'
+                                : 'bg-green-500 text-white hover:bg-green-600'
+                            }`}
+                          >
+                            QC PASS (Space)
                           </button>
                         </div>
                         <div className="flex gap-4">
@@ -1932,6 +2020,7 @@ export default function QC() {
                                       return next
                                     })
                                   }}
+                                  disabled={isViewOnly}
                                   className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 shrink-0"
                                 />
                                 <span className={`flex-1 text-sm ${rejectCheckedIds.has(item.id) ? 'line-through text-gray-400' : 'text-gray-700'}`}>
@@ -1956,7 +2045,7 @@ export default function QC() {
                       })()
                     )}
                   </div>
-                  {rejectChecklistItems.length > 0 && (
+                  {rejectChecklistItems.length > 0 && !isViewOnly && (
                     <div className="shrink-0 p-2 border-t bg-gray-50">
                       <button
                         onClick={() => {

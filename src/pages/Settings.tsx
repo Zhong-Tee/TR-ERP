@@ -146,6 +146,9 @@ export default function Settings() {
   const [overridePage, setOverridePage] = useState(1)
   const overrideDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [roleMenus, setRoleMenus] = useState<Record<string, Record<string, boolean>>>({})
+  const roleMenusRef = useRef<Record<string, Record<string, boolean>>>({})
+  const roleMenusLoadSeqRef = useRef(0)
+  const [roleMenusLoading, setRoleMenusLoading] = useState(false)
   const [savingRoleMenus, setSavingRoleMenus] = useState(false)
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
   const [chatLoading, setChatLoading] = useState(false)
@@ -457,7 +460,19 @@ export default function Settings() {
     { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
   ] as const
 
+  const buildChildrenByParent = () => {
+    const map: Record<string, string[]> = {}
+    MENU_ROLE_OPTIONS.forEach((menu) => {
+      if (!menu.group) return
+      if (!map[menu.group]) map[menu.group] = []
+      map[menu.group].push(menu.key)
+    })
+    return map
+  }
+
   async function loadRoleMenus() {
+    const seq = ++roleMenusLoadSeqRef.current
+    setRoleMenusLoading(true)
     try {
       const { data, error } = await supabase
         .from('st_user_menus')
@@ -480,9 +495,16 @@ export default function Settings() {
         if (!map[roleKey]) map[roleKey] = {}
         map[roleKey][row.menu_key] = row.has_access === true
       })
+      // ป้องกันผลลัพธ์ load เก่ากลับมาเขียนทับ state ล่าสุด
+      if (seq !== roleMenusLoadSeqRef.current) return
+      roleMenusRef.current = map
       setRoleMenus(map)
     } catch (error: any) {
       console.error('Error loading role menus:', error)
+    } finally {
+      if (seq === roleMenusLoadSeqRef.current) {
+        setRoleMenusLoading(false)
+      }
     }
   }
 
@@ -831,6 +853,9 @@ export default function Settings() {
 
   async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
     setRoleMenus((prev) => {
+      const childrenByParent = buildChildrenByParent()
+      const parentOfMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)?.group || ''
+      const isParentMenu = !!childrenByParent[menuKey]?.length
       const updated = {
         ...prev,
         [role]: {
@@ -838,19 +863,19 @@ export default function Settings() {
           [menuKey]: checked,
         },
       }
-      // ถ้าปิดเมนูหลัก → ปิดเมนูย่อยด้วย
-      if (!checked) {
-        MENU_ROLE_OPTIONS.forEach((m) => {
-          if (m.group === menuKey) {
-            updated[role][m.key] = false
-          }
+      // ถ้าติ๊กเมนูหลัก -> ติ๊กเมนูย่อยทั้งหมด, ถ้าเอาติ๊กออก -> เอาออกทั้งหมด
+      if (isParentMenu) {
+        childrenByParent[menuKey].forEach((childKey) => {
+          updated[role][childKey] = checked
         })
       }
-      // ถ้าเปิดเมนูย่อย → เปิดเมนูหลักด้วย
-      const menu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)
-      if (checked && menu && menu.group) {
-        updated[role][menu.group] = true
+      // ถ้าติ๊กเมนูย่อย -> เปิดเมนูหลัก, ถ้าเอาติ๊กออก -> ปิดเมนูหลักเมื่อไม่มีลูกเหลือ
+      if (!isParentMenu && parentOfMenu) {
+        const siblingKeys = childrenByParent[parentOfMenu] || []
+        const hasAnyChecked = siblingKeys.some((key) => updated[role][key] === true)
+        updated[role][parentOfMenu] = hasAnyChecked
       }
+      roleMenusRef.current = updated
       return updated
     })
   }
@@ -859,7 +884,8 @@ export default function Settings() {
     setSavingRoleMenus(true)
     try {
       const payload: Array<{ role: string; menu_key: string; menu_name: string; has_access: boolean }> = []
-      Object.entries(roleMenus).forEach(([role, menus]) => {
+      const currentRoleMenus = roleMenusRef.current
+      Object.entries(currentRoleMenus).forEach(([role, menus]) => {
         MENU_ROLE_OPTIONS.forEach((menu) => {
           payload.push({
             role,
@@ -2020,10 +2046,10 @@ export default function Settings() {
             <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
             <button
               onClick={saveRoleMenus}
-              disabled={savingRoleMenus}
+              disabled={savingRoleMenus || roleMenusLoading}
               className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
             >
-              {savingRoleMenus ? 'กำลังบันทึก...' : 'บันทึก'}
+              {savingRoleMenus ? 'กำลังบันทึก...' : roleMenusLoading ? 'กำลังโหลด...' : 'บันทึก'}
             </button>
           </div>
           <div className="overflow-x-auto" style={{ maxHeight: '75vh' }}>

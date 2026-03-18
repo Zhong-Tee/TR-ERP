@@ -622,70 +622,75 @@ export default function WorkOrderManageList({
     return list
   }
 
+  async function buildProductionExportRows(workOrderName: string): Promise<unknown[][]> {
+    const orders = await fetchOrdersWithItems(workOrderName)
+    const ordersInWorkOrder = orders.sort((a, b) => (a.bill_no || '').localeCompare(b.bill_no || ''))
+    if (ordersInWorkOrder.length === 0) {
+      setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
+      return []
+    }
+    const dataToExport: unknown[][] = []
+    /** สินค้าที่แสดงคอลัมน์ "ชั้นที่" */
+    const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
+    const visibleColumns = EXPORT_ITEM_COLUMNS
+
+    ordersInWorkOrder.forEach((order) => {
+      const items = order.or_order_items || (order as any).order_items || []
+      items.forEach((item: any) => {
+        const noName = !!item.no_name_line
+        const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+        const productName = String(item.product_name ?? '').trim()
+        const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
+        const row: unknown[] = [workOrderName, order.bill_no, item.item_uid]
+        visibleColumns.forEach((col) => {
+          if (col.key === 'notes') row.push(cleanNotes)
+          else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
+          else if (col.key === 'quantity') row.push(1)
+          else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
+          else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
+          else row.push(item[col.key] ?? '')
+        })
+        dataToExport.push(row)
+      })
+    })
+
+    if (dataToExport.length === 0) {
+      setMessageModal({ open: true, message: 'ไม่พบรายการสินค้า' })
+    }
+    return dataToExport
+  }
+
   async function exportProduction(workOrderName: string) {
     try {
-      const orders = await fetchOrdersWithItems(workOrderName)
-      const ordersInWorkOrder = orders.sort((a, b) => (a.bill_no || '').localeCompare(b.bill_no || ''))
-      if (ordersInWorkOrder.length === 0) {
-        setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
-        return
-      }
-      const allItems: any[] = []
-      ordersInWorkOrder.forEach((order) => {
-        const items = order.or_order_items || (order as any).order_items || []
-        allItems.push(...items)
-      })
-      const productIds = Array.from(new Set(allItems.map((i: any) => i.product_id).filter(Boolean)))
-      let productCategoryByProductId: Record<string, string> = {}
-      if (productIds.length > 0) {
-        const { data: products } = await supabase
-          .from('pr_products')
-          .select('id, product_category')
-          .in('id', productIds)
-        if (products) {
-          products.forEach((p: any) => {
-            const cat = p.product_category
-            if (cat != null && String(cat).trim() !== '') {
-              productCategoryByProductId[String(p.id)] = String(cat).trim()
-            }
-          })
-        }
-      }
+      const dataToExport = await buildProductionExportRows(workOrderName)
+      if (dataToExport.length === 0) return
       const visibleColumns = EXPORT_ITEM_COLUMNS
       const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', ...visibleColumns.map((c) => c.label)]
-      const dataToExport: unknown[][] = []
-      /** สินค้าที่แสดงคอลัมน์ "ชั้นที่" */
-      const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
-
-      ordersInWorkOrder.forEach((order) => {
-        const items = order.or_order_items || (order as any).order_items || []
-        items.forEach((item: any) => {
-          const noName = !!item.no_name_line
-          const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
-          const productName = String(item.product_name ?? '').trim()
-          const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
-          const row: unknown[] = [workOrderName, order.bill_no, item.item_uid]
-          visibleColumns.forEach((col) => {
-            if (col.key === 'notes') row.push(cleanNotes)
-            else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
-            else if (col.key === 'quantity') row.push(1)
-            else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
-            else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
-            else row.push(item[col.key] ?? '')
-          })
-          dataToExport.push(row)
-        })
-      })
-      if (dataToExport.length === 0) {
-        setMessageModal({ open: true, message: 'ไม่พบรายการสินค้า' })
-        return
-      }
       const worksheet = XLSX.utils.aoa_to_sheet([headers, ...dataToExport])
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'ProductionData')
       XLSX.writeFile(workbook, `Production_${workOrderName}.xlsx`)
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+    }
+  }
+
+  async function copyProduction(workOrderName: string) {
+    try {
+      const dataToCopy = await buildProductionExportRows(workOrderName)
+      if (dataToCopy.length === 0) return
+      const clipboardText = dataToCopy
+        .map((row) =>
+          row
+            .map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' '))
+            .join('\t')
+        )
+        .join('\n')
+
+      await navigator.clipboard.writeText(clipboardText)
+      setMessageModal({ open: true, message: `คัดลอกข้อมูลเรียบร้อย ${dataToCopy.length} แถว (ไม่รวมหัวตาราง)` })
+    } catch (err: any) {
+      setMessageModal({ open: true, message: 'คัดลอกไม่สำเร็จ: ' + (err?.message ?? err) })
     }
   }
 
@@ -1142,6 +1147,14 @@ export default function WorkOrderManageList({
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.work_order_name))}
+                      disabled={updating}
+                      className="px-3 py-1.5 bg-orange-100 text-orange-800 rounded text-xs font-medium hover:bg-orange-200 disabled:opacity-50"
+                    >
+                      คัดลอก
+                    </button>
                     <button
                       type="button"
                       onClick={(e) => onHeaderButtonClick(e, () => openPickingSlipModal(wo.work_order_name))}
