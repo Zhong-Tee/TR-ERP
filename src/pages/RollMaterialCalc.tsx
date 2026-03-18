@@ -42,7 +42,7 @@ export default function RollMaterialCalc() {
   const [fgProducts, setFgProducts] = useState<Product[]>([])
   const [rmProducts, setRmProducts] = useState<Product[]>([])
   const [pairFgId, setPairFgId] = useState('')
-  const [pairRmId, setPairRmId] = useState('')
+  const [pairRmIds, setPairRmIds] = useState<string[]>([])
   const [pairSaving, setPairSaving] = useState(false)
   const [fgSearch, setFgSearch] = useState('')
   const [rmSearch, setRmSearch] = useState('')
@@ -102,7 +102,7 @@ export default function RollMaterialCalc() {
   const openPairModal = async () => {
     setShowPairModal(true)
     setPairFgId('')
-    setPairRmId('')
+    setPairRmIds([])
     setFgSearch('')
     setRmSearch('')
     try {
@@ -115,12 +115,12 @@ export default function RollMaterialCalc() {
   }
 
   const handlePairSave = async () => {
-    if (!pairFgId || !pairRmId) return
+    if (!pairFgId || pairRmIds.length === 0) return
     try {
       setPairSaving(true)
       await upsertRollConfig({
         fg_product_id: pairFgId,
-        rm_product_id: pairRmId,
+        rm_product_ids: pairRmIds,
       })
       setShowPairModal(false)
       setNotify({ type: 'success', message: 'จับคู่สินค้าสำเร็จ' })
@@ -192,33 +192,6 @@ export default function RollMaterialCalc() {
     }, 800)
   }
 
-  // ── Use calculated value ─────────────────────────────
-  const handleUseCalcValue = async (row: RollCalcDashboardRow, field: 'sheets' | 'cost') => {
-    const val = field === 'sheets' ? row.calc_sheets_per_roll : row.calc_cost_per_sheet
-    if (val == null) return
-    const dbField = field === 'sheets' ? 'sheets_per_roll' : 'cost_per_sheet'
-    try {
-      setSavingIds((prev) => new Set(prev).add(row.config_id))
-      await updateRollConfigField(row.config_id, dbField as 'sheets_per_roll' | 'cost_per_sheet', val)
-      setRows((prev) =>
-        prev.map((r) => (r.config_id === row.config_id ? { ...r, [dbField]: val } : r)),
-      )
-      setEditingValues((prev) => {
-        const copy = { ...prev }
-        delete copy[row.config_id]
-        return copy
-      })
-    } catch {
-      setNotify({ type: 'error', message: 'บันทึกไม่สำเร็จ' })
-    } finally {
-      setSavingIds((prev) => {
-        const next = new Set(prev)
-        next.delete(row.config_id)
-        return next
-      })
-    }
-  }
-
   // ── Manual usage log ─────────────────────────────────
   const openLogModal = (rmProductId: string, rmCode: string, rmName: string) => {
     setLogRmId(rmProductId)
@@ -252,11 +225,6 @@ export default function RollMaterialCalc() {
   const fmtNum = (n: number | null | undefined, digits = 2) =>
     n != null ? n.toLocaleString('th-TH', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '-'
 
-  const diffPercent = (manual: number | null | undefined, calc: number | null | undefined) => {
-    if (manual == null || calc == null || calc === 0) return null
-    return Math.abs((manual - calc) / calc) * 100
-  }
-
   const filteredFg = useMemo(() => {
     if (!fgSearch) return fgProducts.slice(0, 30)
     const s = fgSearch.toLowerCase()
@@ -274,7 +242,10 @@ export default function RollMaterialCalc() {
   }, [rmProducts, rmSearch])
 
   const selectedFg = fgProducts.find((p) => p.id === pairFgId)
-  const selectedRm = rmProducts.find((p) => p.id === pairRmId)
+  const selectedRms = useMemo(
+    () => rmProducts.filter((p) => pairRmIds.includes(p.id)),
+    [rmProducts, pairRmIds],
+  )
 
   // ── Render ───────────────────────────────────────────
   if (loading) {
@@ -350,15 +321,13 @@ export default function RollMaterialCalc() {
               <th className="p-3 text-right">สต๊อคคงเหลือ</th>
               <th className="p-3 text-center">แผ่น/ม้วน</th>
               <th className="p-3 text-center">ต้นทุน/แผ่น</th>
-              <th className="p-3 text-center">แผ่น/ม้วน (คำนวณ)</th>
-              <th className="p-3 text-center">ต้นทุน/แผ่น (คำนวณ)</th>
               <th className="p-3 text-center rounded-tr-lg w-24">จัดการ</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={10} className="text-center py-12 text-gray-400">
+                <td colSpan={8} className="text-center py-12 text-gray-400">
                   <i className="fas fa-box-open text-4xl mb-3 block"></i>
                   {rows.length === 0 ? 'ยังไม่มีการจับคู่สินค้า กดปุ่ม "จับคู่สินค้า" เพื่อเริ่มต้น' : 'ไม่พบรายการที่ตรงกับการค้นหา'}
                 </td>
@@ -367,8 +336,6 @@ export default function RollMaterialCalc() {
               filtered.map((r, idx) => {
                 const stock =
                   r.sheets_per_roll != null ? r.rm_on_hand * r.sheets_per_roll : null
-                const sheetsDiff = diffPercent(r.sheets_per_roll, r.calc_sheets_per_roll)
-                const costDiff = diffPercent(r.cost_per_sheet, r.calc_cost_per_sheet)
                 const isSaving = savingIds.has(r.config_id)
 
                 return (
@@ -392,8 +359,7 @@ export default function RollMaterialCalc() {
                     {/* RM linked */}
                     <td className="p-3 text-xs text-gray-500">
                       <span className="font-mono">{r.rm_product_code}</span>
-                      <br />
-                      <span className="text-gray-400">{r.rm_product_name}</span>
+                      <div className="text-gray-400 whitespace-pre-line">{r.rm_product_name}</div>
                     </td>
 
                     {/* Stock (computed) */}
@@ -440,64 +406,12 @@ export default function RollMaterialCalc() {
                       </div>
                     </td>
 
-                    {/* Calc sheets per roll */}
-                    <td className="p-3 text-center text-sm">
-                      {r.calc_sheets_per_roll != null ? (
-                        <div>
-                          <span className={`font-semibold ${sheetsDiff != null && sheetsDiff > 20 ? 'text-amber-600' : 'text-gray-700'}`}>
-                            {fmtNum(r.calc_sheets_per_roll, 0)}
-                          </span>
-                          {sheetsDiff != null && sheetsDiff > 20 && (
-                            <i className="fas fa-exclamation-triangle text-amber-500 ml-1 text-xs" title={`ต่างจากค่า manual ${sheetsDiff.toFixed(0)}%`}></i>
-                          )}
-                          <button
-                            onClick={() => handleUseCalcValue(r, 'sheets')}
-                            className="ml-1 text-blue-500 hover:text-blue-700 text-xs"
-                            title="ใช้ค่าคำนวณ"
-                          >
-                            <i className="fas fa-arrow-left"></i>
-                          </button>
-                          {r.calc_period_start && r.calc_period_end && (
-                            <div className="text-xs text-gray-400 mt-0.5" title={`${new Date(r.calc_period_start).toLocaleDateString('th-TH')} - ${new Date(r.calc_period_end).toLocaleDateString('th-TH')}`}>
-                              {new Date(r.calc_period_start).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })}
-                              {' - '}
-                              {new Date(r.calc_period_end).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-gray-300 text-xs" title="ต้องมีข้อมูลการเบิก RM อย่างน้อย 2 ครั้ง">-</span>
-                      )}
-                    </td>
-
-                    {/* Calc cost per sheet */}
-                    <td className="p-3 text-center text-sm">
-                      {r.calc_cost_per_sheet != null ? (
-                        <div>
-                          <span className={`font-semibold ${costDiff != null && costDiff > 20 ? 'text-amber-600' : 'text-gray-700'}`}>
-                            {fmtNum(r.calc_cost_per_sheet, 4)}
-                          </span>
-                          {costDiff != null && costDiff > 20 && (
-                            <i className="fas fa-exclamation-triangle text-amber-500 ml-1 text-xs" title={`ต่างจากค่า manual ${costDiff.toFixed(0)}%`}></i>
-                          )}
-                          <button
-                            onClick={() => handleUseCalcValue(r, 'cost')}
-                            className="ml-1 text-blue-500 hover:text-blue-700 text-xs"
-                            title="ใช้ค่าคำนวณ"
-                          >
-                            <i className="fas fa-arrow-left"></i>
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-gray-300 text-xs" title="ต้องมีข้อมูลการเบิก RM อย่างน้อย 2 ครั้ง">-</span>
-                      )}
-                    </td>
-
                     {/* Actions */}
                     <td className="p-3 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <button
-                          onClick={() => openLogModal(r.rm_product_id, r.rm_product_code, r.rm_product_name)}
+                          onClick={() => r.rm_product_id && openLogModal(r.rm_product_id, r.rm_product_code, r.rm_product_name)}
+                          disabled={!r.rm_product_id}
                           className="p-2 text-blue-500 bg-blue-50 hover:text-white hover:bg-blue-600 rounded-lg transition"
                           title="บันทึกการเบิกด้วยมือ"
                         >
@@ -528,77 +442,87 @@ export default function RollMaterialCalc() {
       {/* ════════════════════════════════════════════════ */}
       {/* Pair Modal                                      */}
       {/* ════════════════════════════════════════════════ */}
-      <Modal open={showPairModal} onClose={() => setShowPairModal(false)} contentClassName="max-w-lg">
-        <div className="p-6 space-y-5">
+      <Modal open={showPairModal} onClose={() => setShowPairModal(false)} contentClassName="max-w-5xl w-[95vw] !overflow-y-hidden">
+        <div className="p-6 space-y-5 min-h-[70vh]">
           <h3 className="text-lg font-bold text-gray-800">
             <i className="fas fa-link mr-2 text-blue-500"></i>จับคู่สินค้า FG กับ RM
           </h3>
 
-          {/* FG Selector */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า FG (สินค้าสำเร็จรูป)</label>
-            <div className="relative" ref={fgRef}>
-              {selectedFg ? (
-                <div className="flex items-center gap-2 px-3 py-2 border border-blue-300 rounded-lg bg-blue-50">
-                  <ProductImageHover productCode={selectedFg.product_code} productName={selectedFg.product_name} size="sm" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono font-semibold text-gray-800">{selectedFg.product_code}</div>
-                    <div className="text-xs text-gray-500 truncate">{selectedFg.product_name}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* FG Selector */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า FG (สินค้าสำเร็จรูป)</label>
+              <div className="relative" ref={fgRef}>
+                {selectedFg ? (
+                  <div className="flex items-center gap-2 px-3 py-2 border border-blue-300 rounded-lg bg-blue-50">
+                    <ProductImageHover productCode={selectedFg.product_code} productName={selectedFg.product_name} size="sm" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-mono font-semibold text-gray-800">{selectedFg.product_code}</div>
+                      <div className="text-xs text-gray-500 truncate">{selectedFg.product_name}</div>
+                    </div>
+                    <button onClick={() => { setPairFgId(''); setFgSearch('') }} className="text-gray-400 hover:text-red-500">
+                      <i className="fas fa-times"></i>
+                    </button>
                   </div>
-                  <button onClick={() => { setPairFgId(''); setFgSearch('') }} className="text-gray-400 hover:text-red-500">
-                    <i className="fas fa-times"></i>
-                  </button>
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="ค้นหา FG product..."
-                  value={fgSearch}
-                  onChange={(e) => setFgSearch(e.target.value)}
-                  onFocus={() => setFgDropOpen(true)}
-                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
-                />
-              )}
-              {fgDropOpen && !selectedFg && (
-                <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                  {filteredFg.length === 0 ? (
-                    <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
-                  ) : (
-                    filteredFg.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => { setPairFgId(p.id); setFgDropOpen(false); setFgSearch('') }}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-blue-50 transition text-left"
-                      >
-                        <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
-                        <div className="min-w-0">
-                          <div className="text-sm font-mono font-semibold">{p.product_code}</div>
-                          <div className="text-xs text-gray-500 truncate">{p.product_name}</div>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              )}
+                ) : (
+                  <input
+                    type="text"
+                    placeholder="ค้นหา FG product..."
+                    value={fgSearch}
+                    onChange={(e) => setFgSearch(e.target.value)}
+                    onFocus={() => setFgDropOpen(true)}
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
+                  />
+                )}
+                {fgDropOpen && !selectedFg && (
+                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[32rem] overflow-y-auto">
+                    {filteredFg.length === 0 ? (
+                      <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
+                    ) : (
+                      filteredFg.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => { setPairFgId(p.id); setFgDropOpen(false); setFgSearch('') }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-blue-50 transition text-left"
+                        >
+                          <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
+                          <div className="min-w-0">
+                            <div className="text-sm font-mono font-semibold">{p.product_code}</div>
+                            <div className="text-xs text-gray-500 truncate">{p.product_name}</div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
 
-          {/* RM Selector */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า RM (วัตถุดิบ - ม้วน)</label>
-            <div className="relative" ref={rmRef}>
-              {selectedRm ? (
-                <div className="flex items-center gap-2 px-3 py-2 border border-emerald-300 rounded-lg bg-emerald-50">
-                  <ProductImageHover productCode={selectedRm.product_code} productName={selectedRm.product_name} size="sm" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono font-semibold text-gray-800">{selectedRm.product_code}</div>
-                    <div className="text-xs text-gray-500 truncate">{selectedRm.product_name}</div>
+            {/* RM Selector */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">สินค้า RM (วัตถุดิบ - ม้วน)</label>
+              <div className="relative" ref={rmRef}>
+                {selectedRms.length > 0 && (
+                  <div className="mb-2 p-2 border border-emerald-300 rounded-lg bg-emerald-50">
+                    <div className="flex flex-wrap gap-2">
+                      {selectedRms.map((p) => (
+                        <span key={p.id} className="inline-flex items-center gap-1 px-2 py-1 bg-white rounded border border-emerald-200 text-xs">
+                          <span className="font-mono">{p.product_code}</span>
+                          <button
+                            onClick={() => setPairRmIds((prev) => prev.filter((id) => id !== p.id))}
+                            className="text-gray-400 hover:text-red-500"
+                            title="ลบรายการนี้"
+                          >
+                            <i className="fas fa-times"></i>
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                    <button onClick={() => setPairRmIds([])} className="mt-2 text-xs text-red-500 hover:text-red-700">
+                      ล้างรายการ RM ที่เลือก
+                    </button>
                   </div>
-                  <button onClick={() => { setPairRmId(''); setRmSearch('') }} className="text-gray-400 hover:text-red-500">
-                    <i className="fas fa-times"></i>
-                  </button>
-                </div>
-              ) : (
+                )}
                 <input
                   type="text"
                   placeholder="ค้นหา RM product..."
@@ -607,28 +531,32 @@ export default function RollMaterialCalc() {
                   onFocus={() => setRmDropOpen(true)}
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 outline-none"
                 />
-              )}
-              {rmDropOpen && !selectedRm && (
-                <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                  {filteredRm.length === 0 ? (
-                    <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
-                  ) : (
-                    filteredRm.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => { setPairRmId(p.id); setRmDropOpen(false); setRmSearch('') }}
-                        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-emerald-50 transition text-left"
-                      >
-                        <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
-                        <div className="min-w-0">
-                          <div className="text-sm font-mono font-semibold">{p.product_code}</div>
-                          <div className="text-xs text-gray-500 truncate">{p.product_name}</div>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              )}
+                {rmDropOpen && (
+                  <div className="absolute z-40 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-[32rem] overflow-y-auto">
+                    {filteredRm.length === 0 ? (
+                      <div className="p-3 text-sm text-gray-400 text-center">ไม่พบสินค้า</div>
+                    ) : (
+                      filteredRm.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setPairRmIds((prev) => (prev.includes(p.id) ? prev : [...prev, p.id]))
+                            setRmSearch('')
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-emerald-50 transition text-left"
+                        >
+                          <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
+                          <div className="min-w-0">
+                            <div className="text-sm font-mono font-semibold">{p.product_code}</div>
+                            <div className="text-xs text-gray-500 truncate">{p.product_name}</div>
+                          </div>
+                          {pairRmIds.includes(p.id) && <i className="fas fa-check text-emerald-500 ml-auto"></i>}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -642,7 +570,7 @@ export default function RollMaterialCalc() {
             </button>
             <button
               onClick={handlePairSave}
-              disabled={!pairFgId || !pairRmId || pairSaving}
+              disabled={!pairFgId || pairRmIds.length === 0 || pairSaving}
               className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition font-medium shadow-sm"
             >
               {pairSaving ? (

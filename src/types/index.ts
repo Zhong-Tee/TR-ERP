@@ -879,7 +879,7 @@ export interface RollMaterialCategory {
 export interface RollMaterialConfig {
   id: string
   fg_product_id: string
-  rm_product_id: string
+  rm_product_id: string | null
   category_id: string | null
   sheets_per_roll: number | null
   cost_per_sheet: number | null
@@ -893,18 +893,15 @@ export interface RollCalcDashboardRow {
   fg_product_code: string
   fg_product_name: string
   fg_product_category: string | null
-  rm_product_id: string
+  rm_product_id: string | null
   rm_product_code: string
   rm_product_name: string
+  rm_count: number
   rm_on_hand: number
   category_id: string | null
   category_name: string | null
   sheets_per_roll: number | null
   cost_per_sheet: number | null
-  calc_sheets_per_roll: number | null
-  calc_cost_per_sheet: number | null
-  calc_period_start: string | null
-  calc_period_end: string | null
 }
 
 // ─── HR Module Types ────────────────────────────────────────────────────────

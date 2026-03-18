@@ -46,6 +46,7 @@ const INIT_IMPORT_HEADERS = [
   'initial_stock',
   'safety_stock',
   'order_point',
+  'order_point_days',
   'storage_location',
   'unit_name',
   'unit_multiplier',
@@ -63,6 +64,7 @@ interface InitImportRow {
   initial_stock: number
   safety_stock: number
   order_point: string
+  order_point_days: number | null
   storage_location: string
   unit_name: string
   unit_multiplier: number
@@ -781,13 +783,13 @@ export default function Products() {
     const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
       headers,
-      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
-      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
+      ['110000001', 'CK02-SET สีแดง', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
     ])
     ws['!cols'] = [
       { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
-      { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
       ...channelPriceHeaders.map(() => ({ wch: 14 })),
     ]
     const wb = XLSX.utils.book_new()
@@ -830,6 +832,11 @@ export default function Products() {
         const unitCost = Number(row.unit_cost ?? 0)
         const initialStock = Number(row.initial_stock ?? 0)
         const safetyStock = Number(row.safety_stock ?? 0)
+        const rawOrderPointDays = Number(row.order_point_days ?? '')
+        const orderPointDays =
+          Number.isFinite(rawOrderPointDays) && rawOrderPointDays >= 0
+            ? Math.floor(rawOrderPointDays)
+            : null
         const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
         const rawMult = Number(row.unit_multiplier ?? 1)
         const unitMultiplier = isNaN(rawMult) || rawMult <= 0 ? 1 : rawMult
@@ -859,6 +866,7 @@ export default function Products() {
           initial_stock: initialStock,
           safety_stock: Math.min(safetyStock, initialStock),
           order_point: String(row.order_point ?? '').trim(),
+          order_point_days: orderPointDays,
           storage_location: String(row.storage_location ?? '').trim(),
           unit_name: unitName,
           unit_multiplier: unitMultiplier,
@@ -922,6 +930,7 @@ export default function Products() {
           initial_stock: r.initial_stock,
           safety_stock: r.safety_stock,
           order_point: r.order_point || null,
+          order_point_days: r.order_point_days,
           rubber_code: null,
           storage_location: r.storage_location || null,
           unit_name: r.unit_name || 'ชิ้น',
@@ -948,6 +957,7 @@ export default function Products() {
             unit_cost: r.unit_cost,
             safety_stock: r.safety_stock,
             order_point: r.order_point || null,
+            order_point_days: r.order_point_days,
             storage_location: r.storage_location || null,
             unit_name: r.unit_name || 'ชิ้น',
             unit_multiplier: r.unit_multiplier || 1,
@@ -1626,6 +1636,7 @@ export default function Products() {
                     <th className="px-2 py-2 text-right font-semibold">Safety</th>
                     <th className="px-2 py-2 text-right font-semibold">On Hand</th>
                     <th className="px-2 py-2 text-left font-semibold">จุดสั่งซื้อ</th>
+                    <th className="px-2 py-2 text-right font-semibold">จุดสั่งซื้อ(วัน)</th>
                     <th className="px-2 py-2 text-center font-semibold">หน่วย</th>
                     <th className="px-2 py-2 text-right font-semibold">ชิ้น/หน่วย</th>
                   </tr>
@@ -1656,6 +1667,7 @@ export default function Products() {
                         <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>
                         <td className="px-2 py-1.5 text-right">{onHand.toLocaleString()}</td>
                         <td className="px-2 py-1.5">{row.order_point || '-'}</td>
+                        <td className="px-2 py-1.5 text-right">{row.order_point_days ?? '-'}</td>
                         <td className="px-2 py-1.5 text-center">{row.unit_name || 'ชิ้น'}</td>
                         <td className="px-2 py-1.5 text-right">{row.unit_multiplier}</td>
                       </tr>
