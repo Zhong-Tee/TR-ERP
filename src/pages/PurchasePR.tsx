@@ -28,7 +28,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 
 const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'store', 'account']
 const APPROVE_ROLES = PR_ALLOWED_ROLES
-const PRICE_VISIBLE_ROLES = PR_ALLOWED_ROLES
+const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
 
 interface DraftItem {
   product_id: string
@@ -515,8 +515,12 @@ export default function PurchasePR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                  {canSeePrice && (
+                    <>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                    </>
+                  )}
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
@@ -556,14 +560,18 @@ export default function PurchasePR() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</td>
                       <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        {totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        {pricePerUnit != null && totalAmount > 0
-                          ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
-                          : '-'}
-                      </td>
+                      {canSeePrice && (
+                        <>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            {totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-700">
+                            {pricePerUnit != null && totalAmount > 0
+                              ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
+                              : '-'}
+                          </td>
+                        </>
+                      )}
                       <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>

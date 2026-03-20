@@ -601,7 +601,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     message: '',
   })
   const [importModalOpen, setImportModalOpen] = useState(false)
-  const [importTab, setImportTab] = useState<'smart' | 'wy'>('smart')
+  const [importMode, setImportMode] = useState<'standard-pgtr' | 'wy'>('standard-pgtr')
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importBusy, setImportBusy] = useState(false)
   const [importSummary, setImportSummary] = useState<string | null>(null)
@@ -2648,44 +2648,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     XLSX.writeFile(workbook, 'TRKids_PGTR_Order_Template.xlsx')
   }
 
-  const downloadWyTemplate = () => {
-    const headers = [
-      'เลขบิล',
-      'ชื่อลูกค้า',
-      'รหัสลูกค้า',
-      'วันที่สั่งซื้อ',
-      'เลขอ้างอิงชำระ',
-      'รหัส',
-      'สินค้า',
-      'บรรทัด1',
-      'บรรทัด2',
-      'font',
-      'จำนวน',
-      'ราคา',
-      'โค้ดส่วนลด',
-      'ส่วนลด',
-      'ราคาก่อนลด',
-      'ราคาหลังลด',
-      'ค่าส่ง',
-      'ยอดสุทธิ',
-      'หมายเหตุ',
-      'เลขพัสดุ',
-      'ชื่อ',
-      'นามสกุล',
-      'เบอร์โทร',
-      'ที่อยู่',
-      'แขวง/ตำบล',
-      'เขต/อำเภอ',
-      'จังหวัด',
-      'เลขไปษณีย์',
-      'ชื่อที่อยู่-เบอร์โทรผู้รับ',
-    ]
-    const worksheet = XLSX.utils.aoa_to_sheet([headers])
-    const workbook = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'WY_Template')
-    XLSX.writeFile(workbook, 'TRKids_WY_Order_Template.xlsx')
-  }
-
   const checkImportedOrderCompleteness = (order: ImportedOrder) => {
     if (!order.customer_name || !order.customer_address) return false
     if (order.channel_code !== 'CLAIM' && order.channel_code !== 'INFU') {
@@ -2885,12 +2847,29 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       }
       const curr = map.get(billNo)
       if (!curr) return
+      const normalizeLookup = (value: unknown) =>
+        String(value || '')
+          .trim()
+          .replace(/^'+/, '')
+          .replace(/\s+/g, '')
+          .toLowerCase()
+      const rawCode = String(r['รหัส'] || '').trim().replace(/^'+/, '')
+      const normalizedCode = normalizeLookup(rawCode)
+      const rowProductName = String(r['สินค้า'] || '').trim()
+      const normalizedRowProductName = normalizeLookup(rowProductName)
       const p = products.find(
-        (x) => String(x.product_name || '').trim() === String(r['รหัส'] || '').trim() && String(x.product_code || '').startsWith('22')
+        (x) => {
+          const code = normalizeLookup(x.product_code || '')
+          if (normalizedCode && code === normalizedCode) return true
+          const name = normalizeLookup(x.product_name || '')
+          if (normalizedCode && name === normalizedCode) return true
+          return !!normalizedRowProductName && name === normalizedRowProductName
+        }
       )
       curr.items.push({
         product_id: p ? p.id : null,
         product_name: p ? p.product_name : String(r['สินค้า'] || 'รหัสไม่ตรง'),
+        unit_price: parseNumber(r['ราคา']) || parseNumber(r['ราคาหลังลด']) || parseNumber(r['ราคาก่อนลด']),
         cartoon_pattern: '',
         line_pattern: '',
         line_1: String(r['บรรทัด1'] || ''),
@@ -2917,119 +2896,142 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     }
     setImportBusy(true)
     setImportSummary(null)
-    const adminUser = user.username || user.email || ''
-    const todayStr = new Date().toISOString().slice(0, 10)
-    let successCount = 0
-    let waitingCount = 0
-    let skippedCount = 0
-    let errorCount = 0
-    const errorLines: string[] = []
-    let existingBillNos = new Set<string>()
-    if (useProvidedBillNo) {
-      const billNos = ordersToImport.map((o) => o.bill_no).filter(Boolean) as string[]
-      if (billNos.length > 0) {
-        const { data } = await supabase.from('or_orders').select('bill_no').in('bill_no', billNos)
-        existingBillNos = new Set((data || []).map((d: { bill_no: string }) => d.bill_no))
+    try {
+      const adminUser = user.username || user.email || ''
+      const todayStr = new Date().toISOString().slice(0, 10)
+      let successCount = 0
+      let waitingCount = 0
+      let skippedCount = 0
+      let errorCount = 0
+      const errorLines: string[] = []
+      let existingBillNos = new Set<string>()
+      if (useProvidedBillNo) {
+        const billNos = ordersToImport.map((o) => o.bill_no).filter(Boolean) as string[]
+        if (billNos.length > 0) {
+          const { data } = await supabase.from('or_orders').select('bill_no').in('bill_no', billNos)
+          existingBillNos = new Set((data || []).map((d: { bill_no: string }) => d.bill_no))
+        }
       }
-    }
 
-    for (const order of ordersToImport) {
-      try {
-        const billNo = useProvidedBillNo ? (order.bill_no || '') : await generateBillNo(order.channel_code)
-        if (!billNo) {
-          errorCount += 1
-          errorLines.push('ไม่พบเลขบิลสำหรับออเดอร์ในไฟล์')
-          continue
-        }
-        if (existingBillNos.has(billNo)) {
-          skippedCount += 1
-          continue
-        }
+      for (const order of ordersToImport) {
+        try {
+          const billNo = useProvidedBillNo ? (order.bill_no || '') : await generateBillNo(order.channel_code)
+          if (!billNo) {
+            errorCount += 1
+            errorLines.push('ไม่พบเลขบิลสำหรับออเดอร์ในไฟล์')
+            continue
+          }
+          if (existingBillNos.has(billNo)) {
+            skippedCount += 1
+            continue
+          }
+          applyStampInkLogicToOrderObject(order)
+          const matchedItems = order.items.filter((item) => !!item.product_id)
+          if (matchedItems.length === 0) {
+            errorCount += 1
+            errorLines.push(`${billNo}: ไม่มีรายการสินค้าที่จับคู่สินค้าได้`)
+            continue
+          }
         const isComplete = checkImportedOrderCompleteness(order)
-        if (!isComplete) waitingCount += 1
-        const orderData = {
-          channel_code: order.channel_code,
-          customer_name: order.customer_name || '',
-          customer_address: order.customer_address || '',
-          channel_order_no: order.channel_order_no ?? null,
-          price: order.price || 0,
-          shipping_cost: order.shipping_cost || 0,
-          discount: order.discount || 0,
-          total_amount: order.total_amount || 0,
-          payment_method: order.payment_method || null,
-          promotion: order.promotion || null,
-          payment_date: order.payment_date || null,
-          payment_time: order.payment_time || null,
-          status: isComplete ? 'ลงข้อมูลเสร็จสิ้น' : 'รอลงข้อมูล',
-          admin_user: adminUser,
-          entry_date: todayStr,
-        }
-        const { data: inserted, error: insertErr } = await supabase
-          .from('or_orders')
-          .insert({ ...orderData, bill_no: billNo })
-          .select()
-          .single()
-        if (insertErr || !inserted?.id) {
+        const channelCode = String(order.channel_code || '').trim()
+        // กันบิลค้างสถานะ "ลงข้อมูลเสร็จสิ้น" จากการ import ซึ่งไม่มีแท็บแสดงในหน้า Orders
+        // Import ที่ข้อมูลครบจะไป "ตรวจสอบแล้ว" เฉพาะช่องทางที่อนุญาต auto-verified เท่านั้น
+        const importedStatus: 'รอลงข้อมูล' | 'ตรวจสอบแล้ว' =
+          isComplete && CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode) ? 'ตรวจสอบแล้ว' : 'รอลงข้อมูล'
+          let importedBillingDetails: Record<string, string | null> | null = null
+          try {
+            const parsedAddress = await parseAddressText(order.customer_address || '', supabase)
+            importedBillingDetails = {
+              address_line: parsedAddress.addressLine || null,
+              sub_district: parsedAddress.subDistrict || null,
+              district: parsedAddress.district || null,
+              province: parsedAddress.province || null,
+              postal_code: parsedAddress.postalCode || null,
+              mobile_phone: parsedAddress.mobilePhone || null,
+            }
+          } catch {
+            importedBillingDetails = null
+          }
+          const orderData = {
+            channel_code: order.channel_code,
+            customer_name: order.customer_name || '',
+            customer_address: order.customer_address || '',
+            channel_order_no: order.channel_order_no ?? null,
+            price: order.price || 0,
+            shipping_cost: order.shipping_cost || 0,
+            discount: order.discount || 0,
+            total_amount: order.total_amount || 0,
+            payment_method: order.payment_method || null,
+            promotion: order.promotion || null,
+            payment_date: order.payment_date || null,
+            payment_time: order.payment_time || null,
+            status: importedStatus,
+            admin_user: adminUser,
+            entry_date: todayStr,
+            billing_details: importedBillingDetails,
+          }
+          const { data: inserted, error: insertErr } = await supabase
+            .from('or_orders')
+            .insert({ ...orderData, bill_no: billNo })
+            .select()
+            .single()
+          if (insertErr || !inserted?.id) {
+            errorCount += 1
+            errorLines.push(`${billNo}: ${insertErr?.message || 'ไม่สามารถบันทึกออเดอร์ได้'}`)
+            continue
+          }
+          const orderId = inserted.id
+          const itemsToInsert = matchedItems.map((item, index) => ({
+              order_id: orderId,
+              item_uid: `${billNo}-${index + 1}`,
+              product_id: item.product_id!,
+              product_name: item.product_name || '',
+              quantity: item.quantity || 1,
+              unit_price: item.unit_price || 0,
+              ink_color: item.ink_color || null,
+              product_type: item.product_type || 'ชั้น1',
+              cartoon_pattern: item.cartoon_pattern || null,
+              line_pattern: item.line_pattern || null,
+              font: item.font || null,
+              line_1: item.line_1 || null,
+              line_2: item.line_2 || null,
+              line_3: item.line_3 || null,
+              no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+              is_free: !!(item as { is_free?: boolean }).is_free,
+              notes: item.notes || null,
+              file_attachment: item.file_attachment || null,
+            }))
+          const { error: itemsErr } = await supabase.from('or_order_items').insert(itemsToInsert)
+          if (itemsErr) {
+            await supabase.from('or_orders').delete().eq('id', orderId)
+            errorCount += 1
+            errorLines.push(`${billNo}: ${itemsErr.message}`)
+            continue
+          }
+        if (importedStatus === 'รอลงข้อมูล') waitingCount += 1
+          successCount += 1
+        } catch (err: any) {
           errorCount += 1
-          errorLines.push(`${billNo}: ${insertErr?.message || 'ไม่สามารถบันทึกออเดอร์ได้'}`)
-          continue
+          errorLines.push(err?.message || 'เกิดข้อผิดพลาดในการนำเข้า')
         }
-        const orderId = inserted.id
-        applyStampInkLogicToOrderObject(order)
-        const itemsToInsert = order.items
-          .filter((item) => !!item.product_id)
-          .map((item, index) => ({
-            order_id: orderId,
-            item_uid: `${billNo}-${index + 1}`,
-            product_id: item.product_id!,
-            product_name: item.product_name || '',
-            quantity: item.quantity || 1,
-            unit_price: item.unit_price || 0,
-            ink_color: item.ink_color || null,
-            product_type: item.product_type || 'ชั้น1',
-            cartoon_pattern: item.cartoon_pattern || null,
-            line_pattern: item.line_pattern || null,
-            font: item.font || null,
-            line_1: item.line_1 || null,
-            line_2: item.line_2 || null,
-            line_3: item.line_3 || null,
-            no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
-            is_free: !!(item as { is_free?: boolean }).is_free,
-            notes: item.notes || null,
-            file_attachment: item.file_attachment || null,
-          }))
-        if (itemsToInsert.length === 0) {
-          errorCount += 1
-          errorLines.push(`${billNo}: ไม่มีรายการสินค้าที่จับคู่สินค้าได้`)
-          continue
-        }
-        const { error: itemsErr } = await supabase.from('or_order_items').insert(itemsToInsert)
-        if (itemsErr) {
-          errorCount += 1
-          errorLines.push(`${billNo}: ${itemsErr.message}`)
-          continue
-        }
-        successCount += 1
-      } catch (err: any) {
-        errorCount += 1
-        errorLines.push(err?.message || 'เกิดข้อผิดพลาดในการนำเข้า')
       }
-    }
-    const summaryLines = [
-      'นำเข้าเสร็จสิ้น',
-      `สำเร็จ: ${successCount}`,
-      `รอลงข้อมูล: ${waitingCount}`,
-      `ข้าม (บิลซ้ำ): ${skippedCount}`,
-      `ผิดพลาด: ${errorCount}`,
-    ]
-    if (errorLines.length > 0) {
-      summaryLines.push('', 'ตัวอย่างข้อผิดพลาด:', ...errorLines.slice(0, 5))
-    }
-    setImportSummary(summaryLines.join('\n'))
-    setImportBusy(false)
-    // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
-    if (successCount > 0 || waitingCount > 0) {
-      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      const summaryLines = [
+        'นำเข้าเสร็จสิ้น',
+        `สำเร็จ: ${successCount}`,
+        `รอลงข้อมูล: ${waitingCount}`,
+        `ข้าม (บิลซ้ำ): ${skippedCount}`,
+        `ผิดพลาด: ${errorCount}`,
+      ]
+      if (errorLines.length > 0) {
+        summaryLines.push('', 'ตัวอย่างข้อผิดพลาด:', ...errorLines.slice(0, 5))
+      }
+      setImportSummary(summaryLines.join('\n'))
+      // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
+      if (successCount > 0 || waitingCount > 0) {
+        window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      }
+    } finally {
+      setImportBusy(false)
     }
   }
 
@@ -3056,8 +3058,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           const parsed = parsePgtrJson(json)
           await processAndSaveImportedOrders(parsed, true)
         } else if (headers.includes('เลขบิล') && String(json[0]['เลขบิล']).toUpperCase().startsWith('WY')) {
-          const parsed = parseWyJson(json)
-          await processAndSaveImportedOrders(parsed, true)
+          throw new Error('ไฟล์นี้เป็นรูปแบบ WY กรุณาใช้ปุ่ม "Import Order (WY)"')
         } else {
           const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][]
           const parsed = parseStandardRows(rows)
@@ -3067,6 +3068,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: err?.message || String(err) })
         setImportBusy(false)
       }
+    }
+    reader.onerror = () => {
+      setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: 'ไม่สามารถอ่านไฟล์ได้' })
+      setImportBusy(false)
     }
     reader.readAsArrayBuffer(file)
   }
@@ -3104,6 +3109,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       setMessageModal({ open: true, title: 'นำเข้าไม่สำเร็จ', message: 'ยังโหลดรายการสินค้าไม่เสร็จ กรุณาลองอีกครั้ง' })
       return
     }
+    setImportBusy(true)
     setWyStatus('กำลังประมวลผลไฟล์...')
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -3132,15 +3138,21 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               setWyStatus(`แปลงสำเร็จ! กำลังนำเข้า ${finalData.length} แถว...`)
               const parsed = parseWyJson(finalData)
               await processAndSaveImportedOrders(parsed, true)
-              setWyStatus(`นำเข้าเสร็จสิ้น ${finalData.length} แถว`)
+              setWyStatus(`นำเข้าเสร็จสิ้น ${finalData.length} แถว (${parsed.length} บิล)`)
             } else {
               setWyStatus('ไม่พบข้อมูลที่สามารถแสดงผลได้ในไฟล์')
             }
+            setImportBusy(false)
           },
         })
       } catch (err: any) {
         setWyStatus(err?.message || 'เกิดข้อผิดพลาดในการอ่านไฟล์')
+        setImportBusy(false)
       }
+    }
+    reader.onerror = () => {
+      setWyStatus('ไม่สามารถอ่านไฟล์ได้')
+      setImportBusy(false)
     }
     reader.readAsText(file, 'UTF-8')
   }
@@ -3984,25 +3996,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           </button>
           <button
             type="button"
-            onClick={downloadWyTemplate}
-            disabled={formDisabled}
-            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-teal-600 text-white hover:bg-teal-700'}`}
-          >
-            Template (WY)
-          </button>
-          <button
-            type="button"
             onClick={() => {
               if (formDisabled) return
-              if (!order?.bill_no) {
-                setMessageModal({
-                  open: true,
-                  title: 'แจ้งเตือน',
-                  message: 'กรุณาสร้างบิลก่อนจึงจะสามารถ Import Order from File ได้',
-                })
-                return
-              }
-              setImportTab('smart')
+              setImportMode('standard-pgtr')
               setImportFile(null)
               setImportSummary(null)
               setWyFile(null)
@@ -4018,15 +4014,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             type="button"
             onClick={() => {
               if (formDisabled) return
-              if (!order?.bill_no) {
-                setMessageModal({
-                  open: true,
-                  title: 'แจ้งเตือน',
-                  message: 'กรุณาสร้างบิลก่อนจึงจะสามารถ Import Order (WY) ได้',
-                })
-                return
-              }
-              setImportTab('wy')
+              setImportMode('wy')
               setImportFile(null)
               setImportSummary(null)
               setWyFile(null)
@@ -5567,7 +5555,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     >
       <div className="p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold">Import Orders from File</h3>
+          <h3 className="text-lg font-bold">{importMode === 'wy' ? 'Import Order (WY)' : 'Import Orders from File'}</h3>
           <button
             type="button"
             onClick={() => {
@@ -5578,30 +5566,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             ×
           </button>
         </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setImportTab('smart')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-              importTab === 'smart' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Smart Import
-          </button>
-          <button
-            type="button"
-            onClick={() => setImportTab('wy')}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
-              importTab === 'wy' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            WY CSV → Excel
-          </button>
-        </div>
-        {importTab === 'smart' ? (
+        {importMode === 'standard-pgtr' ? (
           <div className="space-y-3">
             <p className="text-sm text-gray-600">
-              รองรับ Standard / PGTR / WY อัตโนมัติ (Excel หรือ CSV)
+              รองรับเฉพาะ Template Standard / PGTR (Excel หรือ CSV)
             </p>
             <input
               type="file"
@@ -5637,7 +5605,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-gray-600">
-              แปลงไฟล์ CSV ของ WY แล้วนำเข้าอัตโนมัติ
+              เลือกไฟล์ CSV ของ WY แล้วกดนำเข้า
             </p>
             <input
               type="file"
@@ -5646,15 +5614,24 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 const file = e.target.files?.[0] || null
                 setWyFile(file)
                 setWyStatus('')
-                if (file) handleWyConvert(file)
               }}
               className="block w-full text-sm"
             />
-            {wyFile && (
-              <span className="text-xs text-gray-500">
-                ไฟล์: {wyFile.name}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => wyFile && handleWyConvert(wyFile)}
+                disabled={!wyFile || importBusy}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+              >
+                {importBusy ? 'กำลังนำเข้า...' : 'นำเข้า'}
+              </button>
+              {wyFile && (
+                <span className="text-xs text-gray-500">
+                  ไฟล์: {wyFile.name}
+                </span>
+              )}
+            </div>
             {wyStatus && (
               <div className="text-sm text-gray-700">{wyStatus}</div>
             )}

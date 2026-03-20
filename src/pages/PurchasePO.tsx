@@ -38,6 +38,8 @@ const SHIPPING_METHODS = [
   { value: 'other', label: 'อื่นๆ' },
 ]
 
+const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'account']
+
 interface PriceEdit {
   product_id: string
   unit_price: number | null
@@ -46,6 +48,7 @@ interface PriceEdit {
 export default function PurchasePO() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
 
   // list
   const [pos, setPos] = useState<InventoryPO[]>([])
@@ -537,9 +540,13 @@ export default function PurchasePO() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สั่ง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้ขาย</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
+                  {canSeeFinancial && (
+                    <>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
+                    </>
+                  )}
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">คาดการณ์เข้าไทย</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
@@ -566,17 +573,21 @@ export default function PurchasePO() {
                       <td className="px-4 py-3 text-gray-600">{po.created_by ? userMap[po.created_by] || '-' : '-'}</td>
                       <td className="px-4 py-3 text-gray-600">{po.supplier_name || '-'}</td>
                       <td className="px-4 py-3 text-center text-gray-600">{itemCount || '-'}</td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-600">
-                        {unitPrice != null ? unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-600">
-                        {shippingThb != null && shippingPerPiece != null
-                          ? `${shippingThb.toLocaleString(undefined, { minimumFractionDigits: 2 })} / ${shippingPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ฿`
-                          : '-'}
-                      </td>
+                      {canSeeFinancial && (
+                        <>
+                          <td className="px-4 py-3 text-right font-medium">
+                            {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-600">
+                            {unitPrice != null ? unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-600">
+                            {shippingThb != null && shippingPerPiece != null
+                              ? `${shippingThb.toLocaleString(undefined, { minimumFractionDigits: 2 })} / ${shippingPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ฿`
+                              : '-'}
+                          </td>
+                        </>
+                      )}
                       <td className="px-4 py-3 text-center text-gray-600">
                         {po.expected_arrival_date
                           ? new Date(po.expected_arrival_date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -598,12 +609,14 @@ export default function PurchasePO() {
                               >
                                 แก้ไข
                               </button>
-                              <button
-                                onClick={() => openShipping(po)}
-                                className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
-                              >
-                                ค่าขนส่ง
-                              </button>
+                              {canSeeFinancial && (
+                                <button
+                                  onClick={() => openShipping(po)}
+                                  className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
+                                >
+                                  ค่าขนส่ง
+                                </button>
+                              )}
                               <button
                                 onClick={() => handleMarkOrdered(po)}
                                 disabled={updating === po.id}
@@ -613,7 +626,7 @@ export default function PurchasePO() {
                               </button>
                             </>
                           )}
-                          {(po.status === 'ordered' || po.status === 'received') && po.intl_shipping_cost == null && (
+                          {canSeeFinancial && (po.status === 'ordered' || po.status === 'received') && po.intl_shipping_cost == null && (
                             <button
                               onClick={() => openShipping(po)}
                               className="px-4 py-2 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 text-sm font-semibold transition-colors"
@@ -681,8 +694,12 @@ export default function PurchasePO() {
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
+                      {canSeeFinancial && (
+                        <>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -705,32 +722,38 @@ export default function PurchasePO() {
                             <div className="font-medium">{prod?.product_code} - {prod?.product_name}</div>
                           </td>
                           <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              min={0}
-                              step={0.01}
-                              value={pe?.unit_price ?? ''}
-                              onChange={(e) => updatePrice(item.product_id, e.target.value ? Number(e.target.value) : null)}
-                              className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
-                              placeholder="0.00"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right font-medium">
-                            {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                          </td>
+                          {canSeeFinancial && (
+                            <>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={pe?.unit_price ?? ''}
+                                  onChange={(e) => updatePrice(item.product_id, e.target.value ? Number(e.target.value) : null)}
+                                  className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
+                                  placeholder="0.00"
+                                />
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium">
+                                {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                              </td>
+                            </>
+                          )}
                         </tr>
                       )
                     })}
                   </tbody>
-                  <tfoot>
-                    <tr className="bg-gray-50 border-t">
-                      <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
-                      <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
-                        {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
-                      </td>
-                    </tr>
-                  </tfoot>
+                  {canSeeFinancial && (
+                    <tfoot>
+                      <tr className="bg-gray-50 border-t">
+                        <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                        <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
+                          {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
 
@@ -825,30 +848,34 @@ export default function PurchasePO() {
                   <div className="text-gray-500 text-xs">ผู้ขาย</div>
                   <div className="font-medium">{viewing.supplier_name || '-'}</div>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <div className="text-gray-500 text-xs">ยอดรวมสินค้า</div>
-                  <div className="font-medium">{viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
-                </div>
+                {canSeeFinancial && (
+                  <div className="bg-gray-50 rounded-lg p-3">
+                    <div className="text-gray-500 text-xs">ยอดรวมสินค้า</div>
+                    <div className="font-medium">{viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
+                  </div>
+                )}
                 {viewing.expected_arrival_date && (
                   <div className="bg-orange-50 rounded-lg p-3">
                     <div className="text-orange-600 text-xs">คาดการณ์เข้าไทย</div>
                     <div className="font-medium text-orange-800">{new Date(viewing.expected_arrival_date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
                   </div>
                 )}
-                {viewing.intl_shipping_cost_thb != null && (
+                {canSeeFinancial && viewing.intl_shipping_cost_thb != null && (
                   <div className="bg-purple-50 rounded-lg p-3">
                     <div className="text-purple-600 text-xs">ค่าขนส่งต่างประเทศ</div>
                     <div className="font-medium text-purple-800">{Number(viewing.intl_shipping_cost_thb).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div>
                   </div>
                 )}
-                <div className="bg-emerald-50 rounded-lg p-3">
-                  <div className="text-emerald-600 text-xs">ยอดรวมทั้งหมด</div>
-                  <div className="font-bold text-emerald-800">{viewing.grand_total != null ? Number(viewing.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
-                </div>
+                {canSeeFinancial && (
+                  <div className="bg-emerald-50 rounded-lg p-3">
+                    <div className="text-emerald-600 text-xs">ยอดรวมทั้งหมด</div>
+                    <div className="font-bold text-emerald-800">{viewing.grand_total != null ? Number(viewing.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
+                  </div>
+                )}
               </div>
 
               {/* shipping details */}
-              {viewing.intl_shipping_method && (
+              {canSeeFinancial && viewing.intl_shipping_method && (
                 <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm">
                   <div className="font-semibold text-purple-800 mb-1">ค่าขนส่งต่างประเทศ</div>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
@@ -890,8 +917,12 @@ export default function PurchasePO() {
                               <th className="px-3 py-2.5 text-center font-semibold text-gray-600">สถานะ</th>
                             </>
                           )}
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
+                          {canSeeFinancial && (
+                            <>
+                              <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
+                              <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
+                            </>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -945,8 +976,12 @@ export default function PurchasePO() {
                                   </td>
                                 </>
                               )}
-                              <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
-                              <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                              {canSeeFinancial && (
+                                <>
+                                  <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                                  <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
+                                </>
+                              )}
                             </tr>
                           )
                         })}
@@ -1260,8 +1295,12 @@ export default function PurchasePO() {
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รหัสสินค้า</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
+                      {canSeeFinancial && (
+                        <>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
+                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1280,32 +1319,38 @@ export default function PurchasePO() {
                               className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
                             />
                           </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              min={0}
-                              step={0.01}
-                              value={item.unit_price ?? ''}
-                              onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, unit_price: e.target.value ? Number(e.target.value) : null } : r))}
-                              className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
-                              placeholder="0.00"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right font-medium">
-                            {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                          </td>
+                          {canSeeFinancial && (
+                            <>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={item.unit_price ?? ''}
+                                  onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, unit_price: e.target.value ? Number(e.target.value) : null } : r))}
+                                  className="w-full px-2 py-1.5 border rounded-lg text-sm text-right"
+                                  placeholder="0.00"
+                                />
+                              </td>
+                              <td className="px-3 py-2 text-right font-medium">
+                                {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                              </td>
+                            </>
+                          )}
                         </tr>
                       )
                     })}
                   </tbody>
-                  <tfoot>
-                    <tr className="bg-gray-50 border-t">
-                      <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
-                      <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
-                        {editTotalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
-                      </td>
-                    </tr>
-                  </tfoot>
+                  {canSeeFinancial && (
+                    <tfoot>
+                      <tr className="bg-gray-50 border-t">
+                        <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                        <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
+                          {editTotalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
 

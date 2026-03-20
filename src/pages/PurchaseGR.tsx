@@ -27,6 +27,8 @@ const CLOSED_PO_RESOLUTION_MAP: Record<string, { label: string; color: string }>
   cancelled: { label: 'ยกเลิก', color: 'bg-red-100 text-red-800' },
 }
 
+const FINANCIAL_VISIBLE_ROLES = ['superadmin', 'account']
+
 function getGRDisplayStatus(gr: InventoryGR) {
   const poStatus = (gr.inv_po as any)?.status
   const poItems = ((gr.inv_po as any)?.inv_po_items || []) as Array<{ resolution_type?: string | null }>
@@ -122,6 +124,7 @@ function getStoragePublicUrl(bucket: string | undefined, path: string | undefine
 export default function PurchaseGR() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
 
   const [grs, setGrs] = useState<InventoryGR[]>([])
   const [loading, setLoading] = useState(true)
@@ -970,8 +973,12 @@ export default function PurchaseGR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ไทย)/ชิ้น</th>
+                  {canSeeFinancial && (
+                    <>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
+                      <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ไทย)/ชิ้น</th>
+                    </>
+                  )}
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
               </thead>
@@ -1023,12 +1030,16 @@ export default function PurchaseGR() {
                           {grTotalReceived}/{grTotalOrdered}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right text-gray-600">
-                        {formatTotalPerPiece(intlShippingTotal, intlShippingPerPiece)}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-600">
-                        {formatTotalPerPiece(thaiShippingTotal, thaiShippingPerPiece)}
-                      </td>
+                      {canSeeFinancial && (
+                        <>
+                          <td className="px-4 py-3 text-right text-gray-600">
+                            {formatTotalPerPiece(intlShippingTotal, intlShippingPerPiece)}
+                          </td>
+                          <td className="px-4 py-3 text-right text-gray-600">
+                            {formatTotalPerPiece(thaiShippingTotal, thaiShippingPerPiece)}
+                          </td>
+                        </>
+                      )}
                       <td className="px-4 py-3 text-right">
                         <button
                           onClick={() => openDetail(gr)}
@@ -1439,54 +1450,55 @@ export default function PurchaseGR() {
             </div>
           )}
 
-          {/* Domestic shipping (collapsible) */}
-          <div className="border rounded-lg">
-            <button
-              onClick={() => setShippingExpanded(!shippingExpanded)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              <span>ค่าขนส่งในประเทศ (ไม่บังคับ)</span>
-              <svg className={`w-4 h-4 transition-transform ${shippingExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {shippingExpanded && (
-              <div className="px-4 pb-4 space-y-3 border-t">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">ชื่อบริษัทขนส่ง</label>
-                    <input
-                      type="text"
-                      value={domCompany}
-                      onChange={(e) => setDomCompany(e.target.value)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                      placeholder="เช่น Kerry, Flash, J&T..."
-                    />
+          {canSeeFinancial && (
+            <div className="border rounded-lg">
+              <button
+                onClick={() => setShippingExpanded(!shippingExpanded)}
+                className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <span>ค่าขนส่งในประเทศ (ไม่บังคับ)</span>
+                <svg className={`w-4 h-4 transition-transform ${shippingExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {shippingExpanded && (
+                <div className="px-4 pb-4 space-y-3 border-t">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">ชื่อบริษัทขนส่ง</label>
+                      <input
+                        type="text"
+                        value={domCompany}
+                        onChange={(e) => setDomCompany(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-lg text-sm"
+                        placeholder="เช่น Kerry, Flash, J&T..."
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">ค่าขนส่งรวม (บาท)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={domCost}
+                        onChange={(e) => setDomCost(e.target.value)}
+                        onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                        className="w-full px-3 py-2 border rounded-lg text-sm"
+                        placeholder="0.00"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">ค่าขนส่งรวม (บาท)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.01}
-                      value={domCost}
-                      onChange={(e) => setDomCost(e.target.value)}
-                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                      className="w-full px-3 py-2 border rounded-lg text-sm"
-                      placeholder="0.00"
-                    />
-                  </div>
+                  {costPerPiece > 0 && (
+                    <div className="bg-blue-50 rounded-lg p-3 text-sm">
+                      <span className="text-blue-600">ต้นทุนขนส่งต่อชิ้น:</span>{' '}
+                      <span className="font-bold text-blue-800">{costPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท</span>
+                      <span className="text-xs text-gray-500 ml-2">({Number(domCost).toLocaleString()} / {totalReceived.toLocaleString()} ชิ้น)</span>
+                    </div>
+                  )}
                 </div>
-                {costPerPiece > 0 && (
-                  <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                    <span className="text-blue-600">ต้นทุนขนส่งต่อชิ้น:</span>{' '}
-                    <span className="font-bold text-blue-800">{costPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท</span>
-                    <span className="text-xs text-gray-500 ml-2">({Number(domCost).toLocaleString()} / {totalReceived.toLocaleString()} ชิ้น)</span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           {/* note */}
           <div>
@@ -1559,26 +1571,28 @@ export default function PurchaseGR() {
                   </div>
                 )}
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                <div className="bg-blue-50 rounded-lg p-3">
-                  <div className="text-blue-600 text-xs">ค่าขนส่งต่างประเทศ/ชิ้น</div>
-                  <div className="font-medium text-blue-900">
-                    {formatTotalPerPiece(
-                      (viewing as any).inv_po?.intl_shipping_cost_thb != null ? Number((viewing as any).inv_po.intl_shipping_cost_thb) : null,
-                      detailCostMeta.intlShippingPerPiece
-                    )}
+              {canSeeFinancial && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <div className="bg-blue-50 rounded-lg p-3">
+                    <div className="text-blue-600 text-xs">ค่าขนส่งต่างประเทศ/ชิ้น</div>
+                    <div className="font-medium text-blue-900">
+                      {formatTotalPerPiece(
+                        (viewing as any).inv_po?.intl_shipping_cost_thb != null ? Number((viewing as any).inv_po.intl_shipping_cost_thb) : null,
+                        detailCostMeta.intlShippingPerPiece
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 rounded-lg p-3">
+                    <div className="text-blue-600 text-xs">ค่าขนส่งในประเทศ/ชิ้น</div>
+                    <div className="font-medium text-blue-900">
+                      {formatTotalPerPiece(
+                        viewing.dom_shipping_cost != null ? Number(viewing.dom_shipping_cost) : null,
+                        detailCostMeta.domShippingPerPiece
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="bg-blue-50 rounded-lg p-3">
-                  <div className="text-blue-600 text-xs">ค่าขนส่งในประเทศ/ชิ้น</div>
-                  <div className="font-medium text-blue-900">
-                    {formatTotalPerPiece(
-                      viewing.dom_shipping_cost != null ? Number(viewing.dom_shipping_cost) : null,
-                      detailCostMeta.domShippingPerPiece
-                    )}
-                  </div>
-                </div>
-              </div>
+              )}
 
               {/* items */}
               <div className="md:hidden space-y-3">
@@ -1615,7 +1629,7 @@ export default function PurchaseGR() {
                           <div className="font-medium text-gray-800 text-sm break-words">{prod?.product_name || '-'}</div>
                         </div>
                       </div>
-                      <div className="grid grid-cols-5 gap-2 text-xs">
+                      <div className={`grid ${canSeeFinancial ? 'grid-cols-5' : 'grid-cols-4'} gap-2 text-xs`}>
                         <div className="rounded bg-gray-50 p-2 text-center">
                           <div className="text-gray-500">สั่ง</div>
                           <div className="font-semibold text-gray-900">{orderQty.toLocaleString()}</div>
@@ -1632,10 +1646,12 @@ export default function PurchaseGR() {
                           <div className="text-emerald-700">เกิน</div>
                           <div className="font-semibold text-emerald-800">{excess.toLocaleString()}</div>
                         </div>
-                        <div className="rounded bg-purple-50 p-2 text-center">
-                          <div className="text-purple-700">ต้นทุนรวม</div>
-                          <div className="font-semibold text-purple-900">{unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}</div>
-                        </div>
+                        {canSeeFinancial && (
+                          <div className="rounded bg-purple-50 p-2 text-center">
+                            <div className="text-purple-700">ต้นทุนรวม</div>
+                            <div className="font-semibold text-purple-900">{unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}</div>
+                          </div>
+                        )}
                       </div>
                       <div>
                         <div className="text-xs text-gray-600 mb-1">รูปตรวจรับ</div>
@@ -1674,7 +1690,9 @@ export default function PurchaseGR() {
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รับ</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ขาด</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">เกิน</th>
-                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ต้นทุนรวม</th>
+                      {canSeeFinancial && (
+                        <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ต้นทุนรวม</th>
+                      )}
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รูปตรวจรับ</th>
                     </tr>
                   </thead>
@@ -1732,9 +1750,11 @@ export default function PurchaseGR() {
                               <span className="text-gray-400">-</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-right text-gray-600">
-                            {unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}
-                          </td>
+                          {canSeeFinancial && (
+                            <td className="px-3 py-2 text-right text-gray-600">
+                              {unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}
+                            </td>
+                          )}
                           <td className="px-3 py-2">
                             {receiveImages.length > 0 ? (
                               <div className="flex flex-wrap gap-2">
