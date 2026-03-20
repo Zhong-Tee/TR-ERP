@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
-import { calculateDuration } from '../wmsUtils'
+import { calculateDuration, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import OrderDetailModal from './OrderDetailModal'
 
 type UserRow = { id: string; username: string | null; role: string }
@@ -53,7 +53,7 @@ export default function UploadSection() {
   }
 
   const loadOrdersDashboard = async () => {
-    let q = supabase.from('wms_orders').select('*, us_users(username)')
+    let q = supabase.from('wms_orders').select('*, us_users(username)').or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (filterDateStart) {
       q = q.gte('created_at', filterDateStart + 'T00:00:00')

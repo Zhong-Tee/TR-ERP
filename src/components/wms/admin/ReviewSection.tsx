@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
-import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS } from '../wmsUtils'
+import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
 const normalizeOrderId = (value: unknown) =>
@@ -71,6 +71,7 @@ export default function ReviewSection() {
     const { data } = await supabase
       .from('wms_orders')
       .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .gte('created_at', reviewDate + 'T00:00:00')
       .lte('created_at', reviewDate + 'T23:59:59')
 
@@ -160,6 +161,7 @@ export default function ReviewSection() {
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
         .eq('order_id', rawTarget)
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       error = firstErr
       if (!firstErr && data && data.length > 0) rows = data
     }
@@ -170,6 +172,7 @@ export default function ReviewSection() {
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
         .eq('order_id', trimmedTarget)
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       if (!trimErr && trimData && trimData.length > 0) {
         rows = trimData
       }
@@ -181,6 +184,7 @@ export default function ReviewSection() {
       const { data: fuzzyData, error: fuzzyErr } = await supabase
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
         .ilike('order_id', `%${likeTarget}%`)
       if (!fuzzyErr && fuzzyData && fuzzyData.length > 0) {
         rows = fuzzyData.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
@@ -192,6 +196,7 @@ export default function ReviewSection() {
       const { data: dayRows, error: dayErr } = await supabase
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
         .gte('created_at', reviewDate + 'T00:00:00')
         .lte('created_at', reviewDate + 'T23:59:59')
 
@@ -208,6 +213,7 @@ export default function ReviewSection() {
       const { data: recentRows, error: recentErr } = await supabase
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
         .gte('created_at', `${startDate}T00:00:00`)
         .lte('created_at', `${reviewDate || new Date().toISOString().split('T')[0]}T23:59:59`)
 
@@ -261,7 +267,11 @@ export default function ReviewSection() {
     await supabase.from('wms_orders').update(updateData).eq('id', id)
 
     const currentOrderId = reviewOrderActualId || reviewOrderSelect
-    const { data } = await supabase.from('wms_orders').select('*').eq('order_id', currentOrderId)
+    const { data } = await supabase
+      .from('wms_orders')
+      .select('*')
+      .eq('order_id', currentOrderId)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (data) {
       const sortedData = sortOrderItems(data)
@@ -275,8 +285,13 @@ export default function ReviewSection() {
           .from('wms_orders')
           .update({ end_time: new Date().toISOString() })
           .eq('order_id', currentOrderId)
+          .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
-        try { await saveFirstCheckSummary(currentOrderId, sortedData) } catch (e) { console.error('saveFirstCheckSummary error:', e) }
+        try {
+          await saveFirstCheckSummary(currentOrderId, sortedData)
+        } catch (e) {
+          console.error('saveFirstCheckSummary error:', e)
+        }
       }
 
       const allCorrect = sortedData.length > 0 && sortedData.every((i) => i.status === 'correct')

@@ -325,7 +325,7 @@ export interface InventoryPO {
   updated_at: string
   /** joined */
   inv_po_items?: InventoryPOItem[]
-  inv_pr?: { pr_no: string } | null
+  inv_pr?: { pr_no: string; note?: string | null } | null
 }
 
 export interface InventoryPOItem {
@@ -366,8 +366,18 @@ export interface InventoryGR {
   inv_gr_items?: InventoryGRItem[]
   inv_po?: {
     po_no: string
+    note?: string | null
+    status?: string | null
     expected_arrival_date?: string | null
-    inv_pr?: { pr_type?: string | null } | null
+    intl_shipping_cost_thb?: number | null
+    inv_po_items?: Array<{
+      product_id?: string | null
+      qty?: number | null
+      unit_price?: number | null
+      resolution_type?: string | null
+      qty_received_total?: number | null
+    }> | null
+    inv_pr?: { pr_no?: string | null; note?: string | null; pr_type?: string | null } | null
   } | null
 }
 
@@ -379,6 +389,8 @@ export interface InventoryGRItem {
   qty_ordered?: number | null
   qty_shortage?: number | null
   shortage_note?: string | null
+  unit_cost?: number | null
+  total_cost?: number | null
   created_at: string
   /** joined product */
   pr_products?: Product | null

@@ -145,8 +145,8 @@ export default function PurchasePR() {
     return m
   }, [products])
 
-  function getEstimatedCost(product?: (Product & { last_price?: number | null }) | null): number | null {
-    const raw = product?.landed_cost
+  function getLastPurchasePrice(product?: (Product & { last_price?: number | null }) | null): number | null {
+    const raw = product?.last_price
     const n = raw != null ? Number(raw) : NaN
     return Number.isFinite(n) && n > 0 ? n : null
   }
@@ -203,7 +203,7 @@ export default function PurchasePR() {
     const prod = productMap.get(productId)
     updateDraftItem(index, {
       product_id: productId,
-      estimated_price: canSeePrice ? getEstimatedCost(prod) : null,
+      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
     })
   }
 
@@ -214,7 +214,7 @@ export default function PurchasePR() {
       product_id: productId,
       qty: 1,
       unit: 'ชิ้น',
-      estimated_price: canSeePrice ? getEstimatedCost(prod) : null,
+      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
       note: '',
     }
     setDraftItems((prev) => {
@@ -257,7 +257,7 @@ export default function PurchasePR() {
           product_id: prod.id,
           qty: Math.ceil(op - onHand),
           unit: 'ชิ้น',
-          estimated_price: canSeePrice ? getEstimatedCost(prod as any) : null,
+          estimated_price: canSeePrice ? getLastPurchasePrice(prod as any) : null,
           note: `คงเหลือ ${onHand} / จุดสั่งซื้อ ${prod.order_point}`,
         })
       }
@@ -310,7 +310,7 @@ export default function PurchasePR() {
           product_id: item.product_id,
           qty: Number(item.qty) || 1,
           unit: item.unit || 'ชิ้น',
-          estimated_price: getEstimatedCost(currentProduct) ?? (item.estimated_price != null ? Number(item.estimated_price) : null),
+          estimated_price: getLastPurchasePrice(currentProduct) ?? (item.last_purchase_price != null ? Number(item.last_purchase_price) : null),
           note: item.note || '',
         }
       })
@@ -330,12 +330,12 @@ export default function PurchasePR() {
     setSaving(true)
     try {
       const itemPayload = valid.map((i) => {
-        const estimated = getEstimatedCost(productMap.get(i.product_id))
+        const lastPurchase = getLastPurchasePrice(productMap.get(i.product_id))
         return {
           product_id: i.product_id,
           qty: i.qty,
           unit: i.unit,
-          estimated_price: estimated != null ? Number(estimated) : null,
+          estimated_price: lastPurchase != null ? Number(lastPurchase) : null,
           note: i.note || undefined,
         }
       })
@@ -515,6 +515,8 @@ export default function PurchasePR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่สร้าง</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">สถานะ</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
@@ -524,6 +526,22 @@ export default function PurchasePR() {
                 {prs.map((pr) => {
                   const st = STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
                   const isUrgent = pr.pr_type === 'urgent'
+                  const items = ((pr as any).inv_pr_items || []) as Array<{
+                    qty?: number | null
+                    estimated_price?: number | null
+                    last_purchase_price?: number | null
+                  }>
+                  const totalQty = items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0)
+                  const totalAmount = items.reduce((sum, item) => {
+                    const qty = Number(item.qty) || 0
+                    const unitPrice = item.last_purchase_price != null
+                      ? Number(item.last_purchase_price)
+                      : item.estimated_price != null
+                        ? Number(item.estimated_price)
+                        : 0
+                    return sum + qty * unitPrice
+                  }, 0)
+                  const pricePerUnit = totalQty > 0 ? totalAmount / totalQty : null
                   return (
                     <tr key={pr.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-900">{pr.pr_no}</td>
@@ -538,6 +556,14 @@ export default function PurchasePR() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">{pr.requested_by ? userMap[pr.requested_by] || '-' : '-'}</td>
                       <td className="px-4 py-3 text-center text-gray-600">{(pr as any)._itemCount || '-'}</td>
+                      <td className="px-4 py-3 text-right text-gray-700">
+                        {totalAmount > 0 ? totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-700">
+                        {pricePerUnit != null && totalAmount > 0
+                          ? pricePerUnit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ฿'
+                          : '-'}
+                      </td>
                       <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{pr.note || '-'}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${st.color}`}>
@@ -701,8 +727,8 @@ export default function PurchasePR() {
                               {prod.product_name_cn && <span>ชื่อจีน: {prod.product_name_cn}</span>}
                               {prod.seller_name && <span>ผู้จัดจำหน่าย: {prod.seller_name}</span>}
                               {prod.product_category && <span>หมวด: {prod.product_category}</span>}
-                              {canSeePrice && getEstimatedCost(prod) != null && (
-                                <span className="text-blue-600 font-medium">ต้นทุนเฉลี่ย: {Number(getEstimatedCost(prod)).toLocaleString()} บาท</span>
+                              {canSeePrice && getLastPurchasePrice(prod) != null && (
+                                <span className="text-blue-600 font-medium">ราคาซื้อล่าสุด: {Number(getLastPurchasePrice(prod)).toLocaleString()} บาท</span>
                               )}
                               <span className="text-orange-600 font-medium">
                                 คงเหลือ: {(stockBalances[prod.id] ?? 0).toLocaleString()}
@@ -734,7 +760,7 @@ export default function PurchasePR() {
                             </div>
                             {canSeePrice && (
                               <div>
-                                <label className="block text-xs text-gray-500 mb-0.5">ราคาประเมิน</label>
+                                <label className="block text-xs text-gray-500 mb-0.5">ราคาซื้อล่าสุด</label>
                                 <div className="w-full px-2 py-1.5 border rounded-lg text-sm bg-gray-50 text-gray-700 min-h-[34px] flex items-center">
                                   {item.estimated_price != null
                                     ? Number(item.estimated_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -753,16 +779,6 @@ export default function PurchasePR() {
                             </div>
                           </div>
 
-                          {/* item note */}
-                          <div>
-                            <input
-                              type="text"
-                              value={item.note}
-                              onChange={(e) => updateDraftItem(index, { note: e.target.value })}
-                              className="w-full px-2 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
-                              placeholder="หมายเหตุรายการ (ถ้ามี)"
-                            />
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -960,12 +976,8 @@ export default function PurchasePR() {
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวน</th>
                       {canSeePrice && (
-                        <>
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาซื้อล่าสุด</th>
-                          <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาประเมิน</th>
-                        </>
+                        <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาซื้อล่าสุด</th>
                       )}
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -994,23 +1006,19 @@ export default function PurchasePR() {
                             {Number(item.qty).toLocaleString()} {item.unit || ''}
                           </td>
                           {canSeePrice && (
-                            <>
-                              <td className="px-3 py-2 text-right text-blue-600">
-                                {item.last_purchase_price != null ? Number(item.last_purchase_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                              </td>
-                              <td className="px-3 py-2 text-right">
-                                {item.estimated_price != null ? Number(item.estimated_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
-                              </td>
-                            </>
+                            <td className="px-3 py-2 text-right text-blue-600">
+                              {item.last_purchase_price != null
+                                ? Number(item.last_purchase_price).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                : item.product_id && productMap.get(item.product_id)?.last_price != null
+                                  ? Number(productMap.get(item.product_id)?.last_price).toLocaleString(undefined, { minimumFractionDigits: 2 })
+                                  : '-'}
+                            </td>
                           )}
-                          <td className="px-3 py-2 text-gray-500 max-w-[160px] truncate">
-                            {item.note || '-'}
-                          </td>
                         </tr>
                       )
                     })}
                     {!viewItems.length && (
-                      <tr><td colSpan={canSeePrice ? 6 : 4} className="px-3 py-8 text-center text-gray-400">ไม่มีรายการ</td></tr>
+                      <tr><td colSpan={canSeePrice ? 4 : 3} className="px-3 py-8 text-center text-gray-400">ไม่มีรายการ</td></tr>
                     )}
                   </tbody>
                 </table>

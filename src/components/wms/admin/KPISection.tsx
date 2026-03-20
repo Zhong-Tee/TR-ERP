@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../../lib/supabase'
-import { formatDuration } from '../wmsUtils'
+import { formatDuration, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
 export default function KPISection() {
@@ -53,6 +53,7 @@ export default function KPISection() {
       .from('wms_orders')
       .select('order_id, created_at, end_time')
       .in('order_id', orderIds)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     const timeMap: Record<string, { start: Date; end: Date | null }> = {}
     if (orderTimes) {

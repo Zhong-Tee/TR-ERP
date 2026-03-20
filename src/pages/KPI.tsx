@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import { FiDownload, FiSearch } from 'react-icons/fi'
+import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../components/wms/wmsUtils'
 
 /* ================================================================== */
 /*  Types                                                              */
@@ -202,9 +203,12 @@ export default function KPIDashboard() {
       supabase.from('wms_order_summaries')
         .select('order_id, picker_id, total_items, correct_at_first_check, wrong_at_first_check, not_find_at_first_check, accuracy_percent, checked_at, us_users!picker_id(username)')
         .gte('checked_at', tsFrom).lte('checked_at', tsTo),
-      supabase.from('wms_orders')
+      supabase
+        .from('wms_orders')
         .select('order_id, created_at, end_time')
-        .gte('created_at', tsFrom).lte('created_at', tsTo),
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .gte('created_at', tsFrom)
+        .lte('created_at', tsTo),
       supabase.from('qc_sessions')
         .select('username, start_time, end_time, total_items, pass_count, fail_count, kpi_score')
         .not('end_time', 'is', null)

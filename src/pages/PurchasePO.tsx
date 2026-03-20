@@ -77,8 +77,6 @@ export default function PurchasePO() {
   const [shippingPO, setShippingPO] = useState<InventoryPO | null>(null)
   const [shippingForm, setShippingForm] = useState({
     method: '',
-    weight: '',
-    cbm: '',
     cost: '',
     currency: 'CNY',
     exchangeRate: '',
@@ -279,8 +277,6 @@ export default function PurchasePO() {
     setShippingPO(po)
     setShippingForm({
       method: po.intl_shipping_method || '',
-      weight: po.intl_shipping_weight ? String(po.intl_shipping_weight) : '',
-      cbm: po.intl_shipping_cbm ? String(po.intl_shipping_cbm) : '',
       cost: po.intl_shipping_cost ? String(po.intl_shipping_cost) : '',
       currency: po.intl_shipping_currency || 'CNY',
       exchangeRate: po.intl_exchange_rate ? String(po.intl_exchange_rate) : '',
@@ -302,8 +298,6 @@ export default function PurchasePO() {
       const total = Number(shippingPO.total_amount || 0)
       await updatePOShipping(shippingPO.id, {
         intl_shipping_method: shippingForm.method || undefined,
-        intl_shipping_weight: shippingForm.weight ? Number(shippingForm.weight) : undefined,
-        intl_shipping_cbm: shippingForm.cbm ? Number(shippingForm.cbm) : undefined,
         intl_shipping_cost: shippingForm.cost ? Number(shippingForm.cost) : undefined,
         intl_shipping_currency: shippingForm.currency,
         intl_exchange_rate: shippingForm.exchangeRate ? Number(shippingForm.exchangeRate) : undefined,
@@ -544,8 +538,8 @@ export default function PurchasePO() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้ขาย</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">ยอดรวม</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท.)</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ต้นทุน/ชิ้น</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">คาดการณ์เข้าไทย</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
@@ -555,8 +549,13 @@ export default function PurchasePO() {
                   const items = (po.inv_po_items || []) as any[]
                   const itemCount = items.length
                   const totalQty = items.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0)
-                  const shippingThb = po.intl_shipping_cost_thb != null ? Number(po.intl_shipping_cost_thb) : 0
-                  const costPerPiece = totalQty > 0 && shippingThb > 0 ? shippingThb / totalQty : null
+                  const shippingThb = po.intl_shipping_cost_thb != null
+                    ? Number(po.intl_shipping_cost_thb)
+                    : po.intl_shipping_cost != null && po.intl_exchange_rate != null
+                      ? Number(po.intl_shipping_cost) * Number(po.intl_exchange_rate)
+                      : null
+                  const shippingPerPiece = shippingThb != null && totalQty > 0 ? shippingThb / totalQty : null
+                  const unitPrice = po.total_amount != null && totalQty > 0 ? Number(po.total_amount) / totalQty : null
                   return (
                     <tr key={po.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-900">{po.po_no}</td>
@@ -571,14 +570,12 @@ export default function PurchasePO() {
                         {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
-                        {po.intl_shipping_cost_thb != null
-                          ? Number(po.intl_shipping_cost_thb).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' ฿'
-                          : po.intl_shipping_cost != null
-                            ? Number(po.intl_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' ' + (po.intl_shipping_currency || '')
-                            : '-'}
+                        {unitPrice != null ? unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
-                        {costPerPiece != null ? costPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
+                        {shippingThb != null && shippingPerPiece != null
+                          ? `${shippingThb.toLocaleString(undefined, { minimumFractionDigits: 2 })} / ${shippingPerPiece.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ฿`
+                          : '-'}
                       </td>
                       <td className="px-4 py-3 text-center text-gray-600">
                         {po.expected_arrival_date
@@ -856,20 +853,23 @@ export default function PurchasePO() {
                   <div className="font-semibold text-purple-800 mb-1">ค่าขนส่งต่างประเทศ</div>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
                     <div>วิธี: {SHIPPING_METHODS.find((m) => m.value === viewing.intl_shipping_method)?.label || viewing.intl_shipping_method}</div>
-                    {viewing.intl_shipping_weight && <div>น้ำหนัก: {viewing.intl_shipping_weight} กก.</div>}
-                    {viewing.intl_shipping_cbm && <div>CBM: {viewing.intl_shipping_cbm}</div>}
                     {viewing.intl_shipping_cost && <div>ค่าขนส่ง: {Number(viewing.intl_shipping_cost).toLocaleString()} {viewing.intl_shipping_currency}</div>}
                     {viewing.intl_exchange_rate && <div>อัตราแลกเปลี่ยน: {viewing.intl_exchange_rate}</div>}
                   </div>
                 </div>
               )}
 
-              {/* PO note */}
-              {viewing.note && (
-                <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                  <span className="text-blue-600 font-medium">หมายเหตุ:</span> {viewing.note}
+              {/* document notes */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div className="bg-amber-50 rounded-lg p-3">
+                  <span className="text-amber-700 font-medium">หมายเหตุ PR:</span>{' '}
+                  <span className="text-gray-800">{(viewing as any).inv_pr?.note?.trim() || '-'}</span>
                 </div>
-              )}
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <span className="text-blue-600 font-medium">หมายเหตุ PO:</span>{' '}
+                  <span className="text-gray-800">{viewing.note?.trim() || '-'}</span>
+                </div>
+              </div>
 
               {/* items */}
               {(() => {
@@ -892,7 +892,6 @@ export default function PurchasePO() {
                           )}
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ราคาต่อหน่วย</th>
                           <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รวม</th>
-                          <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -948,7 +947,6 @@ export default function PurchasePO() {
                               )}
                               <td className="px-3 py-2 text-right">{item.unit_price != null ? Number(item.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
                               <td className="px-3 py-2 text-right font-medium">{item.subtotal != null ? Number(item.subtotal).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}</td>
-                              <td className="px-3 py-2 text-gray-500 max-w-[140px] truncate text-xs">{item.note || '-'}</td>
                             </tr>
                           )
                         })}
@@ -1123,28 +1121,6 @@ export default function PurchasePO() {
               </select>
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">น้ำหนัก (กก.)</label>
-              <input
-                type="number"
-                min={0}
-                step={0.001}
-                value={shippingForm.weight}
-                onChange={(e) => setShippingForm((f) => ({ ...f, weight: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-lg text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">CBM (ลบ.ม.)</label>
-              <input
-                type="number"
-                min={0}
-                step={0.0001}
-                value={shippingForm.cbm}
-                onChange={(e) => setShippingForm((f) => ({ ...f, cbm: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-lg text-sm"
-              />
-            </div>
-            <div>
               <label className="block text-xs text-gray-500 mb-1">ค่าขนส่ง ({shippingForm.currency})</label>
               <input
                 type="number"
@@ -1286,7 +1262,6 @@ export default function PurchasePO() {
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">ราคาต่อหน่วย</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-32">รวม</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-40">หมายเหตุ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1319,15 +1294,6 @@ export default function PurchasePO() {
                           <td className="px-3 py-2 text-right font-medium">
                             {subtotal ? subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
                           </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="text"
-                              value={item.note}
-                              onChange={(e) => setEditItems((prev) => prev.map((r, i) => i === idx ? { ...r, note: e.target.value } : r))}
-                              className="w-full px-2 py-1.5 border rounded-lg text-xs"
-                              placeholder="หมายเหตุ"
-                            />
-                          </td>
                         </tr>
                       )
                     })}
@@ -1338,7 +1304,6 @@ export default function PurchasePO() {
                       <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
                         {editTotalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
                       </td>
-                      <td></td>
                     </tr>
                   </tfoot>
                 </table>
@@ -1352,6 +1317,31 @@ export default function PurchasePO() {
                   onChange={(e) => setEditArrival(e.target.value)}
                   className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
                 />
+                <div className="flex gap-2 mt-2">
+                  {[7, 14, 30].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        const dt = new Date()
+                        dt.setDate(dt.getDate() + d)
+                        setEditArrival(dt.toISOString().split('T')[0])
+                      }}
+                      className="px-3 py-1 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold transition-colors"
+                    >
+                      +{d} วัน
+                    </button>
+                  ))}
+                  {editArrival && (
+                    <button
+                      type="button"
+                      onClick={() => setEditArrival('')}
+                      className="px-3 py-1 bg-gray-100 text-gray-500 rounded-lg hover:bg-gray-200 text-xs transition-colors"
+                    >
+                      ล้าง
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div>

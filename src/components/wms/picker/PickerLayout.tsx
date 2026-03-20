@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
-import { calculateDuration, sortOrderItems } from '../wmsUtils'
+import { calculateDuration, sortOrderItems, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import PickerOrderList from './PickerOrderList'
 import PickerJobCard from './PickerJobCard'
 import SentAlertsModal from './SentAlertsModal'
@@ -107,7 +107,11 @@ export default function PickerLayout() {
   const loadPickerTask = async (): Promise<any[] | null> => {
     if (!currentOrderId) return null
 
-    const { data } = await supabase.from('wms_orders').select('*').eq('order_id', currentOrderId)
+    const { data } = await supabase
+      .from('wms_orders')
+      .select('*')
+      .eq('order_id', currentOrderId)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (!data || data.length === 0) {
       showMessage({ message: 'ไม่พบข้อมูลใบงาน!' })

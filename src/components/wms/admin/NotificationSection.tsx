@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
+import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 
 export default function NotificationSection() {
   const [currentTab, setCurrentTab] = useState('unread')
@@ -35,6 +36,7 @@ export default function NotificationSection() {
       .from('wms_orders')
       .select('order_id, product_name, location')
       .in('order_id', oids)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     const notificationsWithDetails = data.map((n: any) => {
       const info = oDetails?.find((o: any) => o.order_id === n.order_id) || { product_name: '---', location: '---' }

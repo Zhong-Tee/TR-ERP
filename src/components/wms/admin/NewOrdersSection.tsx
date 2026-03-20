@@ -3,8 +3,8 @@ import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
 
-// Category matching — same groups as Plan Dashboard "เบิก"
-const MAIN_KEYWORDS = ['STAMP', 'LASER']
+// Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION
+const MAIN_KEYWORDS = ['STAMP', 'LASER', 'SUBLIMATION']
 const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK']
 const isMainCategory = (cat: string): boolean => {
   const upper = (cat || '').toUpperCase()
@@ -50,9 +50,17 @@ export default function NewOrdersSection() {
         window.dispatchEvent(new Event('wms-data-changed'))
       })
       .subscribe()
+    const wmsChannel = supabase
+      .channel('wms-new-workorders-wms')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wms_orders' }, () => {
+        loadWorkOrders()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      })
+      .subscribe()
     return () => {
       supabase.removeChannel(woChannel)
       supabase.removeChannel(ordersChannel)
+      supabase.removeChannel(wmsChannel)
     }
   }, [])
 
@@ -79,36 +87,43 @@ export default function NewOrdersSection() {
     const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
     const unassigned = data.filter((wo) => !assignedSet.has(wo.work_order_name))
 
-    // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/ETC)
+    // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
     if (unassigned.length > 0) {
       const unassignedNames = unassigned.map((wo) => wo.work_order_name)
       const { data: orders } = await supabase
         .from('or_orders')
-        .select('work_order_name, or_order_items(product_id)')
+        .select('work_order_name, or_order_items(product_id, is_free)')
         .in('work_order_name', unassignedNames)
 
       const allItems = (orders || []).flatMap((o: any) =>
-        (o.or_order_items || []).map((i: any) => ({ product_id: i.product_id, work_order_name: o.work_order_name }))
+        (o.or_order_items || []).map((i: any) => ({
+          product_id: i.product_id,
+          work_order_name: o.work_order_name,
+          is_free: i.is_free,
+        }))
       )
       const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
 
       let productCategoryMap: Record<string, string> = {}
       if (productIds.length > 0) {
-        const { data: products } = await supabase.from('pr_products').select('id, product_category').in('id', productIds)
+        const { data: products } = await supabase
+          .from('pr_products')
+          .select('id, product_category')
+          .in('id', productIds)
         productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
           acc[p.id] = p.product_category || ''
           return acc
         }, {})
       }
 
-      const woWithPickableItems = new Set<string>()
+      const woQualifiesForAssign = new Set<string>()
       allItems.forEach((item: any) => {
-        if (isMainCategory(productCategoryMap[item.product_id] || '')) {
-          woWithPickableItems.add(item.work_order_name)
-        }
+        if (!item.product_id) return
+        const cat = productCategoryMap[item.product_id] || ''
+        if (isMainCategory(cat)) woQualifiesForAssign.add(item.work_order_name)
       })
 
-      setWorkOrders(unassigned.filter((wo) => woWithPickableItems.has(wo.work_order_name)))
+      setWorkOrders(unassigned.filter((wo) => woQualifiesForAssign.has(wo.work_order_name)))
     } else {
       setWorkOrders([])
     }
@@ -149,99 +164,23 @@ export default function NewOrdersSection() {
         return
       }
 
-      const { data: orders } = await supabase
-        .from('or_orders')
-        .select('id, work_order_name, or_order_items(product_id, product_name, quantity)')
-        .eq('work_order_name', selectedWorkOrder)
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('rpc_assign_wms_for_work_order', {
+        p_work_order_name: selectedWorkOrder,
+        p_picker_id: selectedPickerId,
+      })
+      if (rpcError) throw rpcError
 
-      const items = (orders || []).flatMap((o: any) => o.or_order_items || [])
-      if (items.length === 0) {
-        showMessage({ message: 'ไม่พบรายการสินค้าในใบงานนี้' })
+      const result = rpcResult as {
+        success?: boolean
+        error?: string
+        warehouse_pick_main?: number
+        warehouse_pick_spare?: number
+        system_complete?: number
+      }
+      if (!result || !result.success) {
+        showMessage({ message: result?.error || 'มอบหมาย WMS ไม่สำเร็จ' })
         return
       }
-
-      const productIds = Array.from(new Set(items.map((i: any) => i.product_id).filter(Boolean)))
-      let productMap: Record<string, { product_code?: string; storage_location?: string; product_category?: string; rubber_code?: string; unit_name?: string }> = {}
-      if (productIds.length > 0) {
-        const { data: products } = await supabase
-          .from('pr_products')
-          .select('id, product_code, storage_location, product_category, rubber_code, unit_name')
-          .in('id', productIds)
-        productMap = (products || []).reduce((acc: Record<string, any>, p: any) => {
-          acc[p.id] = {
-            product_code: p.product_code,
-            storage_location: p.storage_location,
-            product_category: p.product_category,
-            rubber_code: p.rubber_code,
-            unit_name: p.unit_name,
-          }
-          return acc
-        }, {})
-      }
-
-      // Normal items (filtered by category) — CONDO STAMP รวม 5 ชั้นเป็น 1 รายการ
-      const filteredItems = items.filter((item: any) => {
-        const cat = productMap[item.product_id]?.product_category || ''
-        return isMainCategory(cat)
-      })
-
-      // Group by product_id เพื่อรวม CONDO STAMP (5 ชั้น → 1 รายการ)
-      const groupedByProduct = new Map<string, { product_id: string; product_name: string; totalQty: number }>()
-      filteredItems.forEach((item: any) => {
-        const key = item.product_id || item.product_name
-        const existing = groupedByProduct.get(key)
-        if (existing) {
-          existing.totalQty += item.quantity || 1
-        } else {
-          groupedByProduct.set(key, { product_id: item.product_id, product_name: item.product_name || 'N/A', totalQty: item.quantity || 1 })
-        }
-      })
-
-      const normalRows = Array.from(groupedByProduct.values()).map((group) => {
-        const cat = (productMap[group.product_id]?.product_category || '').toUpperCase()
-        // CONDO STAMP: 5 ชั้น = 1 ชุด → หาร 5 แล้วปัดขึ้น
-        const qty = cat.includes('CONDO STAMP') ? Math.ceil(group.totalQty / 5) : group.totalQty
-        return {
-          order_id: selectedWorkOrder,
-          product_code: productMap[group.product_id]?.product_code || group.product_name || 'N/A',
-          product_name: group.product_name,
-          location: productMap[group.product_id]?.storage_location || '',
-          qty,
-          unit_name: productMap[group.product_id]?.unit_name || 'ชิ้น',
-          assigned_to: selectedPickerId,
-          status: 'pending',
-        }
-      })
-
-      // Spare parts (grouped by rubber_code)
-      const spareMap = new Map<string, number>()
-      items.forEach((item: any) => {
-        const rc = productMap[item.product_id]?.rubber_code
-        const cat = productMap[item.product_id]?.product_category || ''
-        if (rc && isMainCategory(cat)) {
-          spareMap.set(rc, (spareMap.get(rc) || 0) + (item.quantity || 1))
-        }
-      })
-      const spareRows = Array.from(spareMap.entries()).map(([rc, spareQty]) => ({
-        order_id: selectedWorkOrder,
-        product_code: 'SPARE_PART',
-        product_name: `หน้ายาง+โฟม ${rc}`,
-        location: 'อะไหล่',
-        qty: spareQty,
-        unit_name: 'ชิ้น',
-        assigned_to: selectedPickerId,
-        status: 'pending',
-      }))
-
-      const wmsRows = [...normalRows, ...spareRows]
-
-      if (wmsRows.length === 0) {
-        showMessage({ message: 'ไม่มีสินค้าในหมวดหมู่ที่ต้องหยิบในใบงานนี้' })
-        return
-      }
-
-      const { error } = await supabase.from('wms_orders').insert(wmsRows)
-      if (error) throw error
 
       await ensurePlanDeptStart(selectedWorkOrder)
       showMessage({ message: `มอบหมายใบงาน ${selectedWorkOrder} ให้ Picker เรียบร้อยแล้ว` })

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
-import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS } from '../wmsUtils'
+import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
 interface OrderDetailModalProps {
@@ -30,7 +30,11 @@ export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalP
   }, [orderId, onClose])
 
   const loadOrderDetails = async () => {
-    const { data, error } = await supabase.from('wms_orders').select('*').eq('order_id', orderId)
+    const { data, error } = await supabase
+      .from('wms_orders')
+      .select('*')
+      .eq('order_id', orderId)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (error) {
       console.error('Error fetching order details:', error)

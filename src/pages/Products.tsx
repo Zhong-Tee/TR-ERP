@@ -11,6 +11,8 @@ const COST_VISIBLE_ROLES = ['superadmin', 'account']
 
 const SEARCH_DEBOUNCE_MS = 400
 const PAGE_SIZE = 50
+/** PostgREST / payload size safety for bulk insert */
+const DB_CHUNK_SIZE = 500
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
@@ -101,6 +103,16 @@ async function uploadImageToBucket(file: File): Promise<void> {
   if (error) throw error
 }
 
+type ChannelPriceRow = { product_id: string; channel_code: string; sale_price: number }
+
+async function insertChannelPricesInChunks(rows: ChannelPriceRow[]): Promise<void> {
+  for (let i = 0; i < rows.length; i += DB_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + DB_CHUNK_SIZE)
+    const { error } = await supabase.from('pr_product_channel_prices').insert(chunk)
+    if (error) throw error
+  }
+}
+
 const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
   { value: 'RM', label: 'RM - วัตถุดิบ' },
@@ -126,6 +138,33 @@ const emptyForm = () => ({
   unit_name: 'ชิ้น',
   unit_multiplier: '1',
 })
+
+/** ค่าจาก API/DB อาจเป็น number หรือ string — ใช้ในฟอร์มและตาราง จุดสั่งซื้อ(วัน) */
+function orderPointDaysToFormString(v: unknown): string {
+  if (v == null || v === '') return ''
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n) || n < 0) return ''
+  return String(Math.floor(n))
+}
+
+function productToFormState(product: Product) {
+  return {
+    product_code: product.product_code,
+    product_name: product.product_name,
+    seller_name: product.seller_name || '',
+    product_name_cn: product.product_name_cn || '',
+    order_point: product.order_point || '',
+    order_point_days: orderPointDaysToFormString(product.order_point_days),
+    product_category: product.product_category || '',
+    product_type: product.product_type || 'FG',
+    rubber_code: product.rubber_code || '',
+    storage_location: product.storage_location || '',
+    unit_cost: product.unit_cost != null ? String(product.unit_cost) : '',
+    safety_stock: product.safety_stock != null ? String(product.safety_stock) : '',
+    unit_name: product.unit_name || 'ชิ้น',
+    unit_multiplier: product.unit_multiplier != null ? String(product.unit_multiplier) : '1',
+  }
+}
 
 export default function Products() {
   const { user } = useAuthContext()
@@ -325,28 +364,25 @@ export default function Products() {
     void autoGenerateProductCodeByType('FG')
   }
 
-  function openEdit(product: Product) {
+  async function openEdit(product: Product) {
     setEditingProduct(product)
-    setForm({
-      product_code: product.product_code,
-      product_name: product.product_name,
-      seller_name: product.seller_name || '',
-      product_name_cn: product.product_name_cn || '',
-      order_point: product.order_point || '',
-      order_point_days: product.order_point_days != null ? String(product.order_point_days) : '',
-      product_category: product.product_category || '',
-      product_type: product.product_type || 'FG',
-      rubber_code: product.rubber_code || '',
-      storage_location: product.storage_location || '',
-      unit_cost: product.unit_cost != null ? String(product.unit_cost) : '',
-      safety_stock: product.safety_stock != null ? String(product.safety_stock) : '',
-      unit_name: product.unit_name || 'ชิ้น',
-      unit_multiplier: product.unit_multiplier != null ? String(product.unit_multiplier) : '1',
-    })
+    setForm(productToFormState(product))
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('edit')
     void loadProductChannelPrices(product.id)
+
+    try {
+      const { data, error } = await supabase.from('pr_products').select('*').eq('id', product.id).single()
+      if (error) throw error
+      if (data) {
+        const row = data as Product
+        setEditingProduct(row)
+        setForm(productToFormState(row))
+      }
+    } catch (e) {
+      console.error('openEdit: failed to load product row', e)
+    }
   }
 
   function closeModal() {
@@ -654,10 +690,12 @@ export default function Products() {
       })
       const dupInFile = toInsert.length - deduped.length
 
-      // แยกสินค้าใหม่ vs สินค้าเดิม (เพื่อ insert ใหม่ + update เดิม)
+      const importCodes = deduped.map((i) => i.product_code)
+      // โหลดเฉพาะรหัสในไฟล์ (ไม่ดึงทั้งตาราง)
       const { data: existingProducts } = await supabase
         .from('pr_products')
         .select('id, product_code')
+        .in('product_code', importCodes)
       const existingCodes = new Set(
         (existingProducts || []).map((p: { id: string; product_code: string }) => p.product_code.toLowerCase())
       )
@@ -679,25 +717,23 @@ export default function Products() {
 
       if (newItems.length) {
         const payload = newItems.map(({ channel_prices, ...rest }) => rest)
-        const { error } = await supabase.from('pr_products').insert(payload)
-        if (error) throw error
+        for (let i = 0; i < payload.length; i += DB_CHUNK_SIZE) {
+          const chunk = payload.slice(i, i + DB_CHUNK_SIZE)
+          const { error } = await supabase.from('pr_products').insert(chunk)
+          if (error) throw error
+        }
         insertedCount = payload.length
       }
 
       if (updateItems.length) {
-        for (const item of updateItems) {
-          const { is_active, ...updateData } = item
-          delete (updateData as { channel_prices?: Record<string, number> }).channel_prices
-          const { error } = await supabase
-            .from('pr_products')
-            .update(updateData)
-            .eq('product_code', item.product_code)
-          if (error) {
-            console.error(`Update failed for ${item.product_code}:`, error)
-            continue
-          }
-          updatedCount++
+        // ไม่อัปเดต is_active เมื่อนำเข้าซ้ำ (เดิมเป็นลูป update ทีละแถว)
+        const updatePayload = updateItems.map(({ channel_prices, is_active: _a, ...rest }) => rest)
+        for (let i = 0; i < updatePayload.length; i += DB_CHUNK_SIZE) {
+          const chunk = updatePayload.slice(i, i + DB_CHUNK_SIZE)
+          const { error } = await supabase.from('pr_products').upsert(chunk, { onConflict: 'product_code' })
+          if (error) throw error
         }
+        updatedCount = updateItems.length
       }
 
       const allCodes = deduped.map((i) => i.product_code)
@@ -711,25 +747,33 @@ export default function Products() {
           productIdByCode.set(p.product_code.toLowerCase(), p.id)
         })
       }
+
+      const touchedProductIds = deduped
+        .map((item) => productIdByCode.get(item.product_code.toLowerCase()))
+        .filter((id): id is string => Boolean(id))
+
+      if (touchedProductIds.length > 0) {
+        for (let i = 0; i < touchedProductIds.length; i += DB_CHUNK_SIZE) {
+          const idChunk = touchedProductIds.slice(i, i + DB_CHUNK_SIZE)
+          const { error: delErr } = await supabase.from('pr_product_channel_prices').delete().in('product_id', idChunk)
+          if (delErr) throw delErr
+        }
+      }
+
+      const priceRows: ChannelPriceRow[] = []
       for (const item of deduped) {
         const productId = productIdByCode.get(item.product_code.toLowerCase())
         if (!productId) continue
-        const rows = Object.entries(item.channel_prices || {}).map(([channelCode, price]) => ({
-          product_id: productId,
-          channel_code: channelCode,
-          sale_price: Number(price) || 0,
-        }))
-        const { error: delErr } = await supabase
-          .from('pr_product_channel_prices')
-          .delete()
-          .eq('product_id', productId)
-        if (delErr) throw delErr
-        if (rows.length > 0) {
-          const { error: insErr } = await supabase
-            .from('pr_product_channel_prices')
-            .insert(rows)
-          if (insErr) throw insErr
+        for (const [channelCode, price] of Object.entries(item.channel_prices || {})) {
+          priceRows.push({
+            product_id: productId,
+            channel_code: channelCode,
+            sale_price: Number(price) || 0,
+          })
         }
+      }
+      if (priceRows.length > 0) {
+        await insertChannelPricesInChunks(priceRows)
       }
 
       const msgs: string[] = []
@@ -1196,12 +1240,15 @@ export default function Products() {
                   <th className="px-3 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
                   <th className="px-3 py-2.5 text-left font-semibold">หมวดหมู่</th>
                   <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ(วัน)</th>
                   <th className="px-3 py-2.5 text-center font-semibold">หน่วย</th>
                   <th className="px-3 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {products.map((product, idx) => (
+                {products.map((product, idx) => {
+                  const orderPointDaysDisplay = orderPointDaysToFormString(product.order_point_days)
+                  return (
                   <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="px-3 py-2">
                       <ProductImage
@@ -1222,6 +1269,9 @@ export default function Products() {
                     <td className="px-3 py-2 text-surface-700">{product.rubber_code || '-'}</td>
                     <td className="px-3 py-2 text-surface-700">{product.product_category || '-'}</td>
                     <td className="px-3 py-2 text-center text-surface-700">{product.order_point || '-'}</td>
+                    <td className="px-3 py-2 text-center text-surface-700">
+                      {orderPointDaysDisplay === '' ? '-' : orderPointDaysDisplay}
+                    </td>
                     <td className="px-3 py-2 text-center text-surface-700">
                       {product.unit_name || 'ชิ้น'}
                       {product.unit_multiplier != null && product.unit_multiplier > 1 && (
@@ -1258,7 +1308,8 @@ export default function Products() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>

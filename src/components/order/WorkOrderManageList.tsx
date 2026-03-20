@@ -634,6 +634,23 @@ export default function WorkOrderManageList({
     const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
     const visibleColumns = EXPORT_ITEM_COLUMNS
 
+    const allItemsFlat = ordersInWorkOrder.flatMap((order) => order.or_order_items || (order as any).order_items || [])
+    const productIds = Array.from(new Set(allItemsFlat.map((item: any) => item.product_id).filter(Boolean)))
+    const productCodeByProductId: Record<string, string> = {}
+    const productCategoryByProductId: Record<string, string> = {}
+    if (productIds.length > 0) {
+      const { data: products, error: productsError } = await supabase
+        .from('pr_products')
+        .select('id, product_code, product_category')
+        .in('id', productIds)
+      if (productsError) throw productsError
+      ;(products || []).forEach((p: { id: string; product_code?: string | null; product_category?: string | null }) => {
+        const id = String(p.id)
+        productCodeByProductId[id] = String(p.product_code ?? '').trim()
+        productCategoryByProductId[id] = String(p.product_category ?? '').trim()
+      })
+    }
+
     ordersInWorkOrder.forEach((order) => {
       const items = order.or_order_items || (order as any).order_items || []
       items.forEach((item: any) => {
@@ -641,7 +658,10 @@ export default function WorkOrderManageList({
         const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
         const productName = String(item.product_name ?? '').trim()
         const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
-        const row: unknown[] = [workOrderName, order.bill_no, item.item_uid]
+        const pid = item.product_id ? String(item.product_id) : ''
+        const productCode = pid ? productCodeByProductId[pid] ?? '' : ''
+        const category = pid ? productCategoryByProductId[pid] || 'N/A' : 'N/A'
+        const row: unknown[] = [workOrderName, order.bill_no, item.item_uid, productCode]
         visibleColumns.forEach((col) => {
           if (col.key === 'notes') row.push(cleanNotes)
           else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
@@ -650,6 +670,7 @@ export default function WorkOrderManageList({
           else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
           else row.push(item[col.key] ?? '')
         })
+        row.push(category)
         dataToExport.push(row)
       })
     })
@@ -665,7 +686,7 @@ export default function WorkOrderManageList({
       const dataToExport = await buildProductionExportRows(workOrderName)
       if (dataToExport.length === 0) return
       const visibleColumns = EXPORT_ITEM_COLUMNS
-      const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', ...visibleColumns.map((c) => c.label)]
+      const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', 'รหัสสินค้า', ...visibleColumns.map((c) => c.label), 'หมวด']
       const worksheet = XLSX.utils.aoa_to_sheet([headers, ...dataToExport])
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'ProductionData')

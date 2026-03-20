@@ -72,7 +72,7 @@ export interface PRListFilters {
 export async function loadPRList(filters: PRListFilters = {}): Promise<InventoryPR[]> {
   let q = supabase
     .from('inv_pr')
-    .select('*, inv_pr_items(id)')
+    .select('*, inv_pr_items(id, qty, estimated_price, last_purchase_price)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -223,7 +223,7 @@ export async function loadPODetail(poId: string) {
     .from('inv_po')
     .select(`
       *,
-      inv_pr(pr_no),
+      inv_pr(pr_no, note),
       inv_po_items(
         *,
         pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category)
@@ -335,7 +335,7 @@ export interface GRListFilters {
 export async function loadGRList(filters: GRListFilters = {}): Promise<InventoryGR[]> {
   let q = supabase
     .from('inv_gr')
-    .select('*, inv_po(po_no, status, expected_arrival_date, inv_pr(pr_type), inv_po_items(resolution_type)), inv_gr_items(id, qty_ordered, qty_received)')
+    .select('*, inv_po(po_no, status, expected_arrival_date, intl_shipping_cost_thb, inv_pr(pr_type), inv_po_items(resolution_type, qty_received_total)), inv_gr_items(id, qty_ordered, qty_received)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -361,7 +361,14 @@ export async function loadGRDetail(grId: string) {
     .from('inv_gr')
     .select(`
       *,
-      inv_po(po_no, expected_arrival_date),
+      inv_po(
+        po_no,
+        note,
+        expected_arrival_date,
+        intl_shipping_cost_thb,
+        inv_pr(pr_no, note),
+        inv_po_items(product_id, qty, qty_received_total, unit_price)
+      ),
       inv_gr_items(
         *,
         pr_products(id, product_code, product_name, product_name_cn, seller_name),

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
+import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 
 interface PickerOrderListProps {
   onSelectOrder: (orderId: string) => void
@@ -32,6 +33,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       .from('wms_orders')
       .select('order_id, created_at, status')
       .eq('assigned_to', currentUserId)
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .in('status', ['pending', 'wrong', 'not_find'])
 
     if (!data || data.length === 0) {

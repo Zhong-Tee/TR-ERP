@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
+import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 
 interface SidebarProps {
   activeMenu: string
@@ -41,6 +42,7 @@ export default function Sidebar({ activeMenu, setActiveMenu, username, onLogout,
     const { count } = await supabase
       .from('wms_orders')
       .select('*', { count: 'exact', head: true })
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .eq('status', 'picked')
     setReviewBadge(count || 0)
   }

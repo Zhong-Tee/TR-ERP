@@ -4014,6 +4014,30 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           >
             Import Orders from File
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (formDisabled) return
+              if (!order?.bill_no) {
+                setMessageModal({
+                  open: true,
+                  title: 'แจ้งเตือน',
+                  message: 'กรุณาสร้างบิลก่อนจึงจะสามารถ Import Order (WY) ได้',
+                })
+                return
+              }
+              setImportTab('wy')
+              setImportFile(null)
+              setImportSummary(null)
+              setWyFile(null)
+              setWyStatus('')
+              setImportModalOpen(true)
+            }}
+            disabled={formDisabled}
+            className={`px-3 py-2 rounded-lg text-sm font-medium ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-pink-500 text-white hover:bg-pink-600'}`}
+          >
+            Import Order (WY)
+          </button>
         </div>
         <div className="overflow-x-auto" style={{ overflowY: 'hidden' }}>
           <table className="w-full border-collapse text-sm" style={{ position: 'relative' }}>
@@ -4047,8 +4071,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
                 const lineLimit = getLineCountForPattern(item.cartoon_pattern)
                 const stock = getStockSnapshot(item.product_id || null)
-                const onHandQty = Number(stock.on_hand || 0)
-                const isOutOfStock = Boolean(item.product_id) && onHandQty <= 0
+                // OH: แสดงยอดขายได้ (on_hand − reserved) ให้ตรงกับ validateItemsAgainstStock
+                const sellableQty = Number(stock.available_to_sell || 0)
+                const isOutOfStock = Boolean(item.product_id) && sellableQty <= 0
                 return (
                 <tr key={index} className={(item as { is_free?: boolean }).is_free ? 'bg-green-50' : ''}>
                   <td className="border p-1 align-middle">
@@ -4183,7 +4208,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       <span className="text-xs text-gray-400">-</span>
                     ) : (
                       <span className={`text-xs font-semibold ${isOutOfStock ? 'text-red-600' : 'text-emerald-700'}`}>
-                        {onHandQty.toLocaleString()}
+                        {sellableQty.toLocaleString()}
                       </span>
                     )}
                   </td>

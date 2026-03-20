@@ -84,6 +84,16 @@ function formatDateThai(value?: string | null) {
   return d.toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+function formatMoney(value?: number | null, minimumFractionDigits = 2, maximumFractionDigits = minimumFractionDigits) {
+  if (value == null || Number.isNaN(Number(value))) return '-'
+  return Number(value).toLocaleString(undefined, { minimumFractionDigits, maximumFractionDigits })
+}
+
+function formatTotalPerPiece(total?: number | null, perPiece?: number | null) {
+  if (total == null && perPiece == null) return '-'
+  return `${formatMoney(total, 2, 2)} / ${formatMoney(perPiece, 2, 4)} บาท`
+}
+
 function getEtaMeta(value?: string | null) {
   const eta = toDateOnly(value)
   if (!eta) {
@@ -554,6 +564,45 @@ export default function PurchaseGR() {
     })
   }, [grs])
 
+  const detailCostMeta = useMemo(() => {
+    const poItems = (((viewing as any)?.inv_po?.inv_po_items) || []) as Array<{
+      product_id?: string | null
+      qty?: number | null
+      qty_received_total?: number | null
+      unit_price?: number | null
+    }>
+    const unitPriceByProductId: Record<string, number> = {}
+    poItems.forEach((poItem) => {
+      if (!poItem?.product_id) return
+      if (poItem.unit_price == null) return
+      unitPriceByProductId[poItem.product_id] = Number(poItem.unit_price)
+    })
+
+    const poTotalReceived = poItems.reduce((sum, poItem) => sum + (Number(poItem.qty_received_total) || 0), 0)
+    const poTotalOrdered = poItems.reduce((sum, poItem) => sum + (Number(poItem.qty) || 0), 0)
+    const intlShippingTotal = (viewing as any)?.inv_po?.intl_shipping_cost_thb
+    const intlDenominator = poTotalReceived > 0 ? poTotalReceived : poTotalOrdered
+    const intlShippingPerPiece =
+      intlShippingTotal != null && intlDenominator > 0
+        ? Number(intlShippingTotal) / intlDenominator
+        : null
+
+    const grItems = (viewing?.inv_gr_items || []) as Array<{ qty_received?: number | null }>
+    const grTotalReceived = grItems.reduce((sum, grItem) => sum + (Number(grItem.qty_received) || 0), 0)
+    const domShippingPerPiece =
+      viewing?.dom_cost_per_piece != null
+        ? Number(viewing.dom_cost_per_piece)
+        : viewing?.dom_shipping_cost != null && grTotalReceived > 0
+          ? Number(viewing.dom_shipping_cost) / grTotalReceived
+          : null
+
+    return {
+      unitPriceByProductId,
+      intlShippingPerPiece,
+      domShippingPerPiece,
+    }
+  }, [viewing])
+
   useEffect(() => {
     if (mobileSection === 'receive' && receiveQueueCount === 0) {
       setMobileSection('list')
@@ -921,8 +970,8 @@ export default function PurchaseGR() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้สร้าง</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">จำนวนรายการ</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง</th>
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ต้นทุน/ชิ้น</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ตปท)/ชิ้น</th>
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">ค่าขนส่ง(ไทย)/ชิ้น</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">จัดการ</th>
                 </tr>
               </thead>
@@ -936,6 +985,16 @@ export default function PurchaseGR() {
                   const poStatus = (gr.inv_po as any)?.status
                   const showEtaCountdown = gr.status !== 'received' && poStatus !== 'received' && poStatus !== 'closed'
                   const rowBg = groupIndex % 2 === 0 ? 'bg-blue-200' : 'bg-white'
+                  const poItems = ((gr.inv_po as any)?.inv_po_items || []) as Array<{ qty_received_total?: number | null }>
+                  const poTotalReceived = poItems.reduce((sum, item) => sum + (Number(item.qty_received_total) || 0), 0)
+                  const intlShippingTotal = (gr.inv_po as any)?.intl_shipping_cost_thb != null
+                    ? Number((gr.inv_po as any).intl_shipping_cost_thb)
+                    : null
+                  const intlShippingPerPiece = intlShippingTotal != null && poTotalReceived > 0
+                    ? intlShippingTotal / poTotalReceived
+                    : null
+                  const thaiShippingTotal = gr.dom_shipping_cost != null ? Number(gr.dom_shipping_cost) : null
+                  const thaiShippingPerPiece = gr.dom_cost_per_piece != null ? Number(gr.dom_cost_per_piece) : null
                   return (
                     <tr key={gr.id} className={rowBg}>
                       <td className="px-4 py-3 font-medium text-gray-900">{gr.gr_no}</td>
@@ -965,10 +1024,10 @@ export default function PurchaseGR() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
-                        {gr.dom_shipping_cost != null ? Number(gr.dom_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' บาท' : '-'}
+                        {formatTotalPerPiece(intlShippingTotal, intlShippingPerPiece)}
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
-                        {gr.dom_cost_per_piece != null ? Number(gr.dom_cost_per_piece).toLocaleString(undefined, { minimumFractionDigits: 2 }) + ' บาท' : '-'}
+                        {formatTotalPerPiece(thaiShippingTotal, thaiShippingPerPiece)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <button
@@ -1499,31 +1558,27 @@ export default function PurchaseGR() {
                     <div className="font-medium text-blue-900">{viewing.dom_shipping_company}</div>
                   </div>
                 )}
-                {viewing.dom_shipping_cost != null && (
-                  <div className="bg-blue-50 rounded-lg p-3">
-                    <div className="text-blue-600 text-xs">ค่าขนส่งในประเทศ</div>
-                    <div className="font-medium text-blue-900">{Number(viewing.dom_shipping_cost).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div>
-                  </div>
-                )}
-                {viewing.dom_cost_per_piece != null && (
-                  <div className="bg-blue-50 rounded-lg p-3">
-                    <div className="text-blue-600 text-xs">ต้นทุนต่อชิ้น</div>
-                    <div className="font-bold text-gray-900">{Number(viewing.dom_cost_per_piece).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} บาท</div>
-                  </div>
-                )}
               </div>
-
-              {viewing.note && (
-                <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                  <span className="text-blue-600 font-medium">หมายเหตุ GR:</span> {viewing.note}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <div className="text-blue-600 text-xs">ค่าขนส่งต่างประเทศ/ชิ้น</div>
+                  <div className="font-medium text-blue-900">
+                    {formatTotalPerPiece(
+                      (viewing as any).inv_po?.intl_shipping_cost_thb != null ? Number((viewing as any).inv_po.intl_shipping_cost_thb) : null,
+                      detailCostMeta.intlShippingPerPiece
+                    )}
+                  </div>
                 </div>
-              )}
-
-              {viewing.shortage_note && (
-                <div className="bg-red-50 rounded-lg p-3 text-sm">
-                  <span className="text-red-600 font-medium">หมายเหตุของขาดส่ง:</span> {viewing.shortage_note}
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <div className="text-blue-600 text-xs">ค่าขนส่งในประเทศ/ชิ้น</div>
+                  <div className="font-medium text-blue-900">
+                    {formatTotalPerPiece(
+                      viewing.dom_shipping_cost != null ? Number(viewing.dom_shipping_cost) : null,
+                      detailCostMeta.domShippingPerPiece
+                    )}
+                  </div>
                 </div>
-              )}
+              </div>
 
               {/* items */}
               <div className="md:hidden space-y-3">
@@ -1534,6 +1589,16 @@ export default function PurchaseGR() {
                   const receivedQty = Number(item.qty_received || 0)
                   const shortage = Number(item.qty_shortage || 0)
                   const excess = Math.max(receivedQty - orderQty, 0)
+                  const baseUnitPrice = item.product_id ? detailCostMeta.unitPriceByProductId[item.product_id] : undefined
+                  const hasCostFormulaParts =
+                    baseUnitPrice != null ||
+                    detailCostMeta.intlShippingPerPiece != null ||
+                    detailCostMeta.domShippingPerPiece != null
+                  const unitCostPerPiece = hasCostFormulaParts
+                    ? (Number(baseUnitPrice) || 0) +
+                      (detailCostMeta.intlShippingPerPiece || 0) +
+                      (detailCostMeta.domShippingPerPiece || 0)
+                    : null
                   const receiveImages = [...(item.inv_gr_item_images || [])].sort((a: any, b: any) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
                   return (
                     <div key={item.id} className="border rounded-lg p-3 bg-white space-y-3">
@@ -1548,10 +1613,9 @@ export default function PurchaseGR() {
                         <div className="min-w-0">
                           <div className="font-semibold text-gray-900 text-sm">{prod?.product_code || '-'}</div>
                           <div className="font-medium text-gray-800 text-sm break-words">{prod?.product_name || '-'}</div>
-                          <div className="text-xs text-gray-500 mt-0.5">{item.shortage_note || item.note || '-'}</div>
                         </div>
                       </div>
-                      <div className="grid grid-cols-4 gap-2 text-xs">
+                      <div className="grid grid-cols-5 gap-2 text-xs">
                         <div className="rounded bg-gray-50 p-2 text-center">
                           <div className="text-gray-500">สั่ง</div>
                           <div className="font-semibold text-gray-900">{orderQty.toLocaleString()}</div>
@@ -1567,6 +1631,10 @@ export default function PurchaseGR() {
                         <div className="rounded bg-emerald-50 p-2 text-center">
                           <div className="text-emerald-700">เกิน</div>
                           <div className="font-semibold text-emerald-800">{excess.toLocaleString()}</div>
+                        </div>
+                        <div className="rounded bg-purple-50 p-2 text-center">
+                          <div className="text-purple-700">ต้นทุนรวม</div>
+                          <div className="font-semibold text-purple-900">{unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}</div>
                         </div>
                       </div>
                       <div>
@@ -1606,8 +1674,8 @@ export default function PurchaseGR() {
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">รับ</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ขาด</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">เกิน</th>
+                      <th className="px-3 py-2.5 text-right font-semibold text-gray-600">ต้นทุนรวม</th>
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">รูปตรวจรับ</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -1618,6 +1686,16 @@ export default function PurchaseGR() {
                       const receivedQty = Number(item.qty_received || 0)
                       const shortage = Number(item.qty_shortage || 0)
                       const excess = Math.max(receivedQty - orderQty, 0)
+                      const baseUnitPrice = item.product_id ? detailCostMeta.unitPriceByProductId[item.product_id] : undefined
+                      const hasCostFormulaParts =
+                        baseUnitPrice != null ||
+                        detailCostMeta.intlShippingPerPiece != null ||
+                        detailCostMeta.domShippingPerPiece != null
+                      const unitCostPerPiece = hasCostFormulaParts
+                        ? (Number(baseUnitPrice) || 0) +
+                          (detailCostMeta.intlShippingPerPiece || 0) +
+                          (detailCostMeta.domShippingPerPiece || 0)
+                        : null
                       const receiveImages = [...(item.inv_gr_item_images || [])].sort((a: any, b: any) => {
                         const aOrder = Number(a.sort_order) || 0
                         const bOrder = Number(b.sort_order) || 0
@@ -1654,6 +1732,9 @@ export default function PurchaseGR() {
                               <span className="text-gray-400">-</span>
                             )}
                           </td>
+                          <td className="px-3 py-2 text-right text-gray-600">
+                            {unitCostPerPiece != null ? `${formatMoney(unitCostPerPiece, 2, 4)} บาท` : '-'}
+                          </td>
                           <td className="px-3 py-2">
                             {receiveImages.length > 0 ? (
                               <div className="flex flex-wrap gap-2">
@@ -1681,12 +1762,30 @@ export default function PurchaseGR() {
                               <span className="text-xs text-gray-400">-</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-xs text-gray-500">{item.shortage_note || ''}</td>
                         </tr>
                       )
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div className="bg-amber-50 rounded-lg p-3">
+                  <span className="text-amber-700 font-medium">หมายเหตุ PR:</span>{' '}
+                  <span className="text-gray-800">{viewing.inv_po?.inv_pr?.note?.trim() || '-'}</span>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <span className="text-blue-600 font-medium">หมายเหตุ PO:</span>{' '}
+                  <span className="text-gray-800">{viewing.inv_po?.note?.trim() || '-'}</span>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-3">
+                  <span className="text-blue-600 font-medium">หมายเหตุ GR:</span>{' '}
+                  <span className="text-gray-800">{viewing.note?.trim() || '-'}</span>
+                </div>
+                <div className="bg-red-50 rounded-lg p-3">
+                  <span className="text-red-600 font-medium">หมายเหตุของขาดส่ง:</span>{' '}
+                  <span className="text-gray-800">{viewing.shortage_note?.trim() || '-'}</span>
+                </div>
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t">

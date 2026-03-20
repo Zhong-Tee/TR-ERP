@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
+import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 
 interface SentAlertsModalProps {
   pickerId: string
@@ -62,6 +63,7 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
         .from('wms_orders')
         .select('order_id, product_name, location')
         .in('order_id', orderIds)
+        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
       if (detailsError) throw detailsError
 

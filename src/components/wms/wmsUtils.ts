@@ -1,6 +1,10 @@
 import { getPublicUrl } from '../../lib/qcApi'
 import { supabase } from '../../lib/supabase'
 
+/** แถวที่ต้องหยิบจริง — ซ่อน system_complete จาก Picker / ตรวจสินค้า / รายการหยิบ */
+export const WMS_FULFILLMENT_PICK_OR_LEGACY =
+  'fulfillment_mode.eq.warehouse_pick,fulfillment_mode.is.null'
+
 /** key ของเมนูย่อย WMS — ต้องตรงกับ st_user_menus (Settings) ที่ใช้ wms-* prefix */
 export const WMS_MENU_KEYS = {
   UPLOAD: 'wms-upload',
@@ -55,7 +59,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     const unassignedNames = woNames.filter((n) => !assignedSet.has(n))
 
     if (unassignedNames.length > 0) {
-      const mainKW = ['STAMP', 'LASER']
+      const mainKW = ['STAMP', 'LASER', 'SUBLIMATION']
       const etcCats = ['CALENDAR', 'ETC', 'INK']
       const isPickable = (cat: string) => {
         const u = (cat || '').toUpperCase()
@@ -64,22 +68,34 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
 
       const { data: orders } = await supabase
         .from('or_orders')
-        .select('work_order_name, or_order_items(product_id)')
+        .select('work_order_name, or_order_items(product_id, is_free)')
         .in('work_order_name', unassignedNames)
       const allItems = (orders || []).flatMap((o: any) =>
-        (o.or_order_items || []).map((i: any) => ({ product_id: i.product_id, work_order_name: o.work_order_name }))
+        (o.or_order_items || []).map((i: any) => ({
+          product_id: i.product_id,
+          work_order_name: o.work_order_name,
+          is_free: i.is_free,
+        }))
       )
       const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
       let catMap: Record<string, string> = {}
       if (productIds.length > 0) {
-        const { data: prods } = await supabase.from('pr_products').select('id, product_category').in('id', productIds)
-        catMap = (prods || []).reduce((acc: Record<string, string>, p: any) => { acc[p.id] = p.product_category || ''; return acc }, {})
+        const { data: prods } = await supabase
+          .from('pr_products')
+          .select('id, product_category')
+          .in('id', productIds)
+        catMap = (prods || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[p.id] = p.product_category || ''
+          return acc
+        }, {})
       }
-      const woWithPickable = new Set<string>()
+      const woQualifies = new Set<string>()
       allItems.forEach((item: any) => {
-        if (isPickable(catMap[item.product_id] || '')) woWithPickable.add(item.work_order_name)
+        if (!item.product_id) return
+        const cat = catMap[item.product_id] || ''
+        if (isPickable(cat)) woQualifies.add(item.work_order_name)
       })
-      newOrdersCount = unassignedNames.filter((n) => woWithPickable.has(n)).length
+      newOrdersCount = unassignedNames.filter((n) => woQualifies.has(n)).length
     }
   }
 
@@ -87,6 +103,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   const { data: wmsData } = await supabase
     .from('wms_orders')
     .select('order_id, status')
+    .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
     .gte('created_at', today + 'T00:00:00')
     .lte('created_at', today + 'T23:59:59')
 
