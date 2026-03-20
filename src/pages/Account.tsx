@@ -662,7 +662,7 @@ export default function Account() {
             { key: 'bill-edit' as AccountSection, label: 'แก้ไขบิล' },
             { key: 'amendment' as AccountSection, label: 'ขอยกเลิกบิล' },
             { key: 'slip-age' as AccountSection, label: 'อายุสลิป' },
-            { key: 'trial-balance' as AccountSection, label: 'งบทดลอง' },
+            { key: 'trial-balance' as AccountSection, label: 'งบต้นทุนขาย' },
           ]).filter((s) => hasAccess(`account-${s.key}`)).map((s) => (
             <button
               key={s.key}

@@ -7,6 +7,8 @@ interface TrialSummary {
   safety_stock_value: number
   purchases: number
   cogs: number
+  requisition_cogs: number
+  customer_cogs: number
   returns: number
   waste: number
   adjustments: number
@@ -158,7 +160,9 @@ export default function TrialBalanceSection() {
   const profitCards = summary
     ? [
         { label: 'ยอดขายรวม (รวม VAT)', value: summary.gross_sales, color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
-        { label: 'คืนเงินอนุมัติ', value: summary.refunds_approved, color: 'bg-rose-50 border-rose-200 text-rose-700' },
+        { label: 'คืนเงินอนุมัติ (แสดงข้อมูล)', value: summary.refunds_approved, color: 'bg-rose-50 border-rose-200 text-rose-700' },
+        { label: 'ต้นทุนเบิกภายใน (REQ)', value: summary.requisition_cogs ?? 0, color: 'bg-orange-50 border-orange-200 text-orange-700' },
+        { label: 'ต้นทุนขายจากลูกค้า', value: summary.customer_cogs ?? (summary.cogs - (summary.requisition_cogs ?? 0)), color: 'bg-amber-50 border-amber-200 text-amber-700' },
         { label: 'ยอดขายสุทธิ', value: summary.net_sales, color: 'bg-teal-50 border-teal-200 text-teal-700' },
         { label: 'กำไรขั้นต้น', value: summary.gross_profit, color: summary.gross_profit >= 0 ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700' },
       ]
@@ -170,6 +174,7 @@ export default function TrialBalanceSection() {
         { label: 'ซื้อสินค้า (GR)', value: summary.purchases, sign: '+' },
         { label: 'คืนสินค้าเข้าสต๊อก', value: summary.returns, sign: '+' },
         { label: 'ต้นทุนขาย (COGS)', value: summary.cogs, sign: '−' },
+        { label: 'ต้นทุนเบิกภายใน (REQ)', value: summary.requisition_cogs ?? 0, sign: '−' },
         { label: 'ของเสีย/สินค้าเสียหาย', value: summary.waste, sign: '−' },
         { label: 'ปรับปรุง', value: summary.adjustments, sign: summary.adjustments >= 0 ? '+' : '' },
         { label: 'Safety Stock (สินค้ากักตุน)', value: summary.safety_stock_value, sign: '', bold: false, isSafety: true },
@@ -234,7 +239,7 @@ export default function TrialBalanceSection() {
               <h3 className="text-base font-bold text-gray-800">สรุปรายได้และกำไรขั้นต้น</h3>
               <span className="text-xs text-gray-500">รับรู้รายได้ตามวันที่จัดส่ง (shipped_time)</span>
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-7 gap-4">
               {profitCards.map((c) => (
                 <div key={c.label} className={`rounded-xl border p-4 ${c.color}`}>
                   <div className="text-xs font-medium opacity-75 mb-1">{c.label}</div>
@@ -248,9 +253,16 @@ export default function TrialBalanceSection() {
             </div>
             <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm">
               <span className="font-semibold text-gray-700">สูตรกำไรขั้นต้น:</span>{' '}
-              <span className="text-gray-600">ยอดขายสุทธิ − ต้นทุนขาย (COGS)</span>{' '}
+              <span className="text-gray-600">(ยอดขายรวม (รวม VAT) ÷ 1.07) − ต้นทุนขาย (COGS)</span>{' '}
               <span className="font-mono font-semibold text-gray-900">
                 = {fmt(summary.net_sales)} − {fmt(summary.cogs)} = {fmt(summary.gross_profit)} ฿
+              </span>
+            </div>
+            <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm">
+              <span className="font-semibold text-gray-700">แยกต้นทุนขาย:</span>{' '}
+              <span className="text-gray-600">ต้นทุนขายจากลูกค้า = COGS รวม − ต้นทุนเบิกภายใน (REQ)</span>{' '}
+              <span className="font-mono font-semibold text-gray-900">
+                = {fmt(summary.cogs)} − {fmt(summary.requisition_cogs ?? 0)} = {fmt(summary.customer_cogs ?? (summary.cogs - (summary.requisition_cogs ?? 0)))} ฿
               </span>
             </div>
           </div>
@@ -265,7 +277,7 @@ export default function TrialBalanceSection() {
                 {THAI_MONTHS[month - 1]} พ.ศ. {thaiYear}
               </p>
               <p className="text-xs text-gray-400 mt-1">
-                ยอดขายสุทธิใช้ยอดรวม VAT และหักคืนเงินที่อนุมัติแล้ว
+                ยอดขายสุทธิ = ยอดขายรวม (รวม VAT) ÷ 1.07 (ไม่หักคืนเงินอนุมัติ)
               </p>
             </div>
             <div className="divide-y divide-gray-100">

@@ -407,7 +407,7 @@ export default function Settings() {
     { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
-    { key: 'account-trial-balance', label: 'งบทดลอง', group: 'account' },
+    { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },
     { key: 'products-inactive', label: 'รายการสินค้าไม่เคลื่อนไหว', group: 'products' },
