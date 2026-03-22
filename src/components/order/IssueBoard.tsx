@@ -6,12 +6,15 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
-import { getIssueVisibilityScope, isSuperadmin } from '../../config/accessPolicy'
+import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
   workOrders?: Array<{ work_order_name: string }>
   onOpenCountChange?: (count: number) => void
+  /** sales-tr: กรองเฉพาะบิลที่ admin_user ตรงค่านี้ (หน้า Orders — dropdown / เฉพาะฉัน) */
+  salesTrNarrowAdminUser?: string
 }
 
 type IssueWithOrder = Issue & {
@@ -20,7 +23,12 @@ type IssueWithOrder = Issue & {
   creatorName?: string
 }
 
-export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }: IssueBoardProps) {
+export default function IssueBoard({
+  scope,
+  workOrders = [],
+  onOpenCountChange,
+  salesTrNarrowAdminUser,
+}: IssueBoardProps) {
   const { user } = useAuthContext()
   const [loading, setLoading] = useState(true)
   const [issuesOn, setIssuesOn] = useState<IssueWithOrder[]>([])
@@ -112,7 +120,7 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   useEffect(() => {
     loadIssues()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [types.length, fromDate, toDate])
+  }, [types.length, fromDate, toDate, salesTrNarrowAdminUser])
 
   useEffect(() => {
     const onTabChange = (event: Event) => {
@@ -172,6 +180,17 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
   async function loadIssues() {
     setLoading(true)
     try {
+      let salesTrTeamSet: Set<string> | null = null
+      if (user && isSalesTrTeamRole(user.role)) {
+        try {
+          const vals = await fetchSalesTrTeamAdminValues(supabase)
+          salesTrTeamSet = new Set(vals)
+        } catch (e) {
+          console.error('IssueBoard sales-tr team:', e)
+          salesTrTeamSet = new Set()
+        }
+      }
+
       let query = supabase
         .from('or_issues')
         .select('*')
@@ -210,13 +229,19 @@ export default function IssueBoard({ scope, workOrders = [], onOpenCountChange }
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
         creatorName: creatorMap.get(i.created_by),
       }))
-      // sales-pump / sales-tr: เห็นเฉพาะ issue ของบิลตัวเอง
-      // production: เห็นเฉพาะ issue ที่ตัวเองสร้าง หรือเป็นเจ้าของบิล
-      // superadmin / admin: เห็นทั้งหมด
-      // role อื่นๆ: ไม่เห็นเลย
+      // sales-tr: issue ของบิลที่ผู้ลงข้อมูลเป็นสมาชิก sales-tr ทั้งทีม
+      // sales-pump: เฉพาะบิลตัวเอง
+      // production: issue ที่ตัวเองสร้าง หรือเป็นเจ้าของบิล
+      // superadmin / admin: ทั้งหมด
       const visibilityScope = getIssueVisibilityScope(user?.role)
       const ownerName = user?.username || user?.email || ''
-      if (visibilityScope === 'ownerOrders') {
+      if (visibilityScope === 'salesTrTeam' && salesTrTeamSet) {
+        withOrder = withOrder.filter((i) => salesTrTeamSet!.has((i.order?.admin_user || '').trim()))
+        const narrow = salesTrNarrowAdminUser?.trim()
+        if (narrow) {
+          withOrder = withOrder.filter((i) => (i.order?.admin_user || '').trim() === narrow)
+        }
+      } else if (visibilityScope === 'ownerOrders') {
         withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === ownerName)
       } else if (visibilityScope === 'creatorOrOwner') {
         withOrder = withOrder.filter((i) => i.created_by === user?.id || (i.order?.admin_user || '') === ownerName)

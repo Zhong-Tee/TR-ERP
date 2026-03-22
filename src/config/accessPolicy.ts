@@ -251,9 +251,30 @@ export function isSalesOwnerScopedRole(role: MaybeRole): boolean {
   return isRoleInAllowedList(role, [...SALES_PUMP_ROLE_ALIASES, ...SALES_TR_ROLE_ALIASES])
 }
 
-export function resolveOwnerScopeAdminName(role: MaybeRole, username?: string | null, email?: string | null): string {
-  if (!isSalesOwnerScopedRole(role)) return ''
+export function isSalesTrTeamRole(role: MaybeRole): boolean {
+  return isRoleInAllowedList(role, SALES_TR_ROLE_ALIASES)
+}
+
+export function isSalesPumpOwnerScopedRole(role: MaybeRole): boolean {
+  return isRoleInAllowedList(role, SALES_PUMP_ROLE_ALIASES)
+}
+
+/** เฉพาะ sales-pump: ค่าที่ใช้ match or_orders.admin_user (บิลของตัวเอง) */
+export function resolveSalesPumpOwnerAdminName(
+  role: MaybeRole,
+  username?: string | null,
+  email?: string | null
+): string {
+  if (!isSalesPumpOwnerScopedRole(role)) return ''
   return username || email || ''
+}
+
+/**
+ * สำหรับ RPC เช่น get_sidebar_counts: sales-pump ส่ง username/email;
+ * sales-tr ส่งค่าว่าง แล้วให้ฝั่ง DB ใช้ทีม sales-tr ทั้งหมด
+ */
+export function resolveOwnerScopeAdminName(role: MaybeRole, username?: string | null, email?: string | null): string {
+  return resolveSalesPumpOwnerAdminName(role, username, email)
 }
 
 export function canSeeOfficeChannel(role: MaybeRole): boolean {
@@ -268,9 +289,12 @@ export function canClearAllChats(role: MaybeRole): boolean {
   return isAdminOrSuperadmin(role)
 }
 
-export function getIssueVisibilityScope(role: MaybeRole): 'all' | 'ownerOrders' | 'creatorOrOwner' | 'none' {
+export function getIssueVisibilityScope(
+  role: MaybeRole
+): 'all' | 'ownerOrders' | 'salesTrTeam' | 'creatorOrOwner' | 'none' {
   if (isAdminOrSuperadmin(role)) return 'all'
-  if (isSalesOwnerScopedRole(role)) return 'ownerOrders'
+  if (isSalesTrTeamRole(role)) return 'salesTrTeam'
+  if (isSalesPumpOwnerScopedRole(role)) return 'ownerOrders'
   if (role === 'production') return 'creatorOrOwner'
   return 'none'
 }

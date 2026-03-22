@@ -5,7 +5,11 @@ import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
-import { resolveOwnerScopeAdminName } from '../../config/accessPolicy'
+import {
+  isSalesPumpOwnerScopedRole,
+  isSalesTrTeamRole,
+  resolveSalesPumpOwnerAdminName,
+} from '../../config/accessPolicy'
 
 interface OrderListProps {
   /** กรองตามสถานะบิล (ไม่ใช้เมื่อ filterByRejectedOverpayRefund = true) */
@@ -33,6 +37,10 @@ interface OrderListProps {
   dateTo?: string
   /** เมื่อคลิกที่รายการ ให้เปิด OrderDetailView แทน onOrderClick */
   useDetailViewOnClick?: boolean
+  /** sales-tr: รายการค่า admin_user ของทีม (username/email จาก us_users role sales-tr) */
+  salesTrTeamAdminValues?: string[]
+  /** sales-tr: กรองเฉพาะผู้ใช้คนนี้ (ค่าต้องอยู่ในทีม) — ใช้กับแท็บรอลงข้อมูล */
+  narrowSalesTrAdminUser?: string
 }
 
 export default function OrderList({
@@ -53,6 +61,8 @@ export default function OrderList({
   dateFrom = '',
   dateTo = '',
   useDetailViewOnClick = false,
+  salesTrTeamAdminValues,
+  narrowSalesTrAdminUser,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -137,7 +147,37 @@ export default function OrderList({
 
   useEffect(() => {
     loadOrders()
-  }, [status, searchTerm, channelFilter, verifiedOnly, refreshTrigger, filterByRejectedOverpayRefund, dateFrom, dateTo])
+  }, [
+    status,
+    searchTerm,
+    channelFilter,
+    verifiedOnly,
+    refreshTrigger,
+    filterByRejectedOverpayRefund,
+    dateFrom,
+    dateTo,
+    salesTrTeamAdminValues,
+    narrowSalesTrAdminUser,
+    user?.role,
+    user?.username,
+    user?.email,
+  ])
+
+  function applySalesOrderAdminScope(query: any): any | null {
+    if (isSalesPumpOwnerScopedRole(user?.role)) {
+      const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+      return name ? query.eq('admin_user', name) : query
+    }
+    if (isSalesTrTeamRole(user?.role)) {
+      const team = salesTrTeamAdminValues || []
+      if (team.length === 0) return null
+      let q = query.in('admin_user', team)
+      const pick = narrowSalesTrAdminUser?.trim()
+      if (pick) q = q.eq('admin_user', pick)
+      return q
+    }
+    return query
+  }
 
   async function loadOrders() {
     setLoading(true)
@@ -171,9 +211,13 @@ export default function OrderList({
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
         }
-        // sales-pump / sales-tr: เห็นเฉพาะบิลของตัวเอง
-        const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-        if (adminName) query = query.eq('admin_user', adminName)
+        query = applySalesOrderAdminScope(query)
+        if (query === null) {
+          setOrders([])
+          if (onCountChange) onCountChange(0)
+          setLoading(false)
+          return
+        }
         const { data, error } = await query.limit(100)
         if (error) throw error
         filteredData = data || []
@@ -206,9 +250,13 @@ export default function OrderList({
         if (dateTo) {
           query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
         }
-        // sales-pump / sales-tr: เห็นเฉพาะบิลของตัวเอง
-        const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-        if (adminName) query = query.eq('admin_user', adminName)
+        query = applySalesOrderAdminScope(query)
+        if (query === null) {
+          setOrders([])
+          if (onCountChange) onCountChange(0)
+          setLoading(false)
+          return
+        }
 
         const { data, error } = await query.limit(100)
 

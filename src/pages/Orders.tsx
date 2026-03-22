@@ -7,7 +7,13 @@ import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
 import { Order } from '../types'
 import { supabase } from '../lib/supabase'
-import { canSeeOfficeChannel, resolveOwnerScopeAdminName } from '../config/accessPolicy'
+import {
+  canSeeOfficeChannel,
+  isSalesPumpOwnerScopedRole,
+  isSalesTrTeamRole,
+  resolveSalesPumpOwnerAdminName,
+} from '../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
 
 type Tab =
   | 'create'
@@ -21,6 +27,9 @@ type Tab =
   | 'cancelled'
 
 const ALL_TABS: Tab[] = ['create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
+
+/** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
+const SALES_TR_FILTER_TABS: Tab[] = ['waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue']
 
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
@@ -45,6 +54,12 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
+  const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
+  /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
+  const [salesTrMemberFilter, setSalesTrMemberFilter] = useState('')
+  /** แสดงเฉพาะบิลที่ admin_user เป็นตัวเอง (username / email) */
+  const [salesTrOnlyMe, setSalesTrOnlyMe] = useState(false)
 
   useEffect(() => {
     if (menuAccessLoading) return
@@ -53,6 +68,34 @@ export default function Orders() {
       if (first) setActiveTab(first)
     }
   }, [menuAccessLoading])
+
+  useEffect(() => {
+    if (user?.role !== 'sales-tr') {
+      setSalesTrAdminValues([])
+      setSalesTrTeamRows([])
+      setSalesTrMemberFilter('')
+      setSalesTrOnlyMe(false)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await fetchSalesTrTeamRows(supabase)
+        if (cancelled) return
+        setSalesTrTeamRows(rows)
+        setSalesTrAdminValues(flattenSalesTrAdminIdentifiers(rows))
+      } catch (e) {
+        console.error('Error loading sales-tr team:', e)
+        if (!cancelled) {
+          setSalesTrTeamRows([])
+          setSalesTrAdminValues([])
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.role])
 
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)
@@ -73,10 +116,28 @@ export default function Orders() {
   }
 
   async function refreshCounts() {
-    // Helper: เพิ่มเงื่อนไข admin_user สำหรับ sales-pump / sales-tr
-    const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
+    let salesTrScope: string[] | null = null
+    if (isSalesTrTeamRole(user?.role)) {
+      try {
+        salesTrScope = await fetchSalesTrTeamAdminValues(supabase)
+      } catch (e) {
+        console.error('refreshCounts sales-tr team:', e)
+        salesTrScope = []
+      }
+    }
+
     function applyOwnerFilter(query: any) {
-      return adminName ? query.eq('admin_user', adminName) : query
+      if (isSalesPumpOwnerScopedRole(user?.role)) {
+        const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+        return name ? query.eq('admin_user', name) : query
+      }
+      if (isSalesTrTeamRole(user?.role)) {
+        if (!salesTrScope || salesTrScope.length === 0) {
+          return query.eq('admin_user', '__no_sales_tr_team__')
+        }
+        return query.in('admin_user', salesTrScope)
+      }
+      return query
     }
 
     try {
@@ -119,11 +180,33 @@ export default function Orders() {
           .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
       )
 
-      // Load issue count (On) — issue นับตาม role (RLS จะกรองให้)
-      const { count: issueCount } = await supabase
-        .from('or_issues')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'On')
+      // Load issue count (On) — sales-tr นับเฉพาะบิลที่ admin_user เป็นของทีม sales-tr
+      let issueCount = 0
+      if (isSalesTrTeamRole(user?.role)) {
+        const vals = salesTrScope || []
+        if (vals.length > 0) {
+          const ir = await supabase
+            .from('or_issues')
+            .select('id, or_orders!inner(admin_user)', { count: 'exact', head: true })
+            .eq('status', 'On')
+            .in('or_orders.admin_user', vals)
+          if (!ir.error) issueCount = ir.count ?? 0
+          else {
+            console.warn('Issue count join query failed, fallback:', ir.error)
+            const { count: ic } = await supabase
+              .from('or_issues')
+              .select('id', { count: 'exact', head: true })
+              .eq('status', 'On')
+            issueCount = ic ?? 0
+          }
+        }
+      } else {
+        const { count: ic } = await supabase
+          .from('or_issues')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'On')
+        issueCount = ic ?? 0
+      }
 
       setWaitingCount(waitingCount || 0)
       setCompleteCount(completeCount || 0)
@@ -251,6 +334,29 @@ export default function Orders() {
     return () => window.removeEventListener('navigate-to-issue', onNavigateToIssue)
   }, [])
 
+  function narrowSalesTrAdminUserForTab(): string | undefined {
+    if (user?.role !== 'sales-tr' || !SALES_TR_FILTER_TABS.includes(activeTab)) return undefined
+    if (salesTrOnlyMe) {
+      const self = user.username?.trim() || user.email?.trim()
+      return self || undefined
+    }
+    if (salesTrMemberFilter.trim()) return salesTrMemberFilter.trim()
+    return undefined
+  }
+
+  const salesTrOrderListProps =
+    user?.role === 'sales-tr'
+      ? {
+          salesTrTeamAdminValues: salesTrAdminValues,
+          narrowSalesTrAdminUser: narrowSalesTrAdminUserForTab(),
+        }
+      : {}
+
+  const suppressSalesTrListCountSync =
+    user?.role === 'sales-tr' &&
+    SALES_TR_FILTER_TABS.includes(activeTab) &&
+    (salesTrOnlyMe || !!salesTrMemberFilter.trim())
+
   return (
     <div
       className="w-full"
@@ -336,6 +442,49 @@ export default function Orders() {
                   />
                 </>
               )}
+              {SALES_TR_FILTER_TABS.includes(activeTab) && user?.role === 'sales-tr' && (
+                <>
+                  <select
+                    value={salesTrMemberFilter}
+                    disabled={salesTrOnlyMe}
+                    onChange={(e) => {
+                      setSalesTrMemberFilter(e.target.value)
+                      setSalesTrOnlyMe(false)
+                    }}
+                    className="min-w-[200px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label="กรองตามผู้ลงข้อมูล sales-tr"
+                  >
+                    <option value="">ทีม sales-tr ทั้งหมด</option>
+                    {salesTrTeamRows.map((row, idx) => {
+                      const label = row.username?.trim() || row.email?.trim() || `user-${idx}`
+                      const value = row.username?.trim() || row.email?.trim() || ''
+                      if (!value) return null
+                      return (
+                        <option key={`${value}-${idx}`} value={value}>
+                          {label}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSalesTrOnlyMe((v) => {
+                        const next = !v
+                        if (next) setSalesTrMemberFilter('')
+                        return next
+                      })
+                    }}
+                    className={`shrink-0 px-4 py-2.5 rounded-xl border text-base font-medium transition-colors ${
+                      salesTrOnlyMe
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-200'
+                        : 'border-surface-300 bg-surface-50 text-gray-700 hover:bg-surface-100'
+                    }`}
+                  >
+                    เฉพาะฉัน
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -362,10 +511,11 @@ export default function Orders() {
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
-            onCountChange={setWaitingCount}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setWaitingCount}
             showDeleteButton={true}
             onDelete={handleDeleteOrder}
             refreshTrigger={listRefreshKey}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'complete' ? (
           <OrderList
@@ -374,11 +524,12 @@ export default function Orders() {
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
-            onCountChange={setCompleteCount}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setCompleteCount}
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
             refreshTrigger={listRefreshKey}
             useDetailViewOnClick={true}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'verified' ? (
           <OrderList
@@ -387,16 +538,23 @@ export default function Orders() {
             channelFilter={channelFilter}
             onOrderClick={handleOrderClickViewOnly}
             verifiedOnly={true}
-            onCountChange={setVerifiedCount}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setVerifiedCount}
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
             refreshTrigger={listRefreshKey}
             useDetailViewOnClick={true}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'confirm' ? (
           <OrderConfirmBoard onCountChange={setConfirmCount} />
         ) : activeTab === 'issue' ? (
-          <IssueBoard scope="orders" onOpenCountChange={setIssueCount} />
+          <IssueBoard
+            scope="orders"
+            onOpenCountChange={suppressSalesTrListCountSync ? undefined : setIssueCount}
+            salesTrNarrowAdminUser={
+              user?.role === 'sales-tr' ? narrowSalesTrAdminUserForTab() : undefined
+            }
+          />
         ) : activeTab === 'data-error' ? (
           <OrderList
             status="ลงข้อมูลผิด"
@@ -404,7 +562,8 @@ export default function Orders() {
             channelFilter={channelFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
-            onCountChange={setDataErrorCount}
+            onCountChange={suppressSalesTrListCountSync ? undefined : setDataErrorCount}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'shipped' ? (
           <OrderList
@@ -415,6 +574,7 @@ export default function Orders() {
             dateFrom={shippedDateFrom}
             dateTo={shippedDateTo}
             refreshTrigger={listRefreshKey}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'cancelled' ? (
           <OrderList
@@ -426,6 +586,7 @@ export default function Orders() {
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
             refreshTrigger={listRefreshKey}
+            {...salesTrOrderListProps}
           />
         ) : (
           <OrderForm

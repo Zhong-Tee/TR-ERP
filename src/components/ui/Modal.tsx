@@ -10,6 +10,9 @@ export interface ModalProps {
   align?: 'center' | 'start'
   /** class ของกล่องเนื้อหา (เช่น max-w-md, max-w-4xl, rounded-2xl) */
   contentClassName?: string
+  /** class ของ wrapper fixed (เช่น z-[60] เมื่อต้องซ้อนเหนือ modal อื่นที่ใช้ z-50) */
+  /** แทนที่ z-index ของ overlay (default z-50) */
+  stackClassName?: string
   role?: string
   ariaModal?: boolean
   ariaLabelledby?: string
@@ -26,15 +29,18 @@ export default function Modal({
   closeOnBackdropClick = false,
   align = 'center',
   contentClassName = '',
+  stackClassName,
   role = 'dialog',
   ariaModal = true,
   ariaLabelledby,
 }: ModalProps) {
   if (!open) return null
 
+  const stackZ = stackClassName?.trim() ? stackClassName.trim() : 'z-50'
+
   return (
     <div
-      className={`fixed inset-0 z-50 flex px-4 pb-4 ${align === 'center' ? 'items-center justify-center' : 'items-center justify-start pl-[540px]'}`}
+      className={`fixed inset-0 ${stackZ} flex px-4 pb-4 ${align === 'center' ? 'items-center justify-center' : 'items-center justify-start pl-[540px]'}`}
       style={{ paddingTop: 'calc(5rem + var(--subnav-height, 0rem))' }}
       aria-hidden={!open}
     >
