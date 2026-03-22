@@ -519,199 +519,6 @@ type ImportedOrder = {
   items: ImportedOrderItem[]
 }
 
-/** จัดรูปแบบข้อความสำหรับ fingerprint นำเข้า Template Standard */
-function normalizeImportFingerprintText(s: unknown): string {
-  return String(s ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-}
-
-function roundImportMoney(n: unknown): number {
-  const x = Number(n)
-  if (!Number.isFinite(x)) return 0
-  return Math.round(x * 100) / 100
-}
-
-function formatImportPaymentTimeFp(t: unknown): string | null {
-  if (t == null || t === '') return null
-  const s = String(t).trim()
-  if (!s) return null
-  return s.length >= 5 ? s.slice(0, 5) : s
-}
-
-function formatImportPaymentDateFp(d: unknown): string | null {
-  if (d == null || d === '') return null
-  const s = String(d).trim().slice(0, 10)
-  return s || null
-}
-
-type DbOrderFingerprintRow = {
-  id: string
-  bill_no: string
-  customer_name: string
-  customer_address: string
-  channel_code: string
-  price: unknown
-  shipping_cost: unknown
-  discount: unknown
-  total_amount: unknown
-  payment_method: string | null
-  promotion: string | null
-  payment_date: string | null
-  payment_time: string | null
-}
-
-type DbItemFingerprintRow = {
-  product_id: string | null
-  product_name: string
-  quantity: unknown
-  unit_price: unknown
-  ink_color: string | null
-  product_type: string | null
-  cartoon_pattern: string | null
-  line_pattern: string | null
-  font: string | null
-  line_1: string | null
-  line_2: string | null
-  line_3: string | null
-  notes: string | null
-}
-
-/** ให้ตรงกับค่าที่ insert ลง or_order_items (เช่น product_type ว่าง → ชั้น1) */
-function orderItemFieldsForFingerprint(it: {
-  product_id?: string | null
-  product_name?: string
-  quantity?: unknown
-  unit_price?: unknown
-  ink_color?: string | null
-  product_type?: string | null
-  cartoon_pattern?: string | null
-  line_pattern?: string | null
-  font?: string | null
-  line_1?: string | null
-  line_2?: string | null
-  line_3?: string | null
-  notes?: string | null
-}) {
-  return {
-    product_id: (it.product_id || '').trim(),
-    product_name: normalizeImportFingerprintText(it.product_name).toLowerCase(),
-    quantity: Math.max(1, parseInt(String(it.quantity ?? 1), 10) || 1),
-    unit_price: roundImportMoney(it.unit_price),
-    ink_color: normalizeImportFingerprintText(it.ink_color),
-    product_type: normalizeImportFingerprintText(it.product_type || 'ชั้น1'),
-    cartoon_pattern: normalizeImportFingerprintText(it.cartoon_pattern),
-    line_pattern: normalizeImportFingerprintText(it.line_pattern),
-    font: normalizeImportFingerprintText(it.font),
-    line_1: normalizeImportFingerprintText(it.line_1),
-    line_2: normalizeImportFingerprintText(it.line_2),
-    line_3: normalizeImportFingerprintText(it.line_3),
-    notes: normalizeImportFingerprintText(it.notes),
-  }
-}
-
-/** สร้างสตริงเปรียบเทียบเนื้อหาบิล (หลังจับคู่ product_id แล้ว) */
-function buildStandardImportContentFingerprint(order: ImportedOrder, matchedItems: ImportedOrderItem[]): string {
-  const itemParts = [...matchedItems]
-    .map((it) => orderItemFieldsForFingerprint(it))
-    .sort((a, b) => {
-      const cmp = a.product_id.localeCompare(b.product_id)
-      if (cmp !== 0) return cmp
-      const c2 = a.line_1.localeCompare(b.line_1)
-      if (c2 !== 0) return c2
-      if (a.quantity !== b.quantity) return a.quantity - b.quantity
-      return a.unit_price - b.unit_price
-    })
-
-  const payload = {
-    channel_code: String(order.channel_code || '').trim(),
-    customer_name: normalizeImportFingerprintText(order.customer_name),
-    customer_address: normalizeImportFingerprintText(order.customer_address),
-    price: roundImportMoney(order.price),
-    shipping_cost: roundImportMoney(order.shipping_cost),
-    discount: roundImportMoney(order.discount),
-    total_amount: roundImportMoney(order.total_amount),
-    payment_method: order.payment_method ? normalizeImportFingerprintText(order.payment_method) : null,
-    promotion: order.promotion ? normalizeImportFingerprintText(order.promotion) : null,
-    payment_date: formatImportPaymentDateFp(order.payment_date),
-    payment_time: formatImportPaymentTimeFp(order.payment_time),
-    items: itemParts,
-  }
-  return JSON.stringify(payload)
-}
-
-function dbOrderRowToContentFingerprint(row: DbOrderFingerprintRow, items: DbItemFingerprintRow[]): string {
-  const itemParts = [...items]
-    .map((it) => orderItemFieldsForFingerprint(it))
-    .sort((a, b) => {
-      const cmp = a.product_id.localeCompare(b.product_id)
-      if (cmp !== 0) return cmp
-      const c2 = a.line_1.localeCompare(b.line_1)
-      if (c2 !== 0) return c2
-      if (a.quantity !== b.quantity) return a.quantity - b.quantity
-      return a.unit_price - b.unit_price
-    })
-
-  const payload = {
-    channel_code: String(row.channel_code || '').trim(),
-    customer_name: normalizeImportFingerprintText(row.customer_name),
-    customer_address: normalizeImportFingerprintText(row.customer_address),
-    price: roundImportMoney(row.price),
-    shipping_cost: roundImportMoney(row.shipping_cost),
-    discount: roundImportMoney(row.discount),
-    total_amount: roundImportMoney(row.total_amount),
-    payment_method: row.payment_method ? normalizeImportFingerprintText(row.payment_method) : null,
-    promotion: row.promotion ? normalizeImportFingerprintText(row.promotion) : null,
-    payment_date: formatImportPaymentDateFp(row.payment_date),
-    payment_time: formatImportPaymentTimeFp(row.payment_time),
-    items: itemParts,
-  }
-  return JSON.stringify(payload)
-}
-
-/** Query จำกัด + เทียบ fingerprint กับรายการสินค้าใน DB */
-async function findStandardImportDuplicateBillNo(order: ImportedOrder, fingerprint: string): Promise<string | null> {
-  const ch = String(order.channel_code || '').trim()
-  const ta = roundImportMoney(order.total_amount)
-  let query = supabase
-    .from('or_orders')
-    .select(
-      'id, bill_no, customer_name, customer_address, channel_code, price, shipping_cost, discount, total_amount, payment_method, promotion, payment_date, payment_time'
-    )
-    .eq('channel_code', ch)
-    .eq('total_amount', ta)
-    .limit(100)
-
-  const pd = formatImportPaymentDateFp(order.payment_date)
-  if (pd) {
-    query = query.eq('payment_date', pd)
-  }
-
-  const { data: rows, error } = await query
-  if (error || !rows?.length) return null
-
-  const cn = normalizeImportFingerprintText(order.customer_name)
-  const ca = normalizeImportFingerprintText(order.customer_address)
-  const narrowed = (rows as DbOrderFingerprintRow[]).filter(
-    (r) =>
-      normalizeImportFingerprintText(r.customer_name) === cn &&
-      normalizeImportFingerprintText(r.customer_address || '') === ca
-  )
-
-  for (const row of narrowed) {
-    const { data: items, error: itemErr } = await supabase
-      .from('or_order_items')
-      .select(
-        'product_id, product_name, quantity, unit_price, ink_color, product_type, cartoon_pattern, line_pattern, font, line_1, line_2, line_3, notes'
-      )
-      .eq('order_id', row.id)
-    if (itemErr) continue
-    const fp2 = dbOrderRowToContentFingerprint(row, (items || []) as DbItemFingerprintRow[])
-    if (fp2 === fingerprint) return row.bill_no
-  }
-  return null
-}
-
 type ProductStockSnapshot = {
   on_hand: number
   reserved: number
@@ -798,15 +605,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importBusy, setImportBusy] = useState(false)
   const [importSummary, setImportSummary] = useState<string | null>(null)
-  /** Modal บิลซ้ำ (นำเข้า Standard / WY / PGTR) */
+  /** Modal เลขบิลจากไฟล์ซ้ำกับในระบบ (WY / PGTR) */
   const [importDuplicateModal, setImportDuplicateModal] = useState<{
     open: boolean
-    entries: {
-      kind: 'in_file' | 'in_db' | 'bill_no_in_db'
-      customerName: string
-      channelCode: string
-      existingBillNo?: string
-    }[]
+    entries: { customerName: string; channelCode: string; billNo: string }[]
   }>({ open: false, entries: [] })
   const [wyFile, setWyFile] = useState<File | null>(null)
   const [wyStatus, setWyStatus] = useState('')
@@ -3125,15 +2927,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         }
       }
 
-      const standardContentFpSeen = new Set<string>()
-      let standardDupInFile = 0
-      let standardDupInDb = 0
-      const importDupEntries: {
-        kind: 'in_file' | 'in_db' | 'bill_no_in_db'
-        customerName: string
-        channelCode: string
-        existingBillNo?: string
-      }[] = []
+      const importDupEntries: { customerName: string; channelCode: string; billNo: string }[] = []
 
       for (const order of ordersToImport) {
         try {
@@ -3147,10 +2941,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             if (existingBillNos.has(billNoPre)) {
               skippedCount += 1
               importDupEntries.push({
-                kind: 'bill_no_in_db',
                 customerName: order.customer_name || '',
                 channelCode: String(order.channel_code || '').trim(),
-                existingBillNo: billNoPre,
+                billNo: billNoPre,
               })
               continue
             }
@@ -3165,32 +2958,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             continue
           }
 
-          let contentFpForBatch: string | null = null
           let billNo = ''
-
           if (!useProvidedBillNo) {
-            contentFpForBatch = buildStandardImportContentFingerprint(order, matchedItems)
-            if (standardContentFpSeen.has(contentFpForBatch)) {
-              standardDupInFile += 1
-              importDupEntries.push({
-                kind: 'in_file',
-                customerName: order.customer_name || '',
-                channelCode: String(order.channel_code || '').trim(),
-              })
-              continue
-            }
-            const dupBillNo = await findStandardImportDuplicateBillNo(order, contentFpForBatch)
-            if (dupBillNo) {
-              standardDupInDb += 1
-              importDupEntries.push({
-                kind: 'in_db',
-                customerName: order.customer_name || '',
-                channelCode: String(order.channel_code || '').trim(),
-                existingBillNo: dupBillNo,
-              })
-              standardContentFpSeen.add(contentFpForBatch)
-              continue
-            }
             billNo = await generateBillNo(order.channel_code)
             if (!billNo) {
               errorCount += 1
@@ -3277,9 +3046,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             errorLines.push(`${billNo}: ${itemsErr.message}`)
             continue
           }
-          if (contentFpForBatch) {
-            standardContentFpSeen.add(contentFpForBatch)
-          }
         if (importedStatus === 'รอลงข้อมูล') waitingCount += 1
           successCount += 1
         } catch (err: any) {
@@ -3291,9 +3057,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         'นำเข้าเสร็จสิ้น',
         `สำเร็จ: ${successCount}`,
         `รอลงข้อมูล: ${waitingCount}`,
-        `ข้าม (บิลซ้ำเลขเดิมในไฟล์): ${skippedCount}`,
-        `ข้าม (เนื้อหาซ้ำในไฟล์): ${standardDupInFile}`,
-        `ข้าม (เนื้อหาซ้ำกับบิลในระบบ): ${standardDupInDb}`,
+        `ข้าม (เลขบิลจากไฟล์มีในระบบแล้ว): ${skippedCount}`,
         `ผิดพลาด: ${errorCount}`,
       ]
       if (errorLines.length > 0) {
@@ -5925,29 +5689,15 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       stackClassName="z-[60]"
     >
       <div className="p-5 space-y-3">
-        <h3 className="text-lg font-bold text-amber-900">พบบิลซ้ำจากการนำเข้า</h3>
+        <h3 className="text-lg font-bold text-amber-900">เลขบิลจากไฟล์ซ้ำในระบบ</h3>
         <p className="text-sm text-gray-600">
-          รายการต่อไปนี้ไม่ถูกบันทึก — เลขบิลจากไฟล์มีในระบบแล้ว (WY/PGTR) หรือเนื้อหาซ้ำในไฟล์ / ซ้ำกับบิลอื่นในระบบ (Standard)
+          รายการต่อไปนี้ไม่ถูกบันทึก — เลขบิลในไฟล์ (WY / PGTR) มีในระบบแล้ว
         </p>
         <ul className="max-h-60 overflow-y-auto text-sm space-y-2 border border-amber-200 rounded-lg p-3 bg-amber-50/80">
           {importDuplicateModal.entries.map((e, idx) => (
-            <li key={`${e.kind}-${idx}-${e.existingBillNo || ''}`} className="text-gray-800">
-              {e.kind === 'bill_no_in_db' ? (
-                <>
-                  เลขบิลจากไฟล์มีในระบบแล้ว{' '}
-                  <span className="font-mono font-semibold">{e.existingBillNo}</span>
-                  <span className="text-gray-500"> — {e.channelCode} / {e.customerName}</span>
-                </>
-              ) : e.kind === 'in_db' ? (
-                <>
-                  เนื้อหาซ้ำกับบิลในระบบ <span className="font-mono font-semibold">{e.existingBillNo}</span>
-                  <span className="text-gray-500"> — {e.channelCode} / {e.customerName}</span>
-                </>
-              ) : (
-                <>
-                  เนื้อหาซ้ำในไฟล์ <span className="text-gray-500">(เหมือนแถวที่นำเข้าก่อนหน้า) — {e.channelCode} / {e.customerName}</span>
-                </>
-              )}
+            <li key={`${e.billNo}-${idx}`} className="text-gray-800">
+              <span className="font-mono font-semibold">{e.billNo}</span>
+              <span className="text-gray-500"> — {e.channelCode} / {e.customerName}</span>
             </li>
           ))}
         </ul>
