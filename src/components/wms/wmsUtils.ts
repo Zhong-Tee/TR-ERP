@@ -128,7 +128,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   }
 
   // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel
-  const [reqRes, returnReqRes, borrowReqRes, notifRes] = await Promise.all([
+  const [reqRes, returnReqRes, borrowReqRes, notifRowsRes] = await Promise.all([
     supabase
       .from('wms_requisitions')
       .select('id', { count: 'exact', head: true })
@@ -143,9 +143,24 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
       .eq('status', 'pending'),
     supabase
       .from('wms_notifications')
-      .select('id', { count: 'exact', head: true })
+      .select('id, type, order_id')
       .eq('is_read', false),
   ])
+
+  const notifRows = (notifRowsRes.data || []) as { id: string; type: string; order_id: string | null }[]
+  const cancelOrderSet = new Set<string>()
+  let notifCount = 0
+  for (const row of notifRows) {
+    if (row.type === 'ยกเลิกบิล') {
+      const key = String(row.order_id || '').trim()
+      if (!key) continue
+      if (cancelOrderSet.has(key)) continue
+      cancelOrderSet.add(key)
+      notifCount += 1
+    } else {
+      notifCount += 1
+    }
+  }
 
   const counts: WmsTabCounts = {
     [WMS_MENU_KEYS.NEW_ORDERS]: newOrdersCount,
@@ -154,7 +169,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     [WMS_MENU_KEYS.REQUISITION]: reqRes.count ?? 0,
     [WMS_MENU_KEYS.RETURN_REQUISITION]: returnReqRes.count ?? 0,
     [WMS_MENU_KEYS.BORROW_REQUISITION]: borrowReqRes.count ?? 0,
-    [WMS_MENU_KEYS.NOTIF]: notifRes.count ?? 0,
+    [WMS_MENU_KEYS.NOTIF]: notifCount,
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0)
   return { counts, total }

@@ -20,6 +20,7 @@ export type UserRole =
   | 'production'
   | 'production_mb'
   | 'manager'
+  | 'technician'
   | 'picker'
   | 'auditor'
   | 'hr'
@@ -143,6 +144,8 @@ export interface PackingMeta {
   parcelScanned: boolean
   scanTime?: string
   scannedBy?: string
+  /** หมายเลข Tag ประจำวัน (รีเซ็ตตามวันที่ใน client) */
+  dailyPackingTag?: number
 }
 
 export interface PackingVideo {
@@ -958,6 +961,8 @@ export interface HREmployee {
   hire_date?: string
   probation_end_date?: string
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
+  /** ประเภทสัญญาจ้าง: permanent=ประจำ, daily=รายวัน */
+  contract_type?: 'permanent' | 'daily'
   fingerprint_id_old?: string
   fingerprint_id_new?: string
   user_id?: string
@@ -1047,7 +1052,14 @@ export interface HRInterview {
   interview_date: string
   location?: string
   interviewer_ids: string[]
-  status: 'scheduled' | 'completed' | 'cancelled' | 'no_show'
+  status:
+    | 'waiting_contact'
+    | 'scheduled'
+    | 'attended'
+    | 'rescheduled'
+    | 'no_show'
+    | 'completed'
+    | 'cancelled'
   notes?: string
   created_at: string
   candidate?: HRCandidate

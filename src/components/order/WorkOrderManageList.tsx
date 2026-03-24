@@ -7,6 +7,7 @@ import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
@@ -73,6 +74,10 @@ const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKey: stri
 interface WorkOrderManageListProps {
   searchTerm?: string
   channelFilter?: string
+  dateFrom?: string
+  dateTo?: string
+  mode?: 'active' | 'all'
+  onCountChange?: (count: number) => void
   onRefresh?: () => void
 }
 
@@ -98,6 +103,10 @@ interface PickingSpareRow { name: string; qty: number }
 export default function WorkOrderManageList({
   searchTerm = '',
   channelFilter = '',
+  dateFrom = '',
+  dateTo = '',
+  mode = 'active',
+  onCountChange,
   onRefresh,
 }: WorkOrderManageListProps) {
   const { user } = useAuthContext()
@@ -132,7 +141,7 @@ export default function WorkOrderManageList({
   const pickingSlipContentRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     loadWorkOrders()
-  }, [channelFilter, searchTerm])
+  }, [channelFilter, searchTerm, dateFrom, dateTo, mode])
 
   useEffect(() => {
     async function loadChannels() {
@@ -154,26 +163,38 @@ export default function WorkOrderManageList({
       if (channelFilter) {
         query = query.like('work_order_name', `${channelFilter}-%`)
       }
+      if (dateFrom) {
+        query = query.gte('created_at', `${dateFrom}T00:00:00.000Z`)
+      }
+      if (dateTo) {
+        query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
+      }
 
       const { data, error } = await query
       if (error) throw error
       let list: WorkOrder[] = (data || []) as WorkOrder[]
       if (searchTerm.trim()) {
-        const { data: orderMatch } = await supabase
+        let orderMatchQuery = supabase
           .from('or_orders')
           .select('work_order_name')
           .not('work_order_name', 'is', null)
-          .neq('status', 'จัดส่งแล้ว')
           .or(`bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%`)
+        if (mode === 'active') {
+          orderMatchQuery = orderMatchQuery
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+            .neq('status', 'จัดส่งแล้ว')
+        }
+        const { data: orderMatch } = await orderMatchQuery
         const woNames = new Set((orderMatch || []).map((r: { work_order_name: string }) => r.work_order_name))
         list = list.filter((w) => woNames.has(w.work_order_name))
       }
 
-      if (list.length > 0) {
+      if (mode === 'active' && list.length > 0) {
         const { data: activeOrders } = await supabase
           .from('or_orders')
           .select('work_order_name')
           .not('work_order_name', 'is', null)
+          .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
           .neq('status', 'จัดส่งแล้ว')
           .in(
             'work_order_name',
@@ -183,6 +204,7 @@ export default function WorkOrderManageList({
         list = list.filter((w) => activeSet.has(w.work_order_name))
       }
       setWorkOrders(list)
+      onCountChange?.(list.length)
       setOrdersByWo({})
       setSelectedByWo({})
       setExpandedWo(null)
@@ -221,11 +243,19 @@ export default function WorkOrderManageList({
         .from('or_orders')
         .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user')
         .eq('work_order_name', workOrderName)
-        .neq('status', 'จัดส่งแล้ว')
         .order('created_at', { ascending: false })
+      let rows = data
+      if (mode === 'active') {
+        rows = (rows || []).filter((row: any) => {
+          if (!row?.status) return true
+          const status = String(row.status)
+          if (status === 'จัดส่งแล้ว') return false
+          return !FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN.includes(status as any)
+        })
+      }
 
       if (error) throw error
-      const list = (data || []) as Order[]
+      const list = (rows || []) as Order[]
       setOrdersByWo((prev) => ({ ...prev, [workOrderName]: list }))
       setSelectedByWo((prev) => ({ ...prev, [workOrderName]: new Set<string>() }))
     } catch (error: any) {
@@ -387,6 +417,7 @@ export default function WorkOrderManageList({
       .from('or_orders')
       .select('id, tracking_number, bill_no')
       .eq('work_order_name', workOrderName)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .not('tracking_number', 'is', null)
       .order('bill_no', { ascending: true })
     const withTracking = (ordersData || []).filter((o) => o.tracking_number && String(o.tracking_number).trim() !== '')
@@ -609,13 +640,28 @@ export default function WorkOrderManageList({
     return str
   }
 
-  type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
+  /** จำนวนชิ้นต่อรายการในออเดอร์ — ใช้แตกหลายแถวใน export ผลิต / barcode */
+  const normalizedLineQuantity = (raw: unknown): number => {
+    const q = Math.floor(Number(raw))
+    if (!Number.isFinite(q) || q < 1) return 1
+    return Math.min(q, 9999)
+  }
+
+  /** เมื่อแตก qty>1 ให้ UID ไม่ซ้ำ: base, base-1, base-2, ... */
+  const itemUidForSplitLines = (baseUid: string | null | undefined, copyIndex: number, copies: number): string => {
+    const uid = String(baseUid ?? '').trim() || '—'
+    if (copies <= 1) return uid
+    return `${uid}-${copyIndex + 1}`
+  }
+
+  type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; quantity?: number; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
 
   async function fetchOrdersWithItems(workOrderName: string): Promise<OrderWithItems[]> {
     const { data, error } = await supabase
       .from('or_orders')
       .select('*, or_order_items(*)')
       .eq('work_order_name', workOrderName)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .order('created_at', { ascending: false })
     if (error) throw error
     const list = (data || []) as OrderWithItems[]
@@ -661,17 +707,21 @@ export default function WorkOrderManageList({
         const pid = item.product_id ? String(item.product_id) : ''
         const productCode = pid ? productCodeByProductId[pid] ?? '' : ''
         const category = pid ? productCategoryByProductId[pid] || 'N/A' : 'N/A'
-        const row: unknown[] = [workOrderName, order.bill_no, item.item_uid, productCode]
-        visibleColumns.forEach((col) => {
-          if (col.key === 'notes') row.push(cleanNotes)
-          else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
-          else if (col.key === 'quantity') row.push(1)
-          else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
-          else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
-          else row.push(item[col.key] ?? '')
-        })
-        row.push(category)
-        dataToExport.push(row)
+        const copies = normalizedLineQuantity(item.quantity)
+        for (let c = 0; c < copies; c++) {
+          const displayUid = itemUidForSplitLines(item.item_uid, c, copies)
+          const row: unknown[] = [workOrderName, order.bill_no, displayUid, productCode]
+          visibleColumns.forEach((col) => {
+            if (col.key === 'notes') row.push(cleanNotes)
+            else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
+            else if (col.key === 'quantity') row.push(1)
+            else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
+            else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
+            else row.push(item[col.key] ?? '')
+          })
+          row.push(category)
+          dataToExport.push(row)
+        }
       })
     })
 
@@ -742,13 +792,16 @@ export default function WorkOrderManageList({
         const items = order.or_order_items || (order as any).order_items || []
         items.forEach((item: any) => {
           const category = productCategoryByProductId[String(item.product_id)] || 'N/A'
-          dataToExport.push([
-            item.item_uid,
-            item.product_name,
-            item.ink_color ?? '',
-            forceText(item.line_1),
-            category,
-          ])
+          const copies = normalizedLineQuantity(item.quantity)
+          for (let c = 0; c < copies; c++) {
+            dataToExport.push([
+              itemUidForSplitLines(item.item_uid, c, copies),
+              item.product_name,
+              item.ink_color ?? '',
+              forceText(item.line_1),
+              category,
+            ])
+          }
         })
       })
       if (dataToExport.length === 0) {
@@ -953,10 +1006,11 @@ export default function WorkOrderManageList({
           const name = item.product_name || 'N/A'
           const location = item.storage_location || 'N/A'
           const category = (item.product_category || '').toUpperCase()
+          const lineQty = normalizedLineQuantity((item as any).quantity)
           if (existing) {
-            existing.finalQty += 1
+            existing.finalQty += lineQty
           } else {
-            mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: 1, _category: category })
+            mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: lineQty, _category: category })
           }
         })
       const finalMainList: PickingMainRow[] = Array.from(mainMap.values())
@@ -972,8 +1026,9 @@ export default function WorkOrderManageList({
         if (item.rubber_code) {
           const key = item.rubber_code
           const existing = spareMap.get(key)
-          if (existing) existing.qty += 1
-          else spareMap.set(key, { name: `หน้ายาง+โฟม ${item.rubber_code}`, qty: 1 })
+          const lineQty = normalizedLineQuantity((item as any).quantity)
+          if (existing) existing.qty += lineQty
+          else spareMap.set(key, { name: `หน้ายาง+โฟม ${item.rubber_code}`, qty: lineQty })
         }
       })
       const finalSpareList = Array.from(spareMap.values())

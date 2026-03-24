@@ -21,6 +21,7 @@ function getProductImageUrl(productCode: string | null | undefined, ext: string 
   return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
 }
 
+/** Import สินค้า: ไม่รวม safety_stock — ปรับจำนวน safety จริงผ่านคลัง / ใบปรับสต๊อค */
 const PRODUCT_TEMPLATE_HEADERS = [
   'product_code',
   'product_name',
@@ -32,7 +33,6 @@ const PRODUCT_TEMPLATE_HEADERS = [
   'product_type',
   'rubber_code',
   'storage_location',
-  'safety_stock',
   'unit_cost',
   'unit_name',
   'unit_multiplier',
@@ -526,6 +526,7 @@ export default function Products() {
       closeModal()
       loadProducts()
       loadCategories()
+      loadSellerOptions()
     } catch (error: any) {
       console.error('Error saving product:', error)
       showNotify('error', 'เกิดข้อผิดพลาด', error.message)
@@ -557,7 +558,7 @@ export default function Products() {
     const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
       headers as unknown as string[],
-      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 10, 50, 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['P001', 'สินค้าตัวอย่าง', 'ผู้ขายA', '样品', 'จุดA', 14, 'หมวดA', 'FG', 'R001', 'A-1', 50, 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'สินค้า')
@@ -569,7 +570,7 @@ export default function Products() {
       const { data, error } = await supabase
         .from('pr_products')
         .select(
-          'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_cost, unit_name, unit_multiplier'
+          'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, unit_cost, unit_name, unit_multiplier'
         )
         .eq('is_active', true)
         .order('product_code', { ascending: true })
@@ -629,7 +630,6 @@ export default function Products() {
         product_type: ProductType
         rubber_code: string | null
         storage_location: string | null
-        safety_stock: number
         unit_cost: number
         unit_name: string
         unit_multiplier: number
@@ -643,7 +643,6 @@ export default function Products() {
         if (!code || !name) continue
         const rawType = String(row.product_type ?? '').trim().toUpperCase()
         const productType: ProductType = validTypes.includes(rawType as ProductType) ? (rawType as ProductType) : 'FG'
-        const safetyStock = Number(row.safety_stock ?? 0)
         const unitCost = Number(row.unit_cost ?? 0)
         const rawOrderPointDays = Number(row.order_point_days ?? '')
         const unitName = String(row.unit_name ?? '').trim() || 'ชิ้น'
@@ -670,7 +669,6 @@ export default function Products() {
           product_type: productType,
           rubber_code: (row.rubber_code != null && String(row.rubber_code).trim()) || null,
           storage_location: (row.storage_location != null && String(row.storage_location).trim()) || null,
-          safety_stock: isNaN(safetyStock) ? 0 : safetyStock,
           unit_cost: isNaN(unitCost) ? 0 : unitCost,
           unit_name: unitName,
           unit_multiplier: unitMultiplier,
@@ -709,6 +707,7 @@ export default function Products() {
         showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', dupInFile > 0 ? `ซ้ำในไฟล์ ${dupInFile} รายการ` : '')
         loadProducts()
         loadCategories()
+        loadSellerOptions()
         return
       }
 
@@ -783,6 +782,7 @@ export default function Products() {
       showNotify('success', 'นำเข้าสินค้าสำเร็จ', msgs.join(', '))
       loadProducts()
       loadCategories()
+      loadSellerOptions()
     } catch (err: any) {
       console.error('Import error:', err)
       showNotify('error', 'นำเข้าสินค้าล้มเหลว', err?.message || String(err))
@@ -1003,7 +1003,6 @@ export default function Products() {
             product_type: r.product_type || 'FG',
             seller_name: r.seller_name || null,
             unit_cost: r.unit_cost,
-            safety_stock: r.safety_stock,
             order_point: r.order_point || null,
             order_point_days: r.order_point_days,
             storage_location: r.storage_location || null,
@@ -1069,6 +1068,7 @@ export default function Products() {
       setInitImportErrors([])
       loadProducts()
       loadCategories()
+      loadSellerOptions()
     } catch (err: any) {
       console.error('Init import error:', err)
       showNotify('error', 'นำเข้าล้มเหลว', err?.message || String(err))

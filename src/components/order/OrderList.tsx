@@ -41,6 +41,10 @@ interface OrderListProps {
   salesTrTeamAdminValues?: string[]
   /** sales-tr: กรองเฉพาะผู้ใช้คนนี้ (ค่าต้องอยู่ในทีม) — ใช้กับแท็บรอลงข้อมูล */
   narrowSalesTrAdminUser?: string
+  /** ซ่อนปุ่ม Action ทั้งหมด (ใช้กับหน้ารายการแบบดูอย่างเดียว) */
+  hideActionButtons?: boolean
+  /** เปิดรายละเอียดแบบดูอย่างเดียว (ปิด action แก้ลิงก์ใน detail) */
+  detailReadOnly?: boolean
 }
 
 export default function OrderList({
@@ -63,6 +67,8 @@ export default function OrderList({
   useDetailViewOnClick = false,
   salesTrTeamAdminValues,
   narrowSalesTrAdminUser,
+  hideActionButtons = false,
+  detailReadOnly = false,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -628,7 +634,7 @@ export default function OrderList({
                   {formatDateTime(order.created_at)}
                 </div>
               </div>
-              {(order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ') ? (
+              {!hideActionButtons && (order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ') ? (
                 <div className="flex flex-col gap-1.5 items-end">
                   {showMoveToWaitingButton && onMoveToWaiting && (
                     <button
@@ -665,7 +671,7 @@ export default function OrderList({
                   </button>
                 </div>
               ) : null}
-              {showMoveToWaitingButton && onMoveToWaiting && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && (
+              {!hideActionButtons && showMoveToWaitingButton && onMoveToWaiting && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && order.status !== 'ยกเลิก' && (
                 <button
                   type="button"
                   onClick={async (e) => {
@@ -684,7 +690,7 @@ export default function OrderList({
                   {movingOrderId === order.id ? 'กำลังย้าย...' : 'ย้ายไปรอลงข้อมูล'}
                 </button>
               )}
-              {showDeleteButton && onDelete && (
+              {!hideActionButtons && showDeleteButton && onDelete && (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -748,7 +754,7 @@ export default function OrderList({
 
       {/* Detail Modal */}
       <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
-        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+        {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} readOnly={detailReadOnly} />}
       </Modal>
 
       {/* ส่งตรวจสลิป Modal */}

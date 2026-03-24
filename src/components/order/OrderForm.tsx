@@ -534,6 +534,7 @@ const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'IN
 const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่ให้กรอกราคาเอง (ล็อคราคา/หน่วย ใช้ราคาที่ข้อมูลชำระเงินแทน) */
 const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
+const CHANNEL_PRICE_PAGE_SIZE = 1000
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
 const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
 /** ช่องทางที่เมื่อบันทึก "ข้อมูลครบ" ให้เคลื่อนสถานะไปที่ "ตรวจสอบแล้ว" โดยตรง (ไม่ต้องรอตรวจสลิป) */
@@ -620,7 +621,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [claimFilterSearch, setClaimFilterSearch] = useState('')
   const undoStackRef = useRef<Array<{ formData: typeof formData; items: Partial<OrderItem>[] }>>([])
   const undoingRef = useRef(false)
-  const prevChannelRef = useRef<string>('')
   const [claimFilterChannel, setClaimFilterChannel] = useState('')
   const [selectedClaimRefOrder, setSelectedClaimRefOrder] = useState<Order | null>(null)
   const [claimTypes, setClaimTypes] = useState<{ code: string; name: string }[]>([])
@@ -634,6 +634,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [reviewRemarks, setReviewRemarks] = useState<string | null>(null)
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่สินค้า */
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
+  /** หมวดที่เปิดใช้ในการขาย (pr_category_field_settings.is_active_for_sales) — ไม่มี key = เปิด */
+  const [categorySalesActive, setCategorySalesActive] = useState<Record<string, boolean>>({})
   /** Override ตั้งค่าฟิลด์ระดับสินค้า (product_id → { fieldKey → boolean | null }) */
   const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null>>>({})
   /** index ของแถวที่ช่องหมายเหตุกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
@@ -981,6 +983,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           console.error('Error loading category field settings:', catRes.error)
         } else {
           const settingsMap: Record<string, Record<string, boolean>> = {}
+          const salesMap: Record<string, boolean> = {}
           if (catRes.data && Array.isArray(catRes.data)) {
             catRes.data.forEach((row: any) => {
               const cat = row.category
@@ -1001,10 +1004,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   notes: toBool(row.notes),
                   attachment: toBool(row.attachment),
                 }
+                salesMap[key] = row.is_active_for_sales !== false
               }
             })
           }
           setCategoryFieldSettings(settingsMap)
+          setCategorySalesActive(salesMap)
         }
         if (overrideRes.error) {
           console.error('Error loading product field overrides:', overrideRes.error)
@@ -1065,9 +1070,51 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     })()
   }, [claimModalOpen])
 
+  /** หมวดที่ปิดการขาย — ไม่แสดงใน datalist เลือกสินค้า (รายการเดิมในออเดอร์ยังใช้ `products` เต็มรายการได้) */
+  function isProductCategoryActiveForOrder(p: { product_category?: string | null }): boolean {
+    const c = (p.product_category || '').trim()
+    if (!c) return true
+    return categorySalesActive[c] !== false
+  }
+
+  /**
+   * โหลดราคาสินค้าเฉพาะช่องทางขายปัจจุบันแบบแบ่งหน้า
+   * เพื่อลด payload และกันชนเพดาน row limit ของ PostgREST
+   */
+  async function loadChannelPricesForCode(channelCode: string) {
+    const normalized = (channelCode || '').trim()
+    if (!normalized || CHANNELS_MANUAL_PRICE.includes(normalized)) {
+      setProductChannelPriceMap({})
+      return
+    }
+    try {
+      const nextMap: Record<string, number> = {}
+      let from = 0
+      while (true) {
+        const to = from + CHANNEL_PRICE_PAGE_SIZE - 1
+        const { data, error } = await supabase
+          .from('pr_product_channel_prices')
+          .select('product_id, channel_code, sale_price')
+          .eq('channel_code', normalized)
+          .range(from, to)
+        if (error) throw error
+        const rows = (data || []) as Array<{ product_id: string; channel_code: string; sale_price: number }>
+        rows.forEach((row) => {
+          nextMap[`${row.product_id}__${row.channel_code}`] = Number(row.sale_price) || 0
+        })
+        if (rows.length < CHANNEL_PRICE_PAGE_SIZE) break
+        from += CHANNEL_PRICE_PAGE_SIZE
+      }
+      setProductChannelPriceMap(nextMap)
+    } catch (error) {
+      console.error('Error loading product channel prices:', error)
+      setProductChannelPriceMap({})
+    }
+  }
+
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, channelPricesRes, stockBalancesRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, stockBalancesRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
@@ -1076,7 +1123,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         supabase.from('pr_category_field_settings').select('*'),
         supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
         supabase.from('pr_product_field_overrides').select('*'),
-        supabase.from('pr_product_channel_prices').select('product_id, channel_code, sale_price'),
         supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock'),
       ])
 
@@ -1103,16 +1149,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       if (promotionsRes.data) setPromotions(promotionsRes.data)
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
-      if (channelPricesRes.data) {
-        const nextMap: Record<string, number> = {}
-        ;(channelPricesRes.data || []).forEach((row: { product_id: string; channel_code: string; sale_price: number }) => {
-          nextMap[`${row.product_id}__${row.channel_code}`] = Number(row.sale_price) || 0
-        })
-        setProductChannelPriceMap(nextMap)
-      }
       
       // โหลดการตั้งค่าฟิลด์ต่อหมวดหมู่ (แปลงเป็น boolean จริง เพื่อกันค่า string "false" ที่เป็น truthy)
       const settingsMap: Record<string, Record<string, boolean>> = {}
+      const salesMap: Record<string, boolean> = {}
       if (categorySettingsRes.data && Array.isArray(categorySettingsRes.data)) {
         categorySettingsRes.data.forEach((row: any) => {
           const cat = row.category
@@ -1133,10 +1173,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               notes: toBool(row.notes),
               attachment: toBool(row.attachment),
             }
+            salesMap[key] = row.is_active_for_sales !== false
           }
         })
       }
       setCategoryFieldSettings(settingsMap)
+      setCategorySalesActive(salesMap)
 
       // โหลด product-level field overrides
       const overridesMap: Record<string, Record<string, boolean | null>> = {}
@@ -1275,20 +1317,24 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   }, [items, formData.shipping_cost, formData.discount, discountType, showTaxInvoice, formData.price, formData.channel_code])
 
   useEffect(() => {
+    void loadChannelPricesForCode(formData.channel_code || '')
+  }, [formData.channel_code])
+
+  useEffect(() => {
     const currentChannel = formData.channel_code || ''
-    const prevChannel = prevChannelRef.current
-    if (currentChannel === prevChannel) return
-    prevChannelRef.current = currentChannel
     if (!currentChannel || CHANNELS_MANUAL_PRICE.includes(currentChannel)) return
 
-    setItems((prev) =>
-      prev.map((item) => {
+    setItems((prev) => {
+      let changed = false
+      const next = prev.map((item) => {
         if (!item.product_id) return item
         const autoPrice = getAutoProductPrice(String(item.product_id), currentChannel)
         if ((item.unit_price || 0) === autoPrice) return item
+        changed = true
         return { ...item, unit_price: autoPrice }
       })
-    )
+      return changed ? next : prev
+    })
   }, [formData.channel_code, productChannelPriceMap])
 
   useEffect(() => {
@@ -4211,9 +4257,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                             font.font_name.toLowerCase().includes(searchLower)
                           )
                           
-                          // กรองสินค้าตามเงื่อนไข (ชื่อสินค้า หรือ รหัสสินค้า)
+                          // กรองสินค้าตามเงื่อนไข (ชื่อสินค้า หรือ รหัสสินค้า) + หมวดที่เปิดการขาย
                           const filteredProducts = products.filter(p => {
-                            // ถ้าไม่มีคำค้นหา ให้แสดงสินค้าทั้งหมด
+                            if (!isProductCategoryActiveForOrder(p)) return false
+                            // ถ้าไม่มีคำค้นหา ให้แสดงสินค้าทั้งหมด (ในหมวดที่เปิดการขาย)
                             if (!searchLower) return true
                             // ค้นหาในชื่อสินค้า
                             if (p.product_name.toLowerCase().includes(searchLower)) return true
@@ -4543,7 +4590,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <td className="border p-1.5">
                     <input
                       type="number"
-                      value={item.unit_price || ''}
+                      value={item.unit_price ?? ''}
                       onChange={(e) => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)}
                       onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       onFocus={(e) => {

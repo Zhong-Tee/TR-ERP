@@ -4,6 +4,7 @@
 import { supabase } from './supabase'
 import * as XLSX from 'xlsx'
 import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
@@ -59,6 +60,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     .from('or_orders')
     .select('id, work_order_name')
     .in('work_order_name', woNames)
+    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
   if (ordErr) throw ordErr
   const orderIdsByWo: Record<string, string[]> = {}
   woNames.forEach((n) => (orderIdsByWo[n] = []))
@@ -110,19 +112,17 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     totalByWo[name] = ids.reduce((sum, id) => sum + (totalByOrderId[id] || 0), 0)
   })
 
-  // ดึง sessions ทั้งหมด (รวม session ที่ยังเปิดอยู่) พร้อม end_time เพื่อเช็ค open session
+  // ดึง sessions ทั้งหมดของ WO เพื่อรวมผล pass จาก qc_records
   const { data: allSessions, error: sessErr } = await supabase
     .from('qc_sessions')
-    .select('id, filename, end_time')
+    .select('id, filename')
   if (sessErr) throw sessErr
   const sessionIdsByWo: Record<string, string[]> = {}
-  const hasOpenSessionByWo: Record<string, boolean> = {}
-  woNames.forEach((n) => { sessionIdsByWo[n] = []; hasOpenSessionByWo[n] = false })
+  woNames.forEach((n) => { sessionIdsByWo[n] = [] })
   ;(allSessions || []).forEach((s) => {
     const match = s.filename?.match(/^WO-(.+)$/)
     if (match && woNames.includes(match[1])) {
       sessionIdsByWo[match[1]].push(s.id)
-      if (!s.end_time) hasOpenSessionByWo[match[1]] = true
     }
   })
 
@@ -191,8 +191,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, reject_items, total_bills, pass_bills, fail_bills, remaining_bills }
   })
 
-  // ไม่กรองออกถ้ายังมี session เปิดอยู่ (ยังไม่กด Finish Job) แม้ remaining จะ = 0
-  if (excludeCompleted) return result.filter((r) => r.remaining > 0 || hasOpenSessionByWo[r.work_order_name])
+  if (excludeCompleted) return result.filter((r) => r.remaining > 0)
   return result
 }
 
@@ -202,6 +201,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     .from('or_orders')
     .select('id, bill_no')
     .eq('work_order_name', workOrderName)
+    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
   if (ordersErr) throw ordersErr
   if (!orders?.length) return []
 
@@ -411,7 +411,35 @@ export async function fetchRejectItems() {
     .eq('is_rejected', true)
     .order('created_at', { ascending: true })
   if (error) throw error
-  return data || []
+  const rejectedRecords = data || []
+  if (rejectedRecords.length === 0) return []
+
+  const itemUids = [...new Set(rejectedRecords.map((r) => r.item_uid).filter(Boolean))]
+  if (itemUids.length === 0) return rejectedRecords
+
+  const { data: itemRows, error: itemErr } = await supabase
+    .from('or_order_items')
+    .select('item_uid, order_id')
+    .in('item_uid', itemUids)
+  if (itemErr) throw itemErr
+
+  const orderIds = [...new Set((itemRows || []).map((r) => r.order_id).filter(Boolean))]
+  if (orderIds.length === 0) return rejectedRecords
+
+  const { data: activeOrders, error: ordErr } = await supabase
+    .from('or_orders')
+    .select('id')
+    .in('id', orderIds)
+    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+  if (ordErr) throw ordErr
+
+  const activeOrderIdSet = new Set((activeOrders || []).map((r) => r.id))
+  const activeItemUidSet = new Set(
+    (itemRows || [])
+      .filter((r) => activeOrderIdSet.has(r.order_id))
+      .map((r) => r.item_uid)
+  )
+  return rejectedRecords.filter((r) => activeItemUidSet.has(r.item_uid))
 }
 
 /** Load qc_sessions for Reports (filter by date and optional user). */

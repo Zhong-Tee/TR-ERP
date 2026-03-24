@@ -135,6 +135,8 @@ export default function Settings() {
   }
   const [productCategories, setProductCategories] = useState<string[]>([])
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<ProductFieldKey, boolean>>>({})
+  /** เปิดใช้หมวดในการขาย/เปิดบิล — ไม่มี key = ถือว่าเปิด (ค่าเริ่มต้น) */
+  const [categorySalesActive, setCategorySalesActive] = useState<Record<string, boolean>>({})
   const [savingProductSettings, setSavingProductSettings] = useState(false)
   // Product-level field overrides (null = ใช้ค่าจากหมวดหมู่)
   const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
@@ -172,13 +174,22 @@ export default function Settings() {
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
 
-  // ผู้ขาย (Sellers)
-  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn: string; purchase_channel: string; is_active: boolean }[]>([])
+  // ผู้ขาย (Sellers) — seller_type: thailand | foreign
+  const [sellers, setSellers] = useState<
+    { id: string; name: string; name_cn: string; purchase_channel: string; seller_type: string; is_active: boolean }[]
+  >([])
   const [sellerName, setSellerName] = useState('')
   const [sellerNameCn, setSellerNameCn] = useState('')
   const [sellerPurchaseChannel, setSellerPurchaseChannel] = useState('')
+  const [sellerType, setSellerType] = useState<'thailand' | 'foreign'>('foreign')
   const [sellerSaving, setSellerSaving] = useState(false)
+  const [sellerSyncing, setSellerSyncing] = useState(false)
   const [sellerEditingId, setSellerEditingId] = useState<string | null>(null)
+  /** กรองตารางผู้ขาย: ทั้งหมด / ไทย / ต่างประเทศ */
+  const [sellerTypeTableFilter, setSellerTypeTableFilter] = useState<'all' | 'thailand' | 'foreign'>('all')
+  /** กรองการมองเห็น: ใช้งาน / ซ่อน / ทั้งหมด */
+  const [sellerVisibilityFilter, setSellerVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
+  const [sellerTogglingId, setSellerTogglingId] = useState<string | null>(null)
   // โปรโมชั่น (Promotions)
   const [promotionsList, setPromotionsList] = useState<{ id: string; name: string; is_active: boolean }[]>([])
   const [promotionName, setPromotionName] = useState('')
@@ -186,6 +197,25 @@ export default function Settings() {
   const [promotionEditingId, setPromotionEditingId] = useState<string | null>(null)
 
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+
+  const sellerHiddenCount = useMemo(
+    () => sellers.filter((s) => !s.is_active).length,
+    [sellers],
+  )
+
+  const sellersAfterVisibility = useMemo(() => {
+    if (sellerVisibilityFilter === 'active') return sellers.filter((s) => s.is_active)
+    if (sellerVisibilityFilter === 'hidden') return sellers.filter((s) => !s.is_active)
+    return sellers
+  }, [sellers, sellerVisibilityFilter])
+
+  const sellersFilteredForTable = useMemo(() => {
+    if (sellerTypeTableFilter === 'all') return sellersAfterVisibility
+    return sellersAfterVisibility.filter((s) => {
+      const t = s.seller_type === 'thailand' ? 'thailand' : 'foreign'
+      return t === sellerTypeTableFilter
+    })
+  }, [sellersAfterVisibility, sellerTypeTableFilter])
 
   useEffect(() => {
     loadUsers()
@@ -228,6 +258,15 @@ export default function Settings() {
       if (overrideDebounceRef.current) clearTimeout(overrideDebounceRef.current)
     }
   }, [overrideSearchInput])
+
+  /** ถ้าเลือกกรองหมวดที่ถูกปิดการขายแล้ว ให้รีเซ็ต */
+  useEffect(() => {
+    if (!overrideCategoryFilter) return
+    if (categorySalesActive[overrideCategoryFilter] === false) {
+      setOverrideCategoryFilter('')
+      setOverridePage(1)
+    }
+  }, [overrideCategoryFilter, categorySalesActive])
 
   async function testConnection() {
     setTestingConnection(true)
@@ -349,6 +388,7 @@ export default function Settings() {
     { key: 'dashboard', label: 'Dashboard', group: '' },
     // ── ออเดอร์ ──
     { key: 'orders', label: 'ออเดอร์', group: '' },
+    { key: 'orders-all', label: 'ทั้งหมด', group: 'orders' },
     { key: 'orders-create', label: 'สร้าง/แก้ไข', group: 'orders' },
     { key: 'orders-waiting', label: 'รอลงข้อมูล', group: 'orders' },
     { key: 'orders-data-error', label: 'ลงข้อมูลผิด', group: 'orders' },
@@ -370,6 +410,8 @@ export default function Settings() {
     { key: 'plan-form', label: 'สร้าง/แก้ไขใบงาน', group: 'plan' },
     { key: 'plan-set', label: 'ตั้งค่า', group: 'plan' },
     { key: 'plan-issue', label: 'Issue', group: 'plan' },
+    { key: 'machinery', label: 'Machinery', group: 'plan' },
+    { key: 'machinery-settings', label: 'Machinery · ตั้งค่าเครื่อง', group: 'plan' },
     // ── จัดสินค้า (WMS) ──
     { key: 'wms', label: 'จัดสินค้า', group: '' },
     { key: 'wms-new-orders', label: 'ใบงานใหม่', group: 'wms' },
@@ -393,6 +435,7 @@ export default function Settings() {
     { key: 'packing-new', label: 'ใบงานใหม่', group: 'packing' },
     { key: 'packing-shipped', label: 'จัดส่งแล้ว', group: 'packing' },
     { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
+    { key: 'packing-tagSearch', label: 'ค้นหา Tag', group: 'packing' },
     // ── ทวนสอบขนส่ง ──
     { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },
     // ── บัญชี ──
@@ -722,17 +765,45 @@ export default function Settings() {
   }
 
   // ===== Sellers CRUD =====
-  async function loadSellers() {
+  async function fetchSellersTable() {
     try {
-      const { data, error } = await supabase
-        .from('pr_sellers')
-        .select('*')
-        .eq('is_active', true)
-        .order('name')
+      const { data, error } = await supabase.from('pr_sellers').select('*').order('name')
       if (error) throw error
       setSellers(data || [])
     } catch (error: any) {
       console.error('Error loading sellers:', error)
+    }
+  }
+
+  /** ซิงก์ชื่อจาก pr_products เข้า pr_sellers แล้วโหลดตาราง (เรียกเมื่อเปิดแท็บ) */
+  async function loadSellers() {
+    try {
+      const { error } = await supabase.rpc('rpc_sync_pr_sellers_from_products')
+      if (error) console.warn('Sync sellers from products:', error.message)
+    } catch (e) {
+      console.warn('Sync sellers from products:', e)
+    }
+    await fetchSellersTable()
+  }
+
+  async function syncSellersFromProductsManual() {
+    setSellerSyncing(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_sync_pr_sellers_from_products')
+      if (error) throw error
+      const inserted = (data as { inserted?: number })?.inserted ?? 0
+      showMessage({
+        message:
+          inserted > 0
+            ? `ดึงชื่อผู้ขายจากสินค้าเพิ่มแล้ว ${inserted} รายการ`
+            : 'ชื่อผู้ขายในสินค้ามีในรายการแล้วทั้งหมด',
+      })
+      await fetchSellersTable()
+    } catch (error: any) {
+      console.error('Sync sellers failed:', error)
+      showMessage({ title: 'ผิดพลาด', message: error?.message || String(error) })
+    } finally {
+      setSellerSyncing(false)
     }
   }
 
@@ -747,6 +818,7 @@ export default function Settings() {
         name: sellerName.trim(),
         name_cn: sellerNameCn.trim(),
         purchase_channel: sellerPurchaseChannel.trim(),
+        seller_type: sellerType,
       }
       if (sellerEditingId) {
         const { error } = await supabase
@@ -763,8 +835,9 @@ export default function Settings() {
       setSellerName('')
       setSellerNameCn('')
       setSellerPurchaseChannel('')
+      setSellerType('foreign')
       setSellerEditingId(null)
-      loadSellers()
+      await fetchSellersTable()
     } catch (error: any) {
       console.error('Error saving seller:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
@@ -773,19 +846,23 @@ export default function Settings() {
     }
   }
 
-  async function deleteSeller(id: string) {
-    const ok = await showConfirm({ title: 'ลบผู้ขาย', message: 'ต้องการลบผู้ขายนี้หรือไม่?' })
-    if (!ok) return
+  async function toggleSellerVisibility(s: { id: string; is_active: boolean }) {
+    setSellerTogglingId(s.id)
     try {
       const { error } = await supabase
         .from('pr_sellers')
-        .update({ is_active: false })
-        .eq('id', id)
+        .update({ is_active: !s.is_active })
+        .eq('id', s.id)
       if (error) throw error
-      setSellers((prev) => prev.filter((s) => s.id !== id))
+      showMessage({
+        message: s.is_active ? 'ซ่อนผู้ขายเรียบร้อย' : 'เปิดใช้งานผู้ขายเรียบร้อย',
+      })
+      await fetchSellersTable()
     } catch (error: any) {
-      console.error('Error deleting seller:', error)
+      console.error('Error toggling seller visibility:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    } finally {
+      setSellerTogglingId(null)
     }
   }
 
@@ -1001,6 +1078,7 @@ export default function Settings() {
 
       if (error) throw error
       const map: Record<string, Record<ProductFieldKey, boolean>> = {}
+      const salesMap: Record<string, boolean> = {}
       ;(data || []).forEach((row: any) => {
         map[row.category] = {
           product_name: row.product_name ?? true,
@@ -1017,12 +1095,27 @@ export default function Settings() {
           notes: row.notes ?? true,
           attachment: row.attachment ?? true,
         }
+        const catKey = row.category != null ? String(row.category).trim() : ''
+        if (catKey) {
+          salesMap[catKey] = row.is_active_for_sales !== false
+        }
       })
       setCategoryFieldSettings(map)
+      setCategorySalesActive(salesMap)
     } catch (error: any) {
       console.error('Error loading category field settings:', error)
       setCategoryFieldSettings({})
+      setCategorySalesActive({})
     }
+  }
+
+  /** หมวดนี้เปิดใช้ในการขายหรือไม่ — ไม่มีใน DB ถือว่าเปิด */
+  function getCategorySalesActive(category: string): boolean {
+    return categorySalesActive[category] !== false
+  }
+
+  function setCategorySalesActiveFlag(category: string, value: boolean) {
+    setCategorySalesActive((prev) => ({ ...prev, [category]: value }))
   }
 
   function getCategoryFields(category: string): Record<ProductFieldKey, boolean> {
@@ -1059,6 +1152,7 @@ export default function Settings() {
             unit_price: fields.unit_price,
             notes: fields.notes,
             attachment: fields.attachment,
+            is_active_for_sales: getCategorySalesActive(category),
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'category' }
@@ -1134,9 +1228,23 @@ export default function Settings() {
 
   const OVERRIDE_PAGE_SIZE = 50
 
+  /** สินค้าในหมวดที่เปิดใช้ในการขาย (สำหรับ Override) */
+  const overrideEligibleProducts = useMemo(() => {
+    return allProducts.filter((p) => {
+      const c = (p.product_category || '').trim()
+      if (!c) return true
+      return categorySalesActive[c] !== false
+    })
+  }, [allProducts, categorySalesActive])
+
+  const productCategoriesActiveForSales = useMemo(
+    () => productCategories.filter((c) => categorySalesActive[c] !== false),
+    [productCategories, categorySalesActive]
+  )
+
   /** สินค้าที่กรองตามการค้นหาและหมวดหมู่ (memoized) */
   const filteredOverrideProducts = useMemo(() => {
-    let list = allProducts
+    let list = overrideEligibleProducts
     if (overrideCategoryFilter) {
       list = list.filter((p) => (p.product_category || '') === overrideCategoryFilter)
     }
@@ -1149,7 +1257,7 @@ export default function Settings() {
       )
     }
     return list
-  }, [allProducts, overrideCategoryFilter, overrideSearchTerm])
+  }, [overrideEligibleProducts, overrideCategoryFilter, overrideSearchTerm])
 
   const overrideTotalPages = Math.ceil(filteredOverrideProducts.length / OVERRIDE_PAGE_SIZE)
   const paginatedOverrideProducts = useMemo(() => {
@@ -1160,8 +1268,8 @@ export default function Settings() {
   async function saveProductOverrides() {
     setSavingProductOverrides(true)
     try {
-      const productsWithOverrides = allProducts.filter((p) => productHasOverrides(p.id))
-      const productsWithoutOverrides = allProducts.filter((p) => !productHasOverrides(p.id))
+      const productsWithOverrides = overrideEligibleProducts.filter((p) => productHasOverrides(p.id))
+      const productsWithoutOverrides = overrideEligibleProducts.filter((p) => !productHasOverrides(p.id))
 
       for (const product of productsWithOverrides) {
         const fields = getProductOverrideFields(product.id)
@@ -1723,6 +1831,7 @@ export default function Settings() {
     'production',
     'production_mb',
     'manager',
+    'technician',
     'picker',
     'auditor',
     'hr',
@@ -2618,8 +2727,66 @@ export default function Settings() {
       {activeTab === 'product-settings' && hasAccess('settings-product-settings') && (
         <>
         <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex justify-between items-center mb-2">
+            <div>
+              <h2 className="text-xl font-bold">เปิด/ปิดหมวดหมู่สำหรับการขาย</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                หมวดที่ปิดจะไม่แสดงในตารางฟิลด์ด้านล่างและไม่แสดงใน Override — รวมถึงไม่ให้เลือกสินค้าในหมวดนั้นตอนเปิดบิล
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={saveCategoryFieldSettings}
+              disabled={savingProductSettings || productCategories.length === 0}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+          {productCategories.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="bg-slate-600 text-white">
+                    <th className="p-3 text-left font-semibold whitespace-nowrap rounded-tl-xl">ชื่อหมวดหมู่สินค้า</th>
+                    <th className="p-3 text-center font-semibold whitespace-nowrap rounded-tr-xl min-w-[140px]">
+                      ใช้ในการขาย / เปิดบิล
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {productCategories.map((category, idx) => (
+                    <tr key={category} className={`border-b border-gray-200 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="p-3 border-r border-gray-200 font-medium whitespace-nowrap">{category}</td>
+                      <td className="p-3 text-center border-r border-gray-200">
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={getCategorySalesActive(category)}
+                            onChange={(e) => setCategorySalesActiveFlag(category, e.target.checked)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <span className="text-gray-700">{getCategorySalesActive(category) ? 'เปิด' : 'ปิด'}</span>
+                        </label>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white p-6 rounded-lg shadow mt-6">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
+              <p className="text-sm text-gray-500 mt-1">เฉพาะหมวดที่เปิดใช้ในการขายด้านบน — บันทึกร่วมกับปุ่มในบล็อกด้านบน</p>
+            </div>
             <button
               onClick={saveCategoryFieldSettings}
               disabled={savingProductSettings || productCategories.length === 0}
@@ -2631,6 +2798,10 @@ export default function Settings() {
           {productCategories.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
+            </div>
+          ) : productCategoriesActiveForSales.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              ไม่มีหมวดหมู่ที่เปิดใช้ในการขาย — เปิดหมวดจากตารางด้านบนเพื่อตั้งค่าฟิลด์
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -2646,7 +2817,7 @@ export default function Settings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {productCategories.map((category, idx) => (
+                  {productCategoriesActiveForSales.map((category, idx) => (
                     <tr key={category} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3 border-r border-gray-200 font-semibold whitespace-nowrap">{category}</td>
                       {PRODUCT_FIELD_KEYS.map(({ key }) => (
@@ -2676,7 +2847,7 @@ export default function Settings() {
             </div>
             <button
               onClick={saveProductOverrides}
-              disabled={savingProductOverrides || allProducts.length === 0}
+              disabled={savingProductOverrides || overrideEligibleProducts.length === 0}
               className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {savingProductOverrides ? 'กำลังบันทึก...' : 'บันทึก Override'}
@@ -2715,15 +2886,17 @@ export default function Settings() {
               onChange={(e) => { setOverrideCategoryFilter(e.target.value); setOverridePage(1) }}
               className="px-3 py-2 border rounded-lg text-sm"
             >
-              <option value="">ทุกหมวดหมู่</option>
-              {productCategories.map((cat) => (
+              <option value="">ทุกหมวดหมู่ (ที่เปิดการขาย)</option>
+              {productCategoriesActiveForSales.map((cat) => (
                 <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
           </div>
-          {allProducts.length === 0 ? (
+          {overrideEligibleProducts.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
-              ไม่พบสินค้า
+              {allProducts.length === 0
+                ? 'ไม่พบสินค้า'
+                : 'ไม่มีสินค้าในหมวดที่เปิดใช้ในการขาย — เปิดหมวดจากตารางด้านบน'}
             </div>
           ) : filteredOverrideProducts.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
@@ -2782,7 +2955,7 @@ export default function Settings() {
               <div className="flex items-center justify-between mt-3 text-sm text-gray-600">
                 <span>
                   แสดง {Math.min((overridePage - 1) * OVERRIDE_PAGE_SIZE + 1, filteredOverrideProducts.length)}–{Math.min(overridePage * OVERRIDE_PAGE_SIZE, filteredOverrideProducts.length)} จาก {filteredOverrideProducts.length} รายการ
-                  {filteredOverrideProducts.length < allProducts.length && ` (ทั้งหมด ${allProducts.length})`}
+                  {filteredOverrideProducts.length < overrideEligibleProducts.length && ` (ทั้งหมด ${overrideEligibleProducts.length})`}
                 </span>
                 {overrideTotalPages > 1 && (
                   <div className="flex items-center gap-2">
@@ -2833,8 +3006,22 @@ export default function Settings() {
       {/* ผู้ขาย Tab */}
       {activeTab === 'sellers' && hasAccess('settings-sellers') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
+              <p className="text-sm text-gray-600 max-w-2xl">
+                ระบบดึงชื่อผู้ขายที่ไม่ซ้ำจากรายการสินค้าให้อัตโนมัติเมื่อมีการเพิ่มหรือแก้ไขสินค้า
+                คุณยังกรอกชื่อภาษาจีน ช่องทางซื้อ และประเภทผู้ขาย (ไทย / ต่างประเทศ) ได้จากปุ่มแก้ไข
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={syncSellersFromProductsManual}
+              disabled={sellerSyncing}
+              className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold text-sm disabled:opacity-50 whitespace-nowrap"
+            >
+              {sellerSyncing ? 'กำลังซิงก์...' : 'ซิงก์จากสินค้าตอนนี้'}
+            </button>
           </div>
           <div className="flex gap-2 items-end flex-wrap">
             <div className="flex-1 min-w-[180px]">
@@ -2870,6 +3057,17 @@ export default function Settings() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
               />
             </div>
+            <div className="w-full sm:w-auto sm:min-w-[160px]">
+              <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทผู้ขาย</label>
+              <select
+                value={sellerType}
+                onChange={(e) => setSellerType(e.target.value as 'thailand' | 'foreign')}
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
+              >
+                <option value="thailand">ประเทศไทย</option>
+                <option value="foreign">ต่างประเทศ</option>
+              </select>
+            </div>
             <button
               onClick={saveSeller}
               disabled={sellerSaving}
@@ -2879,7 +3077,13 @@ export default function Settings() {
             </button>
             {sellerEditingId && (
               <button
-                onClick={() => { setSellerEditingId(null); setSellerName(''); setSellerNameCn(''); setSellerPurchaseChannel('') }}
+                onClick={() => {
+                  setSellerEditingId(null)
+                  setSellerName('')
+                  setSellerNameCn('')
+                  setSellerPurchaseChannel('')
+                  setSellerType('foreign')
+                }}
                 className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100"
               >
                 ยกเลิก
@@ -2889,6 +3093,60 @@ export default function Settings() {
           {sellers.length === 0 ? (
             <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลผู้ขาย</p>
           ) : (
+            <>
+              <div className="w-full flex justify-end pt-1">
+                <div className="flex flex-wrap items-start justify-end gap-4 sm:gap-6">
+                  <div className="w-[200px] max-w-full shrink-0">
+                    <label
+                      htmlFor="seller-visibility-filter"
+                      className="block text-sm font-semibold text-gray-700 mb-1 min-h-[1.25rem]"
+                    >
+                      สถานะ
+                    </label>
+                    <select
+                      id="seller-visibility-filter"
+                      value={sellerVisibilityFilter}
+                      onChange={(e) =>
+                        setSellerVisibilityFilter(e.target.value as 'active' | 'hidden' | 'all')
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm bg-white"
+                    >
+                      <option value="active">ใช้งานอยู่</option>
+                      <option value="hidden">ที่ซ่อนอยู่</option>
+                      <option value="all">ทั้งหมด</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1 min-h-[1.25rem] leading-snug">
+                      ซ่อนอยู่ {sellerHiddenCount} รายการ
+                    </p>
+                  </div>
+                  <div className="w-[200px] max-w-full shrink-0">
+                    <label
+                      htmlFor="seller-type-filter"
+                      className="block text-sm font-semibold text-gray-700 mb-1 min-h-[1.25rem]"
+                    >
+                      กรองประเภทผู้ขาย
+                    </label>
+                    <select
+                      id="seller-type-filter"
+                      value={sellerTypeTableFilter}
+                      onChange={(e) =>
+                        setSellerTypeTableFilter(e.target.value as 'all' | 'thailand' | 'foreign')
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-sm bg-white"
+                    >
+                      <option value="all">ทั้งหมด</option>
+                      <option value="thailand">ประเทศไทย</option>
+                      <option value="foreign">ต่างประเทศ</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1 min-h-[1.25rem] leading-snug tabular-nums">
+                      แสดง {sellersFilteredForTable.length} / {sellersAfterVisibility.length} รายการ
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {sellersFilteredForTable.length === 0 ? (
+                <p className="text-gray-400 italic text-center py-8">ไม่มีรายการที่ตรงกับตัวกรอง</p>
+              ) : (
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-blue-600 text-white">
@@ -2896,36 +3154,63 @@ export default function Settings() {
                   <th className="px-4 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
                   <th className="px-4 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
                   <th className="px-4 py-2.5 text-left font-semibold">ช่องทางซื้อ</th>
-                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl w-40">การจัดการ</th>
+                  <th className="px-4 py-2.5 text-left font-semibold whitespace-nowrap">ประเภทผู้ขาย</th>
+                  <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl min-w-[260px]">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
-                {sellers.map((s, idx) => (
+                {sellersFilteredForTable.map((s, idx) => (
                   <tr key={s.id} className={`border-t hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
                     <td className="px-4 py-2.5 font-semibold">{s.name}</td>
                     <td className="px-4 py-2.5 text-gray-700">{s.name_cn || '-'}</td>
                     <td className="px-4 py-2.5 text-gray-700">{s.purchase_channel || '-'}</td>
+                    <td className="px-4 py-2.5 text-gray-700">
+                      {s.seller_type === 'thailand' ? 'ประเทศไทย' : 'ต่างประเทศ'}
+                    </td>
                     <td className="px-4 py-2.5 text-right">
-                      <div className="flex gap-2 justify-end">
+                      <div className="flex gap-2 justify-end items-center flex-wrap">
                         <button
-                          onClick={() => { setSellerEditingId(s.id); setSellerName(s.name); setSellerNameCn(s.name_cn || ''); setSellerPurchaseChannel(s.purchase_channel || '') }}
+                          type="button"
+                          onClick={() => {
+                            setSellerEditingId(s.id)
+                            setSellerName(s.name)
+                            setSellerNameCn(s.name_cn || '')
+                            setSellerPurchaseChannel(s.purchase_channel || '')
+                            setSellerType(s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+                          }}
                           className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
                         >
                           แก้ไข
                         </button>
                         <button
-                          onClick={() => deleteSeller(s.id)}
-                          className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs font-semibold"
+                          type="button"
+                          onClick={() => toggleSellerVisibility(s)}
+                          disabled={sellerTogglingId === s.id}
+                          className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                            s.is_active ? 'bg-emerald-500' : 'bg-gray-400'
+                          }`}
+                          title={s.is_active ? 'กดเพื่อซ่อนผู้ขาย' : 'กดเพื่อเปิดใช้งานผู้ขาย'}
                         >
-                          ลบ
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                              s.is_active ? 'translate-x-8' : 'translate-x-1'
+                            }`}
+                          />
                         </button>
+                        <span
+                          className={`text-xs font-semibold ${s.is_active ? 'text-emerald-700' : 'text-gray-500'}`}
+                        >
+                          {sellerTogglingId === s.id ? 'กำลังบันทึก...' : s.is_active ? 'เปิด' : 'ซ่อน'}
+                        </span>
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+              )}
+            </>
           )}
         </div>
       )}

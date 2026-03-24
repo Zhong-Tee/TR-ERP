@@ -24,6 +24,7 @@ import {
   FiBarChart2,
   FiSettings,
   FiUsers,
+  FiPrinter,
 } from 'react-icons/fi'
 import { LuWarehouse, LuGauge } from 'react-icons/lu'
 
@@ -62,7 +63,14 @@ const menuItems: MenuItem[] = [
     label: 'Plan',
     icon: <FiClipboard className="w-6 h-6" />,
     path: '/plan',
-    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production'],
+  },
+  {
+    key: 'machinery',
+    label: 'Machinery',
+    icon: <FiPrinter className="w-6 h-6" />,
+    path: '/machinery',
+    roles: ['superadmin', 'admin', 'production'],
   },
   {
     key: 'wms',

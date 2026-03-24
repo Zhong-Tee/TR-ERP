@@ -138,6 +138,13 @@ export async function deleteEmployee(id: string) {
   if (error) pgError(error)
 }
 
+/** รหัสถัดไปที่จะได้เมื่อบันทึก (ไม่กินลำดับ) — ต้องมี migration 177 */
+export async function previewNextEmployeeCode(): Promise<string> {
+  const { data, error } = await supabase.rpc('hr_preview_next_employee_code')
+  if (error) pgError(error)
+  return String(data ?? '')
+}
+
 // ─── Leave Types ────────────────────────────────────────────────────────────
 
 export async function fetchLeaveTypes() {

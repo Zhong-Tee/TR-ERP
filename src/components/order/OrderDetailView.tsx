@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
-import { Order, OrderItem } from '../../types'
+import { Order, OrderItem, IssueType } from '../../types'
 import { parseAddressText, ParsedAddress } from '../../lib/thaiAddress'
 import { e164ToLocal } from '../../lib/thaiPhone'
 import * as XLSX from 'xlsx'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { useMenuAccess } from '../../contexts/MenuAccessContext'
+import Modal from '../ui/Modal'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
 function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
@@ -17,9 +20,27 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
   )
 }
 
-export default function OrderDetailView({ order: initialOrder, onClose }: { order: Order; onClose: () => void }) {
+export default function OrderDetailView({
+  order: initialOrder,
+  onClose,
+  readOnly = false,
+}: {
+  order: Order
+  onClose: () => void
+  readOnly?: boolean
+}) {
+  const { user } = useAuthContext()
+  const { hasAccess } = useMenuAccess()
   const [fullOrder, setFullOrder] = useState<Order | null>(null)
   const [loadedItems, setLoadedItems] = useState<OrderItem[] | null>(null)
+  const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
+  const [ticketOpen, setTicketOpen] = useState(false)
+  const [ticketTypeId, setTicketTypeId] = useState('')
+  const [ticketTitle, setTicketTitle] = useState('')
+  const [ticketCreating, setTicketCreating] = useState(false)
+  const [ticketSuccessOpen, setTicketSuccessOpen] = useState(false)
+  const [ticketWorkOrderName, setTicketWorkOrderName] = useState<string | null>(null)
+  const [ticketWorkOrderLoading, setTicketWorkOrderLoading] = useState(false)
 
   /* ── Right-click context menu & edit link ── */
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; itemIdx: number } | null>(null)
@@ -45,6 +66,7 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
   }
 
   function handleEditLinkOpen() {
+    if (readOnly) return
     if (ctxMenu == null) return
     const item = items[ctxMenu.itemIdx]
     setEditLinkItem({ idx: ctxMenu.itemIdx, value: item?.file_attachment || '' })
@@ -52,6 +74,7 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
   }
 
   async function handleEditLinkSave() {
+    if (readOnly) return
     if (!editLinkItem) return
     const item = items[editLinkItem.idx]
     if (!item?.id) return
@@ -147,9 +170,80 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
   }, [order.id, inlineItems.length, isPartial])
 
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
+  const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
 
   const fmt = (n: number | null | undefined) =>
     Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  useEffect(() => {
+    if (!ticketOpen) return
+    let cancelled = false
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('or_issue_types')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+      if (!cancelled && !error) setIssueTypes((data || []) as IssueType[])
+    })()
+    return () => { cancelled = true }
+  }, [ticketOpen])
+
+  useEffect(() => {
+    if (!ticketOpen) return
+    let cancelled = false
+    ;(async () => {
+      setTicketWorkOrderLoading(true)
+      try {
+        let wo = order.work_order_name || null
+        if (!wo && order.id) {
+          const { data } = await supabase
+            .from('or_orders')
+            .select('work_order_name')
+            .eq('id', order.id)
+            .single()
+          wo = (data as { work_order_name?: string | null } | null)?.work_order_name || null
+        }
+        if (!cancelled) setTicketWorkOrderName(wo)
+      } finally {
+        if (!cancelled) setTicketWorkOrderLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [ticketOpen, order.id, order.work_order_name])
+
+  async function handleCreateTicket() {
+    if (!user) return
+    if (!ticketWorkOrderName) {
+      alert('ไม่พบเลขใบงานของบิลนี้ กรุณาตรวจสอบใบงานก่อนเปิด Ticket')
+      return
+    }
+    if (!ticketTitle.trim()) {
+      alert('กรุณากรอกหัวข้อ')
+      return
+    }
+    setTicketCreating(true)
+    try {
+      const { error } = await supabase.from('or_issues').insert({
+        order_id: order.id,
+        work_order_name: ticketWorkOrderName,
+        type_id: ticketTypeId || null,
+        title: ticketTitle.trim(),
+        status: 'On',
+        created_by: user.id,
+      })
+      if (error) throw error
+      setTicketOpen(false)
+      setTicketTitle('')
+      setTicketTypeId('')
+      setTicketSuccessOpen(true)
+    } catch (error: any) {
+      console.error('Error creating issue:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setTicketCreating(false)
+    }
+  }
 
   /* ── Excel Download ── */
   function handleDownloadExcel() {
@@ -218,6 +312,15 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
           <p className="text-sm text-blue-200 select-all">{order.bill_no}</p>
         </div>
         <div className="flex items-center gap-2">
+          {canOpenTicket && (
+            <button
+              type="button"
+              onClick={() => setTicketOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/90 hover:bg-emerald-500 border border-emerald-200/40 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              เปิด Ticket
+            </button>
+          )}
           <button
             type="button"
             onClick={handleDownloadExcel}
@@ -321,7 +424,11 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
                     const isTierProduct = SHOW_TIER_PRODUCTS.includes(item.product_name || '')
                     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
                     return (
-                    <tr key={item.id} className="hover:bg-blue-50/40 transition-colors cursor-context-menu" onContextMenu={(e) => handleContextMenu(e, idx)}>
+                    <tr
+                      key={item.id}
+                      className={`hover:bg-blue-50/40 transition-colors ${readOnly ? '' : 'cursor-context-menu'}`}
+                      onContextMenu={readOnly ? undefined : (e) => handleContextMenu(e, idx)}
+                    >
                       <td className="px-3 py-2 text-gray-400">{idx + 1}</td>
                       <td className="px-3 py-2 font-medium text-gray-900 select-all">{item.product_name}</td>
                       <td className="px-3 py-2 text-gray-700 select-all">{item.ink_color || '-'}</td>
@@ -443,6 +550,88 @@ export default function OrderDetailView({ order: initialOrder, onClose }: { orde
           </div>
         </div>
       )}
+
+      {/* ── Create Ticket Dialog ── */}
+      {ticketOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40" onClick={() => !ticketCreating && setTicketOpen(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h4 className="text-sm font-bold text-gray-800">เปิด Ticket</h4>
+            <div className="text-xs text-gray-500 bg-gray-50 border rounded-lg p-2">
+              บิล: <span className="font-semibold text-gray-700">{order.bill_no || '-'}</span>
+                <span className="ml-2">
+                  ใบงาน:{' '}
+                  <span className="font-semibold text-gray-700">
+                    {ticketWorkOrderLoading ? 'กำลังโหลด...' : (ticketWorkOrderName || 'ไม่มีเลขใบงาน')}
+                  </span>
+                </span>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">ประเภท</label>
+              <select
+                value={ticketTypeId}
+                onChange={(e) => setTicketTypeId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg bg-white"
+              >
+                <option value="">-- ไม่ระบุ --</option>
+                {issueTypes.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">หัวข้อ</label>
+              <input
+                value={ticketTitle}
+                onChange={(e) => setTicketTitle(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+                placeholder="เช่น งานด่วน/ต้องแก้ไข"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateTicket() }}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTicketOpen(false)}
+                disabled={ticketCreating}
+                className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateTicket}
+                disabled={ticketCreating || ticketWorkOrderLoading || !ticketWorkOrderName}
+                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {ticketCreating ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Modal
+        open={ticketSuccessOpen}
+        onClose={() => setTicketSuccessOpen(false)}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-green-600">
+            <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h4 className="text-base font-bold text-gray-800 mb-1">เปิด Ticket สำเร็จ</h4>
+          <p className="text-sm text-gray-500 mb-4">ระบบได้บันทึก Ticket เรียบร้อยแล้ว</p>
+          <button
+            type="button"
+            onClick={() => setTicketSuccessOpen(false)}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
     </div>
   )
 }

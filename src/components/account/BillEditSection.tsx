@@ -62,6 +62,7 @@ type EditEligibility = {
 type SearchResult = {
   id: string
   bill_no: string
+  channel_order_no: string | null
   channel_code: string
   customer_name: string
   customer_address: string
@@ -124,13 +125,13 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no')
+        .select('id, bill_no, channel_order_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no')
         .order('created_at', { ascending: false })
         .limit(50)
 
       if (searchQuery.trim()) {
         const q = searchQuery.trim()
-        query = query.or(`bill_no.ilike.%${q}%,customer_name.ilike.%${q}%,customer_address.ilike.%${q}%`)
+        query = query.or(`bill_no.ilike.%${q}%,channel_order_no.ilike.%${q}%,customer_name.ilike.%${q}%,customer_address.ilike.%${q}%`)
       }
       if (filterChannel) query = query.eq('channel_code', filterChannel)
       if (filterDateFrom) query = query.gte('entry_date', filterDateFrom)
@@ -483,6 +484,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                   <tr className="bg-gray-50 text-left text-gray-600">
                     <th className="px-4 py-3 font-semibold">เลขบิล</th>
                     <th className="px-4 py-3 font-semibold">ช่องทาง</th>
+                    <th className="px-4 py-3 font-semibold">เลขคำสั่งซื้อ</th>
                     <th className="px-4 py-3 font-semibold">ลูกค้า</th>
                     <th className="px-4 py-3 font-semibold">ยอดรวม</th>
                     <th className="px-4 py-3 font-semibold">สถานะ</th>
@@ -507,6 +509,9 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                         </td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold">{r.channel_code}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="font-mono text-gray-700">{r.channel_order_no || '-'}</span>
                         </td>
                         <td className="px-4 py-3 max-w-[200px] truncate">{r.customer_name}</td>
                         <td className="px-4 py-3 font-semibold tabular-nums">{r.total_amount?.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>

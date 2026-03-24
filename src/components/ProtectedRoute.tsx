@@ -2,7 +2,13 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { UserRole } from '../types'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
-import { isRoleInAllowedList, PARENT_SUB_PAGES, resolveMenuKeyFromPath, WMS_MOBILE_SPECIAL_ROLES } from '../config/accessPolicy'
+import {
+  isRoleInAllowedList,
+  PARENT_SUB_PAGES,
+  resolveMenuKeyFromPath,
+  TECHNICIAN_ROLE,
+  WMS_MOBILE_SPECIAL_ROLES,
+} from '../config/accessPolicy'
 
 /** หา path ของ parent menu แล้วหา sub-page แรกที่ user มีสิทธิ์ */
 function findFirstAccessibleSubPage(
@@ -89,9 +95,23 @@ export default function ProtectedRoute({
     return <>{children}</>
   }
 
-  // WMS mobile roles: bypass menuAccess, only allow /wms
+  // Technician: mobile-only /machinery
+  if (user.role === TECHNICIAN_ROLE) {
+    const ok = location.pathname.startsWith('/machinery')
+    if (ok && (!allowedRoles || isRoleInAllowedList(user.role, allowedRoles))) {
+      return <>{children}</>
+    }
+    return <NoAccessFallback />
+  }
+
+  // WMS mobile roles: bypass menuAccess, /wms or /machinery (picker ไม่เข้า machinery)
   if (WMS_MOBILE_SPECIAL_ROLES.includes(user.role)) {
-    if (location.pathname.startsWith('/wms') && (!allowedRoles || isRoleInAllowedList(user.role, allowedRoles))) {
+    const onMachinery = location.pathname.startsWith('/machinery')
+    if (user.role === 'picker' && onMachinery) {
+      return <NoAccessFallback />
+    }
+    const ok = location.pathname.startsWith('/wms') || onMachinery
+    if (ok && (!allowedRoles || isRoleInAllowedList(user.role, allowedRoles))) {
       return <>{children}</>
     }
     return <NoAccessFallback />

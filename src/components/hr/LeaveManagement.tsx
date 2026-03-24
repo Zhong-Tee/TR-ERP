@@ -12,6 +12,22 @@ import Modal from '../ui/Modal'
 const BUCKET_DOCS = 'hr-docs'
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected'
+const WEEKDAY_LABELS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์'] as const
+
+function asDateOnly(value: string): Date {
+  return new Date(`${value}T00:00:00`)
+}
+
+function toDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function thaiWeekdayName(d: Date): string {
+  return d.toLocaleDateString('th-TH', { weekday: 'long' })
+}
 
 function statusBadgeClass(status: HRLeaveRequest['status']): string {
   switch (status) {
@@ -53,13 +69,17 @@ function medicalCertUrl(url: string | undefined): string | null {
 
 export default function LeaveManagement() {
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
-  const [, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
+  const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'list' | 'approval'>('list')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchName, setSearchName] = useState('')
   const [showCalendar, setShowCalendar] = useState(false)
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date()
+    return new Date(now.getFullYear(), now.getMonth(), 1)
+  })
   const [detailRequest, setDetailRequest] = useState<HRLeaveRequest | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -101,6 +121,64 @@ export default function LeaveManagement() {
   })
 
   const pendingRequests = requests.filter((r) => r.status === 'pending')
+  const calendarRequests = requests.filter((r) => r.status === 'approved' || r.status === 'pending')
+
+  const today = new Date()
+  const todayKey = toDateKey(today)
+  const monthYearLabel = calendarMonth.toLocaleDateString('th-TH', {
+    month: 'long',
+    year: 'numeric',
+  })
+
+  const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
+  const monthEnd = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0)
+  const startOffset = (monthStart.getDay() + 6) % 7 // Mon=0 ... Sun=6
+  const totalCells = Math.ceil((startOffset + monthEnd.getDate()) / 7) * 7
+
+  const leavesByDate = calendarRequests.reduce<Record<string, HRLeaveRequest[]>>((acc, req) => {
+    const start = asDateOnly(req.start_date)
+    const end = asDateOnly(req.end_date)
+    for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const key = toDateKey(d)
+      if (!acc[key]) acc[key] = []
+      acc[key].push(req)
+    }
+    return acc
+  }, {})
+
+  const calendarCells = Array.from({ length: totalCells }, (_, idx) => {
+    const d = new Date(monthStart)
+    d.setDate(1 - startOffset + idx)
+    const key = toDateKey(d)
+    return {
+      date: d,
+      key,
+      inMonth: d.getMonth() === calendarMonth.getMonth(),
+      isToday: key === todayKey,
+      leaves: leavesByDate[key] ?? [],
+    }
+  })
+
+  const todayLeaves = leavesByDate[todayKey] ?? []
+
+  const approvedUsedByEmpYearType = requests.reduce<Record<string, number>>((acc, req) => {
+    if (req.status !== 'approved') return acc
+    const year = new Date(req.start_date).getFullYear()
+    const key = `${req.employee_id}|${year}|${req.leave_type_id}`
+    acc[key] = (acc[key] ?? 0) + Number(req.total_days ?? 0)
+    return acc
+  }, {})
+
+  const getLeaveRemainingByTypes = (employeeId: string, dateForYear: string): string => {
+    const year = new Date(dateForYear).getFullYear()
+    const parts = leaveTypes.map((t) => {
+      const max = Number(t.max_days_per_year ?? 0)
+      const used = approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0
+      const remaining = Math.max(0, max - used)
+      return `${t.name}: ${remaining}`
+    })
+    return parts.length ? parts.join(' | ') : '-'
+  }
 
   const handleApprove = async (id: string) => {
     setActionLoading(true)
@@ -199,10 +277,14 @@ export default function LeaveManagement() {
             <button
               type="button"
               onClick={() => setShowCalendar(!showCalendar)}
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-surface-100 text-surface-700 hover:bg-surface-200 transition-colors flex items-center gap-1.5"
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                showCalendar
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
+              }`}
             >
               <FiCalendar className="w-4 h-4" />
-              ปฏิทิน (เร็วๆ นี้)
+              ปฏิทินลา
             </button>
           </div>
           {activeTab === 'list' && (
@@ -242,6 +324,99 @@ export default function LeaveManagement() {
           </div>
         )}
 
+        {showCalendar && (
+          <div className="mx-6 mt-4 mb-2 rounded-xl border border-surface-200 bg-surface-50/70 p-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-base font-semibold text-surface-800">ปฏิทินลา</h3>
+                <p className="text-sm text-surface-600">
+                  วันนี้คือ{` `}
+                  <span className="font-medium text-surface-800">
+                    {thaiWeekdayName(today)} {today.toLocaleDateString('th-TH')}
+                  </span>
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
+                  }
+                  className="px-3 py-1.5 rounded-lg border border-surface-300 bg-white text-sm text-surface-700 hover:bg-surface-100"
+                >
+                  เดือนก่อน
+                </button>
+                <div className="min-w-[170px] text-center text-sm font-semibold text-surface-800">
+                  {monthYearLabel}
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
+                  }
+                  className="px-3 py-1.5 rounded-lg border border-surface-300 bg-white text-sm text-surface-700 hover:bg-surface-100"
+                >
+                  เดือนถัดไป
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-7 gap-2">
+              {WEEKDAY_LABELS.map((day) => (
+                <div key={day} className="rounded-lg bg-surface-100 px-2 py-2 text-center text-xs font-semibold text-surface-600">
+                  {day}
+                </div>
+              ))}
+              {calendarCells.map((cell) => (
+                <div
+                  key={cell.key}
+                  className={`min-h-[110px] rounded-lg border p-2 ${
+                    cell.inMonth
+                      ? 'bg-white border-surface-200'
+                      : 'bg-surface-50 border-surface-100 text-surface-400'
+                  } ${cell.isToday ? 'ring-2 ring-emerald-500 border-emerald-300' : ''}`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
+                      {cell.date.getDate()}
+                    </span>
+                    {cell.leaves.length > 0 && cell.inMonth && (
+                      <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
+                        {cell.leaves.length} คนลา
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    {cell.leaves.slice(0, 3).map((req) => (
+                      <div
+                        key={`${cell.key}-${req.id}`}
+                        className={`rounded px-1.5 py-1 text-[11px] leading-tight truncate ${
+                          req.status === 'approved'
+                            ? 'bg-emerald-50 text-emerald-800'
+                            : 'bg-amber-50 text-amber-800'
+                        }`}
+                        title={`${employeeDisplayName(req)} · ${statusLabel(req.status)}`}
+                      >
+                        {employeeDisplayName(req)}
+                      </div>
+                    ))}
+                    {cell.leaves.length > 3 && (
+                      <div className="text-[11px] text-surface-500">+ อีก {cell.leaves.length - 3} คน</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-lg border border-surface-200 bg-white px-3 py-2 text-sm text-surface-700">
+              <span className="font-medium">รายการลาวันนี้:</span>{' '}
+              {todayLeaves.length === 0
+                ? 'ไม่มีผู้ลาวันนี้'
+                : todayLeaves.map((r) => employeeDisplayName(r)).join(', ')}
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
@@ -256,6 +431,7 @@ export default function LeaveManagement() {
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม-สิ้นสุด</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันลาคงเหลือ</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
                 </tr>
@@ -263,7 +439,7 @@ export default function LeaveManagement() {
               <tbody>
                 {filteredRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center text-surface-500 text-sm">
+                    <td colSpan={8} className="px-6 py-12 text-center text-surface-500 text-sm">
                       ไม่มีรายการ
                     </td>
                   </tr>
@@ -284,6 +460,12 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700">{req.total_days}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
+                      </td>
+                      <td
+                        className="px-6 py-3 text-xs text-surface-700 max-w-[320px] truncate"
+                        title={getLeaveRemainingByTypes(req.employee_id, req.start_date)}
+                      >
+                        {getLeaveRemainingByTypes(req.employee_id, req.start_date)}
                       </td>
                       <td className="px-6 py-3">
                         <span

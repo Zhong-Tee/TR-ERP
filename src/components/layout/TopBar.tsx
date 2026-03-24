@@ -25,6 +25,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })
+  const [notifyCollapsed, setNotifyCollapsed] = useState(true)
+  const [notifyBlinking, setNotifyBlinking] = useState(false)
+  const prevIssueCountRef = useRef(0)
+  const prevChatCountRef = useRef(0)
 
   // ── รับค่า warehouse count จาก Sidebar RPC (ลด 2 queries + 1 realtime channel ซ้ำ) ──
   useEffect(() => {
@@ -75,6 +79,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (path.startsWith('/account')) return 'บัญชี'
     if (path.startsWith('/export')) return 'ใบงาน'
     if (path.startsWith('/plan')) return 'Plan'
+    if (path.startsWith('/machinery')) return 'Machinery'
     if (path.startsWith('/wms')) return 'จัดสินค้า'
     if (path.startsWith('/qc')) return 'QC'
     if (path.startsWith('/packing')) return 'จัดของ'
@@ -178,6 +183,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (!canSeeChat) {
       setIssueOnCount(0)
       setNewChatCount(0)
+      setNotifyCollapsed(true)
+      setNotifyBlinking(false)
       return
     }
     loadChatCounts()
@@ -191,6 +198,19 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       supabase.removeChannel(channel)
     }
   }, [canSeeChat, loadChatCounts, debouncedLoadChatCounts])
+
+  // เด้งกล่องแจ้งเตือนออกทันทีเมื่อมี Issue/Chat ใหม่เพิ่มขึ้น
+  useEffect(() => {
+    if (!canSeeChat) return
+    const hasNewIssue = issueOnCount > prevIssueCountRef.current
+    const hasNewChat = newChatCount > prevChatCountRef.current
+    if (hasNewIssue || hasNewChat) {
+      setNotifyCollapsed(false)
+      setNotifyBlinking(true)
+    }
+    prevIssueCountRef.current = issueOnCount
+    prevChatCountRef.current = newChatCount
+  }, [canSeeChat, issueOnCount, newChatCount])
 
   // ── เมื่อ user อ่านแชทแล้ว → รีเฟรช count ──
   useEffect(() => {
@@ -472,6 +492,88 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {canSeeChat && (
+        <div className="fixed bottom-6 right-6 z-50">
+          {notifyCollapsed ? (
+            <button
+              type="button"
+              onClick={() => { setNotifyCollapsed(false); setNotifyBlinking(false) }}
+              className={`group -mr-6 rounded-l-xl border border-gray-200 bg-white shadow-xl px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 transition-colors ${
+                notifyBlinking ? 'animate-pulse ring-2 ring-red-300' : ''
+              }`}
+              title="ขยายแจ้งเตือน"
+              aria-label="ขยายแจ้งเตือน"
+            >
+              <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              <span className="text-xs font-semibold text-gray-700 whitespace-nowrap">แจ้งเตือน</span>
+              {(issueOnCount > 0 || newChatCount > 0) && (
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-500 text-white animate-bounce">
+                  {issueOnCount + newChatCount}
+                </span>
+              )}
+            </button>
+          ) : (
+            <div
+              className={`w-[380px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden ${
+                notifyBlinking ? 'animate-pulse ring-2 ring-red-300' : ''
+              }`}
+              onClick={() => setNotifyBlinking(false)}
+            >
+              <div className="px-3 py-2 bg-emerald-600 text-white flex items-center justify-between">
+                <div className="font-bold text-base flex items-center gap-2">
+                  แจ้งเตือน
+                  {notifyBlinking && (
+                    <span className="inline-flex w-2.5 h-2.5 rounded-full bg-red-300 animate-ping" />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setNotifyCollapsed(true); setNotifyBlinking(false) }}
+                  className="w-7 h-7 rounded-lg bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
+                  title="ย่อ"
+                  aria-label="ย่อ"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+              <div className="p-3 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => { setNotifyBlinking(false); handleIssueClick('on') }}
+                  className={`w-full flex items-center justify-between rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-base hover:bg-yellow-100 transition-colors ${
+                    issueOnCount > 0 ? 'ring-1 ring-yellow-300' : ''
+                  }`}
+                >
+                  <span className="font-medium text-gray-700">New Issue</span>
+                  <span className={`px-2.5 py-1 rounded-full text-sm font-bold bg-yellow-400 text-emerald-900 ${
+                    issueOnCount > 0 ? 'animate-bounce' : ''
+                  }`}>
+                    {issueOnCount}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setNotifyBlinking(false); handleIssueClick('close') }}
+                  className={`w-full flex items-center justify-between rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-base hover:bg-orange-100 transition-colors ${
+                    newChatCount > 0 ? 'ring-1 ring-orange-300' : ''
+                  }`}
+                >
+                  <span className="font-medium text-gray-700">New Chat</span>
+                  <span className={`px-2.5 py-1 rounded-full text-sm font-bold bg-orange-500 text-white ${
+                    newChatCount > 0 ? 'animate-bounce' : ''
+                  }`}>
+                    {newChatCount}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {MessageModal}

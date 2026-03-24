@@ -136,7 +136,6 @@ export default function IssueBoard({
       .channel(`issue-board-${scope}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issues' }, (payload) => {
         const row = payload.new as Issue
-        if (scope === 'plan' && (!row.work_order_name || !workOrderOptions.includes(row.work_order_name))) return
         if (row.status === 'On') setNewIssueCount((prev) => prev + 1)
         loadIssues()
       })
@@ -201,9 +200,6 @@ export default function IssueBoard({
       if (error) throw error
 
       let list = (issues || []) as Issue[]
-      if (scope === 'plan') {
-        list = list.filter((i) => i.work_order_name != null && String(i.work_order_name).trim() !== '')
-      }
       const orderIds = Array.from(new Set(list.map((i) => i.order_id))).filter(Boolean)
       let orderMap = new Map<string, Order>()
       if (orderIds.length > 0) {
@@ -570,11 +566,11 @@ export default function IssueBoard({
                     <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-medium">
                       ผู้เปิด Ticket: {issue.creatorName || '-'}
                     </span>
-                    {issue.work_order_name && (
-                      <span className="px-3 py-1.5 rounded-lg bg-green-100 text-green-800 font-medium">
-                        {issue.work_order_name}
-                      </span>
-                    )}
+                    <span className={`px-3 py-1.5 rounded-lg font-medium ${
+                      issue.work_order_name ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                    }`}>
+                      {issue.work_order_name || 'ไม่มีเลขใบงาน'}
+                    </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {activeTab === 'on' && (
@@ -649,7 +645,7 @@ export default function IssueBoard({
               <div className="text-sm text-gray-700 space-y-1">
                 <div>หัวข้อ: <span className="font-medium">{detailIssue.title}</span></div>
                 <div>สถานะ: <span className="font-medium">{detailIssue.status}</span></div>
-                {detailIssue.work_order_name && <div>ใบงาน: {detailIssue.work_order_name}</div>}
+                <div>ใบงาน: {detailIssue.work_order_name || 'ไม่มีเลขใบงาน'}</div>
                 <div>ผู้เปิดบิล: <span className="font-medium">{detailIssue.order?.admin_user || '-'}</span></div>
                 <div>ผู้สร้าง Ticket: <span className="font-medium">{detailIssue.creatorName || '-'}</span></div>
                 <div>ระยะเวลา: <span className="font-mono font-bold text-orange-600 text-lg">{formatElapsed(detailIssue)}</span></div>
@@ -751,21 +747,28 @@ export default function IssueBoard({
               ) : (
                 chatLogs.map((log) => {
                   const isPlan = log.source_scope === 'plan'
-                  const isRight = isPlan
+                  const isMe =
+                    log.sender_id === user?.id ||
+                    (!!user?.username && log.sender_name === user.username) ||
+                    (!!user?.email && log.sender_name === user.email)
+                  const isRight = isMe
                   const scopeLabel = isPlan ? 'Plan' : 'ออเดอร์'
                   return (
                     <div key={log.id} className={`flex ${isRight ? 'justify-end' : 'justify-start'} group`}>
-                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
                         isRight
-                          ? 'bg-emerald-500 text-white rounded-br-sm'
-                          : 'bg-white text-gray-900 border border-gray-200 rounded-bl-sm'
+                          ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
+                          : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
                       }`}>
                         <div className={`flex items-center gap-3 mb-1 ${isRight ? 'flex-row-reverse' : ''}`}>
-                          <span className={`text-xs font-bold ${isRight ? 'text-emerald-100' : 'text-blue-600'}`}>
-                            {log.sender_name}
-                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${isRight ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-100 text-blue-600'}`}>{scopeLabel}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${isRight ? 'bg-emerald-600/50 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>
+                            {isRight ? 'ผู้ส่ง' : 'ผู้รับ'}
                           </span>
-                          <span className={`text-xs ${isRight ? 'text-emerald-200' : 'text-gray-400'}`}>
+                          <span className={`text-xs font-bold ${isRight ? 'text-emerald-100' : 'text-blue-700'}`}>
+                            {log.sender_name}
+                            <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[10px] ${isRight ? 'bg-emerald-700/60 text-emerald-100' : 'bg-blue-100 text-blue-700'}`}>{scopeLabel}</span>
+                          </span>
+                          <span className={`text-xs ${isRight ? 'text-emerald-200' : 'text-gray-500'}`}>
                             {formatDateTime(log.created_at)}
                           </span>
                           <button
@@ -773,7 +776,7 @@ export default function IssueBoard({
                             onClick={() => handleHideIssueChat(log.id)}
                             title="ซ่อนข้อความนี้"
                             className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
-                              isRight ? 'text-emerald-200 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                              isRight ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
                             }`}
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

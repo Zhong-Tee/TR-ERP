@@ -16,6 +16,7 @@ import {
 import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
 
 type Tab =
+  | 'all'
   | 'create'
   | 'waiting'
   | 'complete'
@@ -26,10 +27,23 @@ type Tab =
   | 'shipped'
   | 'cancelled'
 
-const ALL_TABS: Tab[] = ['create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['all', 'create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
-const SALES_TR_FILTER_TABS: Tab[] = ['waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue']
+const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue']
+const ALL_STATUS_FILTER_OPTIONS = [
+  'รอลงข้อมูล',
+  'ลงข้อมูลผิด',
+  'ตรวจสอบไม่ผ่าน',
+  'ตรวจสอบไม่สำเร็จ',
+  'ตรวจสอบแล้ว',
+  'รอออกแบบ',
+  'ออกแบบแล้ว',
+  'รอคอนเฟิร์ม',
+  'คอนเฟิร์มแล้ว',
+  'จัดส่งแล้ว',
+  'ยกเลิก',
+] as const
 
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
@@ -47,6 +61,7 @@ export default function Orders() {
   const [confirmCount, setConfirmCount] = useState(0)
   const [shippedCount, setShippedCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
+  const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
@@ -54,6 +69,9 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [allDateFrom, setAllDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [allStatusFilter, setAllStatusFilter] = useState('')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
   const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
   /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
@@ -229,6 +247,27 @@ export default function Orders() {
 
   async function handleMoveToWaiting(order: Order) {
     try {
+      const { data: latestOrder, error: latestErr } = await supabase
+        .from('or_orders')
+        .select('id, status')
+        .eq('id', order.id)
+        .single()
+      if (latestErr) throw latestErr
+
+      const latestStatus = String((latestOrder as any)?.status || order.status || '')
+      if (latestStatus === 'ยกเลิก') {
+        const { count: approvedCancelCount, error: amendErr } = await supabase
+          .from('or_order_amendments')
+          .select('id', { count: 'exact', head: true })
+          .eq('order_id', order.id)
+          .in('status', ['approved', 'executed'])
+        if (amendErr) throw amendErr
+        if ((approvedCancelCount || 0) > 0) {
+          alert('บิลนี้อนุมัติยกเลิกแล้ว ไม่สามารถย้ายกลับไป "รอลงข้อมูล" ได้')
+          return
+        }
+      }
+
       const { error } = await supabase
         .from('or_orders')
         .update({ status: 'รอลงข้อมูล' })
@@ -369,6 +408,7 @@ export default function Orders() {
         <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
+              { id: 'all', label: 'ทั้งหมด' },
               { id: 'create', label: 'สร้าง/แก้ไข' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
@@ -426,6 +466,34 @@ export default function Orders() {
                   </option>
                 ))}
               </select>
+              {activeTab === 'all' && (
+                <>
+                  <select
+                    value={allStatusFilter}
+                    onChange={(e) => setAllStatusFilter(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  >
+                    <option value="">ทุกสถานะ</option>
+                    {ALL_STATUS_FILTER_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="date"
+                    value={allDateFrom}
+                    onChange={(e) => setAllDateFrom(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                  <input
+                    type="date"
+                    value={allDateTo}
+                    onChange={(e) => setAllDateTo(e.target.value)}
+                    className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  />
+                </>
+              )}
               {activeTab === 'shipped' && (
                 <>
                   <input
@@ -485,6 +553,11 @@ export default function Orders() {
                   </button>
                 </>
               )}
+              {activeTab === 'all' && (
+                <div className="ml-auto text-sm font-semibold text-surface-700 flex items-center px-3 py-2 rounded-xl bg-white border border-surface-200">
+                  จำนวนบิลหลังกรอง: {allCount.toLocaleString()} รายการ
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -502,7 +575,22 @@ export default function Orders() {
             onCancel={handleCancel}
             onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}
             readOnly={activeTab !== 'create'}
-            viewOnly={activeTab === 'verified' || activeTab === 'cancelled'}
+            viewOnly={activeTab === 'verified' || activeTab === 'cancelled' || activeTab === 'shipped'}
+          />
+        ) : activeTab === 'all' ? (
+          <OrderList
+            status={allStatusFilter || undefined}
+            searchTerm={searchTerm}
+            channelFilter={channelFilter}
+            onOrderClick={handleOrderClickViewOnly}
+            onCountChange={setAllCount}
+            dateFrom={allDateFrom}
+            dateTo={allDateTo}
+            refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            hideActionButtons={true}
+            detailReadOnly={true}
+            {...salesTrOrderListProps}
           />
         ) : activeTab === 'waiting' ? (
           <OrderList
@@ -570,10 +658,12 @@ export default function Orders() {
             status="จัดส่งแล้ว"
             searchTerm={searchTerm}
             channelFilter={channelFilter}
-            onOrderClick={handleOrderClick}
+            onOrderClick={handleOrderClickViewOnly}
             dateFrom={shippedDateFrom}
             dateTo={shippedDateTo}
             refreshTrigger={listRefreshKey}
+            useDetailViewOnClick={true}
+            detailReadOnly={true}
             {...salesTrOrderListProps}
           />
         ) : activeTab === 'cancelled' ? (

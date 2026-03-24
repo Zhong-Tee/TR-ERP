@@ -48,11 +48,25 @@ export default function Sidebar({ activeMenu, setActiveMenu, username, onLogout,
   }
 
   const updateNotifBadge = async () => {
-    const { count } = await supabase
+    const { data } = await supabase
       .from('wms_notifications')
-      .select('*', { count: 'exact', head: true })
+      .select('id, type, order_id')
       .eq('is_read', false)
-    setNotifBadge(count || 0)
+    const rows = (data || []) as { id: string; type: string; order_id: string | null }[]
+    const cancelOrderSet = new Set<string>()
+    let count = 0
+    for (const row of rows) {
+      if (row.type === 'ยกเลิกบิล') {
+        const key = String(row.order_id || '').trim()
+        if (!key) continue
+        if (cancelOrderSet.has(key)) continue
+        cancelOrderSet.add(key)
+        count += 1
+      } else {
+        count += 1
+      }
+    }
+    setNotifBadge(count)
   }
 
   const menuItems = [

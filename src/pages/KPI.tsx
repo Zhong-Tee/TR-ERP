@@ -3,6 +3,14 @@ import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 import { FiDownload, FiSearch } from 'react-icons/fi'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../components/wms/wmsUtils'
+import {
+  fetchMachines,
+  fetchEventsOverlappingRange,
+  getMachineDayMetrics,
+  computeRepairRounds,
+  type MachineryMachine,
+  type MachineryEvent,
+} from '../lib/machineryApi'
 
 /* ================================================================== */
 /*  Types                                                              */
@@ -87,7 +95,7 @@ interface ProductTypeRow {
   product_type: string | null
 }
 
-type TabKey = 'overview' | 'sales' | 'warehouse' | 'requisition' | 'qc' | 'packing' | 'production' | 'issues' | 'audit'
+type TabKey = 'overview' | 'sales' | 'warehouse' | 'requisition' | 'qc' | 'packing' | 'production' | 'issues' | 'audit' | 'machinery'
 type PresetKey = 'today' | 'yesterday' | 'thisWeek' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear'
 
 /* ================================================================== */
@@ -154,6 +162,56 @@ function normalizeWithdrawProductType(value: string | null | undefined): 'FG' | 
   return 'OTHER'
 }
 
+function eachDayInRange(from: string, to: string): Date[] {
+  const out: Date[] = []
+  const [fy, fm, fd] = from.split('-').map(Number)
+  const [ty, tm, td] = to.split('-').map(Number)
+  const cur = new Date(fy, fm - 1, fd)
+  const end = new Date(ty, tm - 1, td)
+  while (cur.getTime() <= end.getTime()) {
+    out.push(new Date(cur))
+    cur.setDate(cur.getDate() + 1)
+  }
+  return out
+}
+
+function aggregateMachineryPeriod(
+  machines: MachineryMachine[],
+  events: MachineryEvent[],
+  from: string,
+  to: string,
+  nowCap: Date,
+) {
+  const days = eachDayInRange(from, to)
+  let totalShiftH = 0
+  let totalWorkH = 0
+  let totalDownH = 0
+  let totalUnits = 0
+  const byId: Record<string, { name: string; workH: number; downH: number; shiftH: number; units: number }> = {}
+  for (const m of machines) {
+    byId[m.id] = { name: m.name, workH: 0, downH: 0, shiftH: 0, units: 0 }
+  }
+  for (const day of days) {
+    for (const m of machines) {
+      const met = getMachineDayMetrics(m, day, events, nowCap)
+      totalShiftH += met.shift_hours
+      totalWorkH += met.working_hours
+      totalDownH += met.downtime_hours
+      totalUnits += met.effective_units
+      const row = byId[m.id]
+      if (row) {
+        row.shiftH += met.shift_hours
+        row.workH += met.working_hours
+        row.downH += met.downtime_hours
+        row.units += met.effective_units
+      }
+    }
+  }
+  const uptimePct = totalShiftH > 0 ? (totalWorkH / totalShiftH) * 100 : 0
+  const byMachine = Object.values(byId).sort((a, b) => b.workH - a.workH)
+  return { totalShiftH, totalWorkH, totalDownH, totalUnits, uptimePct, byMachine }
+}
+
 /* ================================================================== */
 /*  Component                                                          */
 /* ================================================================== */
@@ -190,13 +248,16 @@ export default function KPIDashboard() {
   const [prevReqItems, setPrevReqItems] = useState<RequisitionItem[]>([])
   const [reqProductTypes, setReqProductTypes] = useState<ProductTypeRow[]>([])
   const [prevReqProductTypes, setPrevReqProductTypes] = useState<ProductTypeRow[]>([])
+  const [machineryMachines, setMachineryMachines] = useState<MachineryMachine[]>([])
+  const [machineryEvents, setMachineryEvents] = useState<MachineryEvent[]>([])
+  const [prevMachineryEvents, setPrevMachineryEvents] = useState<MachineryEvent[]>([])
 
   /* ---------- Fetch helpers ---------- */
   const fetchRange = useCallback(async (from: string, to: string) => {
     const tsFrom = from + 'T00:00:00'
     const tsTo = to + 'T23:59:59'
 
-    const [sales, wms, wmsOrd, qc, pack, prod, issues, audits, requisitions, requisitionItems] = await Promise.all([
+    const [sales, wms, wmsOrd, qc, pack, prod, issues, audits, requisitions, requisitionItems, machMachines, machEvents] = await Promise.all([
       supabase.from('or_orders')
         .select('channel_code, total_amount, entry_date, admin_user, status, or_order_items(quantity, unit_price, is_free)')
         .gte('entry_date', from).lte('entry_date', to).in('status', ['จัดส่งแล้ว', 'เสร็จสิ้น']),
@@ -231,6 +292,8 @@ export default function KPIDashboard() {
       supabase.from('wms_requisition_items')
         .select('requisition_id, product_code, product_name, qty, requisition_topic, created_at')
         .gte('created_at', tsFrom).lte('created_at', tsTo),
+      fetchMachines(),
+      fetchEventsOverlappingRange(tsFrom, tsTo),
     ])
 
     const requisitionItemsData = (requisitionItems.data || []) as RequisitionItem[]
@@ -257,6 +320,8 @@ export default function KPIDashboard() {
       requisitions: (requisitions.data || []) as Requisition[],
       requisitionItems: requisitionItemsData,
       requisitionProductTypes,
+      machineryMachines: machMachines,
+      machineryEvents: machEvents,
     }
   }, [])
 
@@ -276,6 +341,9 @@ export default function KPIDashboard() {
       setReqData(curr.requisitions); setPrevReqData(prev.requisitions)
       setReqItems(curr.requisitionItems); setPrevReqItems(prev.requisitionItems)
       setReqProductTypes(curr.requisitionProductTypes); setPrevReqProductTypes(prev.requisitionProductTypes)
+      setMachineryMachines(curr.machineryMachines)
+      setMachineryEvents(curr.machineryEvents)
+      setPrevMachineryEvents(prev.machineryEvents)
       setLoaded(true)
     } catch (err: any) {
       console.error(err)
@@ -602,6 +670,33 @@ export default function KPIDashboard() {
   const auditKpi = useMemo(() => calcAuditKpi(auditData), [auditData])
   const prevAuditKpi = useMemo(() => calcAuditKpi(prevAuditData), [prevAuditData])
 
+  const machineryNowCap = useMemo(
+    () => new Date(Math.min(Date.now(), new Date(dateTo + 'T23:59:59.999').getTime())),
+    [dateTo],
+  )
+
+  const machineryKpi = useMemo(
+    () => aggregateMachineryPeriod(machineryMachines, machineryEvents, dateFrom, dateTo, machineryNowCap),
+    [machineryMachines, machineryEvents, dateFrom, dateTo, machineryNowCap],
+  )
+
+  const prevMachineryKpi = useMemo(() => {
+    const [pf, pt] = getPrevPeriod(dateFrom, dateTo)
+    const cap = new Date(Math.min(Date.now(), new Date(pt + 'T23:59:59.999').getTime()))
+    return aggregateMachineryPeriod(machineryMachines, prevMachineryEvents, pf, pt, cap)
+  }, [machineryMachines, prevMachineryEvents, dateFrom, dateTo])
+
+  const machineryRepairRounds = useMemo(() => {
+    const tsFromMs = new Date(dateFrom + 'T00:00:00').getTime()
+    const tsToMs = new Date(dateTo + 'T23:59:59.999').getTime()
+    return computeRepairRounds(machineryMachines, machineryEvents, machineryNowCap)
+      .filter((r) => {
+        const t = new Date(r.broken_at).getTime()
+        return t >= tsFromMs && t <= tsToMs
+      })
+      .sort((a, b) => b.duration_ms - a.duration_ms)
+  }, [machineryMachines, machineryEvents, dateFrom, dateTo, machineryNowCap])
+
   /* ================================================================ */
   /*  Excel Export                                                     */
   /* ================================================================ */
@@ -622,6 +717,7 @@ export default function KPIDashboard() {
       ['QC อัตรา Pass', qcKpi.passRate.toFixed(2), '%'],
       ['แก้ปัญหาเฉลี่ย', fmtMinutes(issueKpi.avgResMin), ''],
       ['ตรวจนับแม่นยำ', auditKpi.avgQtyAcc.toFixed(2), '%'],
+      ['Machinery อัตราทำงาน (กะ)', machineryKpi.uptimePct.toFixed(2), '%'],
     ]
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ov), 'ภาพรวม')
 
@@ -691,6 +787,22 @@ export default function KPIDashboard() {
     ]
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(au), 'ตรวจนับสต็อก')
 
+    const mh = [
+      ['ตัวชี้วัด', 'ค่า', 'หน่วย'],
+      ['ชม.กะรวม (ในช่วง)', machineryKpi.totalShiftH.toFixed(2), 'ชม.'],
+      ['ชม.ทำงานรวม', machineryKpi.totalWorkH.toFixed(2), 'ชม.'],
+      ['ชม.หยุด/เสียรวม', machineryKpi.totalDownH.toFixed(2), 'ชม.'],
+      ['อัตราทำงานต่อกะ', machineryKpi.uptimePct.toFixed(2), '%'],
+      ['หน่วยผลิตโดยประมาณ', machineryKpi.totalUnits.toFixed(0), 'หน่วย'],
+      [],
+      ['เครื่อง', 'ชม.กะ', 'ชม.ทำงาน', 'หยุด/เสีย', 'อัตราทำงาน(%)', 'หน่วยโดยประมาณ'],
+    ]
+    machineryKpi.byMachine.forEach((r) => {
+      const up = r.shiftH > 0 ? ((r.workH / r.shiftH) * 100).toFixed(2) : '0'
+      mh.push([r.name, r.shiftH.toFixed(2), r.workH.toFixed(2), r.downH.toFixed(2), up, r.units.toFixed(0)])
+    })
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mh), 'Machinery')
+
     XLSX.writeFile(wb, `KPI_${dateFrom}_${dateTo}.xlsx`)
   }
 
@@ -709,6 +821,7 @@ export default function KPIDashboard() {
     { key: 'warehouse', label: 'คลังจัดสินค้า' }, { key: 'requisition', label: 'การเบิก' }, { key: 'qc', label: 'QC' },
     { key: 'packing', label: 'แพ็คสินค้า' }, { key: 'production', label: 'การผลิต' },
     { key: 'issues', label: 'ปัญหา' }, { key: 'audit', label: 'ตรวจนับสต็อก' },
+    { key: 'machinery', label: 'Machinery' },
   ]
 
   /* ================================================================ */
@@ -829,7 +942,7 @@ export default function KPIDashboard() {
         <div className="flex-1 overflow-y-auto pt-5 space-y-5 pb-8">
 
           {/* ===== Overview KPI Cards (always visible) ===== */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-3">
             <KpiCard label="ยอดขายรวม" value={salesKpi.revenue} prev={prevSalesKpi.revenue} colorClass="text-emerald-600" prefix="฿" />
             <KpiCard label="จำนวนบิล" value={salesKpi.orders} prev={prevSalesKpi.orders} colorClass="text-blue-600" />
             <KpiCard label="แม่นยำจัดสินค้า" value={wmsKpi.avgAccuracy} prev={prevWmsKpi.avgAccuracy} colorClass="text-cyan-600" unit="%" />
@@ -838,6 +951,7 @@ export default function KPIDashboard() {
             <KpiCard label="QC Pass Rate" value={qcKpi.passRate} prev={prevQcKpi.passRate} colorClass="text-indigo-600" unit="%" />
             <KpiCard label="แก้ปัญหาเฉลี่ย" value={issueKpi.avgResMin} prev={prevIssueKpi.avgResMin} colorClass="text-amber-600" unit="min" />
             <KpiCard label="ตรวจนับแม่นยำ" value={auditKpi.avgQtyAcc} prev={prevAuditKpi.avgQtyAcc} colorClass="text-rose-600" unit="%" />
+            <KpiCard label="Machinery ทำงาน/กะ" value={machineryKpi.uptimePct} prev={prevMachineryKpi.uptimePct} colorClass="text-slate-700" unit="%" />
           </div>
 
           {/* ===== Department Tabs ===== */}
@@ -1175,6 +1289,73 @@ export default function KPIDashboard() {
                       </table>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* ===== MACHINERY TAB ===== */}
+              {tab === 'machinery' && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                    <KpiCard label="จำนวนเครื่อง" value={machineryMachines.length} colorClass="text-slate-700" />
+                    <KpiCard label="อัตราทำงาน/กะ" value={machineryKpi.uptimePct} prev={prevMachineryKpi.uptimePct} colorClass="text-emerald-600" unit="%" />
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+                      <div className="text-base text-gray-500 font-medium mb-1 truncate">ชม.กะรวม (ในช่วง)</div>
+                      <div className="text-2xl font-bold text-slate-800 truncate">{machineryKpi.totalShiftH.toFixed(1)}</div>
+                    </div>
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+                      <div className="text-base text-gray-500 font-medium mb-1 truncate">ชม.ทำงานรวม</div>
+                      <div className="text-2xl font-bold text-teal-600 truncate">{machineryKpi.totalWorkH.toFixed(1)}</div>
+                    </div>
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+                      <div className="text-base text-gray-500 font-medium mb-1 truncate">ชม.หยุด/เสียรวม</div>
+                      <div className="text-2xl font-bold text-rose-600 truncate">{machineryKpi.totalDownH.toFixed(1)}</div>
+                    </div>
+                    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+                      <div className="text-base text-gray-500 font-medium mb-1 truncate">หน่วยผลิตโดยประมาณ</div>
+                      <div className="text-2xl font-bold text-indigo-600 truncate">{fmtInt(Math.round(machineryKpi.totalUnits))}</div>
+                    </div>
+                  </div>
+
+                  <RankTable
+                    title="สรุปตามเครื่อง (จากกะและสถานะในแต่ละวัน)"
+                    headers={['เครื่อง', 'ชม.กะ', 'ชม.ทำงาน', 'หยุด/เสีย', 'อัตราทำงาน(%)', 'หน่วยโดยประมาณ']}
+                    rows={machineryKpi.byMachine.map((r) => {
+                      const up = r.shiftH > 0 ? Number(((r.workH / r.shiftH) * 100).toFixed(1)) : 0
+                      return [r.name, r.shiftH, r.workH, r.downH, up, Math.round(r.units)]
+                    })}
+                    colorFrom="from-slate-600"
+                    colorTo="to-slate-700"
+                  />
+
+                  <div>
+                    <h3 className="text-base font-bold text-gray-700 mb-2">รอบซ่อมจากสถานะเครื่องเสีย (เรียงตามระยะเวลา)</h3>
+                    {machineryRepairRounds.length === 0 ? (
+                      <div className="text-sm text-gray-400 py-2">ไม่มีรอบซ่อมในช่วงเวลาที่เลือก</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-base">
+                          <thead>
+                            <tr className="bg-gradient-to-r from-rose-600 to-rose-700 text-white">
+                              <th className="p-2.5 text-left font-semibold rounded-tl-lg">เครื่อง</th>
+                              <th className="p-2.5 text-left font-semibold">เริ่มเสีย</th>
+                              <th className="p-2.5 text-left font-semibold">กลับมาทำงาน</th>
+                              <th className="p-2.5 text-right font-semibold rounded-tr-lg">ระยะเวลา</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {machineryRepairRounds.slice(0, 30).map((r, i) => (
+                              <tr key={`${r.machine_id}-${r.broken_at}-${i}`} className={`border-t border-gray-100 hover:bg-gray-50 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                                <td className="p-2.5 font-medium">{r.machine_name}</td>
+                                <td className="p-2.5 text-gray-600">{new Date(r.broken_at).toLocaleString('th-TH')}</td>
+                                <td className="p-2.5 text-gray-600">{r.back_to_work_at ? new Date(r.back_to_work_at).toLocaleString('th-TH') : '—'}</td>
+                                <td className="p-2.5 text-right font-semibold">{fmtDuration(r.duration_ms)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

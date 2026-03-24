@@ -452,12 +452,13 @@ export default function TransportVerification() {
             type="button"
             onClick={exportSummaryPng}
             disabled={exportingPng}
-            className="px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            📸 บันทึกเป็นภาพ (PNG)
+            <span className="inline-flex items-center leading-none">📸</span>
+            <span className="inline-flex items-center leading-none">บันทึกเป็นภาพ (PNG)</span>
           </button>
         </div>
-        <table className="w-full text-sm">
+        <table className="w-full text-sm [&_th]:align-middle [&_td]:align-middle [&_th]:leading-tight [&_td]:leading-tight">
           <thead>
             <tr className="bg-blue-600 text-white">
               <th className="p-3 text-left font-semibold rounded-tl-xl">ช่องทาง</th>
@@ -521,7 +522,7 @@ export default function TransportVerification() {
                             )
                           })}
                           <tr className="bg-blue-50 font-semibold">
-                            <td className="p-2 text-right">รวมยอด {carrier}</td>
+                            <td className="p-2 text-right align-middle">รวมยอด {carrier}</td>
                             <td className="p-2 text-center">{subtotal.กล่อง}</td>
                             <td className="p-2 text-center">{subtotal['ซองกระดาษ']}</td>
                             <td className="p-2 text-center">{subtotal['ซองบับเบิล']}</td>
@@ -532,12 +533,24 @@ export default function TransportVerification() {
                       )
                     })}
                     <tr className="bg-gray-900 text-white font-bold">
-                      <td className="p-2 text-left">ยอดรวมทุกขนส่งสุทธิ</td>
-                      <td className="p-2 text-center">{grand.กล่อง}</td>
-                      <td className="p-2 text-center">{grand['ซองกระดาษ']}</td>
-                      <td className="p-2 text-center">{grand['ซองบับเบิล']}</td>
-                      <td className="p-2 text-center">{grand['ถุงพัสดุ']}</td>
-                      <td className="p-2 text-center bg-blue-600">{grand.total}</td>
+                      <td className="h-9 p-2 text-left align-middle">
+                        <div className="flex h-full items-center">ยอดรวมทุกขนส่งสุทธิ</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand.กล่อง}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ซองกระดาษ']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ซองบับเบิล']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle">
+                        <div className="flex h-full items-center justify-center">{grand['ถุงพัสดุ']}</div>
+                      </td>
+                      <td className="h-9 p-2 text-center align-middle bg-blue-600">
+                        <div className="flex h-full items-center justify-center">{grand.total}</div>
+                      </td>
                     </tr>
                   </>
                 )

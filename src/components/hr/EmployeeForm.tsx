@@ -6,6 +6,7 @@ import {
   fetchPositions,
   uploadHRFile,
   getHRFileUrl,
+  previewNextEmployeeCode,
 } from '../../lib/hrApi'
 import type { HREmployee, HRDepartment, HRPosition } from '../../types'
 
@@ -19,6 +20,13 @@ const DOC_TYPES = [
   'สัญญาจ้าง',
   'อื่นๆ',
 ] as const
+
+const PREFIX_OPTIONS = ['นาย', 'นางสาว', 'นาง'] as const
+const GENDER_OPTIONS = ['ชาย', 'หญิง'] as const
+
+/** ข้อมูลส่วนตัว / การทำงาน — โฟกัสขอบเขียว */
+const fieldClass =
+  'w-full px-3 py-2 border border-gray-300 rounded-lg outline-none transition-colors focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/35 focus:outline-none'
 
 type DocEntry = { name: string; url: string; type: string; uploaded_at: string }
 
@@ -72,6 +80,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [probation_end_date, setProbationEndDate] = useState('')
   const [salary, setSalary] = useState<number | ''>('')
   const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
+  const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
   const [fingerprint_id_old, setFingerprintIdOld] = useState('')
   const [fingerprint_id_new, setFingerprintIdNew] = useState('')
   const [user_id, setUserId] = useState('')
@@ -80,6 +89,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [documents, setDocuments] = useState<DocEntry[]>([])
   const [docUploadType, setDocUploadType] = useState<string>(DOC_TYPES[0])
   const [docUploading, setDocUploading] = useState(false)
+  const [previewEmployeeCode, setPreviewEmployeeCode] = useState<string>('')
+  const [previewCodeLoading, setPreviewCodeLoading] = useState(false)
 
   const loadOptions = useCallback(async () => {
     try {
@@ -97,6 +108,29 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   useEffect(() => {
     loadOptions()
   }, [loadOptions])
+
+  useEffect(() => {
+    if (employee?.id) {
+      setPreviewEmployeeCode('')
+      return
+    }
+    let cancelled = false
+    setPreviewCodeLoading(true)
+    setPreviewEmployeeCode('')
+    previewNextEmployeeCode()
+      .then((code) => {
+        if (!cancelled && code) setPreviewEmployeeCode(code)
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewEmployeeCode('')
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewCodeLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [employee?.id])
 
   useEffect(() => {
     if (employee) {
@@ -136,6 +170,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       )
       setSalary(employee.salary ?? '')
       setEmploymentStatus(employee.employment_status)
+      setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
       setFingerprintIdOld(employee.fingerprint_id_old ?? '')
       setFingerprintIdNew(employee.fingerprint_id_new ?? '')
       setUserId(employee.user_id ?? '')
@@ -152,6 +187,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       )
     } else {
       setEmploymentStatus('active')
+      setContractType('permanent')
+      setEmployeeCode('')
       setDocuments([])
     }
   }, [employee])
@@ -218,7 +255,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
       const payload: Partial<HREmployee> = {
         id: employee?.id,
-        employee_code: employee_code || undefined,
+        ...(employee?.id ? { employee_code: employee_code || undefined } : {}),
         prefix: prefix || undefined,
         first_name: first_name || '',
         last_name: last_name || '',
@@ -245,6 +282,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         probation_end_date: probation_end_date || undefined,
         salary: typeof salary === 'number' ? salary : undefined,
         employment_status,
+        contract_type,
         fingerprint_id_old: fingerprint_id_old || undefined,
         fingerprint_id_new: fingerprint_id_new || undefined,
         user_id: user_id || undefined,
@@ -278,7 +316,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   ]
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col max-h-[85vh]">
+    <form onSubmit={handleSubmit} className="flex flex-col">
       <div className="flex items-center justify-between p-4 border-b border-gray-200 shrink-0">
         <h2 className="text-lg font-semibold text-gray-900">
           {employee ? 'แก้ไขพนักงาน' : 'เพิ่มพนักงาน'}
@@ -315,18 +353,28 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         </div>
       )}
 
-      <div className="p-4 overflow-y-auto flex-1 min-h-0">
+      <div className="p-4 flex-1 min-h-0">
         {activeTab === 0 && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <label className="col-span-2 sm:col-span-1">
                 <span className="block text-sm font-medium text-gray-700 mb-1">คำนำหน้า</span>
-                <input
-                  type="text"
+                <select
                   value={prefix}
                   onChange={(e) => setPrefix(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                />
+                  className={fieldClass}
+                >
+                  <option value="">-- เลือก --</option>
+                  {prefix &&
+                    !(PREFIX_OPTIONS as readonly string[]).includes(prefix) && (
+                      <option value={prefix}>{prefix}</option>
+                    )}
+                  {PREFIX_OPTIONS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ *</span>
@@ -335,7 +383,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   value={first_name}
                   onChange={(e) => setFirstName(e.target.value)}
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -345,7 +393,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   value={last_name}
                   onChange={(e) => setLastName(e.target.value)}
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -354,7 +402,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={first_name_en}
                   onChange={(e) => setFirstNameEn(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -363,7 +411,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={last_name_en}
                   onChange={(e) => setLastNameEn(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -372,7 +420,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={nickname}
                   onChange={(e) => setNickname(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -381,7 +429,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={citizen_id}
                   onChange={(e) => setCitizenId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -390,18 +438,27 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="date"
                   value={birth_date}
                   onChange={(e) => setBirthDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เพศ</span>
-                <input
-                  type="text"
+                <select
                   value={gender}
                   onChange={(e) => setGender(e.target.value)}
-                  placeholder="ชาย / หญิง"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                />
+                  className={fieldClass}
+                >
+                  <option value="">-- เลือก --</option>
+                  {gender &&
+                    !(GENDER_OPTIONS as readonly string[]).includes(gender) && (
+                      <option value={gender}>{gender}</option>
+                    )}
+                  {GENDER_OPTIONS.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">ศาสนา</span>
@@ -409,7 +466,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={religion}
                   onChange={(e) => setReligion(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label className="col-span-2">
@@ -418,7 +475,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
             </div>
@@ -432,7 +489,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     type="text"
                     value={emergency_name}
                     onChange={(e) => setEmergencyName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className={fieldClass}
                   />
                 </label>
                 <label>
@@ -441,7 +498,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     type="text"
                     value={emergency_phone}
                     onChange={(e) => setEmergencyPhone(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className={fieldClass}
                   />
                 </label>
                 <label>
@@ -451,7 +508,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     value={emergency_relationship}
                     onChange={(e) => setEmergencyRelationship(e.target.value)}
                     placeholder="บิดา, มารดา, ฯลฯ"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className={fieldClass}
                   />
                 </label>
               </div>
@@ -478,7 +535,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                         type="text"
                         value={address[key] ?? ''}
                         onChange={(e) => setAddress((prev) => ({ ...prev, [key]: e.target.value }))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        className={fieldClass}
                       />
                     </label>
                   )
@@ -519,22 +576,35 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสพนักงาน *</span>
-                <input
-                  type="text"
-                  value={employee_code}
-                  onChange={(e) => setEmployeeCode(e.target.value)}
-                  required
-                  disabled={!!employee?.id}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"
-                />
+                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสพนักงาน</span>
+                {employee?.id ? (
+                  <input
+                    type="text"
+                    value={employee_code}
+                    readOnly
+                    disabled
+                    className={`${fieldClass} bg-gray-50 text-gray-700 disabled:bg-gray-100 disabled:text-gray-600 disabled:border-gray-200 disabled:focus:border-gray-200 disabled:focus:ring-0`}
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      previewCodeLoading
+                        ? 'กำลังโหลดรหัส...'
+                        : previewEmployeeCode || '—'
+                    }
+                    className={`${fieldClass} bg-gray-50 text-gray-800 cursor-default`}
+                    title="รหัสที่จะได้เมื่อบันทึก (อาจเปลี่ยนหากมีผู้เพิ่มพร้อมกัน)"
+                  />
+                )}
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">แผนก</span>
                 <select
                   value={department_id}
                   onChange={(e) => setDepartmentId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 >
                   <option value="">-- เลือกแผนก --</option>
                   {departments.map((d) => (
@@ -549,7 +619,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 <select
                   value={position_id}
                   onChange={(e) => setPositionId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 >
                   <option value="">-- เลือกตำแหน่ง --</option>
                   {positions.map((p) => (
@@ -565,7 +635,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="date"
                   value={hire_date}
                   onChange={(e) => setHireDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -574,7 +644,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="date"
                   value={probation_end_date}
                   onChange={(e) => setProbationEndDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -587,7 +657,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   onChange={(e) =>
                     setSalary(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)
                   }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -597,7 +667,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   onChange={(e) =>
                     setEmploymentStatus(e.target.value as HREmployee['employment_status'])
                   }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 >
                   <option value="active">ปฏิบัติงาน</option>
                   <option value="probation">ทดลองงาน</option>
@@ -606,12 +676,25 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 </select>
               </label>
               <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ประเภทสัญญาจ้าง</span>
+                <select
+                  value={contract_type ?? 'permanent'}
+                  onChange={(e) =>
+                    setContractType(e.target.value as HREmployee['contract_type'])
+                  }
+                  className={fieldClass}
+                >
+                  <option value="permanent">ประจำ</option>
+                  <option value="daily">รายวัน</option>
+                </select>
+              </label>
+              <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ตึกเก่า)</span>
                 <input
                   type="text"
                   value={fingerprint_id_old}
                   onChange={(e) => setFingerprintIdOld(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -620,7 +703,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={fingerprint_id_new}
                   onChange={(e) => setFingerprintIdNew(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -630,7 +713,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   value={user_id}
                   onChange={(e) => setUserId(e.target.value)}
                   placeholder="UUID ถ้ามี"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
               <label>
@@ -639,7 +722,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   type="text"
                   value={telegram_chat_id}
                   onChange={(e) => setTelegramChatId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className={fieldClass}
                 />
               </label>
             </div>

@@ -782,16 +782,21 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   const isMe = log.sender_id === user?.id
                   return (
                     <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
-                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 shadow-sm ${
+                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
                         isMe
-                          ? 'bg-emerald-500 text-white rounded-br-sm'
-                          : 'bg-white text-gray-900 border border-gray-200 rounded-bl-sm'
+                          ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
+                          : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
                       }`}>
-                        <div className={`flex items-center gap-3 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                          <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-600'}`}>
+                        <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                            isMe ? 'bg-emerald-600/60 text-emerald-100' : 'bg-blue-100 text-blue-700'
+                          }`}>
+                            {isMe ? 'ผู้ส่ง' : 'ผู้รับ'}
+                          </span>
+                          <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-700'}`}>
                             {log.sender_name}
                           </span>
-                          <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-400'}`}>
+                          <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-500'}`}>
                             {formatDateTime(log.created_at)}
                           </span>
                           <button
@@ -799,7 +804,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             onClick={() => handleHideChat(log.id)}
                             title="ซ่อนข้อความนี้"
                             className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
-                              isMe ? 'text-emerald-200 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                              isMe ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
                             }`}
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

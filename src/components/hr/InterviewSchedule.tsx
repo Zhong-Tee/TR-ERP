@@ -26,6 +26,7 @@ import type { HRCandidate, HRInterview, HRInterviewScore, HREmployee, HRPosition
 import Modal from '../ui/Modal'
 
 type CandidateStatus = HRCandidate['status']
+type InterviewStatus = HRInterview['status']
 
 const STATUS_OPTIONS: { value: CandidateStatus | ''; label: string }[] = [
   { value: '', label: 'ทุกสถานะ' },
@@ -37,6 +38,18 @@ const STATUS_OPTIONS: { value: CandidateStatus | ''; label: string }[] = [
   { value: 'hired', label: 'รับเข้าทำงานแล้ว' },
   { value: 'withdrawn', label: 'ถอนตัว' },
 ]
+
+const INTERVIEW_STATUS_OPTIONS: { value: InterviewStatus; label: string }[] = [
+  { value: 'waiting_contact', label: 'รอติดต่อกลับ' },
+  { value: 'scheduled', label: 'นัดแล้ว' },
+  { value: 'attended', label: 'มาตามนัด' },
+  { value: 'rescheduled', label: 'เลื่อนนัด' },
+  { value: 'no_show', label: 'ไม่มา' },
+]
+
+function interviewStatusLabel(status: InterviewStatus): string {
+  return INTERVIEW_STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status
+}
 
 function candidateName(c: HRCandidate): string {
   return [c.prefix, c.first_name, c.last_name].filter(Boolean).join(' ')
@@ -68,11 +81,15 @@ function formatDateTime(d: string): string {
 }
 
 export default function InterviewSchedule() {
+  const [subTab, setSubTab] = useState<'appointments' | 'scoring'>('appointments')
   const [candidates, setCandidates] = useState<HRCandidate[]>([])
   const [interviews, setInterviews] = useState<HRInterview[]>([])
   const [employees, setEmployees] = useState<HREmployee[]>([])
   const [positions, setPositions] = useState<HRPosition[]>([])
   const [statusFilter, setStatusFilter] = useState<CandidateStatus | ''>('')
+  const [appointmentSearch, setAppointmentSearch] = useState('')
+  const [appointmentDateFrom, setAppointmentDateFrom] = useState('')
+  const [appointmentDateTo, setAppointmentDateTo] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -86,10 +103,18 @@ export default function InterviewSchedule() {
 
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
   const [scheduleCandidate, setScheduleCandidate] = useState<HRCandidate | null>(null)
+  const [scheduleCandidateId, setScheduleCandidateId] = useState('')
+  const [scheduleFirstName, setScheduleFirstName] = useState('')
+  const [scheduleLastName, setScheduleLastName] = useState('')
+  const [scheduleNickname, setScheduleNickname] = useState('')
+  const [schedulePhone, setSchedulePhone] = useState('')
+  const [scheduleSalary, setScheduleSalary] = useState('')
+  const [scheduleAppliedPosition, setScheduleAppliedPosition] = useState('')
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTime, setScheduleTime] = useState('09:00')
   const [scheduleLocation, setScheduleLocation] = useState('')
   const [scheduleInterviewers, setScheduleInterviewers] = useState<string[]>([])
+  const [scheduleStatus, setScheduleStatus] = useState<InterviewStatus>('scheduled')
   const [scheduleSaving, setScheduleSaving] = useState(false)
 
   const [scoringInterview, setScoringInterview] = useState<HRInterview | null>(null)
@@ -132,6 +157,50 @@ export default function InterviewSchedule() {
     if (!statusFilter) return candidates
     return candidates.filter((c) => c.status === statusFilter)
   }, [candidates, statusFilter])
+  const scheduleCandidateOptions = filteredCandidates.length > 0 ? filteredCandidates : candidates
+
+  const candidateMap = useMemo(() => {
+    const map = new Map<string, HRCandidate>()
+    for (const c of candidates) map.set(c.id, c)
+    return map
+  }, [candidates])
+
+  const candidateInterviewHistory = useMemo(() => {
+    const map = new Map<string, { totalAppointments: number; interviewedCount: number }>()
+    for (const iv of interviews) {
+      const cur = map.get(iv.candidate_id) ?? { totalAppointments: 0, interviewedCount: 0 }
+      cur.totalAppointments += 1
+      if (iv.status === 'attended' || iv.status === 'completed') {
+        cur.interviewedCount += 1
+      }
+      map.set(iv.candidate_id, cur)
+    }
+    return map
+  }, [interviews])
+
+  const filteredAppointments = useMemo(() => {
+    const q = appointmentSearch.trim().toLowerCase()
+    return interviews.filter((iv) => {
+      const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+      const dateOnly = iv.interview_date?.slice(0, 10) ?? ''
+
+      if (appointmentDateFrom && dateOnly < appointmentDateFrom) return false
+      if (appointmentDateTo && dateOnly > appointmentDateTo) return false
+
+      if (!q) return true
+      const haystack = [
+        candidate ? candidateName(candidate) : '',
+        (candidate as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '',
+        candidate?.phone ?? '',
+        candidate?.applied_position ?? '',
+        interviewStatusLabel(iv.status),
+      ]
+        .join(' ')
+        .toLowerCase()
+
+      return haystack.includes(q)
+    })
+  }, [interviews, candidateMap, appointmentSearch, appointmentDateFrom, appointmentDateTo])
 
   const positionOptions = useMemo(() => {
     const names = new Set<string>()
@@ -172,10 +241,25 @@ export default function InterviewSchedule() {
     setError(null)
     try {
       const toImport = parsedRecords.filter((r) => selectedImportIds.has(r.citizen_id))
+      let mappedHistoryCount = 0
       for (const r of toImport) {
-        await upsertCandidate(siamIdToCandidate(r))
+        const existing = candidates.find((c) => (c.citizen_id ?? '') === r.citizen_id)
+        if (existing) {
+          const history = candidateInterviewHistory.get(existing.id)
+          if ((history?.totalAppointments ?? 0) > 0 || (history?.interviewedCount ?? 0) > 0) {
+            mappedHistoryCount += 1
+          }
+          await upsertCandidate({
+            ...siamIdToCandidate(r),
+            id: existing.id,
+            // คงสถานะเดิม เพื่อไม่ทับ flow นัดหมาย/สัมภาษณ์ที่ทำไปแล้ว
+            status: existing.status,
+          })
+        } else {
+          await upsertCandidate(siamIdToCandidate(r))
+        }
       }
-      setSuccessMessage(`นำเข้าสำเร็จ ${toImport.length} รายการ`)
+      setSuccessMessage(`นำเข้าสำเร็จ ${toImport.length} รายการ (แมปประวัตินัด/สัมภาษณ์ได้ ${mappedHistoryCount} รายการ)`)
       setImportOpen(false)
       setImportFile(null)
       setParsedRecords([])
@@ -190,29 +274,83 @@ export default function InterviewSchedule() {
 
   const openScheduleModal = (candidate: HRCandidate) => {
     setScheduleCandidate(candidate)
+    setScheduleCandidateId(candidate.id)
+    setScheduleFirstName(candidate.first_name ?? '')
+    setScheduleLastName(candidate.last_name ?? '')
+    setScheduleNickname((candidate as HRCandidate & { nickname?: string }).nickname ?? '')
+    setSchedulePhone(candidate.phone ?? '')
+    setScheduleSalary(candidate.custom_field_1 ?? '')
+    setScheduleAppliedPosition(candidate.applied_position ?? '')
     setScheduleDate('')
     setScheduleTime('09:00')
     setScheduleLocation('')
     setScheduleInterviewers([])
+    setScheduleStatus('scheduled')
+    setScheduleModalOpen(true)
+  }
+
+  const openCreateScheduleModal = () => {
+    setScheduleCandidate(null)
+    setScheduleCandidateId(scheduleCandidateOptions[0]?.id ?? '')
+    const preset = scheduleCandidateOptions[0]
+    setScheduleFirstName(preset?.first_name ?? '')
+    setScheduleLastName(preset?.last_name ?? '')
+    setScheduleNickname((preset as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '')
+    setSchedulePhone(preset?.phone ?? '')
+    setScheduleSalary(preset?.custom_field_1 ?? '')
+    setScheduleAppliedPosition(preset?.applied_position ?? '')
+    setScheduleDate('')
+    setScheduleTime('09:00')
+    setScheduleLocation('')
+    setScheduleInterviewers([])
+    setScheduleStatus('scheduled')
     setScheduleModalOpen(true)
   }
 
   const handleScheduleSubmit = async () => {
-    if (!scheduleCandidate || !scheduleDate) return
+    const selectedCandidateId = scheduleCandidate?.id || scheduleCandidateId
+    const canUseManual = scheduleFirstName.trim() && scheduleLastName.trim()
+    if (!scheduleDate || (!selectedCandidateId && !canUseManual)) return
     setScheduleSaving(true)
     setError(null)
     try {
+      let candidateId = selectedCandidateId
+      if (!candidateId) {
+        const createdCandidate = await upsertCandidate({
+          first_name: scheduleFirstName.trim(),
+          last_name: scheduleLastName.trim(),
+          phone: schedulePhone.trim() || undefined,
+          custom_field_1: scheduleSalary.trim() || undefined,
+          applied_position: scheduleAppliedPosition.trim() || undefined,
+          status: 'scheduled',
+          source: 'manual-appointment',
+          ...(scheduleNickname.trim()
+            ? ({ nickname: scheduleNickname.trim() } as Partial<HRCandidate>)
+            : {}),
+        })
+        candidateId = createdCandidate.id
+      } else {
+        await upsertCandidate({
+          id: candidateId,
+          first_name: scheduleFirstName.trim() || undefined,
+          last_name: scheduleLastName.trim() || undefined,
+          phone: schedulePhone.trim() || undefined,
+          custom_field_1: scheduleSalary.trim() || undefined,
+          applied_position: scheduleAppliedPosition.trim() || undefined,
+        })
+      }
       await upsertInterview({
-        candidate_id: scheduleCandidate.id,
+        candidate_id: candidateId,
         interview_date: `${scheduleDate}T${scheduleTime}:00`,
         location: scheduleLocation || undefined,
         interviewer_ids: scheduleInterviewers,
-        status: 'scheduled',
+        status: scheduleStatus,
       })
-      await upsertCandidate({ id: scheduleCandidate.id, status: 'scheduled' })
+      await upsertCandidate({ id: candidateId, status: 'scheduled' })
       setSuccessMessage('นัดสัมภาษณ์แล้ว')
       setScheduleModalOpen(false)
       setScheduleCandidate(null)
+      setScheduleCandidateId('')
       await loadData()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ')
@@ -317,7 +455,7 @@ export default function InterviewSchedule() {
         payload.id = existingScores[0].id
       }
       await upsertInterviewScore(payload)
-      await upsertInterview({ id: scoringInterview.id, status: 'completed' })
+      await upsertInterview({ id: scoringInterview.id, status: 'attended' })
       const cand = scoringInterview.candidate
       if (cand) {
         await upsertCandidate({
@@ -373,6 +511,17 @@ export default function InterviewSchedule() {
     }
   }
 
+  const handleInterviewStatusChange = async (interviewId: string, status: InterviewStatus) => {
+    setError(null)
+    try {
+      await upsertInterview({ id: interviewId, status })
+      setInterviews((prev) => prev.map((iv) => (iv.id === interviewId ? { ...iv, status } : iv)))
+      setSuccessMessage(`อัปเดตสถานะเป็น "${interviewStatusLabel(status)}" แล้ว`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'อัปเดตสถานะไม่สำเร็จ')
+    }
+  }
+
   useEffect(() => {
     if (!successMessage) return
     const t = setTimeout(() => setSuccessMessage(null), 3000)
@@ -386,22 +535,60 @@ export default function InterviewSchedule() {
 
   return (
     <div className="mt-4 space-y-6">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setSubTab('appointments')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            subTab === 'appointments'
+              ? 'bg-emerald-600 text-white'
+              : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
+          }`}
+        >
+          รายการนัดสัมภาษณ์
+        </button>
+        <button
+          type="button"
+          onClick={() => setSubTab('scoring')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            subTab === 'scoring'
+              ? 'bg-emerald-600 text-white'
+              : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
+          }`}
+        >
+          สัมภาษณ์และคะแนน
+        </button>
+      </div>
+
       <div className="rounded-xl bg-white shadow-soft border border-surface-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-surface-200 flex flex-wrap items-center justify-between gap-4">
-          <h2 className="text-lg font-semibold text-surface-800">สัมภาษณ์และคะแนน</h2>
-          <button
-            type="button"
-            onClick={() => {
-              setImportOpen(true)
-              setImportFile(null)
-              setParsedRecords([])
-              setError(null)
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 shadow-soft"
-          >
-            <FiUpload className="w-4 h-4" />
-            นำเข้าข้อมูลผู้สมัคร
-          </button>
+          <h2 className="text-lg font-semibold text-surface-800">
+            {subTab === 'appointments' ? 'รายการนัดสัมภาษณ์' : 'สัมภาษณ์และคะแนน'}
+          </h2>
+          {subTab === 'appointments' ? (
+            <button
+              type="button"
+              onClick={openCreateScheduleModal}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 shadow-soft"
+            >
+              <FiPlus className="w-4 h-4" />
+              สร้างนัดหมาย
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setImportOpen(true)
+                setImportFile(null)
+                setParsedRecords([])
+                setError(null)
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 shadow-soft"
+            >
+              <FiUpload className="w-4 h-4" />
+              นำเข้าข้อมูลผู้สมัคร
+            </button>
+          )}
         </div>
 
         {error && (
@@ -419,10 +606,130 @@ export default function InterviewSchedule() {
           <div className="flex items-center justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
           </div>
+        ) : subTab === 'appointments' ? (
+          <div>
+            <div className="px-6 py-4 border-b border-surface-100 flex flex-wrap items-end gap-3">
+              <div className="min-w-[220px]">
+                <label className="block text-xs text-surface-600 mb-1">ค้นหา</label>
+                <input
+                  type="text"
+                  value={appointmentSearch}
+                  onChange={(e) => setAppointmentSearch(e.target.value)}
+                  placeholder="ค้นหาผู้สมัคร, ชื่อเล่น, ตำแหน่ง, เบอร์โทร..."
+                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-surface-600 mb-1">วันที่นัด (จาก)</label>
+                <input
+                  type="date"
+                  value={appointmentDateFrom}
+                  onChange={(e) => setAppointmentDateFrom(e.target.value)}
+                  className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-surface-600 mb-1">ถึงวันที่</label>
+                <input
+                  type="date"
+                  value={appointmentDateTo}
+                  onChange={(e) => setAppointmentDateTo(e.target.value)}
+                  className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAppointmentSearch('')
+                  setAppointmentDateFrom('')
+                  setAppointmentDateTo('')
+                }}
+                className="px-3 py-2 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ลำดับ</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้สมัคร</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชื่อเล่น</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่/เวลานัด</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่ง</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เงินเดือน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เบอร์โทร</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAppointments.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-12 text-center text-surface-500 text-sm">
+                      ไม่มีรายการ
+                    </td>
+                  </tr>
+                ) : (
+                  filteredAppointments.map((iv, idx) => {
+                    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+                    return (
+                      <tr
+                        key={iv.id}
+                        onClick={() => openScoring(iv)}
+                        className="border-b border-surface-100 hover:bg-emerald-50/50 cursor-pointer transition-colors"
+                      >
+                        <td className="px-6 py-3 text-sm text-surface-700">{idx + 1}</td>
+                        <td className="px-6 py-3 text-sm text-surface-800">
+                          {candidate ? candidateName(candidate) : '-'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          {(candidate as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '-'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{formatDateTime(iv.interview_date)}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{candidate?.applied_position ?? '-'}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          {candidate?.custom_field_1
+                            ? `${Number(candidate.custom_field_1).toLocaleString('th-TH')} บาท`
+                            : '-'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{candidate?.phone ?? '-'}</td>
+                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
+                          <select
+                            value={iv.status}
+                            onChange={(e) => void handleInterviewStatusChange(iv.id, e.target.value as InterviewStatus)}
+                            className="rounded-lg border border-surface-300 bg-white px-2 py-1.5 text-xs text-surface-700 min-w-[120px]"
+                          >
+                            {INTERVIEW_STATUS_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => openScoring(iv)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
+                          >
+                            <FiEdit2 className="w-4 h-4" /> ให้คะแนน
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+            </div>
+          </div>
         ) : (
           <>
             <div className="px-6 py-4 border-b border-surface-100">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
                 <FiUsers className="w-5 h-5 text-surface-500" />
                 <span className="text-sm font-medium text-surface-700">ผู้สมัคร</span>
                 <select
@@ -436,6 +743,7 @@ export default function InterviewSchedule() {
                     </option>
                   ))}
                 </select>
+                </div>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -446,13 +754,15 @@ export default function InterviewSchedule() {
                     <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่งที่สมัคร</th>
                     <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
                     <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่สมัคร</th>
+                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประวัตินัดสัมภาษณ์</th>
+                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประวัติสัมภาษณ์</th>
                     <th className="px-6 py-3 text-sm font-semibold text-surface-700">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredCandidates.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center text-surface-500 text-sm">
+                      <td colSpan={7} className="px-6 py-12 text-center text-surface-500 text-sm">
                         ไม่มีรายการ
                       </td>
                     </tr>
@@ -481,6 +791,16 @@ export default function InterviewSchedule() {
                           </span>
                         </td>
                         <td className="px-6 py-3 text-sm text-surface-700">{formatDate(c.created_at)}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          {(candidateInterviewHistory.get(c.id)?.totalAppointments ?? 0) > 0
+                            ? `มี (${candidateInterviewHistory.get(c.id)?.totalAppointments ?? 0} ครั้ง)`
+                            : 'ยังไม่เคยนัด'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">
+                          {(candidateInterviewHistory.get(c.id)?.interviewedCount ?? 0) > 0
+                            ? `มี (${candidateInterviewHistory.get(c.id)?.interviewedCount ?? 0} ครั้ง)`
+                            : 'ยังไม่เคยสัมภาษณ์'}
+                        </td>
                         <td className="px-6 py-3">
                           <div className="flex items-center gap-2">
                             {c.status === 'new' && (
@@ -512,70 +832,6 @@ export default function InterviewSchedule() {
             </div>
           </>
         )}
-      </div>
-
-      <div className="rounded-xl bg-white shadow-soft border border-surface-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-surface-200">
-          <h3 className="text-base font-semibold text-surface-800">รายการสัมภาษณ์</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-surface-50 border-b border-surface-200">
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้สมัคร</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่/เวลา</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานที่</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
-                <th className="px-6 py-3 text-sm font-semibold text-surface-700">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {interviews.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-surface-500 text-sm">
-                    ไม่มีรายการ
-                  </td>
-                </tr>
-              ) : (
-                interviews.map((iv) => (
-                  <tr
-                    key={iv.id}
-                    onClick={() => openScoring(iv)}
-                    className="border-b border-surface-100 hover:bg-emerald-50/50 cursor-pointer transition-colors"
-                  >
-                    <td className="px-6 py-3 text-sm text-surface-800">
-                      {iv.candidate ? candidateName(iv.candidate) : '-'}
-                    </td>
-                    <td className="px-6 py-3 text-sm text-surface-700">{formatDateTime(iv.interview_date)}</td>
-                    <td className="px-6 py-3 text-sm text-surface-700">{iv.location ?? '-'}</td>
-                    <td className="px-6 py-3">
-                      <span
-                        className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${
-                          iv.status === 'completed'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : iv.status === 'scheduled'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-surface-100 text-surface-700'
-                        }`}
-                      >
-                        {iv.status === 'scheduled' ? 'นัดแล้ว' : iv.status === 'completed' ? 'เสร็จสิ้น' : iv.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        onClick={() => openScoring(iv)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
-                      >
-                        <FiEdit2 className="w-4 h-4" /> ให้คะแนน
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
       </div>
 
       {/* Import modal */}
@@ -668,16 +924,118 @@ export default function InterviewSchedule() {
         onClose={() => {
           setScheduleModalOpen(false)
           setScheduleCandidate(null)
+          setScheduleCandidateId('')
         }}
-        contentClassName="max-w-md"
+        contentClassName="max-w-3xl overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
         closeOnBackdropClick
       >
         <div className="p-6">
-          <h3 className="text-lg font-semibold text-surface-800 mb-4">นัดสัมภาษณ์</h3>
-          {scheduleCandidate && (
-            <p className="text-sm text-surface-600 mb-4">ผู้สมัคร: {candidateName(scheduleCandidate)}</p>
-          )}
+          <h3 className="text-lg font-semibold text-surface-800 mb-4">สร้างนัดหมาย</h3>
           <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">อ้างอิงผู้สมัครเดิม (ถ้ามี)</label>
+              <select
+                value={scheduleCandidate ? scheduleCandidate.id : scheduleCandidateId}
+                onChange={(e) => {
+                  const id = e.target.value
+                  if (!id) {
+                    setScheduleCandidate(null)
+                    setScheduleCandidateId('')
+                    return
+                  }
+                  const found = candidateMap.get(id) ?? null
+                  setScheduleCandidate(found)
+                  setScheduleCandidateId(id)
+                  if (found) {
+                    setScheduleFirstName(found.first_name ?? '')
+                    setScheduleLastName(found.last_name ?? '')
+                    setScheduleNickname((found as HRCandidate & { nickname?: string }).nickname ?? '')
+                    setSchedulePhone(found.phone ?? '')
+                    setScheduleSalary(found.custom_field_1 ?? '')
+                    setScheduleAppliedPosition(found.applied_position ?? '')
+                  }
+                }}
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              >
+                <option value="">-- ไม่เลือก (สร้างผู้สมัครใหม่จากข้อมูลด้านล่าง) --</option>
+                {scheduleCandidateOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {candidateName(c)}
+                  </option>
+                ))}
+              </select>
+              {filteredCandidates.length === 0 && candidates.length > 0 && (
+                <p className="mt-1 text-xs text-surface-500">
+                  ไม่พบผู้สมัครในตัวกรองปัจจุบัน จึงแสดงผู้สมัครทั้งหมดให้เลือก
+                </p>
+              )}
+            </div>
+
+            {scheduleCandidate && (
+              <div className="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 text-sm text-surface-700">
+                ผู้สมัคร: {candidateName(scheduleCandidate)}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">ชื่อผู้สมัคร *</label>
+                <input
+                  type="text"
+                  value={scheduleFirstName}
+                  onChange={(e) => setScheduleFirstName(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">นามสกุลผู้สมัคร *</label>
+                <input
+                  type="text"
+                  value={scheduleLastName}
+                  onChange={(e) => setScheduleLastName(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">ชื่อเล่น</label>
+                <input
+                  type="text"
+                  value={scheduleNickname}
+                  onChange={(e) => setScheduleNickname(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">เบอร์โทร</label>
+                <input
+                  type="text"
+                  value={schedulePhone}
+                  onChange={(e) => setSchedulePhone(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">เงินเดือน</label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={scheduleSalary}
+                  onChange={(e) => setScheduleSalary(e.target.value)}
+                  placeholder="เช่น 18000"
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">ตำแหน่ง</label>
+                <input
+                  type="text"
+                  value={scheduleAppliedPosition}
+                  onChange={(e) => setScheduleAppliedPosition(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">วันที่</label>
               <input
@@ -705,6 +1063,20 @@ export default function InterviewSchedule() {
                 placeholder="ห้องสัมภาษณ์..."
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
               />
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-surface-700 mb-1">สถานะ</label>
+                <select
+                  value={scheduleStatus}
+                  onChange={(e) => setScheduleStatus(e.target.value as InterviewStatus)}
+                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+                >
+                  {INTERVIEW_STATUS_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">ผู้สัมภาษณ์</label>
@@ -725,6 +1097,7 @@ export default function InterviewSchedule() {
               </select>
               <p className="text-xs text-surface-500 mt-1">กด Ctrl/Cmd เพื่อเลือกหลายคน</p>
             </div>
+            </div>
           </div>
           <div className="mt-6 flex justify-end gap-2">
             <button
@@ -737,7 +1110,13 @@ export default function InterviewSchedule() {
             <button
               type="button"
               onClick={handleScheduleSubmit}
-              disabled={scheduleSaving || !scheduleDate}
+              disabled={
+                scheduleSaving ||
+                !scheduleDate ||
+                (!scheduleCandidate &&
+                  !scheduleCandidateId &&
+                  (!scheduleFirstName.trim() || !scheduleLastName.trim()))
+              }
               className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
             >
               {scheduleSaving ? 'กำลังบันทึก...' : 'บันทึก'}

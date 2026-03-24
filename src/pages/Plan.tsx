@@ -12,9 +12,11 @@ import IssueBoard from '../components/order/IssueBoard'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import { getProductImageUrl } from '../components/wms/wmsUtils'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
+type ManageSubView = 'new' | 'all'
 
 interface ProcessStep {
   name: string
@@ -104,6 +106,15 @@ const defaultSettings: PlanSettingsData = {
   },
   linesPerDept: { เบิก: 1, STAMP: 1, STK: 1, CTT: 1, LASER: 1, TUBE: 1, QC: 1, PACK: 1 },
 }
+
+const normalizeOrderKey = (value: unknown) =>
+  String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/\s+/g, '')
+    .trim()
+    .toUpperCase()
 
 // --- Utils ---
 const pad = (n: number) => String(Math.floor(n)).padStart(2, '0')
@@ -457,9 +468,12 @@ export default function Plan() {
   const [issueOpenCount, setIssueOpenCount] = useState(0)
   const [issueWorkOrders, setIssueWorkOrders] = useState<Array<{ work_order_name: string }>>([])
   const [workOrdersCount, setWorkOrdersCount] = useState(0)
+  const [manageNewCount, setManageNewCount] = useState(0)
   const [workOrdersManageCount, setWorkOrdersManageCount] = useState(0)
+  const [manageSubView, setManageSubView] = useState<ManageSubView>('new')
   const [cancelledByWO, setCancelledByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string }[]>>({})
   const [cancelledDetailWO, setCancelledDetailWO] = useState<string | null>(null)
+  const [selectedCancelledOrderId, setSelectedCancelledOrderId] = useState<string | null>(null)
   const [cancelledWmsLines, setCancelledWmsLines] = useState<any[]>([])
   const [cancelledWmsLoading, setCancelledWmsLoading] = useState(false)
   const [stockActionLoading, setStockActionLoading] = useState<string | null>(null)
@@ -493,6 +507,8 @@ export default function Plan() {
   const [jDateFrom, setJDateFrom] = useState(() => new Date().toISOString().split('T')[0])
   const [jDateTo, setJDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [jChannelFilter, setJChannelFilter] = useState('')
+  const [manageDateFrom, setManageDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [manageDateTo, setManageDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
@@ -510,6 +526,7 @@ export default function Plan() {
     step: 'confirm' | 'result'
     resultMessage: string
   }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
+  const menuCountsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const selectableDepts = settings.departments.filter((d) => !['เบิก', 'QC', 'PACK'].includes(d))
 
@@ -583,9 +600,22 @@ export default function Plan() {
     })()
   }, [])
 
-  const loadWorkOrderCounts = useCallback(async () => {
+  const loadMenuCounts = useCallback(async () => {
     try {
-      const [{ count: pumpCount }, { count: otherCount }, { count: manageCount }] = await Promise.all([
+      const allWorkOrdersQuery = supabase
+        .from('or_work_orders')
+        .select('id', { count: 'exact', head: true })
+      const allWorkOrdersFilteredByChannel = jChannelFilter
+        ? allWorkOrdersQuery.like('work_order_name', `${jChannelFilter}-%`)
+        : allWorkOrdersQuery
+      const allWorkOrdersFilteredByDateFrom = manageDateFrom
+        ? allWorkOrdersFilteredByChannel.gte('created_at', `${manageDateFrom}T00:00:00.000Z`)
+        : allWorkOrdersFilteredByChannel
+      const allWorkOrdersFiltered = manageDateTo
+        ? allWorkOrdersFilteredByDateFrom.lte('created_at', `${manageDateTo}T23:59:59.999Z`)
+        : allWorkOrdersFilteredByDateFrom
+
+      const [{ count: pumpCount }, { count: otherCount }, { count: manageNew }, { count: manageAll }] = await Promise.all([
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
           .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
@@ -596,18 +626,40 @@ export default function Plan() {
           .is('work_order_name', null),
         supabase.from('or_work_orders').select('id', { count: 'exact', head: true })
           .eq('status', 'กำลังผลิต'),
+        allWorkOrdersFiltered,
       ])
       setWorkOrdersCount((pumpCount ?? 0) + (otherCount ?? 0))
-      setWorkOrdersManageCount(manageCount ?? 0)
+      setManageNewCount(manageNew ?? 0)
+      setWorkOrdersManageCount(manageAll ?? 0)
     } catch (e) {
-      console.error('Error loading work order counts:', e)
+      console.error('Error loading menu counts:', e)
     }
-  }, [])
+  }, [jChannelFilter, manageDateFrom, manageDateTo])
 
   useEffect(() => {
     load()
-    loadWorkOrderCounts()
-  }, [load, loadWorkOrderCounts])
+    loadMenuCounts()
+  }, [load, loadMenuCounts])
+
+  useEffect(() => {
+    const scheduleRefreshMenuCounts = () => {
+      if (menuCountsRefreshTimerRef.current) clearTimeout(menuCountsRefreshTimerRef.current)
+      menuCountsRefreshTimerRef.current = setTimeout(() => {
+        loadMenuCounts()
+      }, 400)
+    }
+
+    const channel = supabase
+      .channel('plan-menu-counts-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleRefreshMenuCounts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, scheduleRefreshMenuCounts)
+      .subscribe()
+
+    return () => {
+      if (menuCountsRefreshTimerRef.current) clearTimeout(menuCountsRefreshTimerRef.current)
+      supabase.removeChannel(channel)
+    }
+  }, [loadMenuCounts])
 
   useEffect(() => {
     const channel = supabase
@@ -660,24 +712,92 @@ export default function Plan() {
     return () => { supabase.removeChannel(ch) }
   }, [loadCancelledOrders])
 
-  // โหลด WMS lines สำหรับบิลที่ยกเลิกเมื่อกดดูรายละเอียด
-  const loadCancelledWmsLines = useCallback(async (workOrderName: string) => {
+  const getCancelledOrderProductCodes = useCallback(async (orderId: string): Promise<string[]> => {
+    const { data: items } = await supabase
+      .from('or_order_items')
+      .select('product_id')
+      .eq('order_id', orderId)
+
+    const productIds = [...new Set((items || []).map((i: any) => i.product_id).filter(Boolean))]
+    if (productIds.length === 0) return []
+
+    const { data: products } = await supabase
+      .from('pr_products')
+      .select('id, product_code')
+      .in('id', productIds)
+
+    return [...new Set((products || []).map((p: any) => String(p.product_code || '').trim()).filter(Boolean))]
+  }, [])
+
+  // โหลด WMS lines สำหรับ "บิลที่ยกเลิก" ที่เลือก (ไม่ดึงทั้งใบงาน)
+  const loadCancelledWmsLines = useCallback(async (workOrderName: string, orderId?: string) => {
     setCancelledWmsLoading(true)
     setCancelledDetailWO(workOrderName)
     try {
-      const { data } = await supabase
+      const cleanWorkOrder = String(workOrderName || '').trim()
+      const fallbackOrderId = cancelledByWO[workOrderName]?.[0]?.id || null
+      const targetOrderId = orderId || fallbackOrderId
+      setSelectedCancelledOrderId(targetOrderId)
+
+      if (!targetOrderId) {
+        setCancelledWmsLines([])
+        return
+      }
+
+      const targetCodes = await getCancelledOrderProductCodes(targetOrderId)
+      if (targetCodes.length === 0) {
+        setCancelledWmsLines([])
+        return
+      }
+
+      const { data: exactData } = await supabase
         .from('wms_orders')
-        .select('id, product_code, qty, status, stock_action, picker_id')
-        .eq('order_id', workOrderName)
+        .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
+        .eq('order_id', cleanWorkOrder)
         .eq('status', 'cancelled')
-      setCancelledWmsLines(data || [])
+      let rows = exactData || []
+
+      // Fallback 1: eq ด้วยค่า original เผื่อมีช่องว่าง/อักขระที่ trim แล้วไม่ตรง
+      if (rows.length === 0 && cleanWorkOrder !== workOrderName) {
+        const { data: rawExactData } = await supabase
+          .from('wms_orders')
+          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
+          .eq('order_id', workOrderName)
+          .eq('status', 'cancelled')
+        rows = rawExactData || []
+      }
+
+      // Fallback 2: ค้นหาแบบ ilike ก่อน (เร็วกว่า full scan)
+      if (rows.length === 0 && cleanWorkOrder) {
+        const { data: likeData } = await supabase
+          .from('wms_orders')
+          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
+          .eq('status', 'cancelled')
+          .ilike('order_id', `%${cleanWorkOrder}%`)
+        rows = likeData || []
+      }
+
+      // Fallback: บางเคสค่า order_id มีรูปแบบช่องว่าง/ขีดต่างกันเล็กน้อย
+      if (rows.length === 0) {
+        const targetNorm = normalizeOrderKey(cleanWorkOrder || workOrderName)
+        const { data: fallbackData } = await supabase
+          .from('wms_orders')
+          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
+          .eq('status', 'cancelled')
+          .range(0, 9999)
+        rows = (fallbackData || []).filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
+      }
+
+      const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
+      const filteredRows = rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+      setCancelledWmsLines(filteredRows)
     } catch (e) {
       console.error('Error loading cancelled WMS lines:', e)
       setCancelledWmsLines([])
     } finally {
       setCancelledWmsLoading(false)
     }
-  }, [])
+  }, [cancelledByWO, getCancelledOrderProductCodes])
 
   const handleStockAction = useCallback(async (wmsOrderId: string, action: 'recall' | 'waste') => {
     setStockActionLoading(wmsOrderId)
@@ -692,14 +812,14 @@ export default function Plan() {
         })
         if (error) throw error
       }
-      if (cancelledDetailWO) loadCancelledWmsLines(cancelledDetailWO)
+      if (cancelledDetailWO && selectedCancelledOrderId) loadCancelledWmsLines(cancelledDetailWO, selectedCancelledOrderId)
       loadCancelledOrders()
     } catch (e: any) {
       alert('ดำเนินการไม่สำเร็จ: ' + (e?.message || e))
     } finally {
       setStockActionLoading(null)
     }
-  }, [cancelledDetailWO, loadCancelledWmsLines, loadCancelledOrders, user?.id])
+  }, [cancelledDetailWO, selectedCancelledOrderId, loadCancelledWmsLines, loadCancelledOrders, user?.id])
 
   // ฟัง event จาก TopBar เพื่อเปลี่ยนไป view Issue
   useEffect(() => {
@@ -1421,7 +1541,11 @@ export default function Plan() {
                         {j.name}
                         {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); loadCancelledWmsLines(j.name) }}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const firstOrderId = cancelledByWO[j.name]?.[0]?.id
+                              loadCancelledWmsLines(j.name, firstOrderId)
+                            }}
                             className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                           >
                             ยกเลิก {cancelledByWO[j.name].length}
@@ -1519,11 +1643,99 @@ export default function Plan() {
 
       {currentView === 'work-orders-manage' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
-          <div className="p-4">
-            <WorkOrderManageList
-              channelFilter={jChannelFilter}
-              onRefresh={loadWorkOrderCounts}
-            />
+          <div className="p-4 space-y-4">
+            <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 pb-3">
+              <button
+                type="button"
+                onClick={() => setManageSubView('new')}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                  manageSubView === 'new'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                ใบงานใหม่ ({manageNewCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setManageSubView('all')}
+                className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                  manageSubView === 'all'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                ใบงานทั้งหมด ({workOrdersManageCount})
+              </button>
+            </div>
+
+            {manageSubView === 'all' && (
+              <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <div className="flex flex-wrap gap-3 items-end">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทาง</label>
+                    <select
+                      value={jChannelFilter}
+                      onChange={(e) => setJChannelFilter(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                    >
+                      <option value="">ทั้งหมด</option>
+                      {jChannels.map((ch) => (
+                        <option key={ch.channel_code} value={ch.channel_code}>
+                          {ch.channel_name || ch.channel_code}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">จากวันที่</label>
+                    <input
+                      type="date"
+                      value={manageDateFrom}
+                      onChange={(e) => setManageDateFrom(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ถึงวันที่</label>
+                    <input
+                      type="date"
+                      value={manageDateTo}
+                      onChange={(e) => setManageDateTo(e.target.value)}
+                      className="px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setJChannelFilter('')
+                      setManageDateFrom(new Date().toISOString().split('T')[0])
+                      setManageDateTo(new Date().toISOString().split('T')[0])
+                    }}
+                    className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-100"
+                  >
+                    ล้างตัวกรอง
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {manageSubView === 'new' ? (
+              <WorkOrderManageList
+                mode="active"
+                onCountChange={setManageNewCount}
+                onRefresh={loadMenuCounts}
+              />
+            ) : (
+              <WorkOrderManageList
+                mode="all"
+                channelFilter={jChannelFilter}
+                dateFrom={manageDateFrom}
+                dateTo={manageDateTo}
+                onCountChange={setWorkOrdersManageCount}
+                onRefresh={loadMenuCounts}
+              />
+            )}
           </div>
         </section>
       )}
@@ -1985,7 +2197,11 @@ export default function Plan() {
                             {j.name}
                             {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
                               <button
-                                onClick={(e) => { e.stopPropagation(); loadCancelledWmsLines(j.name) }}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const firstOrderId = cancelledByWO[j.name]?.[0]?.id
+                                  loadCancelledWmsLines(j.name, firstOrderId)
+                                }}
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                               >
                                 ยกเลิก {cancelledByWO[j.name].length}
@@ -2754,7 +2970,7 @@ export default function Plan() {
         </div>
       </Modal>
       {/* Cancelled Bills Detail Modal */}
-      <Modal open={!!cancelledDetailWO} onClose={() => { setCancelledDetailWO(null); setCancelledWmsLines([]) }} contentClassName="max-w-3xl max-h-[85vh] overflow-y-auto">
+      <Modal open={!!cancelledDetailWO} onClose={() => { setCancelledDetailWO(null); setSelectedCancelledOrderId(null); setCancelledWmsLines([]) }} contentClassName="max-w-6xl w-full max-h-[85vh] overflow-y-auto">
         {cancelledDetailWO && (
           <div className="p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-gray-200 pb-3">
@@ -2772,10 +2988,18 @@ export default function Plan() {
                 <p className="text-sm font-semibold text-red-800 mb-2">บิลที่ยกเลิก:</p>
                 <div className="flex flex-wrap gap-2">
                   {cancelledByWO[cancelledDetailWO].map((o) => (
-                    <span key={o.id} className="px-2 py-1 bg-white border border-red-200 rounded-lg text-sm">
+                    <button
+                      key={o.id}
+                      onClick={() => loadCancelledWmsLines(cancelledDetailWO, o.id)}
+                      className={`px-2 py-1 border rounded-lg text-sm transition ${
+                        selectedCancelledOrderId === o.id
+                          ? 'bg-red-100 border-red-300'
+                          : 'bg-white border-red-200 hover:bg-red-50'
+                      }`}
+                    >
                       <span className="font-mono font-bold text-red-700">{o.bill_no}</span>
                       <span className="text-gray-500 ml-1">({o.customer_name})</span>
-                    </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -2792,13 +3016,18 @@ export default function Plan() {
                 <div className="text-center py-6 text-gray-400">
                   <i className="fas fa-check-circle text-green-500 text-2xl mb-2 block"></i>
                   <p>ไม่มีรายการ WMS ที่รอดำเนินการ</p>
+                  <p className="text-xs text-gray-400 mt-2">
+                    หากหน้าแจ้งเตือนมีรายการ แต่หน้าต่างนี้ว่าง ให้รีเฟรชหน้าแล้วลองเปิดใหม่อีกครั้ง
+                  </p>
                 </div>
               ) : (
                 <div className="border border-gray-200 rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-gray-50 text-left text-gray-600">
+                        <th className="px-3 py-2 font-semibold">รูป</th>
                         <th className="px-3 py-2 font-semibold">รหัสสินค้า</th>
+                        <th className="px-3 py-2 font-semibold">ชื่อสินค้า</th>
                         <th className="px-3 py-2 font-semibold">จำนวน</th>
                         <th className="px-3 py-2 font-semibold">สถานะสต๊อก</th>
                         <th className="px-3 py-2 font-semibold text-center">ดำเนินการ</th>
@@ -2807,7 +3036,19 @@ export default function Plan() {
                     <tbody className="divide-y divide-gray-100">
                       {cancelledWmsLines.map((line: any) => (
                         <tr key={line.id}>
+                          <td className="px-3 py-2">
+                            <img
+                              src={getProductImageUrl(line.product_code)}
+                              alt={line.product_name || line.product_code || 'product'}
+                              className="w-9 h-9 object-cover rounded border border-gray-200 bg-white"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement
+                                target.src = 'https://placehold.co/80x80?text=NO+IMG'
+                              }}
+                            />
+                          </td>
                           <td className="px-3 py-2 font-mono">{line.product_code}</td>
+                          <td className="px-3 py-2">{line.product_name || '-'}</td>
                           <td className="px-3 py-2">{line.qty}</td>
                           <td className="px-3 py-2">
                             {line.stock_action === 'recalled' ? (
@@ -2826,14 +3067,14 @@ export default function Plan() {
                                   disabled={stockActionLoading === line.id}
                                   className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-50 transition"
                                 >
-                                  {stockActionLoading === line.id ? '...' : 'เรียกคืนได้'}
+                                  {stockActionLoading === line.id ? '...' : 'คืนสต๊อค'}
                                 </button>
                                 <button
                                   onClick={() => handleStockAction(line.id, 'waste')}
                                   disabled={stockActionLoading === line.id}
                                   className="px-3 py-1.5 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 disabled:opacity-50 transition"
                                 >
-                                  {stockActionLoading === line.id ? '...' : 'ของเสีย'}
+                                  {stockActionLoading === line.id ? '...' : 'ตีเป็นของเสีย'}
                                 </button>
                               </div>
                             ) : !line.stock_action ? (
@@ -2852,7 +3093,7 @@ export default function Plan() {
 
             <div className="flex justify-end pt-2">
               <button
-                onClick={() => { setCancelledDetailWO(null); setCancelledWmsLines([]) }}
+                onClick={() => { setCancelledDetailWO(null); setSelectedCancelledOrderId(null); setCancelledWmsLines([]) }}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
               >
                 ปิด

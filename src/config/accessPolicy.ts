@@ -5,6 +5,11 @@ export type MaybeRole = UserRole | string | null | undefined
 export const SUPERADMIN_ROLE: UserRole = 'superadmin'
 export const ADMIN_ROLE: UserRole = 'admin'
 export const WMS_MOBILE_SPECIAL_ROLES: UserRole[] = ['picker', 'production_mb', 'manager']
+
+/** มือถือ: เข้า /machinery ได้ (รวม technician = เฉพาะมอนิเตอร์) */
+export const MACHINERY_MOBILE_ROLES: UserRole[] = ['production_mb', 'manager', 'technician']
+
+export const TECHNICIAN_ROLE: UserRole = 'technician'
 export const DESKTOP_DB_MANAGED_ROLES: UserRole[] = [
   'superadmin',
   'admin',
@@ -41,7 +46,8 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
   { key: 'dashboard', path: '/dashboard', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
   { key: 'orders', path: '/orders', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
   { key: 'admin-qc', path: '/admin-qc', roles: ['superadmin', 'admin', 'sales-tr', 'qc_order'] },
-  { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'] },
+  { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production'] },
+  { key: 'machinery', path: '/machinery', roles: ['superadmin', 'admin', 'production'] },
   { key: 'wms', path: '/wms', roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production', 'production_mb', 'manager', 'picker'] },
   { key: 'qc', path: '/qc', roles: ['superadmin', 'admin', 'sales-tr', 'qc_staff'] },
   { key: 'packing', path: '/packing', roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'] },
@@ -159,6 +165,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'settings-chat-history': 'settings',
   'settings-easyslip': 'settings',
   'orders-create': 'orders',
+  'orders-all': 'orders',
   'orders-waiting': 'orders',
   'orders-data-error': 'orders',
   'orders-complete': 'orders',
@@ -175,6 +182,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'plan-form': 'plan',
   'plan-set': 'plan',
   'plan-issue': 'plan',
+  'machinery-settings': 'machinery',
   'qc-operation': 'qc',
   'qc-reject': 'qc',
   'qc-report': 'qc',
@@ -183,6 +191,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'packing-new': 'packing',
   'packing-shipped': 'packing',
   'packing-queue': 'packing',
+  'packing-tagSearch': 'packing',
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {
@@ -193,6 +202,7 @@ export function resolveMenuKeyFromPath(pathname: string): string | null {
   if (pathname.startsWith('/admin-qc')) return 'admin-qc'
   if (pathname.startsWith('/account')) return 'account'
   if (pathname.startsWith('/plan')) return 'plan'
+  if (pathname.startsWith('/machinery')) return 'machinery'
   if (pathname.startsWith('/wms')) return 'wms'
   if (pathname.startsWith('/qc')) return 'qc'
   if (pathname.startsWith('/packing')) return 'packing'

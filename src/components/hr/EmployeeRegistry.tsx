@@ -43,6 +43,41 @@ function getStatusLabel(status: string): string {
   return labels[status] ?? status
 }
 
+function getContractTypeLabel(t: HREmployee['contract_type']): string {
+  if (t === 'daily') return 'รายวัน'
+  return 'ประจำ'
+}
+
+function getTenureLabel(hireDate?: string): string {
+  if (!hireDate) return '-'
+  const start = new Date(`${hireDate}T00:00:00`)
+  if (Number.isNaN(start.getTime())) return '-'
+
+  const now = new Date()
+  if (start > now) return 'ยังไม่เริ่มงาน'
+
+  let years = now.getFullYear() - start.getFullYear()
+  let months = now.getMonth() - start.getMonth()
+  let days = now.getDate() - start.getDate()
+
+  if (days < 0) {
+    months -= 1
+    const prevMonthDays = new Date(now.getFullYear(), now.getMonth(), 0).getDate()
+    days += prevMonthDays
+  }
+
+  if (months < 0) {
+    years -= 1
+    months += 12
+  }
+
+  const parts: string[] = []
+  if (years > 0) parts.push(`${years} ปี`)
+  if (months > 0) parts.push(`${months} เดือน`)
+  if (days > 0 || parts.length === 0) parts.push(`${days} วัน`)
+  return parts.join(' ')
+}
+
 export default function EmployeeRegistry() {
   const [employees, setEmployees] = useState<HREmployee[]>([])
   const [departments, setDepartments] = useState<HRDepartment[]>([])
@@ -230,15 +265,17 @@ export default function EmployeeRegistry() {
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ชื่อเล่น</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">แผนก</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ตำแหน่ง</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ประเภทสัญญาจ้าง</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">สถานะ</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันที่เข้างาน</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">อายุงาน</th>
                   <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700 w-24">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-12 text-center text-gray-500">
+                    <td colSpan={10} className="py-12 text-center text-gray-500">
                       ไม่พบพนักงาน
                     </td>
                   </tr>
@@ -274,6 +311,9 @@ export default function EmployeeRegistry() {
                       <td className="py-3 px-4 text-sm text-gray-600">
                         {(emp.position as { name?: string })?.name ?? '-'}
                       </td>
+                      <td className="py-3 px-4 text-sm text-gray-600">
+                        {getContractTypeLabel(emp.contract_type)}
+                      </td>
                       <td className="py-3 px-4">
                         <span
                           className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusBadgeClass(
@@ -287,6 +327,9 @@ export default function EmployeeRegistry() {
                         {emp.hire_date
                           ? new Date(emp.hire_date).toLocaleDateString('th-TH')
                           : '-'}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-gray-600">
+                        {getTenureLabel(emp.hire_date)}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1">
@@ -317,7 +360,11 @@ export default function EmployeeRegistry() {
         )}
       </div>
 
-      <Modal open={modalOpen} onClose={handleCloseModal} contentClassName="max-w-4xl">
+      <Modal
+        open={modalOpen}
+        onClose={handleCloseModal}
+        contentClassName="max-w-4xl overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+      >
         <EmployeeForm
           employee={editingEmployee}
           onSave={handleSave}

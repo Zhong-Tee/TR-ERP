@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import ApprovalList from './ApprovalList'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
@@ -14,6 +15,7 @@ const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; col
 ]
 
 export default function ManagerLayout() {
+  const navigate = useNavigate()
   const { user, signOut } = useAuthContext()
   const [activeView, setActiveView] = useState<ViewKey>('menu')
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
@@ -86,6 +88,15 @@ export default function ManagerLayout() {
                   <div className="text-[10px] text-white/60 mt-1 leading-tight">{item.desc}</div>
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => navigate('/machinery')}
+                className="rounded-2xl bg-gradient-to-br from-slate-600 to-slate-800 p-4 text-left transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg"
+              >
+                <i className="fas fa-industry text-2xl text-white/80 mb-3 block" />
+                <div className="font-bold text-base text-white leading-tight">Machinery</div>
+                <div className="text-[10px] text-white/60 mt-1 leading-tight">มอนิเตอร์สถานะเครื่องจักร</div>
+              </button>
             </div>
           </div>
         )}

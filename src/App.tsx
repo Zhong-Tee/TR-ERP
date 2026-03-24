@@ -36,9 +36,15 @@ import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
 import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
+import Machinery from './pages/Machinery'
 import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
-import { DESKTOP_MENU_PATH_ORDER, WMS_MOBILE_SPECIAL_ROLES } from './config/accessPolicy'
+import {
+  DESKTOP_MENU_PATH_ORDER,
+  MACHINERY_MOBILE_ROLES,
+  TECHNICIAN_ROLE,
+  WMS_MOBILE_SPECIAL_ROLES,
+} from './config/accessPolicy'
 
 const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
@@ -67,6 +73,8 @@ function SmartRedirect() {
 
   // Special roles: redirect immediately without waiting for menuAccess
   if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
+
+  if (user.role === TECHNICIAN_ROLE) return <Navigate to="/machinery" replace />
 
   if (WMS_MOBILE_SPECIAL_ROLES.includes(user.role)) return <Navigate to="/wms" replace />
 
@@ -137,8 +145,22 @@ function AppRoutes() {
   }
 
   const isWmsMobileRole = user ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) : false
+  const isMachineryMobileLayout = user ? MACHINERY_MOBILE_ROLES.includes(user.role) : false
 
-  if (user && isWmsMobileRole && location.pathname !== '/wms') {
+  if (user && user.role === TECHNICIAN_ROLE && location.pathname !== '/machinery') {
+    return <Navigate to="/machinery" replace />
+  }
+
+  if (user && user.role === 'picker' && location.pathname !== '/wms') {
+    return <Navigate to="/wms" replace />
+  }
+
+  if (
+    user &&
+    (user.role === 'production_mb' || user.role === 'manager') &&
+    location.pathname !== '/wms' &&
+    location.pathname !== '/machinery'
+  ) {
     return <Navigate to="/wms" replace />
   }
 
@@ -195,12 +217,26 @@ function AppRoutes() {
       <Route
         path="/plan"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production']}>
             <Layout>
               <div className="p-6">
                 <Plan />
               </div>
             </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/machinery"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production', 'production_mb', 'manager', 'technician']}>
+            {isMachineryMobileLayout ? (
+              <Machinery />
+            ) : (
+              <Layout>
+                <Machinery />
+              </Layout>
+            )}
           </ProtectedRoute>
         }
       />

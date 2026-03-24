@@ -3,7 +3,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
-import { Order, OrderItem, WorkOrder, InkType } from '../types'
+import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -17,6 +17,7 @@ import {
   type UploadQueueItem,
 } from '../lib/packingQueue'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -46,6 +47,8 @@ type PackingItem = {
   file_attachment: string | null
   notes: string | null
   qc_status: 'pass' | 'fail' | 'skip' | null
+  /** หมายเลข Tag ประจำวัน (เซ็ตเมื่อสแกนพัสดุสำเร็จ) */
+  packingTag: number | null
 }
 
 type WorkOrderStatus = {
@@ -60,6 +63,46 @@ type WorkOrderStatus = {
   packedBills: number
 }
 
+function buildPackingItemsFromOrder(
+  order: OrderWithItems,
+  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>
+): PackingItem[] {
+  const isOrderShipped = order.status === 'จัดส่งแล้ว'
+  const isParcelScanned = order.packing_meta?.parcelScanned || false
+  const packingTag = order.packing_meta?.dailyPackingTag ?? null
+  const rows: PackingItem[] = []
+  const items = order.or_order_items || order.order_items || []
+  items.forEach((item) => {
+    const qcStatus = item.item_uid ? qcStatusMap[item.item_uid] || null : null
+    rows.push({
+      tracking_number: order.tracking_number || '',
+      customer_name: order.customer_name || '',
+      order_id: order.id,
+      product_name: item.product_name || '',
+      product_code: item.pr_products?.product_code || null,
+      details: [item.line_1, item.line_2, item.line_3].filter(Boolean).join(' // '),
+      ink_color: item.ink_color,
+      shelf_location: item.product_type,
+      cartoon_pattern: item.cartoon_pattern,
+      line_pattern: item.line_pattern,
+      font: item.font,
+      item_uid: item.item_uid,
+      scanned: item.packing_status === 'สแกนแล้ว',
+      parcelScanned: isParcelScanned,
+      isOrderComplete: isOrderShipped,
+      needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
+      needsCashBill: false,
+      claim_type: order.claim_type,
+      claim_details: order.claim_details,
+      file_attachment: item.file_attachment,
+      notes: item.notes,
+      qc_status: qcStatus,
+      packingTag,
+    })
+  })
+  return rows
+}
+
 type RecordingState = {
   status: 'idle' | 'recording' | 'uploading' | 'error'
   tracking: string | null
@@ -67,6 +110,44 @@ type RecordingState = {
 }
 
 const INACTIVITY_LIMIT = 60_000
+const PACKING_DAILY_TAG_STORAGE_KEY = 'pk_daily_packing_tag_v1'
+
+/** แสดงเลขพัสดุแบบไม่มีช่องว่าง */
+function formatParcelNo(value: string | null | undefined): string {
+  if (!value) return ''
+  return String(value).replace(/\s+/g, '')
+}
+
+function normalizeParcelScanInput(value: string): string {
+  return value.replace(/\s+/g, '').trim().toUpperCase()
+}
+
+function localCalendarDateKey(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** สำรองหมายเลข Tag ต่อเนื่องจำนวน count ตัวในวันเดียวกัน (รีเซ็ตเมื่อเปลี่ยนวันตามเวลาท้องถิ่นของเครื่อง) */
+function reserveDailyPackingTags(count: number): number[] {
+  if (count <= 0) return []
+  const d = localCalendarDateKey()
+  try {
+    const raw = localStorage.getItem(PACKING_DAILY_TAG_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    let seq = 1
+    if (parsed.date === d && typeof parsed.seq === 'number' && parsed.seq >= 1) {
+      seq = parsed.seq
+    }
+    const out: number[] = []
+    for (let i = 0; i < count; i += 1) {
+      out.push(seq + i)
+    }
+    localStorage.setItem(PACKING_DAILY_TAG_STORAGE_KEY, JSON.stringify({ date: d, seq: seq + count }))
+    return out
+  } catch {
+    return Array.from({ length: count }, (_, i) => i + 1)
+  }
+}
 
 function naturalSortCompare(a: string, b: string) {
   const re = /(\d+)/g
@@ -96,15 +177,24 @@ export default function Packing() {
   const [loading, setLoading] = useState(true)
   const { menuAccessLoading } = useMenuAccess()
   const [view, setView] = useState<'selection' | 'main'>('selection')
-  const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue'>('new')
+  const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue' | 'tagSearch'>('new')
+  const [tagSearchInput, setTagSearchInput] = useState('')
+  const [tagSearchLoading, setTagSearchLoading] = useState(false)
+  const [tagSearchError, setTagSearchError] = useState('')
+  const [tagSearchMeta, setTagSearchMeta] = useState<{
+    workOrderName: string | null
+    tracking: string | null
+    packingTag: number | null
+  } | null>(null)
+  const [tagSearchRows, setTagSearchRows] = useState<PackingItem[] | null>(null)
 
   useEffect(() => {
     if (menuAccessLoading) return
     if (!hasAccess(`packing-${selectionTab}`)) {
-      const first = (['new', 'shipped', 'queue'] as const).find((t) => hasAccess(`packing-${t}`))
+      const first = (['new', 'shipped', 'queue', 'tagSearch'] as const).find((t) => hasAccess(`packing-${t}`))
       if (first) setSelectionTab(first)
     }
-  }, [menuAccessLoading])
+  }, [menuAccessLoading, hasAccess, selectionTab])
   const [shippedOrders, setShippedOrders] = useState<
     Array<{
       id: string
@@ -170,6 +260,7 @@ export default function Packing() {
 
   const parcelScanRef = useRef<HTMLInputElement>(null)
   const itemScanRef = useRef<HTMLInputElement>(null)
+  const tagSearchInputRef = useRef<HTMLInputElement>(null)
   const inactivityTimerRef = useRef<number | null>(null)
   const currentIndexRef = useRef(currentIndex)
   const aggregatedDataRef = useRef(aggregatedData)
@@ -199,6 +290,7 @@ export default function Packing() {
       .from('or_orders')
       .select('id', { count: 'exact', head: true })
       .eq('work_order_name', workOrderName)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .neq('status', 'จัดส่งแล้ว')
     if ((count || 0) !== 0) return
     const now = new Date().toISOString()
@@ -215,13 +307,13 @@ export default function Packing() {
     if (error) console.error('PACK checkAndMarkPackEnd error:', error.message)
   }
 
-  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasReadyBills: boolean) => {
+  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean) => {
     if (!hasTracking) {
       openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
       return
     }
-    if (!hasReadyBills) {
-      openAlert('ใบงานนี้ยังไม่มีบิลที่ QC พร้อมแพ็ค')
+    if (!hasBillsWithTracking) {
+      openAlert('ใบงานนี้ยังไม่มีบิลที่มีเลขพัสดุ')
       return
     }
     const skipTrack = isAdminOrSuperadmin(user?.role)
@@ -252,20 +344,13 @@ export default function Packing() {
 
   const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
 
-  const isOrderQcReady = (order: OrderWithItems, qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) => {
-    const items = order.or_order_items || (order.order_items || [])
-    if (items.length === 0) return false
-    return items.every((item) => {
-      const uid = item.item_uid
-      if (!uid) return false
-      const status = qcStatusMap[uid]
-      return status === 'pass' || status === 'skip'
-    })
-  }
-
   const goToNextGroup = () => {
     const nextIndex = aggregatedDataRef.current.findIndex(
-      (g, idx) => idx !== currentIndexRef.current && !g.every((item) => item.scanned) && !g[0].isOrderComplete
+      (g, idx) =>
+        idx !== currentIndexRef.current &&
+        isQcPassGroup(g) &&
+        !g.every((item) => item.scanned) &&
+        !g[0].isOrderComplete
     )
     if (nextIndex !== -1) {
       setCurrentIndex(nextIndex)
@@ -375,6 +460,36 @@ export default function Packing() {
     confirmActionRef.current = null
   }
 
+  useEffect(() => {
+    const isPackingScanConfirm =
+      dialog.open && dialog.mode === 'confirm' && dialog.title === 'ยืนยันการแพ็คสินค้า'
+    if (!isPackingScanConfirm) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat) return
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'textarea' || target?.isContentEditable) return
+
+      if (event.code === 'Space' || event.key === ' ') {
+        event.preventDefault()
+        const action = confirmActionRef.current
+        closeDialog()
+        action?.()
+        return
+      }
+      if (event.code === 'Digit0' || event.code === 'Numpad0' || event.key === '0') {
+        event.preventDefault()
+        closeDialog()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [dialog.open, dialog.mode, dialog.title])
+
   const saveShippedEdit = async () => {
     if (!shippedEdit) return
     const { workOrderName, shippedBy, shippedDate, shippedTime } = shippedEdit
@@ -405,6 +520,74 @@ export default function Packing() {
     )
     setShippedEdit(null)
     openAlert('บันทึกการแก้ไขเรียบร้อยแล้ว')
+  }
+
+  async function runTagSearchLookup() {
+    const q = tagSearchInput.trim().toUpperCase()
+    if (!q) {
+      openAlert('กรุณาสแกนหรือพิมพ์รหัสสินค้า / Item UID')
+      return
+    }
+    setTagSearchLoading(true)
+    setTagSearchError('')
+    setTagSearchRows(null)
+    setTagSearchMeta(null)
+    try {
+      let orderId: string | null = null
+      const { data: byUid, error: uidErr } = await supabase
+        .from('or_order_items')
+        .select('order_id')
+        .eq('item_uid', q)
+        .maybeSingle()
+      if (uidErr) throw uidErr
+      if (byUid?.order_id) orderId = byUid.order_id
+
+      if (!orderId) {
+        const { data: prods, error: pErr } = await supabase.from('pr_products').select('id').eq('product_code', q).limit(1)
+        if (pErr) throw pErr
+        const pid = prods?.[0]?.id
+        if (pid) {
+          const { data: oiRows, error: oiErr } = await supabase.from('or_order_items').select('order_id').eq('product_id', pid)
+          if (oiErr) throw oiErr
+          const unique = [...new Set((oiRows || []).map((r: { order_id: string }) => r.order_id).filter(Boolean))]
+          if (unique.length === 1) {
+            orderId = unique[0]!
+          } else if (unique.length > 1) {
+            setTagSearchError('พบหลายบิลที่มีรหัสสินค้านี้ กรุณาใช้ Item UID แทน')
+            setTagSearchLoading(false)
+            return
+          }
+        }
+      }
+
+      if (!orderId) {
+        setTagSearchError('ไม่พบรายการที่ตรงกับบาร์โค้ด')
+        setTagSearchLoading(false)
+        return
+      }
+
+      const { data: order, error: oErr } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*, pr_products(product_code))')
+        .eq('id', orderId)
+        .single()
+      if (oErr || !order) throw oErr || new Error('ไม่พบออร์เดอร์')
+
+      const ord = order as OrderWithItems
+      const itemUids = (ord.or_order_items || []).map((i) => i.item_uid).filter(Boolean)
+      const qcStatusMap = await fetchQcStatusMap(itemUids as string[])
+      const rows = buildPackingItemsFromOrder(ord, qcStatusMap)
+      setTagSearchRows(rows)
+      setTagSearchMeta({
+        workOrderName: ord.work_order_name ?? null,
+        tracking: ord.tracking_number ?? null,
+        packingTag: ord.packing_meta?.dailyPackingTag ?? null,
+      })
+    } catch (e: any) {
+      setTagSearchError(e?.message || 'ค้นหาไม่สำเร็จ')
+    } finally {
+      setTagSearchLoading(false)
+    }
   }
 
   const completedIndices = useMemo(() => {
@@ -487,6 +670,29 @@ export default function Packing() {
     return Array.from(grouped.values()).sort((a, b) => (a.shipped_time || '').localeCompare(b.shipped_time || ''))
   }, [shippedOrdersFiltered])
 
+  useEffect(() => {
+    if (selectionTab !== 'tagSearch') return
+    setTagSearchInput('')
+    setTagSearchError('')
+    setTagSearchRows(null)
+    setTagSearchMeta(null)
+    requestAnimationFrame(() => {
+      tagSearchInputRef.current?.focus()
+      tagSearchInputRef.current?.select()
+    })
+  }, [selectionTab])
+
+  const tagSearchActiveItemUid = useMemo(() => {
+    if (!tagSearchRows || tagSearchRows.length === 0) return null
+    const q = tagSearchInput.trim().toUpperCase()
+    if (q) {
+      const exact = tagSearchRows.find((item) => item.item_uid.toUpperCase() === q)
+      if (exact) return exact.item_uid
+    }
+    const nextPending = tagSearchRows.find((item) => !item.scanned)
+    return nextPending?.item_uid ?? null
+  }, [tagSearchRows, tagSearchInput])
+
   const shippedChannels = useMemo(() => {
     const values = shippedOrders
       .map((row) => row.channel_code)
@@ -525,6 +731,8 @@ export default function Packing() {
 
     if (isDone) {
       setStatusMessage({ text: '✅ จัดส่งเรียบร้อย', type: 'success' })
+    } else if (!isQcPassGroup(currentGroup)) {
+      setStatusMessage({ text: '⏳ รอ QC Pass ครบทุกชิ้นจึงจะสแกนได้', type: '' })
     } else if (!isParcelScanned) {
       setStatusMessage({ text: 'รอสแกนเลขพัสดุ...', type: '' })
       parcelScanRef.current?.focus()
@@ -593,7 +801,8 @@ export default function Packing() {
           supabase
             .from('or_orders')
             .select('id, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(item_uid, packing_status)')
-            .in('work_order_name', names),
+            .in('work_order_name', names)
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
             .from('qc_sessions')
             .select('filename')
@@ -710,6 +919,7 @@ export default function Packing() {
         .from('or_orders')
         .select('*, or_order_items(*, pr_products(product_code))')
         .eq('work_order_name', workOrderName)
+        .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
         .order('bill_no', { ascending: true })
 
       if (error) throw error
@@ -719,8 +929,7 @@ export default function Packing() {
         (order.or_order_items || order.order_items || []).map((item) => item.item_uid).filter(Boolean)
       )
       const qcStatusMap = await fetchQcStatusMap(itemUids)
-      const readyOrders = ordersWithTracking.filter((order) => isOrderQcReady(order, qcStatusMap))
-      prepareDataForPacking(readyOrders, qcStatusMap)
+      await prepareDataForPacking(ordersWithTracking, qcStatusMap)
       setView('main')
     } catch (error: any) {
       openAlert('ดึงข้อมูลไม่ได้: ' + error.message)
@@ -754,39 +963,10 @@ export default function Packing() {
     return map
   }
 
-  function prepareDataForPacking(orders: OrderWithItems[], qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) {
+  async function prepareDataForPacking(orders: OrderWithItems[], qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) {
     const flatData: PackingItem[] = []
     orders.forEach((order) => {
-      const isOrderShipped = order.status === 'จัดส่งแล้ว'
-      const isParcelScanned = order.packing_meta?.parcelScanned || false
-      const items = order.or_order_items || (order.order_items || [])
-      items.forEach((item) => {
-        const qcStatus = item.item_uid ? qcStatusMap[item.item_uid] || null : null
-        flatData.push({
-          tracking_number: order.tracking_number || '',
-          customer_name: order.customer_name || '',
-          order_id: order.id,
-          product_name: item.product_name || '',
-          product_code: item.pr_products?.product_code || null,
-          details: [item.line_1, item.line_2, item.line_3].filter(Boolean).join(' // '),
-          ink_color: item.ink_color,
-          shelf_location: item.product_type,
-          cartoon_pattern: item.cartoon_pattern,
-          line_pattern: item.line_pattern,
-          font: item.font,
-          item_uid: item.item_uid,
-          scanned: item.packing_status === 'สแกนแล้ว',
-          parcelScanned: isParcelScanned,
-          isOrderComplete: isOrderShipped,
-          needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
-          needsCashBill: false,
-          claim_type: order.claim_type,
-          claim_details: order.claim_details,
-          file_attachment: item.file_attachment,
-          notes: item.notes,
-          qc_status: qcStatus
-        })
-      })
+      flatData.push(...buildPackingItemsFromOrder(order, qcStatusMap))
     })
 
     const grouped: Record<string, PackingItem[]> = {}
@@ -800,20 +980,51 @@ export default function Packing() {
     })
 
     const aggregated = trackingOrder.map((tracking) => grouped[tracking])
-    setAggregatedData(aggregated)
-    if (aggregated.length === 0) {
+    const needTagCount = aggregated.filter((group) => group[0].packingTag == null).length
+    const reservedTags = reserveDailyPackingTags(needTagCount)
+    let tagIdx = 0
+    const aggregatedTagged = aggregated.map((group) => {
+      if (group[0].packingTag != null) return group
+      const t = reservedTags[tagIdx++]!
+      return group.map((item) => ({ ...item, packingTag: t }))
+    })
+
+    const persistNewTags = aggregatedTagged
+      .map((group, i) => ({ group, hadTag: aggregated[i]![0].packingTag != null }))
+      .filter((x) => !x.hadTag)
+      .map(({ group }) => {
+        const order = orders.find((o) => o.id === group[0].order_id)
+        const prev =
+          order?.packing_meta && typeof order.packing_meta === 'object'
+            ? { ...(order.packing_meta as Record<string, unknown>) }
+            : {}
+        const tag = group[0].packingTag
+        return supabase
+          .from('or_orders')
+          .update({
+            packing_meta: { ...prev, dailyPackingTag: tag } as PackingMeta,
+          })
+          .eq('id', group[0].order_id)
+      })
+    await Promise.allSettled(persistNewTags)
+
+    setAggregatedData(aggregatedTagged)
+    if (aggregatedTagged.length === 0) {
       setCurrentIndex(-1)
       return
     }
-    const nextIndex = aggregated.findIndex(
-      (group) => !group.every((item) => item.scanned) && !group[0].isOrderComplete
+    const nextIndex = aggregatedTagged.findIndex(
+      (group) =>
+        isQcPassGroup(group) &&
+        !group.every((item) => item.scanned) &&
+        !group[0].isOrderComplete
     )
     if (nextIndex !== -1) {
       setCurrentIndex(nextIndex)
       startInactivityTimer()
     } else {
-      const firstNotShipped = aggregated.findIndex((group) => !group[0].isOrderComplete)
-      setCurrentIndex(firstNotShipped !== -1 ? firstNotShipped : aggregated.length - 1)
+      const firstNotShipped = aggregatedTagged.findIndex((group) => !group[0].isOrderComplete)
+      setCurrentIndex(firstNotShipped !== -1 ? firstNotShipped : aggregatedTagged.length - 1)
     }
   }
 
@@ -855,12 +1066,40 @@ export default function Packing() {
       setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
       return
     }
-    if (scanValue === String(group[0].tracking_number).trim().toUpperCase()) {
+    const scanNorm = normalizeParcelScanInput(scanValue)
+    const trackingNorm = normalizeParcelScanInput(String(group[0].tracking_number))
+    if (scanNorm === trackingNorm) {
       const scannedBy = user?.username || user?.email || 'unknown'
+      const scanTime = new Date().toISOString()
+      const { data: ordRow, error: metaFetchErr } = await supabase
+        .from('or_orders')
+        .select('packing_meta')
+        .eq('id', group[0].order_id)
+        .single()
+      if (metaFetchErr) {
+        console.error('parcel scan packing_meta fetch:', metaFetchErr)
+      }
+      const prev =
+        ordRow?.packing_meta && typeof ordRow.packing_meta === 'object'
+          ? { ...(ordRow.packing_meta as Record<string, unknown>) }
+          : {}
+      let nextTag = group[0].packingTag
+      if (nextTag == null && typeof prev.dailyPackingTag === 'number') {
+        nextTag = prev.dailyPackingTag
+      }
+      if (nextTag == null) {
+        nextTag = reserveDailyPackingTags(1)[0]!
+      }
       const { error: orderUpdateError } = await supabase
         .from('or_orders')
         .update({
-          packing_meta: { parcelScanned: true, scannedBy, scanTime: new Date().toISOString() }
+          packing_meta: {
+            ...prev,
+            parcelScanned: true,
+            scannedBy,
+            scanTime,
+            dailyPackingTag: nextTag,
+          } as PackingMeta,
         })
         .eq('id', group[0].order_id)
       if (orderUpdateError) {
@@ -877,7 +1116,7 @@ export default function Packing() {
 
       setAggregatedData((prev) =>
         prev.map((g, idx) =>
-          idx === currentIndex ? g.map((item) => ({ ...item, parcelScanned: true })) : g
+          idx === currentIndex ? g.map((item) => ({ ...item, parcelScanned: true, packingTag: nextTag })) : g
         )
       )
       setParcelScanValue('')
@@ -902,6 +1141,11 @@ export default function Packing() {
     const scanValue = itemScanValue.trim().toUpperCase()
     if (!scanValue) return
     const group = currentGroup
+    if (!isQcPassGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
+      return
+    }
     const itemToScan = group.find((item) => !item.scanned && item.item_uid === scanValue)
     if (itemToScan) {
       const { data: updatedItems, error: itemError } = await supabase
@@ -1322,6 +1566,7 @@ export default function Packing() {
                 { key: 'new' as const, label: 'ใบงานใหม่', count: workOrders.length },
                 { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
                 { key: 'queue' as const, label: 'คิวอัปโหลด' },
+                { key: 'tagSearch' as const, label: 'ค้นหา Tag' },
               ]).filter((tab) => hasAccess(`packing-${tab.key}`)).map((tab) => (
                 <button
                   key={tab.key}
@@ -1355,8 +1600,8 @@ export default function Packing() {
                   const qcCompleted = status?.qcCompleted ?? false
                   const qcSkipped = status?.qcSkipped ?? false
                   const readyBills = status?.readyBills ?? 0
-                  const qcReady = qcCompleted || qcSkipped || readyBills > 0
-                  const canSelect = hasTracking && qcReady
+                  const totalBills = status?.totalBills ?? 0
+                  const canSelect = hasTracking && totalBills > 0
 
                   // สีตามสถานะ — ให้ความสำคัญกับ QC ก่อน, แล้วดู tracking
                   let cardClass = ''
@@ -1391,7 +1636,7 @@ export default function Packing() {
                       className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
                       disabled={!canSelect}
                       onClick={() => {
-                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, readyBills > 0 || qcSkipped || qcCompleted)
+                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0)
                       }}
                     >
                       <div className="flex items-center justify-between gap-3">
@@ -1550,6 +1795,181 @@ export default function Packing() {
                 </div>
               )}
             </div>
+          ) : selectionTab === 'tagSearch' ? (
+            <div className="space-y-4">
+              <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-3">
+                <h3 className="font-semibold text-gray-800">สแกนหาบิลจากรหัสสินค้า</h3>
+                <p className="text-sm text-gray-600">
+                  ใช้บาร์โค้ด <strong>Item UID</strong> หรือ <strong>รหัสสินค้า (product code)</strong> ระบบจะแสดงรายการในบิลเดียวกับหน้าจัดของ
+                </p>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <input
+                    ref={tagSearchInputRef}
+                    autoFocus
+                    className="border-2 border-blue-500 rounded px-3 py-2 flex-1 min-w-[200px] text-center font-mono uppercase"
+                    placeholder="สแกนหรือพิมพ์รหัส..."
+                    value={tagSearchInput}
+                    onChange={(e) => setTagSearchInput(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        runTagSearchLookup()
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shrink-0"
+                    disabled={tagSearchLoading}
+                    onClick={() => runTagSearchLookup()}
+                  >
+                    {tagSearchLoading ? 'กำลังค้นหา...' : 'ค้นหา'}
+                  </button>
+                </div>
+                {tagSearchError && <div className="text-sm text-red-600 font-medium">{tagSearchError}</div>}
+              </div>
+
+              {tagSearchRows && tagSearchRows.length > 0 && tagSearchMeta && (
+                <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-x-auto">
+                  <div className="p-4 border-b border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+                    <div>
+                      <div className="text-lg font-bold text-gray-900">ใบงาน: {tagSearchMeta.workOrderName || '—'}</div>
+                      <div className="text-sm text-gray-600 mt-1">
+                        เลขพัสดุ:{' '}
+                        <span className="font-mono font-semibold">{formatParcelNo(tagSearchMeta.tracking || '') || '—'}</span>
+                      </div>
+                      <div className="text-sm text-gray-600">ลูกค้า: {tagSearchRows[0]?.customer_name || '—'}</div>
+                    </div>
+                    <div className="text-center md:self-start">
+                      <div className="text-sm text-gray-600">หมายเลข Tag</div>
+                      <div className="font-mono text-3xl font-extrabold text-blue-700 leading-none mt-1">
+                        {tagSearchMeta.packingTag ?? '—'}
+                      </div>
+                    </div>
+                    <div className="text-sm text-gray-500 md:text-right">
+                      {tagSearchRows.filter((i) => i.qc_status === 'pass' || i.qc_status === 'skip').length}/
+                      {tagSearchRows.length} รายการ QC พร้อม
+                    </div>
+                  </div>
+                  <table className="min-w-full border-collapse">
+                    <thead className="bg-gray-100">
+                      <tr className="text-left text-sm">
+                        <th className="p-2 border">รูปสินค้า</th>
+                        <th className="p-2 border">รูปลาย</th>
+                        <th className="p-2 border">สินค้า</th>
+                        <th className="p-2 border">ชั้น</th>
+                        <th className="p-2 border">สีหมึก</th>
+                        <th className="p-2 border">ลาย//เส้น</th>
+                        <th className="p-2 border">ฟอนต์</th>
+                        <th className="p-2 border">รายละเอียด</th>
+                        <th className="p-2 border">หมายเหตุ</th>
+                        <th className="p-2 border">ไฟล์</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tagSearchRows
+                        .slice()
+                        .sort((a, b) => naturalSortCompare(a.item_uid, b.item_uid))
+                        .map((item) => {
+                          const combinedPattern = [item.cartoon_pattern, item.line_pattern].filter(Boolean).join(' // ')
+                          const displayNotes = (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+                          const fileLink =
+                            item.file_attachment &&
+                            (item.file_attachment.startsWith('http') || item.file_attachment.includes('www.'))
+                              ? item.file_attachment.startsWith('http')
+                                ? item.file_attachment
+                                : `https://${item.file_attachment}`
+                              : null
+                          const productImageUrl = getPublicUrl('product-images', item.product_code, '.jpg')
+                          const patternName = item.cartoon_pattern || item.line_pattern || ''
+                          const patternImageUrl = patternName ? getPublicUrl('cartoon-patterns', patternName, '.jpg') : ''
+                          return (
+                            <tr
+                              key={item.item_uid}
+                              className={
+                                item.item_uid === tagSearchActiveItemUid
+                                  ? 'bg-amber-100 ring-2 ring-amber-400'
+                                  : item.scanned
+                                    ? 'bg-green-50'
+                                    : ''
+                              }
+                            >
+                              <td className="p-2 border align-middle">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
+                                    {productImageUrl ? (
+                                      <img src={productImageUrl} alt={item.product_name} className="w-full h-full object-contain" />
+                                    ) : (
+                                      <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                    )}
+                                  </div>
+                                  <small className="mt-1">{item.item_uid}</small>
+                                </div>
+                              </td>
+                              <td className="p-2 border align-middle">
+                                <div className="flex flex-col items-center">
+                                  <div className="w-20 h-20 border rounded bg-white flex items-center justify-center">
+                                    {patternImageUrl ? (
+                                      <img src={patternImageUrl} alt={patternName || 'pattern'} className="w-full h-full object-contain" />
+                                    ) : (
+                                      <span className="text-xs text-gray-400">ไม่มีรูป</span>
+                                    )}
+                                  </div>
+                                  <small className="mt-1">{patternName || '-'}</small>
+                                </div>
+                              </td>
+                              <td className="p-2 border">
+                                <div className="flex items-start gap-2 min-w-0">
+                                  {item.qc_status === 'pass' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      QC Pass
+                                    </span>
+                                  ) : item.qc_status === 'skip' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      Not QC
+                                    </span>
+                                  ) : item.qc_status === 'fail' ? (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      QC Fail
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
+                                      ยังไม่ได้ QC
+                                    </span>
+                                  )}
+                                  <span className="min-w-0 break-words">{item.product_name}</span>
+                                </div>
+                              </td>
+                              <td className="p-2 border">
+                                {(item.shelf_location || '').trim() === 'ชั้น1' ? '' : item.shelf_location || ''}
+                              </td>
+                              <td className="p-2 border">{item.ink_color || ''}</td>
+                              <td className="p-2 border">{combinedPattern}</td>
+                              <td className="p-2 border">{item.font || ''}</td>
+                              <td className="p-2 border">{item.details || ''}</td>
+                              <td className="p-2 border">{displayNotes}</td>
+                              <td className="p-2 border text-center">
+                                {fileLink ? (
+                                  <a
+                                    href={fileLink}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-cyan-600 underline text-sm"
+                                  >
+                                    เปิด
+                                  </a>
+                                ) : (
+                                  <span className="text-gray-300">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           ) : (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center gap-3">
@@ -1602,7 +2022,7 @@ export default function Packing() {
                     <div key={item.id} className={`border rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 ${cardClass}`}>
                       <div className="min-w-0">
                         <div className="font-medium truncate">
-                          {item.workOrderName} • {item.trackingNumber}
+                          {item.workOrderName} • {formatParcelNo(item.trackingNumber)}
                         </div>
                         <div className="text-xs opacity-70">
                           {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : item.filename} • {
@@ -1751,7 +2171,15 @@ export default function Packing() {
                   const isFullScanned = group.every((item) => item.scanned)
                   const icon = isDone ? '✅' : isFullScanned ? '🟢' : '📦'
                   const tracking = group[0].tracking_number
-                  if (searchTerm && !tracking.toLowerCase().includes(searchTerm.toLowerCase())) return null
+                  const trackingDisp = formatParcelNo(tracking)
+                  const searchNorm = searchTerm.replace(/\s+/g, '').toLowerCase()
+                  if (
+                    searchTerm &&
+                    !trackingDisp.toLowerCase().includes(searchNorm) &&
+                    !tracking.toLowerCase().includes(searchTerm.toLowerCase())
+                  ) {
+                    return null
+                  }
                   return (
                     <button
                       key={`${tracking}-${index}`}
@@ -1761,14 +2189,17 @@ export default function Packing() {
                       onClick={() => handleOrderClick(index)}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="text-sm font-semibold">
-                            {icon} {tracking}
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold break-all">
+                            {icon} {trackingDisp}
                           </div>
                           <div className="text-xs text-gray-500">{group[0].customer_name || 'N/A'}</div>
+                          <div className="text-[11px] font-semibold text-indigo-700 mt-0.5 tabular-nums">
+                            Tag {group[0].packingTag ?? '—'}
+                          </div>
                         </div>
                         <div
-                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap shrink-0 max-w-full ${
                             isQcPassGroup(group)
                               ? group.every((i) => i.qc_status === 'skip')
                                 ? 'bg-orange-100 text-orange-700'
@@ -1827,6 +2258,7 @@ export default function Packing() {
                           }}
                           disabled={
                             isViewOnly ||
+                            !isQcPassGroup(currentGroup) ||
                             !currentGroup[0].parcelScanned ||
                             currentGroup[0].isOrderComplete ||
                             currentGroup.every((item) => item.scanned)
@@ -1862,29 +2294,37 @@ export default function Packing() {
                   </div>
 
                   <div className="bg-white p-4 rounded-lg shadow space-y-4 flex-1 min-h-0 overflow-x-auto overflow-y-visible h-full flex flex-col relative">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div className="flex flex-col gap-1">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <div className="text-lg font-semibold">
-                            เลขพัสดุ: {currentGroup[0].tracking_number}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-3 items-start gap-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <div className="text-lg font-semibold break-all">
+                              เลขพัสดุ: {formatParcelNo(currentGroup[0].tracking_number)}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={stopRecordingAndAdvance}
+                              disabled={recordingState.status !== 'recording'}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 shrink-0"
+                            >
+                              หยุดบันทึก
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            onClick={stopRecordingAndAdvance}
-                            disabled={recordingState.status !== 'recording'}
-                            className="px-3 py-1.5 text-sm font-semibold rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40"
-                          >
-                            หยุดบันทึก
-                          </button>
                         </div>
-                        <div className="text-sm text-gray-600">ลูกค้า: {currentGroup[0].customer_name}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm text-gray-500">จำนวน</div>
-                        <div className="text-2xl font-bold">
-                          {currentGroup.filter((item) => item.scanned).length}/{currentGroup.length}
+                        <div className="text-center px-2">
+                          <div className="text-xs text-gray-500 whitespace-nowrap">หมายเลข Tag</div>
+                          <div className="text-xl sm:text-2xl font-bold tabular-nums">
+                            {currentGroup[0].packingTag ?? '—'}
+                          </div>
+                        </div>
+                        <div className="text-right justify-self-end">
+                          <div className="text-sm text-gray-500">จำนวน</div>
+                          <div className="text-2xl font-bold tabular-nums">
+                            {currentGroup.filter((item) => item.scanned).length}/{currentGroup.length}
+                          </div>
                         </div>
                       </div>
+                      <div className="text-sm text-gray-600">ลูกค้า: {currentGroup[0].customer_name}</div>
                     </div>
 
                     {(currentGroup[0].claim_type || currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) && (
@@ -2008,25 +2448,25 @@ export default function Packing() {
                                   </div>
                                 </td>
                                 <td className="p-2 border">
-                                  <div className="flex flex-col gap-1">
+                                  <div className="flex items-start gap-2 min-w-0">
                                     {item.qc_status === 'pass' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                      <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
                                         QC Pass
                                       </span>
                                     ) : item.qc_status === 'skip' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                      <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
                                         Not QC
                                       </span>
                                     ) : item.qc_status === 'fail' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                      <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
                                         QC Fail
                                       </span>
                                     ) : (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 w-fit">
+                                      <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
                                         ยังไม่ได้ QC
                                       </span>
                                     )}
-                                    <span>{item.product_name}</span>
+                                    <span className="min-w-0 break-words">{item.product_name}</span>
                                   </div>
                                 </td>
                                 <td className="p-2 border">
@@ -2141,13 +2581,25 @@ export default function Packing() {
         <div className="p-5 space-y-4">
           <h3 className="text-lg font-semibold">{dialog.title}</h3>
           <p className="text-sm text-gray-700">{dialog.message}</p>
+          {dialog.mode === 'confirm' && dialog.title === 'ยืนยันการแพ็คสินค้า' && (
+            <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+              คีย์ลัด: กด <strong>Spacebar</strong> = ใช่, กด <strong>0</strong> = ไม่ใช่
+            </p>
+          )}
           <div className="flex justify-end gap-2">
             {dialog.mode === 'confirm' && (
               <button
                 className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
                 onClick={closeDialog}
               >
-                {dialog.cancelText || 'ยกเลิก'}
+                {dialog.title === 'ยืนยันการแพ็คสินค้า' ? (
+                  <span className="flex flex-col leading-tight text-center">
+                    <span className="font-semibold">ไม่ใช่</span>
+                    <span className="text-[11px] text-gray-600">(0) ตรวจสอบอีกรอบ</span>
+                  </span>
+                ) : (
+                  dialog.cancelText || 'ยกเลิก'
+                )}
               </button>
             )}
             <button
@@ -2158,7 +2610,14 @@ export default function Packing() {
                 action?.()
               }}
             >
-              {dialog.confirmText || 'ตกลง'}
+              {dialog.title === 'ยืนยันการแพ็คสินค้า' ? (
+                <span className="flex flex-col leading-tight text-center">
+                  <span className="font-semibold">ใช่</span>
+                  <span className="text-[11px] text-blue-100">(Spacebar) หยุดบันทึก</span>
+                </span>
+              ) : (
+                dialog.confirmText || 'ตกลง'
+              )}
             </button>
           </div>
         </div>
