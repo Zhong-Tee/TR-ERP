@@ -42,6 +42,21 @@ export default function NotificationSection() {
       .trim()
       .toUpperCase()
 
+  /** แถวยกเลิกบิลหลายแถวอาจมี order_id ต่างกันเล็กน้อย — เทียบแบบ normalize แล้วคืน id ที่ยัง status=unread */
+  const getUnreadCancelNotificationIdsForGroup = async (orderIdRaw: string | null | undefined): Promise<string[]> => {
+    const targetNorm = normalizeOrderKey(orderIdRaw)
+    if (!targetNorm) return []
+    const { data, error } = await supabase
+      .from('wms_notifications')
+      .select('id, order_id')
+      .eq('type', 'ยกเลิกบิล')
+      .eq('status', 'unread')
+    if (error) throw error
+    return (data || [])
+      .filter((r) => normalizeOrderKey((r as { order_id?: string }).order_id) === targetNorm)
+      .map((r) => (r as { id: string }).id)
+  }
+
   const getCancelledOrderProductCodes = useCallback(async (orderId: string): Promise<string[]> => {
     const { data: items } = await supabase
       .from('or_order_items')
@@ -115,29 +130,69 @@ export default function NotificationSection() {
     }
   }, [getCancelledOrderProductCodes])
 
-  const loadNotifications = async () => {
-    const { data } = await supabase
+  /** ส่ง tabOverride เมื่อเพิ่ง setCurrentTab แล้ว state ยังไม่ทัน sync (เช่น หลังกดแก้ไขแล้ว) */
+  const loadNotifications = async (tabOverride?: string) => {
+    const tab = tabOverride ?? currentTab
+    const { data, error } = await supabase
       .from('wms_notifications')
       .select('*, us_users!picker_id(username)')
-      .eq('status', currentTab)
+      .eq('status', tab)
       .order('created_at', { ascending: false })
 
+    if (error) {
+      console.error('loadNotifications:', error.message)
+      return
+    }
     if (!data) return
 
     const notificationsWithDetails = await enrichWmsNotificationsWithOrderDetails(supabase, data)
     setNotifications(notificationsWithDetails)
   }
 
-  const markNotifRead = async (id: string) => {
-    await supabase.from('wms_notifications').update({ is_read: true }).eq('id', id)
-    loadNotifications()
-    window.dispatchEvent(new Event('wms-data-changed'))
+  /** ยกเลิกบิลสร้างหลายแถวต่อใบงาน — อัปเดตทุกแถวในกลุ่ม (order_id แบบ normalize) */
+  const markNotifRead = async (n: { id: string; type?: string; order_id?: string }) => {
+    try {
+      if (n.type === 'ยกเลิกบิล' && String(n.order_id || '').trim()) {
+        let ids = await getUnreadCancelNotificationIdsForGroup(n.order_id)
+        if (ids.length === 0) ids = [n.id]
+        const { error } = await supabase.from('wms_notifications').update({ is_read: true }).in('id', ids)
+        if (error) throw error
+      } else {
+        const { error } = await supabase.from('wms_notifications').update({ is_read: true }).eq('id', n.id)
+        if (error) throw error
+      }
+      await loadNotifications()
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert('อัปเดตไม่สำเร็จ: ' + msg)
+    }
   }
 
-  const markNotifFixed = async (id: string) => {
-    await supabase.from('wms_notifications').update({ status: 'fixed', is_read: true }).eq('id', id)
-    loadNotifications()
-    window.dispatchEvent(new Event('wms-data-changed'))
+  const markNotifFixed = async (n: { id: string; type?: string; order_id?: string }) => {
+    try {
+      if (n.type === 'ยกเลิกบิล' && String(n.order_id || '').trim()) {
+        let ids = await getUnreadCancelNotificationIdsForGroup(n.order_id)
+        if (ids.length === 0) ids = [n.id]
+        const { error } = await supabase
+          .from('wms_notifications')
+          .update({ status: 'fixed', is_read: true })
+          .in('id', ids)
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('wms_notifications')
+          .update({ status: 'fixed', is_read: true })
+          .eq('id', n.id)
+        if (error) throw error
+      }
+      setCurrentTab('fixed')
+      await loadNotifications('fixed')
+      window.dispatchEvent(new Event('wms-data-changed'))
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert('อัปเดตไม่สำเร็จ: ' + msg)
+    }
   }
 
   const handleStockAction = async (wmsOrderId: string, action: 'recall' | 'waste') => {
@@ -221,7 +276,7 @@ export default function NotificationSection() {
                     )}
                     {!n.is_read && (
                       <button
-                        onClick={() => markNotifRead(n.id)}
+                        onClick={() => markNotifRead(n)}
                         className="bg-slate-200 px-4 py-2 rounded-lg text-xs font-black hover:bg-slate-300"
                       >
                         อ่านแล้ว
@@ -229,7 +284,7 @@ export default function NotificationSection() {
                     )}
                     {currentTab === 'unread' ? (
                       <button
-                        onClick={() => markNotifFixed(n.id)}
+                        onClick={() => markNotifFixed(n)}
                         className="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-black ml-1 hover:bg-green-700"
                       >
                         แก้ไขแล้ว
