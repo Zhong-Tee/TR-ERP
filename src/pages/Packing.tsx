@@ -996,7 +996,7 @@ export default function Packing() {
         const order = orders.find((o) => o.id === group[0].order_id)
         const prev =
           order?.packing_meta && typeof order.packing_meta === 'object'
-            ? { ...(order.packing_meta as Record<string, unknown>) }
+            ? { ...(order.packing_meta as unknown as Record<string, unknown>) }
             : {}
         const tag = group[0].packingTag
         return supabase

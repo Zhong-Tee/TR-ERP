@@ -5,7 +5,7 @@ import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
-import { Order } from '../types'
+import { Order, OrderStatus } from '../types'
 import { supabase } from '../lib/supabase'
 import {
   canSeeOfficeChannel,
@@ -71,7 +71,7 @@ export default function Orders() {
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [allDateFrom, setAllDateFrom] = useState(() => new Date().toISOString().split('T')[0])
   const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
-  const [allStatusFilter, setAllStatusFilter] = useState('')
+  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
   const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
   /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
@@ -470,7 +470,7 @@ export default function Orders() {
                 <>
                   <select
                     value={allStatusFilter}
-                    onChange={(e) => setAllStatusFilter(e.target.value)}
+                    onChange={(e) => setAllStatusFilter((e.target.value || '') as OrderStatus | '')}
                     className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
                   >
                     <option value="">ทุกสถานะ</option>
@@ -579,7 +579,7 @@ export default function Orders() {
           />
         ) : activeTab === 'all' ? (
           <OrderList
-            status={allStatusFilter || undefined}
+            status={allStatusFilter ? allStatusFilter : undefined}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             onOrderClick={handleOrderClickViewOnly}
