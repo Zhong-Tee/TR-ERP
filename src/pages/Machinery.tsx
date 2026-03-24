@@ -59,7 +59,7 @@ function monitorCardShellClass(status: PrMachineryStatus): string {
   return `rounded-2xl border overflow-hidden flex flex-col min-h-[12rem] ${map[status]}`
 }
 
-function monitorStatusBarClass(status: PrMachineryStatus): string {
+function monitorStatusBarClass(status: PrMachineryStatus, mobile?: boolean): string {
   const map: Record<PrMachineryStatus, string> = {
     working: 'bg-emerald-700/95 text-white',
     broken: 'bg-red-700/95 text-white',
@@ -68,13 +68,35 @@ function monitorStatusBarClass(status: PrMachineryStatus): string {
     decommissioned: 'bg-zinc-600/95 text-white',
     power_off: 'bg-white text-slate-900',
   }
-  return `absolute bottom-0 left-0 right-0 px-2.5 py-1.5 text-xs font-bold backdrop-blur-sm ${map[status]}`
+  const size = mobile ? 'py-2 text-sm' : 'py-1.5 text-xs'
+  return `absolute bottom-0 left-0 right-0 px-2.5 ${size} font-bold backdrop-blur-sm ${map[status]}`
+}
+
+/** พื้นหลังปุ่มเลือกเครื่อง (มือถือ) — โทนตามสถานะ */
+function monitorPickerButtonClass(status: PrMachineryStatus, selected: boolean): string {
+  const byStatus: Record<PrMachineryStatus, string> = {
+    working:
+      'border-emerald-500/70 bg-gradient-to-br from-emerald-950/95 via-emerald-900/50 to-slate-950 hover:from-emerald-900/90',
+    broken:
+      'border-red-500/70 bg-gradient-to-br from-red-950/95 via-red-900/40 to-slate-950 hover:from-red-900/85',
+    repairing:
+      'border-amber-500/70 bg-gradient-to-br from-amber-950/95 via-yellow-900/35 to-slate-950 hover:from-amber-900/60',
+    idle:
+      'border-sky-500/70 bg-gradient-to-br from-sky-950/95 via-sky-900/40 to-slate-950 hover:from-sky-900/70',
+    decommissioned:
+      'border-zinc-500/70 bg-gradient-to-br from-zinc-900/95 via-zinc-950/80 to-slate-950 hover:from-zinc-800/80',
+    power_off:
+      'border-slate-400/45 bg-gradient-to-br from-slate-600/75 via-slate-800/90 to-slate-950 hover:from-slate-500/70',
+  }
+  const ring = selected
+    ? 'ring-2 ring-emerald-400/85 shadow-md shadow-emerald-950/45'
+    : ''
+  return `rounded-xl border px-3 py-2.5 text-left transition-all active:scale-[0.98] ${byStatus[status]} ${ring}`
 }
 
 export default function Machinery() {
-  const { user, signOut } = useAuthContext()
+  const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const [loggingOut, setLoggingOut] = useState(false)
   const [tab, setTab] = useState<TabKey>('monitor')
   const [machines, setMachines] = useState<MachineryMachine[]>([])
   const [events, setEvents] = useState<MachineryEvent[]>([])
@@ -94,16 +116,8 @@ export default function Machinery() {
 
   const isMobileRole =
     user?.role === 'production_mb' || user?.role === 'manager' || user?.role === 'technician'
-
-  const handleLogout = async () => {
-    if (!confirm('ออกจากระบบ?')) return
-    setLoggingOut(true)
-    try {
-      await signOut()
-    } finally {
-      setLoggingOut(false)
-    }
-  }
+  /** มือถือช่างเทคนิค: หัวตารางประวัติช่วงสถานะต้องทึบ ไม่ให้แถวทะลุตอน scroll */
+  const isTechnicianMobileMachinery = user?.role === 'technician' && isMobileRole
 
   const [histFrom, setHistFrom] = useState(() => new Date().toISOString().slice(0, 10))
   const [histTo, setHistTo] = useState(() => new Date().toISOString().slice(0, 10))
@@ -112,6 +126,10 @@ export default function Machinery() {
   const [histStatus, setHistStatus] = useState<'' | PrMachineryStatus>('')
   /** อัปเดตทุกวินาที — จับเวลาในกะที่หน้ามอนิเตอร์ */
   const [monitorTick, setMonitorTick] = useState(() => Date.now())
+  /** มือถือ: เลือกเครื่องแล้วค่อยแสดงรายละเอียด + เปลี่ยนสถานะ */
+  const [selectedMonitorMachineId, setSelectedMonitorMachineId] = useState<string | null>(null)
+  /** มือถือ: ดรอปดาวน์เปลี่ยนสถานะ (เปิดขึ้นด้านบน) */
+  const [openStatusDropdownMachineId, setOpenStatusDropdownMachineId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setError(null)
@@ -166,6 +184,21 @@ export default function Machinery() {
     return () => window.clearInterval(id)
   }, [tab])
 
+  useEffect(() => {
+    if (!selectedMonitorMachineId) return
+    if (!machines.some((m) => m.id === selectedMonitorMachineId)) {
+      setSelectedMonitorMachineId(null)
+    }
+  }, [machines, selectedMonitorMachineId])
+
+  useEffect(() => {
+    if (tab !== 'monitor') setSelectedMonitorMachineId(null)
+  }, [tab])
+
+  useEffect(() => {
+    setOpenStatusDropdownMachineId(null)
+  }, [selectedMonitorMachineId])
+
   const statusCounts = useMemo(() => {
     const c: Record<PrMachineryStatus, number> = {
       working: 0,
@@ -191,6 +224,7 @@ export default function Machinery() {
   }, [machines])
 
   const onStatusChange = async (machineId: string, status: PrMachineryStatus) => {
+    setOpenStatusDropdownMachineId(null)
     setSavingId(machineId)
     setError(null)
     try {
@@ -381,6 +415,133 @@ export default function Machinery() {
     )
   }
 
+  const renderMonitorMachineArticle = (m: MachineryMachine) => {
+    const now = new Date(monitorTick)
+    const workingMs = computeWorkingTimeInShiftMsToday(m, events, now)
+    const shiftTotalMs = computeShiftDurationMsForDay(m, now)
+    const units = computeEffectiveUnitsToday(m, events)
+    const st = m.current_status
+    const isPowerOff = st === 'power_off'
+    const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
+    const subTextColor = isPowerOff ? 'text-slate-700' : 'text-white'
+    return (
+      <article
+        key={m.id}
+        className={`${monitorCardShellClass(st)} ${isMobileRole ? '!overflow-visible relative z-10' : ''}`}
+      >
+        <div className="relative aspect-[4/3] w-full shrink-0 bg-black/50 overflow-hidden rounded-t-2xl">
+          {m.image_url ? (
+            <img src={m.image_url} alt="" className="h-full w-full object-cover" loading="lazy" />
+          ) : (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
+              <FiImage className="h-12 w-12 opacity-60" aria-hidden />
+              <span className="text-xs font-medium">ยังไม่มีรูป</span>
+            </div>
+          )}
+          <div className={monitorStatusBarClass(st, isMobileRole)}>{MACHINERY_STATUS_LABELS[st]}</div>
+        </div>
+        <div className={`flex flex-1 flex-col gap-2.5 p-3 ${textColor}`}>
+          <div>
+            <h3 className="text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
+            <p className={`mt-0.5 text-xs sm:text-sm ${subTextColor}`}>
+              สถานที่ {m.location?.trim() ? m.location : '—'}
+            </p>
+          </div>
+          <dl className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-xs sm:text-sm">
+            <dt>เวลาในกะ (จับเวลา)</dt>
+            <dd className="text-right font-mono tabular-nums font-semibold text-[11px] sm:text-sm">
+              {formatMsAsHms(workingMs)} / {formatMsAsHms(shiftTotalMs)}
+            </dd>
+            <dt>กำลังผลิต/ชม.</dt>
+            <dd className="text-right font-mono tabular-nums">{fmtInt(Number(m.capacity_units_per_hour))} หน่วย</dd>
+            <dt>กำลังผลิตรวม/วัน</dt>
+            <dd className="text-right font-mono tabular-nums">{fmtInt(totalProductionCapacityPerShift(m))} หน่วย</dd>
+            <dt>ผลิตวันนี้</dt>
+            <dd className="text-right font-mono tabular-nums font-semibold">{fmtInt(units)} หน่วย</dd>
+          </dl>
+          {isMobileRole ? (
+            <div className="relative z-20 mt-auto">
+              <span className="mb-0.5 block text-xs font-medium">เปลี่ยนสถานะ</span>
+              <button
+                type="button"
+                disabled={savingId === m.id}
+                onClick={() =>
+                  setOpenStatusDropdownMachineId((prev) => (prev === m.id ? null : m.id))
+                }
+                className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-2.5 text-left text-sm font-semibold ${
+                  isPowerOff
+                    ? 'border-slate-300 bg-white text-slate-900'
+                    : 'border-slate-500/80 bg-slate-950/80 text-white'
+                } disabled:opacity-50`}
+              >
+                <span className="min-w-0 truncate">{MACHINERY_STATUS_LABELS[m.current_status]}</span>
+                <i className="fas fa-chevron-up shrink-0 text-xs opacity-70" aria-hidden />
+              </button>
+              {openStatusDropdownMachineId === m.id && (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-[150] cursor-default bg-black/20"
+                    aria-label="ปิดเมนู"
+                    onClick={() => setOpenStatusDropdownMachineId(null)}
+                  />
+                  <ul
+                    role="listbox"
+                    className="absolute bottom-full left-0 right-0 z-[200] mb-1 max-h-[min(50vh,16rem)] overflow-y-auto rounded-lg border border-slate-500 bg-slate-900 py-1 shadow-2xl shadow-black/70 touch-manipulation"
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    {STATUS_ORDER.map((s) => (
+                      <li key={s}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={s === m.current_status}
+                          className={`w-full px-3 py-2.5 text-left text-sm ${
+                            s === m.current_status
+                              ? 'bg-emerald-900/60 font-semibold text-emerald-200'
+                              : 'text-white hover:bg-slate-800 active:bg-slate-700'
+                          }`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (s !== m.current_status) void onStatusChange(m.id, s)
+                            else setOpenStatusDropdownMachineId(null)
+                          }}
+                        >
+                          {MACHINERY_STATUS_LABELS[s]}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          ) : (
+            <label className="mt-auto block text-xs">
+              <span className="mb-0.5 block font-medium">เปลี่ยนสถานะ</span>
+              <select
+                className={`w-full rounded-lg border px-2.5 py-2 text-sm ${
+                  isPowerOff
+                    ? 'border-slate-300 bg-white text-slate-900'
+                    : 'border-slate-500/80 bg-slate-950/80 text-white'
+                }`}
+                value={m.current_status}
+                disabled={savingId === m.id}
+                onChange={(e) => onStatusChange(m.id, e.target.value as PrMachineryStatus)}
+              >
+                {STATUS_ORDER.map((s) => (
+                  <option key={s} value={s}>
+                    {MACHINERY_STATUS_LABELS[s]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+      </article>
+    )
+  }
+
   const pageText = isMobileRole ? 'text-slate-100 text-sm sm:text-base' : 'text-gray-900 text-sm sm:text-base lg:text-lg'
 
   return (
@@ -390,8 +551,8 @@ export default function Machinery() {
           isMobileRole ? 'px-3 pb-10 pt-2' : 'px-2 sm:px-4 lg:px-6 pb-8 pt-1'
         }`}
       >
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex items-start gap-3 min-w-0">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
           <span
             className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${
               isMobileRole
@@ -402,7 +563,7 @@ export default function Machinery() {
           >
             <FiPrinter className="h-7 w-7" />
           </span>
-          <div>
+          <div className="min-w-0">
             <h1
               className={`text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight ${
                 isMobileRole ? 'text-white' : 'text-gray-900'
@@ -410,32 +571,22 @@ export default function Machinery() {
             >
               Machinery
             </h1>
+            {user?.role === 'technician' && (
+              <p className={`mt-0.5 text-xs font-medium ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>
+                มือถือ · ช่างเทคนิค
+              </p>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {isMobileRole && user?.role !== 'technician' && (
+        <div className="ml-auto flex shrink-0 items-start gap-2">
+          {isMobileRole && (
             <Link
-              to="/wms"
+              to={user?.role === 'technician' ? '/technician' : '/wms'}
               className="inline-flex items-center justify-center gap-2 text-sm font-bold px-4 py-2.5 rounded-xl text-white bg-gradient-to-b from-red-500 to-red-600 shadow-md shadow-red-500/35 ring-1 ring-inset ring-white/20 hover:from-red-600 hover:to-red-700 hover:shadow-lg hover:shadow-red-600/30 active:scale-[0.98] transition-all duration-150"
             >
               <i className="fas fa-arrow-left text-xs opacity-95" aria-hidden />
               ย้อนกลับ
             </Link>
-          )}
-          {user?.role === 'technician' && (
-            <span className="flex items-center gap-2">
-              <span className={`text-xs font-medium ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>
-                มือถือ · ช่างเทคนิค
-              </span>
-              <button
-                type="button"
-                onClick={() => void handleLogout()}
-                disabled={loggingOut}
-                className="text-sm font-bold px-3 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-              >
-                {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
-              </button>
-            </span>
           )}
         </div>
       </header>
@@ -483,6 +634,29 @@ export default function Machinery() {
 
       {tab === 'monitor' && (
         <section className="space-y-5">
+          <div
+            className={`rounded-xl border px-4 py-4 sm:px-5 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${
+              isMobileRole
+                ? 'border-emerald-700/40 bg-emerald-950/40 text-emerald-100'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+            }`}
+          >
+            <div>
+              <span className="font-semibold text-sm sm:text-base">ผลิตวันนี้: </span>
+              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalEffectiveToday)}</span>
+              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>หน่วย</span>
+            </div>
+            <div
+              className={`sm:text-right sm:pl-4 sm:border-l ${
+                isMobileRole ? 'sm:border-emerald-700/40' : 'sm:border-emerald-300/80'
+              }`}
+            >
+              <span className="font-semibold text-sm sm:text-base">กำลังผลิตสูงสุด: </span>
+              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalMaxProductionPerDay)}</span>
+              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>หน่วย</span>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div
               className={`rounded-xl border p-4 text-center shadow-sm ${
@@ -520,119 +694,94 @@ export default function Machinery() {
               </div>
             ))}
           </div>
-          <div
-            className={`rounded-xl border px-4 py-4 sm:px-5 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${
-              isMobileRole
-                ? 'border-emerald-700/40 bg-emerald-950/40 text-emerald-100'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-900'
-            }`}
-          >
-            <div>
-              <span className="font-semibold text-sm sm:text-base">กำลังผลิตสะสมวันนี้: </span>
-              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalEffectiveToday)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>
-                หน่วย (จากชม.ทำงาน × หน่วย/ชม.)
-              </span>
-            </div>
-            <div
-              className={`sm:text-right sm:pl-4 sm:border-l ${
-                isMobileRole ? 'sm:border-emerald-700/40' : 'sm:border-emerald-300/80'
-              }`}
-            >
-              <span className="font-semibold text-sm sm:text-base">กำลังผลิตสูงสุด: </span>
-              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalMaxProductionPerDay)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>
-                หน่วย (รวมกำลังผลิตรวม/วันทุกเครื่อง)
-              </span>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-            {machines.length === 0 && (
-              <div
-                className={`col-span-full rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
-                  isMobileRole ? 'border-slate-600 bg-slate-800/60 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-500'
-                }`}
-              >
-                ยังไม่มีเครื่อง — ไปแท็บตั้งค่าเพื่อเพิ่ม
-              </div>
-            )}
-            {machines.map((m) => {
-              const now = new Date(monitorTick)
-              const workingMs = computeWorkingTimeInShiftMsToday(m, events, now)
-              const shiftTotalMs = computeShiftDurationMsForDay(m, now)
-              const units = computeEffectiveUnitsToday(m, events)
-              const st = m.current_status
-              const isPowerOff = st === 'power_off'
-              const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
-              const subTextColor = isPowerOff ? 'text-slate-700' : 'text-white'
-              return (
-                <article key={m.id} className={monitorCardShellClass(st)}>
-                  <div className="relative aspect-[4/3] w-full shrink-0 bg-black/50">
-                    {m.image_url ? (
-                      <img
-                        src={m.image_url}
-                        alt=""
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
-                        <FiImage className="h-12 w-12 opacity-60" aria-hidden />
-                        <span className="text-xs font-medium">ยังไม่มีรูป</span>
-                      </div>
-                    )}
-                    <div className={monitorStatusBarClass(st)}>{MACHINERY_STATUS_LABELS[st]}</div>
-                  </div>
-                  <div className={`flex flex-1 flex-col gap-2.5 p-3 ${textColor}`}>
-                    <div>
-                      <h3 className="text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
-                      <p className={`mt-0.5 text-xs sm:text-sm ${subTextColor}`}>
-                        สถานที่ {m.location?.trim() ? m.location : '—'}
-                      </p>
+          {isMobileRole ? (
+            <div className="space-y-4">
+              {machines.length === 0 ? (
+                <div
+                  className={`rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
+                    isMobileRole ? 'border-slate-600 bg-slate-800/60 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-500'
+                  }`}
+                >
+                  ยังไม่มีเครื่อง — ไปแท็บตั้งค่าเพื่อเพิ่ม
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 mb-2">เลือกเครื่องจักร</p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {machines.map((m) => {
+                        const st = m.current_status
+                        const selected = selectedMonitorMachineId === m.id
+                        const unitsToday = computeEffectiveUnitsToday(m, events)
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            onClick={() =>
+                              setSelectedMonitorMachineId((prev) => (prev === m.id ? null : m.id))
+                            }
+                            className={monitorPickerButtonClass(st, selected)}
+                          >
+                            <div className="flex items-start gap-2 min-w-0">
+                              <span
+                                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                                  st === 'working'
+                                    ? 'bg-emerald-400'
+                                    : st === 'broken'
+                                      ? 'bg-red-400'
+                                      : st === 'repairing'
+                                        ? 'bg-yellow-400'
+                                        : st === 'idle'
+                                          ? 'bg-sky-400'
+                                          : st === 'decommissioned'
+                                            ? 'bg-zinc-400'
+                                            : 'bg-white'
+                                }`}
+                                aria-hidden
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-sm font-bold text-white leading-snug line-clamp-2">
+                                  {m.name}
+                                </span>
+                                <span className="mt-0.5 block text-xs sm:text-sm font-semibold text-gray-300 truncate">
+                                  {MACHINERY_STATUS_LABELS[st]}
+                                </span>
+                                <span className="mt-1 block text-[11px] sm:text-xs tabular-nums font-medium text-emerald-300/95">
+                                  ผลิตวันนี้ {fmtInt(unitsToday)} หน่วย
+                                </span>
+                              </span>
+                            </div>
+                          </button>
+                        )
+                      })}
                     </div>
-                    <dl className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-xs sm:text-sm">
-                      <dt>เวลาในกะ (จับเวลา)</dt>
-                      <dd className="text-right font-mono tabular-nums font-semibold text-[11px] sm:text-sm">
-                        {formatMsAsHms(workingMs)} / {formatMsAsHms(shiftTotalMs)}
-                      </dd>
-                      <dt>กำลังผลิต/ชม.</dt>
-                      <dd className="text-right font-mono tabular-nums">
-                        {fmtInt(Number(m.capacity_units_per_hour))} หน่วย
-                      </dd>
-                      <dt>กำลังผลิตรวม/วัน</dt>
-                      <dd className="text-right font-mono tabular-nums">
-                        {fmtInt(totalProductionCapacityPerShift(m))} หน่วย
-                      </dd>
-                      <dt>ผลิตวันนี้</dt>
-                      <dd className="text-right font-mono tabular-nums font-semibold">
-                        {fmtInt(units)} หน่วย
-                      </dd>
-                    </dl>
-                    <label className="mt-auto block text-xs">
-                      <span className="mb-0.5 block font-medium">เปลี่ยนสถานะ</span>
-                      <select
-                        className={`w-full rounded-lg border px-2.5 py-2 text-sm ${
-                          isPowerOff
-                            ? 'border-slate-300 bg-white text-slate-900'
-                            : 'border-slate-500/80 bg-slate-950/80 text-white'
-                        }`}
-                        value={m.current_status}
-                        disabled={savingId === m.id}
-                        onChange={(e) => onStatusChange(m.id, e.target.value as PrMachineryStatus)}
-                      >
-                        {STATUS_ORDER.map((s) => (
-                          <option key={s} value={s}>
-                            {MACHINERY_STATUS_LABELS[s]}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <p className="text-center text-xs text-gray-500 mt-3">
+                      แตะชื่อเครื่องอีกครั้งเพื่อปิดรายละเอียด
+                    </p>
                   </div>
-                </article>
-              )
-            })}
-          </div>
+                  {selectedMonitorMachineId &&
+                    (() => {
+                      const sel = machines.find((x) => x.id === selectedMonitorMachineId)
+                      return sel ? renderMonitorMachineArticle(sel) : null
+                    })()}
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+              {machines.length === 0 && (
+                <div
+                  className={`col-span-full rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
+                    isMobileRole ? 'border-slate-600 bg-slate-800/60 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-500'
+                  }`}
+                >
+                  ยังไม่มีเครื่อง — ไปแท็บตั้งค่าเพื่อเพิ่ม
+                </div>
+              )}
+              {machines.map((m) => renderMonitorMachineArticle(m))}
+            </div>
+          )}
         </section>
       )}
 
@@ -939,38 +1088,93 @@ export default function Machinery() {
             ตัวเลขต่อวันคำนวณจากกะและสถานะจริงในวันนั้น (เทียบกับการตั้งค่าเครื่อง)
           </p>
           <div
-            className={`overflow-x-auto rounded-xl border shadow-sm ${
-              isMobileRole ? 'border-slate-600 bg-slate-800/90 shadow-black/30' : 'border-gray-200 bg-white'
+            className={`rounded-xl border shadow-sm ${
+              isMobileRole
+                ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                : 'w-full overflow-hidden border-gray-200 bg-white shadow-md'
             }`}
           >
-            <table className="min-w-full text-sm">
+            <table
+              className={
+                isMobileRole
+                  ? 'w-max min-w-max text-sm'
+                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+              }
+            >
               <thead
-                className={`text-left ${isMobileRole ? 'bg-slate-800/90 text-gray-300' : 'bg-gray-50 text-gray-600'}`}
+                className={`text-left ${
+                  isMobileRole
+                    ? 'bg-slate-800/90 text-gray-300'
+                    : 'border-b-2 border-emerald-200/80 bg-gradient-to-r from-gray-50 to-slate-50 text-gray-700'
+                }`}
               >
                 <tr>
-                  <th className="px-3 py-2">วันที่</th>
-                  <th className="px-3 py-2">เครื่อง</th>
-                  <th className="px-3 py-2">ชม.กะ</th>
-                  <th className="px-3 py-2">ชม.ทำงาน</th>
-                  <th className="px-3 py-2">ชม.หยุด</th>
-                  <th className="px-3 py-2">หน่วย</th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-xs font-bold uppercase tracking-wide'}`}>
+                    วันที่
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-xs font-bold uppercase tracking-wide'}`}>
+                    เครื่อง
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    ชม.กะ
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    ชม.ทำงาน
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    ชม.หยุด
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    หน่วย
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {historyRowsComputed.map((r, i) => (
-                  <tr key={`${r.machine_id}-${r.date}-${i}`} className={`border-t ${isMobileRole ? 'border-slate-700' : 'border-gray-100'}`}>
-                    <td className={`px-3 py-2 font-mono ${isMobileRole ? 'text-gray-200' : ''}`}>{r.date}</td>
-                    <td className={`px-3 py-2 ${isMobileRole ? 'text-slate-100' : ''}`}>{r.machine_name}</td>
-                    <td className={`px-3 py-2 font-mono tabular-nums text-xs ${isMobileRole ? 'text-gray-300' : ''}`}>
+                  <tr
+                    key={`${r.machine_id}-${r.date}-${i}`}
+                    className={
+                      isMobileRole
+                        ? `border-t border-slate-700`
+                        : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-emerald-50/50 last:border-b-0'
+                    }
+                  >
+                    <td
+                      className={`font-mono whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-200' : 'px-4 py-3 text-gray-700'}`}
+                    >
+                      {r.date}
+                    </td>
+                    <td
+                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-100' : 'px-4 py-3 text-gray-900'}`}
+                    >
+                      {r.machine_name}
+                    </td>
+                    <td
+                      className={`font-mono tabular-nums text-xs whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-300' : 'px-4 py-3 text-right text-gray-700'}`}
+                    >
                       {hoursToHms(r.shift_hours)}
                     </td>
-                    <td className={`px-3 py-2 font-mono tabular-nums text-xs ${isMobileRole ? 'text-gray-300' : ''}`}>
+                    <td
+                      className={`font-mono tabular-nums text-xs whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-300' : 'px-4 py-3 text-right text-gray-700'}`}
+                    >
                       {hoursToHms(r.working_hours)}
                     </td>
-                    <td className={`px-3 py-2 font-mono tabular-nums text-xs ${isMobileRole ? 'text-gray-300' : ''}`}>
+                    <td
+                      className={`font-mono tabular-nums text-xs whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-300' : 'px-4 py-3 text-right text-gray-700'}`}
+                    >
                       {hoursToHms(r.downtime_hours)}
                     </td>
-                    <td className={`px-3 py-2 font-semibold ${isMobileRole ? 'text-emerald-300' : ''}`}>
+                    <td
+                      className={`font-semibold tabular-nums whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-emerald-300' : 'px-4 py-3 text-right text-base text-emerald-700'}`}
+                    >
                       {fmtInt(r.effective_units)}
                     </td>
                   </tr>
@@ -986,39 +1190,81 @@ export default function Machinery() {
             จับเวลาจากเปลี่ยนเป็น “เครื่องเสีย” จนถึงครั้งถัดไปที่เป็น “ทำงาน” (รวมช่วงซ่อม/รอ)
           </p>
           <div
-            className={`overflow-x-auto rounded-xl border shadow-sm ${
-              isMobileRole ? 'border-slate-600 bg-slate-800/90 shadow-black/30' : 'border-gray-200 bg-white'
+            className={`rounded-xl border shadow-sm ${
+              isMobileRole
+                ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                : 'w-full overflow-hidden border-gray-200 bg-white shadow-md'
             }`}
           >
-            <table className="min-w-full text-sm">
+            <table
+              className={
+                isMobileRole
+                  ? 'w-max min-w-max text-sm'
+                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+              }
+            >
               <thead
-                className={`text-left ${isMobileRole ? 'bg-slate-800/90 text-gray-300' : 'bg-gray-50 text-gray-600'}`}
+                className={`text-left ${
+                  isMobileRole
+                    ? 'bg-slate-800/90 text-gray-300'
+                    : 'border-b-2 border-amber-200/80 bg-gradient-to-r from-gray-50 to-amber-50/40 text-gray-700'
+                }`}
               >
                 <tr>
-                  <th className="px-3 py-2">เครื่อง</th>
-                  <th className="px-3 py-2">เริ่มเครื่องเสีย</th>
-                  <th className="px-3 py-2">กลับมาทำงาน</th>
-                  <th className="px-3 py-2">ระยะเวลา</th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'w-[18%] px-4 py-3.5 text-xs font-bold uppercase tracking-wide'}`}>
+                    เครื่อง
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-xs font-bold uppercase tracking-wide'}`}>
+                    เริ่มเครื่องเสีย
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-xs font-bold uppercase tracking-wide'}`}>
+                    กลับมาทำงาน
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'w-[14%] px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    ระยะเวลา
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {repairRoundsFiltered.length === 0 && (
                   <tr>
-                    <td colSpan={4} className={`px-3 py-6 text-center text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>
+                    <td
+                      colSpan={4}
+                      className={`py-6 text-center text-sm ${isMobileRole ? 'px-3 text-gray-500' : 'px-4 text-gray-500'}`}
+                    >
                       ไม่มีรอบเครื่องเสียในช่วงที่เลือก
                     </td>
                   </tr>
                 )}
                 {repairRoundsFiltered.map((r, idx) => (
-                  <tr key={`repair-${idx}-${r.machine_id}-${r.broken_at}`} className={`border-t ${isMobileRole ? 'border-slate-700' : 'border-gray-100'}`}>
-                    <td className={`px-3 py-2 ${isMobileRole ? 'text-slate-100' : ''}`}>{r.machine_name}</td>
-                    <td className={`px-3 py-2 font-mono text-xs whitespace-nowrap ${isMobileRole ? 'text-gray-300' : ''}`}>
+                  <tr
+                    key={`repair-${idx}-${r.machine_id}-${r.broken_at}`}
+                    className={
+                      isMobileRole
+                        ? `border-t border-slate-700`
+                        : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-amber-50/40 last:border-b-0'
+                    }
+                  >
+                    <td
+                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-100' : 'px-4 py-3 text-gray-900'}`}
+                    >
+                      {r.machine_name}
+                    </td>
+                    <td
+                      className={`font-mono text-xs whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-300' : 'px-4 py-3 text-gray-700'}`}
+                    >
                       {new Date(r.broken_at).toLocaleString('th-TH')}
                     </td>
-                    <td className={`px-3 py-2 font-mono text-xs whitespace-nowrap ${isMobileRole ? 'text-gray-300' : ''}`}>
+                    <td
+                      className={`font-mono text-xs whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-300' : 'px-4 py-3 text-gray-700'}`}
+                    >
                       {r.back_to_work_at ? new Date(r.back_to_work_at).toLocaleString('th-TH') : '— (ยังไม่กลับมาทำงาน)'}
                     </td>
-                    <td className={`px-3 py-2 font-medium ${isMobileRole ? 'text-amber-200' : 'text-amber-900'}`}>
+                    <td
+                      className={`font-medium whitespace-nowrap tabular-nums ${isMobileRole ? 'px-3 py-2 text-amber-200' : 'px-4 py-3 text-right text-amber-900'}`}
+                    >
                       {formatDurationHoursMinutes(r.duration_ms)}
                     </td>
                   </tr>
@@ -1034,40 +1280,83 @@ export default function Machinery() {
             รวมเครื่องเสีย / กำลังซ่อม / พักเครื่อง / หยุดใช้งาน / ทำงาน — แสดงชม. นาที ต่อช่วง
           </p>
           <div
-            className={`overflow-x-auto rounded-xl border shadow-sm max-h-[28rem] overflow-y-auto ${
-              isMobileRole ? 'border-slate-600 bg-slate-800/90 shadow-black/30' : 'border-gray-200 bg-white'
+            className={`rounded-xl border shadow-sm max-h-[28rem] overflow-y-auto ${
+              isMobileRole
+                ? isTechnicianMobileMachinery
+                  ? 'overflow-x-auto border-slate-600 bg-slate-800 shadow-black/30'
+                  : 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                : 'w-full overflow-x-hidden border-gray-200 bg-white shadow-md'
             }`}
           >
-            <table className="min-w-full text-xs">
+            <table
+              className={
+                isMobileRole
+                  ? 'w-max min-w-max text-xs sm:text-sm'
+                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+              }
+            >
               <thead
-                className={`text-left sticky top-0 z-10 ${
-                  isMobileRole ? 'bg-slate-800/95 text-gray-300' : 'bg-gray-50 text-gray-600'
+                className={`text-left sticky top-0 ${
+                  isMobileRole
+                    ? isTechnicianMobileMachinery
+                      ? 'z-20 border-b border-slate-600 bg-slate-800 text-gray-300 shadow-sm [&_th]:bg-slate-800'
+                      : 'z-10 bg-slate-800/95 text-gray-300 shadow-sm'
+                    : 'z-10 border-b border-gray-200 bg-white text-gray-800 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]'
                 }`}
               >
                 <tr>
-                  <th className="px-2 py-2">เครื่อง</th>
-                  <th className="px-2 py-2">สถานะ</th>
-                  <th className="px-2 py-2">เริ่ม</th>
-                  <th className="px-2 py-2">จบ</th>
-                  <th className="px-2 py-2">ระยะเวลา</th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'w-[20%] px-4 py-3 text-xs font-bold uppercase tracking-wide'}`}>
+                    เครื่อง
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'w-[14%] px-4 py-3 text-xs font-bold uppercase tracking-wide'}`}>
+                    สถานะ
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3 text-xs font-bold uppercase tracking-wide'}`}>
+                    เริ่ม
+                  </th>
+                  <th className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3 text-xs font-bold uppercase tracking-wide'}`}>
+                    จบ
+                  </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'w-[12%] px-4 py-3 text-right text-xs font-bold uppercase tracking-wide'}`}
+                  >
+                    ระยะเวลา
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {statusSegmentsDisplay.map(({ ev, durationMs }) => {
                   const name = machines.find((x) => x.id === ev.machine_id)?.name || ev.machine_id
                   return (
-                    <tr key={ev.id} className={`border-t ${isMobileRole ? 'border-slate-700' : 'border-gray-100'}`}>
-                      <td className={`px-2 py-1.5 ${isMobileRole ? 'text-slate-100' : ''}`}>{name}</td>
-                      <td className={`px-2 py-1.5 ${isMobileRole ? 'text-gray-200' : ''}`}>
+                    <tr
+                      key={ev.id}
+                      className={
+                        isMobileRole
+                          ? `border-t border-slate-700`
+                          : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-sky-50/45 last:border-b-0'
+                      }
+                    >
+                      <td
+                        className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-1.5 text-slate-100' : 'px-4 py-2.5 text-gray-900'}`}
+                      >
+                        {name}
+                      </td>
+                      <td className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-1.5 text-gray-200' : 'px-4 py-2.5 text-gray-800'}`}>
                         {MACHINERY_STATUS_LABELS[ev.status]}
                       </td>
-                      <td className={`px-2 py-1.5 font-mono whitespace-nowrap ${isMobileRole ? 'text-gray-300' : ''}`}>
+                      <td
+                        className={`font-mono whitespace-nowrap ${isMobileRole ? 'px-3 py-1.5 text-xs sm:text-sm text-gray-300' : 'px-4 py-2.5 text-xs text-gray-700'}`}
+                      >
                         {new Date(ev.started_at).toLocaleString('th-TH')}
                       </td>
-                      <td className={`px-2 py-1.5 font-mono whitespace-nowrap ${isMobileRole ? 'text-gray-300' : ''}`}>
+                      <td
+                        className={`font-mono whitespace-nowrap ${isMobileRole ? 'px-3 py-1.5 text-xs sm:text-sm text-gray-300' : 'px-4 py-2.5 text-xs text-gray-700'}`}
+                      >
                         {ev.ended_at ? new Date(ev.ended_at).toLocaleString('th-TH') : '—'}
                       </td>
-                      <td className={`px-2 py-1.5 font-medium ${isMobileRole ? 'text-sky-200' : 'text-sky-900'}`}>
+                      <td
+                        className={`font-medium whitespace-nowrap tabular-nums ${isMobileRole ? 'px-3 py-1.5 text-sky-200' : 'px-4 py-2.5 text-right text-sky-900'}`}
+                      >
                         {formatDurationHoursMinutes(durationMs)}
                       </td>
                     </tr>

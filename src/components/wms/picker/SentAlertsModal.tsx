@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
-import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import { enrichWmsNotificationsWithOrderDetails } from '../../../lib/wmsNotificationEnrichment'
 
 interface SentAlertsModalProps {
   pickerId: string
@@ -58,23 +58,16 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
         return
       }
 
-      const orderIds = [...new Set(rows.map((r) => r.order_id).filter(Boolean))]
-      const { data: details, error: detailsError } = await supabase
-        .from('wms_orders')
-        .select('order_id, product_name, location')
-        .in('order_id', orderIds)
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-
-      if (detailsError) throw detailsError
-
-      const merged = rows.map((row) => {
-        const detail = details?.find((d: any) => d.order_id === row.order_id)
-        return {
-          ...row,
-          product_name: detail?.product_name || '-',
-          location: detail?.location || '-',
-        }
-      })
+      const enriched = await enrichWmsNotificationsWithOrderDetails(supabase, rows)
+      const merged: SentAlertRow[] = enriched.map((n) => ({
+        id: n.id,
+        type: n.type,
+        order_id: n.order_id,
+        created_at: n.created_at,
+        is_read: n.is_read,
+        product_name: n.product_name,
+        location: n.location,
+      }))
 
       setAlerts(merged)
       setLoadError('')
@@ -96,7 +89,7 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
           </button>
         </div>
 
-        <div className="p-4 max-h-[70vh] overflow-y-auto">
+        <div className="p-4 max-h-[70vh] overflow-y-auto bg-slate-100/80">
           {loading ? (
             <div className="text-center py-8 text-gray-500">กำลังโหลด...</div>
           ) : loadError ? (
@@ -106,7 +99,10 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
           ) : (
             <div className="space-y-3">
               {alerts.map((a, idx) => (
-                <div key={a.id} className="rounded-2xl border bg-white p-4">
+                <div
+                  key={a.id}
+                  className="rounded-2xl border border-slate-200/90 bg-white shadow-sm ring-1 ring-slate-200/60 p-4"
+                >
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="font-black text-slate-800">
                       {idx + 1}. {a.type}

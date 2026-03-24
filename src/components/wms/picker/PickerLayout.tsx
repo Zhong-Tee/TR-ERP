@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
 import { calculateDuration, sortOrderItems, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import { dedupeWmsNotificationsForDisplay } from '../../../lib/wmsNotificationEnrichment'
 import PickerOrderList from './PickerOrderList'
 import PickerJobCard from './PickerJobCard'
 import SentAlertsModal from './SentAlertsModal'
@@ -83,12 +84,12 @@ export default function PickerLayout() {
     if (!user?.id) return
 
     const loadPendingAlerts = async () => {
-      const { count } = await supabase
+      const { data } = await supabase
         .from('wms_notifications')
-        .select('id', { count: 'exact', head: true })
+        .select('id, type, order_id')
         .eq('picker_id', user.id)
         .eq('status', 'unread')
-      setPendingAlertCount(count || 0)
+      setPendingAlertCount(dedupeWmsNotificationsForDisplay(data || []).length)
     }
 
     loadPendingAlerts()

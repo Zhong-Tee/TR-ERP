@@ -125,6 +125,8 @@ export default function PurchaseGR() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
+  /** ฝังใน Picker / Manager mobile — โทนเข้ากับพื้นหลัง slate-900 */
+  const embedDark = user?.role === 'picker' || user?.role === 'manager'
 
   const [grs, setGrs] = useState<InventoryGR[]>([])
   const [loading, setLoading] = useState(true)
@@ -613,15 +615,29 @@ export default function PurchaseGR() {
   }, [mobileSection, receiveQueueCount])
 
   return (
-    <div className="space-y-4 mt-4 md:mt-12">
-      <div className="md:hidden bg-white rounded-xl shadow-sm border p-2">
+    <div
+      className={
+        embedDark
+          ? 'p-3 space-y-3 mt-0 w-full max-w-lg mx-auto md:max-w-none md:mx-0'
+          : 'space-y-4 mt-4 md:mt-12'
+      }
+    >
+      <div
+        className={`md:hidden rounded-xl border p-2 ${
+          embedDark
+            ? 'border-slate-700 bg-slate-800 shadow-md shadow-black/15'
+            : 'border-gray-200 bg-white shadow-sm'
+        }`}
+      >
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => setMobileSection('receive')}
             className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
               mobileSection === 'receive'
-                ? 'bg-emerald-600 text-white'
-                : 'bg-gray-100 text-gray-600'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/40'
+                : embedDark
+                  ? 'bg-slate-700/80 text-gray-300'
+                  : 'bg-gray-100 text-gray-600'
             }`}
           >
             รับเข้า
@@ -637,8 +653,10 @@ export default function PurchaseGR() {
             onClick={() => setMobileSection('list')}
             className={`px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
               mobileSection === 'list'
-                ? 'bg-emerald-600 text-white'
-                : 'bg-gray-100 text-gray-600'
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/40'
+                : embedDark
+                  ? 'bg-slate-700/80 text-gray-300'
+                  : 'bg-gray-100 text-gray-600'
             }`}
           >
             รายการ
@@ -648,8 +666,14 @@ export default function PurchaseGR() {
 
       {/* ── New POs waiting for first GR ── */}
       {sortedNewPOs.length > 0 && (
-        <div className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block bg-blue-50 border border-blue-200 rounded-xl p-3 md:p-4`}>
-          <h3 className="text-sm font-semibold text-blue-800 mb-3">PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})</h3>
+        <div
+          className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block rounded-xl border ${
+            embedDark ? 'p-3 border-sky-800/50 bg-sky-950/20' : 'p-3 md:p-4 border-blue-200 bg-blue-50'
+          }`}
+        >
+          <h3 className={`text-sm font-semibold mb-3 ${embedDark ? 'text-sky-200' : 'text-blue-800'}`}>
+            PO ใหม่ รอรับเข้าคลัง ({sortedNewPOs.length})
+          </h3>
 
           <div className="md:hidden space-y-2">
             {sortedNewPOs.map((po) => {
@@ -657,11 +681,13 @@ export default function PurchaseGR() {
               return (
                 <div
                   key={po.id}
-                  className="rounded-xl bg-white border border-blue-200 p-3 text-sm"
+                  className={`rounded-xl border p-3 text-sm ${
+                    embedDark ? 'border-sky-700/35 bg-slate-900/80' : 'border-blue-200 bg-white'
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="font-semibold text-gray-900">{po.po_no}</div>
+                      <div className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">
                           {formatDateThai(po.expected_arrival_date)}
@@ -673,14 +699,18 @@ export default function PurchaseGR() {
                     </div>
                     <button
                       onClick={() => openEtaEdit(po)}
-                      className="px-2.5 py-1.5 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-xs font-semibold whitespace-nowrap"
+                      className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold whitespace-nowrap ${
+                        embedDark
+                          ? 'border-sky-600/50 bg-slate-800 text-sky-300'
+                          : 'border-blue-300 bg-blue-50 text-blue-700'
+                      }`}
                     >
                       แก้ไขวันที่
                     </button>
                   </div>
                   <button
                     onClick={() => openReceive(po, false)}
-                    className="mt-2 w-full px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold"
+                    className="mt-2 w-full px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-500"
                   >
                     รับเข้าคลัง
                   </button>
@@ -695,12 +725,18 @@ export default function PurchaseGR() {
               return (
                 <div
                   key={po.id}
-                  className="w-full md:w-auto px-3 py-2 bg-white border border-blue-200 rounded-lg text-sm text-blue-700"
+                  className={`w-full md:w-auto px-3 py-2 border rounded-lg text-sm ${
+                    embedDark
+                      ? 'border-sky-700/40 bg-slate-900/70 text-sky-200'
+                      : 'border-blue-200 bg-white text-blue-700'
+                  }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <button
                       onClick={() => openReceive(po, false)}
-                      className="text-left font-medium hover:text-blue-800 transition-colors"
+                      className={`text-left font-medium transition-colors ${
+                        embedDark ? 'hover:text-sky-100' : 'hover:text-blue-800'
+                      }`}
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-base">{po.po_no}</span>
@@ -708,13 +744,17 @@ export default function PurchaseGR() {
                           {eta.label}
                         </span>
                       </div>
-                      <div className="text-sm text-gray-600 mt-1 font-medium">
+                      <div className={`text-sm mt-1 font-medium ${embedDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         กำหนดเข้า: {formatDateThai(po.expected_arrival_date)}
                       </div>
                     </button>
                     <button
                       onClick={() => openEtaEdit(po)}
-                      className="px-2.5 py-1.5 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-xs font-semibold hover:bg-blue-100 transition-colors whitespace-nowrap"
+                      className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold transition-colors whitespace-nowrap ${
+                        embedDark
+                          ? 'border-sky-600/50 bg-slate-800 text-sky-300 hover:bg-slate-700'
+                          : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                      }`}
                     >
                       แก้ไขกำหนดเข้า
                     </button>
@@ -728,8 +768,12 @@ export default function PurchaseGR() {
 
       {/* ── Partial POs waiting for follow-up GR ── */}
       {sortedPartialPOs.length > 0 && (
-        <div className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block bg-amber-50 border border-amber-200 rounded-xl p-3 md:p-4`}>
-          <h3 className="text-sm font-semibold text-amber-800 mb-3 flex items-center gap-2">
+        <div
+          className={`${mobileSection === 'receive' ? 'block' : 'hidden'} md:block rounded-xl border ${
+            embedDark ? 'p-3 border-amber-800/45 bg-amber-950/15' : 'p-3 md:p-4 border-amber-200 bg-amber-50'
+          }`}
+        >
+          <h3 className={`text-sm font-semibold mb-3 flex items-center gap-2 ${embedDark ? 'text-amber-200' : 'text-amber-800'}`}>
             PO รอรับเพิ่ม
             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-600 text-white text-xs font-bold">
               {partialCount}
@@ -744,11 +788,16 @@ export default function PurchaseGR() {
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
-                <div key={po.id} className="bg-white border border-amber-200 rounded-xl p-3 space-y-2.5">
+                <div
+                  key={po.id}
+                  className={`border rounded-xl p-3 space-y-2.5 ${
+                    embedDark ? 'border-amber-700/35 bg-slate-900/80' : 'border-amber-200 bg-white'
+                  }`}
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <div className="font-semibold text-gray-900">{po.po_no}</div>
-                      <div className="text-xs text-gray-500 mt-1">
+                      <div className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</div>
+                      <div className={`text-xs mt-1 ${embedDark ? 'text-gray-400' : 'text-gray-500'}`}>
                         รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
                       </div>
                     </div>
@@ -766,7 +815,7 @@ export default function PurchaseGR() {
                   </div>
                   <button
                     onClick={() => openReceive(po, true)}
-                    className="w-full px-3 py-2 bg-amber-600 text-white rounded-lg text-sm font-semibold"
+                    className="w-full px-3 py-2 bg-amber-600 text-white rounded-lg text-sm font-semibold hover:bg-amber-500"
                   >
                     รับเพิ่ม
                   </button>
@@ -783,10 +832,15 @@ export default function PurchaseGR() {
               const outstanding = totalQty - totalRecv
               const eta = getEtaMeta(po.expected_arrival_date)
               return (
-                <div key={po.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-white border border-amber-200 rounded-lg px-3 md:px-4 py-2.5">
+                <div
+                  key={po.id}
+                  className={`flex flex-col md:flex-row md:items-center md:justify-between gap-2 border rounded-lg px-3 md:px-4 py-2.5 ${
+                    embedDark ? 'border-amber-700/35 bg-slate-900/75' : 'border-amber-200 bg-white'
+                  }`}
+                >
                   <div className="flex flex-wrap items-center gap-2 md:gap-3">
-                    <span className="font-medium text-gray-900 text-sm">{po.po_no}</span>
-                    <span className="text-xs text-gray-500">
+                    <span className={`font-medium text-sm ${embedDark ? 'text-white' : 'text-gray-900'}`}>{po.po_no}</span>
+                    <span className={`text-xs ${embedDark ? 'text-gray-400' : 'text-gray-500'}`}>
                       รับแล้ว {totalRecv.toLocaleString()}/{totalQty.toLocaleString()}
                     </span>
                     <span className="inline-block px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-xs font-semibold">
@@ -813,22 +867,34 @@ export default function PurchaseGR() {
       )}
 
       {/* ── Filter Bar ── */}
-      <div className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block bg-white rounded-xl shadow-sm border p-4`}>
+      <div
+        className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block rounded-xl border ${
+          embedDark
+            ? 'p-3 border-slate-700 bg-slate-800 shadow-md shadow-black/15'
+            : 'p-4 border-gray-200 bg-white shadow-sm'
+        }`}
+      >
         <div className="md:hidden space-y-2.5">
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto">
+          <div className={`flex gap-1 rounded-lg p-1 overflow-x-auto ${embedDark ? 'bg-slate-700/80' : 'bg-gray-100'}`}>
             {statusTabs.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setStatusFilter(t.key)}
                 className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors whitespace-nowrap ${
-                  statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
+                  statusFilter === t.key
+                    ? embedDark
+                      ? 'bg-slate-900 shadow-md ring-1 ring-emerald-500/50 text-emerald-400'
+                      : 'bg-white shadow text-emerald-700'
+                    : embedDark
+                      ? 'text-gray-400 hover:text-gray-200'
+                      : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 {t.label}
               </button>
             ))}
           </div>
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 overflow-x-auto">
+          <div className={`flex gap-1 rounded-lg p-1 overflow-x-auto ${embedDark ? 'bg-slate-700/80' : 'bg-gray-100'}`}>
             {[
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
@@ -838,7 +904,13 @@ export default function PurchaseGR() {
                 key={t.key}
                 onClick={() => setTypeFilter(t.key)}
                 className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors whitespace-nowrap ${
-                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                  typeFilter === t.key
+                    ? embedDark
+                      ? `bg-slate-900 shadow-md ring-1 ring-slate-500/50 ${t.color === 'text-blue-700' ? 'text-sky-400' : t.color === 'text-red-700' ? 'text-red-400' : 'text-gray-200'}`
+                      : `bg-white shadow ${t.color || 'text-gray-800'}`
+                    : embedDark
+                      ? 'text-gray-400 hover:text-gray-200'
+                      : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 {t.label}
@@ -851,31 +923,57 @@ export default function PurchaseGR() {
               placeholder="ค้นหาเลขที่ GR..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 ${
+                embedDark
+                  ? 'border-slate-600 bg-slate-900/80 text-white placeholder:text-gray-500'
+                  : ''
+              }`}
             />
           </div>
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ตั้งแต่วันที่" />
-            <span className="text-gray-400 text-sm">-</span>
-            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ถึงวันที่" />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className={`px-2 py-2 border rounded-lg text-sm focus:outline-none ${
+                embedDark ? 'border-slate-600 bg-slate-900/80 text-white' : 'text-black'
+              }`}
+              title="ตั้งแต่วันที่"
+            />
+            <span className={`text-sm ${embedDark ? 'text-gray-500' : 'text-gray-400'}`}>-</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className={`px-2 py-2 border rounded-lg text-sm focus:outline-none ${
+                embedDark ? 'border-slate-600 bg-slate-900/80 text-white' : 'text-black'
+              }`}
+              title="ถึงวันที่"
+            />
           </div>
         </div>
 
         <div className="hidden md:flex md:flex-wrap md:items-center gap-3">
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <div className={`flex gap-1 rounded-lg p-1 ${embedDark ? 'bg-slate-700/80' : 'bg-gray-100'}`}>
             {statusTabs.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setStatusFilter(t.key)}
                 className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
-                  statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
+                  statusFilter === t.key
+                    ? embedDark
+                      ? 'bg-slate-900 shadow-md ring-1 ring-emerald-500/50 text-emerald-400'
+                      : 'bg-white shadow text-emerald-700'
+                    : embedDark
+                      ? 'text-gray-400 hover:text-gray-200'
+                      : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 {t.label}
               </button>
             ))}
           </div>
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <div className={`flex gap-1 rounded-lg p-1 ${embedDark ? 'bg-slate-700/80' : 'bg-gray-100'}`}>
             {[
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
@@ -885,7 +983,13 @@ export default function PurchaseGR() {
                 key={t.key}
                 onClick={() => setTypeFilter(t.key)}
                 className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
-                  typeFilter === t.key ? `bg-white shadow ${t.color || 'text-gray-800'}` : 'text-gray-600 hover:text-gray-900'
+                  typeFilter === t.key
+                    ? embedDark
+                      ? `bg-slate-900 shadow-md ring-1 ring-slate-500/50 ${t.color === 'text-blue-700' ? 'text-sky-400' : t.color === 'text-red-700' ? 'text-red-400' : 'text-gray-200'}`
+                      : `bg-white shadow ${t.color || 'text-gray-800'}`
+                    : embedDark
+                      ? 'text-gray-400 hover:text-gray-200'
+                      : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
                 {t.label}
@@ -898,28 +1002,54 @@ export default function PurchaseGR() {
               placeholder="ค้นหาเลขที่ GR..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 ${
+                embedDark
+                  ? 'border-slate-600 bg-slate-900/80 text-white placeholder:text-gray-500'
+                  : ''
+              }`}
             />
           </div>
           <div className="w-full md:w-auto flex items-center gap-2">
-            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ตั้งแต่วันที่" />
-            <span className="text-gray-400 text-sm">-</span>
-            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm text-black focus:outline-none" title="ถึงวันที่" />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className={`flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm focus:outline-none ${
+                embedDark ? 'border-slate-600 bg-slate-900/80 text-white' : 'text-black'
+              }`}
+              title="ตั้งแต่วันที่"
+            />
+            <span className={`text-sm ${embedDark ? 'text-gray-500' : 'text-gray-400'}`}>-</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className={`flex-1 md:flex-none px-2 py-2 border rounded-lg text-sm focus:outline-none ${
+                embedDark ? 'border-slate-600 bg-slate-900/80 text-white' : 'text-black'
+              }`}
+              title="ถึงวันที่"
+            />
           </div>
         </div>
       </div>
 
       {/* ── GR List ── */}
-      <div className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block bg-white rounded-xl shadow-sm border`}>
+      <div
+        className={`${mobileSection === 'list' ? 'block' : 'hidden'} md:block rounded-xl border ${
+          embedDark
+            ? 'border-slate-700 bg-slate-800 shadow-md shadow-black/15'
+            : 'border-gray-200 bg-white shadow-sm'
+        }`}
+      >
         {loading ? (
           <div className="flex justify-center items-center py-16">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
           </div>
         ) : grs.length === 0 ? (
-          <div className="text-center py-16 text-gray-400">ไม่พบรายการ GR</div>
+          <div className={`text-center py-16 ${embedDark ? 'text-gray-500' : 'text-gray-400'}`}>ไม่พบรายการ GR</div>
         ) : (
           <>
-          <div className="md:hidden divide-y">
+          <div className={`md:hidden divide-y ${embedDark ? 'divide-slate-700' : ''}`}>
             {grRowsWithGroup.map(({ gr, groupIndex }) => {
               const items = (gr as any).inv_gr_items || []
               const grTotalOrdered = items.reduce((s: number, i: any) => s + (Number(i.qty_ordered) || 0), 0)
@@ -928,18 +1058,32 @@ export default function PurchaseGR() {
               const eta = getEtaMeta(gr.inv_po?.expected_arrival_date)
               const poStatus = (gr.inv_po as any)?.status
               const showEtaCountdown = gr.status !== 'received' && poStatus !== 'received' && poStatus !== 'closed'
-              const rowBg = groupIndex % 2 === 0 ? 'bg-blue-200' : 'bg-white'
+              const rowBg = embedDark
+                ? groupIndex % 2 === 0
+                  ? 'bg-slate-800/90'
+                  : 'bg-slate-900/50'
+                : groupIndex % 2 === 0
+                  ? 'bg-blue-200'
+                  : 'bg-white'
               return (
                 <div key={gr.id} className={`p-3 space-y-2 ${rowBg}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-semibold text-gray-900">{gr.gr_no}</div>
+                    <div className={`font-semibold ${embedDark ? 'text-white' : 'text-gray-900'}`}>{gr.gr_no}</div>
                     <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${st.color}`}>{st.label}</span>
                   </div>
-                  <div className="space-y-1 text-xs text-gray-700">
-                    <div>PO: <span className="font-medium">{gr.inv_po?.po_no || '-'}</span></div>
+                  <div className={`space-y-1 text-xs ${embedDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <div>
+                      PO: <span className="font-medium">{gr.inv_po?.po_no || '-'}</span>
+                    </div>
                     <div>วันที่รับ: {gr.received_at ? new Date(gr.received_at).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}</div>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white/80 text-gray-700 border border-gray-200">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full border ${
+                          embedDark
+                            ? 'bg-slate-800/90 text-gray-200 border-slate-600'
+                            : 'bg-white/80 text-gray-700 border-gray-200'
+                        }`}
+                      >
                         กำหนดเข้า: {formatDateThai(gr.inv_po?.expected_arrival_date)}
                       </span>
                       {showEtaCountdown && (
@@ -949,12 +1093,27 @@ export default function PurchaseGR() {
                       )}
                     </div>
                     <div>
-                      จำนวน: <span className={grTotalReceived < grTotalOrdered ? 'text-red-600 font-semibold' : 'font-semibold'}>{grTotalReceived}/{grTotalOrdered}</span>
+                      จำนวน:{' '}
+                      <span
+                        className={
+                          grTotalReceived < grTotalOrdered
+                            ? embedDark
+                              ? 'text-red-400 font-semibold'
+                              : 'text-red-600 font-semibold'
+                            : 'font-semibold'
+                        }
+                      >
+                        {grTotalReceived}/{grTotalOrdered}
+                      </span>
                     </div>
                   </div>
                   <button
                     onClick={() => openDetail(gr)}
-                    className="w-full px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-sm font-semibold"
+                    className={`w-full px-3 py-2 rounded-lg text-sm font-semibold ${
+                      embedDark
+                        ? 'bg-emerald-950/70 text-emerald-300 border border-emerald-700/50 hover:bg-emerald-900/60'
+                        : 'bg-emerald-50 text-emerald-700'
+                    }`}
                   >
                     ดูรายละเอียด
                   </button>

@@ -93,7 +93,7 @@ export default function ManagerLayout() {
                 onClick={() => navigate('/machinery')}
                 className="rounded-2xl bg-gradient-to-br from-slate-600 to-slate-800 p-4 text-left transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg"
               >
-                <i className="fas fa-industry text-2xl text-white/80 mb-3 block" />
+                <i className="fas fa-print text-2xl text-white/80 mb-3 block" aria-hidden />
                 <div className="font-bold text-base text-white leading-tight">Machinery</div>
                 <div className="text-[10px] text-white/60 mt-1 leading-tight">มอนิเตอร์สถานะเครื่องจักร</div>
               </button>

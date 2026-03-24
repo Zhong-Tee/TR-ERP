@@ -95,9 +95,10 @@ export default function ProtectedRoute({
     return <>{children}</>
   }
 
-  // Technician: mobile-only /machinery
+  // Technician: mobile — หน้า home /technician และ /machinery
   if (user.role === TECHNICIAN_ROLE) {
-    const ok = location.pathname.startsWith('/machinery')
+    const ok =
+      location.pathname.startsWith('/machinery') || location.pathname.startsWith('/technician')
     if (ok && (!allowedRoles || isRoleInAllowedList(user.role, allowedRoles))) {
       return <>{children}</>
     }
