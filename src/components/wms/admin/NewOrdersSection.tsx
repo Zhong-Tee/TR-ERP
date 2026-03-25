@@ -24,11 +24,11 @@ export default function NewOrdersSection() {
   const [assigning, setAssigning] = useState(false)
   const { showMessage, MessageModal } = useWmsModal()
 
-  const ensurePlanDeptStart = async (workOrderName: string) => {
-    if (!workOrderName) return
+  const ensurePlanDeptStart = async (workOrderId: string) => {
+    if (!workOrderId) return
     const now = new Date().toISOString()
-    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
-      p_job_name: workOrderName,
+    const { error } = await supabase.rpc('merge_plan_tracks_by_work_order_id', {
+      p_work_order_id: workOrderId,
       p_dept: 'เบิก',
       p_patch: { 'หยิบของ': { start_if_null: now } },
     })
@@ -81,26 +81,26 @@ export default function NewOrdersSection() {
     }
 
     // กรองเฉพาะใบงานที่ยังไม่ได้มอบหมาย Picker (ไม่มีใน wms_orders)
-    const woNames = data.map((wo) => wo.work_order_name)
+    const woIds = data.map((wo) => wo.id)
     const { data: assignedRows } = await supabase
       .from('wms_orders')
-      .select('order_id')
-      .in('order_id', woNames)
-    const assignedSet = new Set((assignedRows || []).map((r: any) => r.order_id))
-    const unassigned = data.filter((wo) => !assignedSet.has(wo.work_order_name))
+      .select('work_order_id')
+      .in('work_order_id', woIds as string[])
+    const assignedSet = new Set((assignedRows || []).map((r: any) => r.work_order_id))
+    const unassigned = data.filter((wo) => !assignedSet.has(wo.id))
 
     // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
     if (unassigned.length > 0) {
-      const unassignedNames = unassigned.map((wo) => wo.work_order_name)
+      const unassignedIds = unassigned.map((wo) => wo.id)
       const { data: orders } = await supabase
         .from('or_orders')
-        .select('work_order_name, or_order_items(product_id, is_free)')
-        .in('work_order_name', unassignedNames)
+        .select('work_order_id, or_order_items(product_id, is_free)')
+        .in('work_order_id', unassignedIds as string[])
 
       const allItems = (orders || []).flatMap((o: any) =>
         (o.or_order_items || []).map((i: any) => ({
           product_id: i.product_id,
-          work_order_name: o.work_order_name,
+          work_order_id: o.work_order_id,
           is_free: i.is_free,
         }))
       )
@@ -122,10 +122,10 @@ export default function NewOrdersSection() {
       allItems.forEach((item: any) => {
         if (!item.product_id) return
         const cat = productCategoryMap[item.product_id] || ''
-        if (isMainCategory(cat)) woQualifiesForAssign.add(item.work_order_name)
+        if (isMainCategory(cat) && item.work_order_id) woQualifiesForAssign.add(String(item.work_order_id))
       })
 
-      setWorkOrders(unassigned.filter((wo) => woQualifiesForAssign.has(wo.work_order_name)))
+      setWorkOrders(unassigned.filter((wo) => woQualifiesForAssign.has(wo.id)))
     } else {
       setWorkOrders([])
     }
@@ -139,8 +139,8 @@ export default function NewOrdersSection() {
 
   const pickerOptions = useMemo(() => pickers, [pickers])
 
-  const openAssignPicker = (workOrderName: string) => {
-    setSelectedWorkOrder(workOrderName)
+  const openAssignPicker = (workOrderId: string) => {
+    setSelectedWorkOrder(workOrderId)
     setSelectedPickerId('')
   }
 
@@ -160,14 +160,14 @@ export default function NewOrdersSection() {
       const { count } = await supabase
         .from('wms_orders')
         .select('id', { count: 'exact', head: true })
-        .eq('order_id', selectedWorkOrder)
+        .eq('work_order_id', selectedWorkOrder)
       if ((count || 0) > 0) {
         showMessage({ message: 'ใบงานนี้ถูกสร้างในระบบ WMS แล้ว' })
         return
       }
 
-      const { data: rpcResult, error: rpcError } = await supabase.rpc('rpc_assign_wms_for_work_order', {
-        p_work_order_name: selectedWorkOrder,
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('rpc_assign_wms_for_work_order_v2', {
+        p_work_order_id: selectedWorkOrder,
         p_picker_id: selectedPickerId,
       })
       if (rpcError) throw rpcError
@@ -185,7 +185,8 @@ export default function NewOrdersSection() {
       }
 
       await ensurePlanDeptStart(selectedWorkOrder)
-      showMessage({ message: `มอบหมายใบงาน ${selectedWorkOrder} ให้ Picker เรียบร้อยแล้ว` })
+      const woName = workOrders.find((w) => w.id === selectedWorkOrder)?.work_order_name || selectedWorkOrder
+      showMessage({ message: `มอบหมายใบงาน ${woName} ให้ Picker เรียบร้อยแล้ว` })
       closeAssignPicker()
       loadWorkOrders()
       window.dispatchEvent(new Event('wms-data-changed'))
@@ -212,7 +213,7 @@ export default function NewOrdersSection() {
           <button
             key={wo.id}
             className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
-            onClick={() => openAssignPicker(wo.work_order_name)}
+            onClick={() => openAssignPicker(wo.id)}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
@@ -235,7 +236,9 @@ export default function NewOrdersSection() {
       <Modal open={!!selectedWorkOrder} onClose={closeAssignPicker} closeOnBackdropClick={true} contentClassName="max-w-md">
         <div className="p-6">
           <h3 className="text-lg font-bold text-slate-800 mb-2">เลือก User Picker</h3>
-          <p className="text-sm text-slate-600 mb-4">ใบงาน: {selectedWorkOrder}</p>
+          <p className="text-sm text-slate-600 mb-4">
+            ใบงาน: {workOrders.find((w) => w.id === selectedWorkOrder)?.work_order_name || selectedWorkOrder}
+          </p>
           <select
             value={selectedPickerId}
             onChange={(e) => setSelectedPickerId(e.target.value)}

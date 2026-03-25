@@ -111,11 +111,11 @@ export default function WorkOrderManageList({
 }: WorkOrderManageListProps) {
   const { user } = useAuthContext()
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
-  const [channelByWo, setChannelByWo] = useState<Record<string, string>>({})
+  const [channelByWo, setChannelByWo] = useState<Record<string, string>>({}) // key = work_order_id
   const [loading, setLoading] = useState(true)
-  const [expandedWo, setExpandedWo] = useState<string | null>(null)
-  const [ordersByWo, setOrdersByWo] = useState<Record<string, Order[]>>({})
-  const [selectedByWo, setSelectedByWo] = useState<Record<string, Set<string>>>({})
+  const [expandedWo, setExpandedWo] = useState<string | null>(null) // work_order_id
+  const [ordersByWo, setOrdersByWo] = useState<Record<string, Order[]>>({}) // key = work_order_id
+  const [selectedByWo, setSelectedByWo] = useState<Record<string, Set<string>>>({}) // key = work_order_id
   const [editingTrackingId, setEditingTrackingId] = useState<string | null>(null)
   const [editingTrackingValue, setEditingTrackingValue] = useState('')
   const [updating, setUpdating] = useState(false)
@@ -176,8 +176,8 @@ export default function WorkOrderManageList({
       if (searchTerm.trim()) {
         let orderMatchQuery = supabase
           .from('or_orders')
-          .select('work_order_name')
-          .not('work_order_name', 'is', null)
+          .select('work_order_id')
+          .not('work_order_id', 'is', null)
           .or(`bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%`)
         if (mode === 'active') {
           orderMatchQuery = orderMatchQuery
@@ -185,23 +185,20 @@ export default function WorkOrderManageList({
             .neq('status', 'จัดส่งแล้ว')
         }
         const { data: orderMatch } = await orderMatchQuery
-        const woNames = new Set((orderMatch || []).map((r: { work_order_name: string }) => r.work_order_name))
-        list = list.filter((w) => woNames.has(w.work_order_name))
+        const woIds = new Set((orderMatch || []).map((r: { work_order_id: string }) => r.work_order_id))
+        list = list.filter((w) => woIds.has(w.id))
       }
 
       if (mode === 'active' && list.length > 0) {
         const { data: activeOrders } = await supabase
           .from('or_orders')
-          .select('work_order_name')
-          .not('work_order_name', 'is', null)
+          .select('work_order_id')
+          .not('work_order_id', 'is', null)
           .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
           .neq('status', 'จัดส่งแล้ว')
-          .in(
-            'work_order_name',
-            list.map((w) => w.work_order_name)
-          )
-        const activeSet = new Set((activeOrders || []).map((r: { work_order_name: string }) => r.work_order_name))
-        list = list.filter((w) => activeSet.has(w.work_order_name))
+          .in('work_order_id', list.map((w) => w.id))
+        const activeSet = new Set((activeOrders || []).map((r: { work_order_id: string }) => r.work_order_id))
+        list = list.filter((w) => activeSet.has(w.id))
       }
       setWorkOrders(list)
       onCountChange?.(list.length)
@@ -210,16 +207,16 @@ export default function WorkOrderManageList({
       setExpandedWo(null)
 
       if (list.length > 0) {
-        const workOrderNames = list.map((w) => w.work_order_name)
+        const workOrderIds = list.map((w) => w.id)
         const { data: orderChannels, error: channelErr } = await supabase
           .from('or_orders')
-          .select('work_order_name, channel_code')
-          .in('work_order_name', workOrderNames)
+          .select('work_order_id, channel_code')
+          .in('work_order_id', workOrderIds)
         if (!channelErr && orderChannels && orderChannels.length > 0) {
           const map: Record<string, string> = {}
-          orderChannels.forEach((r: { work_order_name: string; channel_code: string }) => {
-            if (r.work_order_name && !(r.work_order_name in map)) {
-              map[r.work_order_name] = r.channel_code ?? ''
+          orderChannels.forEach((r: { work_order_id: string; channel_code: string }) => {
+            if (r.work_order_id && !(r.work_order_id in map)) {
+              map[r.work_order_id] = r.channel_code ?? ''
             }
           })
           setChannelByWo(map)
@@ -237,12 +234,12 @@ export default function WorkOrderManageList({
     }
   }
 
-  async function loadOrdersForWo(workOrderName: string) {
+  async function loadOrdersForWo(workOrderId: string) {
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user')
-        .eq('work_order_name', workOrderName)
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
+        .eq('work_order_id', workOrderId)
         .order('created_at', { ascending: false })
       let rows = data
       if (mode === 'active') {
@@ -256,8 +253,8 @@ export default function WorkOrderManageList({
 
       if (error) throw error
       const list = (rows || []) as Order[]
-      setOrdersByWo((prev) => ({ ...prev, [workOrderName]: list }))
-      setSelectedByWo((prev) => ({ ...prev, [workOrderName]: new Set<string>() }))
+      setOrdersByWo((prev) => ({ ...prev, [workOrderId]: list }))
+      setSelectedByWo((prev) => ({ ...prev, [workOrderId]: new Set<string>() }))
     } catch (error: any) {
       console.error('Error loading orders for WO:', error)
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
@@ -265,36 +262,36 @@ export default function WorkOrderManageList({
   }
 
   function toggleExpand(wo: WorkOrder) {
-    if (expandedWo === wo.work_order_name) {
+    if (expandedWo === wo.id) {
       setExpandedWo(null)
       return
     }
-    setExpandedWo(wo.work_order_name)
-    if (!ordersByWo[wo.work_order_name]) {
-      loadOrdersForWo(wo.work_order_name)
+    setExpandedWo(wo.id)
+    if (!ordersByWo[wo.id]) {
+      loadOrdersForWo(wo.id)
     }
   }
 
-  function toggleBillSelect(workOrderName: string, orderId: string) {
+  function toggleBillSelect(workOrderId: string, orderId: string) {
     setSelectedByWo((prev) => {
-      const set = new Set(prev[workOrderName] || [])
+      const set = new Set(prev[workOrderId] || [])
       if (set.has(orderId)) set.delete(orderId)
       else set.add(orderId)
-      return { ...prev, [workOrderName]: set }
+      return { ...prev, [workOrderId]: set }
     })
   }
 
-  function selectAllBills(workOrderName: string) {
-    const orders = ordersByWo[workOrderName] || []
-    setSelectedByWo((prev) => ({ ...prev, [workOrderName]: new Set(orders.map((o) => o.id)) }))
+  function selectAllBills(workOrderId: string) {
+    const orders = ordersByWo[workOrderId] || []
+    setSelectedByWo((prev) => ({ ...prev, [workOrderId]: new Set(orders.map((o) => o.id)) }))
   }
 
-  function clearBillSelection(workOrderName: string) {
-    setSelectedByWo((prev) => ({ ...prev, [workOrderName]: new Set<string>() }))
+  function clearBillSelection(workOrderId: string) {
+    setSelectedByWo((prev) => ({ ...prev, [workOrderId]: new Set<string>() }))
   }
 
-  function confirmReleaseToWorkQueue(workOrderName: string) {
-    const ids = Array.from(selectedByWo[workOrderName] || [])
+  function confirmReleaseToWorkQueue(workOrderId: string) {
+    const ids = Array.from(selectedByWo[workOrderId] || [])
     if (ids.length === 0) {
       setMessageModal({ open: true, message: 'กรุณาเลือกบิลอย่างน้อย 1 รายการ' })
       return
@@ -303,16 +300,16 @@ export default function WorkOrderManageList({
       open: true,
       title: 'ยืนยันย้ายไปใบสั่งงาน',
       message: `ต้องการย้าย ${ids.length} บิล ไปเมนู Plan → ใบสั่งงาน (สถานะใบสั่งงาน) หรือไม่?`,
-      onConfirm: () => executeReleaseToWorkQueue(workOrderName, ids),
+      onConfirm: () => executeReleaseToWorkQueue(workOrderId, ids),
     })
   }
 
-  async function executeReleaseToWorkQueue(workOrderName: string, ids: string[]) {
+  async function executeReleaseToWorkQueue(workOrderId: string, ids: string[]) {
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
-      const { data, error } = await supabase.rpc('rpc_plan_release_orders_to_workqueue', {
-        p_work_order_name: workOrderName,
+      const { data, error } = await supabase.rpc('rpc_plan_release_orders_to_workqueue_v2', {
+        p_work_order_id: workOrderId,
         p_order_ids: ids,
       })
       if (error) throw error
@@ -326,8 +323,8 @@ export default function WorkOrderManageList({
       await loadWorkOrders()
       const remaining = (result.remaining_bills ?? 0) as number
       if (remaining > 0) {
-        await loadOrdersForWo(workOrderName)
-        clearBillSelection(workOrderName)
+        await loadOrdersForWo(workOrderId)
+        clearBillSelection(workOrderId)
       }
       onRefresh?.()
       setMessageModal({
@@ -363,33 +360,33 @@ export default function WorkOrderManageList({
     }
   }
 
-  function openCancelWorkOrderConfirm(workOrderName: string) {
+  function openCancelWorkOrderConfirm(wo: WorkOrder) {
     setConfirmModal({
       open: true,
       title: 'ยืนยันยกเลิกใบงาน',
-      message: `ต้องการยกเลิกใบงาน "${workOrderName}" หรือไม่?`,
-      onConfirm: () => doCancelWorkOrder(workOrderName),
+      message: `ต้องการยกเลิกใบงาน "${wo.work_order_name}" หรือไม่?`,
+      onConfirm: () => doCancelWorkOrder(wo),
     })
   }
 
-  async function doCancelWorkOrder(workOrderName: string) {
+  async function doCancelWorkOrder(wo: WorkOrder) {
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
       const { error: updateError } = await supabase
         .from('or_orders')
-        .update({ work_order_name: null, status: 'ลงข้อมูลเสร็จสิ้น' })
-        .eq('work_order_name', workOrderName)
+        .update({ work_order_id: null, work_order_name: null, status: 'ลงข้อมูลเสร็จสิ้น' })
+        .eq('work_order_id', wo.id)
       if (updateError) throw updateError
       const { error: deleteError } = await supabase
         .from('or_work_orders')
         .delete()
-        .eq('work_order_name', workOrderName)
+        .eq('id', wo.id)
       if (deleteError) throw deleteError
-      await supabase.from('plan_jobs').delete().eq('name', workOrderName)
+      await supabase.from('plan_jobs').delete().eq('work_order_id', wo.id)
       await loadWorkOrders()
       onRefresh?.()
-      setMessageModal({ open: true, message: `ยกเลิกใบงาน "${workOrderName}" เรียบร้อย` })
+      setMessageModal({ open: true, message: `ยกเลิกใบงาน "${wo.work_order_name}" เรียบร้อย` })
     } catch (error: any) {
       console.error('Error cancelling work order:', error)
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (error?.message ?? error) })
@@ -398,11 +395,11 @@ export default function WorkOrderManageList({
     }
   }
 
-  async function openWaybillSorterModal(workOrderName: string) {
+  async function openWaybillSorterModal(workOrderId: string, workOrderNameForDisplay: string) {
     const { data: ordersData } = await supabase
       .from('or_orders')
       .select('id, tracking_number, bill_no')
-      .eq('work_order_name', workOrderName)
+      .eq('work_order_id', workOrderId)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .not('tracking_number', 'is', null)
       .order('bill_no', { ascending: true })
@@ -417,7 +414,7 @@ export default function WorkOrderManageList({
     setWsStatFound('--')
     setWsProgress(0)
     setWsMissing([])
-    setWaybillSorterModal({ open: true, workOrderName, trackingNumbers })
+    setWaybillSorterModal({ open: true, workOrderName: workOrderNameForDisplay, trackingNumbers })
   }
 
   function wsLogAppend(message: string, overwriteFirst = false) {
@@ -642,11 +639,11 @@ export default function WorkOrderManageList({
 
   type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; quantity?: number; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
 
-  async function fetchOrdersWithItems(workOrderName: string): Promise<OrderWithItems[]> {
+  async function fetchOrdersWithItems(workOrderId: string): Promise<OrderWithItems[]> {
     const { data, error } = await supabase
       .from('or_orders')
       .select('*, or_order_items(*)')
-      .eq('work_order_name', workOrderName)
+      .eq('work_order_id', workOrderId)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -654,8 +651,8 @@ export default function WorkOrderManageList({
     return list
   }
 
-  async function buildProductionExportRows(workOrderName: string): Promise<unknown[][]> {
-    const orders = await fetchOrdersWithItems(workOrderName)
+  async function buildProductionExportRows(workOrderId: string, workOrderNameForDisplay: string): Promise<unknown[][]> {
+    const orders = await fetchOrdersWithItems(workOrderId)
     const ordersInWorkOrder = orders.sort((a, b) => (a.bill_no || '').localeCompare(b.bill_no || ''))
     if (ordersInWorkOrder.length === 0) {
       setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
@@ -696,7 +693,7 @@ export default function WorkOrderManageList({
         const copies = normalizedLineQuantity(item.quantity)
         for (let c = 0; c < copies; c++) {
           const displayUid = itemUidForSplitLines(item.item_uid, c, copies)
-          const row: unknown[] = [workOrderName, order.bill_no, displayUid, productCode]
+          const row: unknown[] = [workOrderNameForDisplay, order.bill_no, displayUid, productCode]
           visibleColumns.forEach((col) => {
             if (col.key === 'notes') row.push(cleanNotes)
             else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
@@ -717,24 +714,24 @@ export default function WorkOrderManageList({
     return dataToExport
   }
 
-  async function exportProduction(workOrderName: string) {
+  async function exportProduction(workOrderId: string, workOrderNameForDisplay: string) {
     try {
-      const dataToExport = await buildProductionExportRows(workOrderName)
+      const dataToExport = await buildProductionExportRows(workOrderId, workOrderNameForDisplay)
       if (dataToExport.length === 0) return
       const visibleColumns = EXPORT_ITEM_COLUMNS
       const headers = ['ชื่อใบงาน', 'เลขบิล', 'Item UID', 'รหัสสินค้า', ...visibleColumns.map((c) => c.label), 'หมวด']
       const worksheet = XLSX.utils.aoa_to_sheet([headers, ...dataToExport])
       const workbook = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(workbook, worksheet, 'ProductionData')
-      XLSX.writeFile(workbook, `Production_${workOrderName}.xlsx`)
+      XLSX.writeFile(workbook, `Production_${workOrderNameForDisplay}.xlsx`)
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
     }
   }
 
-  async function copyProduction(workOrderName: string) {
+  async function copyProduction(workOrderId: string, workOrderNameForDisplay: string) {
     try {
-      const dataToCopy = await buildProductionExportRows(workOrderName)
+      const dataToCopy = await buildProductionExportRows(workOrderId, workOrderNameForDisplay)
       if (dataToCopy.length === 0) return
       const clipboardText = dataToCopy
         .map((row) =>
@@ -751,9 +748,9 @@ export default function WorkOrderManageList({
     }
   }
 
-  async function exportBarcode(workOrderName: string) {
+  async function exportBarcode(workOrderId: string, workOrderNameForDisplay: string) {
     try {
-      const orders = await fetchOrdersWithItems(workOrderName)
+      const orders = await fetchOrdersWithItems(workOrderId)
       if (orders.length === 0) {
         setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
         return
@@ -798,7 +795,7 @@ export default function WorkOrderManageList({
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
-      link.download = `Barcode_${workOrderName}.csv`
+      link.download = `Barcode_${workOrderNameForDisplay}.csv`
       link.click()
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
@@ -806,10 +803,10 @@ export default function WorkOrderManageList({
   }
 
   /** เปิด Modal Preview ใบปะหน้า — แยกที่อยู่ → ชื่อ / ที่อยู่ / รหัสไปรษณีย์ / เบอร์โทร แล้วแสดง Preview ก่อน Export */
-  async function openWaybillPreview(workOrderName: string) {
+  async function openWaybillPreview(workOrderId: string, workOrderName: string) {
     try {
       setUpdating(true)
-      const orders = await fetchOrdersWithItems(workOrderName)
+      const orders = await fetchOrdersWithItems(workOrderId)
       if (orders.length === 0) {
         setMessageModal({ open: true, message: 'ไม่พบออร์เดอร์' })
         return
@@ -950,9 +947,9 @@ export default function WorkOrderManageList({
     URL.revokeObjectURL(url)
   }
 
-  async function openPickingSlipModal(workOrderName: string) {
+  async function openPickingSlipModal(workOrderId: string, workOrderName: string) {
     try {
-      const orders = await fetchOrdersWithItems(workOrderName)
+      const orders = await fetchOrdersWithItems(workOrderId)
       const itemList: Array<{ product_id: string; product_name: string; product_category?: string; product_code?: string; storage_location?: string; rubber_code?: string }> = []
       orders.forEach((order) => {
         const list = order.or_order_items || (order as any).order_items || []
@@ -1188,10 +1185,10 @@ export default function WorkOrderManageList({
       ) : (
         <div className="space-y-2">
           {workOrders.map((wo) => {
-            const orders = ordersByWo[wo.work_order_name] || []
-            const selectedIds = selectedByWo[wo.work_order_name] || new Set<string>()
-            const isExpanded = expandedWo === wo.work_order_name
-            const channelCode = channelByWo[wo.work_order_name] ?? ''
+            const orders = ordersByWo[wo.id] || []
+            const selectedIds = selectedByWo[wo.id] || new Set<string>()
+            const isExpanded = expandedWo === wo.id
+            const channelCode = channelByWo[wo.id] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
             const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
 
@@ -1211,7 +1208,7 @@ export default function WorkOrderManageList({
                   <div className="flex flex-wrap gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.id, wo.work_order_name))}
                       disabled={updating}
                       className="px-3 py-1.5 bg-orange-100 text-orange-800 rounded text-xs font-medium hover:bg-orange-200 disabled:opacity-50"
                     >
@@ -1219,7 +1216,7 @@ export default function WorkOrderManageList({
                     </button>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => openPickingSlipModal(wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => openPickingSlipModal(wo.id, wo.work_order_name))}
                       disabled={updating}
                       className="px-3 py-1.5 bg-green-100 text-green-800 rounded text-xs font-medium hover:bg-green-200 disabled:opacity-50"
                     >
@@ -1227,7 +1224,7 @@ export default function WorkOrderManageList({
                     </button>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => exportProduction(wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => exportProduction(wo.id, wo.work_order_name))}
                       disabled={updating}
                       className="px-3 py-1.5 bg-blue-100 text-blue-800 rounded text-xs font-medium hover:bg-blue-200 disabled:opacity-50"
                     >
@@ -1235,7 +1232,7 @@ export default function WorkOrderManageList({
                     </button>
                     <button
                       type="button"
-                      onClick={(e) => onHeaderButtonClick(e, () => exportBarcode(wo.work_order_name))}
+                      onClick={(e) => onHeaderButtonClick(e, () => exportBarcode(wo.id, wo.work_order_name))}
                       disabled={updating}
                       className="px-3 py-1.5 bg-amber-100 text-amber-800 rounded text-xs font-medium hover:bg-amber-200 disabled:opacity-50"
                     >
@@ -1244,7 +1241,7 @@ export default function WorkOrderManageList({
                     {isWaybillSortChannel ? (
                       <button
                         type="button"
-                        onClick={(e) => onHeaderButtonClick(e, () => openWaybillSorterModal(wo.work_order_name))}
+                        onClick={(e) => onHeaderButtonClick(e, () => openWaybillSorterModal(wo.id, wo.work_order_name))}
                         disabled={updating}
                         className="px-3 py-1.5 bg-orange-100 text-orange-800 rounded text-xs font-medium hover:bg-orange-200 disabled:opacity-50"
                       >
@@ -1254,7 +1251,7 @@ export default function WorkOrderManageList({
                       <>
                         <button
                           type="button"
-                          onClick={(e) => onHeaderButtonClick(e, () => openWaybillPreview(wo.work_order_name))}
+                          onClick={(e) => onHeaderButtonClick(e, () => openWaybillPreview(wo.id, wo.work_order_name))}
                           disabled={updating}
                           className="px-3 py-1.5 bg-yellow-100 text-yellow-800 rounded text-xs font-medium hover:bg-yellow-200 disabled:opacity-50"
                         >
@@ -1273,7 +1270,7 @@ export default function WorkOrderManageList({
                     {canCancelWorkOrder && (
                       <button
                         type="button"
-                        onClick={(e) => onHeaderButtonClick(e, () => openCancelWorkOrderConfirm(wo.work_order_name))}
+                        onClick={(e) => onHeaderButtonClick(e, () => openCancelWorkOrderConfirm(wo))}
                         disabled={updating}
                         className="px-3 py-1.5 bg-red-100 text-red-800 rounded text-xs font-medium hover:bg-red-200 disabled:opacity-50"
                       >
@@ -1294,14 +1291,14 @@ export default function WorkOrderManageList({
                         <div className="flex flex-wrap items-center gap-2 mb-4">
                           <button
                             type="button"
-                            onClick={() => selectAllBills(wo.work_order_name)}
+                            onClick={() => selectAllBills(wo.id)}
                             className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-100"
                           >
                             เลือกทั้งหมด
                           </button>
                           <button
                             type="button"
-                            onClick={() => confirmReleaseToWorkQueue(wo.work_order_name)}
+                            onClick={() => confirmReleaseToWorkQueue(wo.id)}
                             disabled={updating || selectedIds.size === 0}
                             className="px-3 py-1.5 bg-indigo-100 text-indigo-900 rounded-lg text-sm font-medium hover:bg-indigo-200 disabled:opacity-50"
                           >
@@ -1318,7 +1315,7 @@ export default function WorkOrderManageList({
                                   <input
                                     type="checkbox"
                                     checked={selectedIds.size === orders.length && orders.length > 0}
-                                    onChange={(e) => (e.target.checked ? selectAllBills(wo.work_order_name) : clearBillSelection(wo.work_order_name))}
+                                    onChange={(e) => (e.target.checked ? selectAllBills(wo.id) : clearBillSelection(wo.id))}
                                     className="rounded border-gray-300"
                                   />
                                 </th>
@@ -1337,7 +1334,7 @@ export default function WorkOrderManageList({
                                       <input
                                         type="checkbox"
                                         checked={selectedIds.has(order.id)}
-                                        onChange={() => toggleBillSelect(wo.work_order_name, order.id)}
+                                        onChange={() => toggleBillSelect(wo.id, order.id)}
                                         className="rounded border-gray-300"
                                       />
                                     </td>

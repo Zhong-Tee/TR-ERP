@@ -12,6 +12,7 @@ interface BorrowItem {
   storage_location?: string
   qty: number
   topic: string
+  item_note?: string
 }
 
 export default function ProductionBorrow() {
@@ -23,7 +24,6 @@ export default function ProductionBorrow() {
   const [selectedItems, setSelectedItems] = useState<BorrowItem[]>([])
   const [borrowNo, setBorrowNo] = useState('')
   const [dueDate, setDueDate] = useState('')
-  const [notes, setNotes] = useState('')
   const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
@@ -144,12 +144,16 @@ export default function ProductionBorrow() {
     if (existing) {
       setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setSelectedItems([...selectedItems, { ...product, qty: 1, topic: '' }])
+      setSelectedItems([...selectedItems, { ...product, qty: 1, topic: '', item_note: '' }])
     }
   }
 
   const updateItemTopic = (code: string, topic: string) => {
     setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, topic } : i))
+  }
+
+  const updateItemNote = (code: string, item_note: string) => {
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, item_note } : i))
   }
 
   const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
@@ -163,7 +167,6 @@ export default function ProductionBorrow() {
     if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (selectedItems.some((i) => !i.topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อยืมให้ครบทุกรายการ' }); return }
     if (!dueDate) { showMessage({ message: 'กรุณากำหนดวันคืน' }); return }
-    if (!notes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
 
     const ok = await showConfirm({
       title: 'ยืนยันการยืมของ',
@@ -181,7 +184,7 @@ export default function ProductionBorrow() {
           status: 'pending',
           due_date: dueDate,
           created_by: user?.id,
-          note: notes.trim() || null,
+          note: null,
         })
         .select()
         .single()
@@ -208,6 +211,7 @@ export default function ProductionBorrow() {
           product_id: codeToId[i.product_code],
           qty: i.qty,
           topic: i.topic || null,
+          item_note: i.item_note?.trim() || null,
         }))
       if (items.length > 0) {
         const { error: itemErr } = await supabase.from('wms_borrow_requisition_items').insert(items)
@@ -216,7 +220,6 @@ export default function ProductionBorrow() {
 
       showMessage({ message: `สร้างใบยืม ${borrowNo} สำเร็จ` })
       setSelectedItems([])
-      setNotes('')
       setDefaultDueDate()
       generateBorrowNo()
     } catch (e: any) {
@@ -437,6 +440,13 @@ export default function ProductionBorrow() {
                       <option key={t.id} value={t.topic_name}>{t.topic_name}</option>
                     ))}
                   </select>
+                  <textarea
+                    value={item.item_note || ''}
+                    onChange={(e) => updateItemNote(item.product_code, e.target.value)}
+                    className="w-full rounded-lg border border-slate-600 bg-slate-600 px-3 py-2 text-sm text-white placeholder-gray-400"
+                    rows={2}
+                    placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                  />
                   <div className="flex items-center gap-1">
                     <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">-</button>
                     <input
@@ -453,27 +463,11 @@ export default function ProductionBorrow() {
             </div>
           )}
 
-          {/* Notes (required) */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              หมายเหตุ <span className="text-red-400">*</span>
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-white placeholder-gray-500 ${
-                notes.trim() ? 'border-slate-600' : 'border-red-500/60'
-              }`}
-              rows={2}
-              placeholder="กรุณาระบุหมายเหตุ (จำเป็น)"
-            />
-          </div>
-
           {/* Submit */}
           <button
             type="button"
             onClick={submitBorrow}
-            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.topic) || !dueDate || !notes.trim()}
+            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.topic) || !dueDate}
             className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold text-base hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50"
           >
             {submitting ? 'กำลังบันทึก...' : `ยืนยันยืมของ (${selectedItems.length} รายการ)`}

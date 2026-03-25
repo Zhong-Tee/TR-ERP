@@ -43,7 +43,7 @@ export default function WorkOrderSelectionList({
       let query = supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no')
-        .is('work_order_name', null)
+        .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
       if (channelFilter) {
@@ -205,36 +205,44 @@ export default function WorkOrderSelectionList({
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
         const prefix = woPrefix(channelCode)
-        const { data: existing } = await supabase
-          .from('or_work_orders')
-          .select('work_order_name')
-          .like('work_order_name', `${prefix}-${datePart}-%`)
-          .order('work_order_name', { ascending: false })
-          .limit(1)
-
-        const lastName = (existing && existing[0]?.work_order_name) || ''
-        const match = lastName.match(new RegExp(`${prefix}-${datePart}-R(\\d+)`))
-        const nextBatch = match ? parseInt(match[1], 10) + 1 : 1
-        const workOrderName = `${prefix}-${datePart}-R${nextBatch}`
-
-        const { error: insertError } = await supabase.from('or_work_orders').insert({
-          work_order_name: workOrderName,
-          status: 'กำลังผลิต',
-          order_count: channelOrders.length,
+        const { data: nextName, error: nameErr } = await supabase.rpc('rpc_next_work_order_name', {
+          p_prefix: prefix,
+          p_date_part: datePart,
         })
+        if (nameErr) throw nameErr
+        const workOrderName = String(nextName || '').trim()
+        if (!workOrderName) throw new Error('สร้างเลขใบงานไม่สำเร็จ')
+
+        const { data: insertedWO, error: insertError } = await supabase
+          .from('or_work_orders')
+          .insert({
+            work_order_name: workOrderName,
+            status: 'กำลังผลิต',
+            order_count: channelOrders.length,
+          })
+          .select('id, work_order_name')
+          .single()
         if (insertError) throw insertError
+        const workOrderId = String((insertedWO as any)?.id || '')
 
         const orderIds = channelOrders.map((o) => o.id)
         const { error: updateError } = await supabase
           .from('or_orders')
-          .update({ work_order_name: workOrderName })
+          .update({
+            work_order_id: workOrderId,
+            work_order_name: workOrderName,
+            // บิลที่ถูกดึงกลับเข้าใบงานใหม่ ไม่ควรถูกมองว่า "ย้ายออกจากใบงาน" อีก
+            plan_released_from_work_order: null,
+            plan_released_from_work_order_id: null,
+            plan_released_at: null,
+          })
           .in('id', orderIds)
         if (updateError) throw updateError
 
         const { data: existingPlan } = await supabase
           .from('plan_jobs')
           .select('id')
-          .eq('name', workOrderName)
+          .eq('work_order_id', workOrderId)
           .limit(1)
         if (!existingPlan?.length) {
           const cutTime = `${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`
@@ -243,6 +251,7 @@ export default function WorkOrderSelectionList({
             id: planJobId(),
             date: dateISO,
             name: workOrderName,
+            work_order_id: workOrderId,
             cut: cutTime,
             qty,
             tracks: {},
@@ -363,10 +372,10 @@ export default function WorkOrderSelectionList({
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[980px] text-sm table-auto">
               <thead>
                 <tr className="bg-gray-100 border-b">
-                  <th className="w-10 p-2 text-left">
+                  <th className="w-10 p-2 text-left whitespace-nowrap">
                     <input
                       type="checkbox"
                       checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0}
@@ -374,13 +383,12 @@ export default function WorkOrderSelectionList({
                       className="rounded border-gray-300"
                     />
                   </th>
-                  <th className="p-2 text-left font-medium w-32">เลขบิล</th>
-                  <th className="p-2 text-left font-medium min-w-[140px]">ชื่อลูกค้า</th>
-                  <th className="p-2 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
-                  <th className="p-2 text-left font-medium min-w-[110px]">เลขคำสั่งซื้อ</th>
-                  <th className="p-2 text-left font-medium w-28">ผู้ลงข้อมูล</th>
-                  <th className="w-16 shrink-0" aria-hidden="true" />
-                  <th className="p-2 text-left font-medium min-w-[120px] w-40">เลขพัสดุ</th>
+                  <th className="p-2 text-left font-medium min-w-[130px] whitespace-nowrap">เลขบิล</th>
+                  <th className="p-2 text-left font-medium min-w-[180px] whitespace-nowrap">ชื่อลูกค้า</th>
+                  <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">ชื่อช่องทาง</th>
+                  <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">เลขคำสั่งซื้อ</th>
+                  <th className="p-2 text-left font-medium min-w-[140px] whitespace-nowrap">ผู้ลงข้อมูล</th>
+                  <th className="p-2 text-left font-medium min-w-[170px] whitespace-nowrap">เลขพัสดุ</th>
                 </tr>
               </thead>
               <tbody>
@@ -398,21 +406,26 @@ export default function WorkOrderSelectionList({
                         className="rounded border-gray-300 cursor-pointer"
                       />
                     </td>
-                    <td className="p-2 align-middle">
+                    <td className="p-2 align-middle whitespace-nowrap">
                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                         {order.bill_no}
                       </button>
                     </td>
-                    <td className="p-2 align-middle text-gray-700 max-w-[200px] truncate" title={order.recipient_name ?? ''}>
+                    <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.recipient_name ?? ''}>
                       {order.recipient_name ?? '-'}
                     </td>
-                    <td className="p-2 align-middle text-gray-700 max-w-[140px] truncate" title={order.customer_name ?? ''}>
+                    <td className="p-2 align-middle text-gray-700 max-w-[200px] truncate" title={order.customer_name ?? ''}>
                       {order.customer_name ?? '-'}
                     </td>
-                    <td className="p-2 align-middle text-gray-700">{order.channel_order_no ?? '-'}</td>
-                    <td className="p-2 align-middle text-gray-700">{order.admin_user ?? '-'}</td>
-                    <td className="w-16 shrink-0" aria-hidden="true" />
-                    <td className="p-2 align-middle text-gray-700">{order.tracking_number ?? '-'}</td>
+                    <td className="p-2 align-middle text-gray-700 max-w-[180px] truncate" title={order.channel_order_no ?? ''}>
+                      {order.channel_order_no ?? '-'}
+                    </td>
+                    <td className="p-2 align-middle text-gray-700 max-w-[160px] truncate" title={order.admin_user ?? ''}>
+                      {order.admin_user ?? '-'}
+                    </td>
+                    <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.tracking_number ?? ''}>
+                      {order.tracking_number ?? '-'}
+                    </td>
                   </tr>
                 ))}
               </tbody>

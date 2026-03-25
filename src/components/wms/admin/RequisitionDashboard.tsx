@@ -26,7 +26,6 @@ export default function RequisitionDashboard() {
   const [cAllProducts, setCAllProducts] = useState<any[]>([])
   const [cSelectedItems, setCSelectedItems] = useState<any[]>([])
   const [cRequisitionId, setCRequisitionId] = useState('')
-  const [cNotes, setCNotes] = useState('')
   const [cTopics, setCTopics] = useState<any[]>([])
   const [cSearching, setCSearching] = useState(false)
   const [cLoadingProducts, setCLoadingProducts] = useState(false)
@@ -253,7 +252,6 @@ export default function RequisitionDashboard() {
   const openCreateModal = async () => {
     setShowCreate(true)
     setCSelectedItems([])
-    setCNotes('')
     setCSearchTerm('')
     setCProducts([])
     setCProductType('FG')
@@ -309,7 +307,7 @@ export default function RequisitionDashboard() {
     if (existing) {
       setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setCSelectedItems([...cSelectedItems, { ...product, qty: 1, requisition_topic: '' }])
+      setCSelectedItems([...cSelectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '' }])
     }
   }
 
@@ -324,10 +322,13 @@ export default function RequisitionDashboard() {
     setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
   }
 
+  const cUpdateNote = (code: string, item_note: string) => {
+    setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, item_note } : i))
+  }
+
   const cSubmit = async () => {
     if (cSelectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (cSelectedItems.some((i: any) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
-    if (!cNotes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
 
     const ok = await showConfirm({ title: 'ยืนยันสร้างใบเบิก', message: `สร้างใบเบิก ${cRequisitionId}?\nจำนวน ${cSelectedItems.length} รายการ` })
     if (!ok) return
@@ -338,7 +339,7 @@ export default function RequisitionDashboard() {
         requisition_id: cRequisitionId,
         created_by: user?.id,
         status: 'pending',
-        notes: cNotes.trim(),
+        notes: null,
         requisition_topic: null,
       })
       if (reqErr) throw reqErr
@@ -350,6 +351,7 @@ export default function RequisitionDashboard() {
         location: item.storage_location || null,
         qty: item.qty,
         requisition_topic: item.requisition_topic || null,
+        item_note: item.item_note?.trim() || null,
       }))
       const { error: itemErr } = await supabase.from('wms_requisition_items').insert(items)
       if (itemErr) throw itemErr
@@ -574,7 +576,7 @@ export default function RequisitionDashboard() {
                 )}
               </div>
 
-              {/* Right: selected items & notes */}
+              {/* Right: selected items */}
               <div className="space-y-4">
                 <div className="bg-white p-5 rounded-xl border shadow-sm">
                   <h3 className="font-bold text-slate-800 text-base mb-3">รายการที่เลือก ({cSelectedItems.length})</h3>
@@ -609,16 +611,17 @@ export default function RequisitionDashboard() {
                               <button onClick={() => cUpdateQty(item.product_code, item.qty + 1)} className="w-8 h-8 rounded-lg bg-green-100 text-green-600 font-bold hover:bg-green-200">+</button>
                             </div>
                           </div>
+                          <textarea
+                            value={item.item_note || ''}
+                            onChange={(e) => cUpdateNote(item.product_code, e.target.value)}
+                            placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                            className="w-full border border-gray-300 p-2.5 rounded-lg text-sm resize-none"
+                            rows={2}
+                          />
                         </div>
                       ))}
                     </div>
                   )}
-                </div>
-
-                <div className="bg-white p-5 rounded-xl border shadow-sm">
-                  <label className="block text-sm font-bold text-gray-700 mb-2">หมายเหตุ <span className="text-red-500">*</span></label>
-                  <textarea value={cNotes} onChange={(e) => setCNotes(e.target.value)} placeholder="กรุณากรอกหมายเหตุ..."
-                    className={`w-full border p-3 rounded-lg text-sm resize-none ${cNotes.trim() ? 'border-gray-300' : 'border-red-400'}`} rows={3} />
                 </div>
               </div>
             </div>

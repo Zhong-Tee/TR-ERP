@@ -69,6 +69,8 @@ export interface Order {
   admin_user: string
   entry_date: string
   work_order_name: string | null
+  /** อ้างอิงใบงานด้วย UUID (รองรับ reuse เลขใบงาน) */
+  work_order_id?: string | null
   /** ชื่อใบงานที่บิลถูก "ย้ายไปใบสั่งงาน" จาก (Plan ป้ายแก้ไข) */
   plan_released_from_work_order?: string | null
   plan_released_at?: string | null

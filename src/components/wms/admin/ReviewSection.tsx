@@ -3,26 +3,17 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
-const normalizeOrderId = (value: unknown) =>
-  String(value || '')
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(/[\u2010-\u2015]/g, '-')
-    .replace(/\s+/g, '')
-    .trim()
-    .toUpperCase()
-
 /** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
-const ensurePlanDeptEnd = async (workOrderName: string) => {
-  if (!workOrderName) return
+const ensurePlanDeptEnd = async (workOrderId: string) => {
+  if (!workOrderId) return
   const now = new Date().toISOString()
   const patch: Record<string, Record<string, string>> = {}
   const procNames = ['หยิบของ', 'เสร็จแล้ว']
   procNames.forEach((p) => {
     patch[p] = { start_if_null: now, end: now }
   })
-  const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
-    p_job_name: workOrderName,
+  const { error } = await supabase.rpc('merge_plan_tracks_by_work_order_id', {
+    p_work_order_id: workOrderId,
     p_dept: 'เบิก',
     p_patch: patch,
   })
@@ -31,12 +22,11 @@ const ensurePlanDeptEnd = async (workOrderName: string) => {
 
 export default function ReviewSection() {
   const [reviewDate, setReviewDate] = useState('')
-  const [reviewOrderSelect, setReviewOrderSelect] = useState('')
-  const [reviewOrderActualId, setReviewOrderActualId] = useState('')
-  const [orderOptions, setOrderOptions] = useState<Array<{ value: string; normKey?: string; label: string; hasUnchecked?: boolean }>>([])
-  const [rowsByOrderRaw, setRowsByOrderRaw] = useState<Record<string, any[]>>({})
-  const [rowsByOrderNorm, setRowsByOrderNorm] = useState<Record<string, any[]>>({})
-  const [reviewPendingOrders, setReviewPendingOrders] = useState<Array<{ id: string; total: number; unchecked: number }>>([])
+  const [reviewOrderSelect, setReviewOrderSelect] = useState('') // work_order_id
+  const [reviewOrderActualId, setReviewOrderActualId] = useState('') // work_order_id
+  const [orderOptions, setOrderOptions] = useState<Array<{ value: string; label: string; hasUnchecked?: boolean }>>([])
+  const [rowsByWorkOrder, setRowsByWorkOrder] = useState<Record<string, any[]>>({})
+  const [reviewPendingOrders, setReviewPendingOrders] = useState<Array<{ id: string; label: string; total: number; unchecked: number }>>([])
   const [inspectItems, setInspectItems] = useState<any[]>([])
   const [currentTab, setCurrentTab] = useState('all')
   const [showCounter, setShowCounter] = useState(false)
@@ -91,7 +81,7 @@ export default function ReviewSection() {
     const { data } = await supabase
       .from('wms_orders')
       .select(
-        'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
       )
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .neq('status', 'cancelled')
@@ -101,29 +91,41 @@ export default function ReviewSection() {
     if (!data) return
     const enrichedRows = await enrichReleasedSourceOrders(data as any[])
 
-    const groupedRowsByNorm: Record<string, any[]> = {}
-    const groupedRowsByRaw: Record<string, any[]> = {}
+    const groupedByWo: Record<string, any[]> = {}
     ;(enrichedRows as any[]).forEach((obj) => {
-      const norm = normalizeOrderId(obj.order_id)
-      if (!groupedRowsByNorm[norm]) groupedRowsByNorm[norm] = []
-      groupedRowsByNorm[norm].push(obj)
-      const raw = String(obj.order_id || '')
-      if (!groupedRowsByRaw[raw]) groupedRowsByRaw[raw] = []
-      groupedRowsByRaw[raw].push(obj)
+      const wid = String(obj.work_order_id || '')
+      if (!wid) return
+      if (!groupedByWo[wid]) groupedByWo[wid] = []
+      groupedByWo[wid].push(obj)
     })
 
-    setRowsByOrderRaw(groupedRowsByRaw)
-    setRowsByOrderNorm(groupedRowsByNorm)
+    setRowsByWorkOrder(groupedByWo)
 
-    const grouped = Object.entries(groupedRowsByRaw).map(([rawId, rows]) => {
+    const workOrderIds = Object.keys(groupedByWo)
+    const woNameById: Record<string, string> = {}
+    if (workOrderIds.length > 0) {
+      const { data: workOrders } = await supabase
+        .from('or_work_orders')
+        .select('id, work_order_name')
+        .in('id', workOrderIds)
+      ;(workOrders || []).forEach((wo: any) => {
+        const id = String(wo.id || '')
+        const name = String(wo.work_order_name || '').trim()
+        if (id) woNameById[id] = name
+      })
+    }
+
+    const grouped = Object.entries(groupedByWo).map(([woId, rows]) => {
       const first = rows[0] || {}
       const total = rows.length
       const picked = rows.filter((r) => r.status === 'picked').length
       const pending = rows.filter((r) => r.status === 'pending').length
+      const nameFromWorkOrder = String(woNameById[woId] || '').trim()
+      const nameFromRow = String(first.order_id || '').trim()
+      const labelBase = nameFromWorkOrder || nameFromRow || 'ไม่ระบุชื่อใบงาน'
       return {
-        key: rawId,
-        normKey: normalizeOrderId(rawId),
-        id: String(first.order_id || rawId),
+        id: woId,
+        label: labelBase,
         total,
         picked,
         pending,
@@ -141,11 +143,10 @@ export default function ReviewSection() {
             { value: '', label: '-- เลือกใบงานที่จัดเสร็จแล้ว --' },
             ...completed.map((o) => ({
               value: o.id,
-              normKey: o.normKey,
               label:
                 o.picked > 0
-                  ? `${o.id} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.picked} รายการ]`
-                  : `${o.id} (${o.total} รายการ) [ตรวจเสร็จแล้ว]`,
+                  ? `${o.label} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.picked} รายการ]`
+                  : `${o.label} (${o.total} รายการ) [ตรวจเสร็จแล้ว]`,
               hasUnchecked: o.picked > 0,
             })),
           ]
@@ -155,7 +156,7 @@ export default function ReviewSection() {
       completed
         .filter((o) => o.picked > 0)
         .sort((a, b) => b.picked - a.picked)
-        .map((o) => ({ id: o.id, total: o.total, unchecked: o.picked }))
+        .map((o) => ({ id: o.id, label: o.label, total: o.total, unchecked: o.picked }))
     )
 
     if (currentSelected && completed.some((o) => o.id === currentSelected)) {
@@ -166,117 +167,28 @@ export default function ReviewSection() {
   }
 
   const startInspection = async (selectedOrderId?: string) => {
-    const selectedRawId = String(selectedOrderId || reviewOrderSelect || '')
-    if (!selectedRawId) {
+    const selectedWoId = String(selectedOrderId || reviewOrderSelect || '')
+    if (!selectedWoId) {
       showMessage({ message: 'โปรดเลือกใบงานที่ต้องการตรวจ!' })
       return
     }
-
-    const rawTarget = selectedRawId
-    const trimmedTarget = rawTarget.trim()
-    const normalizedTarget = normalizeOrderId(rawTarget)
-    let rows: any[] = rowsByOrderRaw[rawTarget]
-      ? [...rowsByOrderRaw[rawTarget]]
-      : (rowsByOrderNorm[normalizedTarget] ? [...rowsByOrderNorm[normalizedTarget]] : [])
-
-    let error: any = null
+    let rows: any[] = rowsByWorkOrder[selectedWoId] ? [...rowsByWorkOrder[selectedWoId]] : []
     if (rows.length === 0) {
-      const { data, error: firstErr } = await supabase
+      const { data, error } = await supabase
         .from('wms_orders')
-        .select(
-          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
-        )
-        .eq('order_id', rawTarget)
+        .select('*')
+        .eq('work_order_id', selectedWoId)
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
         .neq('status', 'cancelled')
-      error = firstErr
-      if (!firstErr && data && data.length > 0) rows = data
+      if (error) console.error(error)
+      rows = data || []
     }
-
-    // fallback 1: ลองเทียบด้วยค่าที่ trim แล้ว (กันเคสช่องว่างหัว/ท้าย)
-    if (rows.length === 0 && trimmedTarget !== rawTarget) {
-      const { data: trimData, error: trimErr } = await supabase
-        .from('wms_orders')
-        .select(
-          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
-        )
-        .eq('order_id', trimmedTarget)
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .neq('status', 'cancelled')
-      if (!trimErr && trimData && trimData.length > 0) {
-        rows = trimData
-      }
-    }
-
-    // fallback 2: ค้นหาแบบ ilike เมื่อรูปแบบรหัสมีความต่างเล็กน้อย
-    if (rows.length === 0 && trimmedTarget) {
-      const likeTarget = trimmedTarget.replace(/\s+/g, '%')
-      const { data: fuzzyData, error: fuzzyErr } = await supabase
-        .from('wms_orders')
-        .select(
-          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
-        )
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .neq('status', 'cancelled')
-        .ilike('order_id', `%${likeTarget}%`)
-      if (!fuzzyErr && fuzzyData && fuzzyData.length > 0) {
-        rows = fuzzyData.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
-      }
-    }
-
-    // fallback สำหรับเคส order_id มีช่องว่าง/รูปแบบต่างกันเล็กน้อย
-    if (rows.length === 0 && reviewDate) {
-      const { data: dayRows, error: dayErr } = await supabase
-        .from('wms_orders')
-        .select(
-          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
-        )
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .neq('status', 'cancelled')
-        .gte('created_at', reviewDate + 'T00:00:00')
-        .lte('created_at', reviewDate + 'T23:59:59')
-
-      if (!dayErr && dayRows) {
-        rows = dayRows.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
-      }
-    }
-
-    // fallback สุดท้าย: ดึงข้อมูลช่วงล่าสุดเผื่อเคสวันที่คลาดจาก timezone แต่รหัสตรงจริง
     if (rows.length === 0) {
-      const start = new Date(reviewDate || new Date().toISOString().split('T')[0])
-      start.setDate(start.getDate() - 7)
-      const startDate = start.toISOString().split('T')[0]
-      const { data: recentRows, error: recentErr } = await supabase
-        .from('wms_orders')
-        .select(
-          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
-        )
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .neq('status', 'cancelled')
-        .gte('created_at', `${startDate}T00:00:00`)
-        .lte('created_at', `${reviewDate || new Date().toISOString().split('T')[0]}T23:59:59`)
-
-      if (!recentErr && recentRows) {
-        rows = recentRows.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
-      }
-    }
-
-    if ((error && rows.length === 0) || rows.length === 0) {
-      const debugEnabled = typeof window !== 'undefined' && window.localStorage.getItem('debug_wms_review') === '1'
-      if (debugEnabled) {
-        console.warn('[WMS Review] startInspection not found', {
-          selectedRawId: rawTarget,
-          normalizedTarget,
-          rawKeys: Object.keys(rowsByOrderRaw).length,
-          normKeys: Object.keys(rowsByOrderNorm).length,
-          sampleRawKeys: Object.keys(rowsByOrderRaw).slice(0, 10),
-        })
-      }
       showMessage({ message: 'ไม่พบข้อมูลรายการในใบงานนี้' })
       return
     }
 
-    const canonicalOrderId = String(rows[0]?.order_id || rawTarget)
+    const canonicalWorkOrderId = String(rows[0]?.work_order_id || selectedWoId)
     const hasUnfinishedItems = rows.some((item) => item.status === 'pending')
     if (hasUnfinishedItems) {
       showMessage({ message: 'ไม่อนุญาตให้ตรวจเนื่องจากใบงานนี้ยังจัดไม่เสร็จสิ้น (มีรายการค้างจัด)' })
@@ -284,8 +196,8 @@ export default function ReviewSection() {
     }
 
     const sortedData = sortOrderItems(await enrichReleasedSourceOrders(rows))
-    setReviewOrderSelect(canonicalOrderId)
-    setReviewOrderActualId(canonicalOrderId)
+    setReviewOrderSelect(canonicalWorkOrderId)
+    setReviewOrderActualId(canonicalWorkOrderId)
     setInspectItems(sortedData)
     setShowCounter(true)
     setShowTabs(true)
@@ -305,11 +217,11 @@ export default function ReviewSection() {
 
     await supabase.from('wms_orders').update(updateData).eq('id', id)
 
-    const currentOrderId = reviewOrderActualId || reviewOrderSelect
+    const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
     const { data } = await supabase
       .from('wms_orders')
       .select('*')
-      .eq('order_id', currentOrderId)
+      .eq('work_order_id', currentWorkOrderId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .neq('status', 'cancelled')
 
@@ -324,11 +236,11 @@ export default function ReviewSection() {
         await supabase
           .from('wms_orders')
           .update({ end_time: new Date().toISOString() })
-          .eq('order_id', currentOrderId)
+          .eq('work_order_id', currentWorkOrderId)
           .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
         try {
-          await saveFirstCheckSummary(currentOrderId, sortedData)
+          await saveFirstCheckSummary(String(sortedData[0]?.order_id || ''), sortedData)
         } catch (e) {
           console.error('saveFirstCheckSummary error:', e)
         }
@@ -336,7 +248,7 @@ export default function ReviewSection() {
 
       const allCorrect = sortedData.length > 0 && sortedData.every((i) => i.status === 'correct')
       if (allCorrect) {
-        await ensurePlanDeptEnd(currentOrderId)
+        await ensurePlanDeptEnd(currentWorkOrderId)
       }
     }
 
@@ -463,7 +375,7 @@ export default function ReviewSection() {
                 onClick={() => startInspection(o.id)}
                 className="px-3 py-1.5 bg-white border border-red-300 rounded-lg text-sm text-red-700 hover:bg-red-100 font-medium transition-colors"
               >
-                {o.id} → ตรวจเพิ่ม ({o.unchecked}/{o.total})
+                {o.label} → ตรวจเพิ่ม ({o.unchecked}/{o.total})
               </button>
             ))}
           </div>

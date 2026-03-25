@@ -31,7 +31,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
 
     const { data } = await supabase
       .from('wms_orders')
-      .select('order_id, created_at, status')
+      .select('work_order_id, order_id, created_at, status')
       .eq('assigned_to', currentUserId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .in('status', ['pending', 'wrong', 'not_find'])
@@ -43,10 +43,12 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
     }
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
-      if (!acc[obj.order_id]) {
-        acc[obj.order_id] = { id: obj.order_id, count: 0, date: obj.created_at }
+      const wid = String(obj.work_order_id || '')
+      if (!wid) return acc
+      if (!acc[wid]) {
+        acc[wid] = { id: wid, name: obj.order_id, count: 0, date: obj.created_at }
       }
-      acc[obj.order_id].count++
+      acc[wid].count++
       return acc
     }, {})
 
@@ -74,7 +76,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
           >
             <div>
               <div className="text-[18px] text-gray-400 font-black uppercase">เลขใบงาน</div>
-              <div className="text-2xl font-black">{o.id}</div>
+              <div className="text-2xl font-black">{o.name || o.id}</div>
             </div>
             <div className="bg-blue-600 text-white px-4 py-2 rounded-2xl font-black">{o.count}</div>
           </div>

@@ -105,6 +105,8 @@ const STATUS_OPTIONS: Array<{ label: string; value: OrderStatus }> = [
   { label: 'เสร็จสิ้น', value: 'เสร็จสิ้น' },
 ]
 
+const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว']
+
 /* ─────────────────────── Column Icon ─────────────────────── */
 
 function ColumnIcon({ columnKey }: { columnKey: ConfirmColumnKey }) {
@@ -157,6 +159,8 @@ interface OrderConfirmBoardProps {
 
 export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardProps) {
   const { user } = useAuthContext()
+  const isProduction = user?.role === 'production'
+  const canProductionChangeStatus = (status: OrderStatus) => PRODUCTION_ALLOWED_CONFIRM_STATUSES.includes(status)
   const [ordersByKey, setOrdersByKey] = useState<Record<ConfirmColumnKey, Order[]>>({
     new: [],
     design: [],
@@ -424,6 +428,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
 
   async function handleStatusUpdate() {
     if (!statusModal) return
+    if (isProduction) {
+      const currentStatus = statusModal.order.status as OrderStatus
+      const nextStatus = statusModal.targetStatus
+      if (!canProductionChangeStatus(currentStatus) || !canProductionChangeStatus(nextStatus)) {
+        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว')
+        return
+      }
+    }
     setUpdating(true)
     try {
       const { error } = await supabase
@@ -560,7 +572,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <ColumnIcon columnKey={column.key} />
-                    <h2 className="text-sm font-bold truncate">{column.title}</h2>
+                    <h2 className="text-base font-bold truncate">{column.title}</h2>
                   </div>
                   <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${column.countBadge}`}>
                     {orders.length}
@@ -587,14 +599,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                       {/* Order Info */}
                       <div className="flex items-start justify-between gap-2 mb-1">
                         <div className="min-w-0">
-                          <div className="font-semibold text-blue-600 text-sm truncate">{order.bill_no}</div>
-                          <div className="text-xs text-gray-500 truncate">{order.customer_name}</div>
+                          <div className="font-semibold text-blue-600 text-base truncate">{order.bill_no}</div>
+                          <div className="text-sm text-gray-500 truncate">{order.customer_name}</div>
                         </div>
                         <div className="text-right shrink-0">
                           <div className="font-bold text-emerald-600 text-sm">
                             ฿{Number(order.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </div>
-                          <div className="text-[11px] text-gray-400">{formatDateTime(order.created_at)}</div>
+                          <div className="text-xs text-gray-400">{formatDateTime(order.created_at)}</div>
                         </div>
                       </div>
 
@@ -610,7 +622,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         <button
                           type="button"
                           onClick={() => setDetailOrder(order)}
-                          className="inline-flex items-center gap-0.5 px-2 py-1 bg-white border border-gray-200 rounded-md text-[11px] font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                          className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-white border border-gray-200 rounded-md text-xs font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
                         >
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -619,11 +631,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           รายละเอียด
                         </button>
 
-                        {column.actionTargetStatus && column.actionLabel && (
+                        {column.actionTargetStatus && column.actionLabel && !isProduction && (
                           <button
                             type="button"
                             onClick={() => openStatusModal(order, column.actionTargetStatus as OrderStatus, column.actionLabel as string)}
-                            className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[11px] font-medium transition-all ${column.actionBtn}`}
+                            className={`inline-flex items-center gap-0.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${column.actionBtn}`}
                           >
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
@@ -632,11 +644,24 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           </button>
                         )}
 
-                        {column.key === 'confirmed' && (
+                        {isProduction && canProductionChangeStatus(order.status as OrderStatus) && (
+                          <button
+                            type="button"
+                            onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                            </svg>
+                            เปลี่ยนสถานะ
+                          </button>
+                        )}
+
+                        {column.key === 'confirmed' && !isProduction && (
                           <button
                             type="button"
                             onClick={() => openStatusModal(order, 'รอคอนเฟิร์ม', 'เปลี่ยนสถานะ')}
-                            className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white rounded-md text-xs font-medium shadow-sm transition-all"
                           >
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -654,7 +679,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               key={fi}
                               type="button"
                               onClick={() => window.open(link, '_blank')}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
+                              className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white rounded-md text-xs font-medium shadow-sm transition-all"
                             >
                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -669,7 +694,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             <button
                               type="button"
                               onClick={() => openChat(order)}
-                              className="inline-flex items-center gap-0.5 px-2 py-1 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-md text-[11px] font-medium shadow-sm transition-all"
+                              className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-md text-xs font-medium shadow-sm transition-all"
                             >
                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -714,7 +739,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 onChange={(e) => setStatusModal((prev) => prev ? { ...prev, targetStatus: e.target.value as OrderStatus } : prev)}
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm outline-none transition-all"
               >
-                {STATUS_OPTIONS.map((opt) => (
+                {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS).map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>

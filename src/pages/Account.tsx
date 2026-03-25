@@ -30,7 +30,7 @@ type VerifiedSlipRow = {
   expected_amount: number | null
   is_deleted: boolean | null
   deletion_reason: string | null
-  or_orders: { channel_code: string | null; admin_user: string | null } | null
+  or_orders: { bill_no: string | null; channel_code: string | null; admin_user: string | null } | null
 }
 
 type BillingRequestOrder = {
@@ -223,15 +223,15 @@ export default function Account() {
       if (slipsError) throw slipsError
       const slips = (slipsData || []) as Omit<VerifiedSlipRow, 'or_orders'>[]
       const orderIds = [...new Set(slips.map((s) => s.order_id).filter(Boolean))]
-      const orderMap: Record<string, { channel_code: string | null; admin_user: string | null }> = {}
+      const orderMap: Record<string, { bill_no: string | null; channel_code: string | null; admin_user: string | null }> = {}
       if (orderIds.length > 0) {
         const { data: ordersData, error: ordersError } = await supabase
           .from('or_orders')
-          .select('id, channel_code, admin_user')
+          .select('id, bill_no, channel_code, admin_user')
           .in('id', orderIds)
         if (!ordersError && ordersData) {
-          ordersData.forEach((o: { id: string; channel_code: string | null; admin_user: string | null }) => {
-            orderMap[o.id] = { channel_code: o.channel_code ?? null, admin_user: o.admin_user ?? null }
+          ordersData.forEach((o: { id: string; bill_no: string | null; channel_code: string | null; admin_user: string | null }) => {
+            orderMap[o.id] = { bill_no: o.bill_no ?? null, channel_code: o.channel_code ?? null, admin_user: o.admin_user ?? null }
           })
         }
       }
@@ -686,7 +686,7 @@ export default function Account() {
             <button
               type="button"
               onClick={() => {
-                const headers = ['วันที่โอน', 'เวลาโอน', 'ชื่อบัญชีผู้โอน', 'เลขบัญชี', 'ชื่อบัญชีผู้รับโอน', 'ช่องทางขาย', 'ผู้ขาย', 'ยอดเงิน', 'สถานะยอด', 'ผลตรวจ', 'สถานะสลิป', 'เหตุผลการลบ']
+                const headers = ['วันที่โอน', 'เวลาโอน', 'ชื่อบัญชีผู้โอน', 'เลขบัญชี', 'ชื่อบัญชีผู้รับโอน', 'ช่องทางขาย', 'ผู้ขาย', 'ยอดเงิน', 'สถานะยอด', 'ผลตรวจ', 'เลขบิล', 'สถานะสลิป', 'เหตุผลการลบ']
                 const rows = filteredSlipsList.map((row) => {
                   const dt = row.easyslip_date || row.verified_at || ''
                   let dateStr = '–'
@@ -708,6 +708,7 @@ export default function Account() {
                     row.verified_amount,
                     getTagLogic(row),
                     row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–',
+                    row.or_orders?.bill_no ?? '–',
                     row.is_deleted ? 'ลบ' : 'ปกติ',
                     row.deletion_reason ?? '–',
                   ]
@@ -804,6 +805,7 @@ export default function Account() {
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ยอดเงิน</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะยอด</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">ผลตรวจ</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">เลขบิล</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะสลิป</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-700">เหตุผลการลบ</th>
                   </tr>
@@ -811,7 +813,7 @@ export default function Account() {
                 <tbody>
                   {filteredSlipsList.length === 0 ? (
                     <tr>
-                      <td colSpan={12} className="px-4 py-12 text-center text-gray-500">
+                      <td colSpan={13} className="px-4 py-12 text-center text-gray-500">
                         ไม่พบรายการตรวจสลิป
                       </td>
                     </tr>
@@ -842,6 +844,7 @@ export default function Account() {
                               {row.validation_status === 'passed' ? 'ผ่าน' : row.validation_status === 'failed' ? 'ไม่ผ่าน' : row.validation_status ?? '–'}
                             </span>
                           </td>
+                          <td className="px-4 py-3 text-center text-gray-700 whitespace-nowrap">{row.or_orders?.bill_no ?? '–'}</td>
                           <td className="px-4 py-3 text-center">
                             <span className={row.is_deleted ? 'text-amber-600 font-medium' : 'text-gray-600'}>{row.is_deleted ? 'ลบ' : 'ปกติ'}</span>
                           </td>

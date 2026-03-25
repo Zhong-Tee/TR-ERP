@@ -12,6 +12,7 @@ interface ReqItem {
   storage_location?: string
   qty: number
   requisition_topic: string
+  item_note?: string
 }
 
 export default function CreateRequisition() {
@@ -22,7 +23,6 @@ export default function CreateRequisition() {
   const [allProducts, setAllProducts] = useState<any[]>([])
   const [selectedItems, setSelectedItems] = useState<ReqItem[]>([])
   const [requisitionId, setRequisitionId] = useState('')
-  const [notes, setNotes] = useState('')
   const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
@@ -170,12 +170,16 @@ export default function CreateRequisition() {
     if (existing) {
       setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '' }])
+      setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '' }])
     }
   }
 
   const updateItemTopic = (code: string, topic: string) => {
     setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
+  }
+
+  const updateItemNote = (code: string, item_note: string) => {
+    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, item_note } : i))
   }
 
   const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
@@ -188,7 +192,6 @@ export default function CreateRequisition() {
   const submitRequisition = async () => {
     if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (selectedItems.some((i) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
-    if (!notes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
 
     const ok = await showConfirm({
       title: 'ยืนยันการสร้างใบเบิก',
@@ -204,7 +207,7 @@ export default function CreateRequisition() {
           requisition_id: requisitionId,
           created_by: user?.id,
           status: 'pending',
-          notes: notes.trim(),
+          notes: null,
           requisition_topic: null,
         })
         .select()
@@ -218,13 +221,13 @@ export default function CreateRequisition() {
         location: item.storage_location || null,
         qty: item.qty,
         requisition_topic: item.requisition_topic || null,
+        item_note: item.item_note?.trim() || null,
       }))
       const { error: itemsError } = await supabase.from('wms_requisition_items').insert(items)
       if (itemsError) throw itemsError
 
       showMessage({ message: `สร้างใบเบิก ${requisitionId} สำเร็จ` })
       setSelectedItems([])
-      setNotes('')
       setSearchTerm('')
       setProducts([])
       setSelectedProductCode('')
@@ -402,6 +405,13 @@ export default function CreateRequisition() {
                       <option key={t.id} value={t.topic_name}>{t.topic_name}</option>
                     ))}
                   </select>
+                  <textarea
+                    value={item.item_note || ''}
+                    onChange={(e) => updateItemNote(item.product_code, e.target.value)}
+                    className="w-full rounded-lg border border-slate-600 bg-slate-600 px-3 py-2 text-sm text-white placeholder-gray-400"
+                    rows={2}
+                    placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                  />
                   <div className="flex items-center gap-1">
                     <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">-</button>
                     <input
@@ -418,27 +428,11 @@ export default function CreateRequisition() {
             </div>
           )}
 
-          {/* Notes (required) */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              หมายเหตุ <span className="text-red-400">*</span>
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className={`w-full rounded-lg border bg-slate-800 px-3 py-2 text-sm text-white placeholder-gray-500 ${
-                notes.trim() ? 'border-slate-600' : 'border-red-500/60'
-              }`}
-              rows={2}
-              placeholder="กรุณาระบุหมายเหตุ (จำเป็น)"
-            />
-          </div>
-
           {/* Submit */}
           <button
             type="button"
             onClick={submitRequisition}
-            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.requisition_topic) || !notes.trim()}
+            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.requisition_topic)}
             className="w-full py-3 rounded-xl bg-green-600 text-white font-bold text-base hover:bg-green-700 active:bg-green-800 disabled:opacity-50"
           >
             {submitting ? 'กำลังบันทึก...' : `ยืนยันเบิกของ (${selectedItems.length} รายการ)`}

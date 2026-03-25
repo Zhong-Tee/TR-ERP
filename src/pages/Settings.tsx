@@ -527,6 +527,9 @@ export default function Settings() {
         .limit(5000)
       if (error) throw error
       const map: Record<string, Record<string, boolean>> = {}
+      /** (role::menu_key) ที่มีแถวใน DB และ has_access = false — ห้ามสืบทอดจากเมนูหลัก (สอดคล้อง hasAccess) */
+      const explicitDeny = new Set<string>()
+      const denyKey = (roleKey: string, menuKey: string) => `${roleKey}::${menuKey}`
       settingsRoles.forEach((role) => {
         map[role] = {}
         MENU_ROLE_OPTIONS.forEach((menu) => {
@@ -537,6 +540,33 @@ export default function Settings() {
         const roleKey = normalizeRole(row.role)
         if (!map[roleKey]) map[roleKey] = {}
         map[roleKey][row.menu_key] = row.has_access === true
+        if (row.has_access === false) {
+          explicitDeny.add(denyKey(roleKey, row.menu_key))
+        }
+      })
+      // ถ้ามีเมนูย่อยติ๊กอย่างน้อยหนึ่งรายการ ให้เมนูหลักแสดงติ๊กสอดคล้องกัน (กันสถานะ DB ไม่มีแถว parent)
+      const childrenByParent = buildChildrenByParent()
+      settingsRoles.forEach((role) => {
+        Object.keys(childrenByParent).forEach((parentKey) => {
+          if (!parentKey) return
+          const kids = childrenByParent[parentKey] || []
+          if (kids.some((ck) => map[role]?.[ck] === true)) {
+            if (!map[role]) map[role] = {}
+            map[role][parentKey] = true
+          }
+        })
+      })
+      // สั่งซื้อ: เมื่อมี purchase=true ใน DB แต่ย่อยไม่มีแถว — hasAccess ยังเข้า PR/PO/GR ได้ (fallback เมนูหลัก)
+      // ให้ตารางตรงกับพฤติกรรมนั้น; ถ้าต้องการปิด PR เฉพาะต้องบันทึกให้มีแถว has_access=false
+      const PURCHASE_INHERIT_PARENT_KEY = 'purchase'
+      settingsRoles.forEach((role) => {
+        if (map[role]?.[PURCHASE_INHERIT_PARENT_KEY] !== true) return
+        const kids = childrenByParent[PURCHASE_INHERIT_PARENT_KEY] || []
+        for (const ck of kids) {
+          if (explicitDeny.has(denyKey(role, ck))) continue
+          if (!map[role]) map[role] = {}
+          map[role][ck] = true
+        }
       })
       // ป้องกันผลลัพธ์ load เก่ากลับมาเขียนทับ state ล่าสุด
       if (seq !== roleMenusLoadSeqRef.current) return
@@ -960,20 +990,43 @@ export default function Settings() {
   async function saveRoleMenus() {
     setSavingRoleMenus(true)
     try {
+      const childrenByParent = buildChildrenByParent()
+      const base = roleMenusRef.current
+      const synced: Record<string, Record<string, boolean>> = {}
+      settingsRoles.forEach((role) => {
+        synced[role] = { ...(base[role] || {}) }
+      })
+      settingsRoles.forEach((role) => {
+        Object.keys(childrenByParent).forEach((parentKey) => {
+          if (!parentKey) return
+          const kids = childrenByParent[parentKey] || []
+          if (kids.some((k) => synced[role]?.[k] === true)) {
+            if (!synced[role]) synced[role] = {}
+            synced[role][parentKey] = true
+          }
+        })
+      })
+      roleMenusRef.current = synced
+
       const payload: Array<{ role: string; menu_key: string; menu_name: string; has_access: boolean }> = []
       const currentRoleMenus = roleMenusRef.current
       Object.entries(currentRoleMenus).forEach(([role, menus]) => {
+        const r = normalizeRole(role)
         MENU_ROLE_OPTIONS.forEach((menu) => {
           payload.push({
-            role,
+            role: r,
             menu_key: menu.key,
             menu_name: menu.label,
             has_access: menus?.[menu.key] ?? false,
           })
         })
       })
-      const { error } = await supabase.from('st_user_menus').upsert(payload, { onConflict: 'role,menu_key' })
-      if (error) throw error
+      const BATCH = 400
+      for (let i = 0; i < payload.length; i += BATCH) {
+        const slice = payload.slice(i, i + BATCH)
+        const { error } = await supabase.from('st_user_menus').upsert(slice, { onConflict: 'role,menu_key' })
+        if (error) throw error
+      }
       refreshMenuAccess()
       await loadRoleMenus()
       showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า Role สำเร็จ' })

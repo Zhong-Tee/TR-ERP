@@ -11,7 +11,8 @@ export default function UploadSection() {
   const [filterUser, setFilterUser] = useState('')
   const [filterDateStart, setFilterDateStart] = useState(() => new Date().toISOString().split('T')[0])
   const [filterDateEnd, setFilterDateEnd] = useState(() => new Date().toISOString().split('T')[0])
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
+  /** scope ของ modal รายละเอียด — แยกด้วย work_order_id ไม่ให้ชื่อใบงานซ้ำปนกัน */
+  const [detailScope, setDetailScope] = useState<{ workOrderId: string | null; displayName: string } | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [tick, setTick] = useState(0)
   // เก็บเวลาล่าสุดสำหรับแต่ละ order เพื่อ freeze เมื่อ COMPLETED
@@ -69,10 +70,15 @@ export default function UploadSection() {
     if (!data) return
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
-      const key = obj.order_id + (obj.assigned_to || '')
+      const woId = (obj.work_order_id as string | null | undefined) ?? null
+      const key = woId
+        ? `${woId}|${obj.assigned_to || ''}`
+        : `legacy:${obj.order_id}|${obj.assigned_to || ''}`
       if (!acc[key]) {
         acc[key] = {
-          id: obj.order_id,
+          rowKey: key,
+          work_order_id: woId,
+          display_name: obj.order_id,
           picked_count: 0,
           wrong_count: 0,
           not_find_count: 0,
@@ -108,8 +114,8 @@ export default function UploadSection() {
     setOrders(Object.values(grouped))
   }
 
-  const openDetailModal = (orderId: string) => {
-    setSelectedOrderId(orderId)
+  const openDetailModal = (workOrderId: string | null, displayName: string) => {
+    setDetailScope({ workOrderId, displayName })
     setIsModalOpen(true)
   }
 
@@ -158,7 +164,7 @@ export default function UploadSection() {
           <table className="w-full text-left text-sm" data-tick={tick}>
             <thead className="bg-gray-50 text-[16px] uppercase text-gray-400">
               <tr>
-                <th className="p-4">ใบงาน (ORDER ID)</th>
+                <th className="p-4">ใบงาน</th>
                 <th className="p-4 text-center">มอบหมาย</th>
                 <th className="p-4 text-center">พนักงาน</th>
                 <th className="p-4 text-center">หยิบแล้ว</th>
@@ -178,8 +184,8 @@ export default function UploadSection() {
                 const cellClass = 'p-4 text-[16px]'
 
                 return (
-                  <tr key={o.id} className="hover:bg-blue-50 border-b transition">
-                    <td className={`${cellClass} font-black text-blue-600`}>{o.id}</td>
+                  <tr key={o.rowKey} className="hover:bg-blue-50 border-b transition">
+                    <td className={`${cellClass} font-black text-blue-600`}>{o.display_name}</td>
                     <td className={`${cellClass} text-center text-gray-500 text-xs`}>
                       {new Date(o.date).toLocaleString('th-TH')}
                     </td>
@@ -202,7 +208,7 @@ export default function UploadSection() {
                     </td>
                     <td className={`${cellClass} text-center font-mono text-blue-600 font-bold`}>
                       {(() => {
-                        const key = o.id + (o.assigned || '')
+                        const key = o.rowKey
                         if (!isWorking && o.max_end) {
                           // COMPLETED + มี end_time → คำนวณจริง แล้ว cache
                           const d = calculateDuration(o.date, o.max_end)
@@ -220,7 +226,10 @@ export default function UploadSection() {
                       })()}
                     </td>
                     <td className={`${cellClass} text-center`}>
-                      <button onClick={() => openDetailModal(o.id)} className="text-blue-500 font-bold underline">
+                      <button
+                        onClick={() => openDetailModal(o.work_order_id, o.display_name)}
+                        className="text-blue-500 font-bold underline"
+                      >
                         View
                       </button>
                     </td>
@@ -232,12 +241,13 @@ export default function UploadSection() {
         </div>
       </section>
 
-      {isModalOpen && selectedOrderId && (
+      {isModalOpen && detailScope && (
         <OrderDetailModal
-          orderId={selectedOrderId}
+          workOrderId={detailScope.workOrderId}
+          orderDisplayName={detailScope.displayName}
           onClose={() => {
             setIsModalOpen(false)
-            setSelectedOrderId(null)
+            setDetailScope(null)
             loadOrdersDashboard()
           }}
         />

@@ -117,10 +117,9 @@ export default function BorrowRequisitionDashboard() {
   const [crSearchTerm, setCrSearchTerm] = useState('')
   const [crProducts, setCrProducts] = useState<any[]>([])
   const [crAllProducts, setCrAllProducts] = useState<any[]>([])
-  const [crSelectedItems, setCrSelectedItems] = useState<{ product_code: string; product_name: string; qty: number; topic: string }[]>([])
+  const [crSelectedItems, setCrSelectedItems] = useState<{ product_code: string; product_name: string; qty: number; topic: string; item_note?: string }[]>([])
   const [crBorrowNo, setCrBorrowNo] = useState('')
   const [crDueDate, setCrDueDate] = useState('')
-  const [crNotes, setCrNotes] = useState('')
   const [crTopics, setCrTopics] = useState<any[]>([])
   const [crSearching, setCrSearching] = useState(false)
   const [crLoadingProducts, setCrLoadingProducts] = useState(false)
@@ -257,7 +256,6 @@ export default function BorrowRequisitionDashboard() {
   const openCreateBorrow = async () => {
     setShowCreate(true)
     setCrSelectedItems([])
-    setCrNotes('')
     setCrSearchTerm('')
     setCrProducts([])
     const d = new Date(); d.setDate(d.getDate() + 7)
@@ -308,21 +306,24 @@ export default function BorrowRequisitionDashboard() {
     if (existing) {
       setCrSelectedItems(crSelectedItems.map((i) => i.product_code === p.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setCrSelectedItems([...crSelectedItems, { product_code: p.product_code, product_name: p.product_name, qty: 1, topic: '' }])
+      setCrSelectedItems([...crSelectedItems, { product_code: p.product_code, product_name: p.product_name, qty: 1, topic: '', item_note: '' }])
     }
+  }
+
+  const crUpdateItemNote = (code: string, item_note: string) => {
+    setCrSelectedItems(crSelectedItems.map((i) => i.product_code === code ? { ...i, item_note } : i))
   }
 
   const crSubmit = async () => {
     if (crSelectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (crSelectedItems.some((i) => !i.topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อยืมให้ครบทุกรายการ' }); return }
     if (!crDueDate) { showMessage({ message: 'กรุณากำหนดวันคืน' }); return }
-    if (!crNotes.trim()) { showMessage({ message: 'กรุณากรอกหมายเหตุ' }); return }
 
     setCrSubmitting(true)
     try {
       const { error: borErr } = await supabase
         .from('wms_borrow_requisitions')
-        .insert({ borrow_no: crBorrowNo, topic: null, status: 'pending', due_date: crDueDate, created_by: user?.id, note: crNotes.trim() || null })
+        .insert({ borrow_no: crBorrowNo, topic: null, status: 'pending', due_date: crDueDate, created_by: user?.id, note: null })
         .select().single()
       if (borErr) throw borErr
 
@@ -335,6 +336,7 @@ export default function BorrowRequisitionDashboard() {
 
       const items = crSelectedItems.filter((i) => codeToId[i.product_code]).map((i) => ({
         borrow_requisition_id: borData.id, product_id: codeToId[i.product_code], qty: i.qty, topic: i.topic || null,
+        item_note: i.item_note?.trim() || null,
       }))
       if (items.length > 0) {
         const { error: itemErr } = await supabase.from('wms_borrow_requisition_items').insert(items)
@@ -703,23 +705,22 @@ export default function BorrowRequisitionDashboard() {
                           className="w-8 h-8 rounded bg-gray-200 text-gray-700 font-bold text-sm hover:bg-gray-300">+</button>
                       </div>
                     </div>
+                    <textarea
+                      value={item.item_note || ''}
+                      onChange={(e) => crUpdateItemNote(item.product_code, e.target.value)}
+                      rows={2}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                      placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                    />
                   </div>
                 ))}
               </div>
             )}
-
-            {/* Notes */}
-            <div>
-              <label className="block text-sm font-bold text-gray-700 mb-1">หมายเหตุ <span className="text-red-500">*</span></label>
-              <textarea value={crNotes} onChange={(e) => setCrNotes(e.target.value)} rows={2}
-                className={`w-full border rounded-lg px-3 py-2 text-sm ${crNotes.trim() ? 'border-gray-300' : 'border-red-400'}`}
-                placeholder="กรุณาระบุหมายเหตุ (จำเป็น)" />
-            </div>
           </div>
 
           <div className="p-4 border-t bg-white flex justify-end gap-3">
             <button onClick={() => setShowCreate(false)} className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition">ยกเลิก</button>
-            <button onClick={crSubmit} disabled={crSubmitting || crSelectedItems.length === 0 || crSelectedItems.some((i) => !i.topic) || !crDueDate || !crNotes.trim()}
+            <button onClick={crSubmit} disabled={crSubmitting || crSelectedItems.length === 0 || crSelectedItems.some((i) => !i.topic) || !crDueDate}
               className="bg-cyan-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-cyan-700 disabled:opacity-50 transition flex items-center gap-2">
               {crSubmitting ? <><i className="fas fa-spinner fa-spin" /> กำลังบันทึก...</> : <><i className="fas fa-check" /> ยืนยันสร้างใบยืม</>}
             </button>

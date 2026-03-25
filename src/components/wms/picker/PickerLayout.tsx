@@ -111,7 +111,7 @@ export default function PickerLayout() {
     const { data } = await supabase
       .from('wms_orders')
       .select('*')
-      .eq('order_id', currentOrderId)
+      .eq('work_order_id', currentOrderId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (!data || data.length === 0) {

@@ -5,11 +5,14 @@ import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_
 import { useWmsModal } from '../useWmsModal'
 
 interface OrderDetailModalProps {
-  orderId: string
+  /** ตัวตนจริงของใบงาน — ต้องใช้กรอง wms_orders ไม่ให้ปนกับใบงานเก่าที่ชื่อซ้ำ */
+  workOrderId: string | null
+  /** ชื่อแสดง (work_order_name / order_id text) */
+  orderDisplayName: string
   onClose: () => void
 }
 
-export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalProps) {
+export default function OrderDetailModal({ workOrderId, orderDisplayName, onClose }: OrderDetailModalProps) {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
@@ -27,14 +30,16 @@ export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalP
     return () => {
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [orderId, onClose])
+  }, [workOrderId, orderDisplayName, onClose])
 
   const loadOrderDetails = async () => {
-    const { data, error } = await supabase
-      .from('wms_orders')
-      .select('*')
-      .eq('order_id', orderId)
-      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+    let q = supabase.from('wms_orders').select('*').or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+    if (workOrderId) {
+      q = q.eq('work_order_id', workOrderId)
+    } else {
+      q = q.eq('order_id', orderDisplayName)
+    }
+    const { data, error } = await q
 
     if (error) {
       console.error('Error fetching order details:', error)
@@ -88,7 +93,7 @@ export default function OrderDetailModal({ orderId, onClose }: OrderDetailModalP
       <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-4xl">
         <div className="bg-white w-full max-h-[90vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl">
           <div className="p-6 border-b flex justify-between items-center bg-slate-50">
-            <h3 className="font-black text-xl text-slate-800">รายละเอียดใบงาน: {orderId}</h3>
+            <h3 className="font-black text-xl text-slate-800">รายละเอียดใบงาน: {orderDisplayName}</h3>
             <button
               onClick={onClose}
               className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all border-2 border-red-400 hover:border-red-600 shadow-md hover:shadow-lg"

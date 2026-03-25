@@ -41,6 +41,11 @@ export default function OrderDetailView({
   const [ticketSuccessOpen, setTicketSuccessOpen] = useState(false)
   const [ticketWorkOrderName, setTicketWorkOrderName] = useState<string | null>(null)
   const [ticketWorkOrderLoading, setTicketWorkOrderLoading] = useState(false)
+  const [feedbackModal, setFeedbackModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
 
   /* ── Right-click context menu & edit link ── */
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; itemIdx: number } | null>(null)
@@ -246,61 +251,113 @@ export default function OrderDetailView({
   }
 
   /* ── Excel Download ── */
-  function handleDownloadExcel() {
-    const orderData: Record<string, any> = {
-      'เลขบิล': order.bill_no,
-      'ช่องทาง': order.channel_code,
-      'สถานะ': order.status,
-      'ชื่อลูกค้า': order.customer_name,
-      'ที่อยู่': order.customer_address,
+  async function buildProductionLikeExport() {
+    const productIds = Array.from(new Set(items.map((item) => item.product_id).filter(Boolean)))
+    const productCodeByProductId: Record<string, string> = {}
+    const productCategoryByProductId: Record<string, string> = {}
+    if (productIds.length > 0) {
+      const { data: products, error } = await supabase
+        .from('pr_products')
+        .select('id, product_code, product_category')
+        .in('id', productIds as string[])
+      if (error) throw error
+      ;(products || []).forEach((p: { id: string; product_code?: string | null; product_category?: string | null }) => {
+        const pid = String(p.id)
+        productCodeByProductId[pid] = String(p.product_code ?? '').trim()
+        productCategoryByProductId[pid] = String(p.product_category ?? '').trim()
+      })
     }
-    if (order.recipient_name) orderData['ชื่อผู้รับ'] = order.recipient_name
-    if (order.channel_order_no) orderData['เลขคำสั่งซื้อ'] = order.channel_order_no
-    if (billing?.mobile_phone) orderData['เบอร์โทร'] = billing.mobile_phone
-    if (order.promotion) orderData['โปรโมชั่น'] = order.promotion
-    orderData['ราคาสินค้า'] = Number(order.price || 0)
-    orderData['ค่าส่ง'] = Number(order.shipping_cost || 0)
-    orderData['ส่วนลด'] = Number(order.discount || 0)
-    orderData['ยอดรวม'] = Number(order.total_amount || 0)
-    if (order.payment_method) orderData['ชำระโดย'] = order.payment_method
-    if (order.payment_date) orderData['วันที่ชำระ'] = order.payment_date
-    if (order.payment_time) orderData['เวลาชำระ'] = order.payment_time
-    orderData['ผู้ลงออเดอร์'] = order.admin_user
-    if (order.created_at) orderData['วันที่สร้าง'] = formatDateTime(order.created_at)
-    if (order.confirm_note) orderData['หมายเหตุ'] = order.confirm_note
 
-    const wsOrder = XLSX.utils.json_to_sheet([orderData])
+    const headers = [
+      'ชื่อใบงาน',
+      'เลขบิล',
+      'Item UID',
+      'รหัสสินค้า',
+      'ชื่อสินค้า',
+      'สีหมึก',
+      'ชั้นที่',
+      'ลายการ์ตูน',
+      'ลายเส้น',
+      'ฟอนต์',
+      'บรรทัด 1',
+      'บรรทัด 2',
+      'บรรทัด 3',
+      'จำนวน',
+      'หมายเหตุ',
+      'ไฟล์แนบ',
+      'หมวด',
+    ]
 
-    const SHOW_TIER_PRODUCTS_XL = ['ตรายางคอนโด TWP ชมพู', 'ตรายางคอนโด TWB ฟ้า']
-    const hasAnyTierXL = items.some((item) => SHOW_TIER_PRODUCTS_XL.includes(item.product_name || ''))
-    const hasAnyFileXL = items.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
-    const itemRows = items.map((item, idx) => {
-      const isTier = SHOW_TIER_PRODUCTS_XL.includes(item.product_name || '')
-      const row: Record<string, any> = {
-        '#': idx + 1,
-        'ชื่อสินค้า': item.product_name,
-        'สีหมึก': item.ink_color || '',
-      }
-      if (hasAnyTierXL) row['ชั้น'] = isTier ? (item.product_type || '') : ''
-      row['ลาย'] = item.cartoon_pattern || ''
-      row['เส้น'] = item.line_pattern || ''
-      row['ฟอนต์'] = item.font || ''
-      row['บรรทัด 1'] = item.line_1 || ''
-      row['บรรทัด 2'] = item.line_2 || ''
-      row['บรรทัด 3'] = item.line_3 || ''
-      row['จำนวน'] = item.quantity
-      row['ราคา/หน่วย'] = Number(item.unit_price || 0)
-      if (item.no_name_line) row['หมายเหตุ'] = 'ไม่รับชื่อ'
-      else if (item.notes) row['หมายเหตุ'] = item.notes
-      if (hasAnyFileXL) row['ไฟล์แนบ'] = item.file_attachment || ''
-      return row
+    const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
+    const dataRows = items.map((item) => {
+      const productName = String(item.product_name ?? '').trim()
+      const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
+      const pid = item.product_id ? String(item.product_id) : ''
+      const noName = !!item.no_name_line
+      const cleanNotes = noName
+        ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : ''))
+        : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
+      return [
+        order.work_order_name || '-',
+        order.bill_no || '-',
+        item.item_uid || '-',
+        pid ? (productCodeByProductId[pid] ?? '') : '',
+        item.product_name || '',
+        item.ink_color || '',
+        showLayer ? (item.product_type || '') : '',
+        item.cartoon_pattern != null && String(item.cartoon_pattern).trim() !== '' ? item.cartoon_pattern : 0,
+        item.line_pattern != null && String(item.line_pattern).trim() !== '' ? item.line_pattern : 0,
+        item.font || '',
+        item.line_1 || '',
+        item.line_2 || '',
+        item.line_3 || '',
+        item.quantity ?? 0,
+        cleanNotes,
+        item.file_attachment || '',
+        pid ? (productCategoryByProductId[pid] || 'N/A') : 'N/A',
+      ]
     })
-    const wsItems = XLSX.utils.json_to_sheet(itemRows)
 
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, wsOrder, 'ข้อมูลบิล')
-    XLSX.utils.book_append_sheet(wb, wsItems, 'รายการสินค้า')
-    XLSX.writeFile(wb, `${order.bill_no || 'order'}.xlsx`)
+    return { headers, dataRows }
+  }
+
+  async function handleCopyProductionData() {
+    try {
+      const { dataRows } = await buildProductionLikeExport()
+      const clipboardText = dataRows
+        .map((row) => row.map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ')).join('\t'))
+        .join('\n')
+      await navigator.clipboard.writeText(clipboardText)
+      setFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลเรียบร้อย ${dataRows.length} แถว (ไม่รวมหัวตาราง)`,
+      })
+    } catch (error: any) {
+      console.error('Error copying production-like data:', error)
+      setFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (error?.message || error),
+      })
+    }
+  }
+
+  async function handleDownloadExcel() {
+    try {
+      const { headers, dataRows } = await buildProductionLikeExport()
+      const wsItems = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, wsItems, 'ProductionData')
+      XLSX.writeFile(wb, `${order.bill_no || 'order'}.xlsx`)
+    } catch (error: any) {
+      console.error('Error downloading production-like excel:', error)
+      setFeedbackModal({
+        open: true,
+        title: 'ดาวน์โหลดไม่สำเร็จ',
+        message: 'ดาวน์โหลด Excel ไม่สำเร็จ: ' + (error?.message || error),
+      })
+    }
   }
 
   return (
@@ -321,6 +378,16 @@ export default function OrderDetailView({
               เปิด Ticket
             </button>
           )}
+          <button
+            type="button"
+            onClick={handleCopyProductionData}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/15 hover:bg-white/25 border border-white/30 rounded-lg text-sm font-medium text-white transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16h8M8 12h8m-8-4h5m-5 12h8a2 2 0 002-2V6a2 2 0 00-2-2h-8a2 2 0 00-2 2v12a2 2 0 002 2zm-4-4V8a2 2 0 012-2h2" />
+            </svg>
+            คัดลอก
+          </button>
           <button
             type="button"
             onClick={handleDownloadExcel}
@@ -626,6 +693,24 @@ export default function OrderDetailView({
           <button
             type="button"
             onClick={() => setTicketSuccessOpen(false)}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={feedbackModal.open}
+        onClose={() => setFeedbackModal({ open: false, title: '', message: '' })}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <h4 className="text-base font-bold text-gray-800 mb-2">{feedbackModal.title}</h4>
+          <p className="text-sm text-gray-600 mb-4">{feedbackModal.message}</p>
+          <button
+            type="button"
+            onClick={() => setFeedbackModal({ open: false, title: '', message: '' })}
             className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
           >
             ตกลง

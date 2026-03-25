@@ -38,6 +38,8 @@ interface PlanJob {
   id: string
   date: string
   name: string
+  /** UUID ของใบงานจริง (กันชื่อซ้ำ) */
+  work_order_id?: string | null
   cut: string | null
   qty: Record<string, number>
   tracks: Record<string, Record<string, { start: string | null; end: string | null }>>
@@ -108,15 +110,6 @@ const defaultSettings: PlanSettingsData = {
   },
   linesPerDept: { เบิก: 1, STAMP: 1, STK: 1, CTT: 1, LASER: 1, TUBE: 1, QC: 1, PACK: 1 },
 }
-
-const normalizeOrderKey = (value: unknown) =>
-  String(value || '')
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(/[\u2010-\u2015]/g, '-')
-    .replace(/\s+/g, '')
-    .trim()
-    .toUpperCase()
 
 // --- Utils ---
 const pad = (n: number) => String(Math.floor(n)).padStart(2, '0')
@@ -459,10 +452,14 @@ const PLAN_MENU_KEY_MAP: Record<string, string> = {
 
 const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'work-orders', 'work-orders-manage', 'dept', 'jobs', 'form', 'set', 'issue']
 
+// แสดงเฉพาะชื่อใบงานจริง เช่น SPTR-250369-R4 (กัน REQ/WY ที่ไม่ใช่ใบงานเข้า Dashboard)
+const isWorkOrderDisplayName = (name?: string | null) => /-R\d+$/i.test(String(name || '').trim())
+
 export default function Plan() {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const unlocked = isAdminOrSuperadmin(user?.role)
+  const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
   const [loading, setLoading] = useState(true)
@@ -474,14 +471,14 @@ export default function Plan() {
   const [manageNewCount, setManageNewCount] = useState(0)
   const [workOrdersManageCount, setWorkOrdersManageCount] = useState(0)
   const [manageSubView, setManageSubView] = useState<ManageSubView>('new')
-  const [cancelledByWO, setCancelledByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string }[]>>({})
-  const [cancelledDetailWO, setCancelledDetailWO] = useState<string | null>(null)
+  const [cancelledByWO, setCancelledByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]>>({})
+  const [cancelledDetailWO, setCancelledDetailWO] = useState<string | null>(null) // work_order_id
   const [selectedCancelledOrderId, setSelectedCancelledOrderId] = useState<string | null>(null)
   const [cancelledWmsLines, setCancelledWmsLines] = useState<any[]>([])
   const [cancelledWmsLoading, setCancelledWmsLoading] = useState(false)
   /** บิลที่ย้ายไปใบสั่งงานจากใบงาน (plan_released_from_work_order = ชื่อ WO) */
-  const [releasedByWO, setReleasedByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string }[]>>({})
-  const [releasedDetailWO, setReleasedDetailWO] = useState<string | null>(null)
+  const [releasedByWO, setReleasedByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]>>({})
+  const [releasedDetailWO, setReleasedDetailWO] = useState<string | null>(null) // work_order_id
   const [selectedReleasedOrderId, setSelectedReleasedOrderId] = useState<string | null>(null)
   const [releasedOrderLines, setReleasedOrderLines] = useState<any[]>([])
   const [releasedLinesLoading, setReleasedLinesLoading] = useState(false)
@@ -521,7 +518,9 @@ export default function Plan() {
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
+  const [woStatusById, setWoStatusById] = useState<Record<string, string>>({})
   const [hideCompleted, setHideCompleted] = useState(true)
+  const [hideVoided, setHideVoided] = useState(true)
   const [selectedDeptForSettings, setSelectedDeptForSettings] = useState<string>('')
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
   const [dashDropTarget, setDashDropTarget] = useState<{ id: string; above: boolean } | null>(null)
@@ -574,19 +573,24 @@ export default function Plan() {
       try {
         const { data, error } = await supabase
           .from('or_work_orders')
-          .select('work_order_name, status')
+          .select('id, work_order_name, status')
           .order('created_at', { ascending: false })
         if (error) throw error
-        const list = (data || []) as Array<{ work_order_name: string; status: string }>
-        setIssueWorkOrders(list)
+        const list = (data || []) as Array<{ id: string; work_order_name: string; status: string }>
+        setIssueWorkOrders(list as any)
         // สร้าง map ชื่อใบงาน → สถานะ
         const statusMap: Record<string, string> = {}
+        const statusByIdMap: Record<string, string> = {}
         list.forEach((wo) => {
           if (wo.work_order_name && !(wo.work_order_name in statusMap)) {
             statusMap[wo.work_order_name] = wo.status || ''
           }
+          if (wo.id && !(wo.id in statusByIdMap)) {
+            statusByIdMap[wo.id] = wo.status || ''
+          }
         })
         setWoStatusByName(statusMap)
+        setWoStatusById(statusByIdMap)
       } catch (error) {
         console.error('Error loading work orders for issues:', error)
       }
@@ -628,11 +632,11 @@ export default function Plan() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
           .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
-          .is('work_order_name', null),
+          .is('work_order_id', null),
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .neq('channel_code', 'PUMP')
           .eq('status', 'ใบสั่งงาน')
-          .is('work_order_name', null),
+          .is('work_order_id', null),
         supabase.from('or_work_orders').select('id', { count: 'exact', head: true })
           .eq('status', 'กำลังผลิต'),
         allWorkOrdersFiltered,
@@ -691,15 +695,16 @@ export default function Plan() {
     try {
       const { data } = await supabase
         .from('or_orders')
-        .select('id, bill_no, work_order_name, customer_name')
+        .select('id, bill_no, work_order_id, work_order_name, customer_name')
         .eq('status', 'ยกเลิก')
-        .not('work_order_name', 'is', null)
+        .not('work_order_id', 'is', null)
       if (data) {
-        const map: Record<string, { id: string; bill_no: string; customer_name: string }[]> = {}
+        const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
         data.forEach((o: any) => {
-          const wo = o.work_order_name
-          if (!map[wo]) map[wo] = []
-          map[wo].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-' })
+          const woId = String(o.work_order_id || '')
+          if (!woId) return
+          if (!map[woId]) map[woId] = []
+          map[woId].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-', wo_name: o.work_order_name || undefined })
         })
         setCancelledByWO(map)
       }
@@ -725,16 +730,16 @@ export default function Plan() {
     try {
       const { data } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, plan_released_from_work_order')
+        .select('id, bill_no, customer_name, plan_released_from_work_order, plan_released_from_work_order_id')
         .eq('status', 'ใบสั่งงาน')
-        .not('plan_released_from_work_order', 'is', null)
+        .not('plan_released_from_work_order_id', 'is', null)
       if (data) {
-        const map: Record<string, { id: string; bill_no: string; customer_name: string }[]> = {}
+        const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
         ;(data as any[]).forEach((o: any) => {
-          const wo = o.plan_released_from_work_order
-          if (!wo) return
-          if (!map[wo]) map[wo] = []
-          map[wo].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-' })
+          const woId = String(o.plan_released_from_work_order_id || '')
+          if (!woId) return
+          if (!map[woId]) map[woId] = []
+          map[woId].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-', wo_name: o.plan_released_from_work_order || undefined })
         })
         setReleasedByWO(map)
       }
@@ -765,9 +770,29 @@ export default function Plan() {
     try {
       const { data } = await supabase
         .from('or_order_items')
-        .select('id, product_name, quantity, unit_price')
+        .select('id, product_id, product_name, quantity, unit_price')
         .eq('order_id', orderId)
-      setReleasedOrderLines(data || [])
+      const lines = (data || []) as any[]
+      const productIds = [...new Set(lines.map((line) => line.product_id).filter(Boolean))]
+      let productCodeById: Record<string, string> = {}
+
+      if (productIds.length > 0) {
+        const { data: products } = await supabase
+          .from('pr_products')
+          .select('id, product_code')
+          .in('id', productIds)
+        productCodeById = (products || []).reduce((acc: Record<string, string>, p: any) => {
+          acc[String(p.id)] = String(p.product_code || '')
+          return acc
+        }, {})
+      }
+
+      setReleasedOrderLines(
+        lines.map((line) => ({
+          ...line,
+          product_code: productCodeById[String(line.product_id)] || '',
+        }))
+      )
     } catch (e) {
       console.error(e)
       setReleasedOrderLines([])
@@ -777,9 +802,9 @@ export default function Plan() {
   }, [])
 
   const openReleasedBillsModal = useCallback(
-    (woName: string) => {
-      setReleasedDetailWO(woName)
-      const firstId = releasedByWO[woName]?.[0]?.id
+    (workOrderId: string) => {
+      setReleasedDetailWO(workOrderId)
+      const firstId = releasedByWO[workOrderId]?.[0]?.id
       if (firstId) void loadReleasedOrderLines(firstId)
       else {
         setSelectedReleasedOrderId(null)
@@ -807,12 +832,11 @@ export default function Plan() {
   }, [])
 
   // โหลด WMS lines สำหรับ "บิลที่ยกเลิก" ที่เลือก (ไม่ดึงทั้งใบงาน)
-  const loadCancelledWmsLines = useCallback(async (workOrderName: string, orderId?: string) => {
+  const loadCancelledWmsLines = useCallback(async (workOrderId: string, orderId?: string) => {
     setCancelledWmsLoading(true)
-    setCancelledDetailWO(workOrderName)
+    setCancelledDetailWO(workOrderId)
     try {
-      const cleanWorkOrder = String(workOrderName || '').trim()
-      const fallbackOrderId = cancelledByWO[workOrderName]?.[0]?.id || null
+      const fallbackOrderId = cancelledByWO[workOrderId]?.[0]?.id || null
       const targetOrderId = orderId || fallbackOrderId
       setSelectedCancelledOrderId(targetOrderId)
 
@@ -830,40 +854,9 @@ export default function Plan() {
       const { data: exactData } = await supabase
         .from('wms_orders')
         .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
-        .eq('order_id', cleanWorkOrder)
+        .eq('work_order_id', workOrderId)
         .eq('status', 'cancelled')
-      let rows = exactData || []
-
-      // Fallback 1: eq ด้วยค่า original เผื่อมีช่องว่าง/อักขระที่ trim แล้วไม่ตรง
-      if (rows.length === 0 && cleanWorkOrder !== workOrderName) {
-        const { data: rawExactData } = await supabase
-          .from('wms_orders')
-          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
-          .eq('order_id', workOrderName)
-          .eq('status', 'cancelled')
-        rows = rawExactData || []
-      }
-
-      // Fallback 2: ค้นหาแบบ ilike ก่อน (เร็วกว่า full scan)
-      if (rows.length === 0 && cleanWorkOrder) {
-        const { data: likeData } = await supabase
-          .from('wms_orders')
-          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
-          .eq('status', 'cancelled')
-          .ilike('order_id', `%${cleanWorkOrder}%`)
-        rows = likeData || []
-      }
-
-      // Fallback: บางเคสค่า order_id มีรูปแบบช่องว่าง/ขีดต่างกันเล็กน้อย
-      if (rows.length === 0) {
-        const targetNorm = normalizeOrderKey(cleanWorkOrder || workOrderName)
-        const { data: fallbackData } = await supabase
-          .from('wms_orders')
-          .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
-          .eq('status', 'cancelled')
-          .range(0, 9999)
-        rows = (fallbackData || []).filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
-      }
+      const rows = exactData || []
 
       const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
       const filteredRows = rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
@@ -877,9 +870,9 @@ export default function Plan() {
   }, [cancelledByWO, getCancelledOrderProductCodes])
 
   const openCancelledBillsModal = useCallback(
-    (woName: string) => {
-      const firstId = cancelledByWO[woName]?.[0]?.id
-      void loadCancelledWmsLines(woName, firstId)
+    (workOrderId: string) => {
+      const firstId = cancelledByWO[workOrderId]?.[0]?.id
+      void loadCancelledWmsLines(workOrderId, firstId)
     },
     [cancelledByWO, loadCancelledWmsLines]
   )
@@ -1258,7 +1251,17 @@ export default function Plan() {
   }, [])
 
 
-  const dayJobs = jobs
+  const scopedJobs = jobs
+    .filter((j) => !!j.work_order_id)
+    .filter((j) => isWorkOrderDisplayName(j.name))
+    .filter((j) => {
+      const wid = String(j.work_order_id || '')
+      // ซ่อนใบงานที่ถูกยกเลิกแล้วเสมอ (เช่น WY ที่ยกเลิก)
+      if (wid && woStatusById[wid] === 'ยกเลิก') return false
+      return true
+    })
+
+  const dayJobs = scopedJobs
     .filter((j) => sameDay(j.date, dDate))
     .sort((a, b) => a.order_index - b.order_index)
 
@@ -1269,7 +1272,7 @@ export default function Plan() {
     const timelines: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {
-        timelines[d] = computePlanTimeline(d, dDate, settings, jobs, 'cut', { precomputed: timelines })
+        timelines[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', { precomputed: timelines })
       }
     })
     return timelines
@@ -1279,7 +1282,7 @@ export default function Plan() {
   useEffect(() => {
     if (autoLockInFlight.current) return
 
-    const dj = jobs
+    const dj = scopedJobs
       .filter((j) => sameDay(j.date, dDate))
       .sort((a, b) => a.order_index - b.order_index)
 
@@ -1289,7 +1292,7 @@ export default function Plan() {
     const tl: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {
-        tl[d] = computePlanTimeline(d, dDate, settings, jobs, 'cut', { precomputed: tl })
+        tl[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', { precomputed: tl })
       }
     })
 
@@ -1336,12 +1339,13 @@ export default function Plan() {
       .finally(() => {
         autoLockInFlight.current = false
       })
-  }, [jobs, dDate, settings])
+  }, [scopedJobs, dDate, settings])
 
-  const filteredJobs = jobs
+  const filteredJobs = scopedJobs
     .filter((j) => !jSearch.trim() || j.name.toLowerCase().includes(jSearch.toLowerCase()))
     .filter((j) => !jDateFrom || j.date >= jDateFrom)
     .filter((j) => !jDateTo || j.date <= jDateTo)
+    .filter((j) => (hideVoided ? !j.is_production_voided : true))
     .filter((j) => {
       if (!jChannelFilter) return true
       const prefixMap: Record<string, string> = { OFFICE: 'OF' }
@@ -1632,28 +1636,28 @@ export default function Plan() {
                             ยกเลิกใบงาน
                           </span>
                         )}
-                        {(releasedByWO[j.name]?.length ?? 0) > 0 && (
+                        {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              openReleasedBillsModal(j.name)
+                              if (j.work_order_id) openReleasedBillsModal(String(j.work_order_id))
                             }}
                             className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200 transition"
                           >
-                            แก้ไข {releasedByWO[j.name].length}
+                            แก้ไข {releasedByWO[String(j.work_order_id || '')].length}
                           </button>
                         )}
-                        {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                        {(cancelledByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              openCancelledBillsModal(j.name)
+                              if (j.work_order_id) openCancelledBillsModal(String(j.work_order_id))
                             }}
                             className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                           >
-                            ยกเลิก {cancelledByWO[j.name].length}
+                            ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
                           </button>
                         )}
                       </td>
@@ -1886,6 +1890,16 @@ export default function Plan() {
                 />
                 <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
               </label>
+              <label className="flex items-center gap-3 cursor-pointer">
+                <span className="text-sm text-gray-600">ซ่อนใบงานยกเลิก</span>
+                <input
+                  type="checkbox"
+                  checked={hideVoided}
+                  onChange={(e) => setHideVoided(e.target.checked)}
+                  className="peer sr-only"
+                />
+                <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
+              </label>
             </div>
             {(!depFilter || depFilter === 'ALL') ? (
               <p className="text-center text-gray-500 py-8">--- กรุณาเลือกแผนกเพื่อเริ่มงาน ---</p>
@@ -1956,28 +1970,28 @@ export default function Plan() {
                                           ยกเลิกใบงาน
                                         </span>
                                       )}
-                                      {(releasedByWO[j.name]?.length ?? 0) > 0 && (
+                                      {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                                         <button
                                           type="button"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            openReleasedBillsModal(j.name)
+                                            if (j.work_order_id) openReleasedBillsModal(String(j.work_order_id))
                                           }}
                                           className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200"
                                         >
-                                          แก้ไข {releasedByWO[j.name].length}
+                                          แก้ไข {releasedByWO[String(j.work_order_id || '')].length}
                                         </button>
                                       )}
-                                      {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                                      {(cancelledByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                                         <button
                                           type="button"
                                           onClick={(e) => {
                                             e.stopPropagation()
-                                            openCancelledBillsModal(j.name)
+                                            if (j.work_order_id) openCancelledBillsModal(String(j.work_order_id))
                                           }}
                                           className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200"
                                         >
-                                          ยกเลิก {cancelledByWO[j.name].length}
+                                          ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
                                         </button>
                                       )}
                                     </div>
@@ -2116,6 +2130,7 @@ export default function Plan() {
       {/* View: Dashboard (Master Plan) - logic ตาม plan.html */}
       {currentView === 'dash' && (() => {
         const visibleDayJobs = dayJobs.filter((j) => {
+          if (hideVoided && j.is_production_voided) return false
           if (!hideCompleted) return true
           return getOverallJobStatus(j, settings).key !== 'done'
         })
@@ -2141,6 +2156,16 @@ export default function Plan() {
                       type="checkbox"
                       checked={hideCompleted}
                       onChange={(e) => setHideCompleted(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
+                  </label>
+                  <label className="flex items-center gap-3 mt-6 cursor-pointer">
+                    <span className="text-sm text-gray-600">ซ่อนใบงานยกเลิก</span>
+                    <input
+                      type="checkbox"
+                      checked={hideVoided}
+                      onChange={(e) => setHideVoided(e.target.checked)}
                       className="peer sr-only"
                     />
                     <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
@@ -2332,28 +2357,28 @@ export default function Plan() {
                                 ยกเลิกใบงาน
                               </span>
                             )}
-                            {(releasedByWO[j.name]?.length ?? 0) > 0 && (
+                            {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  openReleasedBillsModal(j.name)
+                                  if (j.work_order_id) openReleasedBillsModal(String(j.work_order_id))
                                 }}
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200 transition"
                               >
-                                แก้ไข {releasedByWO[j.name].length}
+                                แก้ไข {releasedByWO[String(j.work_order_id || '')].length}
                               </button>
                             )}
-                            {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                            {(cancelledByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  openCancelledBillsModal(j.name)
+                                  if (j.work_order_id) openCancelledBillsModal(String(j.work_order_id))
                                 }}
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                               >
-                                ยกเลิก {cancelledByWO[j.name].length}
+                                ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
                               </button>
                             )}
                           </td>
@@ -3127,7 +3152,7 @@ export default function Plan() {
                 <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-red-100 text-red-600 mr-2">
                   <i className="fas fa-ban text-sm"></i>
                 </span>
-                บิลที่ยกเลิกในใบงาน {cancelledDetailWO}
+                บิลที่ยกเลิกในใบงาน {jobs.find((j) => String(j.work_order_id || '') === cancelledDetailWO)?.name || cancelledDetailWO}
               </h3>
             </div>
 
@@ -3260,7 +3285,7 @@ export default function Plan() {
           setSelectedReleasedOrderId(null)
           setReleasedOrderLines([])
         }}
-        contentClassName="max-w-3xl w-full max-h-[85vh] overflow-y-auto"
+        contentClassName="max-w-4xl w-full max-h-[85vh] overflow-y-auto"
       >
         {releasedDetailWO && (
           <div className="p-6 space-y-4">
@@ -3269,7 +3294,7 @@ export default function Plan() {
                 <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-700 mr-2">
                   <i className="fas fa-share-square text-sm"></i>
                 </span>
-                บิลที่ย้ายไปใบสั่งงานจากใบงาน {releasedDetailWO}
+                บิลที่ย้ายไปใบสั่งงานจากใบงาน {jobs.find((j) => String(j.work_order_id || '') === releasedDetailWO)?.name || releasedByWO[releasedDetailWO]?.[0]?.wo_name || releasedDetailWO}
               </h3>
             </div>
             <p className="text-sm text-gray-600">
@@ -3312,19 +3337,33 @@ export default function Plan() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-gray-50 text-left text-gray-600">
+                        <th className="px-3 py-2 font-semibold">รูป</th>
                         <th className="px-3 py-2 font-semibold">ชื่อสินค้า</th>
                         <th className="px-3 py-2 font-semibold">จำนวน</th>
-                        <th className="px-3 py-2 font-semibold">ราคา/หน่วย</th>
+                        {isSuperadmin && <th className="px-3 py-2 font-semibold">ราคา/หน่วย</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {releasedOrderLines.map((line: any) => (
                         <tr key={line.id}>
+                          <td className="px-3 py-2">
+                            <img
+                              src={getProductImageUrl(line.product_code)}
+                              alt={line.product_name || line.product_code || 'product'}
+                              className="w-9 h-9 object-cover rounded border border-gray-200 bg-white"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement
+                                target.src = 'https://placehold.co/80x80?text=NO+IMG'
+                              }}
+                            />
+                          </td>
                           <td className="px-3 py-2">{line.product_name || '-'}</td>
                           <td className="px-3 py-2">{line.quantity ?? '-'}</td>
-                          <td className="px-3 py-2 tabular-nums">
-                            {line.unit_price != null ? Number(line.unit_price).toLocaleString('th-TH', { minimumFractionDigits: 2 }) : '-'}
-                          </td>
+                          {isSuperadmin && (
+                            <td className="px-3 py-2 tabular-nums">
+                              {line.unit_price != null ? Number(line.unit_price).toLocaleString('th-TH', { minimumFractionDigits: 2 }) : '-'}
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
