@@ -121,7 +121,23 @@ export default function PickerLayout() {
       return null
     }
 
-    const sortedItems = sortOrderItems(data)
+    let sortedItems = sortOrderItems(data)
+    const srcIds = [...new Set(sortedItems.map((i: any) => i.source_order_id).filter(Boolean))]
+    if (srcIds.length > 0) {
+      const { data: billRows } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, plan_released_from_work_order')
+        .in('id', srcIds as string[])
+      const billMap = Object.fromEntries((billRows || []).map((r: any) => [r.id, r]))
+      sortedItems = sortedItems.map((i: any) => {
+        const b = i.source_order_id ? billMap[i.source_order_id] : null
+        return {
+          ...i,
+          source_bill_no: b?.bill_no ?? null,
+          source_bill_released_from_wo: b?.plan_released_from_work_order ?? null,
+        }
+      })
+    }
     setPickerItems(sortedItems)
 
     const hasWorkableItems = sortedItems.some((i) => WORKABLE_STATUSES.includes(i.status))
@@ -160,6 +176,43 @@ export default function PickerLayout() {
         showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
         return
       }
+
+      const sortedItems = await loadPickerTask()
+      if (!sortedItems) return
+
+      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
+      if (nextIdx >= 0) {
+        setCurrentIndex(nextIdx)
+      }
+    } catch (error: any) {
+      showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  const pickerSkipMovedItem = async (item: any) => {
+    try {
+      const { error } = await supabase
+        .from('wms_orders')
+        .update({
+          status: 'cancelled',
+          end_time: new Date().toISOString(),
+        })
+        .eq('id', item.id)
+
+      if (error) {
+        showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
+        return
+      }
+
+      await supabase.from('wms_notifications').insert([
+        {
+          type: 'ข้ามรายการ (บิลถูกย้ายออก)',
+          order_id: item.order_id,
+          picker_id: user?.id,
+          status: 'unread',
+          is_read: false,
+        },
+      ])
 
       const sortedItems = await loadPickerTask()
       if (!sortedItems) return
@@ -254,11 +307,6 @@ export default function PickerLayout() {
               <i className="fas fa-arrow-left text-sm" />
             </button>
           )}
-          {activeView === 'pick' && !showOrderList && (
-            <button onClick={backToOrderList} className="shrink-0 bg-slate-700 w-8 h-8 rounded-full flex items-center justify-center">
-              <i className="fas fa-chevron-left text-xs"></i>
-            </button>
-          )}
           <div className="flex flex-col min-w-0">
             <span className="text-xs text-gray-500 font-bold uppercase truncate">
               {activeView === 'menu' ? 'พนักงานหยิบสินค้า' : activeLabel}
@@ -343,7 +391,14 @@ export default function PickerLayout() {
                 allItems={pickerItems}
                 currentIndex={currentIndex}
                 totalItems={pickerItems.length}
-                onFinish={() => pickerFinishItem(currentItem.id)}
+                onFinish={() => {
+                  const moved = !!(currentItem.plan_line_released || currentItem.source_bill_released_from_wo)
+                  if (moved) {
+                    pickerSkipMovedItem(currentItem)
+                  } else {
+                    pickerFinishItem(currentItem.id)
+                  }
+                }}
                 onNoProduct={() => submitNoProduct(currentItem)}
                 onNavigate={(dir) => pickerNavigate(dir)}
                 onJumpToItem={(itemId) => {

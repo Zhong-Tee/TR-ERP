@@ -121,7 +121,8 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     wmsData.forEach((r: any) => {
       if (!grouped[r.order_id]) grouped[r.order_id] = { total: 0, finished: 0, picked: 0 }
       grouped[r.order_id].total++
-      if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock'].includes(r.status)) grouped[r.order_id].finished++
+      if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(r.status))
+        grouped[r.order_id].finished++
       if (r.status === 'picked') grouped[r.order_id].picked++
     })
     reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
@@ -182,6 +183,7 @@ export const WMS_STATUS_LABELS: Record<string, string> = {
   correct: 'หยิบถูก',
   wrong: 'หยิบผิด',
   not_find: 'ไม่เจอสินค้า',
+  returned: 'คืนเข้าคลัง',
 }
 
 const PRODUCT_IMAGE_BUCKET = 'product-images'

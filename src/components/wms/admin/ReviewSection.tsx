@@ -64,22 +64,46 @@ export default function ReviewSection() {
     setReviewOrderActualId('')
   }
 
+  const enrichReleasedSourceOrders = async (rows: any[]): Promise<any[]> => {
+    if (!rows || rows.length === 0) return rows
+    const sourceIds = [...new Set(rows.map((r) => r.source_order_id).filter(Boolean))]
+    if (sourceIds.length === 0) return rows
+
+    const { data: releasedOrders } = await supabase
+      .from('or_orders')
+      .select('id, plan_released_from_work_order')
+      .in('id', sourceIds as string[])
+
+    const releasedMap = Object.fromEntries(
+      (releasedOrders || []).map((o: any) => [o.id, !!o.plan_released_from_work_order])
+    )
+
+    return rows.map((r) => ({
+      ...r,
+      source_order_released: !!(r.source_order_id && releasedMap[r.source_order_id]),
+    }))
+  }
+
   const loadReviewDropdown = async (skipReset = true) => {
     if (!skipReset) resetReviewUI()
     if (!reviewDate) return
 
     const { data } = await supabase
       .from('wms_orders')
-      .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+      .select(
+        'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+      )
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+      .neq('status', 'cancelled')
       .gte('created_at', reviewDate + 'T00:00:00')
       .lte('created_at', reviewDate + 'T23:59:59')
 
     if (!data) return
+    const enrichedRows = await enrichReleasedSourceOrders(data as any[])
 
     const groupedRowsByNorm: Record<string, any[]> = {}
     const groupedRowsByRaw: Record<string, any[]> = {}
-    ;(data as any[]).forEach((obj) => {
+    ;(enrichedRows as any[]).forEach((obj) => {
       const norm = normalizeOrderId(obj.order_id)
       if (!groupedRowsByNorm[norm]) groupedRowsByNorm[norm] = []
       groupedRowsByNorm[norm].push(obj)
@@ -159,9 +183,12 @@ export default function ReviewSection() {
     if (rows.length === 0) {
       const { data, error: firstErr } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .select(
+          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        )
         .eq('order_id', rawTarget)
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .neq('status', 'cancelled')
       error = firstErr
       if (!firstErr && data && data.length > 0) rows = data
     }
@@ -170,9 +197,12 @@ export default function ReviewSection() {
     if (rows.length === 0 && trimmedTarget !== rawTarget) {
       const { data: trimData, error: trimErr } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .select(
+          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        )
         .eq('order_id', trimmedTarget)
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .neq('status', 'cancelled')
       if (!trimErr && trimData && trimData.length > 0) {
         rows = trimData
       }
@@ -183,8 +213,11 @@ export default function ReviewSection() {
       const likeTarget = trimmedTarget.replace(/\s+/g, '%')
       const { data: fuzzyData, error: fuzzyErr } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .select(
+          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        )
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .neq('status', 'cancelled')
         .ilike('order_id', `%${likeTarget}%`)
       if (!fuzzyErr && fuzzyData && fuzzyData.length > 0) {
         rows = fuzzyData.filter((r: any) => normalizeOrderId(r.order_id) === normalizedTarget)
@@ -195,8 +228,11 @@ export default function ReviewSection() {
     if (rows.length === 0 && reviewDate) {
       const { data: dayRows, error: dayErr } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .select(
+          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        )
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .neq('status', 'cancelled')
         .gte('created_at', reviewDate + 'T00:00:00')
         .lte('created_at', reviewDate + 'T23:59:59')
 
@@ -212,8 +248,11 @@ export default function ReviewSection() {
       const startDate = start.toISOString().split('T')[0]
       const { data: recentRows, error: recentErr } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at')
+        .select(
+          'id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        )
         .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        .neq('status', 'cancelled')
         .gte('created_at', `${startDate}T00:00:00`)
         .lte('created_at', `${reviewDate || new Date().toISOString().split('T')[0]}T23:59:59`)
 
@@ -244,7 +283,7 @@ export default function ReviewSection() {
       return
     }
 
-    const sortedData = sortOrderItems(rows)
+    const sortedData = sortOrderItems(await enrichReleasedSourceOrders(rows))
     setReviewOrderSelect(canonicalOrderId)
     setReviewOrderActualId(canonicalOrderId)
     setInspectItems(sortedData)
@@ -272,13 +311,14 @@ export default function ReviewSection() {
       .select('*')
       .eq('order_id', currentOrderId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+      .neq('status', 'cancelled')
 
     if (data) {
-      const sortedData = sortOrderItems(data)
+      const sortedData = sortOrderItems(await enrichReleasedSourceOrders(data as any[]))
       setInspectItems(sortedData)
 
       const isFullyChecked = sortedData.every((i) =>
-        ['correct', 'wrong', 'not_find', 'out_of_stock'].includes(i.status)
+        ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
       )
       if (isFullyChecked) {
         await supabase
@@ -340,10 +380,11 @@ export default function ReviewSection() {
     correct: inspectItems.filter((i) => i.status === 'correct').length,
     wrong: inspectItems.filter((i) => i.status === 'wrong').length,
     not_find: inspectItems.filter((i) => i.status === 'not_find').length,
+    returned: inspectItems.filter((i) => i.status === 'returned').length,
   }
 
   const checkedCount = inspectItems.filter((i) =>
-    ['correct', 'wrong', 'not_find', 'out_of_stock'].includes(i.status)
+    ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
   ).length
 
   let filtered = inspectItems
@@ -351,6 +392,7 @@ export default function ReviewSection() {
   if (currentTab === 'correct') filtered = inspectItems.filter((i) => i.status === 'correct')
   if (currentTab === 'wrong') filtered = inspectItems.filter((i) => i.status === 'wrong')
   if (currentTab === 'not_find') filtered = inspectItems.filter((i) => i.status === 'not_find')
+  if (currentTab === 'returned') filtered = inspectItems.filter((i) => i.status === 'returned')
 
   return (
     <section>
@@ -467,6 +509,14 @@ export default function ReviewSection() {
           >
             ไม่มีสินค้า <span>({counts.not_find})</span>
           </div>
+          <div
+            onClick={() => switchInspectTab('returned')}
+            className={`inspect-tab pb-2 text-sm font-bold text-slate-600 whitespace-nowrap ${
+              currentTab === 'returned' ? 'inspect-tab-active' : ''
+            }`}
+          >
+            คืนคลัง <span>({counts.returned})</span>
+          </div>
         </div>
       )}
       <div className="bg-white rounded-3xl shadow-sm border overflow-hidden">
@@ -481,6 +531,11 @@ export default function ReviewSection() {
               if (item.status === 'correct') statusBoxClass = 'border-green-500 text-green-500'
               else if (item.status === 'wrong') statusBoxClass = 'border-red-500 text-red-500'
               else if (item.status === 'not_find') statusBoxClass = 'border-orange-500 text-orange-500'
+              else if (item.status === 'returned') statusBoxClass = 'border-slate-500 text-slate-600'
+
+              const isMovedFromPlan = !!(item.plan_line_released || item.source_order_released)
+              const needsReleaseReturn =
+                isMovedFromPlan && ['picked', 'correct', 'system_complete'].includes(item.status)
 
               return (
                 <div key={item.id} className="p-4 flex items-center justify-between hover:bg-gray-50 transition">
@@ -500,36 +555,58 @@ export default function ReviewSection() {
                       <div className="text-[16px] font-bold text-gray-400">
                         จุดจัดเก็บ: {item.location || '-'} | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
+                      {isMovedFromPlan && (
+                        <div className="text-xs font-bold text-amber-800 mt-1">
+                          บิลถูกย้ายออกจากใบงาน — กดคืนเข้าคลังเมื่อตรวจแล้ว
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex-1 text-center px-4">
-                    {['correct', 'wrong', 'not_find'].includes(item.status) && (
+                    {['correct', 'wrong', 'not_find', 'returned'].includes(item.status) && (
                       <div className={`border-2 ${statusBoxClass} font-black px-6 py-2 rounded-xl text-lg uppercase tracking-wider`}>
                         สถานะ: {WMS_STATUS_LABELS[item.status] || item.status}
                       </div>
                     )}
                   </div>
                   <div className="flex items-center gap-2 w-1/3 justify-end">
-                    <button
-                      onClick={() => setInspectStatus(item.id, 'not_find')}
-                      className="h-14 px-4 rounded-2xl font-black border-2 border-orange-200 text-orange-500 hover:bg-orange-50 transition"
-                    >
-                      ไม่เจอ
-                    </button>
-                    <button
-                      onClick={() => setInspectStatus(item.id, 'wrong')}
-                      className={`h-14 px-4 rounded-2xl font-black border-2 border-red-200 transition ${
-                        item.status === 'wrong' ? 'bg-red-600 text-white' : 'text-red-500 hover:bg-red-50'
-                      }`}
-                    >
-                      หยิบผิด
-                    </button>
-                    <button
-                      onClick={() => setInspectStatus(item.id, 'correct')}
-                      className="h-14 px-4 rounded-2xl font-black bg-green-500 text-white hover:bg-green-600 shadow-md transition"
-                    >
-                      หยิบถูก
-                    </button>
+                    {needsReleaseReturn ? (
+                      <button
+                        type="button"
+                        onClick={() => setInspectStatus(item.id, 'returned')}
+                        className="h-14 px-6 rounded-2xl font-black bg-slate-700 text-white hover:bg-slate-800 shadow-md transition"
+                      >
+                        คืนเข้าคลัง
+                      </button>
+                    ) : item.status === 'returned' ? (
+                      <span className="text-sm text-gray-400 font-semibold">ดำเนินการแล้ว</span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setInspectStatus(item.id, 'not_find')}
+                          className="h-14 px-4 rounded-2xl font-black border-2 border-orange-200 text-orange-500 hover:bg-orange-50 transition"
+                        >
+                          ไม่เจอ
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setInspectStatus(item.id, 'wrong')}
+                          className={`h-14 px-4 rounded-2xl font-black border-2 border-red-200 transition ${
+                            item.status === 'wrong' ? 'bg-red-600 text-white' : 'text-red-500 hover:bg-red-50'
+                          }`}
+                        >
+                          หยิบผิด
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setInspectStatus(item.id, 'correct')}
+                          className="h-14 px-4 rounded-2xl font-black bg-green-500 text-white hover:bg-green-600 shadow-md transition"
+                        >
+                          หยิบถูก
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )

@@ -293,7 +293,7 @@ export default function WorkOrderManageList({
     setSelectedByWo((prev) => ({ ...prev, [workOrderName]: new Set<string>() }))
   }
 
-  async function moveSelectedTo(workOrderName: string, newStatus: string) {
+  function confirmReleaseToWorkQueue(workOrderName: string) {
     const ids = Array.from(selectedByWo[workOrderName] || [])
     if (ids.length === 0) {
       setMessageModal({ open: true, message: 'กรุณาเลือกบิลอย่างน้อย 1 รายการ' })
@@ -301,55 +301,41 @@ export default function WorkOrderManageList({
     }
     setConfirmModal({
       open: true,
-      title: 'ยืนยันการย้ายบิล',
-      message: `ต้องการย้าย ${ids.length} บิล ไปสถานะ "${newStatus}" หรือไม่?`,
-      onConfirm: () => doMoveSelectedTo(workOrderName, newStatus, ids),
+      title: 'ยืนยันย้ายไปใบสั่งงาน',
+      message: `ต้องการย้าย ${ids.length} บิล ไปเมนู Plan → ใบสั่งงาน (สถานะใบสั่งงาน) หรือไม่?`,
+      onConfirm: () => executeReleaseToWorkQueue(workOrderName, ids),
     })
   }
 
-  async function doMoveSelectedTo(workOrderName: string, newStatus: string, ids: string[]) {
+  async function executeReleaseToWorkQueue(workOrderName: string, ids: string[]) {
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
-      const updates: Record<string, unknown> = { status: newStatus }
-      if (newStatus === 'รอลงข้อมูล' || newStatus === 'ตรวจสอบแล้ว') {
-        updates.work_order_name = null
-      }
-      if (newStatus === 'ยกเลิก') {
-        // คง work_order_name ไว้เพื่อให้ Plan dashboard แสดง badge สีแดงได้
-      }
-      const { error } = await supabase.from('or_orders').update(updates).in('id', ids)
+      const { data, error } = await supabase.rpc('rpc_plan_release_orders_to_workqueue', {
+        p_work_order_name: workOrderName,
+        p_order_ids: ids,
+      })
       if (error) throw error
-
-      // เมื่อไม่มีบิลเหลือในใบงานแล้ว (ไม่ว่าย้ายไปรอลงข้อมูล / ตรวจสอบแล้ว / ยกเลิก) ให้ลบใบงานนั้นออก
-      const { data: remaining } = await supabase
-        .from('or_orders')
-        .select('id')
-        .eq('work_order_name', workOrderName)
-      if (remaining && remaining.length === 0) {
-        const { error: deleteWoError } = await supabase
-          .from('or_work_orders')
-          .delete()
-          .eq('work_order_name', workOrderName)
-        if (deleteWoError) {
-          console.error('Error deleting empty work order:', deleteWoError)
-          setMessageModal({ open: true, message: 'ย้ายบิลสำเร็จ แต่ลบใบงานว่างไม่สำเร็จ: ' + deleteWoError.message })
-        } else {
-          await supabase.from('plan_jobs').delete().eq('name', workOrderName)
-          await loadWorkOrders()
-        }
-        onRefresh?.()
+      const result = data as { success?: boolean; error?: string; error_code?: string; remaining_bills?: number } | null
+      if (!result?.success) {
+        const msg = result?.error || 'ย้ายบิลไม่สำเร็จ'
+        setMessageModal({ open: true, message: msg })
         return
       }
 
-      const newCount = remaining!.length
-      await supabase.from('or_work_orders').update({ order_count: newCount }).eq('work_order_name', workOrderName)
-      setWorkOrders((prev) =>
-        prev.map((wo) => (wo.work_order_name === workOrderName ? { ...wo, order_count: newCount } : wo))
-      )
-      await loadOrdersForWo(workOrderName)
-      clearBillSelection(workOrderName)
+      await loadWorkOrders()
+      const remaining = (result.remaining_bills ?? 0) as number
+      if (remaining > 0) {
+        await loadOrdersForWo(workOrderName)
+        clearBillSelection(workOrderName)
+      }
       onRefresh?.()
+      setMessageModal({
+        open: true,
+        message:
+          `ย้ายบิลไปใบสั่งงานเรียบร้อย (${ids.length} บิล)` +
+          `\n\nหากมีรายการที่หยิบหรือตรวจสินค้าแล้ว ให้ไปเมนูจัดสินค้า → ตรวจสินค้า แล้วกด "คืนเข้าคลัง" ตามรายการที่มีป้ายย้ายบิล`,
+      })
     } catch (error: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
@@ -1304,7 +1290,7 @@ export default function WorkOrderManageList({
                       <div className="text-center py-6 text-gray-500">กำลังโหลด...</div>
                     ) : (
                       <>
-                        {/* ปุ่มกลุ่ม: เลือกทั้งหมด, คืนไป รอลงข้อมูล, คืนไป ตรวจสอบแล้ว, ยกเลิกบิลที่เลือก */}
+                        {/* เลือกทั้งหมด + ย้ายไปใบสั่งงาน (ตรวจ WMS picked/correct ใน RPC) */}
                         <div className="flex flex-wrap items-center gap-2 mb-4">
                           <button
                             type="button"
@@ -1315,27 +1301,11 @@ export default function WorkOrderManageList({
                           </button>
                           <button
                             type="button"
-                            onClick={() => moveSelectedTo(wo.work_order_name, 'รอลงข้อมูล')}
+                            onClick={() => confirmReleaseToWorkQueue(wo.work_order_name)}
                             disabled={updating || selectedIds.size === 0}
-                            className="px-3 py-1.5 bg-amber-100 text-amber-800 rounded-lg text-sm font-medium hover:bg-amber-200 disabled:opacity-50"
+                            className="px-3 py-1.5 bg-indigo-100 text-indigo-900 rounded-lg text-sm font-medium hover:bg-indigo-200 disabled:opacity-50"
                           >
-                            คืนไป &quot;รอลงข้อมูล&quot;
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => moveSelectedTo(wo.work_order_name, 'ตรวจสอบแล้ว')}
-                            disabled={updating || selectedIds.size === 0}
-                            className="px-3 py-1.5 bg-cyan-100 text-cyan-800 rounded-lg text-sm font-medium hover:bg-cyan-200 disabled:opacity-50"
-                          >
-                            คืนไป &quot;ตรวจสอบแล้ว&quot;
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => moveSelectedTo(wo.work_order_name, 'ยกเลิก')}
-                            disabled={updating || selectedIds.size === 0}
-                            className="px-3 py-1.5 bg-red-100 text-red-800 rounded-lg text-sm font-medium hover:bg-red-200 disabled:opacity-50"
-                          >
-                            ยกเลิกบิลที่เลือก
+                            ย้ายไปใบสั่งงาน
                           </button>
                         </div>
 

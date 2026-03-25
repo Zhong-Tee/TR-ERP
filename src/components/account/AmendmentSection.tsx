@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -54,6 +54,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
   const [reasonType, setReasonType] = useState<string>('staff_error')
   const [reasonDetail, setReasonDetail] = useState('')
   const [submitLoading, setSubmitLoading] = useState(false)
+  /** รายการบิลที่เลือกให้ยกเลิก (บางรายการ → changes_json.remove_item_ids) */
+  const [selectedRemoveIds, setSelectedRemoveIds] = useState<Set<string>>(new Set())
 
   const isCreateMode = !!orderToAmend
   const isApproverRole = user?.role === 'superadmin' || user?.role === 'admin'
@@ -81,23 +83,63 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
     if (!isCreateMode) loadAmendments()
   }, [isCreateMode, loadAmendments])
 
+  const createModeItems = useMemo(() => {
+    if (!orderToAmend) return [] as any[]
+    return (orderToAmend.order_items || (orderToAmend as any).or_order_items || []) as any[]
+  }, [orderToAmend])
+
+  useEffect(() => {
+    if (!orderToAmend?.id) return
+    const ids = createModeItems.map((i: any) => i.id).filter(Boolean) as string[]
+    setSelectedRemoveIds(new Set(ids))
+  }, [orderToAmend?.id, createModeItems])
+
+  const toggleRemoveItem = (itemId: string) => {
+    setSelectedRemoveIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }
+
   const handleSubmitCancellation = async () => {
     if (!orderToAmend || !user?.id) return
+    const lineIds = createModeItems.map((i: any) => i.id).filter(Boolean) as string[]
+    const removeIds = lineIds.filter((id) => selectedRemoveIds.has(id))
+    if (removeIds.length === 0) {
+      setResultModal({
+        open: true,
+        success: false,
+        message: 'กรุณาเลือกอย่างน้อย 1 รายการที่ต้องการนำออก / ยกเลิก',
+      })
+      return
+    }
+    const fullCancel = lineIds.length > 0 && removeIds.length >= lineIds.length
+    const changesJson = fullCancel ? {} : { remove_item_ids: removeIds }
     setSubmitLoading(true)
     try {
       const { data, error } = await supabase.rpc('rpc_submit_amendment', {
         p_order_id: orderToAmend.id,
         p_reason_type: reasonType,
         p_reason_detail: reasonDetail.trim() || null,
-        p_changes_json: {},
+        p_changes_json: changesJson,
         p_items_after: [],
         p_user_id: user.id,
       })
       if (error) throw error
-      setResultModal({ open: true, success: true, message: `ส่งคำขอยกเลิกบิลสำเร็จ เลขที่ ${(data as any)?.amendment_no ?? '-'}\nรออนุมัติจาก superadmin / admin` })
+      setResultModal({
+        open: true,
+        success: true,
+        message:
+          (fullCancel
+            ? `ส่งคำขอยกเลิกบิลสำเร็จ เลขที่ ${(data as any)?.amendment_no ?? '-'}`
+            : `ส่งคำขอแก้ไขบิล (ลบ ${removeIds.length} รายการ) สำเร็จ เลขที่ ${(data as any)?.amendment_no ?? '-'}`) +
+          `\nรออนุมัติจาก superadmin / admin`,
+      })
       onDone?.()
     } catch (e: any) {
-      setResultModal({ open: true, success: false, message: e?.message || 'ส่งคำขอยกเลิกไม่สำเร็จ' })
+      setResultModal({ open: true, success: false, message: e?.message || 'ส่งคำขอไม่สำเร็จ' })
     } finally {
       setSubmitLoading(false)
     }
@@ -113,10 +155,13 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
       })
       if (error) throw error
       const result = data as any
+      const partial = result?.partial === true
       setResultModal({
         open: true,
         success: true,
-        message: `ยกเลิกบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nWMS ที่ยกเลิก: ${result?.cancelled_wms_count ?? 0} รายการ\n\nกรุณาสร้างบิลใหม่ในหน้าออเดอร์`,
+        message: partial
+          ? `ดำเนินการแก้ไขบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nปรับแถว WMS: ${result?.cancelled_wms_count ?? 0} รายการ`
+          : `ยกเลิกบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nWMS ที่ยกเลิก: ${result?.cancelled_wms_count ?? 0} รายการ\n\nกรุณาสร้างบิลใหม่ในหน้าออเดอร์`,
       })
       setDetailModalOpen(false)
       setDetailAmendment(null)
@@ -203,7 +248,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
 
   // ──────── Create Mode: ขอยกเลิกบิล ────────
   if (isCreateMode && orderToAmend) {
-    const items = orderToAmend.order_items || (orderToAmend as any).or_order_items || []
+    const items = createModeItems
     return (
       <div className="space-y-4">
         <div className="bg-white rounded-xl border border-surface-200 shadow-sm p-4">
@@ -224,11 +269,13 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
 
         {items.length > 0 && (
           <div className="bg-white rounded-xl border border-surface-200 shadow-sm p-4">
-            <h4 className="text-sm font-semibold text-gray-700 mb-3">รายการสินค้าในบิล (อ่านอย่างเดียว)</h4>
+            <h4 className="text-sm font-semibold text-gray-700 mb-1">รายการสินค้าในบิล — เลือกรายการที่ต้องการนำออก</h4>
+            <p className="text-xs text-gray-500 mb-3">เลือกครบทุกรายการเพื่อขอ<span className="font-semibold">ยกเลิกบิลทั้งใบ</span> เลือกบางรายการเพื่อขอ<span className="font-semibold">ลบเฉพาะบรรทัด</span> (หลังอนุมัติ)</p>
             <div className="overflow-x-auto border border-gray-200 rounded-lg">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 text-left text-gray-600">
+                    <th className="px-3 py-2 font-semibold w-10">เลือก</th>
                     <th className="px-3 py-2 font-semibold">#</th>
                     <th className="px-3 py-2 font-semibold">ชื่อสินค้า</th>
                     <th className="px-3 py-2 font-semibold w-24">จำนวน</th>
@@ -236,14 +283,31 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {items.map((item: any, i: number) => (
-                    <tr key={item.id || i} className="text-gray-700">
-                      <td className="px-3 py-2 text-gray-400">{i + 1}</td>
-                      <td className="px-3 py-2">{item.product_name || '-'}</td>
-                      <td className="px-3 py-2">{item.quantity ?? '-'}</td>
-                      <td className="px-3 py-2">{item.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
-                    </tr>
-                  ))}
+                  {items.map((item: any, i: number) => {
+                    const rid = item.id as string | undefined
+                    const checked = !!(rid && selectedRemoveIds.has(rid))
+                    return (
+                      <tr key={item.id || i} className={`text-gray-700 ${checked ? 'bg-red-50/60' : ''}`}>
+                        <td className="px-3 py-2 text-center">
+                          {rid ? (
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleRemoveItem(rid)}
+                              className="rounded border-gray-300"
+                              aria-label={`เลือกรายการ ${item.product_name || i + 1}`}
+                            />
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                        <td className="px-3 py-2">{item.product_name || '-'}</td>
+                        <td className="px-3 py-2">{item.quantity ?? '-'}</td>
+                        <td className="px-3 py-2">{item.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -257,8 +321,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
               ยืนยันการขอยกเลิกบิลนี้
             </p>
             <p className="text-amber-700">
-              บิลจะถูกยกเลิกหลังจากได้รับการอนุมัติ สินค้าที่จัดไปแล้วจะรอหัวหน้าแผนกดำเนินการ
-              คุณสามารถสร้างบิลใหม่ได้ในหน้าออเดอร์หลังจากยกเลิกสำเร็จ
+              หลังอนุมัติ ระบบจะอัปเดตบิลและแถว WMS ให้สอดคล้องกับรายการที่เลือก (ยกเลิกทั้งใบหรือลบเฉพาะบรรทัด)
+              คุณสามารถสร้างบิลใหม่ได้ในหน้าออเดอร์เมื่อยกเลิกทั้งใบสำเร็จ
             </p>
           </div>
 
@@ -300,7 +364,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
               className="px-6 py-2 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700 disabled:opacity-50 flex items-center gap-2"
             >
               {submitLoading ? <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" /> : <i className="fas fa-ban" />}
-              ส่งคำขอยกเลิกบิล
+              ส่งคำขอ
             </button>
           </div>
         </div>

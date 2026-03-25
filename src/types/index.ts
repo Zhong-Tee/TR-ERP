@@ -69,6 +69,9 @@ export interface Order {
   admin_user: string
   entry_date: string
   work_order_name: string | null
+  /** ชื่อใบงานที่บิลถูก "ย้ายไปใบสั่งงาน" จาก (Plan ป้ายแก้ไข) */
+  plan_released_from_work_order?: string | null
+  plan_released_at?: string | null
   shipped_by: string | null
   shipped_time: string | null
   tracking_number: string | null
@@ -216,6 +219,8 @@ export interface WorkOrder {
   order_count: number
   created_at: string
   updated_at: string
+  /** มีบิลถูกย้ายออกจากใบงานบางส่วน */
+  plan_wo_modified?: boolean
 }
 
 // Product Type: FG = Finished Goods, RM = Raw Material, PP = Processed Products

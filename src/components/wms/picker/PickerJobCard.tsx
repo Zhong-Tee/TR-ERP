@@ -25,7 +25,8 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
   const { user } = useAuthContext()
   const { showMessage, MessageModal } = useWmsModal()
 
-  const finished = ['picked', 'correct', 'out_of_stock'].includes(item.status)
+  const isMovedFromPlan = !!(item.plan_line_released || item.source_bill_released_from_wo)
+  const finished = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled'].includes(item.status)
   const imgUrl =
     item.product_code === 'SPARE_PART' ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
 
@@ -55,6 +56,17 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
         </div>
 
         <div className="p-4 bg-white">
+          {isMovedFromPlan && (
+            <div className="mb-3 rounded-xl bg-amber-100 border border-amber-300 text-amber-950 text-xs sm:text-sm font-bold px-3 py-2 text-center leading-snug">
+              <div>
+                {item.source_bill_no ? (
+                  <span className="font-mono mr-1">บิล {item.source_bill_no}</span>
+                ) : null}
+                <span>บิลถูกย้ายออกจากใบงาน</span>
+              </div>
+              <div>ตรวจสอบก่อนหยิบต่อ</div>
+            </div>
+          )}
           <div className="mb-3">
             <h2 className="text-[18px] font-bold text-slate-800 truncate">{item.product_name}</h2>
           </div>
@@ -112,11 +124,23 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
           }}
           disabled={finished}
           className={`flex-1 py-6 rounded-3xl text-2xl font-black shadow-lg ${
-            finished ? 'bg-slate-500 opacity-60 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 active:scale-95 transition-all cursor-pointer'
+            finished
+              ? 'bg-slate-500 opacity-60 cursor-not-allowed'
+              : isMovedFromPlan
+              ? 'bg-orange-500 hover:bg-orange-600 active:scale-95 transition-all cursor-pointer text-white'
+              : 'bg-green-500 hover:bg-green-600 active:scale-95 transition-all cursor-pointer'
           }`}
           type="button"
         >
-          {finished ? (item.status === 'out_of_stock' ? 'สินค้าหมดแล้ว' : 'หยิบเรียบร้อยแล้ว') : 'หยิบเสร็จแล้ว'}
+          {finished
+            ? item.status === 'out_of_stock'
+              ? 'สินค้าหมดแล้ว'
+              : item.status === 'cancelled'
+              ? 'ข้ามแล้ว'
+              : 'หยิบเรียบร้อยแล้ว'
+            : isMovedFromPlan
+            ? 'ข้ามรายการ'
+            : 'หยิบเสร็จแล้ว'}
         </button>
         <button
           onClick={() => onNavigate(1)}

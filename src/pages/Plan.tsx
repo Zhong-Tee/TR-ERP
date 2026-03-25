@@ -46,6 +46,8 @@ interface PlanJob {
   locked_plans?: Record<string, { start: number; end: number }>
   order_index: number
   created_at?: string
+  /** ใบงานถูกยกเลิกการผลิต (บิลถูกย้ายหมดแต่มี timestamp ในแผนแล้ว) */
+  is_production_voided?: boolean
 }
 
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
@@ -174,6 +176,7 @@ const toISODateTime = (dateStr: string, timeStr: string): string => {
 }
 
 function getEffectiveQty(job: PlanJob, dept: string, _settings: PlanSettingsData): number {
+  if (job.is_production_voided) return 0
   if (dept === 'เบิก') {
     return (Number(job.qty?.['STAMP']) || 0) + (Number(job.qty?.['LASER']) || 0) + (Number(job.qty?.['ETC']) || 0)
   }
@@ -476,6 +479,12 @@ export default function Plan() {
   const [selectedCancelledOrderId, setSelectedCancelledOrderId] = useState<string | null>(null)
   const [cancelledWmsLines, setCancelledWmsLines] = useState<any[]>([])
   const [cancelledWmsLoading, setCancelledWmsLoading] = useState(false)
+  /** บิลที่ย้ายไปใบสั่งงานจากใบงาน (plan_released_from_work_order = ชื่อ WO) */
+  const [releasedByWO, setReleasedByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string }[]>>({})
+  const [releasedDetailWO, setReleasedDetailWO] = useState<string | null>(null)
+  const [selectedReleasedOrderId, setSelectedReleasedOrderId] = useState<string | null>(null)
+  const [releasedOrderLines, setReleasedOrderLines] = useState<any[]>([])
+  const [releasedLinesLoading, setReleasedLinesLoading] = useState(false)
   const [stockActionLoading, setStockActionLoading] = useState<string | null>(null)
   const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [dashEdit, setDashEdit] = useState<{
@@ -712,6 +721,74 @@ export default function Plan() {
     return () => { supabase.removeChannel(ch) }
   }, [loadCancelledOrders])
 
+  const loadReleasedOrders = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, customer_name, plan_released_from_work_order')
+        .eq('status', 'ใบสั่งงาน')
+        .not('plan_released_from_work_order', 'is', null)
+      if (data) {
+        const map: Record<string, { id: string; bill_no: string; customer_name: string }[]> = {}
+        ;(data as any[]).forEach((o: any) => {
+          const wo = o.plan_released_from_work_order
+          if (!wo) return
+          if (!map[wo]) map[wo] = []
+          map[wo].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-' })
+        })
+        setReleasedByWO(map)
+      }
+    } catch (e) {
+      console.error('Error loading released orders:', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadReleasedOrders()
+  }, [loadReleasedOrders])
+
+  useEffect(() => {
+    const ch = supabase
+      .channel('plan_released_orders')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadReleasedOrders()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(ch)
+    }
+  }, [loadReleasedOrders])
+
+  const loadReleasedOrderLines = useCallback(async (orderId: string) => {
+    setReleasedLinesLoading(true)
+    setSelectedReleasedOrderId(orderId)
+    try {
+      const { data } = await supabase
+        .from('or_order_items')
+        .select('id, product_name, quantity, unit_price')
+        .eq('order_id', orderId)
+      setReleasedOrderLines(data || [])
+    } catch (e) {
+      console.error(e)
+      setReleasedOrderLines([])
+    } finally {
+      setReleasedLinesLoading(false)
+    }
+  }, [])
+
+  const openReleasedBillsModal = useCallback(
+    (woName: string) => {
+      setReleasedDetailWO(woName)
+      const firstId = releasedByWO[woName]?.[0]?.id
+      if (firstId) void loadReleasedOrderLines(firstId)
+      else {
+        setSelectedReleasedOrderId(null)
+        setReleasedOrderLines([])
+      }
+    },
+    [releasedByWO, loadReleasedOrderLines]
+  )
+
   const getCancelledOrderProductCodes = useCallback(async (orderId: string): Promise<string[]> => {
     const { data: items } = await supabase
       .from('or_order_items')
@@ -798,6 +875,14 @@ export default function Plan() {
       setCancelledWmsLoading(false)
     }
   }, [cancelledByWO, getCancelledOrderProductCodes])
+
+  const openCancelledBillsModal = useCallback(
+    (woName: string) => {
+      const firstId = cancelledByWO[woName]?.[0]?.id
+      void loadCancelledWmsLines(woName, firstId)
+    },
+    [cancelledByWO, loadCancelledWmsLines]
+  )
 
   const handleStockAction = useCallback(async (wmsOrderId: string, action: 'recall' | 'waste') => {
     setStockActionLoading(wmsOrderId)
@@ -1539,12 +1624,32 @@ export default function Plan() {
                     <tr key={j.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-4 font-semibold text-gray-900 whitespace-nowrap">
                         {j.name}
-                        {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                        {j.is_production_voided && (
+                          <span
+                            className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300"
+                            title="บิลถูกย้ายออกจากใบงานหมดแล้ว แต่แผนเคยเริ่ม — ปริมาณในแผนถือเป็น 0"
+                          >
+                            ยกเลิกใบงาน
+                          </span>
+                        )}
+                        {(releasedByWO[j.name]?.length ?? 0) > 0 && (
                           <button
+                            type="button"
                             onClick={(e) => {
                               e.stopPropagation()
-                              const firstOrderId = cancelledByWO[j.name]?.[0]?.id
-                              loadCancelledWmsLines(j.name, firstOrderId)
+                              openReleasedBillsModal(j.name)
+                            }}
+                            className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200 transition"
+                          >
+                            แก้ไข {releasedByWO[j.name].length}
+                          </button>
+                        )}
+                        {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              openCancelledBillsModal(j.name)
                             }}
                             className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                           >
@@ -1844,12 +1949,36 @@ export default function Plan() {
                               >
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="min-w-0 flex-1">
-                                    <div className="font-semibold text-lg">
-                                      {j.name}
-                                      {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
-                                        <span className="ml-2 px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300">
-                                          ยกเลิก {cancelledByWO[j.name].length}
+                                    <div className="font-semibold text-lg flex flex-wrap items-center gap-1.5">
+                                      <span>{j.name}</span>
+                                      {j.is_production_voided && (
+                                        <span className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                                          ยกเลิกใบงาน
                                         </span>
+                                      )}
+                                      {(releasedByWO[j.name]?.length ?? 0) > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openReleasedBillsModal(j.name)
+                                          }}
+                                          className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200"
+                                        >
+                                          แก้ไข {releasedByWO[j.name].length}
+                                        </button>
+                                      )}
+                                      {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            openCancelledBillsModal(j.name)
+                                          }}
+                                          className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200"
+                                        >
+                                          ยกเลิก {cancelledByWO[j.name].length}
+                                        </button>
                                       )}
                                     </div>
                                     <div className="text-sm text-gray-500">
@@ -2195,12 +2324,32 @@ export default function Plan() {
                           <td className="p-2 text-gray-400 cursor-grab">{unlocked ? '☰' : ''}</td>
                           <td className="p-2 font-medium">
                             {j.name}
-                            {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                            {j.is_production_voided && (
+                              <span
+                                className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300"
+                                title="บิลถูกย้ายออกจากใบงานหมดแล้ว แต่แผนเคยเริ่ม"
+                              >
+                                ยกเลิกใบงาน
+                              </span>
+                            )}
+                            {(releasedByWO[j.name]?.length ?? 0) > 0 && (
                               <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  const firstOrderId = cancelledByWO[j.name]?.[0]?.id
-                                  loadCancelledWmsLines(j.name, firstOrderId)
+                                  openReleasedBillsModal(j.name)
+                                }}
+                                className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-blue-100 text-blue-800 border border-blue-300 hover:bg-blue-200 transition"
+                              >
+                                แก้ไข {releasedByWO[j.name].length}
+                              </button>
+                            )}
+                            {(cancelledByWO[j.name]?.length ?? 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openCancelledBillsModal(j.name)
                                 }}
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                               >
@@ -3094,6 +3243,103 @@ export default function Plan() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => { setCancelledDetailWO(null); setSelectedCancelledOrderId(null); setCancelledWmsLines([]) }}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Bills released back to work-queue (ย้ายไปใบสั่งงาน) */}
+      <Modal
+        open={!!releasedDetailWO}
+        onClose={() => {
+          setReleasedDetailWO(null)
+          setSelectedReleasedOrderId(null)
+          setReleasedOrderLines([])
+        }}
+        contentClassName="max-w-3xl w-full max-h-[85vh] overflow-y-auto"
+      >
+        {releasedDetailWO && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+              <h3 className="text-lg font-bold text-gray-800">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-700 mr-2">
+                  <i className="fas fa-share-square text-sm"></i>
+                </span>
+                บิลที่ย้ายไปใบสั่งงานจากใบงาน {releasedDetailWO}
+              </h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              รายการด้านล่างเป็นบิลที่ถูกนำกลับไปอยู่ในคิว &quot;ใบสั่งงาน&quot; จากใบงานนี้ (ดูรายการสินค้าในแต่ละบิล)
+            </p>
+            {(releasedByWO[releasedDetailWO] || []).length > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-sm font-semibold text-blue-900 mb-2">เลือกบิล:</p>
+                <div className="flex flex-wrap gap-2">
+                  {releasedByWO[releasedDetailWO].map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => loadReleasedOrderLines(o.id)}
+                      className={`px-2 py-1 border rounded-lg text-sm transition ${
+                        selectedReleasedOrderId === o.id
+                          ? 'bg-blue-100 border-blue-400'
+                          : 'bg-white border-blue-200 hover:bg-blue-50/80'
+                      }`}
+                    >
+                      <span className="font-mono font-bold text-blue-800">{o.bill_no}</span>
+                      <span className="text-gray-600 ml-1">({o.customer_name})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">รายการสินค้าในบิลที่เลือก</h4>
+              {releasedLinesLoading ? (
+                <div className="flex justify-center py-8">
+                  <span className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+                </div>
+              ) : !selectedReleasedOrderId ? (
+                <p className="text-center py-6 text-gray-400 text-sm">เลือกบิลด้านบนเพื่อดูรายการสินค้า</p>
+              ) : releasedOrderLines.length === 0 ? (
+                <p className="text-center py-6 text-gray-400 text-sm">ไม่มีรายการสินค้าในบิลนี้</p>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 text-left text-gray-600">
+                        <th className="px-3 py-2 font-semibold">ชื่อสินค้า</th>
+                        <th className="px-3 py-2 font-semibold">จำนวน</th>
+                        <th className="px-3 py-2 font-semibold">ราคา/หน่วย</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {releasedOrderLines.map((line: any) => (
+                        <tr key={line.id}>
+                          <td className="px-3 py-2">{line.product_name || '-'}</td>
+                          <td className="px-3 py-2">{line.quantity ?? '-'}</td>
+                          <td className="px-3 py-2 tabular-nums">
+                            {line.unit_price != null ? Number(line.unit_price).toLocaleString('th-TH', { minimumFractionDigits: 2 }) : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setReleasedDetailWO(null)
+                  setSelectedReleasedOrderId(null)
+                  setReleasedOrderLines([])
+                }}
                 className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
               >
                 ปิด

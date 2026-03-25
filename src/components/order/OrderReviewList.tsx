@@ -13,6 +13,7 @@ export const ERROR_FIELD_KEYS = [
   { key: 'channel_name', label: 'ชื่อช่องทาง' },
   { key: 'customer_name', label: 'ชื่อลูกค้า' },
   { key: 'address', label: 'ที่อยู่' },
+  { key: 'mobile_phone', label: 'เบอร์โทร' },
   { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
   { key: 'tracking_number', label: 'เลขพัสดุ' },
   { key: 'product_name', label: 'ชื่อสินค้า' },
@@ -36,7 +37,7 @@ const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'IN
 const CHANNELS_ORDER_NO = ['SPTR', 'FSPTR', 'LZTR', 'TTTR']
 
 /** แมป ErrorFieldKey ระดับรายการ → ชื่อคอลัมน์ใน pr_category_field_settings */
-const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address' | 'channel_order_no' | 'tracking_number'>, string> = {
+const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address' | 'mobile_phone' | 'channel_order_no' | 'tracking_number'>, string> = {
   product_name: 'product_name',
   ink_color: 'ink_color',
   layer: 'layer',
@@ -139,6 +140,7 @@ function getVisibleErrorFieldsForOrder(
         ...(CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode) ? [{ key: 'channel_name' as const, label: 'ชื่อช่องทาง' }] : []),
         { key: 'customer_name', label: 'ชื่อลูกค้า' },
         { key: 'address', label: 'ที่อยู่' },
+        { key: 'mobile_phone', label: 'เบอร์โทร' },
       ]
 
   if (!hasItems) return orderLevel
@@ -155,7 +157,7 @@ function getVisibleErrorFieldsForOrder(
 }
 
 /** ฟิลด์ระดับบิล (ไม่แยกรายการ) */
-const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'channel_order_no', 'tracking_number']
+const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'mobile_phone', 'channel_order_no', 'tracking_number']
 
 /** แยกรายการฟิลด์ที่แสดงเป็นระดับบิล vs ระดับรายการ */
 function getOrderLevelAndItemLevelErrorFields(
@@ -729,6 +731,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       <div className="flex items-start gap-3">
                         <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ที่อยู่</div>
                         <div className="flex-1 whitespace-pre-wrap text-sm">{selectedOrder.customer_address}</div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="w-24 text-gray-600 font-medium text-sm shrink-0">เบอร์โทร</div>
+                        <div className="flex-1 whitespace-pre-wrap text-sm">
+                          {(selectedOrder as any).customer_phone ||
+                            (selectedOrder as any).recipient_phone ||
+                            (selectedOrder.billing_details as any)?.mobile_phone ||
+                            '-'}
+                        </div>
                       </div>
                     </>
                   )}

@@ -14,7 +14,9 @@ const isMainCategory = (cat: string): boolean => {
 }
 
 export default function NewOrdersSection() {
-  const [workOrders, setWorkOrders] = useState<Array<{ id: string; work_order_name: string; order_count: number; created_at: string }>>([])
+  const [workOrders, setWorkOrders] = useState<
+    Array<{ id: string; work_order_name: string; order_count: number; created_at: string; plan_wo_modified?: boolean }>
+  >([])
   const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
   const [selectedWorkOrder, setSelectedWorkOrder] = useState<string | null>(null)
   const [selectedPickerId, setSelectedPickerId] = useState('')
@@ -68,7 +70,7 @@ export default function NewOrdersSection() {
     setLoading(true)
     const { data } = await supabase
       .from('or_work_orders')
-      .select('id, work_order_name, order_count, created_at')
+      .select('id, work_order_name, order_count, created_at, plan_wo_modified')
       .eq('status', 'กำลังผลิต')
       .order('created_at', { ascending: false })
 
@@ -212,12 +214,19 @@ export default function NewOrdersSection() {
             className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
             onClick={() => openAssignPicker(wo.work_order_name)}
           >
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-lg font-semibold">📦 {wo.work_order_name}</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold flex flex-wrap items-center gap-2">
+                  <span>📦 {wo.work_order_name}</span>
+                  {wo.plan_wo_modified && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                      ถูกแก้ไข
+                    </span>
+                  )}
+                </div>
                 <div className="text-sm text-gray-600">{wo.order_count} บิล</div>
               </div>
-              <span className="text-blue-600 font-medium">เลือก Picker</span>
+              <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
             </div>
           </button>
         ))}

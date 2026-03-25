@@ -3593,7 +3593,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   function updateItem(index: number, field: keyof OrderItem, value: any) {
     setItems((prev) => {
       const newItems = [...prev]
-      newItems[index] = { ...newItems[index], [field]: value }
+    const nextItem = { ...newItems[index], [field]: value }
+    // เมื่อทำเครื่องหมายว่าเป็นของฟรี ให้ล็อคราคา/หน่วยเป็น 0 เสมอ
+    if ((nextItem as { is_free?: boolean }).is_free) {
+      nextItem.unit_price = 0
+    }
+    newItems[index] = nextItem
       return newItems
     })
   }
@@ -3601,7 +3606,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   function updateItemFields(index: number, fields: Partial<OrderItem>) {
     setItems((prev) => {
       const newItems = [...prev]
-      newItems[index] = { ...newItems[index], ...fields }
+    const nextItem = { ...newItems[index], ...fields }
+    // กันไม่ให้แถวของฟรีถูกเซ็ตราคาเป็นค่ามากกว่า 0 จาก flow อื่น
+    if ((nextItem as { is_free?: boolean }).is_free) {
+      nextItem.unit_price = 0
+    }
+    newItems[index] = nextItem
       return newItems
     })
   }
@@ -4605,8 +4615,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                       }}
                       step="0.01"
                       placeholder="0.00"
-                      disabled={formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled={formDisabled || isManualPriceChannel || isCondoSubRow(item) || !!(item as { is_free?: boolean }).is_free || !isFieldEnabled(index, 'unit_price')}
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !!(item as { is_free?: boolean }).is_free || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">

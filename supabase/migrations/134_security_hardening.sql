@@ -828,7 +828,7 @@ BEGIN
 END;
 $$;
 
--- rpc_execute_bill_cancellation: เพิ่ม role check
+-- rpc_execute_bill_cancellation: เพิ่ม role check (รายละเอียดเต็ม + partial อยู่ migration 187)
 CREATE OR REPLACE FUNCTION rpc_execute_bill_cancellation(p_amendment_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
