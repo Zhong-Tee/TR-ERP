@@ -3341,7 +3341,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
   function addItem() {
     const lastItem = items.length > 0 ? items[items.length - 1] : null
-    // Copy เฉพาะชื่อสินค้า + product_id เพื่อรักษากฏตั้งค่าสินค้า (ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่); คอลัมน์อื่นไม่ copy
+    // Copy ชื่อสินค้า + product_id + ราคา/หน่วย จากแถวล่าสุด เพื่อกรอกบิลซ้ำได้เร็วขึ้น
     const newItem: Partial<OrderItem> =
       lastItem?.product_name || lastItem?.product_id
         ? {
@@ -3349,6 +3349,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             quantity: 1,
             product_name: lastItem?.product_name ?? '',
             product_id: lastItem?.product_id ?? undefined,
+            unit_price: lastItem?.unit_price ?? 0,
           }
         : { product_type: 'ชั้น1', quantity: 1 }
     setItems([...items, newItem])
