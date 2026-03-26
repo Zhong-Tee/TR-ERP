@@ -467,8 +467,8 @@ export default function RequisitionDashboard() {
               <tr>
                 <th className="p-4">รายการเบิก</th>
                 <th className="p-4">ผู้เบิก</th>
+                <th className="p-4">ผู้อนุมัติ</th>
                 <th className="p-4">วันที่ทำรายการ</th>
-                <th className="p-4">หมายเหตุ</th>
                 <th className="p-4">วันที่อนุมัติ</th>
                 <th className="p-4 text-center">สถานะ</th>
                 <th className="p-4 text-center">จัดการ</th>
@@ -487,8 +487,8 @@ export default function RequisitionDashboard() {
                   <tr key={req.id} className="hover:bg-blue-50 border-b transition">
                     <td className="p-4 font-black text-blue-600">{req.requisition_id}</td>
                     <td className="p-4 font-bold text-slate-700">{req.created_by_user?.username || '---'}</td>
+                    <td className="p-4 font-bold text-slate-700">{req.approved_by_user?.username || '-'}</td>
                     <td className="p-4 text-gray-500 text-xs">{formatDate(req.created_at)}</td>
-                    <td className="p-4 text-gray-500 text-sm">{req.notes || '-'}</td>
                     <td className="p-4 text-gray-500 text-xs">{formatDate(req.approved_at)}</td>
                     <td className="p-4 text-center">{getStatusBadge(req.status)}</td>
                     <td className="p-4 text-center">

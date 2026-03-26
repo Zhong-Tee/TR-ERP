@@ -260,6 +260,12 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="text-xs text-gray-500 mb-1">รหัส: {item.product_code}</div>
                         <div className="text-xs text-red-600 font-bold">จุดเก็บ: {item.location}</div>
                       </div>
+                      <div className="hidden md:block flex-1 min-w-[180px] max-w-[320px]">
+                        <div className="text-xs text-gray-500 font-bold uppercase mb-1">หมายเหตุ</div>
+                        <div className="text-sm text-gray-700 break-words bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[42px]">
+                          {requisition.notes || '-'}
+                        </div>
+                      </div>
                       <div className="text-slate-800 font-black text-xl shrink-0 bg-blue-100 px-4 py-2 rounded-lg">
                         x{item.qty}
                       </div>
