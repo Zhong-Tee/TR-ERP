@@ -102,8 +102,9 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   // 2. รายการใบงาน: นับเฉพาะ order_id ที่สถานะภาพรวม = IN PROGRESS (มี item ที่ status เป็น pending/wrong/not_find)
   const { data: wmsData } = await supabase
     .from('wms_orders')
-    .select('order_id, status')
+    .select('work_order_id, order_id, status')
     .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+    .neq('status', 'cancelled')
     .gte('created_at', today + 'T00:00:00')
     .lte('created_at', today + 'T23:59:59')
 
@@ -114,18 +115,19 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   })
   const uploadCount = Object.values(uploadGroups).filter(Boolean).length
 
-  // 3. ตรวจสินค้า: completed orders today that still have unchecked items (picked)
+  // 3. ตรวจสินค้า: ใช้เงื่อนไขเดียวกับ ReviewSection (นับเป็น work_order_id)
   let reviewCount = 0
   if (wmsData) {
-    const grouped: Record<string, { total: number; finished: number; picked: number }> = {}
+    const grouped: Record<string, { total: number; pending: number; picked: number }> = {}
     wmsData.forEach((r: any) => {
-      if (!grouped[r.order_id]) grouped[r.order_id] = { total: 0, finished: 0, picked: 0 }
-      grouped[r.order_id].total++
-      if (['picked', 'correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(r.status))
-        grouped[r.order_id].finished++
-      if (r.status === 'picked') grouped[r.order_id].picked++
+      const wid = String(r.work_order_id || '').trim()
+      if (!wid) return
+      if (!grouped[wid]) grouped[wid] = { total: 0, pending: 0, picked: 0 }
+      grouped[wid].total++
+      if (r.status === 'pending') grouped[wid].pending++
+      if (r.status === 'picked') grouped[wid].picked++
     })
-    reviewCount = Object.values(grouped).filter((g) => g.finished === g.total && g.picked > 0).length
+    reviewCount = Object.values(grouped).filter((g) => g.pending === 0 && g.picked > 0).length
   }
 
   // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel

@@ -43,12 +43,19 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
     }
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
-      const wid = String(obj.work_order_id || '')
-      if (!wid) return acc
-      if (!acc[wid]) {
-        acc[wid] = { id: wid, name: obj.order_id, count: 0, date: obj.created_at }
+      const workOrderId = String(obj.work_order_id || '')
+      const orderId = String(obj.order_id || '')
+      const scopeId = workOrderId
+        ? `wo:${workOrderId}`
+        : orderId
+          ? `ord:${orderId}`
+          : ''
+
+      if (!scopeId) return acc
+      if (!acc[scopeId]) {
+        acc[scopeId] = { id: scopeId, name: orderId || workOrderId, count: 0, date: obj.created_at }
       }
-      acc[wid].count++
+      acc[scopeId].count++
       return acc
     }, {})
 

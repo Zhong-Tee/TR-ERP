@@ -262,6 +262,8 @@ export default function WorkOrderManageList({
   }
 
   function toggleExpand(wo: WorkOrder) {
+    // ใบงานที่ถูกยกเลิกแล้วไม่ให้ขยาย (ไม่มีบิลด้านในแล้ว)
+    if (wo.status === 'ยกเลิก') return
     if (expandedWo === wo.id) {
       setExpandedWo(null)
       return
@@ -373,17 +375,34 @@ export default function WorkOrderManageList({
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
-      const { error: updateError } = await supabase
+      // ย้ายบิลกลับไป "ใบสั่งงาน" ตามกติกาหน้าใบสั่งงาน:
+      // - ช่องทางทั่วไป => status = ใบสั่งงาน
+      // - PUMP => status = เสร็จสิ้น (หน้าใบสั่งงานรองรับ PUMP ที่คอนเฟิร์มแล้ว/เสร็จสิ้น)
+      const commonResetFields = {
+        work_order_id: null,
+        work_order_name: null,
+        plan_released_from_work_order: null,
+        plan_released_from_work_order_id: null,
+        plan_released_at: null,
+      }
+      const { error: updateGeneralError } = await supabase
         .from('or_orders')
-        .update({ work_order_id: null, work_order_name: null, status: 'ลงข้อมูลเสร็จสิ้น' })
+        .update({ ...commonResetFields, status: 'ใบสั่งงาน' })
         .eq('work_order_id', wo.id)
-      if (updateError) throw updateError
-      const { error: deleteError } = await supabase
+        .neq('channel_code', 'PUMP')
+      if (updateGeneralError) throw updateGeneralError
+      const { error: updatePumpError } = await supabase
+        .from('or_orders')
+        .update({ ...commonResetFields, status: 'เสร็จสิ้น' })
+        .eq('work_order_id', wo.id)
+        .eq('channel_code', 'PUMP')
+      if (updatePumpError) throw updatePumpError
+      // ไม่ลบใบงานทิ้ง: เก็บไว้ในแท็บ "ใบงานทั้งหมด" พร้อมสถานะยกเลิก
+      const { error: cancelWoError } = await supabase
         .from('or_work_orders')
-        .delete()
+        .update({ status: 'ยกเลิก', order_count: 0 })
         .eq('id', wo.id)
-      if (deleteError) throw deleteError
-      await supabase.from('plan_jobs').delete().eq('work_order_id', wo.id)
+      if (cancelWoError) throw cancelWoError
       await loadWorkOrders()
       onRefresh?.()
       setMessageModal({ open: true, message: `ยกเลิกใบงาน "${wo.work_order_name}" เรียบร้อย` })
@@ -1188,6 +1207,7 @@ export default function WorkOrderManageList({
             const orders = ordersByWo[wo.id] || []
             const selectedIds = selectedByWo[wo.id] || new Set<string>()
             const isExpanded = expandedWo === wo.id
+            const isCancelledWorkOrder = wo.status === 'ยกเลิก'
             const channelCode = channelByWo[wo.id] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
             const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
@@ -1196,14 +1216,21 @@ export default function WorkOrderManageList({
               <div key={wo.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
                 {/* หัวใบงาน + ปุ่มด้านขวา (เงื่อนไขอ้างอิง file/index.html) */}
                 <div
-                  className="flex items-center justify-between gap-4 p-4 cursor-pointer hover:bg-gray-50 border-b border-gray-100"
+                  className={`flex items-center justify-between gap-4 p-4 border-b border-gray-100 ${
+                    isCancelledWorkOrder ? 'cursor-not-allowed bg-gray-50' : 'cursor-pointer hover:bg-gray-50'
+                  }`}
                   onClick={() => toggleExpand(wo)}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-gray-400 select-none">{isExpanded ? '▼' : '▶'}</span>
+                    <span className="text-gray-400 select-none">{isCancelledWorkOrder ? '•' : (isExpanded ? '▼' : '▶')}</span>
                     <span className="font-semibold text-gray-900 truncate">
                       {wo.work_order_name} ({wo.order_count} บิล)
                     </span>
+                    {isCancelledWorkOrder && (
+                      <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                        ใบงานนี้ถูกยกเลิก
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
@@ -1283,42 +1310,48 @@ export default function WorkOrderManageList({
                 {/* รายการบิล (เมื่อเปิด) */}
                 {isExpanded && (
                   <div className="p-4 bg-gray-50 border-t border-gray-100">
-                    {orders.length === 0 ? (
+                    {isCancelledWorkOrder ? (
+                      <div className="text-center py-6 text-gray-500">ใบงานนี้ถูกยกเลิกและย้ายบิลกลับไปใบสั่งงานแล้ว</div>
+                    ) : orders.length === 0 ? (
                       <div className="text-center py-6 text-gray-500">กำลังโหลด...</div>
                     ) : (
                       <>
                         {/* เลือกทั้งหมด + ย้ายไปใบสั่งงาน (ตรวจ WMS picked/correct ใน RPC) */}
-                        <div className="flex flex-wrap items-center gap-2 mb-4">
-                          <button
-                            type="button"
-                            onClick={() => selectAllBills(wo.id)}
-                            className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-100"
-                          >
-                            เลือกทั้งหมด
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => confirmReleaseToWorkQueue(wo.id)}
-                            disabled={updating || selectedIds.size === 0}
-                            className="px-3 py-1.5 bg-indigo-100 text-indigo-900 rounded-lg text-sm font-medium hover:bg-indigo-200 disabled:opacity-50"
-                          >
-                            ย้ายไปใบสั่งงาน
-                          </button>
-                        </div>
+                        {mode === 'active' && (
+                          <div className="flex flex-wrap items-center gap-2 mb-4">
+                            <button
+                              type="button"
+                              onClick={() => selectAllBills(wo.id)}
+                              className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-100"
+                            >
+                              เลือกทั้งหมด
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => confirmReleaseToWorkQueue(wo.id)}
+                              disabled={updating || selectedIds.size === 0}
+                              className="px-3 py-1.5 bg-indigo-100 text-indigo-900 rounded-lg text-sm font-medium hover:bg-indigo-200 disabled:opacity-50"
+                            >
+                              ย้ายไปใบสั่งงาน
+                            </button>
+                          </div>
+                        )}
 
                         {/* ตารางบิล: ชื่อช่องทาง = or_orders.customer_name, ชื่อลูกค้า = or_orders.recipient_name */}
                         <div className="bg-white rounded-lg border overflow-hidden overflow-x-auto">
                           <table className="w-full text-sm min-w-[720px]">
                             <thead>
                               <tr className="bg-gray-100 border-b">
-                                <th className="w-10 p-3 text-left">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedIds.size === orders.length && orders.length > 0}
-                                    onChange={(e) => (e.target.checked ? selectAllBills(wo.id) : clearBillSelection(wo.id))}
-                                    className="rounded border-gray-300"
-                                  />
-                                </th>
+                                {mode === 'active' && (
+                                  <th className="w-10 p-3 text-left">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedIds.size === orders.length && orders.length > 0}
+                                      onChange={(e) => (e.target.checked ? selectAllBills(wo.id) : clearBillSelection(wo.id))}
+                                      className="rounded border-gray-300"
+                                    />
+                                  </th>
+                                )}
                                 <th className="p-3 text-left font-medium min-w-[110px]">เลขบิล</th>
                                 <th className="p-3 text-left font-medium min-w-[120px]">ชื่อลูกค้า</th>
                                 <th className="p-3 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
@@ -1330,14 +1363,16 @@ export default function WorkOrderManageList({
                             <tbody>
                               {orders.map((order) => (
                                   <tr key={order.id} className="border-b border-gray-100 hover:bg-gray-50">
-                                    <td className="p-3 align-middle">
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedIds.has(order.id)}
-                                        onChange={() => toggleBillSelect(wo.id, order.id)}
-                                        className="rounded border-gray-300"
-                                      />
-                                    </td>
+                                    {mode === 'active' && (
+                                      <td className="p-3 align-middle">
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedIds.has(order.id)}
+                                          onChange={() => toggleBillSelect(wo.id, order.id)}
+                                          className="rounded border-gray-300"
+                                        />
+                                      </td>
+                                    )}
                                     <td className="p-3 align-middle">
                                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                                         {order.bill_no ?? '-'}

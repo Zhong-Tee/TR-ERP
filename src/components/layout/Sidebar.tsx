@@ -171,12 +171,34 @@ interface SidebarProps {
 }
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
-const MENU_KEYS_WITH_COUNT = ['orders', 'admin-qc', 'plan', 'account', 'wms', 'qc', 'packing', 'warehouse', 'purchase'] as const
+const MENU_KEYS_WITH_COUNT = [
+  'orders',
+  'admin-qc',
+  'plan',
+  'machinery',
+  'account',
+  'wms',
+  'qc',
+  'packing',
+  'warehouse',
+  'purchase',
+] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
-  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({ orders: 0, 'admin-qc': 0, plan: 0, account: 0, wms: 0, qc: 0, packing: 0, warehouse: 0, purchase: 0 })
+  const [menuCounts, setMenuCounts] = useState<Record<string, number>>({
+    orders: 0,
+    'admin-qc': 0,
+    plan: 0,
+    machinery: 0,
+    account: 0,
+    wms: 0,
+    qc: 0,
+    packing: 0,
+    warehouse: 0,
+    purchase: 0,
+  })
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const { hasAccess } = useMenuAccess()
 
@@ -185,7 +207,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
       // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
       const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planPumpRes, planOtherRes] = await Promise.all([
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planPumpRes, planOtherRes, machineryWorkingRes] =
+        await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
         loadWmsTabCounts(),
@@ -203,6 +226,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           .neq('channel_code', 'PUMP')
           .eq('status', 'ใบสั่งงาน')
           .is('work_order_id', null),
+        supabase
+          .from('pr_machinery_machines')
+          .select('id', { count: 'exact', head: true })
+          .eq('current_status', 'working'),
       ])
 
       const c = rpcRes.data || {}
@@ -215,6 +242,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         orders: c.orders || 0,
         'admin-qc': c.admin_qc || 0,
         plan: (planPumpRes.count || 0) + (planOtherRes.count || 0),
+        machinery: machineryWorkingRes.count || 0,
         account: accountTotal,
         wms: wmsResult.total,
         qc: qcTotal,
@@ -262,6 +290,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_returns' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_pr' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_po' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pr_machinery_machines' }, () => debouncedLoadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
@@ -282,7 +311,21 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   // Refetch counts เมื่อเปลี่ยนไปหน้า admin-qc, account, wms, packing เพื่อให้ตัวเลขตรงกับหน้านั้น
   useEffect(() => {
-    if (['/orders', '/admin-qc', '/account', '/wms', '/qc', '/packing', '/warehouse', '/purchase/pr', '/purchase/po', '/purchase/gr'].includes(location.pathname)) {
+    if (
+      [
+        '/orders',
+        '/admin-qc',
+        '/account',
+        '/wms',
+        '/qc',
+        '/packing',
+        '/warehouse',
+        '/machinery',
+        '/purchase/pr',
+        '/purchase/po',
+        '/purchase/gr',
+      ].includes(location.pathname)
+    ) {
       loadCounts()
     }
   }, [location.pathname, loadCounts])

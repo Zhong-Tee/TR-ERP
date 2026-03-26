@@ -4,6 +4,8 @@ import { supabase } from '../../../lib/supabase'
 import { formatDuration, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
+type RowKpiStatus = 'valid' | 'mixed_returned' | 'returned_only' | 'no_items' | 'no_first_check'
+
 export default function KPISection() {
   const [dateStart, setDateStart] = useState('')
   const [dateEnd, setDateEnd] = useState('')
@@ -51,22 +53,32 @@ export default function KPISection() {
     const orderIds = summaries.map((s: any) => s.order_id)
     const { data: orderTimes } = await supabase
       .from('wms_orders')
-      .select('order_id, created_at, end_time')
+      .select('order_id, created_at, end_time, status')
       .in('order_id', orderIds)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
-    const timeMap: Record<string, { start: Date; end: Date | null }> = {}
+    const orderAggMap: Record<string, { start: Date; end: Date | null; returnedCount: number; nonReturnedCount: number }> = {}
     if (orderTimes) {
       orderTimes.forEach((ot: any) => {
-        if (!timeMap[ot.order_id]) {
-          timeMap[ot.order_id] = { start: new Date(ot.created_at), end: ot.end_time ? new Date(ot.end_time) : null }
+        if (!orderAggMap[ot.order_id]) {
+          orderAggMap[ot.order_id] = {
+            start: new Date(ot.created_at),
+            end: ot.end_time ? new Date(ot.end_time) : null,
+            returnedCount: 0,
+            nonReturnedCount: 0,
+          }
         }
         const currentStart = new Date(ot.created_at)
         const currentEnd = ot.end_time ? new Date(ot.end_time) : null
-        if (currentStart < timeMap[ot.order_id].start) timeMap[ot.order_id].start = currentStart
-        const existingEnd = timeMap[ot.order_id].end
+        if (currentStart < orderAggMap[ot.order_id].start) orderAggMap[ot.order_id].start = currentStart
+        const existingEnd = orderAggMap[ot.order_id].end
         if (currentEnd && (!existingEnd || currentEnd > existingEnd)) {
-          timeMap[ot.order_id].end = currentEnd
+          orderAggMap[ot.order_id].end = currentEnd
+        }
+        if (ot.status === 'returned') {
+          orderAggMap[ot.order_id].returnedCount++
+        } else {
+          orderAggMap[ot.order_id].nonReturnedCount++
         }
       })
     }
@@ -77,6 +89,7 @@ export default function KPISection() {
       sumWrong: 0,
       sumNotFind: 0,
       sumAccuracy: 0,
+      accuracyDenominatorCount: 0,
       totalPickingMs: 0,
       countWithTime: 0,
     }
@@ -86,10 +99,33 @@ export default function KPISection() {
       stats.sumCorrect += s.correct_at_first_check
       stats.sumWrong += s.wrong_at_first_check
       stats.sumNotFind += s.not_find_at_first_check
-      stats.sumAccuracy += parseFloat(s.accuracy_percent)
+      const firstCheckCount =
+        (Number(s.correct_at_first_check) || 0) +
+        (Number(s.wrong_at_first_check) || 0) +
+        (Number(s.not_find_at_first_check) || 0)
+      const totalItems = Number(s.total_items) || 0
+      const orderAgg = orderAggMap[s.order_id]
+      const returnedCount = orderAgg?.returnedCount || 0
+      const nonReturnedCount = orderAgg?.nonReturnedCount || 0
+      const isReturnedOnly = returnedCount > 0 && nonReturnedCount === 0
+      const hasReturned = returnedCount > 0
+      const hasFirstCheck = firstCheckCount > 0
+      const isNoItems = totalItems <= 0
+
+      let rowKpiStatus: RowKpiStatus = 'valid'
+      if (isNoItems) rowKpiStatus = 'no_items'
+      else if (isReturnedOnly) rowKpiStatus = 'returned_only'
+      else if (!hasFirstCheck) rowKpiStatus = 'no_first_check'
+      else if (hasReturned) rowKpiStatus = 'mixed_returned'
+
+      const includeInAccuracy = !isNoItems && !isReturnedOnly && hasFirstCheck
+      if (includeInAccuracy) {
+        stats.sumAccuracy += parseFloat(s.accuracy_percent)
+        stats.accuracyDenominatorCount++
+      }
 
       let durationText = '-'
-      const times = timeMap[s.order_id]
+      const times = orderAggMap[s.order_id]
       if (times && times.start && times.end) {
         const diff = times.end.getTime() - times.start.getTime()
         if (diff > 0) {
@@ -107,6 +143,8 @@ export default function KPISection() {
         'หยิบผิด (First)': s.wrong_at_first_check,
         'ไม่พบ (First)': s.not_find_at_first_check,
         'ความแม่นยำ (%)': s.accuracy_percent + '%',
+        สถานะแถว: rowKpiStatus,
+        นำไปคิดความแม่นยำ: includeInAccuracy ? 'ใช่' : 'ไม่ใช่',
         เวลาหยิบสินค้า: durationText,
         วันที่ตรวจเสร็จ: new Date(s.checked_at).toLocaleString('th-TH'),
       })
@@ -115,10 +153,14 @@ export default function KPISection() {
         ...s,
         durationText,
         username: s.us_users?.username || '-',
+        rowKpiStatus,
+        includeInAccuracy,
       }
     })
 
-    const avgAccuracy = stats.totalOrders > 0 ? (stats.sumAccuracy / stats.totalOrders).toFixed(2) : '0.00'
+    const avgAccuracy = stats.accuracyDenominatorCount > 0
+      ? (stats.sumAccuracy / stats.accuracyDenominatorCount).toFixed(2)
+      : '0.00'
     const avgPickingTime = stats.countWithTime > 0 ? formatDuration(stats.totalPickingMs / stats.countWithTime) : '00:00:00'
 
     setKpiStats({
@@ -236,6 +278,7 @@ export default function KPISection() {
               <th className="p-4 text-center text-green-600">ถูก (First)</th>
               <th className="p-4 text-center text-red-600">ผิด (First)</th>
               <th className="p-4 text-center text-orange-600">ไม่พบ (First)</th>
+              <th className="p-4 text-center">สถานะแถว</th>
               <th className="p-4 text-center">ความแม่นยำ</th>
               <th className="p-4 text-center text-blue-600">เวลาหยิบสินค้า</th>
               <th className="p-4">วันที่ตรวจเสร็จ</th>
@@ -244,7 +287,7 @@ export default function KPISection() {
           <tbody className="divide-y text-gray-600">
             {kpiData.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-10 text-center italic text-gray-400">
+                <td colSpan={10} className="p-10 text-center italic text-gray-400">
                   {kpiStats === null ? 'กรุณากดค้นหาเพื่อดูข้อมูล' : 'ไม่มีข้อมูลในช่วงเวลาที่เลือก'}
                 </td>
               </tr>
@@ -258,7 +301,34 @@ export default function KPISection() {
                   <td className="p-4 text-[16px] text-center text-red-600 font-bold">{s.wrong_at_first_check}</td>
                   <td className="p-4 text-[16px] text-center text-orange-500 font-bold">{s.not_find_at_first_check}</td>
                   <td className="p-4 text-[16px] text-center">
-                    <span className={`px-2 py-1 rounded-lg font-black ${s.accuracy_percent >= 90 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    <span className={`px-2 py-1 rounded-lg font-black ${
+                      s.rowKpiStatus === 'valid'
+                        ? 'bg-green-100 text-green-700'
+                        : s.rowKpiStatus === 'mixed_returned'
+                          ? 'bg-blue-100 text-blue-700'
+                          : s.rowKpiStatus === 'returned_only'
+                            ? 'bg-slate-100 text-slate-700'
+                            : s.rowKpiStatus === 'no_items'
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {s.rowKpiStatus === 'valid'
+                        ? 'ตรวจจริง'
+                        : s.rowKpiStatus === 'mixed_returned'
+                          ? 'Mixed (correct+returned)'
+                          : s.rowKpiStatus === 'returned_only'
+                            ? 'มีรายการคืนคลัง'
+                            : s.rowKpiStatus === 'no_items'
+                              ? 'ไม่มีรายการ'
+                              : 'ไม่เข้าเกณฑ์ KPI'}
+                    </span>
+                  </td>
+                  <td className="p-4 text-[16px] text-center">
+                    <span className={`px-2 py-1 rounded-lg font-black ${
+                      s.includeInAccuracy
+                        ? (s.accuracy_percent >= 90 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')
+                        : 'bg-gray-100 text-gray-500'
+                    }`}>
                       {s.accuracy_percent}%
                     </span>
                   </td>

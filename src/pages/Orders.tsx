@@ -38,6 +38,7 @@ const ALL_STATUS_FILTER_OPTIONS = [
   'ตรวจสอบไม่สำเร็จ',
   'ตรวจสอบแล้ว',
   'รอออกแบบ',
+  'ไม่ต้องออกแบบ',
   'ออกแบบแล้ว',
   'รอคอนเฟิร์ม',
   'คอนเฟิร์มแล้ว',
@@ -195,7 +196,7 @@ export default function Orders() {
       const { count: confirmCountTotal } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
-          .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
+          .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ไม่ต้องออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
       )
 
       // Load issue count (On) — sales-tr นับเฉพาะบิลที่ admin_user เป็นของทีม sales-tr

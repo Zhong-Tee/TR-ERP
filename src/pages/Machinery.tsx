@@ -230,6 +230,7 @@ export default function Machinery() {
     try {
       await changeMachineStatus(machineId, status)
       await load()
+      window.dispatchEvent(new Event('sidebar-refresh-counts'))
     } catch (e: any) {
       setError(e?.message || String(e))
     } finally {

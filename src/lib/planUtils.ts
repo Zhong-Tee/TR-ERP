@@ -18,6 +18,8 @@ export interface PlanSettingsData {
   prepPerJob: Record<string, number>
   deptBreaks: Record<string, { start: string; end: string }[]>
   linesPerDept: Record<string, number>
+  /** หมวดสินค้าที่ผูกกับแผนก (metadata — ไม่ใช้ใน timeline) */
+  departmentProductCategories: Record<string, string[]>
 }
 
 export interface PlanJob {
@@ -92,6 +94,7 @@ export const defaultSettings: PlanSettingsData = {
     PACK: [{ start: '13:00', end: '14:00' }],
   },
   linesPerDept: { เบิก: 1, STAMP: 1, STK: 1, CTT: 1, LASER: 1, TUBE: 1, QC: 1, PACK: 1 },
+  departmentProductCategories: {},
 }
 
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
@@ -166,7 +169,7 @@ export function getJobStatusForDept(
 ): { text: string; key: 'pending' | 'progress' | 'done' } {
   const procs = (settings.processes[dept] || []).map((p) => p.name)
   const tracks = job.tracks?.[dept] || {}
-  const trackEntries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
+  const trackEntries = Object.entries(tracks).filter(([key, t]) => key !== 'เตรียมไฟล์' && !!(t?.start || t?.end))
 
   if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 

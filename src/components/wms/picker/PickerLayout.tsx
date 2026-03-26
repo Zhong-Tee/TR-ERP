@@ -19,6 +19,7 @@ const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; col
 ]
 
 const WORKABLE_STATUSES = ['pending', 'wrong', 'not_find']
+type PickerScope = { type: 'work_order' | 'order'; id: string }
 
 export default function PickerLayout() {
   const { user, signOut } = useAuthContext()
@@ -33,6 +34,13 @@ export default function PickerLayout() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [showSentAlertsModal, setShowSentAlertsModal] = useState(false)
   const [pendingAlertCount, setPendingAlertCount] = useState(0)
+
+  const parsePickerScope = (raw: string | null): PickerScope | null => {
+    if (!raw) return null
+    if (raw.startsWith('wo:')) return { type: 'work_order', id: raw.slice(3) }
+    if (raw.startsWith('ord:')) return { type: 'order', id: raw.slice(4) }
+    return { type: 'work_order', id: raw }
+  }
 
   const findNextWorkableIndex = (items: any[], fromIndex: number): number => {
     for (let i = fromIndex + 1; i < items.length; i++) {
@@ -106,13 +114,21 @@ export default function PickerLayout() {
   }, [user?.id])
 
   const loadPickerTask = async (): Promise<any[] | null> => {
-    if (!currentOrderId) return null
+    const scope = parsePickerScope(currentOrderId)
+    if (!scope) return null
 
-    const { data } = await supabase
+    let query = supabase
       .from('wms_orders')
       .select('*')
-      .eq('work_order_id', currentOrderId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+
+    if (scope.type === 'work_order') {
+      query = query.eq('work_order_id', scope.id)
+    } else {
+      query = query.eq('order_id', scope.id)
+    }
+
+    const { data } = await query
 
     if (!data || data.length === 0) {
       showMessage({ message: 'ไม่พบข้อมูลใบงาน!' })

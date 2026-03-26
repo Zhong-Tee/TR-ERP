@@ -32,6 +32,8 @@ interface PlanSettingsData {
   prepPerJob: Record<string, number>
   deptBreaks: Record<string, { start: string; end: string }[]>
   linesPerDept: Record<string, number>
+  /** หมวดสินค้าที่ผูกกับแผนก (metadata — ไม่ใช้ใน timeline) */
+  departmentProductCategories: Record<string, string[]>
 }
 
 interface PlanJob {
@@ -51,6 +53,7 @@ interface PlanJob {
   /** ใบงานถูกยกเลิกการผลิต (บิลถูกย้ายหมดแต่มี timestamp ในแผนแล้ว) */
   is_production_voided?: boolean
 }
+type DeptQtyByWorkOrderId = Record<string, Record<string, number>>
 
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
 const AUTO_TRACK_DEPTS: Record<string, string> = {
@@ -109,6 +112,7 @@ const defaultSettings: PlanSettingsData = {
     PACK: [{ start: '13:00', end: '14:00' }],
   },
   linesPerDept: { เบิก: 1, STAMP: 1, STK: 1, CTT: 1, LASER: 1, TUBE: 1, QC: 1, PACK: 1 },
+  departmentProductCategories: {},
 }
 
 // --- Utils ---
@@ -168,23 +172,38 @@ const toISODateTime = (dateStr: string, timeStr: string): string => {
   return d.toISOString()
 }
 
-function getEffectiveQty(job: PlanJob, dept: string, _settings: PlanSettingsData): number {
-  if (job.is_production_voided) return 0
+function getBaseQty(job: PlanJob, dept: string): number {
   if (dept === 'เบิก') {
     return (Number(job.qty?.['STAMP']) || 0) + (Number(job.qty?.['LASER']) || 0) + (Number(job.qty?.['ETC']) || 0)
   }
   if (dept === 'QC') return Number(job.qty?.['PACK']) || 0
   return Number(job.qty?.[dept]) || 0
 }
+function getEffectiveQty(
+  job: PlanJob,
+  dept: string,
+  settings: PlanSettingsData,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+): number {
+  if (job.is_production_voided) return 0
+  const configuredCategories = settings.departmentProductCategories?.[dept] || []
+  const workOrderId = job.work_order_id != null ? String(job.work_order_id) : ''
+  if (configuredCategories.length > 0 && workOrderId && deptQtyByWorkOrderId) {
+    return Number(deptQtyByWorkOrderId[workOrderId]?.[dept] || 0)
+  }
+  return getBaseQty(job, dept)
+}
 
 function getJobStatusForDept(
   job: PlanJob,
   dept: string,
-  settings: PlanSettingsData
+  settings: PlanSettingsData,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
 ): { text: string; key: 'pending' | 'progress' | 'done' } {
+  if (getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) <= 0) return { text: 'รอดำเนินการ', key: 'pending' }
   const procs = (settings.processes[dept] || []).map((p) => p.name)
   const tracks = job.tracks?.[dept] || {}
-  const trackEntries = Object.entries(tracks).filter(([key]) => key !== 'เตรียมไฟล์')
+  const trackEntries = Object.entries(tracks).filter(([key, t]) => key !== 'เตรียมไฟล์' && !!(t?.start || t?.end))
 
   if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 
@@ -212,8 +231,13 @@ function getJobStatusForDept(
   return { text: 'รอดำเนินการ', key: 'pending' }
 }
 
-function calcPlanFor(dept: string, job: PlanJob, settings: PlanSettingsData): number {
-  const q = getEffectiveQty(job, dept, settings)
+function calcPlanFor(
+  dept: string,
+  job: PlanJob,
+  settings: PlanSettingsData,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+): number {
+  const q = getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId)
   if (!q) return 0
   let processTotalSec = 0
   ;(settings.processes[dept] || []).forEach((p) => {
@@ -313,8 +337,9 @@ function computePlanTimeline(
   settings: PlanSettingsData,
   jobs: PlanJob[],
   _anchor: string = 'cut',
-  opts: { precomputed?: Record<string, TimelineItem[]> } = {}
+  opts: { precomputed?: Record<string, TimelineItem[]>; deptQtyByWorkOrderId?: DeptQtyByWorkOrderId } = {}
 ): TimelineItem[] {
+  const deptQtyByWorkOrderId = opts.deptQtyByWorkOrderId
   const lines = Math.max(1, settings.linesPerDept?.[dept] || 1)
   const dayStartSec = parseTimeToMin(settings.dayStart) * 60
   const breakPeriodsSec = (settings.deptBreaks[dept] || [])
@@ -322,7 +347,7 @@ function computePlanTimeline(
     .sort((a, b) => a.start - b.start)
 
   const jobsOnDate = jobs
-    .filter((j) => sameDay(j.date, date) && getEffectiveQty(j, dept, settings) > 0)
+    .filter((j) => sameDay(j.date, date) && getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId) > 0)
     .sort((a, b) => a.order_index - b.order_index)
 
   const results: TimelineItem[] = []
@@ -354,7 +379,7 @@ function computePlanTimeline(
       prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
     }
 
-    let stdDuration = calcPlanFor(dept, j, settings)
+    let stdDuration = calcPlanFor(dept, j, settings, deptQtyByWorkOrderId)
     const cutSec = j.cut ? parseTimeToMin(j.cut) * 60 : -Infinity
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
@@ -374,7 +399,7 @@ function computePlanTimeline(
         const precedingDepts = ['STK', 'CTT', 'TUBE', 'STAMP', 'LASER']
         const finishTimes: number[] = []
         precedingDepts.forEach((preDept) => {
-          if (getEffectiveQty(j, preDept, settings) > 0) {
+          if (getEffectiveQty(j, preDept, settings, deptQtyByWorkOrderId) > 0) {
             const finishSec = getEffectiveFinishSec(preDept, j, precomputed)
             if (finishSec > 0) finishTimes.push(finishSec)
           }
@@ -405,7 +430,7 @@ function computePlanTimeline(
 function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettingsData): { actualStart: string; actualEnd: string; startDayOffset: number; endDayOffset: number } {
   const tracks = job.tracks?.[dept] || {}
   const allEntries = Object.entries(tracks)
-  const processEntries = allEntries.filter(([key]) => key !== 'เตรียมไฟล์')
+  const processEntries = allEntries.filter(([key, t]) => key !== 'เตรียมไฟล์' && !!(t?.start || t?.end))
   if (allEntries.length === 0) return { actualStart: '-', actualEnd: '-', startDayOffset: 0, endDayOffset: 0 }
   let firstStart: Date | null = null
   let lastEnd: Date | null = null
@@ -430,10 +455,14 @@ function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettin
   return { actualStart, actualEnd, startDayOffset: dayDiffStart, endDayOffset: dayDiffEnd }
 }
 
-function getOverallJobStatus(job: PlanJob, settings: PlanSettingsData): { key: 'pending' | 'progress' | 'done' } {
-  const relevantDepts = settings.departments.filter((d) => getEffectiveQty(job, d, settings) > 0)
+function getOverallJobStatus(
+  job: PlanJob,
+  settings: PlanSettingsData,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+): { key: 'pending' | 'progress' | 'done' } {
+  const relevantDepts = settings.departments.filter((d) => getEffectiveQty(job, d, settings, deptQtyByWorkOrderId) > 0)
   if (relevantDepts.length === 0) return { key: 'pending' }
-  const statuses = relevantDepts.map((d) => getJobStatusForDept(job, d, settings).key)
+  const statuses = relevantDepts.map((d) => getJobStatusForDept(job, d, settings, deptQtyByWorkOrderId).key)
   if (statuses.every((s) => s === 'done')) return { key: 'done' }
   if (statuses.some((s) => s === 'progress')) return { key: 'progress' }
   return { key: 'pending' }
@@ -522,6 +551,12 @@ export default function Plan() {
   const [hideCompleted, setHideCompleted] = useState(true)
   const [hideVoided, setHideVoided] = useState(true)
   const [selectedDeptForSettings, setSelectedDeptForSettings] = useState<string>('')
+  /** หมวดสินค้าจาก pr_products — ใช้ใน modal ตั้งค่า Plan */
+  const [planProductCategories, setPlanProductCategories] = useState<string[]>([])
+  /** จำนวนที่คำนวณจากหมวดสินค้า ต่อ work_order_id และแผนก */
+  const [deptQtyByWorkOrderId, setDeptQtyByWorkOrderId] = useState<DeptQtyByWorkOrderId>({})
+  const [categoryModalDept, setCategoryModalDept] = useState<string | null>(null)
+  const [categoryModalDraft, setCategoryModalDraft] = useState<string[]>([])
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
   const [dashDropTarget, setDashDropTarget] = useState<{ id: string; above: boolean } | null>(null)
   const [expandedDeptJob, setExpandedDeptJob] = useState<string | null>(null) // 'dept_jobId' for ประวัติ
@@ -567,6 +602,116 @@ export default function Plan() {
       setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    if (currentView !== 'set') return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('pr_products')
+          .select('product_category')
+          .eq('is_active', true)
+          .not('product_category', 'is', null)
+        if (error) throw error
+        const categories = Array.from(
+          new Set(
+            (data || [])
+              .map((r: { product_category: string | null }) => r.product_category)
+              .filter((c): c is string => !!c && String(c).trim() !== '')
+          )
+        ).sort((a, b) => a.localeCompare(b))
+        if (!cancelled) setPlanProductCategories(categories)
+      } catch (e) {
+        console.error('Plan: load product categories', e)
+        if (!cancelled) setPlanProductCategories([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [currentView])
+
+  useEffect(() => {
+    let cancelled = false
+    const selectedByDept = Object.entries(settings.departmentProductCategories || {}).filter(([, categories]) =>
+      Array.isArray(categories) && categories.length > 0
+    )
+    if (selectedByDept.length === 0) {
+      setDeptQtyByWorkOrderId({})
+      return
+    }
+    const workOrderIds = Array.from(
+      new Set(
+        jobs
+          .map((j) => (j.work_order_id != null ? String(j.work_order_id) : ''))
+          .filter((id) => id !== '')
+      )
+    )
+    if (workOrderIds.length === 0) {
+      setDeptQtyByWorkOrderId({})
+      return
+    }
+    ;(async () => {
+      try {
+        const { data: orders, error: ordersError } = await supabase
+          .from('or_orders')
+          .select('work_order_id, or_order_items(product_id, quantity)')
+          .in('work_order_id', workOrderIds)
+        if (ordersError) throw ordersError
+        const productIds = Array.from(
+          new Set(
+            (orders || [])
+              .flatMap((o: any) => (o.or_order_items || []).map((i: any) => String(i.product_id || '')))
+              .filter((id) => id !== '')
+          )
+        )
+        const productCategoryById: Record<string, string> = {}
+        if (productIds.length > 0) {
+          const { data: products, error: productsError } = await supabase
+            .from('pr_products')
+            .select('id, product_category')
+            .in('id', productIds)
+          if (productsError) throw productsError
+          ;(products || []).forEach((p: any) => {
+            const id = String(p.id || '')
+            const category = String(p.product_category || '').trim()
+            if (id && category) productCategoryById[id] = category
+          })
+        }
+        const categoryQtyByWorkOrder: Record<string, Record<string, number>> = {}
+        ;(orders || []).forEach((order: any) => {
+          const workOrderId = String(order.work_order_id || '')
+          if (!workOrderId) return
+          categoryQtyByWorkOrder[workOrderId] = categoryQtyByWorkOrder[workOrderId] || {}
+          ;(order.or_order_items || []).forEach((item: any) => {
+            const productId = String(item.product_id || '')
+            const category = productCategoryById[productId]
+            if (!category) return
+            const rawQty = Number(item.quantity)
+            const qty = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1
+            categoryQtyByWorkOrder[workOrderId][category] = (categoryQtyByWorkOrder[workOrderId][category] || 0) + qty
+          })
+        })
+        const next: DeptQtyByWorkOrderId = {}
+        workOrderIds.forEach((workOrderId) => {
+          const categoryMap = categoryQtyByWorkOrder[workOrderId] || {}
+          next[workOrderId] = {}
+          selectedByDept.forEach(([dept, categories]) => {
+            const total = (categories as string[]).reduce((sum, category) => sum + (categoryMap[category] || 0), 0)
+            next[workOrderId][dept] = total
+          })
+        })
+        if (!cancelled) setDeptQtyByWorkOrderId(next)
+      } catch (error) {
+        console.error('Plan: load department qty by categories', error)
+        if (!cancelled) setDeptQtyByWorkOrderId({})
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [jobs, settings.departmentProductCategories])
 
   useEffect(() => {
     ;(async () => {
@@ -930,12 +1075,14 @@ export default function Plan() {
       prepPerJob: { ...nextSettings.prepPerJob },
       deptBreaks: { ...nextSettings.deptBreaks },
       linesPerDept: { ...nextSettings.linesPerDept },
+      departmentProductCategories: { ...(nextSettings.departmentProductCategories || {}) },
     }
     s.departments.forEach((d) => {
       s.processes[d] = s.processes[d] || []
       if (s.prepPerJob[d] == null) s.prepPerJob[d] = 10
       s.deptBreaks[d] = s.deptBreaks[d] || []
       if (s.linesPerDept[d] == null) s.linesPerDept[d] = 1
+      if (s.departmentProductCategories[d] == null) s.departmentProductCategories[d] = []
     })
     return s
   }, [])
@@ -1272,7 +1419,10 @@ export default function Plan() {
     const timelines: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {
-        timelines[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', { precomputed: timelines })
+        timelines[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', {
+          precomputed: timelines,
+          deptQtyByWorkOrderId,
+        })
       }
     })
     return timelines
@@ -1292,7 +1442,10 @@ export default function Plan() {
     const tl: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {
-        tl[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', { precomputed: tl })
+        tl[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', {
+          precomputed: tl,
+          deptQtyByWorkOrderId,
+        })
       }
     })
 
@@ -1339,7 +1492,7 @@ export default function Plan() {
       .finally(() => {
         autoLockInFlight.current = false
       })
-  }, [scopedJobs, dDate, settings])
+  }, [scopedJobs, dDate, settings, deptQtyByWorkOrderId])
 
   const filteredJobs = scopedJobs
     .filter((j) => !jSearch.trim() || j.name.toLowerCase().includes(jSearch.toLowerCase()))
@@ -1906,15 +2059,15 @@ export default function Plan() {
             ) : (() => {
               const dept = depFilter
               const jobsOnDate = jobs
-                .filter((j) => sameDay(j.date, depDate) && getEffectiveQty(j, dept, settings) > 0)
+                .filter((j) => sameDay(j.date, depDate) && getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId) > 0)
                 .sort((a, b) => a.order_index - b.order_index)
-              const timeline = computePlanTimeline(dept, depDate, settings, jobs)
+              const timeline = computePlanTimeline(dept, depDate, settings, jobs, 'cut', { deptQtyByWorkOrderId })
               const linesCount = Math.max(1, settings.linesPerDept?.[dept] ?? 1)
               const processNames = (settings.processes[dept] || []).map((p) => p.name)
               const workflowLabel = processNames.length ? processNames.join(' → ') : '-'
               const lineJobs: PlanJob[][] = Array.from({ length: linesCount }, () => [])
               jobsOnDate.forEach((j) => {
-                if (hideCompleted && getJobStatusForDept(j, dept, settings).key === 'done') return
+                if (hideCompleted && getJobStatusForDept(j, dept, settings, deptQtyByWorkOrderId).key === 'done') return
                 const lineIdx = j.line_assignments?.[dept] ?? 0
                 const idx = Math.min(lineIdx, lineJobs.length - 1)
                 lineJobs[idx].push(j)
@@ -1996,7 +2149,7 @@ export default function Plan() {
                                       )}
                                     </div>
                                     <div className="text-sm text-gray-500">
-                                      ตัด: {fmtCutTime(j.cut)} | Qty: <b>{getEffectiveQty(j, dept, settings)}</b>
+                                      ตัด: {fmtCutTime(j.cut)} | Qty: <b>{getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId)}</b>
                                     </div>
                                   </div>
                                   <button
@@ -2132,7 +2285,7 @@ export default function Plan() {
         const visibleDayJobs = dayJobs.filter((j) => {
           if (hideVoided && j.is_production_voided) return false
           if (!hideCompleted) return true
-          return getOverallJobStatus(j, settings).key !== 'done'
+          return getOverallJobStatus(j, settings, deptQtyByWorkOrderId).key !== 'done'
         })
         return (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -2182,16 +2335,16 @@ export default function Plan() {
                           ['ลำดับ', 'ชื่อใบงาน', 'เวลาตัด', 'จำนวน', 'ไลน์', 'สถานะ', 'แผนเริ่ม', 'แผนเสร็จ', 'เริ่มจริง', 'เสร็จจริง'],
                         ]
                         visibleDayJobs
-                          .filter((j) => getEffectiveQty(j, dept, settings) > 0)
+                          .filter((j) => getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId) > 0)
                           .forEach((j, i) => {
-                            const status = getJobStatusForDept(j, dept, settings)
+                            const status = getJobStatusForDept(j, dept, settings, deptQtyByWorkOrderId)
                             const me = tls[dept]?.find((x) => x.id === j.id)
                             const acts = getActualTimesForDept(j, dept, settings)
                             data.push([
                               i + 1,
                               j.name,
                               fmtCutTime(j.cut) || '-',
-                              getEffectiveQty(j, dept, settings),
+                              getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId),
                               `L${(j.line_assignments?.[dept] ?? 0) + 1}`,
                               status.text,
                               me ? secToHHMM(me.start) : '-',
@@ -2229,13 +2382,13 @@ export default function Plan() {
                     const lineJobs = tl.filter((x) => x.line === lineIdx)
                     const lastRes = lineJobs[lineJobs.length - 1]
                     const lastJb = jobs.find((j) => j.id === lastRes.id)
-                    const lastStatus = lastJb ? getJobStatusForDept(lastJb, d, settings) : { key: 'pending' as const }
+                    const lastStatus = lastJb ? getJobStatusForDept(lastJb, d, settings, deptQtyByWorkOrderId) : { key: 'pending' as const }
                     const lastActEnd = lastJb ? getLatestActualEndSecForDept(lastJb, d) : 0
                     const displayEnd = lastStatus.key === 'done' && lastActEnd > 0 ? lastActEnd : lastRes.end
                     const totalDurSeconds = lineJobs.reduce((sum, item) => {
                       const jb = jobs.find((j) => j.id === item.id)
                       if (!jb) return sum + item.dur
-                      const st = getJobStatusForDept(jb, d, settings)
+                      const st = getJobStatusForDept(jb, d, settings, deptQtyByWorkOrderId)
                       if (st.key === 'done') {
                         const tracks = jb.tracks?.[d] || {}
                         const procs = (settings.processes[d] || []).map((p) => p.name)
@@ -2288,7 +2441,7 @@ export default function Plan() {
                   </thead>
                   <tbody>
                     {visibleDayJobs.map((j) => {
-                      const statusByDept = settings.departments.map((d) => getJobStatusForDept(j, d, settings))
+                      const statusByDept = settings.departments.map((d) => getJobStatusForDept(j, d, settings, deptQtyByWorkOrderId))
                       return (
                         <tr
                           key={j.id}
@@ -2392,7 +2545,7 @@ export default function Plan() {
                             })()}
                           </td>
                           {settings.departments.map((d, di) => {
-                            const q = getEffectiveQty(j, d, settings)
+                            const q = getEffectiveQty(j, d, settings, deptQtyByWorkOrderId)
                             const status = statusByDept[di]
                             const me = dashTimelines[d]?.find((x) => x.id === j.id)
                             const acts = getActualTimesForDept(j, d, settings)
@@ -2594,7 +2747,7 @@ export default function Plan() {
                             const next = { ...settings }
                             const idx = next.departments.indexOf(d)
                             if (idx > -1) next.departments[idx] = newName
-                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept'].forEach((k) => {
+                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
                               const key = k as keyof PlanSettingsData
                               const obj = next[key] as Record<string, unknown>
                               if (obj[d] != null) {
@@ -2649,7 +2802,7 @@ export default function Plan() {
                             if (!window.confirm(`ลบแผนก ${d}?`)) return
                             const next = { ...settings }
                             next.departments = next.departments.filter((x) => x !== d)
-                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept'].forEach((k) => {
+                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
                               const obj = next[k as keyof PlanSettingsData] as Record<string, unknown>
                               delete obj[d]
                             })
@@ -2660,6 +2813,22 @@ export default function Plan() {
                           className="rounded-lg bg-red-600 px-2 py-1 text-sm text-white hover:bg-red-700 font-semibold disabled:opacity-50"
                         >
                           ลบ
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!unlocked}
+                          onClick={() => {
+                            setCategoryModalDept(d)
+                            setCategoryModalDraft([...(settings.departmentProductCategories?.[d] || [])])
+                          }}
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm hover:bg-gray-100 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          หมวดหมู่
+                          {(settings.departmentProductCategories?.[d]?.length ?? 0) > 0 && (
+                            <span className="ml-0.5 text-gray-500">
+                              ({settings.departmentProductCategories?.[d]?.length})
+                            </span>
+                          )}
                         </button>
                       </div>
                     ))}
@@ -3084,6 +3253,82 @@ export default function Plan() {
           </section>
         )
       })()}
+
+      <Modal
+        open={!!categoryModalDept}
+        onClose={() => setCategoryModalDept(null)}
+        contentClassName="max-w-lg w-full"
+        closeOnBackdropClick={false}
+      >
+        {categoryModalDept && (
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-1">หมวดหมู่สินค้า</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              แผนก <span className="font-semibold text-gray-800">{categoryModalDept}</span> — เลือกหมวดจากสินค้า (active)
+            </p>
+            {(() => {
+              const catOptions = Array.from(new Set([...planProductCategories, ...categoryModalDraft])).sort((a, b) =>
+                a.localeCompare(b)
+              )
+              return catOptions.length === 0 ? (
+                <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+                  ยังไม่มีหมวดหมู่ในสินค้า (หรือไม่มีสินค้า active ที่ระบุหมวด)
+                </p>
+              ) : (
+                <div className="max-h-72 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100 mb-4">
+                  {catOptions.map((cat) => (
+                    <label
+                      key={cat}
+                      className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={categoryModalDraft.includes(cat)}
+                        onChange={() => {
+                          setCategoryModalDraft((prev) =>
+                            prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+                          )
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="text-gray-800">{cat}</span>
+                    </label>
+                  ))}
+                </div>
+              )
+            })()}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCategoryModalDept(null)}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const dept = categoryModalDept
+                  const sorted = [...categoryModalDraft].sort((a, b) => a.localeCompare(b))
+                  const next: PlanSettingsData = {
+                    ...settings,
+                    departmentProductCategories: {
+                      ...(settings.departmentProductCategories || {}),
+                      [dept]: sorted,
+                    },
+                  }
+                  setSettings(next)
+                  saveSettings(next)
+                  setCategoryModalDept(null)
+                }}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                บันทึก
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Modal ล้าง: แสดงเฉพาะยืนยันล้าง (รหัสปลดล็อคใส่ด้านบน) */}
       <Modal

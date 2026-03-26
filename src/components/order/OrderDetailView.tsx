@@ -5,6 +5,7 @@ import { Order, OrderItem, IssueType } from '../../types'
 import { parseAddressText, ParsedAddress } from '../../lib/thaiAddress'
 import { e164ToLocal } from '../../lib/thaiPhone'
 import * as XLSX from 'xlsx'
+import { buildProductionLikeExport } from '../../lib/orderProductionExcel'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import Modal from '../ui/Modal'
@@ -250,80 +251,10 @@ export default function OrderDetailView({
     }
   }
 
-  /* ── Excel Download ── */
-  async function buildProductionLikeExport() {
-    const productIds = Array.from(new Set(items.map((item) => item.product_id).filter(Boolean)))
-    const productCodeByProductId: Record<string, string> = {}
-    const productCategoryByProductId: Record<string, string> = {}
-    if (productIds.length > 0) {
-      const { data: products, error } = await supabase
-        .from('pr_products')
-        .select('id, product_code, product_category')
-        .in('id', productIds as string[])
-      if (error) throw error
-      ;(products || []).forEach((p: { id: string; product_code?: string | null; product_category?: string | null }) => {
-        const pid = String(p.id)
-        productCodeByProductId[pid] = String(p.product_code ?? '').trim()
-        productCategoryByProductId[pid] = String(p.product_category ?? '').trim()
-      })
-    }
-
-    const headers = [
-      'ชื่อใบงาน',
-      'เลขบิล',
-      'Item UID',
-      'รหัสสินค้า',
-      'ชื่อสินค้า',
-      'สีหมึก',
-      'ชั้นที่',
-      'ลายการ์ตูน',
-      'ลายเส้น',
-      'ฟอนต์',
-      'บรรทัด 1',
-      'บรรทัด 2',
-      'บรรทัด 3',
-      'จำนวน',
-      'หมายเหตุ',
-      'ไฟล์แนบ',
-      'หมวด',
-    ]
-
-    const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
-    const dataRows = items.map((item) => {
-      const productName = String(item.product_name ?? '').trim()
-      const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
-      const pid = item.product_id ? String(item.product_id) : ''
-      const noName = !!item.no_name_line
-      const cleanNotes = noName
-        ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : ''))
-        : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
-      return [
-        order.work_order_name || '-',
-        order.bill_no || '-',
-        item.item_uid || '-',
-        pid ? (productCodeByProductId[pid] ?? '') : '',
-        item.product_name || '',
-        item.ink_color || '',
-        showLayer ? (item.product_type || '') : '',
-        item.cartoon_pattern != null && String(item.cartoon_pattern).trim() !== '' ? item.cartoon_pattern : 0,
-        item.line_pattern != null && String(item.line_pattern).trim() !== '' ? item.line_pattern : 0,
-        item.font || '',
-        item.line_1 || '',
-        item.line_2 || '',
-        item.line_3 || '',
-        item.quantity ?? 0,
-        cleanNotes,
-        item.file_attachment || '',
-        pid ? (productCategoryByProductId[pid] || 'N/A') : 'N/A',
-      ]
-    })
-
-    return { headers, dataRows }
-  }
-
+  /* ── Excel Download (หัวตารางร่วมกับ lib/orderProductionExcel) ── */
   async function handleCopyProductionData() {
     try {
-      const { dataRows } = await buildProductionLikeExport()
+      const { dataRows } = await buildProductionLikeExport(supabase, order, items)
       const clipboardText = dataRows
         .map((row) => row.map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ')).join('\t'))
         .join('\n')
@@ -345,7 +276,7 @@ export default function OrderDetailView({
 
   async function handleDownloadExcel() {
     try {
-      const { headers, dataRows } = await buildProductionLikeExport()
+      const { headers, dataRows } = await buildProductionLikeExport(supabase, order, items)
       const wsItems = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, wsItems, 'ProductionData')

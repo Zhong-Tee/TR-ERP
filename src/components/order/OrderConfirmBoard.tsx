@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FiMessageCircle } from 'react-icons/fi'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
+import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '../../lib/orderProductionExcel'
 import { Order, OrderStatus, OrderChatLog } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -9,9 +11,9 @@ import OrderDetailView from './OrderDetailView'
 
 /* ─────────────────────── Types & Constants ─────────────────────── */
 
-type ConfirmColumnKey = 'new' | 'design' | 'designed' | 'waiting' | 'confirmed' | 'completed'
+type ConfirmColumnKey = 'new' | 'noDesign' | 'design' | 'designed' | 'waiting' | 'confirmed' | 'completed'
 
-type ViewMode = 'default' | 'new' | 'completed'
+type ViewMode = 'default' | 'new' | 'noDesign' | 'completed'
 
 interface ConfirmColumn {
   key: ConfirmColumnKey
@@ -85,6 +87,19 @@ const NEW_COLUMN: ConfirmColumn = {
     'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-sm',
 }
 
+/** คอลัมน์ "ไม่ต้องออกแบบ" — ข้ามขั้นตอนออกแบบ ไปคอนเฟิร์ม/ผลิตได้โดยตรง */
+const NO_DESIGN_COLUMN: ConfirmColumn = {
+  key: 'noDesign',
+  title: 'ไม่ต้องออกแบบ',
+  status: 'ไม่ต้องออกแบบ',
+  actionLabel: 'เปลี่ยนสถานะ',
+  actionTargetStatus: 'คอนเฟิร์มแล้ว',
+  headerGradient: 'bg-gradient-to-r from-slate-500 to-slate-600',
+  countBadge: 'bg-slate-50 text-slate-700 ring-1 ring-slate-200',
+  actionBtn:
+    'bg-gradient-to-r from-slate-500 to-slate-600 hover:from-slate-600 hover:to-slate-700 text-white shadow-sm',
+}
+
 /** คอลัมน์ "เสร็จสิ้น" (completed view) — ไม่มีปุ่มเปลี่ยนสถานะ */
 const COMPLETED_COLUMN: ConfirmColumn = {
   key: 'completed',
@@ -96,16 +111,29 @@ const COMPLETED_COLUMN: ConfirmColumn = {
 
 const CHANNEL_CODE = 'PUMP'
 
+function orderBillingPhone(o: Order): string {
+  const b = o.billing_details
+  const p = (b?.mobile_phone || b?.tax_customer_phone || '').trim()
+  return p || '—'
+}
+
 const STATUS_OPTIONS: Array<{ label: string; value: OrderStatus }> = [
   { label: 'Order ใหม่', value: 'ตรวจสอบแล้ว' },
   { label: 'รอออกแบบ', value: 'รอออกแบบ' },
+  { label: 'ไม่ต้องออกแบบ', value: 'ไม่ต้องออกแบบ' },
   { label: 'ออกแบบแล้ว', value: 'ออกแบบแล้ว' },
   { label: 'รอคอนเฟิร์มแบบ', value: 'รอคอนเฟิร์ม' },
   { label: 'คอนเฟิร์มแล้ว', value: 'คอนเฟิร์มแล้ว' },
   { label: 'เสร็จสิ้น', value: 'เสร็จสิ้น' },
 ]
 
-const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ออกแบบแล้ว']
+const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = [
+  'ตรวจสอบแล้ว',
+  'รอออกแบบ',
+  'ออกแบบแล้ว',
+  'ไม่ต้องออกแบบ',
+  'คอนเฟิร์มแล้ว',
+]
 
 /* ─────────────────────── Column Icon ─────────────────────── */
 
@@ -116,6 +144,12 @@ function ColumnIcon({ columnKey }: { columnKey: ConfirmColumnKey }) {
       return (
         <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      )
+    case 'noDesign':
+      return (
+        <svg className={cls} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
       )
     case 'design':
@@ -163,6 +197,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const canProductionChangeStatus = (status: OrderStatus) => PRODUCTION_ALLOWED_CONFIRM_STATUSES.includes(status)
   const [ordersByKey, setOrdersByKey] = useState<Record<ConfirmColumnKey, Order[]>>({
     new: [],
+    noDesign: [],
     design: [],
     designed: [],
     waiting: [],
@@ -192,6 +227,31 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [viewMode, setViewMode] = useState<ViewMode>('default')
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
+  const [selectedNoDesignIds, setSelectedNoDesignIds] = useState<Set<string>>(new Set())
+  const [selectedCompletedIds, setSelectedCompletedIds] = useState<Set<string>>(new Set())
+  const [confirmTableSearch, setConfirmTableSearch] = useState('')
+  const [exportingNoDesign, setExportingNoDesign] = useState(false)
+  const [exportingCompleted, setExportingCompleted] = useState(false)
+
+  const isTableConfirmView = viewMode === 'noDesign' || viewMode === 'completed'
+
+  const filteredTableOrders = useMemo(() => {
+    const raw =
+      viewMode === 'noDesign' ? ordersByKey.noDesign : viewMode === 'completed' ? ordersByKey.completed : []
+    const q = confirmTableSearch.trim().toLowerCase()
+    if (!q) return raw
+    return raw.filter((o) => {
+      const bill = (o.bill_no || '').toLowerCase()
+      const cn = (o.customer_name || '').toLowerCase()
+      const rn = (o.recipient_name || '').toLowerCase()
+      return bill.includes(q) || cn.includes(q) || rn.includes(q)
+    })
+  }, [viewMode, ordersByKey.noDesign, ordersByKey.completed, confirmTableSearch])
+
+  useEffect(() => {
+    setSelectedNoDesignIds(new Set())
+    setSelectedCompletedIds(new Set())
+  }, [fromDate, toDate, refreshKey, viewMode])
 
   /* ── Data Loading ── */
 
@@ -293,9 +353,19 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   async function loadAll() {
     setLoading(true)
     try {
-      const [newOrders, designOrders, designedOrders, waitingOrders, confirmedOrders, shippedOrders, completedOrders] =
+      const [
+        newOrders,
+        noDesignOrders,
+        designOrders,
+        designedOrders,
+        waitingOrders,
+        confirmedOrders,
+        shippedOrders,
+        completedOrders,
+      ] =
         await Promise.all([
           loadOrdersByStatus('ตรวจสอบแล้ว'),
+          loadOrdersByStatus('ไม่ต้องออกแบบ'),
           loadOrdersByStatus('รอออกแบบ'),
           loadOrdersByStatus('ออกแบบแล้ว'),
           loadOrdersByStatus('รอคอนเฟิร์ม'),
@@ -309,13 +379,21 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
 
       setOrdersByKey({
         new: newOrders,
+        noDesign: noDesignOrders,
         design: designOrders,
         designed: designedOrders,
         waiting: waitingOrders,
         confirmed: confirmedOrders,
         completed: actualCompleted,
       })
-      onCountChange?.(newOrders.length + designOrders.length + designedOrders.length + waitingOrders.length + confirmedOrders.length)
+      onCountChange?.(
+        newOrders.length +
+          noDesignOrders.length +
+          designOrders.length +
+          designedOrders.length +
+          waitingOrders.length +
+          confirmedOrders.length
+      )
     } catch (error) {
       console.error('Error loading confirm orders:', error)
     } finally {
@@ -345,6 +423,89 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   function openStatusModal(order: Order, targetStatus: OrderStatus, label: string) {
     setNoteText(order.confirm_note || '')
     setStatusModal({ order, targetStatus, label })
+  }
+
+  async function moveOrderToNoDesign(order: Order) {
+    if (isProduction && !canProductionChangeStatus(order.status as OrderStatus)) {
+      alert('สิทธิ์ production ไม่สามารถดำเนินการกับสถานะนี้ได้')
+      return
+    }
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: 'ไม่ต้องออกแบบ' })
+        .eq('id', order.id)
+      if (error) throw error
+      setRefreshKey((k) => k + 1)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('moveOrderToNoDesign:', error)
+      alert('เกิดข้อผิดพลาด: ' + msg)
+    }
+  }
+
+  function toggleNoDesignSelect(id: string) {
+    setSelectedNoDesignIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleCompletedSelect(id: string) {
+    setSelectedCompletedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleExportSelectedNoDesign() {
+    const list = ordersByKey.noDesign.filter((o) => selectedNoDesignIds.has(o.id))
+    if (list.length === 0) {
+      alert('กรุณาเลือกบิลที่ต้องการ Export')
+      return
+    }
+    setExportingNoDesign(true)
+    try {
+      const { headers, dataRows } = await buildProductionLikeExportMulti(supabase, list)
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'ProductionData')
+      const stamp = new Date().toISOString().slice(0, 10)
+      XLSX.writeFile(wb, `Confirm_ไม่ต้องออกแบบ_${stamp}.xlsx`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('Export no-design:', error)
+      alert('Export ไม่สำเร็จ: ' + msg)
+    } finally {
+      setExportingNoDesign(false)
+    }
+  }
+
+  async function handleExportCompletedLines() {
+    const list = ordersByKey.completed.filter((o) => selectedCompletedIds.has(o.id))
+    if (list.length === 0) {
+      alert('กรุณาเลือกบิลที่ต้องการ Export')
+      return
+    }
+    setExportingCompleted(true)
+    try {
+      const { headers, dataRows } = await buildBillLineItemsExportMulti(supabase, list)
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows])
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'รายการบิล')
+      const stamp = new Date().toISOString().slice(0, 10)
+      XLSX.writeFile(wb, `Confirm_เสร็จสิ้น_รายการสินค้า_${stamp}.xlsx`)
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('Export completed:', error)
+      alert('Export ไม่สำเร็จ: ' + msg)
+    } finally {
+      setExportingCompleted(false)
+    }
   }
 
   async function openChat(order: Order) {
@@ -432,7 +593,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       const currentStatus = statusModal.order.status as OrderStatus
       const nextStatus = statusModal.targetStatus
       if (!canProductionChangeStatus(currentStatus) || !canProductionChangeStatus(nextStatus)) {
-        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว')
+        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว, ไม่ต้องออกแบบ, คอนเฟิร์มแล้ว')
         return
       }
     }
@@ -464,10 +625,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   let gridCols: string
   if (viewMode === 'new') {
     visibleColumns = [NEW_COLUMN]
-    gridCols = 'lg:grid-cols-1 max-w-2xl'
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
+  } else if (viewMode === 'noDesign') {
+    visibleColumns = [NO_DESIGN_COLUMN]
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
   } else if (viewMode === 'completed') {
     visibleColumns = [COMPLETED_COLUMN]
-    gridCols = 'lg:grid-cols-1 max-w-2xl'
+    gridCols = 'lg:grid-cols-1 w-full max-w-none'
   } else {
     visibleColumns = DEFAULT_COLUMNS
     gridCols = 'lg:grid-cols-4'
@@ -483,89 +647,511 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     )
   }
 
+  const tableColumn = isTableConfirmView
+    ? (viewMode === 'noDesign' ? NO_DESIGN_COLUMN : COMPLETED_COLUMN)
+    : null
+
   /* ── Render ── */
 
   return (
-    <div className="space-y-4">
-      {/* ── Filter Bar ── */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
-        <svg className="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
+    <div className="space-y-4 w-full min-w-0 max-w-full">
+      {/* ── Filter bar + แท็บ (แถวเดียวกันเมื่อมุมมองตาราง) ── */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4 flex flex-wrap items-end gap-3 w-full min-w-0">
+        {isTableConfirmView ? (
+          <>
+            <div className="flex flex-wrap items-end gap-2 sm:gap-3 flex-1 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 shadow-sm">
+              <div className="shrink-0">
+                <label className="block text-xs font-semibold text-gray-700 mb-0.5">จากวันที่</label>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                />
+              </div>
+              <div className="shrink-0">
+                <label className="block text-xs font-semibold text-gray-700 mb-0.5">ถึงวันที่</label>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                />
+              </div>
+              <div className="min-w-[8rem] flex-1 max-w-xs">
+                <label className="block text-xs font-semibold text-gray-700 mb-0.5">ค้นหาชื่อ</label>
+                <input
+                  type="text"
+                  value={confirmTableSearch}
+                  onChange={(e) => setConfirmTableSearch(e.target.value)}
+                  placeholder="พิมพ์บางส่วนของชื่อ"
+                  className="w-full px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmTableSearch('')
+                  const now = new Date()
+                  setFromDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
+                  setToDate(new Date().toISOString().split('T')[0])
+                }}
+                className="shrink-0 rounded-lg border border-gray-300 bg-gray-100 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+              >
+                ล้างตัวกรอง
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0 ml-auto">
+              {/* งานใหม่ */}
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
+                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                  viewMode === 'new'
+                    ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md ring-2 ring-blue-300'
+                    : 'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
+                }`}
+              >
+                <ColumnIcon columnKey="new" />
+                งานใหม่
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                    viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
+                  }`}
+                >
+                  {ordersByKey.new.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
+                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                  viewMode === 'noDesign'
+                    ? 'bg-gradient-to-r from-slate-500 to-slate-600 text-white shadow-md ring-2 ring-slate-300'
+                    : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
+                }`}
+              >
+                <ColumnIcon columnKey="noDesign" />
+                ไม่ต้องออกแบบ
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {ordersByKey.noDesign.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
+                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                  viewMode === 'completed'
+                    ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md ring-2 ring-teal-300'
+                    : 'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
+                }`}
+              >
+                <ColumnIcon columnKey="completed" />
+                เสร็จสิ้น
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                    viewMode === 'completed' ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-600'
+                  }`}
+                >
+                  {ordersByKey.completed.length}
+                </span>
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <svg className="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
 
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium text-gray-600">จากวันที่</label>
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
-          />
-        </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-600">จากวันที่</label>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+              />
+            </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-sm font-medium text-gray-600">ถึงวันที่</label>
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
-          />
-        </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-600">ถึงวันที่</label>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+              />
+            </div>
 
-        <div className="flex-1" />
+            <div className="flex-1" />
 
-        {/* งานใหม่ button */}
-        <button
-          type="button"
-          onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-            viewMode === 'new'
-              ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md ring-2 ring-blue-300'
-              : 'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
-          }`}
-        >
-          <ColumnIcon columnKey="new" />
-          งานใหม่
-          <span
-            className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-              viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
-            }`}
-          >
-            {ordersByKey.new.length}
-          </span>
-        </button>
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                viewMode === 'new'
+                  ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md ring-2 ring-blue-300'
+                  : 'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
+              }`}
+            >
+              <ColumnIcon columnKey="new" />
+              งานใหม่
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
+                }`}
+              >
+                {ordersByKey.new.length}
+              </span>
+            </button>
 
-        {/* เสร็จสิ้น button */}
-        <button
-          type="button"
-          onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
-          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-            viewMode === 'completed'
-              ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md ring-2 ring-teal-300'
-              : 'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
-          }`}
-        >
-          <ColumnIcon columnKey="completed" />
-          เสร็จสิ้น
-          <span
-            className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-              viewMode === 'completed' ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-600'
-            }`}
-          >
-            {ordersByKey.completed.length}
-          </span>
-        </button>
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                viewMode === 'noDesign'
+                  ? 'bg-gradient-to-r from-slate-500 to-slate-600 text-white shadow-md ring-2 ring-slate-300'
+                  : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
+              }`}
+            >
+              <ColumnIcon columnKey="noDesign" />
+              ไม่ต้องออกแบบ
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {ordersByKey.noDesign.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                viewMode === 'completed'
+                  ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md ring-2 ring-teal-300'
+                  : 'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
+              }`}
+            >
+              <ColumnIcon columnKey="completed" />
+              เสร็จสิ้น
+              <span
+                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  viewMode === 'completed' ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-600'
+                }`}
+              >
+                {ordersByKey.completed.length}
+              </span>
+            </button>
+          </>
+        )}
       </div>
 
       {/* ── Columns Grid ── */}
-      <div className={`grid grid-cols-1 ${gridCols} gap-4 min-h-0`}>
-        {visibleColumns.map((column) => {
+      <div className={`grid grid-cols-1 gap-4 min-h-0 w-full min-w-0 ${gridCols}`}>
+        {viewMode === 'new' ? (
+          <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden w-full min-w-0">
+            <div className="overflow-x-auto rounded-xl border border-gray-200">
+              {ordersByKey.new.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white">
+                  <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                  </svg>
+                  <p className="text-base text-gray-500">ไม่พบรายการ</p>
+                </div>
+              ) : (
+                <table className="min-w-full text-base">
+                  <thead className="bg-blue-600 text-white sticky top-0">
+                    <tr>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">วันที่</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
+                      <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
+                      <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
+                      <th className="p-4 text-left font-semibold min-w-[10rem]">ที่อยู่</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ordersByKey.new.map((order, idx) => (
+                      <tr
+                        key={order.id}
+                        className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${
+                          idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                        }`}
+                      >
+                        <td className="p-4 text-gray-700 whitespace-nowrap align-top">
+                          {formatDateTime(order.created_at)}
+                        </td>
+                        <td className="p-4 align-top whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setDetailOrder(order)}
+                            className="font-semibold text-blue-600 hover:text-blue-800 hover:underline text-left"
+                          >
+                            {order.bill_no}
+                          </button>
+                        </td>
+                        <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
+                          {order.customer_name}
+                        </td>
+                        <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
+                          {order.recipient_name || '—'}
+                        </td>
+                        <td className="p-4 text-gray-700 text-sm align-top max-w-[14rem] break-words">
+                          {(order.customer_address || '').slice(0, 200)}
+                          {(order.customer_address || '').length > 200 ? '…' : ''}
+                        </td>
+                        <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
+                          {orderBillingPhone(order)}
+                        </td>
+                        <td className="p-4 align-top">
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDetailOrder(order)}
+                              className="inline-flex items-center px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-800 hover:bg-gray-50"
+                            >
+                              รายละเอียด
+                            </button>
+                            {NEW_COLUMN.actionTargetStatus && NEW_COLUMN.actionLabel && !isProduction && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  openStatusModal(
+                                    order,
+                                    NEW_COLUMN.actionTargetStatus as OrderStatus,
+                                    NEW_COLUMN.actionLabel as string
+                                  )
+                                }
+                                className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${NEW_COLUMN.actionBtn}`}
+                              >
+                                {NEW_COLUMN.actionLabel}
+                              </button>
+                            )}
+                            {isProduction && canProductionChangeStatus(order.status as OrderStatus) && (
+                              <button
+                                type="button"
+                                onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
+                              >
+                                เปลี่ยนสถานะ
+                              </button>
+                            )}
+                            {(!isProduction || canProductionChangeStatus(order.status as OrderStatus)) && (
+                              <button
+                                type="button"
+                                onClick={() => moveOrderToNoDesign(order)}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50"
+                              >
+                                ไม่ต้องออกแบบ
+                              </button>
+                            )}
+                            <div className="inline-flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => openChat(order)}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-semibold hover:bg-gray-800"
+                              >
+                                Chat
+                              </button>
+                              {(unreadByOrder[order.id] || 0) > 0 && (
+                                <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
+                                  {unreadByOrder[order.id]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
+        ) : isTableConfirmView && tableColumn ? (
+          <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-0 w-full min-w-0">
+            <div className="p-4 space-y-4 w-full min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (viewMode === 'noDesign') {
+                      setSelectedNoDesignIds(new Set(filteredTableOrders.map((o) => o.id)))
+                    } else {
+                      setSelectedCompletedIds(new Set(filteredTableOrders.map((o) => o.id)))
+                    }
+                  }}
+                  disabled={filteredTableOrders.length === 0}
+                  className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  เลือกทั้งหมด
+                </button>
+                <button
+                  type="button"
+                  onClick={viewMode === 'noDesign' ? handleExportSelectedNoDesign : handleExportCompletedLines}
+                  disabled={
+                    viewMode === 'noDesign'
+                      ? exportingNoDesign || selectedNoDesignIds.size === 0
+                      : exportingCompleted || selectedCompletedIds.size === 0
+                  }
+                  className={
+                    viewMode === 'noDesign'
+                      ? 'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40'
+                      : 'rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40'
+                  }
+                >
+                  {viewMode === 'noDesign'
+                    ? exportingNoDesign
+                      ? 'กำลังสร้างไฟล์...'
+                      : 'Export Excel'
+                    : exportingCompleted
+                      ? 'กำลังสร้างไฟล์...'
+                      : 'Export Excel'}
+                </button>
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
+                {filteredTableOrders.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white">
+                    <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                    </svg>
+                    <p className="text-base text-gray-500">ไม่พบรายการ</p>
+                  </div>
+                ) : (
+                  <table className="min-w-full text-base">
+                    <thead className="bg-blue-600 text-white sticky top-0">
+                      <tr>
+                        <th className="p-4 text-left font-semibold w-12"> </th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">วันที่</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
+                        <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
+                        <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
+                        <th className="p-4 text-left font-semibold min-w-[10rem]">ที่อยู่</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTableOrders.map((order, idx) => (
+                        <tr
+                          key={order.id}
+                          className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${
+                            idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                          }`}
+                        >
+                          <td className="p-4 align-top">
+                            <input
+                              type="checkbox"
+                              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                              checked={
+                                viewMode === 'noDesign'
+                                  ? selectedNoDesignIds.has(order.id)
+                                  : selectedCompletedIds.has(order.id)
+                              }
+                              onChange={() =>
+                                viewMode === 'noDesign'
+                                  ? toggleNoDesignSelect(order.id)
+                                  : toggleCompletedSelect(order.id)
+                              }
+                            />
+                          </td>
+                          <td className="p-4 text-gray-700 whitespace-nowrap align-top">
+                            {formatDateTime(order.created_at)}
+                          </td>
+                          <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
+                            {order.bill_no}
+                          </td>
+                          <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
+                            {order.customer_name}
+                          </td>
+                          <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
+                            {order.recipient_name || '—'}
+                          </td>
+                          <td className="p-4 text-gray-700 text-sm align-top max-w-[14rem] break-words">
+                            {(order.customer_address || '').slice(0, 200)}
+                            {(order.customer_address || '').length > 200 ? '…' : ''}
+                          </td>
+                          <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
+                            {orderBillingPhone(order)}
+                          </td>
+                          <td className="p-4 align-top">
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setDetailOrder(order)}
+                                className="inline-flex items-center px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+                              >
+                                รายละเอียด
+                              </button>
+                              {viewMode === 'noDesign' &&
+                                tableColumn.actionTargetStatus &&
+                                tableColumn.actionLabel &&
+                                !isProduction && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      openStatusModal(
+                                        order,
+                                        tableColumn.actionTargetStatus as OrderStatus,
+                                        tableColumn.actionLabel as string
+                                      )
+                                    }
+                                    className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${tableColumn.actionBtn}`}
+                                  >
+                                    {tableColumn.actionLabel}
+                                  </button>
+                                )}
+                              {viewMode === 'noDesign' &&
+                                isProduction &&
+                                canProductionChangeStatus(order.status as OrderStatus) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
+                                    className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
+                                  >
+                                    เปลี่ยนสถานะ
+                                  </button>
+                                )}
+                              <div className="inline-flex items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => openChat(order)}
+                                  className="inline-flex items-center px-2.5 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-semibold hover:bg-gray-800"
+                                >
+                                  Chat
+                                </button>
+                                {(unreadByOrder[order.id] || 0) > 0 && (
+                                  <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
+                                    {unreadByOrder[order.id]}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : (
+        visibleColumns.map((column) => {
           const orders = ordersByKey[column.key] || []
           return (
             <div
               key={column.key}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col min-h-0"
+              className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col min-h-0 w-full min-w-0"
             >
               {/* Column Header */}
               <div className={`p-4 ${column.headerGradient} text-white shrink-0`}>
@@ -657,6 +1243,16 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           </button>
                         )}
 
+                        {column.key === 'new' && (!isProduction || canProductionChangeStatus(order.status as OrderStatus)) && (
+                          <button
+                            type="button"
+                            onClick={() => moveOrderToNoDesign(order)}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-400 transition-colors"
+                          >
+                            ไม่ต้องออกแบบ
+                          </button>
+                        )}
+
                         {column.key === 'confirmed' && !isProduction && (
                           <button
                             type="button"
@@ -715,7 +1311,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               </div>
             </div>
           )
-        })}
+        })
+        )}
       </div>
 
       {/* ── Status Update Modal ── */}

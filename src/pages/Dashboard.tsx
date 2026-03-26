@@ -42,6 +42,7 @@ const STATUS_COLORS: Record<string, string> = {
   'ตรวจสอบไม่สำเร็จ': 'bg-pink-100 text-pink-700',
   'ตรวจสอบแล้ว': 'bg-indigo-100 text-indigo-700',
   'รอออกแบบ': 'bg-violet-100 text-violet-700',
+  'ไม่ต้องออกแบบ': 'bg-slate-100 text-slate-700',
   'ออกแบบแล้ว': 'bg-fuchsia-100 text-fuchsia-700',
   'รอคอนเฟิร์ม': 'bg-purple-100 text-purple-700',
   'คอนเฟิร์มแล้ว': 'bg-cyan-100 text-cyan-700',
