@@ -235,6 +235,24 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
 
   const isTableConfirmView = viewMode === 'noDesign' || viewMode === 'completed'
 
+  // #region agent log
+  useEffect(() => {
+    fetch('http://127.0.0.1:7244/ingest/f8abaf9b-e7c6-47c0-b905-d540d1d7d499', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ed809c' },
+      body: JSON.stringify({
+        sessionId: 'ed809c',
+        runId: 'pre-fix',
+        hypothesisId: 'H1_H2_H3_H4',
+        location: 'src/components/order/OrderConfirmBoard.tsx:isTableConfirmView',
+        message: 'OrderConfirmBoard mode snapshot',
+        data: { viewMode, isTableConfirmView },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {})
+  }, [viewMode, isTableConfirmView])
+  // #endregion
+
   const filteredTableOrders = useMemo(() => {
     const raw =
       viewMode === 'noDesign' ? ordersByKey.noDesign : viewMode === 'completed' ? ordersByKey.completed : []
@@ -707,16 +725,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 type="button"
                 onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
                 className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                  viewMode === 'new'
-                    ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md ring-2 ring-blue-300'
-                    : 'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
+                  'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
                 }`}
               >
                 <ColumnIcon columnKey="new" />
                 งานใหม่
                 <span
                   className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
+                    'bg-blue-100 text-blue-600'
                   }`}
                 >
                   {ordersByKey.new.length}
@@ -735,7 +751,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 ไม่ต้องออกแบบ
                 <span
                   className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                    'bg-slate-100 text-slate-600'
                   }`}
                 >
                   {ordersByKey.noDesign.length}
@@ -754,7 +770,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 เสร็จสิ้น
                 <span
                   className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    viewMode === 'completed' ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-600'
+                    'bg-teal-100 text-teal-600'
                   }`}
                 >
                   {ordersByKey.completed.length}
@@ -803,7 +819,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               งานใหม่
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
+                  'bg-blue-100 text-blue-600'
                 }`}
               >
                 {ordersByKey.new.length}
@@ -814,16 +830,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               type="button"
               onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
               className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                viewMode === 'noDesign'
-                  ? 'bg-gradient-to-r from-slate-500 to-slate-600 text-white shadow-md ring-2 ring-slate-300'
-                  : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
+                'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
               }`}
             >
               <ColumnIcon columnKey="noDesign" />
               ไม่ต้องออกแบบ
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                  'bg-slate-100 text-slate-600'
                 }`}
               >
                 {ordersByKey.noDesign.length}
@@ -834,16 +848,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               type="button"
               onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
               className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                viewMode === 'completed'
-                  ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md ring-2 ring-teal-300'
-                  : 'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
+                'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
               }`}
             >
               <ColumnIcon columnKey="completed" />
               เสร็จสิ้น
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  viewMode === 'completed' ? 'bg-white/20 text-white' : 'bg-teal-100 text-teal-600'
+                  'bg-teal-100 text-teal-600'
                 }`}
               >
                 {ordersByKey.completed.length}
