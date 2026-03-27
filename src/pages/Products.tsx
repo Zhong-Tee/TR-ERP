@@ -50,6 +50,7 @@ const INIT_IMPORT_HEADERS = [
   'safety_stock',
   'order_point',
   'order_point_days',
+  'rubber_code',
   'storage_location',
   'unit_name',
   'unit_multiplier',
@@ -69,6 +70,7 @@ interface InitImportRow {
   safety_stock: number
   order_point: string
   order_point_days: number | null
+  rubber_code: string
   storage_location: string
   unit_name: string
   unit_multiplier: number
@@ -829,13 +831,13 @@ export default function Products() {
     const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
       headers,
-      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
-      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
+      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'R001', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
     ])
     ws['!cols'] = [
       { wch: 14 }, { wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
-      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
       ...channelPriceHeaders.map(() => ({ wch: 14 })),
     ]
     const wb = XLSX.utils.book_new()
@@ -914,6 +916,7 @@ export default function Products() {
           safety_stock: Math.min(safetyStock, initialStock),
           order_point: String(row.order_point ?? '').trim(),
           order_point_days: orderPointDays,
+          rubber_code: String(row.rubber_code ?? '').trim(),
           storage_location: String(row.storage_location ?? '').trim(),
           unit_name: unitName,
           unit_multiplier: unitMultiplier,
@@ -978,7 +981,7 @@ export default function Products() {
           safety_stock: r.safety_stock,
           order_point: r.order_point || null,
           order_point_days: r.order_point_days,
-          rubber_code: null,
+          rubber_code: r.rubber_code || null,
           storage_location: r.storage_location || null,
           unit_name: r.unit_name || 'ชิ้น',
           unit_multiplier: r.unit_multiplier || 1,
@@ -1005,6 +1008,7 @@ export default function Products() {
             unit_cost: r.unit_cost,
             order_point: r.order_point || null,
             order_point_days: r.order_point_days,
+            rubber_code: r.rubber_code || null,
             storage_location: r.storage_location || null,
             unit_name: r.unit_name || 'ชิ้น',
             unit_multiplier: r.unit_multiplier || 1,
@@ -1076,6 +1080,8 @@ export default function Products() {
       setInitImporting(false)
     }
   }
+
+  const initImportChannelHeaders = getChannelPriceHeaders(channels)
 
   return (
     <div className="space-y-6 mt-4">
@@ -1637,7 +1643,8 @@ export default function Products() {
         open={initImportOpen}
         onClose={() => { if (!initImporting) { setInitImportOpen(false); setInitImportRows([]); setInitImportDupCodes(new Set()); setInitImportErrors([]) } }}
         closeOnBackdropClick={false}
-        contentClassName="max-w-5xl !overflow-hidden flex flex-col"
+        stackClassName="z-[70]"
+        contentClassName="w-full max-w-full !overflow-hidden flex flex-col"
       >
         <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
           <h2 className="text-2xl font-semibold">ตรวจสอบข้อมูลก่อนนำเข้า</h2>
@@ -1677,23 +1684,32 @@ export default function Products() {
 
           {/* Data Table */}
           {initImportRows.length > 0 && (
-            <div className="overflow-x-auto border border-surface-200 rounded-xl">
-              <table className="w-full text-xs">
+            <div className="overflow-x-auto pb-1 border border-surface-200 rounded-xl">
+              <table className="min-w-max text-xs">
                 <thead>
                   <tr className="bg-surface-100">
                     <th className="px-2 py-2 text-left font-semibold">สถานะ</th>
                     <th className="px-2 py-2 text-left font-semibold">รหัสสินค้า</th>
                     <th className="px-2 py-2 text-left font-semibold">ชื่อสินค้า</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อภาษาจีน</th>
                     <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
                     <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
+                    <th className="px-2 py-2 text-left font-semibold">ผู้ขาย</th>
                     <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
                     <th className="px-2 py-2 text-right font-semibold">สต๊อครวม</th>
                     <th className="px-2 py-2 text-right font-semibold">Safety</th>
                     <th className="px-2 py-2 text-right font-semibold">On Hand</th>
                     <th className="px-2 py-2 text-left font-semibold">จุดสั่งซื้อ</th>
                     <th className="px-2 py-2 text-right font-semibold">จุดสั่งซื้อ(วัน)</th>
+                    <th className="px-2 py-2 text-left font-semibold">รหัสหน้ายาง</th>
+                    <th className="px-2 py-2 text-left font-semibold">จุดจัดเก็บ</th>
                     <th className="px-2 py-2 text-center font-semibold">หน่วย</th>
                     <th className="px-2 py-2 text-right font-semibold">ชิ้น/หน่วย</th>
+                    {initImportChannelHeaders.map((header) => (
+                      <th key={header} className="px-2 py-2 text-right font-semibold">
+                        {header}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -1711,20 +1727,35 @@ export default function Products() {
                         </td>
                         <td className="px-2 py-1.5 font-mono font-semibold">{row.product_code}</td>
                         <td className="px-2 py-1.5 max-w-[200px] truncate">{row.product_name}</td>
+                        <td className="px-2 py-1.5">{row.product_name_cn || '-'}</td>
                         <td className="px-2 py-1.5">{row.product_category || '-'}</td>
                         <td className="px-2 py-1.5 text-center">
                           <span className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] font-bold ${row.product_type === 'RM' ? 'bg-orange-100 text-orange-700' : row.product_type === 'PP' ? 'bg-purple-100 text-purple-700' : 'bg-green-100 text-green-700'}`}>
                             {row.product_type}
                           </span>
                         </td>
+                        <td className="px-2 py-1.5">{row.seller_name || '-'}</td>
                         <td className="px-2 py-1.5 text-right">{row.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         <td className="px-2 py-1.5 text-right font-semibold">{row.initial_stock.toLocaleString()}</td>
                         <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>
                         <td className="px-2 py-1.5 text-right">{onHand.toLocaleString()}</td>
                         <td className="px-2 py-1.5">{row.order_point || '-'}</td>
                         <td className="px-2 py-1.5 text-right">{row.order_point_days ?? '-'}</td>
+                        <td className="px-2 py-1.5">{row.rubber_code || '-'}</td>
+                        <td className="px-2 py-1.5">{row.storage_location || '-'}</td>
                         <td className="px-2 py-1.5 text-center">{row.unit_name || 'ชิ้น'}</td>
                         <td className="px-2 py-1.5 text-right">{row.unit_multiplier}</td>
+                        {initImportChannelHeaders.map((header) => {
+                          const channelCode = header.replace('price_', '')
+                          const price = row.channel_prices?.[channelCode]
+                          return (
+                            <td key={header} className="px-2 py-1.5 text-right">
+                              {typeof price === 'number'
+                                ? price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                : '-'}
+                            </td>
+                          )
+                        })}
                       </tr>
                     )
                   })}

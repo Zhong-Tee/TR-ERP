@@ -5,6 +5,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
 import Modal from '../ui/Modal'
 import OrderDetailView from '../order/OrderDetailView'
+import { pumpVerifiedRoutingStatus } from '../../lib/pumpConfirmRouting'
 
 type ManualSlipRow = {
   id: string
@@ -264,9 +265,20 @@ export default function ManualSlipCheckSection() {
       if (updateErr) throw updateErr
 
       const newOrderStatus = action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'
+      let orderUpdateStatus = newOrderStatus
+      if (action === 'approved' && newOrderStatus === 'ตรวจสอบแล้ว') {
+        const { data: ord } = await supabase
+          .from('or_orders')
+          .select('channel_code, requires_confirm_design')
+          .eq('id', actionModal.group.order_id)
+          .maybeSingle()
+        if (ord?.channel_code === 'PUMP') {
+          orderUpdateStatus = pumpVerifiedRoutingStatus(ord.requires_confirm_design !== false)
+        }
+      }
       const { error: orderErr } = await supabase
         .from('or_orders')
-        .update({ status: newOrderStatus })
+        .update({ status: orderUpdateStatus })
         .eq('id', actionModal.group.order_id)
       if (orderErr) throw orderErr
 
@@ -274,7 +286,12 @@ export default function ManualSlipCheckSection() {
       await loadRows()
       setCheckResult({
         open: true,
-        message: action === 'approved' ? 'อนุมัติแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบแล้ว"' : 'ปฏิเสธแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบไม่ผ่าน"',
+        message:
+          action === 'approved'
+            ? orderUpdateStatus === 'ไม่ต้องออกแบบ'
+              ? 'อนุมัติแล้ว — สถานะบิลเป็น "ไม่ต้องออกแบบ" (คิว Confirm)'
+              : 'อนุมัติแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบแล้ว"'
+            : 'ปฏิเสธแล้ว — สถานะบิลเปลี่ยนเป็น "ตรวจสอบไม่ผ่าน"',
         type: action === 'approved' ? 'success' : 'warning',
       })
     } catch (e: any) {

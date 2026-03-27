@@ -2,11 +2,25 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
+import { fetchWorkOrderNamesWithWmsAssigned } from '../wmsUtils'
 
-// Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION
+function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const r of rows) {
+    const n = r.work_order_name
+    if (!n || seen.has(n)) continue
+    seen.add(n)
+    out.push(r)
+  }
+  return out
+}
+
+// Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION + อะไหล่ (rubber_code)
 const MAIN_KEYWORDS = ['STAMP', 'LASER', 'SUBLIMATION']
 const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK']
-const isMainCategory = (cat: string): boolean => {
+const isMainCategory = (cat: string, rubberCode?: string): boolean => {
+  if ((rubberCode || '').trim() !== '') return true
   const upper = (cat || '').toUpperCase()
   if (MAIN_KEYWORDS.some((kw) => upper.includes(kw))) return true
   if (ETC_CATEGORIES.includes(upper)) return true
@@ -80,14 +94,9 @@ export default function NewOrdersSection() {
       return
     }
 
-    // กรองเฉพาะใบงานที่ยังไม่ได้มอบหมาย Picker (ไม่มีใน wms_orders)
-    const woIds = data.map((wo) => wo.id)
-    const { data: assignedRows } = await supabase
-      .from('wms_orders')
-      .select('work_order_id')
-      .in('work_order_id', woIds as string[])
-    const assignedSet = new Set((assignedRows || []).map((r: any) => r.work_order_id))
-    const unassigned = data.filter((wo) => !assignedSet.has(wo.id))
+    const deduped = dedupeWorkOrdersByName(data)
+    const assignedNames = await fetchWorkOrderNamesWithWmsAssigned()
+    const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
 
     // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
     if (unassigned.length > 0) {
@@ -110,10 +119,13 @@ export default function NewOrdersSection() {
       if (productIds.length > 0) {
         const { data: products } = await supabase
           .from('pr_products')
-          .select('id, product_category')
+          .select('id, product_category, rubber_code')
           .in('id', productIds)
         productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
-          acc[p.id] = p.product_category || ''
+          const category = String(p.product_category || '')
+          const rubberCode = String(p.rubber_code || '').trim()
+          // เก็บ rubber_code เป็น marker ใน map เดียว เพื่อลดการแตก state/map เพิ่ม
+          acc[p.id] = rubberCode ? `${category}__RUBBER__${rubberCode}` : category
           return acc
         }, {})
       }
@@ -121,14 +133,22 @@ export default function NewOrdersSection() {
       const woQualifiesForAssign = new Set<string>()
       allItems.forEach((item: any) => {
         if (!item.product_id) return
-        const cat = productCategoryMap[item.product_id] || ''
-        if (isMainCategory(cat) && item.work_order_id) woQualifiesForAssign.add(String(item.work_order_id))
+        const raw = productCategoryMap[item.product_id] || ''
+        const marker = '__RUBBER__'
+        const markerIdx = raw.indexOf(marker)
+        const hasRubber = markerIdx >= 0
+        const cat = hasRubber ? raw.slice(0, markerIdx) : raw
+        const rubberCode = hasRubber ? raw.slice(markerIdx + marker.length) : ''
+        if (isMainCategory(cat, rubberCode) && item.work_order_id) {
+          woQualifiesForAssign.add(String(item.work_order_id))
+        }
       })
 
       setWorkOrders(unassigned.filter((wo) => woQualifiesForAssign.has(wo.id)))
     } else {
       setWorkOrders([])
     }
+
     setLoading(false)
   }
 
@@ -201,37 +221,43 @@ export default function NewOrdersSection() {
     return <div className="text-center text-slate-400 py-10">กำลังโหลด...</div>
   }
 
-  if (workOrders.length === 0) {
-    return <div className="text-center text-slate-500 italic py-20">ไม่มีใบงานใหม่</div>
-  }
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <h2 className="text-xl font-black mb-4">ใบงานใหม่</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto pb-4">
-        {workOrders.map((wo) => (
-          <button
-            key={wo.id}
-            className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
-            onClick={() => openAssignPicker(wo.id)}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-lg font-semibold flex flex-wrap items-center gap-2">
-                  <span>📦 {wo.work_order_name}</span>
-                  {wo.plan_wo_modified && (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
-                      ถูกแก้ไข
-                    </span>
-                  )}
+      <p className="text-sm text-slate-600 mb-3">
+        แสดง<strong>เฉพาะ</strong>ใบงานที่ยัง<strong>ไม่ได้มอบหมาย Picker</strong> และมีสินค้าที่ต้องหยิบคลัง — ใบงานที่มอบหมายแล้วหรือปิดงานแล้วดูที่เมนู{' '}
+        <strong>รายการใบงาน</strong> หรือหน้ามือถือของ Picker
+      </p>
+      {workOrders.length === 0 ? (
+        <div className="text-center text-slate-500 italic py-10 border border-dashed border-slate-200 rounded-lg">
+          ไม่มีใบงานใหม่ที่รอมอบหมาย Picker
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto pb-4">
+          {workOrders.map((wo) => (
+            <button
+              key={wo.id}
+              className="p-4 border rounded-lg text-left transition-colors bg-gray-100 border-gray-200 hover:bg-gray-200"
+              onClick={() => openAssignPicker(wo.id)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-lg font-semibold flex flex-wrap items-center gap-2">
+                    <span>📦 {wo.work_order_name}</span>
+                    {wo.plan_wo_modified && (
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                        ถูกแก้ไข
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600">{wo.order_count} บิล</div>
                 </div>
-                <div className="text-sm text-gray-600">{wo.order_count} บิล</div>
+                <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
               </div>
-              <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
-            </div>
-          </button>
-        ))}
-      </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       <Modal open={!!selectedWorkOrder} onClose={closeAssignPicker} closeOnBackdropClick={true} contentClassName="max-w-md">
         <div className="p-6">

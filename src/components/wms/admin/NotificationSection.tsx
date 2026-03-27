@@ -87,16 +87,7 @@ export default function NotificationSection() {
 
       const targetOrderId = orderId || orders[0]?.id || null
       setSelectedCancelledOrderId(targetOrderId)
-      if (!targetOrderId) {
-        setCancelledLines([])
-        return
-      }
-
-      const targetCodes = await getCancelledOrderProductCodes(targetOrderId)
-      if (targetCodes.length === 0) {
-        setCancelledLines([])
-        return
-      }
+      const targetCodes = targetOrderId ? await getCancelledOrderProductCodes(targetOrderId) : []
 
       const targetNorm = normalizeOrderKey(workOrderId)
       let rows: any[] = []
@@ -119,8 +110,13 @@ export default function NotificationSection() {
         rows = (fallback || []).filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
       }
 
+      // ถ้าไม่มี targetOrderId (เช่น ยกเลิกบางรายการที่บิลหลักยังไม่สถานะยกเลิก)
+      // ให้แสดง cancelled rows ทั้งใบงาน เพื่อให้ WMS เลือกคืนสต๊อก/ของเสียต่อได้
       const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
-      const filteredRows = rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+      const filteredRows =
+        codeSet.size > 0
+          ? rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+          : rows
       setCancelledLines(filteredRows)
     } catch (e) {
       console.error('loadCancelledLines error:', e)

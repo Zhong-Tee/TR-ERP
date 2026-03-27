@@ -121,8 +121,12 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                 <tbody className="divide-y">
                   {items.map((item) => {
                     const currentColorClass = statusColorMap[item.status] || 'bg-gray-100'
+                    const isSpareLike =
+                      item.product_code === 'SPARE_PART' ||
+                      item.location === 'อะไหล่' ||
+                      String(item.product_name || '').includes('หน้ายาง+โฟม')
                     const imgUrl =
-                      item.product_code === 'SPARE_PART'
+                      isSpareLike
                         ? getProductImageUrl('spare_part')
                         : getProductImageUrl(item.product_code)
 
@@ -142,7 +146,7 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                         <td className="p-3">
                           <div className="font-bold text-slate-700">{item.product_name}</div>
                           <div className="text-[10px] text-gray-400">
-                            {item.product_code === 'SPARE_PART' ? 'อะไหล่' : item.product_code}
+                            {isSpareLike ? 'อะไหล่' : item.product_code}
                           </div>
                         </td>
                         <td className="p-3 text-red-600 font-bold">{item.location || '-'}</td>

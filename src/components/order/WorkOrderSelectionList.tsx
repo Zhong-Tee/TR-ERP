@@ -48,13 +48,15 @@ export default function WorkOrderSelectionList({
 
       if (channelFilter) {
         if (channelFilter === 'PUMP') {
-          query = query.eq('channel_code', 'PUMP').in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
+          query = query
+            .eq('channel_code', 'PUMP')
+            .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น', 'ย้ายจากใบงาน'])
         } else {
-          query = query.eq('channel_code', channelFilter).eq('status', 'ใบสั่งงาน')
+          query = query.eq('channel_code', channelFilter).in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
         }
       } else {
         query = query.or(
-          'and(channel_code.eq.PUMP,status.in.(คอนเฟิร์มแล้ว,เสร็จสิ้น)),and(channel_code.neq.PUMP,status.eq.ใบสั่งงาน)'
+          'and(channel_code.eq.PUMP,status.in.(คอนเฟิร์มแล้ว,เสร็จสิ้น,ย้ายจากใบงาน)),and(channel_code.neq.PUMP,status.in.(ใบสั่งงาน,ย้ายจากใบงาน))'
         )
       }
 
@@ -238,6 +240,15 @@ export default function WorkOrderSelectionList({
           })
           .in('id', orderIds)
         if (updateError) throw updateError
+
+        // ถ้าบิลถูกปล่อยกลับมาจากใบงาน (status=ย้ายจากใบงาน)
+        // เมื่อสร้างใบงานใหม่ให้กลับไปสถานะใบสั่งงาน
+        const { error: normalizeStatusError } = await supabase
+          .from('or_orders')
+          .update({ status: 'ใบสั่งงาน' })
+          .in('id', orderIds)
+          .eq('status', 'ย้ายจากใบงาน')
+        if (normalizeStatusError) throw normalizeStatusError
 
         const { data: existingPlan } = await supabase
           .from('plan_jobs')

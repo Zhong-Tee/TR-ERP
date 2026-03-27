@@ -879,6 +879,7 @@ export default function Packing() {
           const shippedBy = user?.username || user?.email || 'system'
           await supabase.from('or_orders').update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() }).in('id', officeIds)
           await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', wo.work_order_name)
+          await checkAndMarkPackEnd(wo.work_order_name)
         }
 
         const { data: planJobs } = await supabase

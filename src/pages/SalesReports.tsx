@@ -532,6 +532,7 @@ export default function SalesReports() {
               <option value="เสร็จสิ้น">เสร็จสิ้น</option>
               <option value="ใบงานกำลังผลิต">ใบงานกำลังผลิต</option>
               <option value="ใบสั่งงาน">ใบสั่งงาน</option>
+              <option value="ย้ายจากใบงาน">ย้ายจากใบงาน</option>
               <option value="คอนเฟิร์มแล้ว">คอนเฟิร์มแล้ว</option>
               <option value="ยกเลิก">ยกเลิก</option>
             </select>

@@ -125,8 +125,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     try {
       const { data, error } = await supabase.rpc('get_unread_chat_count', {
         p_user_id: user.id,
-        p_role: user.role || '',
-        p_username: user.username || user.email || '',
+        p_role: (user.role || '').trim(),
+        p_username: (user.username || user.email || '').trim(),
       })
       if (error) throw error
       setIssueOnCount(data?.issue_on_count ?? 0)
@@ -191,13 +191,21 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     const channel = supabase
       .channel('topbar-issue-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => debouncedLoadChatCounts())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, () => debouncedLoadChatCounts())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, () => debouncedLoadChatCounts())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, (payload) => {
+        const sid = (payload.new as { sender_id?: string })?.sender_id
+        if (user?.id && sid === user.id) return
+        debouncedLoadChatCounts()
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
+        const sid = (payload.new as { sender_id?: string })?.sender_id
+        if (user?.id && sid === user.id) return
+        debouncedLoadChatCounts()
+      })
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [canSeeChat, loadChatCounts, debouncedLoadChatCounts])
+  }, [canSeeChat, user?.id, loadChatCounts, debouncedLoadChatCounts])
 
   // เด้งกล่องแจ้งเตือนออกทันทีเมื่อมี Issue/Chat ใหม่เพิ่มขึ้น
   useEffect(() => {
@@ -226,10 +234,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const issueTabs = [
     { key: 'on', label: `New Issue (${issueOnCount})` },
-    { key: 'close', label: `New Chat (${newChatCount})` },
+    { key: 'unread', label: `New Chat (${newChatCount})` },
   ]
 
-  /** Navigate to the correct Issue page based on role, then switch Issue tab (on/close) */
+  /** Navigate to the correct Issue page based on role, then switch Issue tab (on / unread / …) */
   const handleIssueClick = (tabKey: string) => {
     // กำหนดเส้นทางตาม role
     const isProductionRole = user?.role === 'production'
@@ -559,7 +567,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setNotifyBlinking(false); handleIssueClick('close') }}
+                  onClick={() => { setNotifyBlinking(false); handleIssueClick('unread') }}
                   className={`w-full flex items-center justify-between rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-base hover:bg-orange-100 transition-colors ${
                     newChatCount > 0 ? 'ring-1 ring-orange-300' : ''
                   }`}

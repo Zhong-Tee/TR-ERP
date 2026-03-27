@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -56,6 +56,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
   const [submitLoading, setSubmitLoading] = useState(false)
   /** รายการบิลที่เลือกให้ยกเลิก (บางรายการ → changes_json.remove_item_ids) */
   const [selectedRemoveIds, setSelectedRemoveIds] = useState<Set<string>>(new Set())
+  /** กันค่า selectedRemoveIds ถูกรีเซ็ตเป็นทุกรายการเมื่อ createModeItems เปลี่ยน reference */
+  const selectionInitForOrderRef = useRef<string | null>(null)
 
   const isCreateMode = !!orderToAmend
   const isApproverRole = user?.role === 'superadmin' || user?.role === 'admin'
@@ -89,9 +91,19 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
   }, [orderToAmend])
 
   useEffect(() => {
-    if (!orderToAmend?.id) return
+    if (!orderToAmend?.id) {
+      selectionInitForOrderRef.current = null
+      return
+    }
     const ids = createModeItems.map((i: any) => i.id).filter(Boolean) as string[]
-    setSelectedRemoveIds(new Set(ids))
+    if (ids.length === 0) return
+    const oid = orderToAmend.id
+    if (selectionInitForOrderRef.current !== oid) {
+      selectionInitForOrderRef.current = oid
+      setSelectedRemoveIds(new Set(ids))
+      return
+    }
+    setSelectedRemoveIds((prev) => (prev.size > 0 ? prev : new Set(ids)))
   }, [orderToAmend?.id, createModeItems])
 
   const toggleRemoveItem = (itemId: string) => {
@@ -573,16 +585,37 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
               </div>
             ) : null}
 
-            {/* รายการสินค้า */}
+            {/* รายการสินค้า — คำขอบางรายการ: แสดงเฉพาะบรรทัดที่ขอนำออก (จาก items_before + remove_item_ids) */}
             {(() => {
-              const items = detailOrder?.or_order_items || (detailAmendment.items_before && Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before : [])
+              const itemsBefore = detailAmendment.items_before && Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before : []
+              const rawRemove = detailAmendment.changes_json && (detailAmendment.changes_json as { remove_item_ids?: unknown }).remove_item_ids
+              const removeIds =
+                Array.isArray(rawRemove) && rawRemove.length > 0
+                  ? new Set(rawRemove.map((x) => String(x)))
+                  : null
+              const isPendingPartial = detailAmendment.status === 'pending' && removeIds && removeIds.size > 0
+              let items: any[] = []
+              if (isPendingPartial && itemsBefore.length > 0) {
+                items = itemsBefore.filter((it: any) => it?.id && removeIds!.has(String(it.id)))
+              } else if (detailOrder?.or_order_items && (detailAmendment.status === 'executed' || !isPendingPartial)) {
+                items = detailOrder.or_order_items
+              } else if (itemsBefore.length > 0) {
+                items = itemsBefore as any[]
+              } else {
+                items = detailOrder?.or_order_items || []
+              }
               if (!items || items.length === 0) return null
               return (
                 <div>
                   <h4 className="text-sm font-semibold text-gray-700 mb-2">
                     <i className="fas fa-boxes mr-1 text-gray-500" />
-                    รายการสินค้าในบิล ({items.length} รายการ)
+                    {isPendingPartial ? `รายการที่ขอนำออก (${items.length} รายการ)` : `รายการสินค้าในบิล (${items.length} รายการ)`}
                   </h4>
+                  {isPendingPartial && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-2">
+                      แสดงเฉพาะบรรทัดที่เลือกในคำขอ (ยกเลิกบางรายการ) — ไม่ใช่ทุกรายการในบิล
+                    </p>
+                  )}
                   <div className="border border-gray-200 rounded-lg overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>

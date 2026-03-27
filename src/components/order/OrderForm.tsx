@@ -5,6 +5,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
 import { parseAddressText, type SubDistrictOption } from '../../lib/thaiAddress'
 import VerificationResultModal, { type AmountStatus, type VerificationResultType } from './VerificationResultModal'
+import { pumpVerifiedRoutingStatus } from '../../lib/pumpConfirmRouting'
 import Modal from '../ui/Modal'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
@@ -644,6 +645,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [fileAttachmentFocusedIndex, setFileAttachmentFocusedIndex] = useState<number | null>(null)
   /** ref ช่องวันที่ เวลา นัดรับ (SHOP PICKUP) — คลิกที่ไหนของช่องก็เปิด picker ได้ */
   const scheduledPickupInputRef = useRef<HTMLInputElement>(null)
+  /** PUMP: true = คิว Confirm งานใหม่ (ต้องออกแบบ), false = คิว ไม่ต้องออกแบบ เมื่อถึงสถานะตรวจสอบแล้ว */
+  const [requiresConfirmDesign, setRequiresConfirmDesign] = useState(false)
 
   const [formData, setFormData] = useState({
     channel_code: '',
@@ -848,6 +851,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           payment_date: order.payment_date || '',
           payment_time: order.payment_time || '',
         })
+        setRequiresConfirmDesign((order as Order).requires_confirm_design !== false)
 
         let orderItems = order.order_items || []
         if (orderItems.length === 0 && order.id) {
@@ -899,6 +903,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       } else {
         setItems([{ product_type: 'ชั้น1', quantity: 1 }])
         setUploadedSlipPaths([])
+        setRequiresConfirmDesign(false)
       }
     }
     loadOrderData()
@@ -1542,7 +1547,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
-      let statusToSave: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' | 'ตรวจสอบแล้ว' = targetStatus
+      let statusToSave: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' | 'ตรวจสอบแล้ว' | 'ไม่ต้องออกแบบ' = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCode = formData.channel_code?.trim() || ''
         if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
@@ -1573,9 +1578,15 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         }
       }
 
+      const channelCodeForSave = formData.channel_code?.trim() || ''
+      if (channelCodeForSave === 'PUMP' && statusToSave === 'ตรวจสอบแล้ว') {
+        statusToSave = pumpVerifiedRoutingStatus(requiresConfirmDesign)
+      }
+
       const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, scheduled_pickup_at: _spForm, ...formDataForDb } = formData
       const orderData = {
         ...formDataForDb,
+        requires_confirm_design: requiresConfirmDesign,
         customer_address: customerAddressToSave,
         price: calculatedPrice,
         discount: discountBahtForSave,
@@ -2510,9 +2521,21 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         newStatus = 'ตรวจสอบไม่ผ่าน'
       }
 
+      let statusForDb = newStatus
+      if (newStatus === 'ตรวจสอบแล้ว') {
+        const { data: meta } = await supabase
+          .from('or_orders')
+          .select('channel_code, requires_confirm_design')
+          .eq('id', orderId)
+          .maybeSingle()
+        if (meta?.channel_code === 'PUMP') {
+          statusForDb = pumpVerifiedRoutingStatus(meta.requires_confirm_design !== false)
+        }
+      }
+
       const { error: updateError } = await supabase
         .from('or_orders')
-        .update({ status: newStatus })
+        .update({ status: statusForDb })
         .eq('id', orderId)
 
       if (updateError) {
@@ -2520,7 +2543,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         throw new Error('เกิดข้อผิดพลาดในการอัพเดตสถานะออเดอร์: ' + updateError.message)
       }
 
-      const modalType: VerificationResultType = newStatus === 'ตรวจสอบแล้ว' ? 'success' : 'failed'
+      const modalType: VerificationResultType =
+        statusForDb === 'ตรวจสอบแล้ว' || statusForDb === 'ไม่ต้องออกแบบ' ? 'success' : 'failed'
       setVerificationModal({
         type: modalType,
         accountMatch: allAccountNameMatch ? true : (errors.length === 0 ? false : null),
@@ -3050,6 +3074,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             payment_date: order.payment_date || null,
             payment_time: order.payment_time || null,
             status: importedStatus,
+            // นำเข้าแบบเดิม: ถือว่าต้องการคิวงานใหม่ (เทียบเท่าเปิดบิลแล้วกดป้ายออกแบบ)
+            requires_confirm_design: true,
             admin_user: adminUser,
             entry_date: todayStr,
             billing_details: importedBillingDetails,
@@ -3291,6 +3317,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         shipped_by: null,
         shipped_time: null,
         tracking_number: ref.tracking_number ?? null,
+        requires_confirm_design: ref.requires_confirm_design !== false,
       }
       const { data: newOrder, error } = await supabase
         .from('or_orders')
@@ -3763,6 +3790,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                             customer_address: formData.customer_address?.trim() || '',
                             admin_user: adminUser,
                             entry_date: new Date().toISOString().slice(0, 10),
+                            requires_confirm_design: false,
                           })
                           .select()
                           .single()
@@ -4076,7 +4104,36 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       {/* ขยายเต็มความกว้างของพื้นที่เนื้อหา (ไม่กระทบเมนูซ้าย) */}
       <div className="-mx-4 sm:-mx-6 lg:-mx-8 bg-white px-4 sm:px-6 lg:px-8 py-6 rounded-lg shadow" style={{ position: 'relative', overflow: 'hidden' }}>
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          <h3 className="text-xl font-bold mr-auto">รายการสินค้า</h3>
+          <h3 className="text-xl font-bold mr-auto flex items-center gap-2 flex-wrap">
+            รายการสินค้า
+            {requiresConfirmDesign && (
+              <span className="text-xs sm:text-sm font-semibold px-2 py-0.5 rounded-full bg-fuchsia-100 text-fuchsia-800 ring-1 ring-fuchsia-200">
+                ออกแบบ
+              </span>
+            )}
+          </h3>
+          <button
+            type="button"
+            onClick={() => {
+              if (formDisabled) return
+              setRequiresConfirmDesign((v) => !v)
+            }}
+            disabled={formDisabled}
+            title={
+              requiresConfirmDesign
+                ? 'คลิกเพื่อยกเลิกเครื่องหมายออกแบบ'
+                : 'ทำเครื่องหมายออกแบบสำหรับบิลนี้'
+            }
+            className={`px-3 py-2 rounded-lg text-sm font-medium shrink-0 border transition-colors ${
+              formDisabled
+                ? 'bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed'
+                : requiresConfirmDesign
+                  ? 'bg-fuchsia-800 text-white border-fuchsia-800 shadow-sm hover:bg-fuchsia-900'
+                  : 'bg-white text-fuchsia-700 border-fuchsia-300 hover:bg-fuchsia-50'
+            }`}
+          >
+            ออกแบบ
+          </button>
           <button
             type="button"
             onClick={downloadStandardOrderTemplate}
@@ -5625,9 +5682,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     const { error: refundError } = await supabase.from('ac_refunds').insert(refundData)
                     if (refundError) throw new Error(refundError.message)
                   }
+                  let overpayStatus: 'ตรวจสอบแล้ว' | 'ไม่ต้องออกแบบ' = 'ตรวจสอบแล้ว'
+                  const { data: overMeta } = await supabase
+                    .from('or_orders')
+                    .select('channel_code, requires_confirm_design')
+                    .eq('id', verificationModal.orderId)
+                    .maybeSingle()
+                  if (overMeta?.channel_code === 'PUMP') {
+                    overpayStatus = pumpVerifiedRoutingStatus(overMeta.requires_confirm_design !== false)
+                  }
                   const { error: updateError } = await supabase
                     .from('or_orders')
-                    .update({ status: 'ตรวจสอบแล้ว' })
+                    .update({ status: overpayStatus })
                     .eq('id', verificationModal.orderId)
                   if (updateError) throw new Error(updateError.message)
                   setVerificationModal(null)

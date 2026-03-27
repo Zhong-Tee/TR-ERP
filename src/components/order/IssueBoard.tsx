@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Issue, IssueMessage, IssueType, Order } from '../../types'
@@ -8,6 +9,7 @@ import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
 import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
+import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
@@ -23,6 +25,14 @@ type IssueWithOrder = Issue & {
   creatorName?: string
 }
 
+type UnreadOrderChatRow = {
+  order_id: string
+  bill_no: string | null
+  customer_name: string | null
+  unread_count: number
+  last_message_at: string
+}
+
 export default function IssueBoard({
   scope,
   workOrders = [],
@@ -30,6 +40,7 @@ export default function IssueBoard({
   salesTrNarrowAdminUser,
 }: IssueBoardProps) {
   const { user } = useAuthContext()
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [issuesOn, setIssuesOn] = useState<IssueWithOrder[]>([])
   const [issuesClosed, setIssuesClosed] = useState<IssueWithOrder[]>([])
@@ -40,7 +51,17 @@ export default function IssueBoard({
   const [chatMessage, setChatMessage] = useState('')
   const [chatSending, setChatSending] = useState(false)
   const [enterToSend, setEnterToSend] = useState(false)
-  const [activeTab, setActiveTab] = useState<'on' | 'close'>('on')
+  const [activeTab, setActiveTab] = useState<'on' | 'close' | 'unread'>('on')
+
+  useEffect(() => {
+    if (!user?.id) {
+      setEnterToSend(false)
+      return
+    }
+    setEnterToSend(getChatEnterToSendPref(user.id, 'issue'))
+  }, [user?.id])
+  const [unreadOrderRows, setUnreadOrderRows] = useState<UnreadOrderChatRow[]>([])
+  const [loadingUnreadOrders, setLoadingUnreadOrders] = useState(false)
   const [, setNewIssueCount] = useState(0)
   const [, setNewChatCount] = useState(0)
   const [detailIssue, setDetailIssue] = useState<IssueWithOrder | null>(null)
@@ -59,6 +80,10 @@ export default function IssueBoard({
   const [billSearching, setBillSearching] = useState(false)
   const billSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
+  const issuesWithUnread = useMemo(
+    () => [...issuesOn, ...issuesClosed].filter((i) => (unreadByIssue[i.id] || 0) > 0),
+    [issuesOn, issuesClosed, unreadByIssue]
+  )
   const [fromDate, setFromDate] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -124,8 +149,10 @@ export default function IssueBoard({
 
   useEffect(() => {
     const onTabChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ tab: 'on' | 'close' }>).detail
-      if (detail?.tab) setActiveTab(detail.tab)
+      const detail = (event as CustomEvent<{ tab: 'on' | 'close' | 'unread' }>).detail
+      if (detail?.tab === 'on' || detail?.tab === 'close' || detail?.tab === 'unread') {
+        setActiveTab(detail.tab)
+      }
     }
     window.addEventListener('issue-tab-change', onTabChange)
     return () => window.removeEventListener('issue-tab-change', onTabChange)
@@ -141,7 +168,10 @@ export default function IssueBoard({
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, (payload) => {
         const row = payload.new as IssueMessage
-        setNewChatCount((prev) => prev + 1)
+        const fromSelf = !!(user && row.sender_id === user.id)
+        if (!fromSelf) {
+          setNewChatCount((prev) => prev + 1)
+        }
         if (chatIssue && chatIssue.id === row.issue_id) {
           setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
           if (user) {
@@ -152,7 +182,7 @@ export default function IssueBoard({
             })
           }
         }
-        if (!chatIssue || chatIssue.id !== row.issue_id) {
+        if ((!chatIssue || chatIssue.id !== row.issue_id) && !fromSelf) {
           setUnreadByIssue((prev) => ({ ...prev, [row.issue_id]: (prev[row.issue_id] || 0) + 1 }))
         }
       })
@@ -270,13 +300,14 @@ export default function IssueBoard({
     try {
       const [{ data: reads }, { data: messages }] = await Promise.all([
         supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
-        supabase.from('or_issue_messages').select('issue_id, created_at').eq('is_hidden', false).in('issue_id', issueIds),
+        supabase.from('or_issue_messages').select('issue_id, created_at, sender_id').eq('is_hidden', false).in('issue_id', issueIds),
       ])
       const readMap = new Map(
         (reads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
       )
       const counts: Record<string, number> = {}
-      ;(messages || []).forEach((m: { issue_id: string; created_at: string }) => {
+      ;(messages || []).forEach((m: { issue_id: string; created_at: string; sender_id: string }) => {
+        if (user && m.sender_id === user.id) return
         const lastRead = readMap.get(m.issue_id) ?? 0
         const msgTime = new Date(m.created_at).getTime()
         if (msgTime > lastRead) {
@@ -287,6 +318,62 @@ export default function IssueBoard({
     } catch (error) {
       console.error('Error loading unread counts:', error)
     }
+  }
+
+  const loadUnreadOrderChatSummaries = useCallback(async () => {
+    if (!user) {
+      setUnreadOrderRows([])
+      return
+    }
+    setLoadingUnreadOrders(true)
+    try {
+      const { data, error } = await supabase.rpc('list_unread_order_chat_summaries', {
+        p_user_id: user.id,
+        p_role: (user.role || '').trim(),
+        p_username: (user.username || user.email || '').trim(),
+      })
+      if (error) throw error
+      const rows = (data || []) as Record<string, unknown>[]
+      setUnreadOrderRows(
+        rows.map((r) => ({
+          order_id: String(r.order_id),
+          bill_no: (r.bill_no as string) ?? null,
+          customer_name: (r.customer_name as string) ?? null,
+          unread_count: Number(r.unread_count ?? 0),
+          last_message_at: String(r.last_message_at ?? ''),
+        }))
+      )
+    } catch (e) {
+      console.error('loadUnreadOrderChatSummaries:', e)
+      setUnreadOrderRows([])
+    } finally {
+      setLoadingUnreadOrders(false)
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (activeTab === 'unread') {
+      void loadUnreadOrderChatSummaries()
+    }
+  }, [activeTab, loadUnreadOrderChatSummaries])
+
+  useEffect(() => {
+    const onOrderChatRead = () => {
+      if (activeTab === 'unread') void loadUnreadOrderChatSummaries()
+    }
+    window.addEventListener('order-chat-read', onOrderChatRead)
+    return () => window.removeEventListener('order-chat-read', onOrderChatRead)
+  }, [activeTab, loadUnreadOrderChatSummaries])
+
+  function goToConfirmOrderChat(orderId: string) {
+    if (scope === 'plan') {
+      navigate('/orders')
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('navigate-to-order-chat', { detail: { orderId } }))
+      }, 200)
+      return
+    }
+    window.dispatchEvent(new CustomEvent('navigate-to-order-chat', { detail: { orderId } }))
   }
 
   async function openChat(issue: IssueWithOrder) {
@@ -498,6 +585,7 @@ export default function IssueBoard({
           {[
             { key: 'on' as const, label: `New Issue (${issuesOn.length})` },
             { key: 'close' as const, label: `Close Issue (${issuesClosed.length})` },
+            { key: 'unread' as const, label: 'ข้อความยังไม่อ่าน' },
           ].map((tab) => (
             <button
               key={tab.key}
@@ -537,7 +625,79 @@ export default function IssueBoard({
       </div>
       <div className="bg-white rounded-lg shadow overflow-hidden">
         <div className="divide-y">
-          {(activeTab === 'on' ? issuesOn : issuesClosed).length === 0 ? (
+          {activeTab === 'unread' ? (
+            <div className="p-5 space-y-8">
+              <section>
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">แชท Issue (Ticket)</h3>
+                {issuesWithUnread.length === 0 ? (
+                  <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">ไม่มีข้อความ Issue ยังไม่อ่าน</div>
+                ) : (
+                  <div className="space-y-3">
+                    {issuesWithUnread.map((issue) => (
+                      <div
+                        key={issue.id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl"
+                      >
+                        <div>
+                          <div className="font-bold text-blue-700">{issue.order?.bill_no || '-'}</div>
+                          <div className="text-sm text-gray-700 mt-1">{issue.title}</div>
+                          <span className="inline-flex mt-2 min-w-[1.2rem] h-5 px-1.5 items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white">
+                            {unreadByIssue[issue.id]}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openChat(issue)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-semibold hover:bg-emerald-700"
+                        >
+                          <FiMessageCircle className="w-4 h-4" />
+                          เปิดแชท
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+              <section>
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+                  แชทคำสั่งซื้อ (Confirm){' '}
+                  <span className="font-normal text-gray-500 normal-case">— เปิดจากเมนู ออเดอร์ → Confirm</span>
+                </h3>
+                {loadingUnreadOrders ? (
+                  <div className="flex justify-center py-10">
+                    <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500" />
+                  </div>
+                ) : unreadOrderRows.length === 0 ? (
+                  <div className="text-center text-gray-500 py-6 bg-gray-50 rounded-lg">ไม่มีแชทบิลยังไม่อ่าน</div>
+                ) : (
+                  <div className="space-y-3">
+                    {unreadOrderRows.map((row) => (
+                      <div
+                        key={row.order_id}
+                        className="flex flex-wrap items-center justify-between gap-3 p-4 bg-orange-50 border border-orange-200 rounded-xl"
+                      >
+                        <div>
+                          <div className="font-bold text-blue-700">{row.bill_no || row.order_id}</div>
+                          {row.customer_name && <div className="text-sm text-gray-600 mt-1">{row.customer_name}</div>}
+                          <div className="text-xs text-gray-500 mt-1">
+                            ข้อความยังไม่อ่าน {row.unread_count} · ล่าสุด {row.last_message_at ? formatDateTime(row.last_message_at) : '-'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => goToConfirmOrderChat(row.order_id)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700"
+                        >
+                          <FiMessageCircle className="w-4 h-4" />
+                          ไปหน้า Confirm เปิดแชท
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : (activeTab === 'on' ? issuesOn : issuesClosed).length === 0 ? (
             <div className="p-6 text-center text-gray-500">ไม่พบรายการ</div>
           ) : (
             (activeTab === 'on' ? issuesOn : issuesClosed).map((issue) => (
@@ -816,7 +976,11 @@ export default function IssueBoard({
                   <input
                     type="checkbox"
                     checked={enterToSend}
-                    onChange={(e) => setEnterToSend(e.target.checked)}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setEnterToSend(checked)
+                      if (user?.id) setChatEnterToSendPref(user.id, 'issue', checked)
+                    }}
                     className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                   />
                   <span className="text-sm text-gray-600">Enter ส่งข้อความ</span>

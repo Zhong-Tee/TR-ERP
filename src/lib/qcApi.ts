@@ -45,14 +45,24 @@ export interface WorkOrderWithProgress extends WorkOrder {
   remaining_bills: number
 }
 
-/** Load work orders with QC progress. Excludes WOs that are fully QC'd (remaining === 0) when excludeCompleted is true. */
+/** Load work orders with QC progress. When excludeCompleted is true, hides WOs only if nothing left to check AND no open QC session (still waiting for Finish). */
 export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Promise<WorkOrderWithProgress[]> {
-  const { data: woList, error: woErr } = await supabase
+  const { data: woRaw, error: woErr } = await supabase
     .from('or_work_orders')
     .select('*')
     .order('created_at', { ascending: false })
   if (woErr) throw woErr
-  if (!woList?.length) return []
+  if (!woRaw?.length) return []
+
+  // กรองใบงานยกเลิก + dedupe ตามชื่อใบงาน (คงแถวล่าสุด) ป้องกันการ์ดซ้ำในหน้า QC
+  const latestWoByName: Record<string, WorkOrder> = {}
+  ;(woRaw as WorkOrder[]).forEach((wo) => {
+    if (!wo?.work_order_name) return
+    if (wo.status === 'ยกเลิก') return
+    if (!latestWoByName[wo.work_order_name]) latestWoByName[wo.work_order_name] = wo
+  })
+  const woList = Object.values(latestWoByName)
+  if (!woList.length) return []
 
   const woNames = woList.map((w) => w.work_order_name)
 
@@ -70,7 +80,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const allOrderIds = (orders || []).map((o) => o.id)
   if (allOrderIds.length === 0) {
-    return woList.map((wo) => ({
+    const emptyProgress = woList.map((wo) => ({
       ...wo,
       total_items: 0,
       qc_done: 0,
@@ -83,6 +93,8 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       fail_bills: 0,
       remaining_bills: 0,
     }))
+    if (excludeCompleted) return []
+    return emptyProgress
   }
 
   // ดึง items พร้อม item_uid + order_id เพื่อ mapping กลับไปที่ bill
@@ -112,18 +124,38 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     totalByWo[name] = ids.reduce((sum, id) => sum + (totalByOrderId[id] || 0), 0)
   })
 
-  // ดึง sessions ทั้งหมดของ WO เพื่อรวมผล pass จาก qc_records
-  const { data: allSessions, error: sessErr } = await supabase
-    .from('qc_sessions')
-    .select('id, filename')
+  // เฉพาะ session ของใบงานในรอบนี้ — กันพลาด default row limit ของ API ที่ตัดตารางใหญ่แล้วไม่ได้แถวล่าสุดของ WO
+  const woSessionFilenames = [...new Set(woNames.map((n) => `WO-${n}`))]
+  const { data: allSessions, error: sessErr } =
+    woSessionFilenames.length === 0
+      ? { data: [] as { id: string; filename: string; end_time: string | null; created_at?: string | null; start_time?: string }[], error: null }
+      : await supabase
+          .from('qc_sessions')
+          .select('id, filename, end_time, created_at, start_time')
+          .in('filename', woSessionFilenames)
   if (sessErr) throw sessErr
   const sessionIdsByWo: Record<string, string[]> = {}
-  woNames.forEach((n) => { sessionIdsByWo[n] = [] })
+  woNames.forEach((n) => {
+    sessionIdsByWo[n] = []
+  })
+  /** end_time ของ qc_session ล่าสุดต่อใบงาน — กันค้างจาก session เก่าเปิดค้าง + session ใหม่ปิดแล้ว */
+  const latestSessionEndByWoName: Record<string, string | null> = {}
+  const sessionsByWoKey: Record<string, { end_time: string | null; created_at: string }[]> = {}
   ;(allSessions || []).forEach((s) => {
     const match = s.filename?.match(/^WO-(.+)$/)
-    if (match && woNames.includes(match[1])) {
-      sessionIdsByWo[match[1]].push(s.id)
-    }
+    if (!match || !woNames.includes(match[1])) return
+    const woKey = match[1]
+    sessionIdsByWo[woKey].push(s.id)
+    if (!sessionsByWoKey[woKey]) sessionsByWoKey[woKey] = []
+    const row = s as { end_time: string | null; created_at?: string | null; start_time?: string }
+    const ts = row.created_at ?? row.start_time ?? ''
+    sessionsByWoKey[woKey].push({ end_time: row.end_time, created_at: ts })
+  })
+  Object.keys(sessionsByWoKey).forEach((woKey) => {
+    const sorted = [...sessionsByWoKey[woKey]].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
+    latestSessionEndByWoName[woKey] = sorted[0]?.end_time ?? null
   })
 
   // ดึง qc_records พร้อม item_uid + status เพื่อคำนวณ pass/fail ทั้ง item level และ bill level
@@ -191,7 +223,40 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, reject_items, total_bills, pass_bills, fail_bills, remaining_bills }
   })
 
-  if (excludeCompleted) return result.filter((r) => r.remaining > 0)
+  // ล่าสุดต่อชื่อใบงาน (วันที่ใหม่สุดก่อน) — ใช้เทียบว่า Plan ปิดขั้น QC แล้วหรือยัง
+  const { data: planJobRows, error: planJobErr } = await supabase
+    .from('plan_jobs')
+    .select('name, tracks, date')
+    .in('name', woNames)
+    .order('date', { ascending: false })
+  if (planJobErr) throw planJobErr
+  const latestPlanTracksByName: Record<string, Record<string, unknown> | undefined> = {}
+  for (const row of planJobRows || []) {
+    const n = (row as { name?: string }).name
+    if (!n || latestPlanTracksByName[n] !== undefined) continue
+    latestPlanTracksByName[n] = (row as { tracks?: Record<string, unknown> }).tracks
+  }
+
+  const isPlanQcDoneFromTracks = (tracks: Record<string, unknown> | undefined): boolean => {
+    const qc = tracks?.QC as Record<string, { start?: string; end?: string }> | undefined
+    return !!qc?.['เสร็จแล้ว']?.end
+  }
+
+  if (excludeCompleted) {
+    return result.filter((r) => {
+      if (r.remaining > 0) return true
+      const wo = r.work_order_name
+      if (!Object.prototype.hasOwnProperty.call(latestSessionEndByWoName, wo)) {
+        const planTracks = latestPlanTracksByName[wo]
+        if (planTracks && !isPlanQcDoneFromTracks(planTracks)) return true
+        return false
+      }
+      const latestEnd = latestSessionEndByWoName[wo]
+      if (latestEnd == null) return true
+      // ปิด session แล้ว = จบ QC ในระบบ — ซ่อนแม้ Plan ยังไม่ sync ขั้น QC (ไม่ให้ค้างแบบ LZTR)
+      return false
+    })
+  }
   return result
 }
 
@@ -447,8 +512,8 @@ export async function fetchReports(params: { startDate: string; endDate: string;
   let query = supabase
     .from('qc_sessions')
     .select('*')
-    .gte('created_at', `${params.startDate}T00:00:00`)
-    .lte('created_at', `${params.endDate}T23:59:59`)
+    .gte('end_time', `${params.startDate}T00:00:00`)
+    .lte('end_time', `${params.endDate}T23:59:59`)
     .not('end_time', 'is', null)
   if (params.user) query = query.eq('username', params.user)
   const { data, error } = await query.order('created_at', { ascending: false })

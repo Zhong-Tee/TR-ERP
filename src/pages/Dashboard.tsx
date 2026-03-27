@@ -47,6 +47,7 @@ const STATUS_COLORS: Record<string, string> = {
   'รอคอนเฟิร์ม': 'bg-purple-100 text-purple-700',
   'คอนเฟิร์มแล้ว': 'bg-cyan-100 text-cyan-700',
   'เสร็จสิ้น': 'bg-lime-100 text-lime-700',
+  'ย้ายจากใบงาน': 'bg-cyan-100 text-cyan-700',
   'ใบสั่งงาน': 'bg-teal-100 text-teal-700',
   'ใบงานกำลังผลิต': 'bg-amber-100 text-amber-700',
   'จัดส่งแล้ว': 'bg-green-100 text-green-700',
@@ -138,7 +139,7 @@ export default function Dashboard() {
       ['รอลงข้อมูล', 'รอตรวจคำสั่งซื้อ', 'ลงข้อมูลเสร็จสิ้น'].includes(o.status)
     ).length
     const production = orders.filter((o) =>
-      ['ใบสั่งงาน', 'ใบงานกำลังผลิต'].includes(o.status)
+      ['ใบสั่งงาน', 'ย้ายจากใบงาน', 'ใบงานกำลังผลิต'].includes(o.status)
     ).length
     const cancelled = orders.filter((o) => o.status === 'ยกเลิก').length
     const totalProducts = products.length

@@ -205,10 +205,19 @@ function getJobStatusForDept(
   const tracks = job.tracks?.[dept] || {}
   const trackEntries = Object.entries(tracks).filter(([key, t]) => key !== 'เตรียมไฟล์' && !!(t?.start || t?.end))
 
+  // QC/PACK บันทึกอัตโนมัติใช้ชื่อขั้น เริ่ม… / เสร็จแล้ว (ไม่ตรงกับ settings.processes) — ถ้ามี end ที่ขั้น "เสร็จแล้ว" ถือว่า done
+  if ((dept === 'QC' || dept === 'PACK') && tracks['เสร็จแล้ว']?.end) {
+    return { text: 'เสร็จแล้ว', key: 'done' }
+  }
+
   if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 
+  // เบิก: WMS เคยบันทึกขั้นสุดท้ายเป็น "เสร็จแล้ว" — ถือว่าครบขั้น "ส่งมอบ" ใน settings
+  const procHasEnd = (p: string) =>
+    !!tracks[p]?.end || (dept === 'เบิก' && p === 'ส่งมอบ' && !!tracks['เสร็จแล้ว']?.end)
+
   // เช็ค "เสร็จแล้ว": ลอง match ตาม settings ก่อน, fallback ไปดู track entries จริง
-  const completedSettingsSteps = procs.filter((p) => tracks[p]?.end).length
+  const completedSettingsSteps = procs.filter(procHasEnd).length
   if (procs.length > 0 && completedSettingsSteps === procs.length) return { text: 'เสร็จแล้ว', key: 'done' }
   // Fallback: ถ้าชื่อ process ไม่ตรงกับ settings แต่ track entries ทุกตัวเสร็จแล้ว
   if (completedSettingsSteps === 0 && trackEntries.length > 0 && trackEntries.every(([, t]) => t?.end)) {
@@ -218,13 +227,13 @@ function getJobStatusForDept(
   // เช็ค "กำลังทำ": มี start ใน tracks ไหม
   if (Object.values(tracks).some((t) => t?.start)) {
     // ลองหาชื่อ step จาก settings ก่อน
-    const currentStep = procs.find((p) => tracks[p]?.start && !tracks[p]?.end)
+    const currentStep = procs.find((p) => tracks[p]?.start && !procHasEnd(p))
     if (currentStep) return { text: currentStep, key: 'progress' }
     // Fallback: หาจาก track entries จริง (กรณีชื่อ process เปลี่ยน)
     const activeEntry = trackEntries.find(([, t]) => t?.start && !t?.end)
     if (activeEntry) return { text: activeEntry[0], key: 'progress' }
     // Fallback สุดท้าย
-    const pendingStep = procs.find((p) => !tracks[p]?.end)
+    const pendingStep = procs.find((p) => !procHasEnd(p))
     return { text: pendingStep || 'กำลังทำ', key: 'progress' }
   }
 
@@ -776,11 +785,11 @@ export default function Plan() {
       const [{ count: pumpCount }, { count: otherCount }, { count: manageNew }, { count: manageAll }] = await Promise.all([
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
-          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
+          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น', 'ย้ายจากใบงาน'])
           .is('work_order_id', null),
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .neq('channel_code', 'PUMP')
-          .eq('status', 'ใบสั่งงาน')
+          .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
           .is('work_order_id', null),
         supabase.from('or_work_orders').select('id', { count: 'exact', head: true })
           .eq('status', 'กำลังผลิต'),
@@ -835,24 +844,58 @@ export default function Plan() {
     }
   }, [])
 
-  // โหลดบิลที่ยกเลิกแยกตามใบงาน
+  // โหลดบิลที่มี WMS cancelled และยังไม่ตัดสินใจ stock_action (pending) แยกตามใบงาน
   const loadCancelledOrders = useCallback(async () => {
     try {
-      const { data } = await supabase
-        .from('or_orders')
-        .select('id, bill_no, work_order_id, work_order_name, customer_name')
-        .eq('status', 'ยกเลิก')
+      const { data: pendingCancelledRows } = await supabase
+        .from('wms_orders')
+        .select('work_order_id, source_order_id')
+        .eq('status', 'cancelled')
+        .is('stock_action', null)
         .not('work_order_id', 'is', null)
-      if (data) {
-        const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
-        data.forEach((o: any) => {
-          const woId = String(o.work_order_id || '')
-          if (!woId) return
-          if (!map[woId]) map[woId] = []
-          map[woId].push({ id: o.id, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-', wo_name: o.work_order_name || undefined })
-        })
-        setCancelledByWO(map)
+
+      const rows = pendingCancelledRows || []
+      if (rows.length === 0) {
+        setCancelledByWO({})
+        return
       }
+
+      const woToOrderIds = new Map<string, Set<string>>()
+      rows.forEach((r: any) => {
+        const woId = String(r.work_order_id || '')
+        if (!woId) return
+        if (!woToOrderIds.has(woId)) woToOrderIds.set(woId, new Set<string>())
+        const oid = String(r.source_order_id || '')
+        if (oid) woToOrderIds.get(woId)!.add(oid)
+      })
+
+      const allOrderIds = [...new Set(rows.map((r: any) => String(r.source_order_id || '')).filter(Boolean))]
+      const orderById = new Map<string, { id: string; bill_no: string; customer_name: string }>()
+      if (allOrderIds.length > 0) {
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('id, bill_no, customer_name')
+          .in('id', allOrderIds)
+        ;(orders || []).forEach((o: any) => {
+          orderById.set(String(o.id), {
+            id: String(o.id),
+            bill_no: o.bill_no || '-',
+            customer_name: o.customer_name || '-',
+          })
+        })
+      }
+
+      const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
+      woToOrderIds.forEach((idSet, woId) => {
+        const list = [...idSet]
+          .map((oid) => orderById.get(oid))
+          .filter(Boolean) as { id: string; bill_no: string; customer_name: string }[]
+        map[woId] =
+          list.length > 0
+            ? list
+            : [{ id: `__wo__${woId}`, bill_no: 'WMS pending', customer_name: '-' }]
+      })
+      setCancelledByWO(map)
     } catch (e) {
       console.error('Error loading cancelled orders:', e)
     }
@@ -876,7 +919,7 @@ export default function Plan() {
       const { data } = await supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, plan_released_from_work_order, plan_released_from_work_order_id')
-        .eq('status', 'ใบสั่งงาน')
+        .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
         .not('plan_released_from_work_order_id', 'is', null)
       if (data) {
         const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
@@ -976,7 +1019,7 @@ export default function Plan() {
     return [...new Set((products || []).map((p: any) => String(p.product_code || '').trim()).filter(Boolean))]
   }, [])
 
-  // โหลด WMS lines สำหรับ "บิลที่ยกเลิก" ที่เลือก (ไม่ดึงทั้งใบงาน)
+  // โหลด WMS lines ที่ถูก cancel และยัง pending การตัดสินใจ stock_action
   const loadCancelledWmsLines = useCallback(async (workOrderId: string, orderId?: string) => {
     setCancelledWmsLoading(true)
     setCancelledDetailWO(workOrderId)
@@ -990,21 +1033,18 @@ export default function Plan() {
         return
       }
 
-      const targetCodes = await getCancelledOrderProductCodes(targetOrderId)
-      if (targetCodes.length === 0) {
-        setCancelledWmsLines([])
-        return
-      }
-
       const { data: exactData } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to')
+        .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to, source_order_id')
         .eq('work_order_id', workOrderId)
         .eq('status', 'cancelled')
+        .is('stock_action', null)
       const rows = exactData || []
 
-      const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
-      const filteredRows = rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+      const filteredRows =
+        targetOrderId && !String(targetOrderId).startsWith('__wo__')
+          ? rows.filter((r: any) => String(r.source_order_id || '') === String(targetOrderId))
+          : rows
       setCancelledWmsLines(filteredRows)
     } catch (e) {
       console.error('Error loading cancelled WMS lines:', e)
@@ -1012,7 +1052,7 @@ export default function Plan() {
     } finally {
       setCancelledWmsLoading(false)
     }
-  }, [cancelledByWO, getCancelledOrderProductCodes])
+  }, [cancelledByWO])
 
   const openCancelledBillsModal = useCallback(
     (workOrderId: string) => {
@@ -1402,8 +1442,9 @@ export default function Plan() {
     .filter((j) => !!j.work_order_id)
     .filter((j) => isWorkOrderDisplayName(j.name))
     .filter((j) => {
+      if (!hideVoided) return true
       const wid = String(j.work_order_id || '')
-      // ซ่อนใบงานที่ถูกยกเลิกแล้วเสมอ (เช่น WY ที่ยกเลิก)
+      if (j.is_production_voided) return false
       if (wid && woStatusById[wid] === 'ยกเลิก') return false
       return true
     })
@@ -2067,6 +2108,9 @@ export default function Plan() {
               const workflowLabel = processNames.length ? processNames.join(' → ') : '-'
               const lineJobs: PlanJob[][] = Array.from({ length: linesCount }, () => [])
               jobsOnDate.forEach((j) => {
+                if (hideVoided && j.is_production_voided) return
+                const wid = String(j.work_order_id || '')
+                if (hideVoided && wid && woStatusById[wid] === 'ยกเลิก') return
                 if (hideCompleted && getJobStatusForDept(j, dept, settings, deptQtyByWorkOrderId).key === 'done') return
                 const lineIdx = j.line_assignments?.[dept] ?? 0
                 const idx = Math.min(lineIdx, lineJobs.length - 1)
@@ -2108,7 +2152,7 @@ export default function Plan() {
                                 data-id={j.id}
                                 className={`rounded-xl border p-3 ${
                                   isAllDone
-                                    ? 'bg-green-50 border-green-200'
+                                    ? 'bg-orange-50 border-orange-200'
                                     : isStarted
                                     ? 'bg-blue-50 border-blue-200'
                                     : 'bg-white border-gray-200'
@@ -2165,7 +2209,7 @@ export default function Plan() {
                                 </div>
                                 {isAllDone ? (
                                   <div className="mt-3">
-                                    <div className="rounded-xl border border-green-200 bg-green-100 py-2 text-center text-sm font-bold text-green-800">
+                                    <div className="rounded-xl border border-orange-200 bg-orange-100 py-2 text-center text-sm font-bold text-orange-900">
                                       ✓ เสร็จสมบูรณ์
                                     </div>
                                     <button
@@ -2562,7 +2606,7 @@ export default function Plan() {
                               <Fragment key={d}>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
+                                    status.key === 'done' ? 'bg-orange-100 border border-orange-200' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0.5">
@@ -2587,7 +2631,7 @@ export default function Plan() {
                                 </td>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 align-top ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
+                                    status.key === 'done' ? 'bg-orange-100 border border-orange-200' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">
@@ -2653,7 +2697,7 @@ export default function Plan() {
                                 </td>
                                 <td
                                   className={`p-2 text-center border-l border-gray-200 align-top ${
-                                    status.key === 'done' ? 'bg-green-100' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
+                                    status.key === 'done' ? 'bg-orange-100 border border-orange-200' : status.key === 'progress' ? 'bg-green-50' : 'bg-yellow-50'
                                   }`}
                                 >
                                   <div className="flex flex-col items-center gap-0 text-[11px]">

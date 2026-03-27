@@ -410,7 +410,19 @@ export default function OrderList({
           : order.status === 'ลงข้อมูลผิด' ? 'bg-rose-100 text-rose-700 border border-rose-200'
           : order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ' ? 'bg-red-100 text-red-700 border border-red-200'
           : order.status === 'ยกเลิก' ? 'bg-gray-200 text-gray-500 border border-gray-300'
+          : order.status === 'ใบสั่งงาน' || order.status === 'ย้ายจากใบงาน'
+            ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
           : 'bg-slate-100 text-slate-600 border border-slate-200'
+        const showDesignBadge =
+          order.requires_confirm_design === true &&
+          [
+            'รอลงข้อมูล',
+            'ลงข้อมูลผิด',
+            'ตรวจสอบไม่ผ่าน',
+            'ตรวจสอบแล้ว',
+            'จัดส่งแล้ว',
+            'ยกเลิก',
+          ].includes(order.status)
 
         const cardBg = orderIdx % 2 === 0
           ? 'bg-white border-l-4 border-l-blue-400 border border-gray-100'
@@ -443,6 +455,11 @@ export default function OrderList({
                     ? 'ตรวจสอบแล้ว (โอนเกิน)'
                     : order.status}
                 </span>
+                {showDesignBadge && (
+                  <span className="px-2.5 py-1 rounded-full text-sm font-semibold bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-200">
+                    ออกแบบ
+                  </span>
+                )}
                 {(order as any).has_rejected_overpay_refund && (
                   <span className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold">
                     ปฏิเสธโอนคืน

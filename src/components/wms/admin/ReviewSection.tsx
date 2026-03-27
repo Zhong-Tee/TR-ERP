@@ -1,6 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../../lib/supabase'
-import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import {
+  getProductImageUrl,
+  sortOrderItems,
+  WMS_STATUS_LABELS,
+  WMS_FULFILLMENT_PICK_OR_LEGACY,
+  WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR,
+  isWmsCancelledAwaitingPhysicalShelf,
+  isWmsReviewVisibleRow,
+} from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 
 /** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
@@ -8,7 +16,7 @@ const ensurePlanDeptEnd = async (workOrderId: string) => {
   if (!workOrderId) return
   const now = new Date().toISOString()
   const patch: Record<string, Record<string, string>> = {}
-  const procNames = ['หยิบของ', 'เสร็จแล้ว']
+  const procNames = ['หยิบของ', 'ส่งมอบ']
   procNames.forEach((p) => {
     patch[p] = { start_if_null: now, end: now }
   })
@@ -32,7 +40,7 @@ export default function ReviewSection() {
   const [showCounter, setShowCounter] = useState(false)
   const [showTabs, setShowTabs] = useState(false)
   const { showMessage, MessageModal } = useWmsModal()
-
+  const inspectResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]
     setReviewDate(today)
@@ -45,6 +53,12 @@ export default function ReviewSection() {
       resetReviewUI()
     }
   }, [reviewDate])
+
+  useEffect(() => {
+    return () => {
+      if (inspectResyncTimerRef.current) clearTimeout(inspectResyncTimerRef.current)
+    }
+  }, [])
 
   const resetReviewUI = () => {
     setShowCounter(false)
@@ -74,6 +88,33 @@ export default function ReviewSection() {
     }))
   }
 
+  const fetchInspectRows = useCallback(async (workOrderId: string): Promise<any[]> => {
+    if (!workOrderId) return []
+    const { data, error } = await supabase
+      .from('wms_orders')
+      .select('*')
+      .eq('work_order_id', workOrderId)
+      .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+    if (error) {
+      console.error('fetchInspectRows error:', error)
+      return []
+    }
+    return sortOrderItems(await enrichReleasedSourceOrders((data || []) as any[]))
+  }, [])
+
+  const scheduleInspectResync = useCallback((workOrderId: string) => {
+    if (!workOrderId) return
+    if (inspectResyncTimerRef.current) clearTimeout(inspectResyncTimerRef.current)
+    inspectResyncTimerRef.current = setTimeout(async () => {
+      const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
+      if (!currentWorkOrderId || currentWorkOrderId !== workOrderId) return
+      const fresh = await fetchInspectRows(workOrderId)
+      if (fresh.length > 0) setInspectItems(fresh)
+    }, 1200)
+  }, [fetchInspectRows, reviewOrderActualId, reviewOrderSelect])
+
   const loadReviewDropdown = async (skipReset = true) => {
     if (!skipReset) resetReviewUI()
     if (!reviewDate) return
@@ -81,12 +122,13 @@ export default function ReviewSection() {
     const { data } = await supabase
       .from('wms_orders')
       .select(
-        'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released'
+        'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released, stock_action'
       )
-      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-      .neq('status', 'cancelled')
+      .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
       .gte('created_at', reviewDate + 'T00:00:00')
       .lte('created_at', reviewDate + 'T23:59:59')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
 
     if (!data) return
     const enrichedRows = await enrichReleasedSourceOrders(data as any[])
@@ -120,6 +162,8 @@ export default function ReviewSection() {
       const total = rows.length
       const picked = rows.filter((r) => r.status === 'picked').length
       const pending = rows.filter((r) => r.status === 'pending').length
+      const shelfPending = rows.filter((r) => isWmsCancelledAwaitingPhysicalShelf(r)).length
+      const uncheckedInspect = picked + shelfPending
       const nameFromWorkOrder = String(woNameById[woId] || '').trim()
       const nameFromRow = String(first.order_id || '').trim()
       const labelBase = nameFromWorkOrder || nameFromRow || 'ไม่ระบุชื่อใบงาน'
@@ -129,6 +173,8 @@ export default function ReviewSection() {
         total,
         picked,
         pending,
+        shelfPending,
+        uncheckedInspect,
       }
     })
 
@@ -144,19 +190,19 @@ export default function ReviewSection() {
             ...completed.map((o) => ({
               value: o.id,
               label:
-                o.picked > 0
-                  ? `${o.label} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.picked} รายการ]`
+                o.uncheckedInspect > 0
+                  ? `${o.label} (${o.total} รายการ) [ยังไม่ได้ตรวจ ${o.uncheckedInspect} รายการ]`
                   : `${o.label} (${o.total} รายการ) [ตรวจเสร็จแล้ว]`,
-              hasUnchecked: o.picked > 0,
+              hasUnchecked: o.uncheckedInspect > 0,
             })),
           ]
         : [{ value: '', label: 'ไม่มีใบงานที่พร้อมตรวจ' }]
     )
     setReviewPendingOrders(
       completed
-        .filter((o) => o.picked > 0)
-        .sort((a, b) => b.picked - a.picked)
-        .map((o) => ({ id: o.id, label: o.label, total: o.total, unchecked: o.picked }))
+        .filter((o) => o.uncheckedInspect > 0)
+        .sort((a, b) => b.uncheckedInspect - a.uncheckedInspect)
+        .map((o) => ({ id: o.id, label: o.label, total: o.total, unchecked: o.uncheckedInspect }))
     )
 
     if (currentSelected && completed.some((o) => o.id === currentSelected)) {
@@ -178,8 +224,9 @@ export default function ReviewSection() {
         .from('wms_orders')
         .select('*')
         .eq('work_order_id', selectedWoId)
-        .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-        .neq('status', 'cancelled')
+        .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
       if (error) console.error(error)
       rows = data || []
     }
@@ -218,17 +265,12 @@ export default function ReviewSection() {
     await supabase.from('wms_orders').update(updateData).eq('id', id)
 
     const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
-    const { data } = await supabase
-      .from('wms_orders')
-      .select('*')
-      .eq('work_order_id', currentWorkOrderId)
-      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
-      .neq('status', 'cancelled')
+    const optimisticRows = inspectItems.map((i) => (i.id === id ? { ...i, ...updateData } : i))
+    const sortedData = sortOrderItems(await enrichReleasedSourceOrders(optimisticRows))
+    setInspectItems(sortedData)
+    scheduleInspectResync(currentWorkOrderId)
 
-    if (data) {
-      const sortedData = sortOrderItems(await enrichReleasedSourceOrders(data as any[]))
-      setInspectItems(sortedData)
-
+    if (sortedData.length > 0) {
       const isFullyChecked = sortedData.every((i) =>
         ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
       )
@@ -292,7 +334,7 @@ export default function ReviewSection() {
     correct: inspectItems.filter((i) => i.status === 'correct').length,
     wrong: inspectItems.filter((i) => i.status === 'wrong').length,
     not_find: inspectItems.filter((i) => i.status === 'not_find').length,
-    returned: inspectItems.filter((i) => i.status === 'returned').length,
+    returned: inspectItems.filter((i) => i.status === 'returned' || isWmsCancelledAwaitingPhysicalShelf(i)).length,
   }
 
   const checkedCount = inspectItems.filter((i) =>
@@ -300,11 +342,13 @@ export default function ReviewSection() {
   ).length
 
   let filtered = inspectItems
+  if (currentTab === 'all') filtered = inspectItems.filter((i) => isWmsReviewVisibleRow(i))
   if (currentTab === 'picked') filtered = inspectItems.filter((i) => i.status === 'picked')
   if (currentTab === 'correct') filtered = inspectItems.filter((i) => i.status === 'correct')
   if (currentTab === 'wrong') filtered = inspectItems.filter((i) => i.status === 'wrong')
   if (currentTab === 'not_find') filtered = inspectItems.filter((i) => i.status === 'not_find')
-  if (currentTab === 'returned') filtered = inspectItems.filter((i) => i.status === 'returned')
+  if (currentTab === 'returned')
+    filtered = inspectItems.filter((i) => i.status === 'returned' || isWmsCancelledAwaitingPhysicalShelf(i))
 
   return (
     <section>
@@ -444,7 +488,10 @@ export default function ReviewSection() {
               else if (item.status === 'wrong') statusBoxClass = 'border-red-500 text-red-500'
               else if (item.status === 'not_find') statusBoxClass = 'border-orange-500 text-orange-500'
               else if (item.status === 'returned') statusBoxClass = 'border-slate-500 text-slate-600'
+              else if (isWmsCancelledAwaitingPhysicalShelf(item))
+                statusBoxClass = 'border-slate-500 text-slate-600'
 
+              const awaitingShelfAfterBillCancel = isWmsCancelledAwaitingPhysicalShelf(item)
               const isMovedFromPlan = !!(item.plan_line_released || item.source_order_released)
               const needsReleaseReturn =
                 isMovedFromPlan && ['picked', 'correct', 'system_complete'].includes(item.status)
@@ -467,6 +514,14 @@ export default function ReviewSection() {
                       <div className="text-[16px] font-bold text-gray-400">
                         จุดจัดเก็บ: {item.location || '-'} | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
+                      <div className="text-xs text-gray-400 mt-1">
+                        UID: {item.item_uid || '-'} | WMS: {String(item.id || '').slice(0, 8)}
+                      </div>
+                      {awaitingShelfAfterBillCancel && (
+                        <div className="text-xs font-bold text-rose-800 mt-1">
+                          บิลยกเลิกหลังหยิบ — ตัดจอง/คืนสต๊อคในระบบแล้ว กดคืนคลังเมื่อเก็บของกลับที่จัดเก็บ
+                        </div>
+                      )}
                       {isMovedFromPlan && (
                         <div className="text-xs font-bold text-amber-800 mt-1">
                           บิลถูกย้ายออกจากใบงาน — กดคืนเข้าคลังเมื่อตรวจแล้ว
@@ -475,14 +530,26 @@ export default function ReviewSection() {
                     </div>
                   </div>
                   <div className="flex-1 text-center px-4">
-                    {['correct', 'wrong', 'not_find', 'returned'].includes(item.status) && (
+                    {(['correct', 'wrong', 'not_find', 'returned'].includes(item.status) ||
+                      awaitingShelfAfterBillCancel) && (
                       <div className={`border-2 ${statusBoxClass} font-black px-6 py-2 rounded-xl text-lg uppercase tracking-wider`}>
-                        สถานะ: {WMS_STATUS_LABELS[item.status] || item.status}
+                        สถานะ:{' '}
+                        {awaitingShelfAfterBillCancel
+                          ? 'รอคืนคลัง (บิลยกเลิก)'
+                          : WMS_STATUS_LABELS[item.status] || item.status}
                       </div>
                     )}
                   </div>
                   <div className="flex items-center gap-2 w-1/3 justify-end">
-                    {needsReleaseReturn ? (
+                    {awaitingShelfAfterBillCancel ? (
+                      <button
+                        type="button"
+                        onClick={() => setInspectStatus(item.id, 'returned')}
+                        className="h-14 px-6 rounded-2xl font-black bg-slate-700 text-white hover:bg-slate-800 shadow-md transition"
+                      >
+                        คืนคลัง
+                      </button>
+                    ) : needsReleaseReturn ? (
                       <button
                         type="button"
                         onClick={() => setInspectStatus(item.id, 'returned')}

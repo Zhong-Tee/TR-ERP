@@ -173,18 +173,21 @@ export function getJobStatusForDept(
 
   if (procs.length === 0 && trackEntries.length === 0) return { text: 'รอดำเนินการ', key: 'pending' }
 
-  const completedSettingsSteps = procs.filter((p) => tracks[p]?.end).length
+  const procHasEnd = (p: string) =>
+    !!tracks[p]?.end || (dept === 'เบิก' && p === 'ส่งมอบ' && !!tracks['เสร็จแล้ว']?.end)
+
+  const completedSettingsSteps = procs.filter(procHasEnd).length
   if (procs.length > 0 && completedSettingsSteps === procs.length) return { text: 'เสร็จแล้ว', key: 'done' }
   if (completedSettingsSteps === 0 && trackEntries.length > 0 && trackEntries.every(([, t]) => t?.end)) {
     return { text: 'เสร็จแล้ว', key: 'done' }
   }
 
   if (Object.values(tracks).some((t) => t?.start)) {
-    const currentStep = procs.find((p) => tracks[p]?.start && !tracks[p]?.end)
+    const currentStep = procs.find((p) => tracks[p]?.start && !procHasEnd(p))
     if (currentStep) return { text: currentStep, key: 'progress' }
     const activeEntry = trackEntries.find(([, t]) => t?.start && !t?.end)
     if (activeEntry) return { text: activeEntry[0], key: 'progress' }
-    const pendingStep = procs.find((p) => !tracks[p]?.end)
+    const pendingStep = procs.find((p) => !procHasEnd(p))
     return { text: pendingStep || 'กำลังทำ', key: 'progress' }
   }
 

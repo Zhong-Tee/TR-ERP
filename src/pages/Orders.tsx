@@ -42,6 +42,9 @@ const ALL_STATUS_FILTER_OPTIONS = [
   'ออกแบบแล้ว',
   'รอคอนเฟิร์ม',
   'คอนเฟิร์มแล้ว',
+  'ใบสั่งงาน',
+  'ย้ายจากใบงาน',
+  'ใบงานกำลังผลิต',
   'จัดส่งแล้ว',
   'ยกเลิก',
 ] as const
@@ -372,6 +375,21 @@ export default function Orders() {
     }
     window.addEventListener('navigate-to-issue', onNavigateToIssue)
     return () => window.removeEventListener('navigate-to-issue', onNavigateToIssue)
+  }, [])
+
+  // จาก IssueBoard (ข้อความยังไม่อ่าน) → ไป Confirm แล้วเปิดแชทบิล
+  useEffect(() => {
+    const onNavigateToOrderChat = (e: Event) => {
+      const orderId = (e as CustomEvent<{ orderId?: string }>).detail?.orderId
+      if (!orderId) return
+      setActiveTab('confirm')
+      setSelectedOrder(null)
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('open-confirm-order-chat', { detail: { orderId } }))
+      }, 120)
+    }
+    window.addEventListener('navigate-to-order-chat', onNavigateToOrderChat)
+    return () => window.removeEventListener('navigate-to-order-chat', onNavigateToOrderChat)
   }, [])
 
   function narrowSalesTrAdminUserForTab(): string | undefined {

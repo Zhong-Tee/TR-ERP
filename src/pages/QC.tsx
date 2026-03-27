@@ -111,6 +111,7 @@ export default function QC() {
   const [workOrdersWithProgress, setWorkOrdersWithProgress] = useState<WorkOrderWithProgress[]>([])
   const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string; sessionId: string | null }>({ step: 'select', startTime: null, filename: '', sessionId: null })
   const [qcData, setQcData] = useState<{ items: QCItem[] }>({ items: [] })
+  const [activeSessionItemUids, setActiveSessionItemUids] = useState<Set<string>>(new Set())
   const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
   const [barcodeQuery, setBarcodeQuery] = useState('')
   const [qcCategoryFilter, setQcCategoryFilter] = useState<string>('')
@@ -232,6 +233,15 @@ export default function QC() {
   const passedItems = qcData.items.filter((i) => i.status === 'pass').reduce((a, i) => a + (i.qty || 1), 0)
   const failedItems = qcData.items.filter((i) => i.status === 'fail').reduce((a, i) => a + (i.qty || 1), 0)
   const remainingItems = totalItems - passedItems - failedItems
+  const activeSessionItems = useMemo(
+    () => qcData.items.filter((item) => activeSessionItemUids.has(item.uid)),
+    [qcData.items, activeSessionItemUids]
+  )
+  const activeTotalItems = activeSessionItems.reduce((a, i) => a + (i.qty || 1), 0)
+  const activePassedItems = activeSessionItems.filter((i) => i.status === 'pass').reduce((a, i) => a + (i.qty || 1), 0)
+  const activeFailedItems = activeSessionItems.filter((i) => i.status === 'fail').reduce((a, i) => a + (i.qty || 1), 0)
+  const activeRemainingItems = activeTotalItems - activePassedItems - activeFailedItems
+  const canFinishSession = !isViewOnly && activeTotalItems > 0 && activeRemainingItems === 0 && activeFailedItems === 0
 
   const qcCategoryOptions = useMemo(() => {
     const set = new Set<string>()
@@ -301,6 +311,24 @@ export default function QC() {
     }
   }, [])
 
+  const refreshActiveSessionItemUids = useCallback(async () => {
+    if (qcState.step !== 'working' || !qcState.filename) {
+      setActiveSessionItemUids(new Set())
+      return
+    }
+    const woName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
+    if (!woName) {
+      setActiveSessionItemUids(new Set())
+      return
+    }
+    try {
+      const activeItems = await fetchItemsByWorkOrder(woName)
+      setActiveSessionItemUids(new Set(activeItems.map((item) => item.uid)))
+    } catch (e) {
+      console.error('refreshActiveSessionItemUids error:', e)
+    }
+  }, [qcState.step, qcState.filename])
+
   // จำนวนรายการรอ QC (จำนวน work orders ที่ยังเหลือ)
   const qcOperationCount = workOrdersWithProgress.length
   // จำนวน reject items
@@ -335,11 +363,18 @@ export default function QC() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
         loadWorkOrders()
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadWorkOrders()
+        refreshActiveSessionItemUids()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, () => {
+        refreshActiveSessionItemUids()
+      })
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [loadRejectItems, loadWorkOrders])
+  }, [loadRejectItems, loadWorkOrders, refreshActiveSessionItemUids])
 
   useEffect(() => {
     if (currentView === 'reject') loadRejectItems()
@@ -360,6 +395,10 @@ export default function QC() {
       setSessionBackup(qcState, qcData)
     }
   }, [qcState.step, qcState.startTime, qcState.filename, qcState.sessionId, qcData.items])
+
+  useEffect(() => {
+    refreshActiveSessionItemUids()
+  }, [refreshActiveSessionItemUids, qcData.items])
 
   useEffect(() => {
     setImgErrors({ product: false, cartoon: false })
@@ -396,6 +435,9 @@ export default function QC() {
   }, [currentRejectItem?.product_code])
 
   const allChecklistChecked = checklistItems.length === 0 || checklistItems.every((item) => checkedIds.has(item.id))
+  const allRejectChecklistChecked =
+    rejectChecklistItems.length === 0 || rejectChecklistItems.every((item) => rejectCheckedIds.has(item.id))
+
   const focusBarcodeInput = useCallback(() => {
     setTimeout(() => {
       barcodeInputRef.current?.focus()
@@ -411,8 +453,9 @@ export default function QC() {
       if (!skipTrack) await ensurePlanDeptStart(woName)
       const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
+        setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+        await loadWorkOrders()
         alert('ไม่พบรายการในใบงานนี้')
-        setLoading(false)
         return
       }
       saveWorkOrderName(woName)
@@ -471,6 +514,7 @@ export default function QC() {
       }
 
       setQcData({ items })
+      setActiveSessionItemUids(new Set(items.map((item) => item.uid)))
       setQcState({ step: 'working', startTime, filename, sessionId })
       const first = items.find((i) => i.status === 'pending') || items[0]
       setCurrentItem(first)
@@ -493,6 +537,7 @@ export default function QC() {
   function proceedSwitchJob() {
     setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
     setQcData({ items: [] })
+    setActiveSessionItemUids(new Set())
     setCurrentItem(null)
     setQcCategoryFilter('')
     clearSessionBackup()
@@ -617,11 +662,10 @@ export default function QC() {
           return
         }
       }
-      setQcData((prev) => ({
-        items: prev.items.map((i) =>
-          i.uid === currentItem.uid ? { ...i, status: 'pass', check_time: new Date() } : i
-        ),
-      }))
+      const updatedItems = qcData.items.map((i) =>
+        i.uid === currentItem.uid ? { ...i, status: 'pass', check_time: new Date() } : i
+      )
+      setQcData({ items: updatedItems })
       const nextIdx = qcData.items.indexOf(currentItem) + 1
       if (qcData.items[nextIdx]) setCurrentItem(qcData.items[nextIdx])
       setBarcodeQuery('')
@@ -653,7 +697,7 @@ export default function QC() {
         })
         .eq('id', qcState.sessionId)
       if (updateErr) throw updateErr
-      if (totalItems > 0 && passedItems === totalItems && failedItems === 0) {
+      if (activeTotalItems > 0 && activePassedItems === activeTotalItems && activeFailedItems === 0) {
         const woName = qcState.filename?.startsWith('WO-') ? qcState.filename.slice(3) : ''
         if (woName) {
           await ensurePlanDeptEnd(woName)
@@ -662,6 +706,7 @@ export default function QC() {
       clearSessionBackup()
       setQcState({ step: 'select', startTime: null, filename: '', sessionId: null })
       setQcData({ items: [] })
+      setActiveSessionItemUids(new Set())
       setCurrentItem(null)
       setQcCategoryFilter('')
       loadRejectItems()
@@ -709,6 +754,10 @@ export default function QC() {
   async function markRejectStatus(status: 'pass' | 'fail') {
     if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!currentRejectItem) return
+    if (status === 'pass' && !allRejectChecklistChecked) {
+      alert('กรุณาเช็คผ่านหัวข้อการตรวจเช็คให้ครบทั้งหมดก่อนกด QC PASS')
+      return
+    }
     if (status === 'pass') {
       const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
       const updates: Partial<QCRecord> = {
@@ -724,14 +773,12 @@ export default function QC() {
         if (passError) throw passError
 
         // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
-        setQcData((prev) => ({
-          ...prev,
-          items: prev.items.map((i) =>
-            i.uid === currentRejectItem.item_uid
-              ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
-              : i
-          ),
-        }))
+        const updatedItems = qcData.items.map((i) =>
+          i.uid === currentRejectItem.item_uid
+            ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
+            : i
+        )
+        setQcData((prev) => ({ ...prev, items: updatedItems }))
 
         const updatedList = await fetchRejectItems()
         setRejectData(updatedList)
@@ -903,7 +950,12 @@ export default function QC() {
     setSkipQcLoading(woName)
     try {
       const items = await fetchItemsByWorkOrder(woName)
-      if (items.length === 0) { alert('ไม่พบรายการ'); return }
+      if (items.length === 0) {
+        setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+        await loadWorkOrders()
+        alert('ไม่พบรายการ')
+        return
+      }
 
       const now = new Date()
       const filename = `WO-${woName}`
@@ -1384,14 +1436,14 @@ export default function QC() {
                     <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
                       ค้นหา
                     </button>
-                    {remainingItems === 0 && passedItems === totalItems && totalItems > 0 && !isViewOnly && (
+                    {canFinishSession && (
                       <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
                         FINISH JOB
                       </button>
                     )}
-                    {remainingItems === 0 && failedItems > 0 && (
+                    {activeRemainingItems === 0 && activeFailedItems > 0 && (
                       <span className="text-sm text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg">
-                        มีรายการไม่ผ่าน {failedItems} รายการ — ต้อง Pass ทุกรายการจึงจะจบงานได้
+                        มีรายการไม่ผ่าน {activeFailedItems} รายการ (เฉพาะที่ยัง Active) — ต้อง Pass ทุกรายการจึงจะจบงานได้
                       </span>
                     )}
                     <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
@@ -1958,12 +2010,13 @@ export default function QC() {
                           </button>
                           <button
                             onClick={() => markRejectStatus('pass')}
-                            disabled={isViewOnly}
+                            disabled={isViewOnly || !allRejectChecklistChecked}
                             className={`flex-1 py-3 rounded-xl font-bold ${
-                              isViewOnly
+                              isViewOnly || !allRejectChecklistChecked
                                 ? 'bg-green-300 text-white cursor-not-allowed opacity-60'
                                 : 'bg-green-500 text-white hover:bg-green-600'
                             }`}
+                            title={!allRejectChecklistChecked ? 'กรุณาเช็คผ่านหัวข้อการตรวจเช็คให้ครบทั้งหมดก่อน' : undefined}
                           >
                             QC PASS (Space)
                           </button>

@@ -16,6 +16,14 @@ const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
 /** หมวดสินค้าที่ไม่นับเป็นสินค้าหลัก (นับเป็นอะไหล่เท่านั้น) */
 const PICKING_EXCLUDED_CATEGORIES = ['UV', 'STK', 'TUBE']
 
+/** ใบงานที่ยกเลิก / ไม่มีบิลในใบงาน (รองรับข้อมูลเก่าที่ order_count=0 แต่ status ยังไม่เป็น ยกเลิก) — ไม่แสดงกับใบงานจัดส่งแล้ว */
+function isWorkOrderCancelledRecord(wo: WorkOrder): boolean {
+  const st = String(wo.status ?? '').trim()
+  if (st === 'จัดส่งแล้ว') return false
+  if (st === 'ยกเลิก') return true
+  return Number(wo.order_count) === 0
+}
+
 /** Flash Express template: 24 headers (ต้องตรง 100% กับ template ที่ Flash Express กำหนด) */
 const FLASH_EXPRESS_H = [
   "Customer_order_number\n(เลขออเดอร์ของลูกค้า)",
@@ -263,7 +271,7 @@ export default function WorkOrderManageList({
 
   function toggleExpand(wo: WorkOrder) {
     // ใบงานที่ถูกยกเลิกแล้วไม่ให้ขยาย (ไม่มีบิลด้านในแล้ว)
-    if (wo.status === 'ยกเลิก') return
+    if (isWorkOrderCancelledRecord(wo)) return
     if (expandedWo === wo.id) {
       setExpandedWo(null)
       return
@@ -301,7 +309,7 @@ export default function WorkOrderManageList({
     setConfirmModal({
       open: true,
       title: 'ยืนยันย้ายไปใบสั่งงาน',
-      message: `ต้องการย้าย ${ids.length} บิล ไปเมนู Plan → ใบสั่งงาน (สถานะใบสั่งงาน) หรือไม่?`,
+      message: `ต้องการย้าย ${ids.length} บิล ไปเมนู Plan → ใบสั่งงาน หรือไม่?`,
       onConfirm: () => executeReleaseToWorkQueue(workOrderId, ids),
     })
   }
@@ -375,28 +383,20 @@ export default function WorkOrderManageList({
     setConfirmModal((prev) => ({ ...prev, open: false }))
     setUpdating(true)
     try {
-      // ย้ายบิลกลับไป "ใบสั่งงาน" ตามกติกาหน้าใบสั่งงาน:
-      // - ช่องทางทั่วไป => status = ใบสั่งงาน
-      // - PUMP => status = เสร็จสิ้น (หน้าใบสั่งงานรองรับ PUMP ที่คอนเฟิร์มแล้ว/เสร็จสิ้น)
+      // ย้ายบิลกลับคิว Plan: เขียนสถานะใบสั่งงานโดยตรง (soft-deprecate สถานะย้ายจากใบงาน)
       const commonResetFields = {
         work_order_id: null,
         work_order_name: null,
         plan_released_from_work_order: null,
         plan_released_from_work_order_id: null,
         plan_released_at: null,
+        status: 'ใบสั่งงาน' as const,
       }
-      const { error: updateGeneralError } = await supabase
+      const { error: updateOrdersError } = await supabase
         .from('or_orders')
-        .update({ ...commonResetFields, status: 'ใบสั่งงาน' })
+        .update({ ...commonResetFields })
         .eq('work_order_id', wo.id)
-        .neq('channel_code', 'PUMP')
-      if (updateGeneralError) throw updateGeneralError
-      const { error: updatePumpError } = await supabase
-        .from('or_orders')
-        .update({ ...commonResetFields, status: 'เสร็จสิ้น' })
-        .eq('work_order_id', wo.id)
-        .eq('channel_code', 'PUMP')
-      if (updatePumpError) throw updatePumpError
+      if (updateOrdersError) throw updateOrdersError
       // ไม่ลบใบงานทิ้ง: เก็บไว้ในแท็บ "ใบงานทั้งหมด" พร้อมสถานะยกเลิก
       const { error: cancelWoError } = await supabase
         .from('or_work_orders')
@@ -1207,27 +1207,37 @@ export default function WorkOrderManageList({
             const orders = ordersByWo[wo.id] || []
             const selectedIds = selectedByWo[wo.id] || new Set<string>()
             const isExpanded = expandedWo === wo.id
-            const isCancelledWorkOrder = wo.status === 'ยกเลิก'
+            const isCancelledWorkOrder = isWorkOrderCancelledRecord(wo)
             const channelCode = channelByWo[wo.id] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
             const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
 
             return (
-              <div key={wo.id} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <div
+                key={wo.id}
+                className={`bg-white rounded-lg border overflow-hidden ${
+                  isCancelledWorkOrder ? 'border-red-200 ring-1 ring-red-100' : 'border-gray-200'
+                }`}
+              >
                 {/* หัวใบงาน + ปุ่มด้านขวา (เงื่อนไขอ้างอิง file/index.html) */}
                 <div
-                  className={`flex items-center justify-between gap-4 p-4 border-b border-gray-100 ${
-                    isCancelledWorkOrder ? 'cursor-not-allowed bg-gray-50' : 'cursor-pointer hover:bg-gray-50'
+                  className={`flex flex-wrap items-center justify-between gap-4 p-4 border-b border-gray-100 ${
+                    isCancelledWorkOrder
+                      ? 'cursor-not-allowed bg-red-50/60 border-red-100'
+                      : 'cursor-pointer hover:bg-gray-50 border-gray-100'
                   }`}
                   onClick={() => toggleExpand(wo)}
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-gray-400 select-none">{isCancelledWorkOrder ? '•' : (isExpanded ? '▼' : '▶')}</span>
-                    <span className="font-semibold text-gray-900 truncate">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <span className="text-gray-400 select-none shrink-0">{isCancelledWorkOrder ? '•' : isExpanded ? '▼' : '▶'}</span>
+                    <span className={`font-semibold truncate ${isCancelledWorkOrder ? 'text-red-950' : 'text-gray-900'}`}>
                       {wo.work_order_name} ({wo.order_count} บิล)
                     </span>
                     {isCancelledWorkOrder && (
-                      <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-orange-100 text-orange-800 border border-orange-300">
+                      <span
+                        className="shrink-0 px-2.5 py-1 text-xs font-bold rounded-md bg-red-100 text-red-900 border border-red-300"
+                        title="บิลถูกย้ายออกหรือปิดใบงานแล้ว — ไม่มีบิลในใบงาน"
+                      >
                         ใบงานนี้ถูกยกเลิก
                       </span>
                     )}
@@ -1298,7 +1308,8 @@ export default function WorkOrderManageList({
                       <button
                         type="button"
                         onClick={(e) => onHeaderButtonClick(e, () => openCancelWorkOrderConfirm(wo))}
-                        disabled={updating}
+                        disabled={updating || isCancelledWorkOrder}
+                        title={isCancelledWorkOrder ? 'ใบงานนี้ถูกยกเลิกแล้ว' : undefined}
                         className="px-3 py-1.5 bg-red-100 text-red-800 rounded text-xs font-medium hover:bg-red-200 disabled:opacity-50"
                       >
                         ยกเลิกใบงาน
@@ -1311,7 +1322,9 @@ export default function WorkOrderManageList({
                 {isExpanded && (
                   <div className="p-4 bg-gray-50 border-t border-gray-100">
                     {isCancelledWorkOrder ? (
-                      <div className="text-center py-6 text-gray-500">ใบงานนี้ถูกยกเลิกและย้ายบิลกลับไปใบสั่งงานแล้ว</div>
+                      <div className="text-center py-6 text-red-800/90 text-sm font-medium">
+                        ใบงานนี้ถูกยกเลิก — บิลถูกย้ายกลับไปใบสั่งงานหรือไม่มีบิลในใบงานแล้ว
+                      </div>
                     ) : orders.length === 0 ? (
                       <div className="text-center py-6 text-gray-500">กำลังโหลด...</div>
                     ) : (

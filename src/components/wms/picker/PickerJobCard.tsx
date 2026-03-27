@@ -27,8 +27,12 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
 
   const isMovedFromPlan = !!(item.plan_line_released || item.source_bill_released_from_wo)
   const finished = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled'].includes(item.status)
+  const isSpareLike =
+    item.product_code === 'SPARE_PART' ||
+    item.location === 'อะไหล่' ||
+    String(item.product_name || '').includes('หน้ายาง+โฟม')
   const imgUrl =
-    item.product_code === 'SPARE_PART' ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
+    isSpareLike ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
 
   return (
     <>

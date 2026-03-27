@@ -42,6 +42,13 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       return
     }
 
+    const woIds = [...new Set((data as any[]).map((r) => r.work_order_id).filter(Boolean))]
+    let woNameById: Record<string, string> = {}
+    if (woIds.length > 0) {
+      const { data: woRows } = await supabase.from('or_work_orders').select('id, work_order_name').in('id', woIds)
+      woNameById = Object.fromEntries((woRows || []).map((w: any) => [w.id, w.work_order_name]))
+    }
+
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
       const workOrderId = String(obj.work_order_id || '')
       const orderId = String(obj.order_id || '')
@@ -52,8 +59,11 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
           : ''
 
       if (!scopeId) return acc
+      const displayName = workOrderId
+        ? woNameById[workOrderId] || workOrderId
+        : orderId
       if (!acc[scopeId]) {
-        acc[scopeId] = { id: scopeId, name: orderId || workOrderId, count: 0, date: obj.created_at }
+        acc[scopeId] = { id: scopeId, name: displayName, count: 0, date: obj.created_at }
       }
       acc[scopeId].count++
       return acc

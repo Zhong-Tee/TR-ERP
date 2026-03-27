@@ -224,7 +224,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
           .neq('channel_code', 'PUMP')
-          .eq('status', 'ใบสั่งงาน')
+          .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
           .is('work_order_id', null),
         supabase
           .from('pr_machinery_machines')

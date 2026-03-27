@@ -41,6 +41,7 @@ export type OrderStatus =
   | 'รอคอนเฟิร์ม'
   | 'คอนเฟิร์มแล้ว'
   | 'เสร็จสิ้น'
+  | 'ย้ายจากใบงาน'
   | 'ใบสั่งงาน'
   | 'ใบงานกำลังผลิต'
   | 'จัดส่งแล้ว'
@@ -81,6 +82,8 @@ export interface Order {
   claim_type: string | null
   claim_details: string | null
   confirm_note?: string | null
+  /** PUMP: true = คิว Confirm งานใหม่ (ต้องออกแบบ), false = คิว ไม่ต้องออกแบบ เมื่อเข้าสู่ขั้นตรวจสอบแล้ว */
+  requires_confirm_design?: boolean
   billing_details: BillingDetails | null
   packing_meta: PackingMeta | null
   transport_meta?: {

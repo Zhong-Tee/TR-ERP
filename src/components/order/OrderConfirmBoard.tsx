@@ -1,13 +1,28 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FiMessageCircle } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
+import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 import { formatDateTime } from '../../lib/utils'
 import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '../../lib/orderProductionExcel'
 import { Order, OrderStatus, OrderChatLog } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { isSalesPumpOwnerScopedRole } from '../../config/accessPolicy'
 import OrderDetailView from './OrderDetailView'
+
+/** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
+function salesPumpAdminMatchesUser(
+  adminUser: string | null | undefined,
+  u: { username?: string | null; email?: string | null },
+  jwtEmailLower: string
+): boolean {
+  const au = (adminUser || '').trim().toLowerCase()
+  if (!au) return false
+  const un = (u.username || '').trim().toLowerCase()
+  const em = (u.email || '').trim().toLowerCase()
+  return au === un || (!!em && au === em) || (!!jwtEmailLower && au === jwtEmailLower)
+}
 
 /* ─────────────────────── Types & Constants ─────────────────────── */
 
@@ -219,6 +234,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [chatLoading, setChatLoading] = useState(false)
   const [chatMessage, setChatMessage] = useState('')
   const [chatSending, setChatSending] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement | null>(null)
   const [fromDate, setFromDate] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -227,31 +243,29 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [viewMode, setViewMode] = useState<ViewMode>('default')
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    if (!user?.id) {
+      setSendOnEnter(false)
+      return
+    }
+    setSendOnEnter(getChatEnterToSendPref(user.id, 'order-confirm'))
+  }, [user?.id])
   const [selectedNoDesignIds, setSelectedNoDesignIds] = useState<Set<string>>(new Set())
   const [selectedCompletedIds, setSelectedCompletedIds] = useState<Set<string>>(new Set())
   const [confirmTableSearch, setConfirmTableSearch] = useState('')
   const [exportingNoDesign, setExportingNoDesign] = useState(false)
   const [exportingCompleted, setExportingCompleted] = useState(false)
+  const [copyingAllNew, setCopyingAllNew] = useState(false)
+  const [copyFeedbackModal, setCopyFeedbackModal] = useState<{ open: boolean; title: string; message: string }>({
+    open: false,
+    title: '',
+    message: '',
+  })
+  const ordersByKeyRef = useRef(ordersByKey)
+  ordersByKeyRef.current = ordersByKey
 
   const isTableConfirmView = viewMode === 'noDesign' || viewMode === 'completed'
-
-  // #region agent log
-  useEffect(() => {
-    fetch('http://127.0.0.1:7244/ingest/f8abaf9b-e7c6-47c0-b905-d540d1d7d499', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'ed809c' },
-      body: JSON.stringify({
-        sessionId: 'ed809c',
-        runId: 'pre-fix',
-        hypothesisId: 'H1_H2_H3_H4',
-        location: 'src/components/order/OrderConfirmBoard.tsx:isTableConfirmView',
-        message: 'OrderConfirmBoard mode snapshot',
-        data: { viewMode, isTableConfirmView },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {})
-  }, [viewMode, isTableConfirmView])
-  // #endregion
 
   const filteredTableOrders = useMemo(() => {
     const raw =
@@ -295,21 +309,45 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     const channel = supabase
       .channel('confirm-board-chat')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
-        const row = payload.new as OrderChatLog
-        // ถ้า chat เปิดอยู่สำหรับ order นี้ → เพิ่ม message เข้า log ทันที + mark read
-        if (chatOrder && chatOrder.id === row.order_id) {
-          setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
-          if (user) {
-            supabase.from('or_order_chat_reads').upsert({
-              order_id: row.order_id,
-              user_id: user.id,
-              last_read_at: new Date().toISOString(),
-            })
+        void (async () => {
+          const row = payload.new as OrderChatLog
+          if (user && row.sender_id === user.id) return
+          // ถ้า chat เปิดอยู่สำหรับ order นี้ → เพิ่ม message เข้า log ทันที + mark read
+          if (chatOrder && chatOrder.id === row.order_id) {
+            setChatLogs((prev) => (prev.some((m) => m.id === row.id) ? prev : [...prev, row]))
+            if (user) {
+              await supabase.from('or_order_chat_reads').upsert({
+                order_id: row.order_id,
+                user_id: user.id,
+                last_read_at: new Date().toISOString(),
+              })
+            }
+            return
           }
-        } else {
-          // chat ไม่ได้เปิด → เพิ่ม unread count
+          if (user && isSalesPumpOwnerScopedRole(user.role)) {
+            const { data: { session } } = await supabase.auth.getSession()
+            const jwtLo = session?.user?.email?.trim().toLowerCase() || ''
+            const all = Object.values(ordersByKeyRef.current).flat()
+            let ord = all.find((o) => o.id === row.order_id)
+            let adminUser = ord?.admin_user
+            if (!ord) {
+              const { data: o } = await supabase.from('or_orders').select('admin_user').eq('id', row.order_id).maybeSingle()
+              adminUser = o?.admin_user ?? undefined
+            }
+            if (!salesPumpAdminMatchesUser(adminUser, user, jwtLo)) {
+              const { data: prior } = await supabase
+                .from('or_order_chat_logs')
+                .select('id')
+                .eq('order_id', row.order_id)
+                .eq('sender_id', user.id)
+                .eq('is_hidden', false)
+                .limit(1)
+                .maybeSingle()
+              if (!prior) return
+            }
+          }
           setUnreadByOrder((prev) => ({ ...prev, [row.order_id]: (prev[row.order_id] || 0) + 1 }))
-        }
+        })()
       })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
@@ -318,10 +356,30 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   // Load unread counts เมื่อ orders เปลี่ยน
   useEffect(() => {
     if (!user) return
-    const allOrders = Object.values(ordersByKey).flat()
-    const orderIds = allOrders.map((o) => o.id).filter(Boolean)
-    if (orderIds.length === 0) return
-    loadOrderUnreadCounts(orderIds)
+    void (async () => {
+      const allOrders = Object.values(ordersByKey).flat()
+      let scopedIds = allOrders.map((o) => o.id).filter(Boolean)
+      if (isSalesPumpOwnerScopedRole(user.role)) {
+        const { data: { session } } = await supabase.auth.getSession()
+        const jwtLo = session?.user?.email?.trim().toLowerCase() || ''
+        const ownedIds = allOrders
+          .filter((o) => salesPumpAdminMatchesUser(o.admin_user, user, jwtLo))
+          .map((o) => o.id)
+          .filter(Boolean)
+        const { data: participated } = await supabase
+          .from('or_order_chat_logs')
+          .select('order_id')
+          .eq('sender_id', user.id)
+          .eq('is_hidden', false)
+        const fromChats = [...new Set((participated || []).map((r: { order_id: string }) => r.order_id).filter(Boolean))]
+        scopedIds = [...new Set([...ownedIds, ...fromChats])]
+      }
+      if (scopedIds.length === 0) {
+        setUnreadByOrder({})
+        return
+      }
+      loadOrderUnreadCounts(scopedIds)
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ordersByKey, user])
 
@@ -333,13 +391,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     try {
       const [{ data: reads }, { data: messages }] = await Promise.all([
         supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
-        supabase.from('or_order_chat_logs').select('order_id, created_at').eq('is_hidden', false).in('order_id', orderIds),
+        supabase.from('or_order_chat_logs').select('order_id, created_at, sender_id').eq('is_hidden', false).in('order_id', orderIds),
       ])
       const readMap = new Map(
         (reads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
       )
       const counts: Record<string, number> = {}
-      ;(messages || []).forEach((m: { order_id: string; created_at: string }) => {
+      ;(messages || []).forEach((m: { order_id: string; created_at: string; sender_id: string }) => {
+        if (user && m.sender_id === user.id) return
         const lastRead = readMap.get(m.order_id) ?? 0
         const msgTime = new Date(m.created_at).getTime()
         if (msgTime > lastRead) {
@@ -526,35 +585,96 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
-  async function openChat(order: Order) {
-    setChatOrder(order)
-    setChatMessage('')
-    setChatLogs([])
-    setChatLoading(true)
+  async function handleCopyAllNewOrders() {
+    if (copyingAllNew) return
+    if (ordersByKey.new.length === 0) {
+      setCopyFeedbackModal({
+        open: true,
+        title: 'ไม่พบข้อมูล',
+        message: 'ไม่มีบิลในแท็บงานใหม่สำหรับคัดลอก',
+      })
+      return
+    }
+    setCopyingAllNew(true)
     try {
-      if (user) {
-        await supabase.from('or_order_chat_reads').upsert({
-          order_id: order.id,
-          user_id: user.id,
-          last_read_at: new Date().toISOString(),
-        })
-        setUnreadByOrder((prev) => ({ ...prev, [order.id]: 0 }))
-        window.dispatchEvent(new Event('order-chat-read'))
-      }
-      const { data, error } = await supabase
-        .from('or_order_chat_logs')
-        .select('*')
-        .eq('order_id', order.id)
-        .eq('is_hidden', false)
-        .order('created_at', { ascending: true })
-      if (error) throw error
-      setChatLogs((data || []) as OrderChatLog[])
-    } catch (error) {
-      console.error('Error loading chat logs:', error)
+      const { dataRows } = await buildProductionLikeExportMulti(supabase, ordersByKey.new)
+      const clipboardText = dataRows
+        .map((row) => row.map((value) => String(value ?? '').replace(/\r?\n/g, ' ').replace(/\t/g, ' ')).join('\t'))
+        .join('\n')
+      await navigator.clipboard.writeText(clipboardText)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลเรียบร้อย ${dataRows.length} แถว จาก ${ordersByKey.new.length} บิล (ไม่รวมหัวตาราง)`,
+      })
+    } catch (error: any) {
+      console.error('Error copying new orders data:', error)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (error?.message || error),
+      })
     } finally {
-      setChatLoading(false)
+      setCopyingAllNew(false)
     }
   }
+
+  const openChat = useCallback(
+    async (order: Order) => {
+      setChatOrder(order)
+      setChatMessage('')
+      setChatLogs([])
+      setChatLoading(true)
+      try {
+        if (user) {
+          await supabase.from('or_order_chat_reads').upsert({
+            order_id: order.id,
+            user_id: user.id,
+            last_read_at: new Date().toISOString(),
+          })
+          setUnreadByOrder((prev) => ({ ...prev, [order.id]: 0 }))
+          window.dispatchEvent(new Event('order-chat-read'))
+        }
+        const { data, error } = await supabase
+          .from('or_order_chat_logs')
+          .select('*')
+          .eq('order_id', order.id)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: true })
+        if (error) throw error
+        setChatLogs((data || []) as OrderChatLog[])
+      } catch (error) {
+        console.error('Error loading chat logs:', error)
+      } finally {
+        setChatLoading(false)
+      }
+    },
+    [user]
+  )
+
+  useLayoutEffect(() => {
+    if (!chatOrder || chatLoading || chatLogs.length === 0) return
+    chatEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+  }, [chatOrder?.id, chatLoading, chatLogs])
+
+  useEffect(() => {
+    const onOpenChatFromNav = (e: Event) => {
+      const orderId = (e as CustomEvent<{ orderId?: string }>).detail?.orderId
+      if (!orderId || !user) return
+      const all = Object.values(ordersByKey).flat()
+      const found = all.find((o) => o.id === orderId)
+      if (found) {
+        void openChat(found)
+        return
+      }
+      void (async () => {
+        const { data, error } = await supabase.from('or_orders').select('*').eq('id', orderId).maybeSingle()
+        if (!error && data) void openChat(data as Order)
+      })()
+    }
+    window.addEventListener('open-confirm-order-chat', onOpenChatFromNav)
+    return () => window.removeEventListener('open-confirm-order-chat', onOpenChatFromNav)
+  }, [ordersByKey, user, openChat])
 
   async function handleSendChat() {
     if (!chatOrder || !user) return
@@ -803,6 +923,17 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
               />
             </div>
+
+            {viewMode === 'new' && (
+              <button
+                type="button"
+                onClick={() => void handleCopyAllNewOrders()}
+                disabled={copyingAllNew || ordersByKey.new.length === 0}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm bg-white text-blue-700 hover:bg-blue-50 border border-blue-300 shadow-sm disabled:opacity-50"
+              >
+                {copyingAllNew ? 'กำลังคัดลอก...' : 'คัดลอก'}
+              </button>
+            )}
 
             <div className="flex-1" />
 
@@ -1399,7 +1530,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 ปิดหน้าต่าง
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
+            <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
               {chatLoading ? (
                 <div className="flex justify-center items-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -1412,45 +1543,48 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   <p className="text-sm">ยังไม่มีข้อความ</p>
                 </div>
               ) : (
-                chatLogs.map((log) => {
-                  const isMe = log.sender_id === user?.id
-                  return (
-                    <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
-                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
-                        isMe
-                          ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
-                          : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
-                      }`}>
-                        <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                            isMe ? 'bg-emerald-600/60 text-emerald-100' : 'bg-blue-100 text-blue-700'
-                          }`}>
-                            {isMe ? 'ผู้ส่ง' : 'ผู้รับ'}
-                          </span>
-                          <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-700'}`}>
-                            {log.sender_name}
-                          </span>
-                          <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-500'}`}>
-                            {formatDateTime(log.created_at)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleHideChat(log.id)}
-                            title="ซ่อนข้อความนี้"
-                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
-                              isMe ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
-                            }`}
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                          </button>
+                <>
+                  {chatLogs.map((log) => {
+                    const isMe = log.sender_id === user?.id
+                    return (
+                      <div key={log.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}>
+                        <div className={`max-w-[80%] rounded-2xl px-4 py-3 shadow-sm border ${
+                          isMe
+                            ? 'bg-emerald-500/95 text-white border-emerald-400 rounded-br-sm'
+                            : 'bg-blue-50 text-gray-900 border-blue-200 rounded-bl-sm'
+                        }`}>
+                          <div className={`flex items-center gap-2 mb-1 ${isMe ? 'flex-row-reverse' : ''}`}>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                              isMe ? 'bg-emerald-600/60 text-emerald-100' : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {isMe ? 'ผู้ส่ง' : 'ผู้รับ'}
+                            </span>
+                            <span className={`text-xs font-bold ${isMe ? 'text-emerald-100' : 'text-blue-700'}`}>
+                              {log.sender_name}
+                            </span>
+                            <span className={`text-xs ${isMe ? 'text-emerald-200' : 'text-gray-500'}`}>
+                              {formatDateTime(log.created_at)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleHideChat(log.id)}
+                              title="ซ่อนข้อความนี้"
+                              className={`opacity-0 group-hover:opacity-100 p-0.5 rounded transition-all ${
+                                isMe ? 'text-emerald-100 hover:text-red-200' : 'text-gray-400 hover:text-red-500'
+                              }`}
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                          <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
                         </div>
-                        <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
                       </div>
-                    </div>
-                  )
-                })
+                    )
+                  })}
+                  <div ref={chatEndRef} className="h-px w-full shrink-0" aria-hidden />
+                </>
               )}
             </div>
             <div className="p-4 border-t bg-white space-y-3">
@@ -1488,7 +1622,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   <input
                     type="checkbox"
                     checked={sendOnEnter}
-                    onChange={(e) => setSendOnEnter(e.target.checked)}
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      setSendOnEnter(checked)
+                      if (user?.id) setChatEnterToSendPref(user.id, 'order-confirm', checked)
+                    }}
                     className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                   />
                   <span className="text-xs text-gray-500 group-hover:text-gray-700 transition-colors">Enter เพื่อส่งข้อความ</span>
@@ -1509,6 +1647,24 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={copyFeedbackModal.open}
+        onClose={() => setCopyFeedbackModal({ open: false, title: '', message: '' })}
+        contentClassName="max-w-sm"
+      >
+        <div className="p-6 text-center">
+          <h4 className="text-base font-bold text-gray-800 mb-2">{copyFeedbackModal.title}</h4>
+          <p className="text-sm text-gray-600 mb-4">{copyFeedbackModal.message}</p>
+          <button
+            type="button"
+            onClick={() => setCopyFeedbackModal({ open: false, title: '', message: '' })}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors"
+          >
+            ตกลง
+          </button>
+        </div>
       </Modal>
     </div>
   )

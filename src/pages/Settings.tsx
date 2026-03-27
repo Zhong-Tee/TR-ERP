@@ -9,6 +9,7 @@ import { useWmsModal } from '../components/wms/useWmsModal'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
+import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -1767,7 +1768,7 @@ export default function Settings() {
       // 3. โหลดบิลทั้งหมด
       const { data: allOrders, error: ordersError } = await supabase
         .from('or_orders')
-        .select('id, bill_no, status, total_amount')
+        .select('id, bill_no, status, total_amount, channel_code, requires_confirm_design')
 
       if (ordersError) throw ordersError
 
@@ -1785,8 +1786,13 @@ export default function Settings() {
 
           // ตรวจสอบสถานะที่ควรเป็น
           if (verification.hasPassed && !verification.hasErrors && !verification.hasFailed) {
-            // ทุก slip ผ่าน validation → ควรเป็น "ตรวจสอบแล้ว"
-            expectedStatus = 'ตรวจสอบแล้ว'
+            // ทุก slip ผ่าน validation → PUMP แยกคิว Confirm ตาม requires_confirm_design
+            const oc = (order as { channel_code?: string }).channel_code
+            const rcd = (order as { requires_confirm_design?: boolean }).requires_confirm_design
+            expectedStatus =
+              oc === 'PUMP'
+                ? pumpVerifiedRoutingStatus(rcd !== false)
+                : 'ตรวจสอบแล้ว'
             reason = 'ทุกสลิปผ่านการตรวจสอบ'
           } else if (verification.hasFailed || verification.hasErrors) {
             // มี slip ที่ไม่ผ่าน → ควรเป็น "ตรวจสอบไม่ผ่าน"
@@ -1797,7 +1803,7 @@ export default function Settings() {
           // ถ้าสถานะไม่ตรงกับที่ควรเป็น
           if (expectedStatus && order.status !== expectedStatus) {
             // ตรวจสอบว่าบิลอยู่ในสถานะที่เกี่ยวข้องหรือไม่ (ไม่ใช่สถานะอื่นๆ เช่น "ยกเลิก", "จัดส่งแล้ว")
-            const irrelevantStatuses = ['ยกเลิก', 'จัดส่งแล้ว', 'ใบงานกำลังผลิต']
+            const irrelevantStatuses = ['ยกเลิก', 'จัดส่งแล้ว', 'ใบงานกำลังผลิต', 'ใบสั่งงาน', 'ย้ายจากใบงาน']
             if (!irrelevantStatuses.includes(order.status)) {
               updates.push({
                 id: order.id,

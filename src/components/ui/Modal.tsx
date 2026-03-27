@@ -40,7 +40,7 @@ export default function Modal({
 
   return (
     <div
-      className={`fixed inset-0 ${stackZ} flex px-4 pb-4 ${align === 'center' ? 'items-center justify-center' : 'items-center justify-start pl-[540px]'}`}
+      className={`fixed inset-0 ${stackZ} flex pr-4 pb-4 ${align === 'center' ? 'items-center justify-center pl-[calc(var(--content-offset-left,0rem)+1rem)]' : 'items-center justify-start pl-[calc(var(--content-offset-left,0rem)+1rem)]'}`}
       style={{ paddingTop: 'calc(5rem + var(--subnav-height, 0rem))' }}
       aria-hidden={!open}
     >

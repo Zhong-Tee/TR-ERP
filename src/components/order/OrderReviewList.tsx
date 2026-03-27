@@ -595,6 +595,44 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }
 
+  function getVisibleItemFieldsForReview(item: any): Array<{ key: ErrorFieldKey; label: string }> {
+    const channelCode = (selectedOrder as any)?.channel_code || ''
+    const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
+      ? [...ORDER_LEVEL_KEYS, 'unit_price']
+      : ORDER_LEVEL_KEYS
+
+    const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
+    const perItemLevel = ITEM_LEVEL_DEF.filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
+    const pk = item.cartoon_pattern || ''
+    const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
+    return perItemLevel.filter(({ key }) => {
+      if (lc == null) return true
+      if (key === 'line_1') return lc >= 1
+      if (key === 'line_2') return lc >= 2
+      if (key === 'line_3') return lc >= 3
+      return true
+    })
+  }
+
+  function isSingleItemAllChecked(index: number, item: any): boolean {
+    const visibleFields = getVisibleItemFieldsForReview(item)
+    if (visibleFields.length === 0) return false
+    return visibleFields.every(({ key }) => !!(rejectErrorFieldsByItem[index] || {})[key])
+  }
+
+  function toggleSingleItemAll(index: number, item: any) {
+    const visibleFields = getVisibleItemFieldsForReview(item)
+    if (visibleFields.length === 0) return
+    const allChecked = isSingleItemAllChecked(index, item)
+    setRejectErrorFieldsByItem((prev) => ({
+      ...prev,
+      [index]: {
+        ...(prev[index] || {}),
+        ...visibleFields.reduce((acc, { key }) => ({ ...acc, [key]: !allChecked }), {} as Record<string, boolean>),
+      },
+    }))
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -958,30 +996,27 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       <h3 className="text-sm font-semibold text-green-900 mb-2">ระดับรายการ — ติ๊กฟิลด์ที่ถูกต้องต่อรายการ</h3>
                       <div className="space-y-4">
                         {orderItems.map((item: any, index: number) => {
-                          const perItemKeys = getVisibleFieldsForItem(item, categoryFieldSettings, productCategoryByProductId, productFieldOverrides)
-                          const perItemLevel = ITEM_LEVEL_DEF
-                            .filter((d) => perItemKeys.has(d.key) && !effectiveOrderKeys.includes(d.key))
-                          if (perItemLevel.length === 0) return null
+                          const visibleFields = getVisibleItemFieldsForReview(item)
+                          if (visibleFields.length === 0) return null
                           return (
                           <div key={item.id || index} className="border border-green-200 rounded-lg p-3 bg-white/60">
-                            <div className="text-sm font-medium text-green-900 mb-2">
-                              รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
-                              {item.is_free && (
-                                <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300">สินค้าแถม</span>
-                              )}
+                            <div className="mb-2 flex items-start justify-between gap-2">
+                              <div className="text-sm font-medium text-green-900">
+                                รายการที่ {index + 1}: {(item.product_name || '').trim() || '(ไม่มีชื่อสินค้า)'}
+                                {item.is_free && (
+                                  <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300">สินค้าแถม</span>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => toggleSingleItemAll(index, item)}
+                                className="px-2.5 py-1 text-xs font-bold rounded-md bg-green-500 text-white hover:bg-green-600 transition-colors shrink-0"
+                              >
+                                {isSingleItemAllChecked(index, item) ? 'ยกเลิกทั้งหมด' : 'เลือกทั้งหมด'}
+                              </button>
                             </div>
                             <div className="grid grid-cols-1 gap-1.5">
-                              {perItemLevel
-                                .filter(({ key }) => {
-                                  const pk = item.cartoon_pattern || ''
-                                  const lc = pk ? cartoonPatternImageMap[pk]?.line_count : null
-                                  if (lc == null) return true
-                                  if (key === 'line_1') return lc >= 1
-                                  if (key === 'line_2') return lc >= 2
-                                  if (key === 'line_3') return lc >= 3
-                                  return true
-                                })
-                                .map(({ key, label }) => (
+                              {visibleFields.map(({ key, label }) => (
                                 <label key={key} className="flex items-center gap-2 cursor-pointer">
                                   <input
                                     type="checkbox"
