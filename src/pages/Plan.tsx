@@ -1002,23 +1002,6 @@ export default function Plan() {
     [releasedByWO, loadReleasedOrderLines]
   )
 
-  const getCancelledOrderProductCodes = useCallback(async (orderId: string): Promise<string[]> => {
-    const { data: items } = await supabase
-      .from('or_order_items')
-      .select('product_id')
-      .eq('order_id', orderId)
-
-    const productIds = [...new Set((items || []).map((i: any) => i.product_id).filter(Boolean))]
-    if (productIds.length === 0) return []
-
-    const { data: products } = await supabase
-      .from('pr_products')
-      .select('id, product_code')
-      .in('id', productIds)
-
-    return [...new Set((products || []).map((p: any) => String(p.product_code || '').trim()).filter(Boolean))]
-  }, [])
-
   // โหลด WMS lines ที่ถูก cancel และยัง pending การตัดสินใจ stock_action
   const loadCancelledWmsLines = useCallback(async (workOrderId: string, orderId?: string) => {
     setCancelledWmsLoading(true)

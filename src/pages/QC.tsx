@@ -663,7 +663,7 @@ export default function QC() {
         }
       }
       const updatedItems = qcData.items.map((i) =>
-        i.uid === currentItem.uid ? { ...i, status: 'pass', check_time: new Date() } : i
+        i.uid === currentItem.uid ? { ...i, status: 'pass' as const, check_time: new Date() } : i
       )
       setQcData({ items: updatedItems })
       const nextIdx = qcData.items.indexOf(currentItem) + 1

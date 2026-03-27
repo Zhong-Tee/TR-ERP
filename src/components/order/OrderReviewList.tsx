@@ -986,11 +986,6 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   const orderItems: any[] = (selectedOrder as any).order_items || (selectedOrder as any).or_order_items || []
                   if (orderItems.length === 0) return null
 
-                  const channelCode = (selectedOrder as any)?.channel_code || ''
-                  const effectiveOrderKeys: ErrorFieldKey[] = CHANNELS_ORDER_NO.includes(channelCode)
-                    ? [...ORDER_LEVEL_KEYS, 'unit_price']
-                    : ORDER_LEVEL_KEYS
-
                   return (
                     <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
                       <h3 className="text-sm font-semibold text-green-900 mb-2">ระดับรายการ — ติ๊กฟิลด์ที่ถูกต้องต่อรายการ</h3>
