@@ -2153,20 +2153,20 @@ export default function Packing() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(300px,340px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
             <div className="bg-white p-4 rounded-lg shadow space-y-3 h-full min-h-0 flex flex-col">
               <div className="flex items-center gap-2 whitespace-nowrap">
-                <span className="font-semibold text-sm">
+                <span className="font-bold text-base">
                   สำเร็จ {completedIndices.size} / {aggregatedData.length}
                 </span>
                 <input
-                  className="border rounded px-2 py-1 text-sm flex-1 min-w-0"
+                  className="border rounded-lg px-3 py-2 text-base flex-1 min-w-0"
                   placeholder="ค้นหาเลขพัสดุ..."
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
                 />
               </div>
-              <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
+              <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1">
                 {aggregatedData.map((group, index) => {
                   const isDone = group[0].isOrderComplete
                   const isFullScanned = group.every((item) => item.scanned)
@@ -2184,23 +2184,23 @@ export default function Packing() {
                   return (
                     <button
                       key={`${tracking}-${index}`}
-                      className={`w-full text-left p-2 rounded border ${
+                      className={`w-full text-left p-3 rounded-lg border ${
                         index === currentIndex ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
                       }`}
                       onClick={() => handleOrderClick(index)}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="text-sm font-semibold break-all">
+                          <div className="text-lg font-bold break-all leading-snug">
                             {icon} {trackingDisp}
                           </div>
-                          <div className="text-xs text-gray-500">{group[0].customer_name || 'N/A'}</div>
-                          <div className="text-[11px] font-semibold text-indigo-700 mt-0.5 tabular-nums">
+                          <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
+                          <div className="text-sm font-bold text-indigo-700 mt-1 tabular-nums">
                             Tag {group[0].packingTag ?? '—'}
                           </div>
                         </div>
                         <div
-                          className={`inline-flex items-center justify-center rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap shrink-0 max-w-full ${
+                          className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
                             isQcPassGroup(group)
                               ? group.every((i) => i.qc_status === 'skip')
                                 ? 'bg-orange-100 text-orange-700'

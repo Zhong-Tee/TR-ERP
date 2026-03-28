@@ -195,12 +195,27 @@ export default function Orders() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'จัดส่งแล้ว')
       )
 
-      // Load confirm count: งานใหม่ + รอออกแบบ + ออกแบบแล้ว + รอคอนเฟิร์ม + คอนเฟิร์มแล้ว (PUMP)
-      const { count: confirmCountTotal } = await applyOwnerFilter(
+      // Load confirm count: PUMP ทุกบิลในสถานะคิว + ช่องอื่นที่ติ๊กออกแบบ (requires_confirm_design)
+      const confirmStatusList = [
+        'ตรวจสอบแล้ว',
+        'รอออกแบบ',
+        'ไม่ต้องออกแบบ',
+        'ออกแบบแล้ว',
+        'รอคอนเฟิร์ม',
+        'คอนเฟิร์มแล้ว',
+      ] as const
+      const { count: confirmPump } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
-          .in('status', ['ตรวจสอบแล้ว', 'รอออกแบบ', 'ไม่ต้องออกแบบ', 'ออกแบบแล้ว', 'รอคอนเฟิร์ม', 'คอนเฟิร์มแล้ว'])
+          .in('status', [...confirmStatusList]),
       )
+      const { count: confirmOtherChannels } = await applyOwnerFilter(
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .eq('requires_confirm_design', true)
+          .neq('channel_code', 'PUMP')
+          .in('status', [...confirmStatusList]),
+      )
+      const confirmCountTotal = (confirmPump ?? 0) + (confirmOtherChannels ?? 0)
 
       // Load issue count (On) — sales-tr นับเฉพาะบิลที่ admin_user เป็นของทีม sales-tr
       let issueCount = 0

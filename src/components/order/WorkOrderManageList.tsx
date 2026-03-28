@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
+import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
@@ -642,20 +643,6 @@ export default function WorkOrderManageList({
     return str
   }
 
-  /** จำนวนชิ้นต่อรายการในออเดอร์ — ใช้แตกหลายแถวใน export ผลิต / barcode */
-  const normalizedLineQuantity = (raw: unknown): number => {
-    const q = Math.floor(Number(raw))
-    if (!Number.isFinite(q) || q < 1) return 1
-    return Math.min(q, 9999)
-  }
-
-  /** เมื่อแตก qty>1 ให้ UID ไม่ซ้ำ: base, base-1, base-2, ... */
-  const itemUidForSplitLines = (baseUid: string | null | undefined, copyIndex: number, copies: number): string => {
-    const uid = String(baseUid ?? '').trim() || '—'
-    if (copies <= 1) return uid
-    return `${uid}-${copyIndex + 1}`
-  }
-
   type OrderWithItems = Order & { or_order_items?: Array<{ bill_no?: string; item_uid: string; quantity?: number; product_name: string; ink_color: string | null; product_type: string | null; cartoon_pattern: string | null; line_pattern: string | null; font: string | null; line_1: string | null; line_2: string | null; line_3: string | null; no_name_line?: boolean; notes: string | null; file_attachment: string | null; product_id: string }> }
 
   async function fetchOrdersWithItems(workOrderId: string): Promise<OrderWithItems[]> {
@@ -700,7 +687,15 @@ export default function WorkOrderManageList({
     }
 
     ordersInWorkOrder.forEach((order) => {
-      const items = order.or_order_items || (order as any).order_items || []
+      const rawItems = order.or_order_items || (order as any).order_items || []
+      const items = [...rawItems].sort((a: any, b: any) => {
+        const ta = new Date(a.created_at || 0).getTime()
+        const tb = new Date(b.created_at || 0).getTime()
+        if (ta !== tb) return ta - tb
+        return String(a.id || '').localeCompare(String(b.id || ''))
+      })
+      const bill = String(order.bill_no ?? '').trim() || '—'
+      let unitSeq = 0
       items.forEach((item: any) => {
         const noName = !!item.no_name_line
         const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
@@ -711,7 +706,8 @@ export default function WorkOrderManageList({
         const category = pid ? productCategoryByProductId[pid] || 'N/A' : 'N/A'
         const copies = normalizedLineQuantity(item.quantity)
         for (let c = 0; c < copies; c++) {
-          const displayUid = itemUidForSplitLines(item.item_uid, c, copies)
+          unitSeq++
+          const displayUid = flatBillUnitUid(bill, unitSeq)
           const row: unknown[] = [workOrderNameForDisplay, order.bill_no, displayUid, productCode]
           visibleColumns.forEach((col) => {
             if (col.key === 'notes') row.push(cleanNotes)
@@ -791,13 +787,22 @@ export default function WorkOrderManageList({
       const headers = ['Item UID', 'ชื่อสินค้า', 'สีหมึก', 'บรรทัด 1', 'หมวด']
       const dataToExport: unknown[][] = []
       orders.forEach((order) => {
-        const items = order.or_order_items || (order as any).order_items || []
+        const rawItems = order.or_order_items || (order as any).order_items || []
+        const items = [...rawItems].sort((a: any, b: any) => {
+          const ta = new Date(a.created_at || 0).getTime()
+          const tb = new Date(b.created_at || 0).getTime()
+          if (ta !== tb) return ta - tb
+          return String(a.id || '').localeCompare(String(b.id || ''))
+        })
+        const bill = String(order.bill_no ?? '').trim() || '—'
+        let unitSeq = 0
         items.forEach((item: any) => {
           const category = productCategoryByProductId[String(item.product_id)] || 'N/A'
           const copies = normalizedLineQuantity(item.quantity)
           for (let c = 0; c < copies; c++) {
+            unitSeq++
             dataToExport.push([
-              itemUidForSplitLines(item.item_uid, c, copies),
+              flatBillUnitUid(bill, unitSeq),
               item.product_name,
               item.ink_color ?? '',
               forceText(item.line_1),

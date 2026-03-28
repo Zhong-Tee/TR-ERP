@@ -39,6 +39,7 @@ export default function ReviewSection() {
   const [currentTab, setCurrentTab] = useState('all')
   const [showCounter, setShowCounter] = useState(false)
   const [showTabs, setShowTabs] = useState(false)
+  const [planBackfillLoading, setPlanBackfillLoading] = useState(false)
   const { showMessage, MessageModal } = useWmsModal()
   const inspectResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -286,10 +287,9 @@ export default function ReviewSection() {
         } catch (e) {
           console.error('saveFirstCheckSummary error:', e)
         }
-      }
 
-      const allCorrect = sortedData.length > 0 && sortedData.every((i) => i.status === 'correct')
-      if (allCorrect) {
+        // Plan "เบิก" finish (⚡): ต้องสอดคล้องกับ isFullyChecked — รวมคืนคลัง/ไม่เจอ/หยิบผิด
+        // เดิมเรียกเฉพาะเมื่อทุกแถว correct ทำให้กรณีย้ายบิลแล้วคืนเข้าคลังไม่ประทับเวลา
         await ensurePlanDeptEnd(currentWorkOrderId)
       }
     }
@@ -340,6 +340,48 @@ export default function ReviewSection() {
   const checkedCount = inspectItems.filter((i) =>
     ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
   ).length
+
+  const inspectFullyChecked = inspectItems.length > 0 && checkedCount === inspectItems.length
+
+  const backfillPlanPickEndForCurrentWorkOrder = async (force: boolean) => {
+    const wid = reviewOrderActualId || reviewOrderSelect
+    if (!wid || !inspectFullyChecked) return
+    setPlanBackfillLoading(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_backfill_plan_pick_end_from_wms', {
+        p_work_order_id: wid,
+        p_force: force,
+      })
+      if (error) {
+        showMessage({ message: 'ซิงค์ Plan ไม่สำเร็จ: ' + error.message })
+        return
+      }
+      const row = data as { success?: boolean; error?: string; updated_count?: number; skipped?: unknown[] } | null
+      if (!row?.success) {
+        showMessage({ message: row?.error || 'ซิงค์ Plan ไม่สำเร็จ' })
+        return
+      }
+      if ((row.updated_count || 0) > 0) {
+        showMessage({ message: 'อัปเดตเวลาเสร็จเบิกใน Plan แล้ว' })
+      } else {
+        const sk = Array.isArray(row.skipped) ? row.skipped[0] : null
+        const reason =
+          sk && typeof sk === 'object' && sk !== null && 'reason' in sk
+            ? String((sk as { reason?: string }).reason || '')
+            : ''
+        showMessage({
+          message:
+            reason === 'already_stamped'
+              ? 'Plan มีเวลาเสร็จเบิกอยู่แล้ว — ใช้ "บังคับเขียนทับ" หากต้องการแก้'
+              : reason === 'inspect_not_complete'
+                ? 'ยังตรวจไม่ครบตามระบบ — ไม่ได้อัปเดต Plan'
+                : 'ไม่มีการเปลี่ยนแปลง (ดูเหตุผลใน skipped)',
+        })
+      }
+    } finally {
+      setPlanBackfillLoading(false)
+    }
+  }
 
   let filtered = inspectItems
   if (currentTab === 'all') filtered = inspectItems.filter((i) => isWmsReviewVisibleRow(i))
@@ -395,11 +437,31 @@ export default function ReviewSection() {
           </div>
         </div>
         {showCounter && (
-          <div className="bg-white p-6 rounded-3xl shadow-xl border-t-4 border-blue-600 text-center min-w-[200px]">
+          <div className="bg-white p-6 rounded-3xl shadow-xl border-t-4 border-blue-600 text-center min-w-[200px] flex flex-col items-center gap-3">
             <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Checked / Total</div>
             <div className="text-6xl font-black text-blue-600">
               {checkedCount} / {inspectItems.length}
             </div>
+            {inspectFullyChecked && (reviewOrderActualId || reviewOrderSelect) && (
+              <div className="flex flex-col gap-2 w-full max-w-[220px]">
+                <button
+                  type="button"
+                  disabled={planBackfillLoading}
+                  onClick={() => backfillPlanPickEndForCurrentWorkOrder(false)}
+                  className="text-xs font-bold bg-slate-700 text-white px-3 py-2 rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {planBackfillLoading ? 'กำลังซิงค์…' : 'ซิงค์เวลาเสร็จเบิก → Plan (ย้อนหลัง)'}
+                </button>
+                <button
+                  type="button"
+                  disabled={planBackfillLoading}
+                  onClick={() => backfillPlanPickEndForCurrentWorkOrder(true)}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 underline disabled:opacity-50"
+                >
+                  บังคับเขียนทับเวลาใน Plan
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

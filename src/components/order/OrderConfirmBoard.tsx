@@ -8,7 +8,9 @@ import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '.
 import { Order, OrderStatus, OrderChatLog } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
-import { isSalesPumpOwnerScopedRole } from '../../config/accessPolicy'
+import { isSalesPumpOwnerScopedRole, isSalesTrTeamRole } from '../../config/accessPolicy'
+import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
+import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
 import OrderDetailView from './OrderDetailView'
 
 /** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
@@ -109,10 +111,10 @@ const NO_DESIGN_COLUMN: ConfirmColumn = {
   status: 'ไม่ต้องออกแบบ',
   actionLabel: 'เปลี่ยนสถานะ',
   actionTargetStatus: 'คอนเฟิร์มแล้ว',
-  headerGradient: 'bg-gradient-to-r from-slate-500 to-slate-600',
-  countBadge: 'bg-slate-50 text-slate-700 ring-1 ring-slate-200',
+  headerGradient: 'bg-gradient-to-r from-orange-500 to-orange-600',
+  countBadge: 'bg-orange-50 text-orange-800 ring-1 ring-orange-200',
   actionBtn:
-    'bg-gradient-to-r from-slate-500 to-slate-600 hover:from-slate-600 hover:to-slate-700 text-white shadow-sm',
+    'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white shadow-sm',
 }
 
 /** คอลัมน์ "เสร็จสิ้น" (completed view) — ไม่มีปุ่มเปลี่ยนสถานะ */
@@ -124,7 +126,15 @@ const COMPLETED_COLUMN: ConfirmColumn = {
   countBadge: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
 }
 
-const CHANNEL_CODE = 'PUMP'
+/** สอดคล้อง RPC get_unread_chat_count / list_unread_order_chat_summaries (sales-tr, production) */
+const CONFIRM_PIPELINE_STATUSES_ORDER_UNREAD: OrderStatus[] = [
+  'ตรวจสอบแล้ว',
+  'ไม่ต้องออกแบบ',
+  'รอออกแบบ',
+  'ออกแบบแล้ว',
+  'รอคอนเฟิร์ม',
+  'คอนเฟิร์มแล้ว',
+]
 
 function orderBillingPhone(o: Order): string {
   const b = o.billing_details
@@ -265,6 +275,49 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const ordersByKeyRef = useRef(ordersByKey)
   ordersByKeyRef.current = ordersByKey
 
+  const [salesTrTeamAdminValues, setSalesTrTeamAdminValues] = useState<string[]>([])
+  const [salesTrTeamScopeReady, setSalesTrTeamScopeReady] = useState(true)
+  const salesTrTeamSetRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    salesTrTeamSetRef.current = new Set(
+      salesTrTeamAdminValues.map((s) => s.trim()).filter(Boolean),
+    )
+  }, [salesTrTeamAdminValues])
+
+  useEffect(() => {
+    if (!user?.role) {
+      setSalesTrTeamAdminValues([])
+      setSalesTrTeamScopeReady(true)
+      return
+    }
+    if (!isSalesTrTeamRole(user.role)) {
+      setSalesTrTeamAdminValues([])
+      setSalesTrTeamScopeReady(true)
+      return
+    }
+    setSalesTrTeamScopeReady(false)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const vals = await fetchSalesTrTeamAdminValues(supabase)
+        if (!cancelled) {
+          setSalesTrTeamAdminValues(vals)
+          setSalesTrTeamScopeReady(true)
+        }
+      } catch (e) {
+        console.error('OrderConfirmBoard sales-tr team:', e)
+        if (!cancelled) {
+          setSalesTrTeamAdminValues([])
+          setSalesTrTeamScopeReady(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.role])
+
   const isTableConfirmView = viewMode === 'noDesign' || viewMode === 'completed'
 
   const filteredTableOrders = useMemo(() => {
@@ -288,9 +341,10 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   /* ── Data Loading ── */
 
   useEffect(() => {
+    if (!salesTrTeamScopeReady) return
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey, fromDate, toDate])
+  }, [refreshKey, fromDate, toDate, salesTrTeamScopeReady, salesTrTeamAdminValues])
 
   // Realtime subscription: reload board when or_orders changes
   useEffect(() => {
@@ -345,6 +399,31 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 .maybeSingle()
               if (!prior) return
             }
+          }
+          if (user && isSalesTrTeamRole(user.role)) {
+            const all = Object.values(ordersByKeyRef.current).flat()
+            let ord = all.find((o) => o.id === row.order_id)
+            let adminUser = ord?.admin_user
+            let channelCode = ord?.channel_code
+            let orderStatus = ord?.status as OrderStatus | undefined
+            let requiresDesign = ord?.requires_confirm_design
+            if (!ord) {
+              const { data: o } = await supabase
+                .from('or_orders')
+                .select('admin_user, channel_code, status, requires_confirm_design')
+                .eq('id', row.order_id)
+                .maybeSingle()
+              adminUser = o?.admin_user ?? undefined
+              channelCode = o?.channel_code ?? undefined
+              orderStatus = o?.status as OrderStatus | undefined
+              requiresDesign = o?.requires_confirm_design
+            }
+            const teamOk = salesTrTeamSetRef.current.has((adminUser || '').trim())
+            const inConfirmPipeline =
+              !!orderStatus &&
+              CONFIRM_PIPELINE_STATUSES_ORDER_UNREAD.includes(orderStatus) &&
+              orderQualifiesForConfirmBoard(channelCode, requiresDesign)
+            if (!teamOk || !inConfirmPipeline) return
           }
           setUnreadByOrder((prev) => ({ ...prev, [row.order_id]: (prev[row.order_id] || 0) + 1 }))
         })()
@@ -479,20 +558,39 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   }
 
   async function loadOrdersByStatus(status: OrderStatus): Promise<Order[]> {
-    let query = supabase
-      .from('or_orders')
-      .select('*, or_order_items(*)')
-      .eq('channel_code', CHANNEL_CODE)
-      .eq('status', status)
-      .order('created_at', { ascending: true })
+    const buildQuery = (pumpOnly: boolean) => {
+      let q = supabase.from('or_orders').select('*, or_order_items(*)').eq('status', status)
+      if (pumpOnly) {
+        q = q.eq('channel_code', 'PUMP')
+      } else {
+        q = q.eq('requires_confirm_design', true).neq('channel_code', 'PUMP')
+      }
+      if (fromDate) q = q.gte('created_at', `${fromDate}T00:00:00.000Z`)
+      if (toDate) q = q.lte('created_at', `${toDate}T23:59:59.999Z`)
+      if (isSalesTrTeamRole(user?.role)) {
+        if (salesTrTeamAdminValues.length === 0) {
+          q = q.eq('admin_user', '__no_sales_tr_team__')
+        } else {
+          q = q.in('admin_user', salesTrTeamAdminValues)
+        }
+      }
+      return q
+    }
 
-    if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
-    if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+    const [{ data: pumpRows, error: pumpErr }, { data: otherRows, error: otherErr }] = await Promise.all([
+      buildQuery(true),
+      buildQuery(false),
+    ])
+    if (pumpErr) throw pumpErr
+    if (otherErr) throw otherErr
 
-    const { data, error } = await query
-    if (error) throw error
-
-    return (data || []) as Order[]
+    const map = new Map<string, Order>()
+    for (const o of [...(pumpRows || []), ...(otherRows || [])] as Order[]) {
+      map.set(o.id, o)
+    }
+    return [...map.values()].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    )
   }
 
   /* ── Event Handlers ── */
@@ -863,15 +961,15 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
                 className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
                   viewMode === 'noDesign'
-                    ? 'bg-gradient-to-r from-slate-500 to-slate-600 text-white shadow-md ring-2 ring-slate-300'
-                    : 'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
+                    ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md ring-2 ring-orange-300'
+                    : 'bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm'
                 }`}
               >
                 <ColumnIcon columnKey="noDesign" />
                 ไม่ต้องออกแบบ
                 <span
                   className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    'bg-slate-100 text-slate-600'
+                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-200 text-orange-900'
                   }`}
                 >
                   {ordersByKey.noDesign.length}
@@ -961,14 +1059,16 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               type="button"
               onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
               className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                'bg-white text-slate-600 hover:bg-slate-50 border border-slate-300 shadow-sm'
+                viewMode === 'noDesign'
+                  ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md ring-2 ring-orange-300'
+                  : 'bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm'
               }`}
             >
               <ColumnIcon columnKey="noDesign" />
               ไม่ต้องออกแบบ
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  'bg-slate-100 text-slate-600'
+                  viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-200 text-orange-900'
                 }`}
               >
                 {ordersByKey.noDesign.length}
@@ -1091,7 +1191,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               <button
                                 type="button"
                                 onClick={() => moveOrderToNoDesign(order)}
-                                className="inline-flex items-center px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50"
+                                className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 border border-orange-600 rounded-lg text-xs font-semibold text-white shadow-sm"
                               >
                                 ไม่ต้องออกแบบ
                               </button>
@@ -1147,7 +1247,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   }
                   className={
                     viewMode === 'noDesign'
-                      ? 'rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40'
+                      ? 'rounded-xl bg-orange-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-40'
                       : 'rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-40'
                   }
                 >
@@ -1307,7 +1407,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     {orders.length}
                   </span>
                 </div>
-                <p className="text-sm font-medium text-white/80 mt-1">ช่องทาง: {CHANNEL_CODE}</p>
+                <p className="text-sm font-medium text-white/80 mt-1">ช่องทาง: PUMP + ช่องอื่นที่ติ๊กออกแบบ</p>
               </div>
 
               {/* Column Body */}
@@ -1390,7 +1490,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           <button
                             type="button"
                             onClick={() => moveOrderToNoDesign(order)}
-                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-white border border-slate-300 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-400 transition-colors"
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 border border-orange-600 rounded-md text-xs font-semibold text-white shadow-sm transition-colors"
                           >
                             ไม่ต้องออกแบบ
                           </button>

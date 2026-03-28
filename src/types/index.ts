@@ -686,6 +686,8 @@ export interface QCRecord {
 /** QC session item (in-memory during QC Operation) */
 export interface QCItem {
   uid: string
+  /** item_uid แถว or_order_items — ใช้รองรับ session/qc_records รูปแบบเก่า */
+  source_line_uid?: string
   product_code: string
   product_name: string
   product_category?: string | null

@@ -482,7 +482,8 @@ export default function QC() {
         const recordByUid: Record<string, (typeof records)[0]> = {}
         records.forEach((r) => { recordByUid[r.item_uid] = r })
         items.forEach((it) => {
-          const rec = recordByUid[it.uid]
+          const rec =
+            recordByUid[it.uid] ?? (it.source_line_uid ? recordByUid[it.source_line_uid] : undefined)
           if (rec) {
             it.status = rec.status as 'pass' | 'fail' | 'pending'
             it.fail_reason = rec.fail_reason ?? undefined
@@ -1453,16 +1454,16 @@ export default function QC() {
                 </div>
 
                 <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
-                  <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
-                    <div className="p-2 border-b space-y-2">
-                      <div className="text-xs font-bold text-gray-600 uppercase">รายการ</div>
+                  <div className="w-[min(100%,22rem)] min-w-[15rem] max-w-[22rem] shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden sm:min-w-[17rem]">
+                    <div className="p-3 border-b space-y-2.5">
+                      <div className="text-sm font-bold text-gray-700 uppercase tracking-wide">รายการ</div>
                       {qcCategoryOptions.length > 0 && (
-                        <div className="flex items-center gap-2">
-                          <label className="text-xs text-gray-500 whitespace-nowrap">หมวดหมู่สินค้า</label>
+                        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                          <label className="text-sm text-gray-600 font-medium whitespace-nowrap shrink-0">หมวดหมู่สินค้า</label>
                           <select
                             value={qcCategoryFilter}
                             onChange={(e) => setQcCategoryFilter(e.target.value)}
-                            className="flex-1 min-w-0 rounded border border-gray-200 px-2 py-1 text-xs"
+                            className="flex-1 min-w-0 rounded-lg border border-gray-200 px-2.5 py-2 text-sm"
                           >
                             <option value="">ทั้งหมด</option>
                             {qcCategoryOptions.map((opt) => (
@@ -1472,25 +1473,26 @@ export default function QC() {
                         </div>
                       )}
                     </div>
-                    <div className="flex-1 overflow-y-auto p-1 space-y-1">
+                    <div className="flex-1 overflow-y-auto p-2 space-y-2">
                       {itemsToShow.map((item, index) => (
                         <div
                           key={item.uid}
                           id={'item-' + item.uid}
                           onClick={() => selectItem(item)}
-                          className={`p-2 rounded border cursor-pointer flex justify-between items-center text-xs ${
-                            item === currentItem ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-gray-100 hover:bg-gray-50'
+                          className={`p-3 rounded-lg border cursor-pointer flex justify-between items-start gap-2 ${
+                            item === currentItem ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-400' : 'border-gray-200 hover:bg-gray-50'
                           }`}
                         >
-                          <div className="truncate min-w-0">
-                            <span className="text-gray-400 font-bold">{index + 1}. </span>
-                            <span className="font-medium uppercase">{item.uid}</span>
-                            <br />
-                            <span className="text-gray-500 text-[10px]">{item.product_name}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="leading-snug">
+                              <span className="text-gray-500 font-bold text-base">{index + 1}. </span>
+                              <span className="font-bold uppercase text-base text-gray-900">{item.uid}</span>
+                            </div>
+                            <div className="text-sm text-gray-600 mt-1 line-clamp-2 leading-snug">{item.product_name}</div>
                           </div>
-                          {item.status === 'pass' && <span className="text-green-500 shrink-0">✓</span>}
-                          {item.status === 'fail' && <span className="text-red-500 shrink-0">✗</span>}
-                          {item.status === 'pending' && <span className="text-gray-300 shrink-0">○</span>}
+                          {item.status === 'pass' && <span className="text-green-600 shrink-0 text-xl font-bold leading-none">✓</span>}
+                          {item.status === 'fail' && <span className="text-red-600 shrink-0 text-xl font-bold leading-none">✗</span>}
+                          {item.status === 'pending' && <span className="text-gray-300 shrink-0 text-xl leading-none">○</span>}
                         </div>
                       ))}
                     </div>

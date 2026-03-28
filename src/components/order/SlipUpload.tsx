@@ -1,6 +1,10 @@
 import React, { useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { SlipVerificationResult, MultipleSlipVerificationResult } from '../../lib/easyslip'
+import {
+  computePostSlipVerificationStatus,
+  fetchOrderOwnerSalesRole,
+} from '../../lib/postSlipVerificationStatus'
 
 interface SlipUploadProps {
   orderId: string
@@ -128,10 +132,24 @@ export default function SlipUpload({
 
         // Check if amount matches or exceeds
         if (result.totalAmount >= orderAmount) {
-          // Update order status to "รอตรวจคำสั่งซื้อ"
+          const { data: orderRow, error: orderFetchError } = await supabase
+            .from('or_orders')
+            .select('admin_user, channel_code, requires_confirm_design')
+            .eq('id', orderId)
+            .single()
+
+          if (orderFetchError) throw orderFetchError
+
+          const ownerRole = await fetchOrderOwnerSalesRole(supabase, orderRow.admin_user)
+          const nextStatus = computePostSlipVerificationStatus(
+            ownerRole,
+            orderRow.channel_code,
+            orderRow.requires_confirm_design,
+          )
+
           const { error: updateError } = await supabase
             .from('or_orders')
-            .update({ status: 'รอตรวจคำสั่งซื้อ' })
+            .update({ status: nextStatus })
             .eq('id', orderId)
 
           if (updateError) throw updateError

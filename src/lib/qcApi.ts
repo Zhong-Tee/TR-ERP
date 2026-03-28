@@ -5,6 +5,7 @@ import { supabase } from './supabase'
 import * as XLSX from 'xlsx'
 import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
+import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
@@ -68,7 +69,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const { data: orders, error: ordErr } = await supabase
     .from('or_orders')
-    .select('id, work_order_name')
+    .select('id, work_order_name, bill_no')
     .in('work_order_name', woNames)
     .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
   if (ordErr) throw ordErr
@@ -97,31 +98,53 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return emptyProgress
   }
 
-  // ดึง items พร้อม item_uid + order_id เพื่อ mapping กลับไปที่ bill
   const { data: items, error: itemsErr } = await supabase
     .from('or_order_items')
-    .select('order_id, item_uid')
+    .select('order_id, item_uid, quantity, created_at, id')
     .in('order_id', allOrderIds)
   if (itemsErr) throw itemsErr
 
-  const totalByOrderId: Record<string, number> = {}
-  // mapping: item_uid → order_id (เพื่อรู้ว่า item อยู่ bill ไหน)
-  const itemUidToOrderId: Record<string, string> = {}
-  // mapping: order_id → item_uids (ทุก item ใน bill นั้น)
-  const itemUidsByOrderId: Record<string, string[]> = {}
+  const itemsByOrderId: Record<string, { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string }[]> = {}
   ;(items || []).forEach((row) => {
-    totalByOrderId[row.order_id] = (totalByOrderId[row.order_id] || 0) + 1
-    if (row.item_uid) {
-      itemUidToOrderId[row.item_uid] = row.order_id
-      if (!itemUidsByOrderId[row.order_id]) itemUidsByOrderId[row.order_id] = []
-      itemUidsByOrderId[row.order_id].push(row.item_uid)
-    }
+    if (!itemsByOrderId[row.order_id]) itemsByOrderId[row.order_id] = []
+    itemsByOrderId[row.order_id].push(row as { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string })
+  })
+  Object.keys(itemsByOrderId).forEach((oid) => {
+    itemsByOrderId[oid].sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      if (ta !== 0) return ta
+      return String(a.id).localeCompare(String(b.id))
+    })
   })
 
   const totalByWo: Record<string, number> = {}
+  const flatUidsByWo: Record<string, string[]> = {}
   woNames.forEach((name) => {
-    const ids = orderIdsByWo[name] || []
-    totalByWo[name] = ids.reduce((sum, id) => sum + (totalByOrderId[id] || 0), 0)
+    const oids = orderIdsByWo[name] || []
+    const ords = (orders || [])
+      .filter((o: { id: string; work_order_name?: string }) => o.work_order_name === name && oids.includes(o.id))
+      .sort((a: { bill_no?: string | null; id: string }, b: { bill_no?: string | null; id: string }) => {
+        const c = String(a.bill_no || '').localeCompare(String(b.bill_no || ''))
+        if (c !== 0) return c
+        return String(a.id).localeCompare(String(b.id))
+      })
+    let unitSum = 0
+    const flatList: string[] = []
+    ords.forEach((order: { id: string; bill_no?: string | null }) => {
+      const bill = String(order.bill_no || '').trim() || '—'
+      let seq = 0
+      const rows = itemsByOrderId[order.id] || []
+      rows.forEach((r) => {
+        const n = normalizedLineQuantity(r.quantity)
+        for (let i = 0; i < n; i++) {
+          seq++
+          unitSum++
+          flatList.push(flatBillUnitUid(bill, seq))
+        }
+      })
+    })
+    totalByWo[name] = unitSum
+    flatUidsByWo[name] = flatList
   })
 
   // เฉพาะ session ของใบงานในรอบนี้ — กันพลาด default row limit ของ API ที่ตัดตารางใหญ่แล้วไม่ได้แถวล่าสุดของ WO
@@ -197,22 +220,31 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     let pass_items = 0
     let fail_items = 0
     let reject_items = 0
-    orderIds.forEach((orderId) => {
-      const uids = itemUidsByOrderId[orderId] || []
-      uids.forEach((uid) => {
-        const st = itemStatusMap[uid]
-        if (st === 'pass') pass_items++
-        else if (st === 'fail') fail_items++
-        if (itemRejectedMap[uid]) reject_items++
-      })
+    const woFlat = flatUidsByWo[woName] || []
+    woFlat.forEach((uid) => {
+      const st = itemStatusMap[uid]
+      if (st === 'pass') pass_items++
+      else if (st === 'fail') fail_items++
+      if (itemRejectedMap[uid]) reject_items++
     })
     const remaining = Math.max(0, total_items - pass_items - fail_items)
 
-    // คำนวณ pass/fail ระดับ bill
     let pass_bills = 0
     let fail_bills = 0
     orderIds.forEach((orderId) => {
-      const uids = itemUidsByOrderId[orderId] || []
+      const orderRow = (orders || []).find((o: { id: string }) => o.id === orderId) as { bill_no?: string | null; id: string } | undefined
+      if (!orderRow) return
+      const bill = String(orderRow.bill_no || '').trim() || '—'
+      const uids: string[] = []
+      let seq = 0
+      const rows = itemsByOrderId[orderId] || []
+      rows.forEach((r) => {
+        const n = normalizedLineQuantity(r.quantity)
+        for (let i = 0; i < n; i++) {
+          seq++
+          uids.push(flatBillUnitUid(bill, seq))
+        }
+      })
       if (uids.length === 0) return
       const statuses = uids.map((uid) => itemStatusMap[uid] || 'pending')
       if (statuses.every((s) => s === 'pass')) pass_bills++
@@ -267,16 +299,20 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     .select('id, bill_no')
     .eq('work_order_name', workOrderName)
     .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+    .order('bill_no', { ascending: true })
+    .order('id', { ascending: true })
   if (ordersErr) throw ordersErr
   if (!orders?.length) return []
 
   const orderIds = orders.map((o) => o.id)
   const billByOrderId: Record<string, string> = {}
-  orders.forEach((o) => { billByOrderId[o.id] = o.bill_no || '' })
+  orders.forEach((o) => {
+    billByOrderId[o.id] = o.bill_no || ''
+  })
 
   const { data: items, error: itemsErr } = await supabase
     .from('or_order_items')
-    .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment')
+    .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
     .in('order_id', orderIds)
   if (itemsErr) throw itemsErr
   if (!items?.length) return []
@@ -297,24 +333,50 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     }
   }
 
-  const qcItems: QCItem[] = items.map((row) => ({
-    uid: row.item_uid || '',
-    product_code: row.product_id ? (productCodeMap[row.product_id] || '0') : '0',
-    product_name: row.product_name || '',
-    product_category: row.product_id ? (productCategoryMap[row.product_id] ?? null) : null,
-    bill_no: billByOrderId[row.order_id] || '',
-    ink_color: row.ink_color ?? null,
-    font: row.font ?? null,
-    floor: '-',
-    cartoon_name: row.cartoon_pattern ?? '0',
-    line1: row.line_1 ?? '',
-    line2: row.line_2 ?? '',
-    line3: row.line_3 ?? '',
-    qty: row.quantity ?? 1,
-    remark: row.notes ?? '',
-    file_attachment: row.file_attachment ?? null,
-    status: 'pending',
-  }))
+  const byOrder: Record<string, typeof items> = {}
+  for (const row of items) {
+    if (!byOrder[row.order_id]) byOrder[row.order_id] = []
+    byOrder[row.order_id].push(row)
+  }
+  Object.keys(byOrder).forEach((oid) => {
+    byOrder[oid].sort((a, b) => {
+      const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      if (ta !== 0) return ta
+      return String(a.id).localeCompare(String(b.id))
+    })
+  })
+
+  const qcItems: QCItem[] = []
+  for (const o of orders) {
+    const bill = String(billByOrderId[o.id] || '').trim() || '—'
+    let seq = 0
+    const rows = byOrder[o.id] || []
+    for (const row of rows) {
+      const copies = normalizedLineQuantity(row.quantity)
+      for (let c = 0; c < copies; c++) {
+        seq++
+        qcItems.push({
+          uid: flatBillUnitUid(bill, seq),
+          source_line_uid: row.item_uid || undefined,
+          product_code: row.product_id ? (productCodeMap[row.product_id] || '0') : '0',
+          product_name: row.product_name || '',
+          product_category: row.product_id ? (productCategoryMap[row.product_id] ?? null) : null,
+          bill_no: billByOrderId[o.id] || '',
+          ink_color: row.ink_color ?? null,
+          font: row.font ?? null,
+          floor: '-',
+          cartoon_name: row.cartoon_pattern ?? '0',
+          line1: row.line_1 ?? '',
+          line2: row.line_2 ?? '',
+          line3: row.line_3 ?? '',
+          qty: 1,
+          remark: row.notes ?? '',
+          file_attachment: row.file_attachment ?? null,
+          status: 'pending',
+        })
+      }
+    }
+  }
   return qcItems
 }
 

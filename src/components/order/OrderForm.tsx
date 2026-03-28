@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
-import { Order, OrderItem, Product, CartoonPattern, BankSetting } from '../../types'
+import { Order, OrderItem, OrderStatus, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { uploadMultipleToStorage, verifyMultipleSlipsFromStorage } from '../../lib/slipVerification'
 import { parseAddressText, type SubDistrictOption } from '../../lib/thaiAddress'
 import VerificationResultModal, { type AmountStatus, type VerificationResultType } from './VerificationResultModal'
-import { pumpVerifiedRoutingStatus } from '../../lib/pumpConfirmRouting'
+import {
+  computePostSlipVerificationStatus,
+  fetchOrderOwnerSalesRole,
+  nonPumpDesignChecked,
+} from '../../lib/postSlipVerificationStatus'
 import Modal from '../ui/Modal'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
@@ -851,7 +855,14 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           payment_date: order.payment_date || '',
           payment_time: order.payment_time || '',
         })
-        setRequiresConfirmDesign((order as Order).requires_confirm_design !== false)
+        {
+          const oc = ((order as Order).channel_code ?? '').trim()
+          setRequiresConfirmDesign(
+            oc === 'PUMP'
+              ? (order as Order).requires_confirm_design !== false
+              : (order as Order).requires_confirm_design === true,
+          )
+        }
 
         let orderItems = order.order_items || []
         if (orderItems.length === 0 && order.id) {
@@ -1547,7 +1558,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
-      let statusToSave: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' | 'ตรวจสอบแล้ว' | 'ไม่ต้องออกแบบ' = targetStatus
+      let statusToSave:
+        | 'รอลงข้อมูล'
+        | 'ลงข้อมูลเสร็จสิ้น'
+        | 'ตรวจสอบแล้ว'
+        | 'ไม่ต้องออกแบบ'
+        | 'รอตรวจคำสั่งซื้อ' = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCode = formData.channel_code?.trim() || ''
         if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
@@ -1579,8 +1595,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       }
 
       const channelCodeForSave = formData.channel_code?.trim() || ''
-      if (channelCodeForSave === 'PUMP' && statusToSave === 'ตรวจสอบแล้ว') {
-        statusToSave = pumpVerifiedRoutingStatus(requiresConfirmDesign)
+      if (statusToSave === 'ตรวจสอบแล้ว') {
+        const ownerRole = await fetchOrderOwnerSalesRole(supabase, user.username || user.email)
+        if (channelCodeForSave === 'PUMP') {
+          statusToSave = computePostSlipVerificationStatus(
+            ownerRole,
+            channelCodeForSave,
+            requiresConfirmDesign,
+            { fallbackNonPumpNonSales: 'ตรวจสอบแล้ว' },
+          ) as typeof statusToSave
+        } else if (ownerRole === 'sales-tr' && !nonPumpDesignChecked(requiresConfirmDesign)) {
+          statusToSave = 'รอตรวจคำสั่งซื้อ'
+        }
       }
 
       const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, scheduled_pickup_at: _spForm, ...formDataForDb } = formData
@@ -2521,15 +2547,21 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         newStatus = 'ตรวจสอบไม่ผ่าน'
       }
 
-      let statusForDb = newStatus
+      let statusForDb: OrderStatus = newStatus
       if (newStatus === 'ตรวจสอบแล้ว') {
         const { data: meta } = await supabase
           .from('or_orders')
-          .select('channel_code, requires_confirm_design')
+          .select('channel_code, requires_confirm_design, admin_user')
           .eq('id', orderId)
           .maybeSingle()
-        if (meta?.channel_code === 'PUMP') {
-          statusForDb = pumpVerifiedRoutingStatus(meta.requires_confirm_design !== false)
+        if (meta) {
+          const ownerRole = await fetchOrderOwnerSalesRole(supabase, meta.admin_user)
+          statusForDb = computePostSlipVerificationStatus(
+            ownerRole,
+            meta.channel_code,
+            meta.requires_confirm_design,
+            { fallbackNonPumpNonSales: 'ตรวจสอบแล้ว' },
+          )
         }
       }
 
@@ -2544,7 +2576,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       }
 
       const modalType: VerificationResultType =
-        statusForDb === 'ตรวจสอบแล้ว' || statusForDb === 'ไม่ต้องออกแบบ' ? 'success' : 'failed'
+        statusForDb === 'ตรวจสอบแล้ว' ||
+        statusForDb === 'ไม่ต้องออกแบบ' ||
+        statusForDb === 'รอตรวจคำสั่งซื้อ'
+          ? 'success'
+          : 'failed'
       setVerificationModal({
         type: modalType,
         accountMatch: allAccountNameMatch ? true : (errors.length === 0 ? false : null),
@@ -5682,14 +5718,20 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     const { error: refundError } = await supabase.from('ac_refunds').insert(refundData)
                     if (refundError) throw new Error(refundError.message)
                   }
-                  let overpayStatus: 'ตรวจสอบแล้ว' | 'ไม่ต้องออกแบบ' = 'ตรวจสอบแล้ว'
+                  let overpayStatus: OrderStatus = 'ตรวจสอบแล้ว'
                   const { data: overMeta } = await supabase
                     .from('or_orders')
-                    .select('channel_code, requires_confirm_design')
+                    .select('channel_code, requires_confirm_design, admin_user')
                     .eq('id', verificationModal.orderId)
                     .maybeSingle()
-                  if (overMeta?.channel_code === 'PUMP') {
-                    overpayStatus = pumpVerifiedRoutingStatus(overMeta.requires_confirm_design !== false)
+                  if (overMeta) {
+                    const ownerRole = await fetchOrderOwnerSalesRole(supabase, overMeta.admin_user)
+                    overpayStatus = computePostSlipVerificationStatus(
+                      ownerRole,
+                      overMeta.channel_code,
+                      overMeta.requires_confirm_design,
+                      { fallbackNonPumpNonSales: 'ตรวจสอบแล้ว' },
+                    )
                   }
                   const { error: updateError } = await supabase
                     .from('or_orders')
