@@ -5689,7 +5689,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         statusMessage={verificationModal.statusMessage}
         onConfirmOverpay={
           verificationModal.type === 'over_transfer' && verificationModal.orderId && verificationModal.overpayAmount != null
-            ? async () => {
+            ? async (bankDetails) => {
                 setConfirmingOverpay(true)
                 try {
                   const refundData = {
@@ -5697,6 +5697,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     amount: verificationModal.overpayAmount,
                     reason: `โอนเกิน (ยอดบิล: ฿${verificationModal.orderAmount.toLocaleString()}, สลิป: ฿${verificationModal.totalAmount.toLocaleString()})`,
                     status: 'pending' as const,
+                    refund_recipient_account_name: bankDetails.refund_recipient_account_name,
+                    refund_recipient_bank: bankDetails.refund_recipient_bank,
+                    refund_recipient_account_number: bankDetails.refund_recipient_account_number,
                   }
 
                   // เช็คว่ามี pending refund ของ order นี้อยู่แล้วหรือไม่ — ถ้ามีให้อัพเดตแทน insert
@@ -5711,7 +5714,13 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   if (existingRefund) {
                     const { error: refundError } = await supabase
                       .from('ac_refunds')
-                      .update({ amount: refundData.amount, reason: refundData.reason })
+                      .update({
+                        amount: refundData.amount,
+                        reason: refundData.reason,
+                        refund_recipient_account_name: refundData.refund_recipient_account_name,
+                        refund_recipient_bank: refundData.refund_recipient_bank,
+                        refund_recipient_account_number: refundData.refund_recipient_account_number,
+                      })
                       .eq('id', existingRefund.id)
                     if (refundError) throw new Error(refundError.message)
                   } else {
@@ -5740,6 +5749,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   if (updateError) throw new Error(updateError.message)
                   setVerificationModal(null)
                   onSave()
+                  window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
                 } catch (err: any) {
                   console.error('Error confirming overpay:', err)
                   alert('เกิดข้อผิดพลาด: ' + (err?.message || err))

@@ -53,6 +53,8 @@ export default function ManualSlipCheckSection() {
 
   const [actionModal, setActionModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
   const [actionSubmitting, setActionSubmitting] = useState(false)
+  const [disapproveModal, setDisapproveModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
+  const [disapproveSubmitting, setDisapproveSubmitting] = useState(false)
 
   const [editingCell, setEditingCell] = useState<EditingCell>(null)
   const [editValue, setEditValue] = useState<string>('')
@@ -248,40 +250,45 @@ export default function ManualSlipCheckSection() {
     }
   }
 
+  async function applyManualSlipDecision(group: OrderGroup, action: 'approved' | 'rejected') {
+    const reviewData = {
+      status: action,
+      reviewed_by: user?.username || user?.email || 'unknown',
+      reviewed_at: new Date().toISOString(),
+    }
+    const { error: updateErr } = await supabase
+      .from('ac_manual_slip_checks')
+      .update(reviewData)
+      .eq('order_id', group.order_id)
+      .eq('status', 'pending')
+    if (updateErr) throw updateErr
+
+    const newOrderStatus = action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'
+    let orderUpdateStatus = newOrderStatus
+    if (action === 'approved' && newOrderStatus === 'ตรวจสอบแล้ว') {
+      const { data: ord } = await supabase
+        .from('or_orders')
+        .select('channel_code, requires_confirm_design')
+        .eq('id', group.order_id)
+        .maybeSingle()
+      if (ord?.channel_code === 'PUMP') {
+        orderUpdateStatus = pumpVerifiedRoutingStatus(ord.requires_confirm_design !== false)
+      }
+    }
+    const { error: orderErr } = await supabase
+      .from('or_orders')
+      .update({ status: orderUpdateStatus })
+      .eq('id', group.order_id)
+    if (orderErr) throw orderErr
+
+    return { orderUpdateStatus, action }
+  }
+
   async function handleAction(action: 'approved' | 'rejected') {
     if (!actionModal.group) return
     setActionSubmitting(true)
     try {
-      const reviewData = {
-        status: action,
-        reviewed_by: user?.username || user?.email || 'unknown',
-        reviewed_at: new Date().toISOString(),
-      }
-      const { error: updateErr } = await supabase
-        .from('ac_manual_slip_checks')
-        .update(reviewData)
-        .eq('order_id', actionModal.group.order_id)
-        .eq('status', 'pending')
-      if (updateErr) throw updateErr
-
-      const newOrderStatus = action === 'approved' ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน'
-      let orderUpdateStatus = newOrderStatus
-      if (action === 'approved' && newOrderStatus === 'ตรวจสอบแล้ว') {
-        const { data: ord } = await supabase
-          .from('or_orders')
-          .select('channel_code, requires_confirm_design')
-          .eq('id', actionModal.group.order_id)
-          .maybeSingle()
-        if (ord?.channel_code === 'PUMP') {
-          orderUpdateStatus = pumpVerifiedRoutingStatus(ord.requires_confirm_design !== false)
-        }
-      }
-      const { error: orderErr } = await supabase
-        .from('or_orders')
-        .update({ status: orderUpdateStatus })
-        .eq('id', actionModal.group.order_id)
-      if (orderErr) throw orderErr
-
+      const { orderUpdateStatus } = await applyManualSlipDecision(actionModal.group, action)
       setActionModal({ open: false, group: null })
       await loadRows()
       setCheckResult({
@@ -298,6 +305,26 @@ export default function ManualSlipCheckSection() {
       setCheckResult({ open: true, message: 'ดำเนินการไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
     } finally {
       setActionSubmitting(false)
+    }
+  }
+
+  async function confirmDisapproveTransfer() {
+    const group = disapproveModal.group
+    if (!group || disapproveSubmitting) return
+    setDisapproveSubmitting(true)
+    try {
+      await applyManualSlipDecision(group, 'rejected')
+      await loadRows()
+      setDisapproveModal({ open: false, group: null })
+      setCheckResult({
+        open: true,
+        message: 'ไม่อนุมัติแล้ว — สถานะบิลยังเป็น "ตรวจสอบไม่ผ่าน" ฝั่งออเดอร์แสดงป้ายไม่อนุมัติ',
+        type: 'warning',
+      })
+    } catch (e: any) {
+      setCheckResult({ open: true, message: 'ดำเนินการไม่สำเร็จ: ' + (e?.message || e), type: 'info' })
+    } finally {
+      setDisapproveSubmitting(false)
     }
   }
 
@@ -446,33 +473,45 @@ export default function ManualSlipCheckSection() {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => handleViewDetail(group.order_id)}
-                      className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
-                    >
-                      <i className="fas fa-eye mr-1"></i> ดูบิล
-                    </button>
-                    {group.status === 'pending' && (
-                      <>
-                        <button
-                          onClick={() => handleCheckAllSlips(group)}
-                          disabled={checkingOrderId === group.order_id}
-                          className="px-3 py-1.5 bg-sky-500 text-white rounded-lg text-xs font-bold hover:bg-sky-600 transition disabled:opacity-50"
-                        >
-                          {checkingOrderId === group.order_id ? (
-                            <span className="flex items-center gap-1"><span className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></span> ตรวจ...</span>
-                          ) : (
-                            <><i className="fas fa-search mr-1"></i> เช็คสลิป</>
-                          )}
-                        </button>
-                        <button
-                          onClick={() => setActionModal({ open: true, group })}
-                          className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition"
-                        >
-                          <i className="fas fa-check-circle mr-1"></i> ยืนยันการโอน
-                        </button>
-                      </>
+                  <div className="flex flex-col items-end gap-2 shrink-0">
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <button
+                        onClick={() => handleViewDetail(group.order_id)}
+                        className="px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-50 transition"
+                      >
+                        <i className="fas fa-eye mr-1"></i> ดูบิล
+                      </button>
+                      {group.entries.some(e => e.status === 'pending') && (
+                        <>
+                          <button
+                            onClick={() => handleCheckAllSlips(group)}
+                            disabled={checkingOrderId === group.order_id}
+                            className="px-3 py-1.5 bg-sky-500 text-white rounded-lg text-xs font-bold hover:bg-sky-600 transition disabled:opacity-50"
+                          >
+                            {checkingOrderId === group.order_id ? (
+                              <span className="flex items-center gap-1"><span className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></span> ตรวจ...</span>
+                            ) : (
+                              <><i className="fas fa-search mr-1"></i> เช็คสลิป</>
+                            )}
+                          </button>
+                          <button
+                            onClick={() => setActionModal({ open: true, group })}
+                            className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 transition"
+                          >
+                            <i className="fas fa-check-circle mr-1"></i> ยืนยันการโอน
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {group.entries.some(e => e.status === 'pending') && (
+                      <button
+                        type="button"
+                        onClick={() => setDisapproveModal({ open: true, group })}
+                        disabled={disapproveSubmitting}
+                        className="px-3 py-1.5 border border-red-300 bg-red-50 text-red-700 rounded-lg text-xs font-bold hover:bg-red-100 transition disabled:opacity-50 w-full max-w-[11rem]"
+                      >
+                        <><i className="fas fa-times-circle mr-1"></i> ไม่อนุมัติ</>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -522,6 +561,63 @@ export default function ManualSlipCheckSection() {
             ตกลง
           </button>
         </div>
+      </Modal>
+
+      {/* ไม่อนุมัติการโอน — ยืนยันใน Modal */}
+      <Modal
+        open={disapproveModal.open}
+        onClose={() => {
+          if (!disapproveSubmitting) setDisapproveModal({ open: false, group: null })
+        }}
+        contentClassName="max-w-md"
+        ariaLabelledby="disapprove-modal-title"
+      >
+        {disapproveModal.group && (
+          <div className="p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="shrink-0 w-11 h-11 rounded-full bg-red-100 flex items-center justify-center text-red-600">
+                <i className="fas fa-times-circle text-xl" aria-hidden />
+              </div>
+              <div className="min-w-0">
+                <h3 id="disapprove-modal-title" className="text-lg font-bold text-gray-900">ไม่อนุมัติการโอน</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  ไม่อนุมัติการโอนสำหรับบิล{' '}
+                  <span className="font-mono font-bold text-blue-600">{disapproveModal.group.bill_no || '–'}</span>
+                  ?
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600 bg-red-50/80 border border-red-100 rounded-lg px-3 py-2.5 mb-6">
+              <span className="block">รายการจะถูกปิดในเมนูบัญชี และฝั่งออเดอร์จะแสดงป้าย</span>
+              <span className="block mt-1 font-semibold text-red-800">ไม่อนุมัติ</span>
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setDisapproveModal({ open: false, group: null })}
+                disabled={disapproveSubmitting}
+                className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={confirmDisapproveTransfer}
+                disabled={disapproveSubmitting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              >
+                {disapproveSubmitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white/40 border-t-white" />
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  <>ยืนยันไม่อนุมัติ</>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Approve/Reject confirmation modal */}

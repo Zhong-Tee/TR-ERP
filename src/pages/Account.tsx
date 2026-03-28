@@ -113,11 +113,33 @@ const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
   'bill-edit', 'amendment', 'slip-age', 'trial-balance',
 ]
 
+/** แถบเมนูหลักบัญชี — รวมลิงก์เข้า Dashboard แยกแท็บโอนคืน / ใบกำกับภาษี */
+const ACCOUNT_TOP_NAV_ITEMS: Array<{
+  id: string
+  section: AccountSection
+  label: string
+  dashboardTab?: AccountTab
+  count?: 'manualSlip' | 'amendment' | 'refunds' | 'taxInvoice'
+  accessKey?: string
+}> = [
+  { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', accessKey: 'account-dashboard' },
+  { id: 'nav-slip-verification', section: 'slip-verification', label: 'รายการการตรวจสลิป' },
+  { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
+  { id: 'nav-bill-edit', section: 'bill-edit', label: 'แก้ไขบิล' },
+  { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
+  { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
+  { id: 'nav-trial', section: 'trial-balance', label: 'งบต้นทุนขาย' },
+  { id: 'nav-refunds', section: 'dashboard', label: 'รายการโอนคืน', dashboardTab: 'refunds', count: 'refunds', accessKey: 'account-refunds' },
+  { id: 'nav-tax-inv', section: 'dashboard', label: 'ขอใบกำกับภาษี', dashboardTab: 'tax-invoice', count: 'taxInvoice', accessKey: 'account-tax-invoice' },
+]
+
 export default function Account() {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
+  /** แยกไฮไลต์แท็บ Dashboard กับแท็บย่อย "รายการโอนคืน" ในแถบบน (ทั้งคู่เปิด dashboard+refunds ได้) */
+  const [dashboardFromOverview, setDashboardFromOverview] = useState(true)
 
   useEffect(() => {
     if (menuAccessLoading) return
@@ -187,6 +209,28 @@ export default function Account() {
 
   /** ป้องกันกระพริบ: แสดง spinner เฉพาะครั้งแรกเท่านั้น */
   const initialLoadDone = useRef(false)
+
+  const [manualSlipPendingOrdersCount, setManualSlipPendingOrdersCount] = useState(0)
+  const [amendmentPendingCount, setAmendmentPendingCount] = useState(0)
+  const [queueCountsLoading, setQueueCountsLoading] = useState(true)
+
+  async function loadQueueCounts() {
+    try {
+      const [slipRes, amendRes] = await Promise.all([
+        supabase.from('ac_manual_slip_checks').select('order_id').eq('status', 'pending'),
+        supabase.from('or_order_amendments').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      ])
+      if (slipRes.error) throw slipRes.error
+      if (amendRes.error) throw amendRes.error
+      const orderIds = new Set((slipRes.data || []).map((r: { order_id: string }) => r.order_id))
+      setManualSlipPendingOrdersCount(orderIds.size)
+      setAmendmentPendingCount(amendRes.count ?? 0)
+    } catch (e) {
+      console.error('Error loading account queue counts:', e)
+    } finally {
+      setQueueCountsLoading(false)
+    }
+  }
 
   async function fetchOrderForView(orderId: string) {
     setViewOrderLoading(true)
@@ -354,20 +398,28 @@ export default function Account() {
       loadEasySlipQuota(),
       loadBillingRequests(),
       loadHistory(),
+      loadQueueCounts(),
     ]).finally(() => {
       initialLoadDone.current = true
     })
   }, [])
 
-  // เรียลไทม์: Realtime เมื่อ or_orders / ac_refunds เปลี่ยน
+  // เรียลไทม์: Realtime เมื่อข้อมูลคิวบัญชีเปลี่ยน
   useEffect(() => {
     const channel = supabase
       .channel('account-counts-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
         loadBillingRequests()
+        loadQueueCounts()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => {
         loadRefunds()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => {
+        loadQueueCounts()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => {
+        loadQueueCounts()
       })
       .subscribe()
     return () => {
@@ -383,6 +435,7 @@ export default function Account() {
       if (document.visibilityState === 'visible') {
         loadRefunds()
         loadBillingRequests()
+        loadQueueCounts()
       }
     }, POLL_MS)
     return () => clearInterval(t)
@@ -394,6 +447,7 @@ export default function Account() {
       if (document.visibilityState === 'visible') {
         loadRefunds()
         loadBillingRequests()
+        loadQueueCounts()
       }
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -411,12 +465,15 @@ export default function Account() {
 
       if (error) throw error
       
-      // กรองเฉพาะรายการที่ reason มีคำว่า "โอนเกิน"
-      // และแสดงเฉพาะรายการที่ออเดอร์มีสถานะ: จัดส่งแล้ว เท่านั้น
-      const filteredRefunds = (data || []).filter((refund: any) => 
-        refund.reason && refund.reason.includes('โอนเกิน') &&
-        (refund as any).or_orders?.status === 'จัดส่งแล้ว'
-      )
+      // กรองเฉพาะรายการโอนเกิน — แสดงได้ทุกสถานะบิลที่ยังไม่ยกเลิก
+      // (เดิมจำกัดแค่ "จัดส่งแล้ว" ทำให้รายการที่สร้างตอน ตรวจสอบแล้ว/คอนเฟิร์ม ฯลฯ ไม่ขึ้นในเมนูบัญชี)
+      const filteredRefunds = (data || []).filter((refund: any) => {
+        const reason = refund.reason != null ? String(refund.reason) : ''
+        if (!reason.includes('โอนเกิน')) return false
+        const st = (refund as any).or_orders?.status as string | undefined
+        if (st === 'ยกเลิก') return false
+        return true
+      })
       
       setRefunds(filteredRefunds)
     } catch (error: any) {
@@ -651,28 +708,79 @@ export default function Account() {
 
   const pendingRefunds = refunds.filter((r) => r.status === 'pending')
 
+  function accountTopNavActive(item: (typeof ACCOUNT_TOP_NAV_ITEMS)[number]): boolean {
+    if (accountSection !== item.section) return false
+    if (item.section !== 'dashboard') return true
+    if (item.id === 'nav-dashboard') {
+      return activeTab === 'approvals' || (activeTab === 'refunds' && dashboardFromOverview)
+    }
+    if (item.dashboardTab === 'refunds') return activeTab === 'refunds' && !dashboardFromOverview
+    if (item.dashboardTab === 'tax-invoice') return activeTab === 'tax-invoice'
+    return false
+  }
+
+  function accountTopNavCountPill(item: (typeof ACCOUNT_TOP_NAV_ITEMS)[number]): { text: string; pillClass: string } | null {
+    if (!item.count) return null
+    if (item.count === 'manualSlip') {
+      return {
+        text: queueCountsLoading ? '–' : String(manualSlipPendingOrdersCount),
+        pillClass: 'bg-violet-100 text-violet-800',
+      }
+    }
+    if (item.count === 'amendment') {
+      return {
+        text: queueCountsLoading ? '–' : String(amendmentPendingCount),
+        pillClass: 'bg-amber-100 text-amber-800',
+      }
+    }
+    if (item.count === 'refunds') {
+      return {
+        text: loading ? '–' : String(pendingRefunds.length),
+        pillClass: 'bg-amber-100 text-amber-800',
+      }
+    }
+    if (item.count === 'taxInvoice') {
+      return {
+        text: billingLoading ? '–' : String(taxInvoiceOrders.length),
+        pillClass: 'bg-sky-100 text-sky-800',
+      }
+    }
+    return null
+  }
+
   return (
     <div className="space-y-8">
       <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
         <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 overflow-x-auto">
-          {([
-            { key: 'dashboard' as AccountSection, label: 'Dashboard' },
-            { key: 'slip-verification' as AccountSection, label: 'รายการการตรวจสลิป' },
-            { key: 'manual-slip-check' as AccountSection, label: 'ตรวจสลิปมือ' },
-            { key: 'bill-edit' as AccountSection, label: 'แก้ไขบิล' },
-            { key: 'amendment' as AccountSection, label: 'ขอยกเลิกบิล' },
-            { key: 'slip-age' as AccountSection, label: 'อายุสลิป' },
-            { key: 'trial-balance' as AccountSection, label: 'งบต้นทุนขาย' },
-          ]).filter((s) => hasAccess(`account-${s.key}`)).map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              onClick={() => setAccountSection(s.key)}
-              className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${accountSection === s.key ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
-            >
-              {s.label}
-            </button>
-          ))}
+          {ACCOUNT_TOP_NAV_ITEMS.filter((item) => hasAccess(item.accessKey ?? `account-${item.section}`)).map((item) => {
+            const pill = accountTopNavCountPill(item)
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setAccountSection(item.section)
+                  if (item.id === 'nav-dashboard') {
+                    setActiveTab('refunds')
+                    setDashboardFromOverview(true)
+                  } else if (item.dashboardTab != null) {
+                    setActiveTab(item.dashboardTab)
+                    setDashboardFromOverview(false)
+                  }
+                }}
+                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors inline-flex items-center gap-2 ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+              >
+                {item.label}
+                {pill && (
+                  <span
+                    className={`min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold tabular-nums ${pill.pillClass}`}
+                  >
+                    {pill.text}
+                  </span>
+                )}
+              </button>
+            )
+          })}
         </nav>
       </div>
 
@@ -988,7 +1096,7 @@ export default function Account() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('refunds')}
+          onClick={() => { setActiveTab('refunds'); setDashboardFromOverview(false) }}
           className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-amber-200 transition-all focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 flex flex-col"
         >
           <div className="h-1 w-full bg-amber-500 shrink-0" />
@@ -1001,7 +1109,7 @@ export default function Account() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('tax-invoice')}
+          onClick={() => { setActiveTab('tax-invoice'); setDashboardFromOverview(false) }}
           className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-sky-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1 flex flex-col"
         >
           <div className="h-1 w-full bg-sky-500 shrink-0" />
@@ -1021,7 +1129,7 @@ export default function Account() {
         {hasAccess('account-refunds') && (
         <button
           type="button"
-          onClick={() => setActiveTab('refunds')}
+          onClick={() => { setActiveTab('refunds'); setDashboardFromOverview(false) }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการโอนคืน
@@ -1033,7 +1141,7 @@ export default function Account() {
         {hasAccess('account-tax-invoice') && (
         <button
           type="button"
-          onClick={() => setActiveTab('tax-invoice')}
+          onClick={() => { setActiveTab('tax-invoice'); setDashboardFromOverview(false) }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'tax-invoice' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           ขอใบกำกับภาษี
@@ -1045,7 +1153,7 @@ export default function Account() {
         {hasAccess('account-approvals') && (
         <button
           type="button"
-          onClick={() => setActiveTab('approvals')}
+          onClick={() => { setActiveTab('approvals'); setDashboardFromOverview(true) }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${activeTab === 'approvals' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการอนุมัติ
@@ -1091,6 +1199,9 @@ export default function Account() {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบัญชีรับคืน</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ธนาคาร</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เหตุผล</th>
@@ -1113,6 +1224,9 @@ export default function Account() {
                           )}
                         </td>
                           <td className="px-4 py-3 text-gray-700">{(refund as any).or_orders?.customer_name || '–'}</td>
+                          <td className="px-4 py-3 text-gray-700 text-sm max-w-[120px] truncate" title={refund.refund_recipient_account_name || ''}>{refund.refund_recipient_account_name?.trim() || '–'}</td>
+                          <td className="px-4 py-3 text-gray-700 text-sm max-w-[100px] truncate" title={refund.refund_recipient_bank || ''}>{refund.refund_recipient_bank?.trim() || '–'}</td>
+                          <td className="px-4 py-3 text-gray-700 text-sm font-mono tabular-nums max-w-[120px] truncate" title={refund.refund_recipient_account_number || ''}>{refund.refund_recipient_account_number?.trim() || '–'}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
@@ -1227,6 +1341,9 @@ export default function Account() {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบัญชีรับคืน</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ธนาคาร</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เหตุผล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
@@ -1250,6 +1367,9 @@ export default function Account() {
                     <td className="px-4 py-3 text-gray-700">
                       {(refund as any).or_orders?.customer_name || '–'}
                     </td>
+                    <td className="px-4 py-3 text-gray-700 text-sm max-w-[120px] truncate" title={refund.refund_recipient_account_name || ''}>{refund.refund_recipient_account_name?.trim() || '–'}</td>
+                    <td className="px-4 py-3 text-gray-700 text-sm max-w-[100px] truncate" title={refund.refund_recipient_bank || ''}>{refund.refund_recipient_bank?.trim() || '–'}</td>
+                    <td className="px-4 py-3 text-gray-700 text-sm font-mono tabular-nums max-w-[120px] truncate" title={refund.refund_recipient_account_number || ''}>{refund.refund_recipient_account_number?.trim() || '–'}</td>
                     <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">
                       ฿{refund.amount.toLocaleString()}
                     </td>

@@ -773,6 +773,10 @@ export interface Refund {
   approved_by: string | null
   approved_at: string | null
   created_at: string
+  /** บัญชีรับโอนคืน (โอนเกิน) */
+  refund_recipient_account_name?: string | null
+  refund_recipient_bank?: string | null
+  refund_recipient_account_number?: string | null
 }
 
 // Verified Slip Types

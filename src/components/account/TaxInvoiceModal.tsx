@@ -68,6 +68,7 @@ export default function TaxInvoiceModal({
   const [discount, setDiscount] = useState(0)
   const [items, setItems] = useState<TaxInvoiceItem[]>([])
   const [exporting, setExporting] = useState(false)
+  const [buyerCopied, setBuyerCopied] = useState(false)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   /* Load bill headers from DB */
   useEffect(() => {
@@ -99,6 +100,10 @@ export default function TaxInvoiceModal({
       }
     })()
   }, [open, receiverAccount])
+
+  useEffect(() => {
+    if (!open) setBuyerCopied(false)
+  }, [open])
 
   /* Pre-fill data from order */
   useEffect(() => {
@@ -266,6 +271,36 @@ export default function TaxInvoiceModal({
     if (order) onConfirm(order)
   }
 
+  async function copyBuyerInfo() {
+    const text = [
+      `ชื่อ: ${customerName.trim()}`,
+      `ที่อยู่: ${customerAddress.trim()}`,
+      `เลขผู้เสียภาษี: ${customerTaxId.trim()}`,
+      `สาขา: ${customerBranch.trim()}`,
+      `โทร: ${customerPhone.trim()}`,
+    ].join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      setBuyerCopied(true)
+      window.setTimeout(() => setBuyerCopied(false), 2000)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        setBuyerCopied(true)
+        window.setTimeout(() => setBuyerCopied(false), 2000)
+      } catch {
+        alert('ไม่สามารถคัดลอกได้')
+      }
+    }
+  }
+
   if (!open || !order) return null
 
   return (
@@ -386,7 +421,19 @@ export default function TaxInvoiceModal({
 
           {/* Buyer Info */}
           <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-            <h3 className="text-sm font-bold text-gray-700">ข้อมูลผู้ซื้อ / Buyer Information</h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-gray-700">ข้อมูลผู้ซื้อ / Buyer Information</h3>
+              <button
+                type="button"
+                onClick={copyBuyerInfo}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:border-gray-400 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                {buyerCopied ? 'คัดลอกแล้ว' : 'คัดลอก'}
+              </button>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="md:col-span-2">
                 <label className="block text-xs font-medium text-gray-500 mb-1">ชื่อ / Name</label>

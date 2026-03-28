@@ -233,7 +233,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       ])
 
       const c = rpcRes.data || {}
-      const accountTotal = (c.refund_pending || 0) + (c.tax_pending || 0)
+      const accountTotal =
+        (c.refund_pending || 0) +
+        (c.tax_pending || 0) +
+        (c.manual_slip_pending || 0) +
+        (c.amendment_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
       const qcTotal = qcWoCount + (c.qc_reject || 0)
       const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
@@ -280,6 +284,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .channel('sidebar-menu-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadCounts())

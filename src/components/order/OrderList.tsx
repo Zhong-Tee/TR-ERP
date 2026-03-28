@@ -342,20 +342,36 @@ export default function OrderList({
 
         const orderIdsWithRejectedOverpayRefund = new Set((rejectedRefundsData || []).map((r: any) => r.order_id))
 
-        // Load manual slip check submissions
+        // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
         const { data: manualSlipData } = await supabase
           .from('ac_manual_slip_checks')
-          .select('order_id')
+          .select('order_id, status')
           .in('order_id', orderIds)
 
-        const orderIdsWithManualSlipCheck = new Set((manualSlipData || []).map((r: any) => r.order_id))
+        const manualSlipByOrder = new Map<string, { hasPending: boolean; hasRejected: boolean }>()
+        for (const r of manualSlipData || []) {
+          const oid = (r as any).order_id as string
+          const st = (r as any).status as string
+          const cur = manualSlipByOrder.get(oid) || { hasPending: false, hasRejected: false }
+          if (st === 'pending') cur.hasPending = true
+          if (st === 'rejected') cur.hasRejected = true
+          manualSlipByOrder.set(oid, cur)
+        }
 
-        filteredData = filteredData.map((order: any) => ({
-          ...order,
-          has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
-          has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id),
-          has_manual_slip_check: orderIdsWithManualSlipCheck.has(order.id),
-        }))
+        filteredData = filteredData.map((order: any) => {
+          const slip = manualSlipByOrder.get(order.id)
+          let manual_slip_badge: 'none' | 'pending' | 'rejected' = 'none'
+          if (slip) {
+            if (slip.hasPending) manual_slip_badge = 'pending'
+            else if (slip.hasRejected) manual_slip_badge = 'rejected'
+          }
+          return {
+            ...order,
+            has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
+            has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id),
+            manual_slip_badge,
+          }
+        })
       }
       
       setOrders(filteredData)
@@ -630,9 +646,14 @@ export default function OrderList({
               </div>
             </div>
             <div className="flex items-center gap-3 shrink-0">
-              {(order as any).has_manual_slip_check && (
+              {(order as any).manual_slip_badge === 'pending' && (
                 <span className="px-2.5 py-1.5 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold whitespace-nowrap">
                   ส่งตรวจสลิปแล้ว
+                </span>
+              )}
+              {(order as any).manual_slip_badge === 'rejected' && (
+                <span className="px-2.5 py-1.5 bg-rose-100 text-rose-800 rounded-full text-xs font-semibold whitespace-nowrap border border-rose-200">
+                  ไม่อนุมัติ
                 </span>
               )}
               <div className="text-right">
