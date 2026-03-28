@@ -1058,19 +1058,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
             <button
               type="button"
               onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                viewMode === 'noDesign'
-                  ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md ring-2 ring-orange-300'
-                  : 'bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm'
-              }`}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm"
             >
               <ColumnIcon columnKey="noDesign" />
               ไม่ต้องออกแบบ
-              <span
-                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-200 text-orange-900'
-                }`}
-              >
+              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-orange-200 text-orange-900">
                 {ordersByKey.noDesign.length}
               </span>
             </button>

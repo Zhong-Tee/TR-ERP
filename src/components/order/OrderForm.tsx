@@ -2490,7 +2490,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
 
       // กรณีหลายสลิป: ใช้ผลรวมจากทุกใบ (totalFromSlips) สำหรับเช็คยอด
       const amountForCheck = isMultiSlip ? totalFromSlips : totalAmount
-      let newStatus: string = 'ตรวจสอบไม่ผ่าน'
+      let newStatus: OrderStatus = 'ตรวจสอบไม่ผ่าน'
       let statusMessage = ''
       let amountStatus: AmountStatus = 'mismatch'
       const overpayAmount = amountForCheck > orderAmount ? amountForCheck - orderAmount : 0
