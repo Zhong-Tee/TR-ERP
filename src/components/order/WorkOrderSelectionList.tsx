@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
@@ -46,18 +47,9 @@ export default function WorkOrderSelectionList({
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
+      query = query.in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
       if (channelFilter) {
-        if (channelFilter === 'PUMP') {
-          query = query
-            .eq('channel_code', 'PUMP')
-            .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น', 'ย้ายจากใบงาน'])
-        } else {
-          query = query.eq('channel_code', channelFilter).in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
-        }
-      } else {
-        query = query.or(
-          'and(channel_code.eq.PUMP,status.in.(คอนเฟิร์มแล้ว,เสร็จสิ้น,ย้ายจากใบงาน)),and(channel_code.neq.PUMP,status.in.(ใบสั่งงาน,ย้ายจากใบงาน))'
-        )
+        query = query.eq('channel_code', channelFilter)
       }
 
       if (searchTerm) {

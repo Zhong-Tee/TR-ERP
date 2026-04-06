@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Order, OrderItem } from '../types'
+import { sortOrderItemsForExport } from './orderItemExportSort'
 
 /** หัวตารางเดียวกับปุ่ม "ดาวน์โหลด Excel" ในรายละเอียดบิล (ProductionData) */
 export const PRODUCTION_EXCEL_HEADERS = [
@@ -53,7 +54,8 @@ export function buildProductionDataRowsForOrder(
   productCodeByProductId: Record<string, string>,
   productCategoryByProductId: Record<string, string>
 ): unknown[][] {
-  return items.map((item) => {
+  const sorted = sortOrderItemsForExport(items)
+  return sorted.map((item) => {
     const productName = String(item.product_name ?? '').trim()
     const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
     const pid = item.product_id ? String(item.product_id) : ''
@@ -157,7 +159,8 @@ export function buildBillLineItemsRows(order: Order, items: OrderItem[]): unknow
       '',
     ]]
   }
-  return items.map((item, idx) => {
+  const sorted = sortOrderItemsForExport(items)
+  return sorted.map((item, idx) => {
     const isTierProduct = TIER_PRODUCT_NAMES.includes(item.product_name || '')
     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
     const noteCell = item.no_name_line

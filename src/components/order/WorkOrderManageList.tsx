@@ -9,6 +9,7 @@ import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
+import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
@@ -688,12 +689,7 @@ export default function WorkOrderManageList({
 
     ordersInWorkOrder.forEach((order) => {
       const rawItems = order.or_order_items || (order as any).order_items || []
-      const items = [...rawItems].sort((a: any, b: any) => {
-        const ta = new Date(a.created_at || 0).getTime()
-        const tb = new Date(b.created_at || 0).getTime()
-        if (ta !== tb) return ta - tb
-        return String(a.id || '').localeCompare(String(b.id || ''))
-      })
+      const items = sortOrderItemsForExport(rawItems)
       const bill = String(order.bill_no ?? '').trim() || '—'
       let unitSeq = 0
       items.forEach((item: any) => {
@@ -788,12 +784,7 @@ export default function WorkOrderManageList({
       const dataToExport: unknown[][] = []
       orders.forEach((order) => {
         const rawItems = order.or_order_items || (order as any).order_items || []
-        const items = [...rawItems].sort((a: any, b: any) => {
-          const ta = new Date(a.created_at || 0).getTime()
-          const tb = new Date(b.created_at || 0).getTime()
-          if (ta !== tb) return ta - tb
-          return String(a.id || '').localeCompare(String(b.id || ''))
-        })
+        const items = sortOrderItemsForExport(rawItems)
         const bill = String(order.bill_no ?? '').trim() || '—'
         let unitSeq = 0
         items.forEach((item: any) => {

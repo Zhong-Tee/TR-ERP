@@ -6,6 +6,7 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
+import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../lib/planWorkQueue'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
@@ -782,20 +783,15 @@ export default function Plan() {
         ? allWorkOrdersFilteredByDateFrom.lte('created_at', `${manageDateTo}T23:59:59.999Z`)
         : allWorkOrdersFilteredByDateFrom
 
-      const [{ count: pumpCount }, { count: otherCount }, { count: manageNew }, { count: manageAll }] = await Promise.all([
+      const [{ count: workQueueCount }, { count: manageNew }, { count: manageAll }] = await Promise.all([
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
-          .eq('channel_code', 'PUMP')
-          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น', 'ย้ายจากใบงาน'])
-          .is('work_order_id', null),
-        supabase.from('or_orders').select('id', { count: 'exact', head: true })
-          .neq('channel_code', 'PUMP')
-          .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
+          .in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
           .is('work_order_id', null),
         supabase.from('or_work_orders').select('id', { count: 'exact', head: true })
           .eq('status', 'กำลังผลิต'),
         allWorkOrdersFiltered,
       ])
-      setWorkOrdersCount((pumpCount ?? 0) + (otherCount ?? 0))
+      setWorkOrdersCount(workQueueCount ?? 0)
       setManageNewCount(manageNew ?? 0)
       setWorkOrdersManageCount(manageAll ?? 0)
     } catch (e) {

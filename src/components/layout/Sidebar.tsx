@@ -4,6 +4,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
+import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
@@ -207,7 +208,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
       // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
       const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planPumpRes, planOtherRes, machineryWorkingRes] =
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
@@ -217,14 +218,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
-          .eq('channel_code', 'PUMP')
-          .in('status', ['คอนเฟิร์มแล้ว', 'เสร็จสิ้น'])
-          .is('work_order_id', null),
-        supabase
-          .from('or_orders')
-          .select('id', { count: 'exact', head: true })
-          .neq('channel_code', 'PUMP')
-          .in('status', ['ใบสั่งงาน', 'ย้ายจากใบงาน'])
+          .in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
           .is('work_order_id', null),
         supabase
           .from('pr_machinery_machines')
@@ -245,7 +239,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       setMenuCounts({
         orders: c.orders || 0,
         'admin-qc': c.admin_qc || 0,
-        plan: (planPumpRes.count || 0) + (planOtherRes.count || 0),
+        plan: planWorkQueueRes.count || 0,
         machinery: machineryWorkingRes.count || 0,
         account: accountTotal,
         wms: wmsResult.total,
