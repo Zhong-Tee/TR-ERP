@@ -1,6 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { fetchPlanDeptSettings } from '../../../lib/planPickingDepartments'
+import type { PlanDeptSettings } from '../../../lib/planPickingDepartments'
+import {
+  enrichWmsRowsWithPickingDepartment,
+  getDepartmentOptionsForWmsRows,
+} from '../../../lib/wmsPickingDepartmentEnrichment'
 import { calculateDuration, sortOrderItems, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import { dedupeWmsNotificationsForDisplay } from '../../../lib/wmsNotificationEnrichment'
 import PickerOrderList from './PickerOrderList'
@@ -9,6 +15,7 @@ import SentAlertsModal from './SentAlertsModal'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
 import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
+import { consolidateCondoStampWmsDisplayRows, getWmsConsolidatedRowIds } from '../../../lib/wmsCondoStampConsolidation'
 
 type ViewKey = 'menu' | 'pick' | 'parcel-return' | 'gr-receive'
 
@@ -34,6 +41,17 @@ export default function PickerLayout() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [showSentAlertsModal, setShowSentAlertsModal] = useState(false)
   const [pendingAlertCount, setPendingAlertCount] = useState(0)
+  const [pickerPlanSettings, setPickerPlanSettings] = useState<PlanDeptSettings | null>(null)
+  const [pickerDeptFilter, setPickerDeptFilter] = useState('')
+  const pickerItemsRef = useRef<any[]>([])
+  useEffect(() => {
+    pickerItemsRef.current = pickerItems
+  }, [pickerItems])
+
+  const displayPickerItems = useMemo(() => {
+    if (!pickerDeptFilter) return pickerItems
+    return pickerItems.filter((i) => String(i.picking_department || '') === pickerDeptFilter)
+  }, [pickerItems, pickerDeptFilter])
 
   const parsePickerScope = (raw: string | null): PickerScope | null => {
     if (!raw) return null
@@ -54,14 +72,16 @@ export default function PickerLayout() {
 
   useEffect(() => {
     if (currentOrderId) {
-      loadPickerTask().then((sortedItems) => {
-        if (sortedItems) {
-          const firstWorkable = sortedItems.findIndex((i) => WORKABLE_STATUSES.includes(i.status))
-          if (firstWorkable >= 0) setCurrentIndex(firstWorkable)
-        }
-      }).catch((err) => {
-        console.error('Error in loadPickerTask:', err)
-      })
+      loadPickerTask()
+        .then((sortedItems) => {
+          if (sortedItems) {
+            const firstWorkable = sortedItems.findIndex((i) => WORKABLE_STATUSES.includes(i.status))
+            if (firstWorkable >= 0) setCurrentIndex(firstWorkable)
+          }
+        })
+        .catch((err) => {
+          console.error('Error in loadPickerTask:', err)
+        })
     }
   }, [currentOrderId])
 
@@ -70,8 +90,8 @@ export default function PickerLayout() {
       clearInterval(timerIntervalRef.current)
     }
 
-    if (currentOrderId && pickerItems.length > 0 && currentIndex < pickerItems.length) {
-      const currentItem = pickerItems[currentIndex]
+    if (currentOrderId && displayPickerItems.length > 0 && currentIndex < displayPickerItems.length) {
+      const currentItem = displayPickerItems[currentIndex]
       if (currentItem) {
         timerIntervalRef.current = setInterval(() => {
           setTimer(calculateDuration(currentItem.created_at, null))
@@ -86,7 +106,7 @@ export default function PickerLayout() {
         clearInterval(timerIntervalRef.current)
       }
     }
-  }, [currentIndex, pickerItems, currentOrderId])
+  }, [currentIndex, displayPickerItems, currentOrderId])
 
   useEffect(() => {
     if (!user?.id) return
@@ -154,9 +174,14 @@ export default function PickerLayout() {
         }
       })
     }
-    setPickerItems(sortedItems)
 
-    const hasWorkableItems = sortedItems.some((i) => WORKABLE_STATUSES.includes(i.status))
+    const planSettings = await fetchPlanDeptSettings()
+    setPickerPlanSettings(planSettings)
+    const enrichedItems = await enrichWmsRowsWithPickingDepartment(sortedItems, planSettings)
+    const consolidatedItems = consolidateCondoStampWmsDisplayRows(enrichedItems as any[])
+    setPickerItems(consolidatedItems)
+
+    const hasWorkableItems = consolidatedItems.some((i) => WORKABLE_STATUSES.includes(i.status))
     if (!hasWorkableItems) {
       showMessage({ message: 'ใบงานนี้จัดการครบทุกรายการแล้ว!' })
       setCurrentOrderId(null)
@@ -164,10 +189,11 @@ export default function PickerLayout() {
       return null
     }
 
-    return sortedItems
+    return consolidatedItems
   }
 
   const selectOrder = (orderId: string) => {
+    setPickerDeptFilter('')
     setCurrentOrderId(orderId)
     setCurrentIndex(0)
     setShowOrderList(false)
@@ -180,26 +206,57 @@ export default function PickerLayout() {
     setCurrentOrderId(null)
     setCurrentIndex(0)
     setPickerItems([])
+    setPickerDeptFilter('')
+    setPickerPlanSettings(null)
     setTimer('00:00:00')
     setShowOrderList(true)
   }
 
-  const pickerFinishItem = async (itemId: string) => {
+  useEffect(() => {
+    if (!pickerDeptFilter) return
+    const items = pickerItemsRef.current
+    if (!currentOrderId || items.length === 0) return
+    const display = items.filter((i) => String(i.picking_department || '') === pickerDeptFilter)
+    const first = display.findIndex((i) => WORKABLE_STATUSES.includes(i.status))
+    if (first >= 0) setCurrentIndex(first)
+    else setCurrentIndex(0)
+  }, [pickerDeptFilter, currentOrderId])
+
+  useEffect(() => {
+    if (displayPickerItems.length === 0) return
+    setCurrentIndex((idx) => Math.min(idx, displayPickerItems.length - 1))
+  }, [displayPickerItems.length])
+
+  const advanceAfterWorkableUpdate = async () => {
+    const sortedItems = await loadPickerTask()
+    if (!sortedItems) return
+    const display = pickerDeptFilter
+      ? sortedItems.filter((i) => String(i.picking_department || '') === pickerDeptFilter)
+      : sortedItems
+    const nextIdx = findNextWorkableIndex(display, currentIndex)
+    if (nextIdx >= 0) {
+      setCurrentIndex(nextIdx)
+    } else if (pickerDeptFilter && !display.some((i) => WORKABLE_STATUSES.includes(i.status))) {
+      showMessage({
+        message: 'ไม่มีรายการค้างในชุดแผนกที่เลือก — เปลี่ยนเป็น “ทั้งหมด” หรือแผนกอื่น',
+      })
+    }
+  }
+
+  const pickerFinishItem = async (item: { id: string; _consolidated_wms_ids?: string[] }) => {
     try {
-      const { error } = await supabase.from('wms_orders').update({ status: 'picked', end_time: new Date().toISOString() }).eq('id', itemId)
+      const ids = getWmsConsolidatedRowIds(item)
+      const { error } = await supabase
+        .from('wms_orders')
+        .update({ status: 'picked', end_time: new Date().toISOString() })
+        .in('id', ids)
 
       if (error) {
         showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
         return
       }
 
-      const sortedItems = await loadPickerTask()
-      if (!sortedItems) return
-
-      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
-      if (nextIdx >= 0) {
-        setCurrentIndex(nextIdx)
-      }
+      await advanceAfterWorkableUpdate()
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
@@ -207,13 +264,14 @@ export default function PickerLayout() {
 
   const pickerSkipMovedItem = async (item: any) => {
     try {
+      const ids = getWmsConsolidatedRowIds(item)
       const { error } = await supabase
         .from('wms_orders')
         .update({
           status: 'cancelled',
           end_time: new Date().toISOString(),
         })
-        .eq('id', item.id)
+        .in('id', ids)
 
       if (error) {
         showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
@@ -230,13 +288,7 @@ export default function PickerLayout() {
         },
       ])
 
-      const sortedItems = await loadPickerTask()
-      if (!sortedItems) return
-
-      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
-      if (nextIdx >= 0) {
-        setCurrentIndex(nextIdx)
-      }
+      await advanceAfterWorkableUpdate()
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
@@ -247,10 +299,11 @@ export default function PickerLayout() {
     if (!ok) return
 
     try {
+      const ids = getWmsConsolidatedRowIds(item)
       const { error: updateError } = await supabase
         .from('wms_orders')
         .update({ status: 'out_of_stock', end_time: new Date().toISOString() })
-        .eq('id', item.id)
+        .in('id', ids)
 
       if (updateError) {
         showMessage({ message: 'เกิดข้อผิดพลาด: ' + updateError.message })
@@ -267,24 +320,18 @@ export default function PickerLayout() {
         },
       ])
 
-      const sortedItems = await loadPickerTask()
-      if (!sortedItems) return
-
-      const nextIdx = findNextWorkableIndex(sortedItems, currentIndex)
-      if (nextIdx >= 0) {
-        setCurrentIndex(nextIdx)
-      }
+      await advanceAfterWorkableUpdate()
     } catch (error: any) {
       showMessage({ message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
 
   const pickerNavigate = (dir: number) => {
-    if (pickerItems.length === 0) return
+    if (displayPickerItems.length === 0) return
     setCurrentIndex((prev) => {
       const newIndex = prev + dir
-      if (newIndex < 0) return pickerItems.length - 1
-      if (newIndex >= pickerItems.length) return 0
+      if (newIndex < 0) return displayPickerItems.length - 1
+      if (newIndex >= displayPickerItems.length) return 0
       return newIndex
     })
   }
@@ -302,7 +349,7 @@ export default function PickerLayout() {
     }
   }
 
-  const currentItem = pickerItems[currentIndex]
+  const currentItem = displayPickerItems[currentIndex]
   const activeLabel = MENU_ITEMS.find((m) => m.key === activeView)?.label || ''
 
   const handleBackToMenu = () => {
@@ -359,7 +406,7 @@ export default function PickerLayout() {
             <div className="text-xl font-black text-white leading-none">
               <span className="text-green-400">{currentIndex + 1}</span>
               <span className="text-gray-600 mx-1">/</span>
-              <span className="text-gray-400">{pickerItems.length}</span>
+              <span className="text-gray-400">{displayPickerItems.length}</span>
             </div>
           )}
           <button
@@ -401,27 +448,57 @@ export default function PickerLayout() {
           <div className="flex-1 flex flex-col p-4 justify-between overflow-hidden">
             {showOrderList ? (
               <PickerOrderList onSelectOrder={selectOrder} currentUserId={user?.id} />
+            ) : pickerItems.length > 0 && displayPickerItems.length === 0 ? (
+              <div className="text-center text-amber-300 font-bold py-16 px-4 leading-relaxed">
+                ไม่มีรายการในแผนกนี้ — เลือก &quot;ทั้งหมด (ใบงาน)&quot; หรือแผนกอื่น
+              </div>
             ) : currentItem ? (
-              <PickerJobCard
-                item={currentItem}
-                allItems={pickerItems}
-                currentIndex={currentIndex}
-                totalItems={pickerItems.length}
-                onFinish={() => {
-                  const moved = !!(currentItem.plan_line_released || currentItem.source_bill_released_from_wo)
-                  if (moved) {
-                    pickerSkipMovedItem(currentItem)
-                  } else {
-                    pickerFinishItem(currentItem.id)
-                  }
-                }}
-                onNoProduct={() => submitNoProduct(currentItem)}
-                onNavigate={(dir) => pickerNavigate(dir)}
-                onJumpToItem={(itemId) => {
-                  const idx = pickerItems.findIndex((i) => i.id === itemId)
-                  if (idx >= 0) setCurrentIndex(idx)
-                }}
-              />
+              <>
+                {pickerPlanSettings && pickerItems.length > 0 && (
+                  <div className="shrink-0 mb-3">
+                    <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">เลือกแผนกหยิบ</label>
+                    <select
+                      value={pickerDeptFilter}
+                      onChange={(e) => setPickerDeptFilter(e.target.value)}
+                      className="w-full rounded-2xl bg-slate-800 text-white border border-slate-600 px-3 py-2.5 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">ทั้งหมด (ใบงาน)</option>
+                      {getDepartmentOptionsForWmsRows(pickerPlanSettings, pickerItems).map((d) => {
+                        const pending = pickerItems.filter(
+                          (i) =>
+                            String(i.picking_department || '') === d && WORKABLE_STATUSES.includes(i.status)
+                        ).length
+                        return (
+                          <option key={d} value={d}>
+                            {d}
+                            {pending > 0 ? ` — ค้าง ${pending}` : ''}
+                          </option>
+                        )
+                      })}
+                    </select>
+                  </div>
+                )}
+                <PickerJobCard
+                  item={currentItem}
+                  allItems={displayPickerItems}
+                  currentIndex={currentIndex}
+                  totalItems={displayPickerItems.length}
+                  onFinish={() => {
+                    const moved = !!(currentItem.plan_line_released || currentItem.source_bill_released_from_wo)
+                    if (moved) {
+                      pickerSkipMovedItem(currentItem)
+                    } else {
+                      pickerFinishItem(currentItem)
+                    }
+                  }}
+                  onNoProduct={() => submitNoProduct(currentItem)}
+                  onNavigate={(dir) => pickerNavigate(dir)}
+                  onJumpToItem={(itemId) => {
+                    const idx = displayPickerItems.findIndex((i) => i.id === itemId)
+                    if (idx >= 0) setCurrentIndex(idx)
+                  }}
+                />
+              </>
             ) : (
               <div className="text-center text-slate-500 italic py-20">ไม่มีงานมอบหมาย</div>
             )}

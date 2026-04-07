@@ -3110,8 +3110,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
             payment_date: order.payment_date || null,
             payment_time: order.payment_time || null,
             status: importedStatus,
-            // นำเข้าแบบเดิม: ถือว่าต้องการคิวงานใหม่ (เทียบเท่าเปิดบิลแล้วกดป้ายออกแบบ)
-            requires_confirm_design: true,
+            // นำเข้าจากไฟล์ (WY / Standard / PGTR): ไม่ตั้งค่าป้ายออกแบบ — ติ๊กได้ภายหลังในฟอร์ม
+            requires_confirm_design: false,
             admin_user: adminUser,
             entry_date: todayStr,
             billing_details: importedBillingDetails,

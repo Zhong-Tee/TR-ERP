@@ -348,7 +348,10 @@ BEGIN
   SELECT COUNT(*) INTO v_remain
   FROM or_orders o
   WHERE o.work_order_id = p_work_order_id
-    AND COALESCE(o.status, '') NOT IN ('ยกเลิก', 'จัดส่งแล้ว');
+    AND COALESCE(o.status, '') NOT IN (
+      U&'\0E22\0E01\0E40\0E25\0E34\0E01',
+      U&'\0E08\0E31\0E14\0E2A\0E48\0E07\0E41\0E25\0E49\0E27'
+    );
 
   IF v_remain = 0 THEN
     DELETE FROM wms_orders w
@@ -400,14 +403,22 @@ BEGIN
 END;
 $$;
 
--- Backfill order_count for every work order that has at least one or_orders row
+-- Backfill order_count for all work orders that still have linked orders
 UPDATE or_work_orders wo
 SET
-  order_count = (
-    SELECT COUNT(*)::int
-    FROM or_orders o
-    WHERE o.work_order_id = wo.id
-      AND COALESCE(o.status, '') NOT IN ('ยกเลิก', 'จัดส่งแล้ว')
-  ),
+  order_count = sub.cnt,
   plan_wo_modified = true
-WHERE EXISTS (SELECT 1 FROM or_orders o WHERE o.work_order_id = wo.id);
+FROM (
+  SELECT
+    o.work_order_id AS wid,
+    COUNT(*)::int AS cnt
+  FROM or_orders o
+  WHERE o.work_order_id IS NOT NULL
+    AND COALESCE(o.status, '') NOT IN (
+      U&'\0E22\0E01\0E40\0E25\0E34\0E01',
+      U&'\0E08\0E31\0E14\0E2A\0E48\0E07\0E41\0E25\0E49\0E27'
+    )
+  GROUP BY o.work_order_id
+) sub
+WHERE wo.id = sub.wid
+  AND (wo.order_count IS DISTINCT FROM sub.cnt);

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { calculateDuration, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import { consolidateCondoStampWmsDisplayRows } from '../../../lib/wmsCondoStampConsolidation'
 import OrderDetailModal from './OrderDetailModal'
 
 type UserRow = { id: string; username: string | null; role: string }
@@ -79,11 +80,6 @@ export default function UploadSection() {
           rowKey: key,
           work_order_id: woId,
           display_name: obj.order_id,
-          picked_count: 0,
-          wrong_count: 0,
-          not_find_count: 0,
-          oos_count: 0,
-          total: 0,
           assigned: obj.us_users?.username || '---',
           date: obj.created_at,
           max_end: null,
@@ -91,17 +87,9 @@ export default function UploadSection() {
         }
       }
       acc[key].items.push(obj)
-      acc[key].total++
-      // เก็บ created_at ที่เก่าที่สุด (min) เป็นเวลาเริ่มต้นของ group
       if (new Date(obj.created_at) < new Date(acc[key].date)) {
         acc[key].date = obj.created_at
       }
-      if (['picked', 'correct', 'wrong', 'not_find'].includes(obj.status)) {
-        acc[key].picked_count++
-      }
-      if (obj.status === 'wrong') acc[key].wrong_count++
-      if (obj.status === 'not_find') acc[key].not_find_count++
-      if (obj.status === 'out_of_stock') acc[key].oos_count++
       if (obj.end_time) {
         const ce = new Date(obj.end_time)
         if (!acc[key].max_end || ce > new Date(acc[key].max_end)) {
@@ -110,6 +98,17 @@ export default function UploadSection() {
       }
       return acc
     }, {})
+
+    for (const o of Object.values(grouped) as any[]) {
+      const consolidated = consolidateCondoStampWmsDisplayRows(o.items)
+      o.total = consolidated.length
+      o.picked_count = consolidated.filter((i: any) =>
+        ['picked', 'correct', 'wrong', 'not_find'].includes(i.status)
+      ).length
+      o.wrong_count = consolidated.filter((i: any) => i.status === 'wrong').length
+      o.not_find_count = consolidated.filter((i: any) => i.status === 'not_find').length
+      o.oos_count = consolidated.filter((i: any) => i.status === 'out_of_stock').length
+    }
 
     setOrders(Object.values(grouped))
   }

@@ -1,4 +1,5 @@
 import Modal from '../../ui/Modal'
+import { getWmsConsolidatedRowIds, getCondoStampDisplayQty, getCondoStampLayersLabel } from '../../../lib/wmsCondoStampConsolidation'
 
 interface PickerListModalProps {
   items: any[]
@@ -23,6 +24,7 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
             <div className="text-center p-10 text-gray-400 italic">ไม่มีข้อมูลรายการ</div>
           ) : (
             items.map((item, idx) => {
+              const layersBracket = getCondoStampLayersLabel(item)
               const isFinished = ['picked', 'correct', 'out_of_stock'].includes(item.status)
               const isCurrent = item.id === currentItemId
 
@@ -43,7 +45,7 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
 
               return (
                 <div
-                  key={item.id}
+                  key={getWmsConsolidatedRowIds(item).join('-')}
                   onClick={() => onJumpTo(item.id)}
                   className={`flex items-center justify-between p-3 border rounded-2xl transition-all cursor-pointer active:scale-95 ${bgClass}`}
                 >
@@ -56,7 +58,9 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
                         {item.product_name}
                       </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase">
-                        จุดเก็บ: <span className="text-red-500">{item.location}</span> | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
+                        จุดเก็บ: <span className="text-red-500">{item.location}</span> | จำนวน:{' '}
+                        {getCondoStampDisplayQty(item)} {item.unit_name || 'ชิ้น'}
+                        {layersBracket ? ` ${layersBracket}` : ''}
                       </div>
                     </div>
                   </div>

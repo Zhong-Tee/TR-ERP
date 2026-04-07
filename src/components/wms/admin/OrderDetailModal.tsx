@@ -2,6 +2,12 @@ import { useState, useEffect } from 'react'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import {
+  consolidateCondoStampWmsDisplayRows,
+  getWmsConsolidatedRowIds,
+  getCondoStampDisplayQty,
+  getCondoStampLayersLabel,
+} from '../../../lib/wmsCondoStampConsolidation'
 import { useWmsModal } from '../useWmsModal'
 
 interface OrderDetailModalProps {
@@ -47,13 +53,14 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
       return
     }
 
-    const sortedData = sortOrderItems(data || [])
+    const sortedData = consolidateCondoStampWmsDisplayRows(sortOrderItems(data || []) as any[])
     setItems(sortedData)
     setLoading(false)
   }
 
-  const updateItemStatus = async (id: string, newStatus: string) => {
-    const { error } = await supabase.from('wms_orders').update({ status: newStatus }).eq('id', id)
+  const updateItemStatus = async (row: { id: string; _consolidated_wms_ids?: string[] }, newStatus: string) => {
+    const ids = getWmsConsolidatedRowIds(row)
+    const { error } = await supabase.from('wms_orders').update({ status: newStatus }).in('id', ids)
 
     if (error) {
       showMessage({ message: `ไม่สามารถอัปเดตสถานะได้: ${error.message}` })
@@ -63,11 +70,14 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
     loadOrderDetails()
   }
 
-  const deleteOrderItem = async (id: string) => {
-    const ok = await showConfirm({ title: 'ยืนยันการลบ', message: 'ยืนยันการลบรายการนี้หรือไม่?' })
+  const deleteOrderItem = async (row: { id: string; _consolidated_wms_ids?: string[] }) => {
+    const ids = getWmsConsolidatedRowIds(row)
+    const msg =
+      ids.length > 1 ? `ยืนยันการลบ ${ids.length} รายการ (รวมสินค้าเดียวกัน) หรือไม่?` : 'ยืนยันการลบรายการนี้หรือไม่?'
+    const ok = await showConfirm({ title: 'ยืนยันการลบ', message: msg })
     if (!ok) return
 
-    const { error } = await supabase.from('wms_orders').delete().eq('id', id)
+    const { error } = await supabase.from('wms_orders').delete().in('id', ids)
 
     if (error) {
       showMessage({ message: `ไม่สามารถลบข้อมูลได้: ${error.message}` })
@@ -120,6 +130,10 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                 </thead>
                 <tbody className="divide-y">
                   {items.map((item) => {
+                    const rowKey =
+                      item._consolidated_wms_ids && item._consolidated_wms_ids.length > 0
+                        ? item._consolidated_wms_ids.join('-')
+                        : item.id
                     const currentColorClass = statusColorMap[item.status] || 'bg-gray-100'
                     const isSpareLike =
                       item.product_code === 'SPARE_PART' ||
@@ -129,9 +143,10 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                       isSpareLike
                         ? getProductImageUrl('spare_part')
                         : getProductImageUrl(item.product_code)
+                    const condoLayers = getCondoStampLayersLabel(item)
 
                     return (
-                      <tr key={item.id}>
+                      <tr key={rowKey}>
                         <td className="p-3">
                           <img
                             src={imgUrl}
@@ -147,16 +162,18 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                           <div className="font-bold text-slate-700">{item.product_name}</div>
                           <div className="text-[10px] text-gray-400">
                             {isSpareLike ? 'อะไหล่' : item.product_code}
+                            {condoLayers ? <span className="ml-1 text-blue-600 font-bold">{condoLayers}</span> : null}
                           </div>
                         </td>
                         <td className="p-3 text-red-600 font-bold">{item.location || '-'}</td>
                         <td className="p-3 text-center font-bold">
-                          {item.qty} {item.unit_name || 'ชิ้น'}
+                          {getCondoStampDisplayQty(item)} {item.unit_name || 'ชิ้น'}
+                          {condoLayers ? ` ${condoLayers}` : ''}
                         </td>
                         <td className="p-3">
                           <select
                             value={item.status}
-                            onChange={(e) => updateItemStatus(item.id, e.target.value)}
+                            onChange={(e) => updateItemStatus(item, e.target.value)}
                             className={`text-[11px] p-1.5 border rounded-lg font-bold outline-none transition-colors ${currentColorClass}`}
                           >
                             {dropdownStatuses.map((s) => (
@@ -173,7 +190,7 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                         </td>
                         <td className="p-3 text-center">
                           <button
-                            onClick={() => deleteOrderItem(item.id)}
+                            onClick={() => deleteOrderItem(item)}
                             className="text-red-600 hover:text-red-800 transition-all hover:scale-125 active:scale-100 p-2 rounded-lg hover:bg-red-50 inline-flex items-center justify-center"
                             title="ลบรายการ"
                             aria-label="ลบรายการ"

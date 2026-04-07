@@ -10,6 +10,14 @@ import {
   isWmsReviewVisibleRow,
 } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
+import { fetchPlanDeptSettings, type PlanDeptSettings } from '../../../lib/planPickingDepartments'
+import { enrichWmsRowsWithPickingDepartment, getDepartmentOptionsForWmsRows } from '../../../lib/wmsPickingDepartmentEnrichment'
+import {
+  consolidateCondoStampWmsDisplayRows,
+  getWmsConsolidatedRowIds,
+  getCondoStampDisplayQty,
+  getCondoStampLayersLabel,
+} from '../../../lib/wmsCondoStampConsolidation'
 
 /** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
 const ensurePlanDeptEnd = async (workOrderId: string) => {
@@ -40,6 +48,8 @@ export default function ReviewSection() {
   const [showCounter, setShowCounter] = useState(false)
   const [showTabs, setShowTabs] = useState(false)
   const [planBackfillLoading, setPlanBackfillLoading] = useState(false)
+  const [reviewDeptFilter, setReviewDeptFilter] = useState('')
+  const [reviewPlanSettings, setReviewPlanSettings] = useState<PlanDeptSettings | null>(null)
   const { showMessage, MessageModal } = useWmsModal()
   const inspectResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -67,6 +77,8 @@ export default function ReviewSection() {
     setInspectItems([])
     setCurrentTab('all')
     setReviewOrderActualId('')
+    setReviewDeptFilter('')
+    setReviewPlanSettings(null)
   }
 
   const enrichReleasedSourceOrders = async (rows: any[]): Promise<any[]> => {
@@ -102,7 +114,11 @@ export default function ReviewSection() {
       console.error('fetchInspectRows error:', error)
       return []
     }
-    return sortOrderItems(await enrichReleasedSourceOrders((data || []) as any[]))
+    const sorted = sortOrderItems(await enrichReleasedSourceOrders((data || []) as any[]))
+    const plan = await fetchPlanDeptSettings()
+    setReviewPlanSettings(plan)
+    const enriched = await enrichWmsRowsWithPickingDepartment(sorted, plan)
+    return consolidateCondoStampWmsDisplayRows(enriched as any[])
   }, [])
 
   const scheduleInspectResync = useCallback((workOrderId: string) => {
@@ -243,10 +259,16 @@ export default function ReviewSection() {
       return
     }
 
+    const plan = await fetchPlanDeptSettings()
     const sortedData = sortOrderItems(await enrichReleasedSourceOrders(rows))
+    const withDept = consolidateCondoStampWmsDisplayRows(
+      await enrichWmsRowsWithPickingDepartment(sortedData, plan)
+    )
+    setReviewPlanSettings(plan)
+    setReviewDeptFilter('')
     setReviewOrderSelect(canonicalWorkOrderId)
     setReviewOrderActualId(canonicalWorkOrderId)
-    setInspectItems(sortedData)
+    setInspectItems(withDept as any[])
     setShowCounter(true)
     setShowTabs(true)
     setCurrentTab('all')
@@ -258,12 +280,14 @@ export default function ReviewSection() {
 
   const setInspectStatus = async (id: string, newStatus: string) => {
     const item = inspectItems.find((i) => i.id === id)
+    if (!item) return
+    const targetIds = getWmsConsolidatedRowIds(item)
     let updateData: Record<string, any> = { status: newStatus }
 
     if (newStatus === 'wrong') updateData.error_count = (item?.error_count || 0) + 1
     if (newStatus === 'not_find') updateData.not_find_count = (item?.not_find_count || 0) + 1
 
-    await supabase.from('wms_orders').update(updateData).eq('id', id)
+    await supabase.from('wms_orders').update(updateData).in('id', targetIds)
 
     const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
     const optimisticRows = inspectItems.map((i) => (i.id === id ? { ...i, ...updateData } : i))
@@ -308,10 +332,11 @@ export default function ReviewSection() {
 
     if (existing) return
 
-    const total = items.length
-    const correct = items.filter((i) => i.status === 'correct').length
-    const wrong = items.filter((i) => i.status === 'wrong').length
-    const notFind = items.filter((i) => i.status === 'not_find').length
+    const lineCount = (i: any) => Number(i._consolidated_line_count || 1)
+    const total = items.reduce((s, i) => s + lineCount(i), 0)
+    const correct = items.reduce((s, i) => s + (i.status === 'correct' ? lineCount(i) : 0), 0)
+    const wrong = items.reduce((s, i) => s + (i.status === 'wrong' ? lineCount(i) : 0), 0)
+    const notFind = items.reduce((s, i) => s + (i.status === 'not_find' ? lineCount(i) : 0), 0)
     const accuracy = total > 0 ? ((correct / total) * 100).toFixed(2) : 0
 
     await supabase.from('wms_order_summaries').insert([
@@ -342,6 +367,13 @@ export default function ReviewSection() {
   ).length
 
   const inspectFullyChecked = inspectItems.length > 0 && checkedCount === inspectItems.length
+
+  const deptViewItems = reviewDeptFilter
+    ? inspectItems.filter((i) => String(i.picking_department || '') === reviewDeptFilter)
+    : []
+  const deptCheckedCount = deptViewItems.filter((i) =>
+    ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
+  ).length
 
   const backfillPlanPickEndForCurrentWorkOrder = async (force: boolean) => {
     const wid = reviewOrderActualId || reviewOrderSelect
@@ -392,6 +424,10 @@ export default function ReviewSection() {
   if (currentTab === 'returned')
     filtered = inspectItems.filter((i) => i.status === 'returned' || isWmsCancelledAwaitingPhysicalShelf(i))
 
+  if (reviewDeptFilter) {
+    filtered = filtered.filter((i) => String(i.picking_department || '') === reviewDeptFilter)
+  }
+
   return (
     <section>
       <div className="flex justify-between items-end mb-6 flex-wrap gap-4">
@@ -434,6 +470,25 @@ export default function ReviewSection() {
             >
               เริ่มเช็คสินค้า
             </button>
+            {showTabs && inspectItems.length > 0 && reviewPlanSettings && (
+              <div>
+                <label className="text-sm font-bold text-gray-700 uppercase block mb-1">
+                  3. มุมมองแผนก <span className="normal-case text-gray-500 font-semibold text-xs">(กรองแสดงอย่างเดียว)</span>
+                </label>
+                <select
+                  value={reviewDeptFilter}
+                  onChange={(e) => setReviewDeptFilter(e.target.value)}
+                  className="border px-2.5 rounded-lg w-72 text-sm shadow-sm outline-none h-[42px]"
+                >
+                  <option value="">ทั้งหมด — ใบงาน</option>
+                  {getDepartmentOptionsForWmsRows(reviewPlanSettings, inspectItems).map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
         {showCounter && (
@@ -442,6 +497,12 @@ export default function ReviewSection() {
             <div className="text-6xl font-black text-blue-600">
               {checkedCount} / {inspectItems.length}
             </div>
+            {reviewDeptFilter && deptViewItems.length > 0 && (
+              <div className="text-xs font-bold text-slate-600 leading-snug">
+                แผนก {reviewDeptFilter}: {deptCheckedCount} / {deptViewItems.length} ในมุมมองนี้
+                <div className="text-[10px] font-semibold text-slate-400 mt-0.5">การปิดงาน/ซิงค์ Plan ยังอิงทุกแถวด้านบน</div>
+              </div>
+            )}
             {inspectFullyChecked && (reviewOrderActualId || reviewOrderSelect) && (
               <div className="flex flex-col gap-2 w-full max-w-[220px]">
                 <button
@@ -559,7 +620,10 @@ export default function ReviewSection() {
                 isMovedFromPlan && ['picked', 'correct', 'system_complete'].includes(item.status)
 
               return (
-                <div key={item.id} className="p-4 flex items-center justify-between hover:bg-gray-50 transition">
+                <div
+                  key={item._consolidated_wms_ids?.length ? item._consolidated_wms_ids.join('-') : item.id}
+                  className="p-4 flex items-center justify-between hover:bg-gray-50 transition"
+                >
                   <div className="flex items-center gap-6 w-1/3">
                     <div className="text-xl font-black text-gray-300 w-8 text-center">{idx + 1}</div>
                     <img
@@ -574,7 +638,9 @@ export default function ReviewSection() {
                     <div>
                       <div className="text-[18.66px] font-black text-slate-800 leading-tight mb-1">{item.product_name}</div>
                       <div className="text-[16px] font-bold text-gray-400">
-                        จุดจัดเก็บ: {item.location || '-'} | จำนวน: {item.qty} {item.unit_name || 'ชิ้น'}
+                        จุดจัดเก็บ: {item.location || '-'} | จำนวน: {getCondoStampDisplayQty(item)}{' '}
+                        {item.unit_name || 'ชิ้น'}
+                        {getCondoStampLayersLabel(item) ? ` ${getCondoStampLayersLabel(item)}` : ''}
                       </div>
                       <div className="text-xs text-gray-400 mt-1">
                         UID: {item.item_uid || '-'} | WMS: {String(item.id || '').slice(0, 8)}

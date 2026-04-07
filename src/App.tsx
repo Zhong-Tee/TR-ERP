@@ -233,6 +233,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/plan/tv"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production']}>
+            <Plan tvMode />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/technician"
         element={
           <ProtectedRoute allowedRoles={['technician']}>

@@ -6,6 +6,7 @@ import PickerListModal from './PickerListModal'
 import AlertModal from './AlertModal'
 import SentAlertsModal from './SentAlertsModal'
 import { useWmsModal } from '../useWmsModal'
+import { getCondoStampDisplayQty, getCondoStampLayersLabel } from '../../../lib/wmsCondoStampConsolidation'
 
 interface PickerJobCardProps {
   item: any
@@ -33,6 +34,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
     String(item.product_name || '').includes('หน้ายาง+โฟม')
   const imgUrl =
     isSpareLike ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
+  const condoLayersLabel = getCondoStampLayersLabel(item)
 
   return (
     <>
@@ -106,8 +108,11 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
           <div className="bg-slate-50 px-6 py-2 rounded-2xl border flex items-center justify-between">
             <span className="text-[18.66px] text-gray-400 font-bold uppercase">จำนวนเบิก</span>
             <span className="text-4xl font-black text-slate-900">
-              {item.qty}
-              <span className="ml-2 text-base font-bold text-slate-500">{item.unit_name || 'ชิ้น'}</span>
+              {getCondoStampDisplayQty(item)}
+              <span className="ml-2 text-base font-bold text-slate-500">
+                {item.unit_name || 'ชิ้น'}
+                {condoLayersLabel ? <span className="ml-1 text-slate-600">{condoLayersLabel}</span> : null}
+              </span>
             </span>
           </div>
         </div>

@@ -495,10 +495,19 @@ const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'work-orders', 'work-orders-manage', 
 // แสดงเฉพาะชื่อใบงานจริง เช่น SPTR-250369-R4 (กัน REQ/WY ที่ไม่ใช่ใบงานเข้า Dashboard)
 const isWorkOrderDisplayName = (name?: string | null) => /-R\d+$/i.test(String(name || '').trim())
 
-export default function Plan() {
+const PLAN_TV_PATH = '/plan/tv'
+
+export function getPlanTvDisplayUrl() {
+  if (typeof window === 'undefined') return PLAN_TV_PATH
+  return `${window.location.origin}${PLAN_TV_PATH}`
+}
+
+type PlanProps = { tvMode?: boolean }
+
+export default function Plan({ tvMode = false }: PlanProps) {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
-  const unlocked = isAdminOrSuperadmin(user?.role)
+  const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
   const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
@@ -532,12 +541,27 @@ export default function Plan() {
   } | null>(null)
 
   useEffect(() => {
+    if (tvMode) return
     if (menuAccessLoading) return
     if (!hasAccess(PLAN_MENU_KEY_MAP[currentView] || currentView)) {
       const first = ALL_PLAN_VIEWS.find((v) => hasAccess(PLAN_MENU_KEY_MAP[v] || v))
       if (first) setCurrentView(first)
     }
-  }, [menuAccessLoading])
+  }, [menuAccessLoading, tvMode])
+
+  useEffect(() => {
+    if (!tvMode) return
+    setCurrentView('dash')
+  }, [tvMode])
+
+  useEffect(() => {
+    if (!tvMode) return
+    const prevTitle = document.title
+    document.title = 'Plan — Dashboard & Master Plan (TV)'
+    return () => {
+      document.title = prevTitle
+    }
+  }, [tvMode])
 
   // Form state
   const [fDate, setFDate] = useState(() => localISODate())
@@ -570,6 +594,7 @@ export default function Plan() {
   const [categoryModalDraft, setCategoryModalDraft] = useState<string[]>([])
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
   const [dashDropTarget, setDashDropTarget] = useState<{ id: string; above: boolean } | null>(null)
+  const [tvLinkCopyHint, setTvLinkCopyHint] = useState(false)
   const [expandedDeptJob, setExpandedDeptJob] = useState<string | null>(null) // 'dept_jobId' for ประวัติ
   /** Modal ล้าง: ยืนยันล้างเท่านั้น (รหัสปลดล็อคใส่ด้านบน) */
   const [clearStepModal, setClearStepModal] = useState<{
@@ -590,8 +615,9 @@ export default function Plan() {
     }
   }, [depFilter, selectableDepts])
 
-  const load = useCallback(async () => {
-    setDbStatus('กำลังโหลด...')
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent
+    if (!silent) setDbStatus('กำลังโหลด...')
     try {
       const [settingsRes, jobsRes] = await Promise.all([
         supabase.from('plan_settings').select('data').eq('id', 1).single(),
@@ -604,13 +630,48 @@ export default function Plan() {
         : defaultSettings
       setSettings(loadedSettings)
       setJobs((jobsRes.data || []) as PlanJob[])
-      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
+      if (!silent) setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     } catch (e: any) {
       console.error('Plan load error:', e)
-      setDbStatus('โหลดข้อมูลไม่สำเร็จ')
-      alert('ไม่สามารถโหลดข้อมูลจากฐานข้อมูลได้!')
+      if (!silent) {
+        setDbStatus('โหลดข้อมูลไม่สำเร็จ')
+        alert('ไม่สามารถโหลดข้อมูลจากฐานข้อมูลได้!')
+      }
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
+    }
+  }, [])
+
+  /** เบราว์เซอร์ทีวีบางรุ่นตัด WebSocket — โหลดซ้ำเป็นระยะให้ข้อมูลยังเคลื่อนไหว */
+  useEffect(() => {
+    if (!tvMode) return
+    const id = window.setInterval(() => {
+      load({ silent: true })
+    }, 45_000)
+    return () => window.clearInterval(id)
+  }, [tvMode, load])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('plan_settings_realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'plan_settings', filter: 'id=eq.1' },
+        () => {
+          supabase
+            .from('plan_settings')
+            .select('data')
+            .eq('id', 1)
+            .single()
+            .then(({ data, error }) => {
+              if (error || !data?.data) return
+              setSettings({ ...defaultSettings, ...data.data })
+            })
+        }
+      )
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
     }
   }, [])
 
@@ -1541,56 +1602,73 @@ export default function Plan() {
     )
   }
 
+  if (tvMode && !menuAccessLoading && !hasAccess('plan-dash')) {
+    return (
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 px-4 text-center text-gray-600">
+        <p className="text-lg font-semibold text-gray-800">ไม่มีสิทธิ์เปิดหน้าแสดงผลบนทีวี</p>
+        <p className="text-sm">ต้องมีสิทธิ์เมนู Dashboard (Master Plan)</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="w-full flex flex-col min-h-0 h-full flex-1">
+    <div
+      className={
+        tvMode
+          ? 'w-full min-h-screen flex flex-col bg-gray-50 px-2 py-3 sm:px-4 sm:py-4'
+          : 'w-full flex flex-col min-h-0 h-full flex-1'
+      }
+    >
       {/* เมนูย่อย — fixed ชิด TopBar เต็มซ้ายขวา (ไม่มี transition เพื่อแสดงทันที) */}
-      <div
-        className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft"
-        style={{ left: 'var(--content-offset-left, 16rem)' }}
-      >
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
-          <div className="flex items-center justify-between gap-4">
-            <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
-              {(
-                [
-                  ['dash', 'Dashboard (Master Plan)'],
-                  ['work-orders', `ใบสั่งงาน (${workOrdersCount})`],
-                  ['work-orders-manage', `จัดการใบงาน (${workOrdersManageCount})`],
-                  ['dept', 'หน้าแผนก (คิวงาน)'],
-                  ['jobs', 'ใบงานทั้งหมด'],
-                  ['form', 'สร้าง/แก้ไขใบงาน'],
-                  ['set', 'ตั้งค่า'],
-                  ['issue', `Issue (${issueOpenCount})`],
-                ] as [ViewKey, string][]
-              ).filter(([key]) => hasAccess(PLAN_MENU_KEY_MAP[key] || key)).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setCurrentView(key)}
-                  className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
-                    currentView === key
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-blue-600'
+      {!tvMode && (
+        <div
+          className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft"
+          style={{ left: 'var(--content-offset-left, 16rem)' }}
+        >
+          <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+            <div className="flex items-center justify-between gap-4">
+              <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
+                {(
+                  [
+                    ['dash', 'Dashboard (Master Plan)'],
+                    ['work-orders', `ใบสั่งงาน (${workOrdersCount})`],
+                    ['work-orders-manage', `จัดการใบงาน (${workOrdersManageCount})`],
+                    ['dept', 'หน้าแผนก (คิวงาน)'],
+                    ['jobs', 'ใบงานทั้งหมด'],
+                    ['form', 'สร้าง/แก้ไขใบงาน'],
+                    ['set', 'ตั้งค่า'],
+                    ['issue', `Issue (${issueOpenCount})`],
+                  ] as [ViewKey, string][]
+                ).filter(([key]) => hasAccess(PLAN_MENU_KEY_MAP[key] || key)).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setCurrentView(key)}
+                    className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
+                      currentView === key
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-blue-600'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </nav>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span
+                  className={`rounded-full px-3 py-2 text-sm font-semibold ${
+                    unlocked ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'
                   }`}
                 >
-                  {label}
-                </button>
-              ))}
-            </nav>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <span
-                className={`rounded-full px-3 py-2 text-sm font-semibold ${
-                  unlocked ? 'bg-green-100 text-green-800 border border-green-300' : 'bg-red-100 text-red-800 border border-red-300'
-                }`}
-              >
-                {unlocked ? '🔓 แก้ไขได้' : '🔒 ดูอย่างเดียว'}
-              </span>
+                  {unlocked ? '🔓 แก้ไขได้' : '🔒 ดูอย่างเดียว'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="pt-16 space-y-4">
+      <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'pt-16 space-y-4'}>
       {/* View: Form สร้าง/แก้ไขใบงาน */}
       {currentView === 'form' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -2323,7 +2401,7 @@ export default function Plan() {
                       type="date"
                       value={dDate}
                       onChange={(e) => setDDate(e.target.value)}
-                      disabled={!unlocked}
+                      disabled={!unlocked && !tvMode}
                       className="rounded-lg border border-gray-300 px-3 py-2"
                     />
                   </div>
@@ -2437,7 +2515,9 @@ export default function Plan() {
                   )
                 })}
               </div>
-              <div className="overflow-x-auto max-h-[60vh] rounded-xl border border-gray-200">
+              <div
+                className={`overflow-x-auto rounded-xl border border-gray-200 ${tvMode ? 'max-h-[calc(100vh-14rem)]' : 'max-h-[60vh]'}`}
+              >
                 <table className="w-full text-sm border-collapse">
                   <thead className="bg-gray-100 sticky top-0 z-10">
                     <tr>
@@ -2746,9 +2826,25 @@ export default function Plan() {
         const breaksList = (settings.deptBreaks[currentDept] || []).slice()
         return (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
-            <h2 className="border-b border-gray-200 px-4 py-3 text-lg font-semibold">
-              ตั้งค่า (แผนก • กระบวนการ • เวลามาตรฐาน)
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-4 py-3">
+              <h2 className="text-lg font-semibold">ตั้งค่า (แผนก • กระบวนการ • เวลามาตรฐาน)</h2>
+              <button
+                type="button"
+                onClick={async () => {
+                  const url = getPlanTvDisplayUrl()
+                  try {
+                    await navigator.clipboard.writeText(url)
+                    setTvLinkCopyHint(true)
+                    window.setTimeout(() => setTvLinkCopyHint(false), 2500)
+                  } catch {
+                    window.prompt('คัดลอกลิงก์โหมดแสดงบนทีวี (Dashboard)', url)
+                  }
+                }}
+                className="rounded-lg border border-emerald-600 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-900 hover:bg-emerald-100"
+              >
+                {tvLinkCopyHint ? 'คัดลอกแล้ว ✓' : 'คัดลอกลิงก์แสดงบนทีวี (Dashboard)'}
+              </button>
+            </div>
             {!unlocked && (
               <div className="mx-4 mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
                 เฉพาะ role superadmin และ admin เท่านั้นที่สามารถแก้ไขตั้งค่าได้

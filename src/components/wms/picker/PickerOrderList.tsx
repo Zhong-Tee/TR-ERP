@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import { countWmsOrdersAsDisplayLines } from '../../../lib/wmsCondoStampConsolidation'
 
 interface PickerOrderListProps {
   onSelectOrder: (orderId: string) => void
@@ -31,7 +32,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
 
     const { data } = await supabase
       .from('wms_orders')
-      .select('work_order_id, order_id, created_at, status')
+      .select('id, work_order_id, order_id, created_at, status, product_name, product_code, location, qty')
       .eq('assigned_to', currentUserId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .in('status', ['pending', 'wrong', 'not_find'])
@@ -49,25 +50,30 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       woNameById = Object.fromEntries((woRows || []).map((w: any) => [w.id, w.work_order_name]))
     }
 
-    const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
-      const workOrderId = String(obj.work_order_id || '')
-      const orderId = String(obj.order_id || '')
-      const scopeId = workOrderId
-        ? `wo:${workOrderId}`
-        : orderId
-          ? `ord:${orderId}`
-          : ''
+    const grouped = (data as any[]).reduce(
+      (acc: Record<string, any>, obj) => {
+        const workOrderId = String(obj.work_order_id || '')
+        const orderId = String(obj.order_id || '')
+        const scopeId = workOrderId ? `wo:${workOrderId}` : orderId ? `ord:${orderId}` : ''
 
-      if (!scopeId) return acc
-      const displayName = workOrderId
-        ? woNameById[workOrderId] || workOrderId
-        : orderId
-      if (!acc[scopeId]) {
-        acc[scopeId] = { id: scopeId, name: displayName, count: 0, date: obj.created_at }
-      }
-      acc[scopeId].count++
-      return acc
-    }, {})
+        if (!scopeId) return acc
+        const displayName = workOrderId ? woNameById[workOrderId] || workOrderId : orderId
+        if (!acc[scopeId]) {
+          acc[scopeId] = { id: scopeId, name: displayName, items: [] as any[], date: obj.created_at }
+        }
+        acc[scopeId].items.push(obj)
+        if (new Date(obj.created_at) < new Date(acc[scopeId].date)) {
+          acc[scopeId].date = obj.created_at
+        }
+        return acc
+      },
+      {}
+    )
+
+    for (const g of Object.values(grouped) as any[]) {
+      g.count = countWmsOrdersAsDisplayLines(g.items)
+      delete g.items
+    }
 
     setOrders(Object.values(grouped))
     setLoading(false)

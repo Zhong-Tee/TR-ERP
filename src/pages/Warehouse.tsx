@@ -18,6 +18,30 @@ function toNumber(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+/** YYYY-MM-DD ตามปฏิทินเครื่อง (ไม่ใช้ UTC แบบ toISOString) */
+function toLocalDateString(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * จำนวนวันระหว่างวันที่เริ่ม (ตัวกรอง YYYY-MM-DD) ถึงวันที่ปัจจุบันตามปฏิทินเครื่อง
+ * เทียบเฉพาะวันที่ ไม่รวมชั่วโมง/นาที — อย่างน้อย 1 วัน
+ */
+function calendarDaysFromFilterToToday(salesFromYmd: string, now: Date): number {
+  const parts = salesFromYmd.split('-').map((s) => Number(s.trim()))
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return 1
+  const [y, mo, d] = parts as [number, number, number]
+  const from = new Date(y, mo - 1, d)
+  if (Number.isNaN(from.getTime())) return 1
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const diffMs = end.getTime() - from.getTime()
+  const wholeDays = Math.round(diffMs / (1000 * 60 * 60 * 24))
+  return Math.max(wholeDays, 1)
+}
+
 export default function Warehouse() {
   const { user } = useAuthContext()
   const canSeeCost = user?.role === 'superadmin'
@@ -36,7 +60,7 @@ export default function Warehouse() {
   const [salesFromDate, setSalesFromDate] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - 14)
-    return d.toISOString().split('T')[0]
+    return toLocalDateString(d)
   })
   const [salesMap, setSalesMap] = useState<Record<string, number>>({})
   const [salesLoading, setSalesLoading] = useState(false)
@@ -159,10 +183,7 @@ export default function Warehouse() {
     if (!salesFromDate) return null
     const totalSold = salesMap[productId]
     if (!totalSold || totalSold <= 0) return null
-    const from = new Date(salesFromDate)
-    const today = new Date()
-    const diffMs = today.getTime() - from.getTime()
-    const diffDays = Math.max(diffMs / (1000 * 60 * 60 * 24), 1)
+    const diffDays = calendarDaysFromFilterToToday(salesFromDate, new Date())
     const avgPerDay = totalSold / diffDays
     return avgPerDay > 0 ? Math.round(avgPerDay * 100) / 100 : null
   }
