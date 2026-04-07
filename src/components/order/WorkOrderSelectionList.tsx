@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { localISODate } from '../../lib/localDate'
 import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
@@ -188,7 +189,7 @@ export default function WorkOrderSelectionList({
 
       const today = new Date()
       const datePart = today.toLocaleDateString('th-TH', { year: '2-digit', month: '2-digit', day: '2-digit' }).replace(/\//g, '')
-      const dateISO = today.toISOString().slice(0, 10)
+      const dateISO = localISODate(today)
 
       const { data: maxOrder } = await supabase
         .from('plan_jobs')
@@ -264,7 +265,12 @@ export default function WorkOrderSelectionList({
             order_index: nextOrderIndex++,
           }
           const { error: planErr } = await supabase.from('plan_jobs').insert([planRow])
-          if (planErr) console.warn('Sync plan_jobs failed for', workOrderName, planErr)
+          if (planErr) {
+            console.warn('Sync plan_jobs failed for', workOrderName, planErr)
+            alert(
+              `สร้างใบงาน "${workOrderName}" แล้ว แต่บันทึกแผนผลิต (plan_jobs) ไม่สำเร็จ — ตรวจสิทธิ์ role หรือดู Console\n${planErr.message}`
+            )
+          }
         }
       }
 

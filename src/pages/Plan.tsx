@@ -14,6 +14,7 @@ import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
+import { localISODate } from '../lib/localDate'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
@@ -539,21 +540,21 @@ export default function Plan() {
   }, [menuAccessLoading])
 
   // Form state
-  const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [fDate, setFDate] = useState(() => localISODate())
   const [fName, setFName] = useState('')
   const [fCut, setFCut] = useState('')
   const [fQty, setFQty] = useState<Record<string, number>>({})
 
   // Filters
-  const [dDate, setDDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [depDate, setDepDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [dDate, setDDate] = useState(() => localISODate())
+  const [depDate, setDepDate] = useState(() => localISODate())
   const [depFilter, setDepFilter] = useState('ALL')
   const [jSearch, setJSearch] = useState('')
-  const [jDateFrom, setJDateFrom] = useState(() => new Date().toISOString().split('T')[0])
-  const [jDateTo, setJDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [jDateFrom, setJDateFrom] = useState(() => localISODate())
+  const [jDateTo, setJDateTo] = useState(() => localISODate())
   const [jChannelFilter, setJChannelFilter] = useState('')
-  const [manageDateFrom, setManageDateFrom] = useState(() => new Date().toISOString().split('T')[0])
-  const [manageDateTo, setManageDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [manageDateFrom, setManageDateFrom] = useState(() => localISODate())
+  const [manageDateTo, setManageDateTo] = useState(() => localISODate())
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
@@ -1753,8 +1754,8 @@ export default function Plan() {
                   type="button"
                   onClick={() => {
                     setJSearch('')
-                    setJDateFrom(new Date().toISOString().split('T')[0])
-                    setJDateTo(new Date().toISOString().split('T')[0])
+                    setJDateFrom(localISODate())
+                    setJDateTo(localISODate())
                     setJChannelFilter('')
                     setJStatusFilter('')
                   }}
@@ -1991,8 +1992,8 @@ export default function Plan() {
                     type="button"
                     onClick={() => {
                       setJChannelFilter('')
-                      setManageDateFrom(new Date().toISOString().split('T')[0])
-                      setManageDateTo(new Date().toISOString().split('T')[0])
+                      setManageDateFrom(localISODate())
+                      setManageDateTo(localISODate())
                     }}
                     className="px-4 py-2 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-100"
                   >

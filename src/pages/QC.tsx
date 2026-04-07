@@ -115,6 +115,7 @@ export default function QC() {
   const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
   const [barcodeQuery, setBarcodeQuery] = useState('')
   const [qcCategoryFilter, setQcCategoryFilter] = useState<string>('')
+  const [showNotQcOnly, setShowNotQcOnly] = useState(false)
   const [productExt, setProductExt] = useState('.jpg')
   const [cartoonExt, setCartoonExt] = useState('.jpg')
   const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
@@ -253,9 +254,43 @@ export default function QC() {
   }, [qcData.items])
 
   const itemsToShow = useMemo(() => {
-    if (!qcCategoryFilter) return qcData.items
-    return qcData.items.filter((i) => (i.product_category?.trim() || '') === qcCategoryFilter)
-  }, [qcData.items, qcCategoryFilter])
+    let list = qcData.items
+    if (qcCategoryFilter) {
+      list = list.filter((i) => (i.product_category?.trim() || '') === qcCategoryFilter)
+    }
+    if (showNotQcOnly) {
+      list = list.filter((i) => i.status === 'pending')
+    }
+    return list
+  }, [qcData.items, qcCategoryFilter, showNotQcOnly])
+
+  // เมื่อสลับตัวกรอง/ข้อมูลเปลี่ยน ให้เลือก currentItem ให้สอดคล้องกับรายการที่แสดง
+  useEffect(() => {
+    if (qcState.step !== 'working') return
+    if (itemsToShow.length === 0) {
+      setCurrentItem(null)
+      return
+    }
+    if (!currentItem || !itemsToShow.includes(currentItem)) {
+      const firstPending = itemsToShow.find((i) => i.status === 'pending')
+      setCurrentItem(firstPending || itemsToShow[0])
+    }
+  }, [qcState.step, itemsToShow])
+
+  /** รายการคงเหลือ (สถานะ pending) แยกตามหมวดสินค้า — ใช้เป็นตัวแทนแผนกในระบบปัจจุบัน */
+  const remainingByDept = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const i of qcData.items) {
+      if (i.status !== 'pending') continue
+      const dept = i.product_category?.trim() || 'ไม่ระบุหมวด'
+      const q = i.qty || 1
+      map.set(dept, (map.get(dept) || 0) + q)
+    }
+    return Array.from(map.entries()).sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1]
+      return a[0].localeCompare(b[0], 'th')
+    })
+  }, [qcData.items])
 
   const productImageUrl = currentItem ? getPublicUrl('product-images', currentItem.product_code, productExt) : ''
   const cartoonImageUrl = currentItem ? getPublicUrl('cartoon-patterns', currentItem.cartoon_name, cartoonExt) : ''
@@ -1392,34 +1427,65 @@ export default function QC() {
 
             {qcState.step === 'working' && (
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
-                  <div className="flex gap-8">
-                    <div className="text-center">
-                      <div className="text-xs text-gray-500 uppercase">Total</div>
-                      <div className="text-2xl font-bold">{totalItems}</div>
+                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3 md:flex-row md:items-end md:gap-4 w-full min-w-0">
+                  <div className="flex flex-wrap items-end gap-6 sm:gap-8 min-w-0 shrink-0">
+                    <div className="flex flex-wrap items-end gap-6 sm:gap-8">
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500 uppercase">Total</div>
+                        <div className="text-2xl font-bold">{totalItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-green-600 uppercase">Pass</div>
+                        <div className="text-2xl font-bold text-green-600">{passedItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-red-600 uppercase">Fail</div>
+                        <div className="text-2xl font-bold text-red-600">{failedItems}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-blue-600 uppercase">Left</div>
+                        <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
+                      </div>
                     </div>
-                    <div className="text-center">
-                      <div className="text-xs text-green-600 uppercase">Pass</div>
-                      <div className="text-2xl font-bold text-green-600">{passedItems}</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-xs text-red-600 uppercase">Fail</div>
-                      <div className="text-2xl font-bold text-red-600">{failedItems}</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-xs text-blue-600 uppercase">Left</div>
-                      <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
+                    {remainingByDept.length > 0 && (
+                      <div className="flex flex-col items-start justify-end border-l border-gray-200 pl-4 sm:pl-5 min-h-[3.5rem]">
+                        <div className="text-sm sm:text-base font-bold text-slate-600 tracking-wide">คงเหลือแยกแผนก (หมวดสินค้า)</div>
+                        <div className="flex flex-wrap gap-x-3 sm:gap-x-4 gap-y-1 mt-1 max-w-[min(100%,32rem)]">
+                          {remainingByDept.map(([dept, n]) => (
+                            <span key={dept} className="text-base sm:text-lg whitespace-nowrap">
+                              <span className="text-gray-700 font-medium">{dept}</span>{' '}
+                              <span className="font-bold text-blue-600 tabular-nums">{n}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-end min-h-[3.5rem] shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowNotQcOnly((v) => !v)}
+                        className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
+                          showNotQcOnly
+                            ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                        title="กรองเฉพาะรายการที่ยังไม่ได้ตรวจ (pending)"
+                      >
+                        รายการไม่ได้ QC
+                      </button>
                     </div>
                   </div>
                   {qcState.startTime && (
-                    <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2">
-                      <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
-                      <span className="text-lg font-bold text-indigo-700">
-                        {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                      </span>
+                    <div className="flex w-full justify-center md:flex-1 md:items-end min-w-0 py-0.5 md:min-w-[10rem]">
+                      <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2 shrink-0">
+                        <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                        <span className="text-lg font-bold text-indigo-700">
+                          {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                      </div>
                     </div>
                   )}
-                  <div className="flex gap-2 items-center flex-wrap">
+                  <div className="flex gap-2 items-center flex-wrap shrink-0 md:justify-end">
                     {qcState.filename && (
                       <div className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-sm font-semibold whitespace-nowrap">
                         ใบงาน: {qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : qcState.filename}

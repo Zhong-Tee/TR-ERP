@@ -82,7 +82,7 @@ const menuItems: MenuItem[] = [
   },
   {
     key: 'qc',
-    label: 'QC',
+    label: 'QC Operation',
     icon: <FiSearch className="w-6 h-6" />,
     path: '/qc',
     roles: ['superadmin', 'admin', 'sales-tr', 'qc_staff'],

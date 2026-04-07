@@ -2195,24 +2195,26 @@ export default function Packing() {
                             {icon} {trackingDisp}
                           </div>
                           <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
-                          <div className="text-sm font-bold text-indigo-700 mt-1 tabular-nums">
-                            Tag {group[0].packingTag ?? '—'}
+                          <div className="mt-1 flex items-center gap-2 flex-wrap">
+                            <div className="text-sm font-bold text-indigo-700 tabular-nums">
+                              Tag {group[0].packingTag ?? '—'}
+                            </div>
+                            <div
+                              className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
+                                isQcPassGroup(group)
+                                  ? group.every((i) => i.qc_status === 'skip')
+                                    ? 'bg-orange-100 text-orange-700'
+                                    : 'bg-green-100 text-green-700'
+                                  : 'bg-red-100 text-red-700'
+                              }`}
+                            >
+                              {isQcPassGroup(group)
+                                ? group.every((i) => i.qc_status === 'skip')
+                                  ? 'Not QC'
+                                  : 'QC Pass'
+                                : 'ยังไม่ QC'}
+                            </div>
                           </div>
-                        </div>
-                        <div
-                          className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
-                            isQcPassGroup(group)
-                              ? group.every((i) => i.qc_status === 'skip')
-                                ? 'bg-orange-100 text-orange-700'
-                                : 'bg-green-100 text-green-700'
-                              : 'bg-red-100 text-red-700'
-                          }`}
-                        >
-                          {isQcPassGroup(group)
-                            ? group.every((i) => i.qc_status === 'skip')
-                              ? 'Not QC'
-                              : 'QC Pass'
-                            : 'ยังไม่ QC'}
                         </div>
                       </div>
                     </button>

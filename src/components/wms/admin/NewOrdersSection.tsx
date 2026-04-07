@@ -3,6 +3,7 @@ import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
 import { fetchWorkOrderNamesWithWmsAssigned } from '../wmsUtils'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
 
 function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]): T[] {
   const seen = new Set<string>()
@@ -36,6 +37,8 @@ export default function NewOrdersSection() {
   const [selectedPickerId, setSelectedPickerId] = useState('')
   const [loading, setLoading] = useState(true)
   const [assigning, setAssigning] = useState(false)
+  /** จำนวนบิลที่ยังไม่ยกเลิก/จัดส่งแล้ว — สอดคล้องกับ Plan จัดการใบงาน */
+  const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
   const { showMessage, MessageModal } = useWmsModal()
 
   const ensurePlanDeptStart = async (workOrderId: string) => {
@@ -82,74 +85,98 @@ export default function NewOrdersSection() {
 
   const loadWorkOrders = async () => {
     setLoading(true)
-    const { data } = await supabase
-      .from('or_work_orders')
-      .select('id, work_order_name, order_count, created_at, plan_wo_modified')
-      .eq('status', 'กำลังผลิต')
-      .order('created_at', { ascending: false })
+    try {
+      const { data } = await supabase
+        .from('or_work_orders')
+        .select('id, work_order_name, order_count, created_at, plan_wo_modified')
+        .eq('status', 'กำลังผลิต')
+        .order('created_at', { ascending: false })
 
-    if (!data || data.length === 0) {
-      setWorkOrders([])
-      setLoading(false)
-      return
-    }
-
-    const deduped = dedupeWorkOrdersByName(data)
-    const assignedNames = await fetchWorkOrderNamesWithWmsAssigned()
-    const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
-
-    // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
-    if (unassigned.length > 0) {
-      const unassignedIds = unassigned.map((wo) => wo.id)
-      const { data: orders } = await supabase
-        .from('or_orders')
-        .select('work_order_id, or_order_items(product_id, is_free)')
-        .in('work_order_id', unassignedIds as string[])
-
-      const allItems = (orders || []).flatMap((o: any) =>
-        (o.or_order_items || []).map((i: any) => ({
-          product_id: i.product_id,
-          work_order_id: o.work_order_id,
-          is_free: i.is_free,
-        }))
-      )
-      const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
-
-      let productCategoryMap: Record<string, string> = {}
-      if (productIds.length > 0) {
-        const { data: products } = await supabase
-          .from('pr_products')
-          .select('id, product_category, rubber_code')
-          .in('id', productIds)
-        productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
-          const category = String(p.product_category || '')
-          const rubberCode = String(p.rubber_code || '').trim()
-          // เก็บ rubber_code เป็น marker ใน map เดียว เพื่อลดการแตก state/map เพิ่ม
-          acc[p.id] = rubberCode ? `${category}__RUBBER__${rubberCode}` : category
-          return acc
-        }, {})
+      if (!data || data.length === 0) {
+        setWorkOrders([])
+        setActiveBillCountByWo({})
+        return
       }
 
-      const woQualifiesForAssign = new Set<string>()
-      allItems.forEach((item: any) => {
-        if (!item.product_id) return
-        const raw = productCategoryMap[item.product_id] || ''
-        const marker = '__RUBBER__'
-        const markerIdx = raw.indexOf(marker)
-        const hasRubber = markerIdx >= 0
-        const cat = hasRubber ? raw.slice(0, markerIdx) : raw
-        const rubberCode = hasRubber ? raw.slice(markerIdx + marker.length) : ''
-        if (isMainCategory(cat, rubberCode) && item.work_order_id) {
-          woQualifiesForAssign.add(String(item.work_order_id))
+      const deduped = dedupeWorkOrdersByName(data)
+      const assignedNames = await fetchWorkOrderNamesWithWmsAssigned()
+      const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
+
+      let finalList: Array<{
+        id: string
+        work_order_name: string
+        order_count: number
+        created_at: string
+        plan_wo_modified?: boolean
+      }> = []
+
+      // กรองเฉพาะใบงานที่มีสินค้าในหมวดหมู่ที่ต้องหยิบ (STAMP/LASER/SUBLIMATION/CALENDAR/ETC/INK)
+      if (unassigned.length > 0) {
+        const unassignedIds = unassigned.map((wo) => wo.id)
+        const { data: orders } = await supabase
+          .from('or_orders')
+          .select('work_order_id, or_order_items(product_id, is_free)')
+          .in('work_order_id', unassignedIds as string[])
+
+        const allItems = (orders || []).flatMap((o: any) =>
+          (o.or_order_items || []).map((i: any) => ({
+            product_id: i.product_id,
+            work_order_id: o.work_order_id,
+            is_free: i.is_free,
+          }))
+        )
+        const productIds = [...new Set(allItems.map((i: any) => i.product_id).filter(Boolean))]
+
+        let productCategoryMap: Record<string, string> = {}
+        if (productIds.length > 0) {
+          const { data: products } = await supabase
+            .from('pr_products')
+            .select('id, product_category, rubber_code')
+            .in('id', productIds)
+          productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
+            const category = String(p.product_category || '')
+            const rubberCode = String(p.rubber_code || '').trim()
+            // เก็บ rubber_code เป็น marker ใน map เดียว เพื่อลดการแตก state/map เพิ่ม
+            acc[p.id] = rubberCode ? `${category}__RUBBER__${rubberCode}` : category
+            return acc
+          }, {})
         }
-      })
 
-      setWorkOrders(unassigned.filter((wo) => woQualifiesForAssign.has(wo.id)))
-    } else {
-      setWorkOrders([])
+        const woQualifiesForAssign = new Set<string>()
+        allItems.forEach((item: any) => {
+          if (!item.product_id) return
+          const raw = productCategoryMap[item.product_id] || ''
+          const marker = '__RUBBER__'
+          const markerIdx = raw.indexOf(marker)
+          const hasRubber = markerIdx >= 0
+          const cat = hasRubber ? raw.slice(0, markerIdx) : raw
+          const rubberCode = hasRubber ? raw.slice(markerIdx + marker.length) : ''
+          if (isMainCategory(cat, rubberCode) && item.work_order_id) {
+            woQualifiesForAssign.add(String(item.work_order_id))
+          }
+        })
+
+        finalList = unassigned.filter((wo) => woQualifiesForAssign.has(wo.id))
+      }
+
+      const counts: Record<string, number> = {}
+      if (finalList.length > 0) {
+        const { data: cntRows } = await supabase
+          .from('or_orders')
+          .select('work_order_id')
+          .in('work_order_id', finalList.map((w) => w.id))
+          .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+          .neq('status', 'จัดส่งแล้ว')
+        for (const r of cntRows || []) {
+          const wid = String((r as { work_order_id: string }).work_order_id)
+          counts[wid] = (counts[wid] || 0) + 1
+        }
+      }
+      setActiveBillCountByWo(counts)
+      setWorkOrders(finalList)
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
   }
 
   const loadPickers = async () => {
@@ -250,7 +277,7 @@ export default function NewOrdersSection() {
                       </span>
                     )}
                   </div>
-                  <div className="text-sm text-gray-600">{wo.order_count} บิล</div>
+                  <div className="text-sm text-gray-600">{activeBillCountByWo[wo.id] ?? wo.order_count} บิล</div>
                 </div>
                 <span className="text-blue-600 font-medium shrink-0">เลือก Picker</span>
               </div>

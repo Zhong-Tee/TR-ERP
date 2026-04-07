@@ -11,6 +11,308 @@ import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilte
 import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 
+/** ค่าเริ่มต้นแผนกจาก Plan — ใช้เมื่อยังไม่บันทึก plan_settings */
+const PLAN_DEPARTMENTS_FALLBACK = ['เบิก', 'STAMP', 'STK', 'CTT', 'LASER', 'TUBE', 'QC', 'PACK'] as const
+/** แผนกสำหรับรายการที่ไม่ตรงหมวดในตั้งค่า */
+const PICKING_GENERAL_DEPT = 'ทั่วไป'
+/** แผนกคิว/คลัง — ให้จับคู่หมวดสินค้าหลังแผนกผลิต (มิฉะนั้นรายการจะไปกองที่เบิกหมดแล้วได้ PNG ใบเดียว) */
+const PICKING_DEPT_LOW_PRIORITY = new Set(['เบิก', 'QC', 'PACK'])
+
+type PlanDeptSettings = {
+  departments: string[]
+  departmentProductCategories: Record<string, string[]>
+}
+
+async function fetchPlanDeptSettings(): Promise<PlanDeptSettings> {
+  const { data, error } = await supabase.from('plan_settings').select('data').eq('id', 1).maybeSingle()
+  if (error && error.code !== 'PGRST116') console.warn('ใบเบิก: โหลด plan_settings', error)
+  const raw = data?.data as Partial<PlanDeptSettings> | undefined
+  const departments =
+    Array.isArray(raw?.departments) && raw.departments.length > 0
+      ? raw.departments.map((d) => String(d))
+      : [...PLAN_DEPARTMENTS_FALLBACK]
+  const departmentProductCategories =
+    raw?.departmentProductCategories && typeof raw.departmentProductCategories === 'object'
+      ? (raw.departmentProductCategories as Record<string, string[]>)
+      : {}
+  return { departments, departmentProductCategories }
+}
+
+function pickingDepartmentSearchOrder(settings: PlanDeptSettings): string[] {
+  const hi: string[] = []
+  const lo: string[] = []
+  for (const d of settings.departments) {
+    if (isPickingLowPriorityDept(d)) lo.push(d)
+    else hi.push(d)
+  }
+  return [...hi, ...lo]
+}
+
+function isPickingLowPriorityDept(name: string): boolean {
+  return PICKING_DEPT_LOW_PRIORITY.has(name)
+}
+
+/** มองจากข้อความหมวดหรือชื่อสินค้า (กรณีตั้งค่าผูกหมดไปที่แผนกเบิก / หมวดไม่บอกประเภท) */
+function inferDeptFromProductText(text: string, settings: PlanDeptSettings): string | null {
+  const s = String(text || '').trim()
+  if (!s) return null
+  const depts = settings.departments
+  if (/STAMP|ตรายาง|CONDO\s*STAMP|RUBBER|แสตมป์/i.test(s)) {
+    const hit = depts.find((d) => isStampDepartmentName(d))
+    return hit ?? null
+  }
+  if (/LASER|เลเซอร์/i.test(s)) {
+    return depts.find((d) => d.toUpperCase().includes('LASER')) ?? null
+  }
+  if (/\bCTT\b/i.test(s) || /ซีทีที/i.test(s)) {
+    return depts.find((d) => d.trim().toUpperCase() === 'CTT') ?? null
+  }
+  if (/\bSTK\b/i.test(s)) {
+    return depts.find((d) => d.trim().toUpperCase() === 'STK') ?? null
+  }
+  if (/\bTUBE\b/i.test(s)) {
+    return depts.find((d) => d.trim().toUpperCase() === 'TUBE') ?? null
+  }
+  return null
+}
+
+function inferDeptFromCategoryHeuristic(
+  cat: string,
+  settings: PlanDeptSettings,
+  productName?: string
+): string | null {
+  return (
+    inferDeptFromProductText(cat, settings) ??
+    (productName ? inferDeptFromProductText(productName, settings) : null)
+  )
+}
+
+function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
+  if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
+  return lineQty
+}
+
+function resolvePickingDepartment(
+  productCategory: string,
+  settings: PlanDeptSettings,
+  productName?: string
+): string {
+  const cat = String(productCategory || '').trim().replace(/\s+/g, ' ')
+  const hasAnyAssignment = Object.values(settings.departmentProductCategories || {}).some(
+    (list) => Array.isArray(list) && list.length > 0
+  )
+  if (!hasAnyAssignment) {
+    return inferDeptFromCategoryHeuristic(cat, settings, productName) ?? PICKING_GENERAL_DEPT
+  }
+  const lower = cat.toLowerCase()
+  for (const dept of pickingDepartmentSearchOrder(settings)) {
+    const list = settings.departmentProductCategories[dept] || []
+    for (const configured of list) {
+      const c = String(configured || '').trim().replace(/\s+/g, ' ')
+      if (c && (c === cat || c.toLowerCase() === lower)) {
+        if (isPickingLowPriorityDept(dept)) {
+          const bump = inferDeptFromCategoryHeuristic(cat, settings, productName)
+          if (bump) return bump
+        }
+        return dept
+      }
+    }
+  }
+  return inferDeptFromCategoryHeuristic(cat, settings, productName) ?? PICKING_GENERAL_DEPT
+}
+
+function deptExportOrder(settings: PlanDeptSettings, deptKeys: string[]): string[] {
+  const withItems = new Set(deptKeys)
+  const out: string[] = []
+  for (const d of settings.departments) {
+    if (withItems.has(d)) out.push(d)
+  }
+  if (withItems.has(PICKING_GENERAL_DEPT) && !out.includes(PICKING_GENERAL_DEPT)) out.push(PICKING_GENERAL_DEPT)
+  for (const d of deptKeys) {
+    if (!out.includes(d) && withItems.has(d)) out.push(d)
+  }
+  return out
+}
+
+function formatThaiBuddhistDate(d: Date = new Date()): string {
+  return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear() + 543}`
+}
+
+function safeFilePart(s: string): string {
+  const t = String(s || '').trim().replace(/[/\\?%*:|"<>]/g, '_')
+  return t || 'export'
+}
+
+function isStampDepartmentName(dept: string): boolean {
+  return dept.trim().toUpperCase() === 'STAMP'
+}
+
+/** สร้าง DOM สำหรับถ่าย PNG ใบเบิก (เลย์เอาต์เดียวกับเอกสารอ้างอิง) */
+function buildPickingSlipPrintDom(opts: {
+  workOrderName: string
+  deptTitle: string
+  buddhistDateStr: string
+  rows: PickingMainRow[]
+  spareItems: PickingSpareRow[]
+  showSpareSummary: boolean
+}): HTMLDivElement {
+  const { workOrderName, deptTitle, buddhistDateStr, rows, spareItems, showSpareSummary } = opts
+  const wrap = document.createElement('div')
+  wrap.style.cssText =
+    'box-sizing:border-box;width:820px;padding:28px 32px;background:#fff;color:#111;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;line-height:1.35;'
+
+  const header = document.createElement('div')
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;gap:16px;'
+  const title = document.createElement('div')
+  title.style.cssText = 'font-size:17px;font-weight:700;'
+  title.textContent = `ใบเบิกใบงาน: ${workOrderName}`
+  const dateEl = document.createElement('div')
+  dateEl.style.cssText = 'font-size:14px;font-weight:600;white-space:nowrap;'
+  dateEl.textContent = `วันที่: ${buddhistDateStr}`
+  header.appendChild(title)
+  header.appendChild(dateEl)
+  wrap.appendChild(header)
+
+  const deptBar = document.createElement('div')
+  deptBar.style.cssText =
+    'font-size:15px;font-weight:700;background:#e8e8e8;border:1px solid #000;padding:8px 10px;margin-bottom:4px;'
+  deptBar.textContent = `แผนก ${deptTitle}`
+  wrap.appendChild(deptBar)
+
+  const table = document.createElement('table')
+  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin:0 0 16px 0;'
+  const thead = document.createElement('thead')
+  const trh = document.createElement('tr')
+  const thBase = 'border:1px solid #000;padding:7px 8px;font-weight:700;background:#f4f4f4;'
+  const headers: [string, string][] = [
+    ['จุดเก็บ', `${thBase}text-align:left;width:20%;`],
+    ['รหัส', `${thBase}text-align:center;width:16%;`],
+    ['รายการ', `${thBase}text-align:left;width:49%;`],
+    ['จำนวน', `${thBase}text-align:center;width:15%;`],
+  ]
+  for (const [label, st] of headers) {
+    const th = document.createElement('th')
+    th.setAttribute('style', st)
+    th.textContent = label
+    trh.appendChild(th)
+  }
+  thead.appendChild(trh)
+  table.appendChild(thead)
+  const tbody = document.createElement('tbody')
+  const tdL = 'border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:left;'
+  const tdC = 'border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:center;'
+  for (const row of rows) {
+    const tr = document.createElement('tr')
+    const c1 = document.createElement('td')
+    c1.setAttribute('style', tdL)
+    c1.textContent = row.location
+    const c2 = document.createElement('td')
+    c2.setAttribute('style', tdC)
+    c2.textContent = row.code
+    const c3 = document.createElement('td')
+    c3.setAttribute('style', tdL)
+    c3.textContent = row.name
+    const c4 = document.createElement('td')
+    c4.setAttribute('style', tdC)
+    c4.textContent = String(row.finalQty)
+    tr.appendChild(c1)
+    tr.appendChild(c2)
+    tr.appendChild(c3)
+    tr.appendChild(c4)
+    tbody.appendChild(tr)
+  }
+  table.appendChild(tbody)
+  wrap.appendChild(table)
+
+  if (showSpareSummary && spareItems.length > 0) {
+    const spareHead = document.createElement('div')
+    spareHead.style.cssText = 'font-size:14px;font-weight:700;margin:12px 0 6px 0;display:flex;align-items:center;gap:6px;'
+    const ic = document.createElement('span')
+    ic.textContent = '✎'
+    ic.setAttribute('style', 'font-size:16px;')
+    spareHead.appendChild(ic)
+    const st = document.createElement('span')
+    st.textContent = 'รายการอะไหล่รวม'
+    spareHead.appendChild(st)
+    wrap.appendChild(spareHead)
+
+    const stbl = document.createElement('table')
+    stbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;'
+    const stHead = document.createElement('thead')
+    const strh = document.createElement('tr')
+    const sth = `${thBase}`
+    const h1 = document.createElement('th')
+    h1.setAttribute('style', `${sth}text-align:left;width:85%;`)
+    h1.textContent = 'รายการอะไหล่'
+    const h2 = document.createElement('th')
+    h2.setAttribute('style', `${sth}text-align:center;width:15%;`)
+    h2.textContent = 'จำนวน'
+    strh.appendChild(h1)
+    strh.appendChild(h2)
+    stHead.appendChild(strh)
+    stbl.appendChild(stHead)
+    const stBody = document.createElement('tbody')
+    for (const s of spareItems) {
+      const tr = document.createElement('tr')
+      const d1 = document.createElement('td')
+      d1.setAttribute('style', tdL)
+      d1.textContent = s.label
+      const d2 = document.createElement('td')
+      d2.setAttribute('style', tdC)
+      d2.textContent = String(s.qty)
+      tr.appendChild(d1)
+      tr.appendChild(d2)
+      stBody.appendChild(tr)
+    }
+    stbl.appendChild(stBody)
+    wrap.appendChild(stbl)
+  }
+
+  const foot = document.createElement('div')
+  foot.style.cssText = 'display:flex;justify-content:space-between;gap:32px;margin-top:28px;padding-top:8px;'
+  const mkSign = (label: string) => {
+    const box = document.createElement('div')
+    box.style.cssText = 'flex:1;min-width:0;'
+    const lb = document.createElement('div')
+    lb.style.cssText = 'font-size:13px;font-weight:600;margin-bottom:28px;'
+    lb.textContent = label
+    const line = document.createElement('div')
+    line.style.cssText = 'border-bottom:1px dotted #333;height:1px;'
+    box.appendChild(lb)
+    box.appendChild(line)
+    return box
+  }
+  foot.appendChild(mkSign('ผู้เบิก'))
+  foot.appendChild(mkSign('ผู้จ่าย'))
+  wrap.appendChild(foot)
+
+  return wrap
+}
+
+async function downloadPickingSlipPng(
+  opts: Parameters<typeof buildPickingSlipPrintDom>[0],
+  fileBase: string
+): Promise<void> {
+  const html2canvas = (await import('html2canvas')).default
+  const node = buildPickingSlipPrintDom(opts)
+  node.style.position = 'fixed'
+  node.style.left = '-9999px'
+  node.style.top = '0'
+  document.body.appendChild(node)
+  try {
+    const canvas = await html2canvas(node, { scale: 2, backgroundColor: '#ffffff', logging: false })
+    const link = document.createElement('a')
+    link.download = `${fileBase}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  } finally {
+    document.body.removeChild(node)
+  }
+}
+
 /** ช่องทางที่ใช้ปุ่ม "เรียงใบปะหน้า" (อ้างอิง file/index.html) */
 const WAYBILL_SORT_CHANNELS = ['FSPTR', 'SPTR', 'TTTR', 'LZTR', 'SHOP']
 /** ช่องทางที่ที่อยู่ไม่ส่งไปใบปะหน้า (SHOP แสดงที่อยู่เหมือน FBTR) */
@@ -105,10 +407,10 @@ type WaybillSorterModal = { open: boolean; workOrderName: string | null; trackin
 interface WaybillPreviewRow { billNo: string; addressRaw: string; consigneeName: string; address: string; postalCode: string; phone1: string; phone2: string; cod: string }
 /** Modal Preview ใบปะหน้า */
 type WaybillPreviewModal = { open: boolean; workOrderName: string | null; rows: WaybillPreviewRow[] }
-/** สินค้าหลัก: จุดเก็บ, รหัส, รายการ, จำนวนเบิก */
-interface PickingMainRow { woName: string; code: string; name: string; location: string; finalQty: number }
-/** อะไหล่: รายการอะไหล่, จำนวน */
-interface PickingSpareRow { name: string; qty: number }
+/** สินค้าหลัก: จุดเก็บ, รหัส, รายการ, จำนวนเบิก, แผนก (จากตั้งค่า Plan) */
+interface PickingMainRow { woName: string; code: string; name: string; location: string; finalQty: number; dept: string }
+/** อะไหล่ — ข้อความตาม รหัสหน้ายาง (rubber_code) ในสินค้า */
+interface PickingSpareRow { label: string; qty: number }
 
 export default function WorkOrderManageList({
   searchTerm = '',
@@ -131,10 +433,17 @@ export default function WorkOrderManageList({
   const [updating, setUpdating] = useState(false)
   const [_channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  /** จำนวนบิลต่อใบงาน — นับจาก or_orders ชุดเดียวกับตาราง (ไม่พึ่ง order_count ที่อาจค้าง) */
+  const [billCountByWo, setBillCountByWo] = useState<Record<string, number>>({})
 
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
-  const [pickingSlipModal, setPickingSlipModal] = useState<PickingSlipModal>({ open: false, workOrderName: null, mainItems: [], spareItems: [] })
+  const [pickingSlipModal, setPickingSlipModal] = useState<PickingSlipModal>({
+    open: false,
+    workOrderName: null,
+    mainItems: [],
+    spareItems: [],
+  })
   const [importTrackingModal, setImportTrackingModal] = useState<ImportTrackingModal>({ open: false, workOrderName: null })
   const [waybillSorterModal, setWaybillSorterModal] = useState<WaybillSorterModal>({ open: false, workOrderName: null, trackingNumbers: [] })
   const [waybillPreviewModal, setWaybillPreviewModal] = useState<WaybillPreviewModal>({ open: false, workOrderName: null, rows: [] })
@@ -148,7 +457,6 @@ export default function WorkOrderManageList({
   const [wsBatchSize, setWsBatchSize] = useState(25)
   const trackingFileInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfInputRef = useRef<HTMLInputElement>(null)
-  const pickingSlipContentRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     loadWorkOrders()
   }, [channelFilter, searchTerm, dateFrom, dateTo, mode])
@@ -216,6 +524,23 @@ export default function WorkOrderManageList({
       setSelectedByWo({})
       setExpandedWo(null)
 
+      let nextBillCounts: Record<string, number> = {}
+      if (list.length > 0) {
+        const workOrderIds = list.map((w) => w.id)
+        let countQuery = supabase.from('or_orders').select('work_order_id').in('work_order_id', workOrderIds)
+        if (mode === 'active') {
+          countQuery = countQuery
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+            .neq('status', 'จัดส่งแล้ว')
+        }
+        const { data: countRows } = await countQuery
+        for (const row of countRows || []) {
+          const wid = String((row as { work_order_id: string }).work_order_id)
+          nextBillCounts[wid] = (nextBillCounts[wid] || 0) + 1
+        }
+      }
+      setBillCountByWo(nextBillCounts)
+
       if (list.length > 0) {
         const workOrderIds = list.map((w) => w.id)
         const { data: orderChannels, error: channelErr } = await supabase
@@ -264,6 +589,7 @@ export default function WorkOrderManageList({
       if (error) throw error
       const list = (rows || []) as Order[]
       setOrdersByWo((prev) => ({ ...prev, [workOrderId]: list }))
+      setBillCountByWo((prev) => ({ ...prev, [workOrderId]: list.length }))
       setSelectedByWo((prev) => ({ ...prev, [workOrderId]: new Set<string>() }))
     } catch (error: any) {
       console.error('Error loading orders for WO:', error)
@@ -993,7 +1319,14 @@ export default function WorkOrderManageList({
         rubber_code: productMap[item.product_id]?.rubber_code,
       }))
 
-      type MainRowWithCat = PickingMainRow & { _category: string }
+      type MainRowWithCat = {
+        woName: string
+        code: string
+        name: string
+        location: string
+        finalQty: number
+        _category: string
+      }
       const mainMap = new Map<string, MainRowWithCat>()
       itemsInWorkOrder
         .filter((item) => !PICKING_EXCLUDED_CATEGORIES.some((ex) => (item.product_category || '').toUpperCase().includes(ex)))
@@ -1003,33 +1336,45 @@ export default function WorkOrderManageList({
           const code = item.product_code || 'N/A'
           const name = item.product_name || 'N/A'
           const location = item.storage_location || 'N/A'
-          const category = (item.product_category || '').toUpperCase()
+          const rawCategory = String(item.product_category || '').trim()
           const lineQty = normalizedLineQuantity((item as any).quantity)
           if (existing) {
             existing.finalQty += lineQty
           } else {
-            mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: lineQty, _category: category })
+            mainMap.set(key, { woName: workOrderName, code, name, location, finalQty: lineQty, _category: rawCategory })
           }
         })
-      const finalMainList: PickingMainRow[] = Array.from(mainMap.values())
-        .map((item) => {
-          let finalQty = item.finalQty
-          if (item._category.includes('CONDO STAMP')) finalQty = Math.ceil(item.finalQty / 5)
-          return { woName: item.woName, code: item.code, name: item.name, location: item.location, finalQty }
-        })
+      const withCatList = Array.from(mainMap.values()).map((item) => {
+        let finalQty = item.finalQty
+        if (item._category.toUpperCase().includes('CONDO STAMP')) finalQty = Math.ceil(item.finalQty / 5)
+        return { ...item, finalQty }
+      })
+      const planDeptSettings = await fetchPlanDeptSettings()
+      const finalMainList: PickingMainRow[] = withCatList
+        .map((item) => ({
+          woName: item.woName,
+          code: item.code,
+          name: item.name,
+          location: item.location,
+          finalQty: item.finalQty,
+          dept: resolvePickingDepartment(item._category, planDeptSettings, item.name),
+        }))
         .sort((a, b) => a.location.localeCompare(b.location))
 
       const spareMap = new Map<string, PickingSpareRow>()
       itemsInWorkOrder.forEach((item) => {
-        if (item.rubber_code) {
-          const key = item.rubber_code
-          const existing = spareMap.get(key)
-          const lineQty = normalizedLineQuantity((item as any).quantity)
-          if (existing) existing.qty += lineQty
-          else spareMap.set(key, { name: `หน้ายาง+โฟม ${item.rubber_code}`, qty: lineQty })
-        }
+        const rawCat = String(item.product_category || '').trim()
+        const lineQty = normalizedLineQuantity((item as any).quantity)
+        const spareQty = pickSpareQtyForLine(lineQty, rawCat)
+        const rc = item.rubber_code != null ? String(item.rubber_code).trim() : ''
+        if (!rc) return
+        const existing = spareMap.get(rc)
+        if (existing) existing.qty += spareQty
+        else spareMap.set(rc, { label: rc, qty: spareQty })
       })
-      const finalSpareList = Array.from(spareMap.values())
+      const finalSpareList = Array.from(spareMap.values()).sort((a, b) =>
+        (a.label || '').localeCompare(b.label || '', 'th')
+      )
 
       if (finalMainList.length === 0 && finalSpareList.length === 0) {
         setMessageModal({ open: true, message: 'ไม่พบสินค้าในใบงานนี้' })
@@ -1045,42 +1390,68 @@ export default function WorkOrderManageList({
     const { workOrderName, mainItems, spareItems } = pickingSlipModal
     if (!workOrderName) return
     try {
-      if (pickingSlipContentRef.current) {
-        try {
-          const html2canvas = (await import('html2canvas')).default
-          const canvas = await html2canvas(pickingSlipContentRef.current, { scale: 2 })
-          const link = document.createElement('a')
-          link.download = `ใบเบิก_${workOrderName}.png`
-          link.href = canvas.toDataURL('image/png')
-          link.click()
-        } catch (_) {
-          /* PNG skip if html2canvas fails */
-        }
+      const deptSettings = await fetchPlanDeptSettings()
+      const stampLabel = deptSettings.departments.find((d) => isStampDepartmentName(d)) ?? 'STAMP'
+      const byDept: Record<string, PickingMainRow[]> = {}
+      for (const row of mainItems) {
+        if (!byDept[row.dept]) byDept[row.dept] = []
+        byDept[row.dept].push(row)
       }
-      const wb = XLSX.utils.book_new()
-      const ws1Headers = [['รหัสทำรายการ', 'รหัสสินค้า', 'รายการสินค้า', 'จุดเก็บ', 'จำนวนเบิก']]
-      const ws1Rows = mainItems.map((item) => [item.woName, item.code, item.name, item.location, String(item.finalQty)])
-      const ws1 = XLSX.utils.aoa_to_sheet(ws1Headers.concat(ws1Rows))
-      XLSX.utils.book_append_sheet(wb, ws1, 'รายการหยิบสินค้า')
-      const ws2Headers = [['รายการอะไหล่', 'จำนวนรวม']]
-      const ws2Rows = spareItems.map((item) => [item.name, String(item.qty)])
-      const ws2 = XLSX.utils.aoa_to_sheet(ws2Headers.concat(ws2Rows))
-      XLSX.utils.book_append_sheet(wb, ws2, 'สรุปอะไหล่')
-      XLSX.writeFile(wb, `ใบเบิก_${workOrderName}.xlsx`)
-
-      const csvHeaders = ['รหัสทำรายการ', 'รหัสสินค้า', 'รายการสินค้า', 'จุดเก็บ', 'จำนวนเบิก']
-      const csvRows = [csvHeaders.join(',')]
-      mainItems.forEach((item) => {
-        const row = [`"${item.woName}"`, `"${item.code}"`, `"${item.name}"`, `"${item.location}"`, item.finalQty]
-        csvRows.push(row.join(','))
+      if (spareItems.length > 0 && !byDept[stampLabel]) {
+        byDept[stampLabel] = []
+      }
+      const candidateKeys = Object.keys(byDept).filter((d) => {
+        const n = byDept[d]?.length ?? 0
+        if (n > 0) return true
+        return spareItems.length > 0 && d === stampLabel
       })
+      const ordered = deptExportOrder(deptSettings, candidateKeys)
+      const dateStr = formatThaiBuddhistDate()
+      for (let i = 0; i < ordered.length; i++) {
+        const d = ordered[i]
+        const rows = (byDept[d] || []).slice().sort((a, b) => a.location.localeCompare(b.location))
+        try {
+          await downloadPickingSlipPng(
+            {
+              workOrderName,
+              deptTitle: d,
+              buddhistDateStr: dateStr,
+              rows,
+              spareItems,
+              showSpareSummary: isStampDepartmentName(d) && spareItems.length > 0,
+            },
+            `ใบเบิก_${safeFilePart(workOrderName)}_${safeFilePart(d)}`
+          )
+        } catch (_) {
+          /* PNG รายแผนกล้มเหลว — ข้าม */
+        }
+        if (i < ordered.length - 1) await new Promise((r) => setTimeout(r, 750))
+      }
+
+      const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
+      const csvRows: string[] = []
+      csvRows.push(['รหัสทำรายการ', 'แผนก', 'รหัสสินค้า', 'รายการสินค้า', 'จุดเก็บ', 'จำนวนเบิก'].join(','))
+      mainItems.forEach((item) => {
+        csvRows.push(
+          [esc(item.woName), esc(item.dept), esc(item.code), esc(item.name), esc(item.location), item.finalQty].join(',')
+        )
+      })
+      if (spareItems.length > 0) {
+        csvRows.push('')
+        csvRows.push(esc('อะไหล่ (หน้ายาง/โฟม) — รวมทั้งใบงาน'))
+        csvRows.push(['รายการอะไหล่ (รหัสหน้ายาง)', 'จำนวนรวม'].join(','))
+        spareItems.forEach((item) => {
+          csvRows.push([esc(item.label), item.qty].join(','))
+        })
+      }
       const csvContent = '\uFEFF' + csvRows.join('\n')
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = URL.createObjectURL(blob)
-      link.download = `ใบเบิก_${workOrderName}.csv`
+      link.href = url
+      link.download = `ใบเบิก_${safeFilePart(workOrderName)}.csv`
       link.click()
-
+      URL.revokeObjectURL(url)
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาดในการ Export: ' + (err?.message ?? err) })
     }
@@ -1227,7 +1598,7 @@ export default function WorkOrderManageList({
                   <div className="flex flex-wrap items-center gap-2 min-w-0">
                     <span className="text-gray-400 select-none shrink-0">{isCancelledWorkOrder ? '•' : isExpanded ? '▼' : '▶'}</span>
                     <span className={`font-semibold truncate ${isCancelledWorkOrder ? 'text-red-950' : 'text-gray-900'}`}>
-                      {wo.work_order_name} ({wo.order_count} บิล)
+                      {wo.work_order_name} ({billCountByWo[wo.id] ?? wo.order_count} บิล)
                     </span>
                     {isCancelledWorkOrder && (
                       <span
@@ -1492,7 +1863,7 @@ export default function WorkOrderManageList({
         <div className="p-5">
           <h2 className="text-lg font-bold text-gray-900 mb-4">ใบเบิก: {pickingSlipModal.workOrderName}</h2>
 
-          <div ref={pickingSlipContentRef} className="space-y-4">
+          <div className="space-y-4">
             {/* สินค้าหลัก */}
             <div>
               <h3 className="text-base font-semibold text-gray-900 mb-2 flex items-center gap-2">
@@ -1503,10 +1874,11 @@ export default function WorkOrderManageList({
                 <table className="w-full text-sm border-collapse">
                   <thead className="bg-gray-100">
                     <tr>
-                      <th className="p-2 text-left border-b border-gray-200 w-[25%]">จุดเก็บ</th>
-                      <th className="p-2 text-left border-b border-gray-200 w-[20%]">รหัส</th>
-                      <th className="p-2 text-left border-b border-gray-200 w-[40%]">รายการ</th>
-                      <th className="p-2 text-center border-b border-gray-200 w-[15%]">จำนวน</th>
+                      <th className="p-2 text-left border-b border-gray-200 w-[20%]">จุดเก็บ</th>
+                      <th className="p-2 text-left border-b border-gray-200 w-[16%]">รหัส</th>
+                      <th className="p-2 text-left border-b border-gray-200 w-[14%]">แผนก</th>
+                      <th className="p-2 text-left border-b border-gray-200 min-w-[36%]">รายการ</th>
+                      <th className="p-2 text-center border-b border-gray-200 w-[10%]">จำนวน</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1514,6 +1886,7 @@ export default function WorkOrderManageList({
                       <tr key={i} className="border-b border-gray-100">
                         <td className="p-2">{row.location}</td>
                         <td className="p-2">{row.code}</td>
+                        <td className="p-2 text-gray-700">{row.dept}</td>
                         <td className="p-2">{row.name}</td>
                         <td className="p-2 text-center">{row.finalQty}</td>
                       </tr>
@@ -1535,14 +1908,14 @@ export default function WorkOrderManageList({
                     <thead className="bg-gray-100">
                       <tr>
                         <th className="p-2 text-left border-b border-gray-200">รายการอะไหล่</th>
-                        <th className="p-2 text-center border-b border-gray-200 w-20">จำนวน</th>
+                        <th className="p-2 text-center border-b border-gray-200 w-24">จำนวน</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pickingSlipModal.spareItems.map((row, i) => (
                         <tr key={i} className="border-b border-gray-100">
-                          <td className="p-2">{row.name}</td>
-                          <td className="p-2 text-center">{row.qty}</td>
+                          <td className="p-2">{row.label}</td>
+                          <td className="p-2 text-center tabular-nums">{row.qty}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1559,7 +1932,7 @@ export default function WorkOrderManageList({
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium bg-[#6610f2] hover:bg-[#5a0dd9]"
             >
               <span role="img" aria-label="export">🚀</span>
-              Export All (PNG, CSV, XLSX)
+              Export All (PNG, CSV)
             </button>
             <button
               type="button"

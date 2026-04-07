@@ -69,6 +69,7 @@ export default function TaxInvoiceModal({
   const [items, setItems] = useState<TaxInvoiceItem[]>([])
   const [exporting, setExporting] = useState(false)
   const [buyerCopied, setBuyerCopied] = useState(false)
+  const [itemsCopied, setItemsCopied] = useState(false)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   /* Load bill headers from DB */
   useEffect(() => {
@@ -102,7 +103,10 @@ export default function TaxInvoiceModal({
   }, [open, receiverAccount])
 
   useEffect(() => {
-    if (!open) setBuyerCopied(false)
+    if (!open) {
+      setBuyerCopied(false)
+      setItemsCopied(false)
+    }
   }, [open])
 
   /* Pre-fill data from order */
@@ -301,6 +305,90 @@ export default function TaxInvoiceModal({
     }
   }
 
+  async function copyItemsForExcel() {
+    const nonEmptyRows = filledItems.filter((r) => {
+      const desc = (r.description || '').trim()
+      return desc !== '' || (r.quantity || 0) > 0 || (r.unitPrice || 0) > 0 || (r.amount || 0) > 0
+    })
+
+    const headers = ['ลำดับ', 'รายการ', 'ราคาต่อหน่วย', 'จำนวน', 'จำนวนเงิน']
+    const rows = nonEmptyRows.map((r, i) => {
+      const unit = Number(r.unitPrice || 0)
+      const qty = Number(r.quantity || 0)
+      const amt = Number(r.amount || 0)
+      return [
+        String(i + 1),
+        (r.description || '').trim(),
+        unit ? unit.toFixed(2) : '',
+        qty ? String(qty) : '',
+        amt ? amt.toFixed(2) : '',
+      ]
+    })
+
+    const summaryRows: Array<[string, string]> = [
+      ['รวมเป็นเงิน / Amount', Number(subtotal || 0).toFixed(2)],
+      ['มูลค่าสินค้าที่นำมาคิดภาษี', Number(netAmount || 0).toFixed(2)],
+      [`ภาษีมูลค่าเพิ่ม ${VAT_RATE}%`, Number(vatAmount || 0).toFixed(2)],
+      ['รวมจำนวนเงิน / TOTAL', Number(grandTotal || 0).toFixed(2)],
+    ]
+
+    // TSV (tab-separated) with CRLF for best Excel compatibility on Windows
+    const tsvItems = [headers, ...rows].map((cols) => cols.join('\t')).join('\r\n')
+    const tsvSummary = [['รายการสรุป', 'จำนวนเงิน'], ...summaryRows].map((cols) => cols.join('\t')).join('\r\n')
+    const text = `${tsvItems}\r\n\r\n${tsvSummary}\r\n`
+
+    // HTML table (Excel paste reliably splits columns)
+    const esc = (s: string) =>
+      s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+
+    const htmlItems =
+      `<table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead>` +
+      `<tbody>${rows
+        .map((r) => `<tr>${r.map((c) => `<td>${esc(String(c ?? ''))}</td>`).join('')}</tr>`)
+        .join('')}</tbody></table>`
+
+    const htmlSummary =
+      `<table><thead><tr><th>${esc('รายการสรุป')}</th><th>${esc('จำนวนเงิน')}</th></tr></thead>` +
+      `<tbody>${summaryRows
+        .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`)
+        .join('')}</tbody></table>`
+
+    const html = `${htmlItems}<br/>${htmlSummary}`
+    try {
+      if (typeof (window as any).ClipboardItem !== 'undefined' && navigator.clipboard && 'write' in navigator.clipboard) {
+        const item = new (window as any).ClipboardItem({
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        })
+        await (navigator.clipboard as any).write([item])
+      } else {
+        await navigator.clipboard.writeText(text)
+      }
+      setItemsCopied(true)
+      window.setTimeout(() => setItemsCopied(false), 2000)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        setItemsCopied(true)
+        window.setTimeout(() => setItemsCopied(false), 2000)
+      } catch {
+        alert('ไม่สามารถคัดลอกรายการสินค้าได้')
+      }
+    }
+  }
+
   if (!open || !order) return null
 
   return (
@@ -463,6 +551,18 @@ export default function TaxInvoiceModal({
           </div>
 
           {/* Items Table */}
+          <div className="flex items-center justify-end mb-2">
+            <button
+              type="button"
+              onClick={copyItemsForExcel}
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:border-gray-400 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              {itemsCopied ? 'คัดลอกแล้ว' : 'คัดลอกรายการสินค้า'}
+            </button>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>

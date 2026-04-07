@@ -100,12 +100,52 @@ function getTagLogic(row: VerifiedSlipRow): string {
   return tags.length > 0 ? tags.join(', ') : '–'
 }
 
-/** แปลงข้อความเหตุผล refund เป็นรูปแบบใหม่ (รองรับข้อมูลเก่าที่ใช้รูปแบบเดิม) */
+/** แปลงข้อความเหตุผล refund เป็นรูปแบบใหม่ (รองรับข้อมูลเก่าที่ใช้รูปแบบเดิม) — ตัดคำนำหน้า โอนเกิน/ลูกค้าโอนเกิน เมื่อตามด้วย (ยอดบิล… */
 function formatRefundReason(reason: string): string {
-  return reason
-    .replace('ลูกค้าโอนเกิน', 'โอนเกิน')
+  let s = reason
     .replace('ยอดออเดอร์:', 'ยอดบิล:')
     .replace('ยอดสลิป:', 'สลิป:')
+  s = s.replace(/^\s*ลูกค้าโอนเกิน\s*(?=\()/u, '')
+  s = s.replace(/^\s*โอนเกิน\s*(?=\()/u, '')
+  return s.trim()
+}
+
+async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('ac_verified_slips')
+    .select('slip_image_url, slip_storage_path')
+    .eq('order_id', orderId)
+    .or('is_deleted.is.null,is_deleted.eq.false')
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
+  const urls: string[] = []
+  for (const r of rows) {
+    if (r.slip_storage_path) {
+      const raw = r.slip_storage_path
+      const parts = raw.split('/')
+      const bucket = parts[0] || 'slip-images'
+      const filePath = parts.slice(1).join('/')
+      let signedUrl: string | null = null
+      const { data: signed, error: signErr } = await supabase.storage
+        .from(bucket)
+        .createSignedUrl(filePath, 3600)
+      if (!signErr && signed?.signedUrl) signedUrl = signed.signedUrl
+      if (!signedUrl && raw) {
+        const retry = await supabase.storage
+          .from('slip-images')
+          .createSignedUrl(parts.length > 1 ? filePath : raw, 3600)
+        if (!retry.error && retry.data?.signedUrl) signedUrl = retry.data.signedUrl
+      }
+      if (signedUrl) {
+        urls.push(signedUrl)
+        continue
+      }
+      if (signErr) console.warn('Slip signed URL failed:', raw, signErr)
+    }
+    if (r.slip_image_url) urls.push(r.slip_image_url)
+  }
+  return urls
 }
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
@@ -166,8 +206,13 @@ export default function Account() {
   const [historyTaxInvoices, setHistoryTaxInvoices] = useState<BillingRequestOrder[]>([])
   const [historyRefunds, setHistoryRefunds] = useState<Refund[]>([])
   const [viewOrderId, setViewOrderId] = useState<string | null>(null)
+  /** เมื่อเปิดจากแถวรายการโอนคืน — แสดงรายละเอียดโอนเกินในโมดัลข้อมูลบิล */
+  const [viewBillRefund, setViewBillRefund] = useState<Refund | null>(null)
   const [viewOrder, setViewOrder] = useState<(Order & { order_items?: any[] }) | null>(null)
   const [viewOrderLoading, setViewOrderLoading] = useState(false)
+  const [billViewSlipUrls, setBillViewSlipUrls] = useState<string[]>([])
+  const [billViewSlipLoading, setBillViewSlipLoading] = useState(false)
+  const [billViewSlipFailed, setBillViewSlipFailed] = useState<Set<number>>(new Set())
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>('refund')
   const [slipPopupOrderId, setSlipPopupOrderId] = useState<string | null>(null)
   const [slipPopupBillNo, setSlipPopupBillNo] = useState<string>('')
@@ -255,6 +300,33 @@ export default function Account() {
     if (viewOrderId) fetchOrderForView(viewOrderId)
     else setViewOrder(null)
   }, [viewOrderId])
+
+  useEffect(() => {
+    if (!viewOrderId || !viewBillRefund) {
+      setBillViewSlipUrls([])
+      setBillViewSlipFailed(new Set())
+      setBillViewSlipLoading(false)
+      return
+    }
+    let cancelled = false
+    setBillViewSlipLoading(true)
+    setBillViewSlipUrls([])
+    setBillViewSlipFailed(new Set())
+    fetchSlipImageUrlsForOrder(viewOrderId)
+      .then((urls) => {
+        if (!cancelled) setBillViewSlipUrls(urls)
+      })
+      .catch((e) => {
+        console.error('Error loading slips for bill modal:', e)
+        if (!cancelled) setBillViewSlipUrls([])
+      })
+      .finally(() => {
+        if (!cancelled) setBillViewSlipLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [viewOrderId, viewBillRefund])
 
   async function loadVerifiedSlipsList() {
     setVerifiedSlipsLoading(true)
@@ -349,40 +421,7 @@ export default function Account() {
     setSlipPopupFailed(new Set())
     setSlipPopupLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('ac_verified_slips')
-        .select('slip_image_url, slip_storage_path')
-        .eq('order_id', orderId)
-        .or('is_deleted.is.null,is_deleted.eq.false')
-        .order('created_at', { ascending: true })
-      if (error) throw error
-      const rows = (data || []) as { slip_image_url?: string; slip_storage_path?: string | null }[]
-      const urls: string[] = []
-      for (const r of rows) {
-        if (r.slip_storage_path) {
-          const raw = r.slip_storage_path
-          const parts = raw.split('/')
-          const bucket = parts[0] || 'slip-images'
-          const filePath = parts.slice(1).join('/')
-          let signedUrl: string | null = null
-          const { data: signed, error: signErr } = await supabase.storage
-            .from(bucket)
-            .createSignedUrl(filePath, 3600)
-          if (!signErr && signed?.signedUrl) signedUrl = signed.signedUrl
-          if (!signedUrl && raw) {
-            const retry = await supabase.storage
-              .from('slip-images')
-              .createSignedUrl(parts.length > 1 ? filePath : raw, 3600)
-            if (!retry.error && retry.data?.signedUrl) signedUrl = retry.data.signedUrl
-          }
-          if (signedUrl) {
-            urls.push(signedUrl)
-            continue
-          }
-          if (signErr) console.warn('Slip signed URL failed:', raw, signErr)
-        }
-        if (r.slip_image_url) urls.push(r.slip_image_url)
-      }
+      const urls = await fetchSlipImageUrlsForOrder(orderId)
       setSlipPopupUrls(urls)
     } catch (e) {
       console.error('Error fetching slip images:', e)
@@ -1204,9 +1243,9 @@ export default function Account() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เหตุผล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ดำเนินการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 min-w-[20rem] max-w-[28rem]">เหตุผลโอนเกิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
                       </tr>
                     </thead>
@@ -1214,7 +1253,7 @@ export default function Account() {
                       {historyRefunds.map((refund) => (
                         <tr
                           key={refund.id}
-                          onClick={() => setViewOrderId(refund.order_id)}
+                          onClick={() => { setViewOrderId(refund.order_id); setViewBillRefund(refund) }}
                           className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
                         >
                           <td className="px-4 py-3 font-medium text-gray-800">
@@ -1229,13 +1268,13 @@ export default function Account() {
                           <td className="px-4 py-3 text-gray-700 text-sm font-mono tabular-nums max-w-[120px] truncate" title={refund.refund_recipient_account_number || ''}>{refund.refund_recipient_account_number?.trim() || '–'}</td>
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
-                          <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${refund.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                               {refund.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-gray-500 text-sm">{refund.approved_at ? formatDateTime(refund.approved_at) : '–'}</td>
+                          <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
                           <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
@@ -1276,7 +1315,7 @@ export default function Account() {
                         return (
                           <tr
                             key={o.id}
-                            onClick={() => setViewOrderId(o.id)}
+                            onClick={() => { setViewOrderId(o.id); setViewBillRefund(null) }}
                             className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
                           >
                             <td className="px-4 py-3 font-semibold text-sky-700">
@@ -1345,9 +1384,9 @@ export default function Account() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">ธนาคาร</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เหตุผล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่สร้าง</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 min-w-[20rem] max-w-[28rem]">เหตุผลโอนเกิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
                 </tr>
               </thead>
@@ -1355,7 +1394,7 @@ export default function Account() {
                 {pendingRefunds.map((refund) => (
                   <tr
                     key={refund.id}
-                    onClick={() => setViewOrderId(refund.order_id)}
+                    onClick={() => { setViewOrderId(refund.order_id); setViewBillRefund(refund) }}
                     className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
                   >
                     <td className="px-4 py-3 font-medium text-gray-800">
@@ -1373,9 +1412,6 @@ export default function Account() {
                     <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">
                       ฿{refund.amount.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-gray-600 max-w-[200px] truncate" title={formatRefundReason(refund.reason)}>
-                      {formatRefundReason(refund.reason)}
-                    </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex px-2.5 py-1 rounded-lg text-sm font-medium bg-amber-100 text-amber-700">
                         รออนุมัติ
@@ -1383,6 +1419,9 @@ export default function Account() {
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-sm">
                       {formatDateTime(refund.created_at)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>
+                      {formatRefundReason(refund.reason)}
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex gap-2">
@@ -1448,7 +1487,7 @@ export default function Account() {
                   return (
                     <tr
                       key={o.id}
-                      onClick={() => setViewOrderId(o.id)}
+                      onClick={() => { setViewOrderId(o.id); setViewBillRefund(null) }}
                       className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
                     >
                       <td className="px-3 py-2.5 font-semibold text-sky-700">
@@ -1551,7 +1590,7 @@ export default function Account() {
       {viewOrderId && (
         <Modal
           open
-          onClose={() => setViewOrderId(null)}
+          onClose={() => { setViewOrderId(null); setViewBillRefund(null) }}
           closeOnBackdropClick
           contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
         >
@@ -1559,7 +1598,7 @@ export default function Account() {
               <h3 className="text-lg font-semibold text-gray-800">ข้อมูลบิล (ดูอย่างเดียว)</h3>
               <button
                 type="button"
-                onClick={() => setViewOrderId(null)}
+                onClick={() => { setViewOrderId(null); setViewBillRefund(null) }}
                 className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
               >
                 ✕
@@ -1586,6 +1625,66 @@ export default function Account() {
                     <p><span className="font-medium text-gray-600">ยอดรวม:</span> ฿{Number(viewOrder.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                     <p><span className="font-medium text-gray-600">วันที่สร้าง:</span> {formatDateTime(viewOrder.created_at)}</p>
                   </div>
+                  {viewBillRefund && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+                      <h4 className="font-semibold text-gray-800">รายละเอียดการโอนเกิน</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">ชื่อบัญชีรับคืน:</span>{' '}
+                          <span className="text-gray-800">{viewBillRefund.refund_recipient_account_name?.trim() || '–'}</span>
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-600">ธนาคาร:</span>{' '}
+                          <span className="text-gray-800">{viewBillRefund.refund_recipient_bank?.trim() || '–'}</span>
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-600">เลขบัญชี:</span>{' '}
+                          <span className="text-gray-800 font-mono tabular-nums">{viewBillRefund.refund_recipient_account_number?.trim() || '–'}</span>
+                        </p>
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">จำนวนเงินคืน:</span>{' '}
+                          <span className="text-emerald-700 font-semibold tabular-nums">฿{viewBillRefund.amount.toLocaleString()}</span>
+                        </p>
+                        <p className="sm:col-span-2">
+                          <span className="font-medium text-gray-600">เหตุผลโอนเกิน:</span>{' '}
+                          <span className="text-gray-800">{formatRefundReason(viewBillRefund.reason)}</span>
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-600 text-sm mb-2">รูปสลิปโอน</p>
+                        {billViewSlipLoading ? (
+                          <div className="flex justify-center py-6">
+                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-amber-500 border-t-transparent" />
+                          </div>
+                        ) : billViewSlipUrls.length === 0 ? (
+                          <p className="text-sm text-gray-500">ไม่พบภาพสลิปของบิลนี้</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {billViewSlipUrls.map((url, idx) => (
+                              <div key={idx} className="flex justify-center">
+                                {billViewSlipFailed.has(idx) ? (
+                                  <div className="flex flex-col items-center justify-center py-6 px-4 rounded-lg border border-amber-200 bg-white text-amber-800 w-full max-w-md">
+                                    <p className="font-medium text-sm">โหลดรูปไม่สำเร็จ</p>
+                                    <a href={url} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-600 hover:underline">
+                                      เปิดในแท็บใหม่
+                                    </a>
+                                  </div>
+                                ) : (
+                                  <img
+                                    src={url}
+                                    alt={`สลิปโอน ${idx + 1}`}
+                                    className="max-w-full max-h-[min(28rem,55vh)] w-auto h-auto rounded-lg border border-gray-200 shadow-sm object-contain"
+                                    referrerPolicy="no-referrer"
+                                    onError={() => setBillViewSlipFailed((prev) => new Set(prev).add(idx))}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <h4 className="font-semibold text-gray-700 mb-2">รายการสินค้า</h4>
                     <div className="border border-gray-200 rounded-lg overflow-hidden">
