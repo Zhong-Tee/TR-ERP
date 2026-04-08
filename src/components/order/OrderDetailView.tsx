@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Order, OrderItem, IssueType } from '../../types'
@@ -9,6 +9,7 @@ import { buildProductionLikeExport } from '../../lib/orderProductionExcel'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import Modal from '../ui/Modal'
+import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
 function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
@@ -176,6 +177,7 @@ export default function OrderDetailView({
   }, [order.id, inlineItems.length, isPartial])
 
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
+  const displayItems = useMemo(() => sortOrderItemsForExport(items as any[]), [items])
   const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
 
   const fmt = (n: number | null | undefined) =>
@@ -388,14 +390,14 @@ export default function OrderDetailView({
         )}
 
         {/* ── รายการสินค้า ── */}
-        {items.length > 0 && (() => {
+        {displayItems.length > 0 && (() => {
           const SHOW_TIER_PRODUCTS = ['ตรายางคอนโด TWP ชมพู', 'ตรายางคอนโด TWB ฟ้า']
-          const hasAnyTierProduct = items.some((item) => SHOW_TIER_PRODUCTS.includes(item.product_name || ''))
-          const hasAnyFileAttachment = items.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
+          const hasAnyTierProduct = displayItems.some((item) => SHOW_TIER_PRODUCTS.includes(item.product_name || ''))
+          const hasAnyFileAttachment = displayItems.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
           return (
           <section>
             <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-3">
-              รายการสินค้า <span className="text-gray-400 font-normal">({items.length} รายการ)</span>
+              รายการสินค้า <span className="text-gray-400 font-normal">({displayItems.length} รายการ)</span>
             </h4>
             <div className="overflow-x-auto rounded-lg border border-gray-200">
               <table className="w-full text-sm">
@@ -418,7 +420,7 @@ export default function OrderDetailView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {items.map((item, idx) => {
+                  {displayItems.map((item, idx) => {
                     const isTierProduct = SHOW_TIER_PRODUCTS.includes(item.product_name || '')
                     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
                     return (

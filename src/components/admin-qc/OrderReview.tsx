@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 
 export default function OrderReview() {
   const { user } = useAuthContext()
@@ -212,7 +213,7 @@ export default function OrderReview() {
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedOrder.order_items.map((item, idx) => (
+                          {sortOrderItemsForExport((selectedOrder.order_items as any[]) || []).map((item: any, idx: number) => (
                             <tr key={idx} className="border-t">
                               <td className="p-2">{item.product_name}</td>
                               <td className="p-2">{item.quantity}</td>

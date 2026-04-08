@@ -36,6 +36,12 @@ const ensurePlanDeptEnd = async (workOrderId: string) => {
   if (error) console.error('ensurePlanDeptEnd error:', error.message)
 }
 
+const displayPickingDepartmentLabel = (dept: string): string => {
+  if (dept === 'เบิก') return 'ETC'
+  if (dept === 'ทั่วไป') return 'อะไหล่'
+  return dept
+}
+
 export default function ReviewSection() {
   const [reviewDate, setReviewDate] = useState('')
   const [reviewOrderSelect, setReviewOrderSelect] = useState('') // work_order_id
@@ -483,7 +489,7 @@ export default function ReviewSection() {
                   <option value="">ทั้งหมด — ใบงาน</option>
                   {getDepartmentOptionsForWmsRows(reviewPlanSettings, inspectItems).map((d) => (
                     <option key={d} value={d}>
-                      {d}
+                      {displayPickingDepartmentLabel(d)}
                     </option>
                   ))}
                 </select>
@@ -499,7 +505,7 @@ export default function ReviewSection() {
             </div>
             {reviewDeptFilter && deptViewItems.length > 0 && (
               <div className="text-xs font-bold text-slate-600 leading-snug">
-                แผนก {reviewDeptFilter}: {deptCheckedCount} / {deptViewItems.length} ในมุมมองนี้
+                แผนก {displayPickingDepartmentLabel(reviewDeptFilter)}: {deptCheckedCount} / {deptViewItems.length} ในมุมมองนี้
                 <div className="text-[10px] font-semibold text-slate-400 mt-0.5">การปิดงาน/ซิงค์ Plan ยังอิงทุกแถวด้านบน</div>
               </div>
             )}

@@ -28,6 +28,12 @@ const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; col
 const WORKABLE_STATUSES = ['pending', 'wrong', 'not_find']
 type PickerScope = { type: 'work_order' | 'order'; id: string }
 
+const displayPickingDepartmentLabel = (dept: string): string => {
+  if (dept === 'เบิก') return 'ETC'
+  if (dept === 'ทั่วไป') return 'อะไหล่'
+  return dept
+}
+
 export default function PickerLayout() {
   const { user, signOut } = useAuthContext()
   const [activeView, setActiveView] = useState<ViewKey>('menu')
@@ -470,7 +476,7 @@ export default function PickerLayout() {
                         ).length
                         return (
                           <option key={d} value={d}>
-                            {d}
+                            {displayPickingDepartmentLabel(d)}
                             {pending > 0 ? ` — ค้าง ${pending}` : ''}
                           </option>
                         )

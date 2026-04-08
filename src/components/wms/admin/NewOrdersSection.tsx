@@ -19,7 +19,7 @@ function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]
 
 // Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION + อะไหล่ (rubber_code)
 const MAIN_KEYWORDS = ['STAMP', 'LASER', 'SUBLIMATION']
-const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK']
+const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK', 'SUB-KTA', 'SUB-KTC']
 const isMainCategory = (cat: string, rubberCode?: string): boolean => {
   if ((rubberCode || '').trim() !== '') return true
   const upper = (cat || '').toUpperCase()

@@ -105,7 +105,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
 
     if (unassignedNames.length > 0) {
       const mainKW = ['STAMP', 'LASER', 'SUBLIMATION']
-      const etcCats = ['CALENDAR', 'ETC', 'INK']
+      const etcCats = ['CALENDAR', 'ETC', 'INK', 'SUB-KTA', 'SUB-KTC']
       const isPickable = (cat: string, rubberCode?: string) => {
         if ((rubberCode || '').trim() !== '') return true
         const u = (cat || '').toUpperCase()
