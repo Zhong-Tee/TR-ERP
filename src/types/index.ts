@@ -166,6 +166,8 @@ export interface PackingVideo {
   duration_seconds: number | null
   recorded_by: string | null
   recorded_at: string | null
+  gdrive_file_id?: string | null
+  gdrive_url?: string | null
   created_at: string
 }
 

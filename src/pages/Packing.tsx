@@ -228,6 +228,8 @@ export default function Packing() {
   const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
   const [queueItems, setQueueItems] = useState<UploadQueueItem[]>([])
   const [queueLoading, setQueueLoading] = useState(false)
+  const [packingVideoUrl, setPackingVideoUrl] = useState<string | null>(null)
+  const [packingVideoLoading, setPackingVideoLoading] = useState(false)
   const [dialog, setDialog] = useState<{
     open: boolean
     mode: 'alert' | 'confirm'
@@ -621,6 +623,65 @@ export default function Packing() {
     if (currentIndex < 0) return null
     return aggregatedData[currentIndex] || null
   }, [aggregatedData, currentIndex])
+
+  useEffect(() => {
+    if (view !== 'main') return
+    if (!currentGroup || currentGroup.length === 0) {
+      setPackingVideoUrl(null)
+      return
+    }
+    const orderId = currentGroup[0].order_id
+    const tracking = currentGroup[0].tracking_number
+    if (!orderId && !tracking) {
+      setPackingVideoUrl(null)
+      return
+    }
+
+    let cancelled = false
+    const run = async () => {
+      setPackingVideoLoading(true)
+      try {
+        // Prefer exact link by order_id; fallback to tracking_number for legacy rows.
+        const tryByOrder = async () => {
+          if (!orderId) return null
+          const { data, error } = await supabase
+            .from('pk_packing_videos')
+            .select('gdrive_url, created_at')
+            .eq('order_id', orderId)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+          if (error) throw error
+          return (data && data[0]?.gdrive_url) ? String(data[0].gdrive_url) : null
+        }
+        const tryByTracking = async () => {
+          const t = (tracking || '').trim()
+          if (!t) return null
+          const { data, error } = await supabase
+            .from('pk_packing_videos')
+            .select('gdrive_url, created_at')
+            .eq('tracking_number', t)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+            .limit(1)
+          if (error) throw error
+          return (data && data[0]?.gdrive_url) ? String(data[0].gdrive_url) : null
+        }
+
+        const url = (await tryByOrder()) ?? (await tryByTracking())
+        if (!cancelled) setPackingVideoUrl(url)
+      } catch (_err) {
+        if (!cancelled) setPackingVideoUrl(null)
+      } finally {
+        if (!cancelled) setPackingVideoLoading(false)
+      }
+    }
+
+    run()
+    return () => {
+      cancelled = true
+    }
+  }, [view, currentGroup])
 
   const newWorkOrders = useMemo(() => {
     return workOrders
@@ -2304,6 +2365,35 @@ export default function Packing() {
                             <div className="text-lg font-semibold break-all">
                               เลขพัสดุ: {formatParcelNo(currentGroup[0].tracking_number)}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!packingVideoUrl) return
+                                window.open(packingVideoUrl, '_blank', 'noopener,noreferrer')
+                              }}
+                              disabled={!packingVideoUrl || packingVideoLoading}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 shrink-0"
+                              title={packingVideoUrl ? 'เปิดวิดีโอในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+                            >
+                              {packingVideoLoading ? 'กำลังหา...' : 'วิดีโอ'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!packingVideoUrl) return
+                                try {
+                                  await navigator.clipboard.writeText(packingVideoUrl)
+                                  openAlert('คัดลอกลิงก์วิดีโอแล้ว')
+                                } catch {
+                                  openAlert('คัดลอกไม่สำเร็จ (เบราว์เซอร์ไม่อนุญาต) กรุณาคลิก "วิดีโอ" เพื่อเปิดแท็บใหม่แทน')
+                                }
+                              }}
+                              disabled={!packingVideoUrl || packingVideoLoading}
+                              className="px-3 py-1.5 text-sm font-semibold rounded bg-slate-200 text-slate-800 hover:bg-slate-300 disabled:opacity-40 shrink-0"
+                              title="คัดลอกลิงก์วิดีโอ"
+                            >
+                              คัดลอกลิงก์
+                            </button>
                             <button
                               type="button"
                               onClick={stopRecordingAndAdvance}
