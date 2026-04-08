@@ -64,6 +64,7 @@ export default function Orders() {
   
   const [confirmCount, setConfirmCount] = useState(0)
   const [shippedCount, setShippedCount] = useState(0)
+  const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
@@ -73,7 +74,10 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
-  const [allDateFrom, setAllDateFrom] = useState(() => new Date().toISOString().split('T')[0])
+  const [allDateFrom, setAllDateFrom] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  })
   const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
@@ -449,7 +453,7 @@ export default function Orders() {
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
               { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
               { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
-              { id: 'shipped', label: 'จัดส่งแล้ว', count: shippedCount, countColor: 'text-blue-600' },
+              { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
               { id: 'issue', label: 'Issue', count: issueCount, countColor: 'text-blue-600' },
             ].filter((tab) => hasAccess(`orders-${tab.id}`)).map((tab) => (
@@ -542,6 +546,9 @@ export default function Orders() {
                     onChange={(e) => setShippedDateTo(e.target.value)}
                     className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
                   />
+                  <div className="text-sm font-semibold text-surface-700 flex items-center px-3 py-2 rounded-xl bg-white border border-surface-200">
+                    จำนวนบิลหลังกรอง: {shippedFilteredCount.toLocaleString()} รายการ
+                  </div>
                 </>
               )}
               {SALES_TR_FILTER_TABS.includes(activeTab) && user?.role === 'sales-tr' && (
@@ -695,6 +702,7 @@ export default function Orders() {
             onOrderClick={handleOrderClickViewOnly}
             dateFrom={shippedDateFrom}
             dateTo={shippedDateTo}
+            onCountChange={setShippedFilteredCount}
             refreshTrigger={listRefreshKey}
             useDetailViewOnClick={true}
             detailReadOnly={true}

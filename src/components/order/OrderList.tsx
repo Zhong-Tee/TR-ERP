@@ -233,6 +233,10 @@ export default function OrderList({
           .select('*, or_order_items(*), or_order_reviews(*)')
           .order('created_at', { ascending: false })
 
+        const statuses = status == null ? [] : Array.isArray(status) ? status : [status]
+        const isFilteringShipped = statuses.includes('จัดส่งแล้ว')
+        const dateField = isFilteringShipped ? 'shipped_time' : 'created_at'
+
         if (status != null) {
           if (Array.isArray(status)) {
             query = query.in('status', status)
@@ -251,10 +255,10 @@ export default function OrderList({
           query = query.eq('channel_code', channelFilter)
         }
         if (dateFrom) {
-          query = query.gte('created_at', `${dateFrom}T00:00:00.000Z`)
+          query = query.gte(dateField, `${dateFrom}T00:00:00.000Z`)
         }
         if (dateTo) {
-          query = query.lte('created_at', `${dateTo}T23:59:59.999Z`)
+          query = query.lte(dateField, `${dateTo}T23:59:59.999Z`)
         }
         query = applySalesOrderAdminScope(query)
         if (query === null) {
@@ -286,6 +290,39 @@ export default function OrderList({
       // Load verification statuses for each order
       const orderIds = filteredData.map((o: any) => o.id)
       if (orderIds.length > 0) {
+        // Load packing video URL (Google Drive) per order
+        try {
+          const { data: videoRows, error: videoErr } = await supabase
+            .from('pk_packing_videos')
+            .select('order_id, tracking_number, gdrive_url, created_at')
+            .in('order_id', orderIds)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+          if (videoErr) throw videoErr
+
+          const gdriveByOrderId = new Map<string, string>()
+          const gdriveByTracking = new Map<string, string>()
+          for (const r of (videoRows || []) as any[]) {
+            const url = r?.gdrive_url ? String(r.gdrive_url) : ''
+            if (!url) continue
+            const oid = r?.order_id ? String(r.order_id) : ''
+            const tn = r?.tracking_number ? String(r.tracking_number).trim() : ''
+            if (oid && !gdriveByOrderId.has(oid)) gdriveByOrderId.set(oid, url)
+            if (tn && !gdriveByTracking.has(tn)) gdriveByTracking.set(tn, url)
+          }
+
+          filteredData = filteredData.map((order: any) => {
+            const tn = order.tracking_number ? String(order.tracking_number).trim() : ''
+            const gdrive_url =
+              gdriveByOrderId.get(String(order.id)) ||
+              (tn ? gdriveByTracking.get(tn) : null) ||
+              null
+            return { ...order, packing_gdrive_url: gdrive_url }
+          })
+        } catch (_e) {
+          // ignore video lookup failure
+        }
+
         const { data: verifiedSlipsData } = await supabase
           .from('ac_verified_slips')
           .select('order_id, verified_amount, account_name_match, bank_code_match, amount_match, validation_status, validation_errors, easyslip_response')
@@ -656,6 +693,20 @@ export default function OrderList({
                   ไม่อนุมัติ
                 </span>
               )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const url = (order as any).packing_gdrive_url as string | null | undefined
+                  if (!url) return
+                  window.open(url, '_blank', 'noopener,noreferrer')
+                }}
+                disabled={!(order as any).packing_gdrive_url}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 whitespace-nowrap"
+                title={(order as any).packing_gdrive_url ? 'เปิดวิดีโอในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+              >
+                วิดีโอ
+              </button>
               <div className="text-right">
                 <div
                   className={`text-xl font-bold ${
