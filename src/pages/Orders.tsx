@@ -63,7 +63,6 @@ export default function Orders() {
   const [cancelledCount, setCancelledCount] = useState(0)
   
   const [confirmCount, setConfirmCount] = useState(0)
-  const [shippedCount, setShippedCount] = useState(0)
   const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
@@ -194,11 +193,6 @@ export default function Orders() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ยกเลิก')
       )
 
-      // Load shipped count
-      const { count: shippedCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'จัดส่งแล้ว')
-      )
-
       // Load confirm count: PUMP ทุกบิลในสถานะคิว + ช่องอื่นที่ติ๊กออกแบบ (requires_confirm_design)
       const confirmStatusList = [
         'ตรวจสอบแล้ว',
@@ -255,7 +249,6 @@ export default function Orders() {
       setDataErrorCount(dataErrorCount || 0)
       setCancelledCount(cancelledCount || 0)
       setConfirmCount(confirmCountTotal ?? 0)
-      setShippedCount(shippedCount || 0)
       setIssueCount(issueCount || 0)
       // แจ้ง Sidebar ให้อัปเดตตัวเลขเมนูทันที
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
