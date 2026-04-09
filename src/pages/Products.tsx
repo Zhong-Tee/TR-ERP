@@ -178,8 +178,9 @@ export default function Products() {
   const [appliedSearch, setAppliedSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
-  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
+  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'active' | 'hold' | 'hidden' | 'all'>('active')
   const [hiddenCount, setHiddenCount] = useState(0)
+  const [holdCount, setHoldCount] = useState(0)
   const [channels, setChannels] = useState<ChannelOption[]>([])
   const [channelPrices, setChannelPrices] = useState<Record<string, string>>({})
   const [categories, setCategories] = useState<string[]>([])
@@ -188,6 +189,7 @@ export default function Products() {
   const [form, setForm] = useState(emptyForm())
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [holdingId, setHoldingId] = useState<string | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadPreview, setUploadPreview] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
@@ -308,9 +310,16 @@ export default function Products() {
         .from('pr_products')
         .select('*', { count: 'exact', head: true })
         .eq('is_active', false)
+      const holdCountQuery = supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .eq('is_hold', true)
 
       if (productVisibilityFilter === 'active') {
-        query = query.eq('is_active', true)
+        query = query.eq('is_active', true).eq('is_hold', false)
+      } else if (productVisibilityFilter === 'hold') {
+        query = query.eq('is_active', true).eq('is_hold', true)
       } else if (productVisibilityFilter === 'hidden') {
         query = query.eq('is_active', false)
       }
@@ -327,16 +336,19 @@ export default function Products() {
         query = query.eq('product_type', productTypeFilter)
       }
 
-      const [{ data, error, count }, { count: hiddenTotal, error: hiddenErr }] = await Promise.all([
+      const [{ data, error, count }, { count: hiddenTotal, error: hiddenErr }, { count: holdTotal, error: holdErr }] = await Promise.all([
         query,
         hiddenCountQuery,
+        holdCountQuery,
       ])
 
       if (error) throw error
       if (hiddenErr) throw hiddenErr
+      if (holdErr) throw holdErr
       setProducts(data || [])
       setTotalCount(count || 0)
       setHiddenCount(hiddenTotal || 0)
+      setHoldCount(holdTotal || 0)
     } catch (error: any) {
       console.error('Error loading products:', error)
       showNotify('error', 'เกิดข้อผิดพลาดในการโหลดข้อมูล', error.message)
@@ -552,6 +564,29 @@ export default function Products() {
       showNotify('error', 'เกิดข้อผิดพลาด', error.message)
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  async function toggleProductHold(product: Product) {
+    setHoldingId(product.id)
+    try {
+      const nextHold = !product.is_hold
+      const { error } = await supabase
+        .from('pr_products')
+        .update({
+          is_hold: nextHold,
+          hold_at: nextHold ? new Date().toISOString() : null,
+          hold_by: nextHold ? (user?.id ?? null) : null,
+        })
+        .eq('id', product.id)
+      if (error) throw error
+      showNotify('success', nextHold ? 'ตั้งค่า Hold เรียบร้อย' : 'ยกเลิก Hold เรียบร้อย')
+      loadProducts()
+    } catch (error: any) {
+      console.error('Error toggling product hold:', error)
+      showNotify('error', 'เกิดข้อผิดพลาด', error.message)
+    } finally {
+      setHoldingId(null)
     }
   }
 
@@ -1212,14 +1247,23 @@ export default function Products() {
             <select
               id="products-visibility"
               value={productVisibilityFilter}
-              onChange={(e) => setProductVisibilityFilter(e.target.value as 'active' | 'hidden' | 'all')}
+              onChange={(e) => setProductVisibilityFilter(e.target.value as 'active' | 'hold' | 'hidden' | 'all')}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-surface-50 text-base"
             >
               <option value="active">ใช้งานอยู่</option>
+              <option value="hold">Hold</option>
               <option value="hidden">ที่ซ่อนอยู่</option>
               <option value="all">ทั้งหมด</option>
             </select>
-            <p className="text-xs text-surface-500 mt-1">ซ่อนอยู่ {hiddenCount} รายการ</p>
+            <div className="mt-1 flex items-center gap-2 text-xs text-surface-500">
+              <span className="inline-flex items-center gap-1">
+                Hold <span className="font-semibold text-amber-700">{holdCount}</span> รายการ
+              </span>
+              <span className="text-surface-300">|</span>
+              <span className="inline-flex items-center gap-1">
+                ซ่อนอยู่ <span className="font-semibold text-surface-700">{hiddenCount}</span> รายการ
+              </span>
+            </div>
           </div>
         </div>
 
@@ -1292,6 +1336,19 @@ export default function Products() {
                           className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold"
                         >
                           แก้ไข
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleProductHold(product)}
+                          disabled={holdingId === product.id}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 ${
+                            product.is_hold
+                              ? 'bg-amber-500 text-white hover:bg-amber-600'
+                              : 'bg-white text-amber-700 border border-amber-300 hover:bg-amber-50'
+                          }`}
+                          title={product.is_hold ? 'กดเพื่อยกเลิก Hold' : 'กดเพื่อ Hold (ไม่แจ้งเตือนถึงจุดสั่งซื้อ)'}
+                        >
+                          {holdingId === product.id ? 'กำลังบันทึก...' : product.is_hold ? 'Hold' : 'Hold'}
                         </button>
                         <button
                           type="button"

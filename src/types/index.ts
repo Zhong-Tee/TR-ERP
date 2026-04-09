@@ -81,6 +81,8 @@ export interface Order {
   tracking_number: string | null
   claim_type: string | null
   claim_details: string | null
+  /** บิล REQ: เวลายืนยันที่อยู่/ผู้รับ/เบอร์ (ว่าง = ยังไม่ยืนยัน) */
+  claim_shipping_confirmed_at?: string | null
   confirm_note?: string | null
   /** PUMP: true = คิว Confirm งานใหม่ (ต้องออกแบบ), false = คิว ไม่ต้องออกแบบ เมื่อเข้าสู่ขั้นตรวจสอบแล้ว */
   requires_confirm_design?: boolean
@@ -252,6 +254,11 @@ export interface Product {
   safety_stock: number | null
   unit_name: string | null
   unit_multiplier: number | null
+  /** true = ไม่แจ้งเตือนถึงจุดสั่งซื้อ (รอขายหมดแล้วค่อยซ่อน) */
+  is_hold: boolean
+  hold_reason?: string | null
+  hold_at?: string | null
+  hold_by?: string | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket product-images ตาม product_code */
   image_url?: string | null
   is_active: boolean

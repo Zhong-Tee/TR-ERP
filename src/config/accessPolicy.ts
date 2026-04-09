@@ -127,6 +127,8 @@ const MENU_KEY_ALIASES: Record<string, string[]> = {
   'warehouse-stock': ['warehouse'],
   hr: ['hr-employees'],
   'hr-employees': ['hr'],
+  /** แท็บบิลเคลม REQ ใช้สิทธิ์เดียวกับสร้าง/แก้ไข */
+  'orders-claim-req': ['orders-create'],
 }
 
 const MENU_KEY_PARENT_MAP: Record<string, string> = {
@@ -176,6 +178,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'orders-issue': 'orders',
   'orders-work-orders': 'orders',
   'orders-work-orders-manage': 'orders',
+  'orders-claim-req': 'orders',
   'plan-dash': 'plan',
   'plan-dept': 'plan',
   'plan-jobs': 'plan',
@@ -192,6 +195,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'packing-shipped': 'packing',
   'packing-queue': 'packing',
   'packing-tagSearch': 'packing',
+  'account-claim-approval': 'account',
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {

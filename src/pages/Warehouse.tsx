@@ -82,7 +82,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost')
+        .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost, is_hold')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -195,6 +195,7 @@ export default function Warehouse() {
   }
 
   function isBelowReorderThreshold(product: Product, onHand: number): boolean {
+    if (product.is_hold) return false
     const pendingQty = Number(pendingPoMap[product.id] || 0)
     const availableSoon = onHand + pendingQty
     const orderPoint = toNumber(product.order_point)

@@ -30,7 +30,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const prevIssueCountRef = useRef(0)
   const prevChatCountRef = useRef(0)
 
-  // ── รับค่า warehouse count จาก Sidebar RPC (ลด 2 queries + 1 realtime channel ซ้ำ) ──
+  // ── รับค่า warehouse count จาก Sidebar RPC + จากหน้า Warehouse (Hold / logic เดียวกับปุ่ม "ถึงจุดสั่งซื้อ") ──
   useEffect(() => {
     const onWarehouseCount = (e: Event) => {
       const count = (e as CustomEvent).detail?.count
@@ -45,10 +45,12 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       if (detail) setPurchaseBadge(detail)
     }
     window.addEventListener('sidebar-warehouse-count', onWarehouseCount)
+    window.addEventListener('warehouse-below-order-point', onWarehouseCount)
     window.addEventListener('sidebar-pending-return-count', onPendingReturnCount)
     window.addEventListener('sidebar-purchase-badge', onPurchaseBadge)
     return () => {
       window.removeEventListener('sidebar-warehouse-count', onWarehouseCount)
+      window.removeEventListener('warehouse-below-order-point', onWarehouseCount)
       window.removeEventListener('sidebar-pending-return-count', onPendingReturnCount)
       window.removeEventListener('sidebar-purchase-badge', onPurchaseBadge)
     }

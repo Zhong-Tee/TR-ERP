@@ -5,6 +5,7 @@ import OrderList from '../components/order/OrderList'
 import OrderForm from '../components/order/OrderForm'
 import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
+import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
 import { Order, OrderStatus } from '../types'
 import { supabase } from '../lib/supabase'
 import {
@@ -18,6 +19,7 @@ import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminI
 type Tab =
   | 'all'
   | 'create'
+  | 'claim-req'
   | 'waiting'
   | 'complete'
   | 'verified'
@@ -27,10 +29,10 @@ type Tab =
   | 'shipped'
   | 'cancelled'
 
-const ALL_TABS: Tab[] = ['all', 'create', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
-const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue']
+const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
 const ALL_STATUS_FILTER_OPTIONS = [
   'รอลงข้อมูล',
   'ลงข้อมูลผิด',
@@ -65,6 +67,8 @@ export default function Orders() {
   const [confirmCount, setConfirmCount] = useState(0)
   const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
+  const [claimReqNeedShippingCount, setClaimReqNeedShippingCount] = useState(0)
+  const [claimRejectedCount, setClaimRejectedCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
@@ -372,6 +376,7 @@ export default function Orders() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => loadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => loadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => loadCounts())
       .subscribe()
 
     return () => {
@@ -441,6 +446,7 @@ export default function Orders() {
             {[
               { id: 'all', label: 'ทั้งหมด' },
               { id: 'create', label: 'สร้าง/แก้ไข' },
+              { id: 'claim-req', label: 'บิลเคลม (REQ)' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
@@ -462,20 +468,37 @@ export default function Orders() {
                     : 'border-transparent text-gray-500 hover:text-blue-600'
                 }`}
               >
-                {'count' in tab && tab.count !== undefined && 'countColor' in tab
-                  ? <>
-                      {tab.label}{' '}
-                      <span className={`font-semibold ${tab.countColor}`}>({tab.count})</span>
-                    </>
-                  : tab.label
-                }
+                {tab.id === 'claim-req' ? (
+                  <>
+                    {tab.label}
+                    {claimReqNeedShippingCount > 0 && (
+                      <span className="font-semibold text-amber-600"> ({claimReqNeedShippingCount})</span>
+                    )}
+                    {claimRejectedCount > 0 && (
+                      <span
+                        className="font-semibold text-rose-700"
+                        title="จำนวนคำขอเคลมที่บัญชีปฏิเสธ (ในขอบเขตของคุณ)"
+                      >
+                        {' '}
+                        ปฏิเสธ ({claimRejectedCount})
+                      </span>
+                    )}
+                  </>
+                ) : 'count' in tab && tab.count !== undefined && tab.count > 0 && 'countColor' in tab ? (
+                  <>
+                    {tab.label}{' '}
+                    <span className={`font-semibold ${tab.countColor}`}>({tab.count})</span>
+                  </>
+                ) : (
+                  tab.label
+                )}
               </button>
             ))}
           </nav>
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'create' && activeTab !== 'confirm' && (
+        {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <input
@@ -676,6 +699,22 @@ export default function Orders() {
             salesTrNarrowAdminUser={
               user?.role === 'sales-tr' ? narrowSalesTrAdminUserForTab() : undefined
             }
+          />
+        ) : activeTab === 'claim-req' ? (
+          <ClaimReqOrdersTab
+            userRole={user?.role}
+            narrowAdminUser={
+              user?.role === 'sales-tr'
+                ? narrowSalesTrAdminUserForTab()
+                : isSalesPumpOwnerScopedRole(user?.role)
+                  ? resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email) || undefined
+                  : undefined
+            }
+            refreshTrigger={listRefreshKey}
+            onCountsChange={(_pendingApproval, needShipping, rejected) => {
+              setClaimReqNeedShippingCount(needShipping)
+              setClaimRejectedCount(rejected ?? 0)
+            }}
           />
         ) : activeTab === 'data-error' ? (
           <OrderList

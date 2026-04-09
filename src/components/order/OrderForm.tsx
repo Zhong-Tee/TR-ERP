@@ -524,6 +524,28 @@ type ImportedOrder = {
   items: ImportedOrderItem[]
 }
 
+
+
+type ClaimDraftRow = {
+  key: string
+  product_id: string | null
+  product_name: string
+  quantity: number
+  unit_price: number
+  ink_color: string | null
+  product_type: string | null
+  cartoon_pattern: string | null
+  line_pattern: string | null
+  font: string | null
+  line_1: string | null
+  line_2: string | null
+  line_3: string | null
+  no_name_line: boolean
+  is_free: boolean
+  notes: string | null
+  file_attachment: string | null
+}
+
 type ProductStockSnapshot = {
   on_hand: number
   reserved: number
@@ -618,9 +640,9 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   }>({ open: false, entries: [] })
   const [wyFile, setWyFile] = useState<File | null>(null)
   const [wyStatus, setWyStatus] = useState('')
-  /** Modal เคลม: step 1 เลือกบิลอ้างอิง, step 2 เลือกหัวข้อเคลม + ยืนยัน */
+  /** Modal เคลม: step 1 เลือกบิลอ้างอิง, step 2 เลือกหัวข้อเคลม, step 3 แก้รายการแล้วส่งอนุมัติ */
   const [claimModalOpen, setClaimModalOpen] = useState(false)
-  const [claimStep, setClaimStep] = useState<1 | 2>(1)
+  const [claimStep, setClaimStep] = useState<1 | 2 | 3>(1)
   const [claimOrders, setClaimOrders] = useState<Order[]>([])
   const [claimOrdersLoading, setClaimOrdersLoading] = useState(false)
   const [claimFilterSearch, setClaimFilterSearch] = useState('')
@@ -630,7 +652,15 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
   const [selectedClaimRefOrder, setSelectedClaimRefOrder] = useState<Order | null>(null)
   const [claimTypes, setClaimTypes] = useState<{ code: string; name: string }[]>([])
   const [selectedClaimType, setSelectedClaimType] = useState('')
+  const [claimSupportingUrl, setClaimSupportingUrl] = useState('')
+  const [claimDescription, setClaimDescription] = useState('')
   const [claimConfirmSubmitting, setClaimConfirmSubmitting] = useState(false)
+  const [claimDraftItems, setClaimDraftItems] = useState<ClaimDraftRow[]>([])
+  const [claimDraftLoading, setClaimDraftLoading] = useState(false)
+  /** บิลจัดส่ง: มีคำขอรออนุมัติ / บิล REQ ล่าสุดหลังอนุมัติ (แสดงแทนเลขบิลเดิม + เคลมซ้ำ) */
+  const [claimRefMetaByOrderId, setClaimRefMetaByOrderId] = useState<
+    Record<string, { hasPending: boolean; latestReqBillNo: string | null }>
+  >({})
   /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ระดับบิลที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
   /** ฟิลด์ระดับรายการที่ผิดต่อ index (error_fields.items) — ถ้ามีใช้แยกรายการ ไม่ใช่ทั้งบิล */
@@ -1067,8 +1097,12 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     setClaimStep(1)
     setSelectedClaimRefOrder(null)
     setSelectedClaimType('')
+    setClaimSupportingUrl('')
+    setClaimDescription('')
     setClaimFilterSearch('')
     setClaimFilterChannel('')
+    setClaimDraftItems([])
+    setClaimRefMetaByOrderId({})
     setClaimOrdersLoading(true)
     ;(async () => {
       try {
@@ -1076,8 +1110,66 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           supabase.from('or_orders').select('*').not('bill_no', 'is', null).eq('status', 'จัดส่งแล้ว').order('created_at', { ascending: false }).limit(500),
           supabase.from('claim_type').select('code, name').order('sort_order', { ascending: true }),
         ])
-        if (ordersRes.data) setClaimOrders(ordersRes.data as Order[])
+        const orders = (ordersRes.data || []) as Order[]
+        if (ordersRes.data) setClaimOrders(orders)
         if (typesRes.data) setClaimTypes(typesRes.data as { code: string; name: string }[])
+
+        const meta: Record<string, { hasPending: boolean; latestReqBillNo: string | null }> = {}
+        for (const o of orders) {
+          meta[o.id] = { hasPending: false, latestReqBillNo: null }
+        }
+        const ids = orders.map((o) => o.id)
+        const CHUNK = 100
+        type ReqRow = {
+          ref_order_id: string
+          status: string
+          created_claim_order_id: string | null
+          reviewed_at: string | null
+        }
+        const reqRows: ReqRow[] = []
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK)
+          if (chunk.length === 0) continue
+          const { data: part } = await supabase
+            .from('or_claim_requests')
+            .select('ref_order_id, status, created_claim_order_id, reviewed_at')
+            .in('ref_order_id', chunk)
+            .in('status', ['pending', 'approved'])
+          if (part) reqRows.push(...(part as ReqRow[]))
+        }
+        for (const r of reqRows) {
+          if (r.status === 'pending' && meta[r.ref_order_id]) {
+            meta[r.ref_order_id].hasPending = true
+          }
+        }
+        const bestApproved = new Map<string, { reviewed_at: string; created_claim_order_id: string }>()
+        for (const r of reqRows) {
+          if (r.status !== 'approved' || !r.created_claim_order_id) continue
+          const prev = bestApproved.get(r.ref_order_id)
+          const rt = r.reviewed_at || ''
+          if (!prev || rt > prev.reviewed_at) {
+            bestApproved.set(r.ref_order_id, {
+              reviewed_at: rt,
+              created_claim_order_id: r.created_claim_order_id,
+            })
+          }
+        }
+        const createdIds = [...new Set([...bestApproved.values()].map((v) => v.created_claim_order_id))]
+        const billByOrderId: Record<string, string> = {}
+        for (let i = 0; i < createdIds.length; i += CHUNK) {
+          const ch = createdIds.slice(i, i + CHUNK)
+          if (ch.length === 0) continue
+          const { data: orows } = await supabase.from('or_orders').select('id, bill_no').in('id', ch)
+          for (const row of orows || []) {
+            const ro = row as { id: string; bill_no: string | null }
+            if (ro.bill_no) billByOrderId[ro.id] = ro.bill_no
+          }
+        }
+        for (const [refId, v] of bestApproved) {
+          const bn = billByOrderId[v.created_claim_order_id]
+          if (bn && meta[refId]) meta[refId].latestReqBillNo = bn
+        }
+        setClaimRefMetaByOrderId(meta)
       } catch (e) {
         console.error('Error loading claim data:', e)
       } finally {
@@ -3307,36 +3399,108 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     reader.readAsText(file, 'UTF-8')
   }
 
-  /** สร้างบิลเคลม: ดึงข้อมูลบิลอ้างอิง (ชื่อลูกค้า, ที่อยู่, รายการสินค้า) มาใส่บิลเคลม แล้วเปิดบิล */
-  async function handleClaimConfirm() {
-    if (!selectedClaimRefOrder?.bill_no || !selectedClaimRefOrder?.id || !selectedClaimType?.trim() || !onOpenOrder) return
+  /** ตรวจรายการเคลมในมอดัลก่อนส่งอนุมัติ */
+  function claimDraftIsValid(rows: ClaimDraftRow[]): boolean {
+    if (!rows.length) return false
+    return rows.every((r) => {
+      if (!r.product_id) return false
+      const q = Number(r.quantity)
+      if (!Number.isFinite(q) || q < 1) return false
+      if (r.is_free) return true
+      const up = Number(r.unit_price)
+      if (!Number.isFinite(up) || up < 0) return false
+      return true
+    })
+  }
+
+  async function loadClaimDraftAndGoStep3() {
+    if (!selectedClaimRefOrder?.id) return
+    setClaimDraftLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_items')
+        .select('*')
+        .eq('order_id', selectedClaimRefOrder.id)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      const list = data || []
+      const rows: ClaimDraftRow[] = list.map((item: Record<string, unknown>, idx: number) => ({
+        key: `cd-${String(item.id || idx)}-${idx}`,
+        product_id: item.product_id ? String(item.product_id) : null,
+        product_name: String(item.product_name ?? ''),
+        quantity: Number(item.quantity) || 1,
+        unit_price: Number(item.unit_price) || 0,
+        ink_color: item.ink_color != null ? String(item.ink_color) : null,
+        product_type: item.product_type != null ? String(item.product_type) : 'ชั้น1',
+        cartoon_pattern: item.cartoon_pattern != null ? String(item.cartoon_pattern) : null,
+        line_pattern: item.line_pattern != null ? String(item.line_pattern) : null,
+        font: item.font != null ? String(item.font) : null,
+        line_1: item.line_1 != null ? String(item.line_1) : null,
+        line_2: item.line_2 != null ? String(item.line_2) : null,
+        line_3: item.line_3 != null ? String(item.line_3) : null,
+        no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+        is_free: !!(item as { is_free?: boolean }).is_free,
+        notes: item.notes != null ? String(item.notes) : null,
+        file_attachment: item.file_attachment != null ? String(item.file_attachment) : null,
+      }))
+      setClaimDraftItems(rows)
+      setClaimStep(3)
+    } catch (e: any) {
+      console.error('Error loading claim items:', e)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'โหลดรายการบิลไม่สำเร็จ' })
+    } finally {
+      setClaimDraftLoading(false)
+    }
+  }
+
+  function normalizeClaimSupportingUrl(raw: string): string | null {
+    const s = raw.trim()
+    if (!s) return null
+    if (/^https?:\/\//i.test(s)) return s
+    return `https://${s}`
+  }
+
+  /** ส่งคำขอเคลมให้บัญชีอนุมัติ (สร้างบิล REQ หลังอนุมัติเท่านั้น) */
+  async function handleClaimSubmitForApproval() {
+    if (!selectedClaimRefOrder?.bill_no || !selectedClaimRefOrder?.id || !selectedClaimType?.trim()) return
+    if (!claimDescription.trim()) {
+      setMessageModal({
+        open: true,
+        title: 'ข้อมูลไม่ครบ',
+        message: 'กรุณากรอกคำอธิบายการเคลม',
+      })
+      return
+    }
+    if (!claimDraftIsValid(claimDraftItems)) {
+      setMessageModal({
+        open: true,
+        title: 'ข้อมูลไม่ครบ',
+        message: 'กรุณาเลือกสินค้าให้ครบ จำนวนอย่างน้อย 1 และราคาต่อหน่วย (หรือติ๊กของแถม)',
+      })
+      return
+    }
     setClaimConfirmSubmitting(true)
     try {
       const ref = selectedClaimRefOrder
-      const refBillNo = ref.bill_no
-      const claimBillNo = `REQ${refBillNo}`
       const adminUser = user?.username ?? user?.email ?? ''
-
-      // ดึงรายการสินค้าจากบิลอ้างอิง
-      const { data: refItems, error: itemsErr } = await supabase
-        .from('or_order_items')
-        .select('*')
-        .eq('order_id', ref.id)
-        .order('created_at', { ascending: true })
-      if (itemsErr) throw itemsErr
-
-      // คัดลอกข้อมูลจากบิลอ้างอิง: ชื่อลูกค้า, ที่อยู่, billing_details, ยอด, รายการสินค้า
-      const orderData = {
+      const itemsTotal = claimDraftItems.reduce(
+        (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
+        0,
+      )
+      const shipping = Number(ref.shipping_cost) || 0
+      const discount = Number(ref.discount) || 0
+      const totalAmount = itemsTotal + shipping - discount
+      const order = {
         channel_code: ref.channel_code,
         customer_name: ref.customer_name || '',
         customer_address: ref.customer_address || '',
         channel_order_no: ref.channel_order_no ?? null,
         recipient_name: ref.recipient_name ?? null,
         scheduled_pickup_at: ref.scheduled_pickup_at ?? null,
-        price: ref.price ?? 0,
-        shipping_cost: ref.shipping_cost ?? 0,
-        discount: ref.discount ?? 0,
-        total_amount: ref.total_amount ?? 0,
+        price: itemsTotal,
+        shipping_cost: shipping,
+        discount,
+        total_amount: totalAmount,
         payment_method: ref.payment_method ?? null,
         promotion: ref.promotion ?? null,
         payment_date: ref.payment_date ?? null,
@@ -3344,9 +3508,8 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         status: 'รอลงข้อมูล' as const,
         admin_user: adminUser,
         entry_date: new Date().toISOString().slice(0, 10),
-        bill_no: claimBillNo,
         claim_type: selectedClaimType.trim(),
-        claim_details: null,
+        claim_details: claimDescription.trim() || null,
         billing_details: ref.billing_details ?? null,
         packing_meta: null,
         work_order_name: null,
@@ -3355,48 +3518,61 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
         tracking_number: ref.tracking_number ?? null,
         requires_confirm_design: ref.requires_confirm_design !== false,
       }
-      const { data: newOrder, error } = await supabase
-        .from('or_orders')
-        .insert(orderData)
-        .select()
-        .single()
-      if (error) throw error
-      const newOrderId = (newOrder as { id: string }).id
+      const items = claimDraftItems.map((r) => ({
+        product_id: r.product_id,
+        product_name: r.product_name,
+        quantity: r.quantity,
+        unit_price: r.unit_price,
+        ink_color: r.ink_color,
+        product_type: r.product_type,
+        cartoon_pattern: r.cartoon_pattern,
+        line_pattern: r.line_pattern,
+        font: r.font,
+        line_1: r.line_1,
+        line_2: r.line_2,
+        line_3: r.line_3,
+        no_name_line: r.no_name_line,
+        is_free: r.is_free,
+        notes: r.notes,
+        file_attachment: r.file_attachment,
+      }))
 
-      // คัดลอกรายการสินค้าจากบิลอ้างอิงไปบิลเคลม (สร้าง item_uid เป็น bill_no-1, bill_no-2, ...)
-      if (refItems && refItems.length > 0) {
-        const itemsToInsert = refItems.map((item: Record<string, unknown>, index: number) => {
-          const itemUid = `${claimBillNo}-${index + 1}`
-          return {
-            order_id: newOrderId,
-            item_uid: itemUid,
-            product_id: item.product_id,
-            product_name: item.product_name ?? '',
-            quantity: item.quantity ?? 1,
-            unit_price: item.unit_price ?? 0,
-            ink_color: item.ink_color ?? null,
-            product_type: item.product_type ?? 'ชั้น1',
-            cartoon_pattern: item.cartoon_pattern ?? null,
-            line_pattern: item.line_pattern ?? null,
-            font: item.font ?? null,
-            line_1: item.line_1 ?? null,
-            line_2: item.line_2 ?? null,
-            line_3: item.line_3 ?? null,
-            no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
-            is_free: !!(item as { is_free?: boolean }).is_free,
-            notes: item.notes ?? null,
-            file_attachment: item.file_attachment ?? null,
-          }
-        })
-        const { error: itemsError } = await supabase.from('or_order_items').insert(itemsToInsert)
-        if (itemsError) throw itemsError
+      const { error } = await supabase.from('or_claim_requests').insert({
+        ref_order_id: ref.id,
+        claim_type: selectedClaimType.trim(),
+        supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
+        claim_description: claimDescription.trim(),
+        proposed_snapshot: { order, items },
+        ref_snapshot: {
+          bill_no: ref.bill_no,
+          price: ref.price,
+          total_amount: ref.total_amount,
+          shipping_cost: ref.shipping_cost,
+          discount: ref.discount,
+        },
+        submitted_by: user?.id ?? null,
+      })
+      if (error) {
+        if ((error as { code?: string }).code === '23505') {
+          setMessageModal({
+            open: true,
+            title: 'มีคำขอค้างอยู่',
+            message: 'บิลนี้มีคำขอเคลมที่รออนุมัติอยู่แล้ว',
+          })
+          return
+        }
+        throw error
       }
-
       setClaimModalOpen(false)
-      onOpenOrder(newOrder as Order)
+      setMessageModal({
+        open: true,
+        title: 'ส่งคำขอแล้ว',
+        message: 'รอฝ่ายบัญชีอนุมัติที่เมนู บัญชี → อนุมัติเคลม',
+      })
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
     } catch (e: any) {
-      console.error('Error creating claim order:', e)
-      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'สร้างบิลเคลมไม่สำเร็จ' })
+      console.error('Error submitting claim request:', e)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'ส่งคำขอเคลมไม่สำเร็จ' })
     } finally {
       setClaimConfirmSubmitting(false)
     }
@@ -5913,18 +6089,18 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     <Modal
       open={claimModalOpen}
       onClose={() => setClaimModalOpen(false)}
-      contentClassName="max-w-2xl max-h-[85vh] flex flex-col"
+      contentClassName="max-w-4xl max-h-[90vh] flex flex-col"
       closeOnBackdropClick
     >
       <div className="p-5 flex flex-col flex-1 min-h-0">
-        <h3 className="text-lg font-bold mb-4">สร้างบิลเคลม</h3>
+        <h3 className="text-lg font-bold mb-4">เคลม — ส่งขออนุมัติ</h3>
         {claimStep === 1 && (
           <>
             <p className="text-sm text-gray-600 mb-3">#1 เลือกบิลอ้างอิงที่ต้องการนำไปเคลม</p>
             <div className="flex gap-3 mb-3 flex-wrap">
               <input
                 type="text"
-                placeholder="ค้นหาเลขบิล / ชื่อลูกค้า / เลขคำสั่งซื้อ"
+                placeholder="ค้นหาเลขบิล / REQ / ชื่อลูกค้า / เลขคำสั่งซื้อ"
                 value={claimFilterSearch}
                 onChange={(e) => setClaimFilterSearch(e.target.value)}
                 className="flex-1 min-w-[180px] px-3 py-2 border rounded-lg"
@@ -5948,7 +6124,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                   <thead className="bg-gray-100 sticky top-0">
                     <tr>
                       <th className="text-left p-2 w-10"></th>
-                      <th className="text-left p-2">เลขบิล</th>
+                      <th className="text-left p-2">เลขบิล / REQ</th>
                       <th className="text-left p-2">ชื่อลูกค้า</th>
                       <th className="text-left p-2">ช่องทาง</th>
                       <th className="text-left p-2">สถานะ</th>
@@ -5964,27 +6140,57 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                         const bill = (o.bill_no || '').toLowerCase()
                         const name = (o.customer_name || '').toLowerCase()
                         const orderNo = (o.channel_order_no || '').toLowerCase()
-                        return bill.includes(search) || name.includes(search) || orderNo.includes(search)
+                        const reqBill = (claimRefMetaByOrderId[o.id]?.latestReqBillNo || '').toLowerCase()
+                        return (
+                          bill.includes(search) ||
+                          name.includes(search) ||
+                          orderNo.includes(search) ||
+                          (reqBill && reqBill.includes(search))
+                        )
                       })
-                      .map((o) => (
-                        <tr
-                          key={o.id}
-                          className={`border-t cursor-pointer hover:bg-gray-50 ${selectedClaimRefOrder?.id === o.id ? 'bg-blue-50' : ''}`}
-                          onClick={() => setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)}
-                        >
-                          <td className="p-2">
-                            <input
-                              type="radio"
-                              checked={selectedClaimRefOrder?.id === o.id}
-                              onChange={() => setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)}
-                            />
-                          </td>
-                          <td className="p-2 font-medium">{o.bill_no}</td>
-                          <td className="p-2">{o.customer_name || '-'}</td>
-                          <td className="p-2">{channels.find((c) => c.channel_code === o.channel_code)?.channel_name ?? o.channel_code}</td>
-                          <td className="p-2">{o.status}</td>
-                        </tr>
-                      ))}
+                      .map((o) => {
+                        const crm = claimRefMetaByOrderId[o.id]
+                        const blocked = !!crm?.hasPending
+                        const reqBill = crm?.latestReqBillNo || null
+                        const displayBill = reqBill || o.bill_no || '–'
+                        return (
+                          <tr
+                            key={o.id}
+                            className={`border-t ${blocked ? 'opacity-65 cursor-not-allowed bg-gray-50/80' : 'cursor-pointer hover:bg-gray-50'} ${selectedClaimRefOrder?.id === o.id ? 'bg-blue-50' : ''}`}
+                            onClick={() => {
+                              if (blocked) return
+                              setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)
+                            }}
+                          >
+                            <td className="p-2">
+                              <input
+                                type="radio"
+                                disabled={blocked}
+                                checked={selectedClaimRefOrder?.id === o.id}
+                                onChange={() => {
+                                  if (blocked) return
+                                  setSelectedClaimRefOrder(selectedClaimRefOrder?.id === o.id ? null : o)
+                                }}
+                              />
+                            </td>
+                            <td className="p-2">
+                              <div className="font-mono font-medium text-gray-900">{displayBill}</div>
+                              {reqBill && (
+                                <div className="text-xs text-gray-500 mt-0.5">อ้างอิงบิลจัดส่ง {o.bill_no}</div>
+                              )}
+                              {blocked && (
+                                <div className="text-xs text-amber-800 mt-0.5">รออนุมัติ — ไม่สามารถส่งคำขอซ้ำจนกว่าบัญชีจะอนุมัติหรือปฏิเสธ</div>
+                              )}
+                              {reqBill && !blocked && (
+                                <div className="text-xs text-blue-800 mt-0.5">เคลมซ้ำ — เมื่ออนุมัติจะได้เลข REQ ชุดใหม่ (เช่น …-2)</div>
+                              )}
+                            </td>
+                            <td className="p-2">{o.customer_name || '-'}</td>
+                            <td className="p-2">{channels.find((c) => c.channel_code === o.channel_code)?.channel_name ?? o.channel_code}</td>
+                            <td className="p-2">{o.status}</td>
+                          </tr>
+                        )
+                      })}
                   </tbody>
                 </table>
               )}
@@ -6008,18 +6214,54 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           <>
             <p className="text-sm text-gray-600 mb-2">#2 หัวข้อการเคลม (claim_type)</p>
             {selectedClaimRefOrder && (
-              <p className="text-sm text-gray-700 mb-3">บิลอ้างอิง: <strong>{selectedClaimRefOrder.bill_no}</strong></p>
+              <div className="text-sm text-gray-700 mb-3 space-y-1">
+                <p>
+                  บิลอ้างอิง (จัดส่งแล้ว): <strong className="font-mono">{selectedClaimRefOrder.bill_no}</strong>
+                </p>
+                {claimRefMetaByOrderId[selectedClaimRefOrder.id]?.latestReqBillNo && (
+                  <p className="text-blue-900">
+                    เคลมซ้ำ — บิล REQ ล่าสุด:{' '}
+                    <strong className="font-mono">
+                      {claimRefMetaByOrderId[selectedClaimRefOrder.id]!.latestReqBillNo}
+                    </strong>
+                  </p>
+                )}
+              </div>
             )}
             <select
               value={selectedClaimType}
               onChange={(e) => setSelectedClaimType(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg mb-4"
+              className="w-full px-3 py-2 border rounded-lg mb-3"
             >
               <option value="">-- เลือกหัวข้อการเคลม --</option>
               {claimTypes.map((ct) => (
                 <option key={ct.code} value={ct.code}>{ct.name}</option>
               ))}
             </select>
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">ลิงก์หลักฐาน (URL)</label>
+              <input
+                type="text"
+                value={claimSupportingUrl}
+                onChange={(e) => setClaimSupportingUrl(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+                placeholder="เช่น https://... (ไม่บังคับ)"
+              />
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                คำอธิบายการเคลม <span className="text-red-600">*</span>
+              </label>
+              <textarea
+                value={claimDescription}
+                onChange={(e) => setClaimDescription(e.target.value)}
+                rows={8}
+                maxLength={4000}
+                className="w-full px-3 py-2 border rounded-lg text-sm resize-y min-h-[180px]"
+                placeholder="อธิบายรายละเอียดการเคลม..."
+              />
+              <p className="text-xs text-gray-500 mt-1">{claimDescription.length}/4000</p>
+            </div>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -6033,11 +6275,237 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
               </button>
               <button
                 type="button"
-                onClick={handleClaimConfirm}
-                disabled={!selectedClaimType.trim() || claimConfirmSubmitting || !onOpenOrder}
+                onClick={() => void loadClaimDraftAndGoStep3()}
+                disabled={!selectedClaimType.trim() || claimDraftLoading || !claimDescription.trim()}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {claimDraftLoading ? 'กำลังโหลดรายการ...' : 'ถัดไป — แก้รายการเคลม'}
+              </button>
+            </div>
+          </>
+        )}
+        {claimStep === 3 && selectedClaimRefOrder && (
+          <>
+            <p className="text-sm text-gray-600 mb-2">#3 รายการที่ต้องการเคลม (แก้จำนวน / ราคา / สินค้า)</p>
+            <p className="text-sm text-gray-700 mb-2">
+              บิลอ้างอิง (จัดส่งแล้ว): <strong className="font-mono">{selectedClaimRefOrder.bill_no}</strong>
+              {claimRefMetaByOrderId[selectedClaimRefOrder.id]?.latestReqBillNo && (
+                <>
+                  {' · '}
+                  REQ ล่าสุด:{' '}
+                  <strong className="font-mono">
+                    {claimRefMetaByOrderId[selectedClaimRefOrder.id]!.latestReqBillNo}
+                  </strong>
+                </>
+              )}
+              {' · '}
+              หัวข้อ: <strong>{claimTypes.find((c) => c.code === selectedClaimType)?.name ?? selectedClaimType}</strong>
+            </p>
+            {claimDescription.trim() && (
+              <p className="text-sm text-gray-600 mb-2 whitespace-pre-wrap">
+                คำอธิบาย: <span className="text-gray-900">{claimDescription.trim()}</span>
+              </p>
+            )}
+            {claimSupportingUrl.trim() && (
+              <p className="text-sm text-blue-600 mb-2">
+                ลิงก์หลักฐาน:{' '}
+                <span className="break-all">{normalizeClaimSupportingUrl(claimSupportingUrl) || claimSupportingUrl.trim()}</span>
+              </p>
+            )}
+            <div className="border rounded-lg overflow-auto max-h-[340px] mb-3">
+              <table className="w-full text-xs sm:text-sm">
+                <thead className="bg-gray-100 sticky top-0">
+                  <tr>
+                    <th className="text-left p-2 min-w-[140px]">สินค้า</th>
+                    <th className="text-right p-2 w-20">จำนวน</th>
+                    <th className="text-right p-2 w-24">ราคา/หน่วย</th>
+                    <th className="text-center p-2 w-16">แถม</th>
+                    <th className="w-10" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {claimDraftItems.map((row, idx) => (
+                    <tr key={row.key} className="border-t">
+                      <td className="p-1">
+                        <input
+                          list="claim-product-datalist"
+                          value={row.product_name}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, product_name: v, product_id: null } : r)),
+                            )
+                          }}
+                          onBlur={() => {
+                            const ch = selectedClaimRefOrder.channel_code
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => {
+                                if (i !== idx) return r
+                                const match = findMatchedProduct(r.product_name)
+                                const fromMap = match?.id ? productChannelPriceMap[String(match.id)] : undefined
+                                if (!match) return r
+                                const manual = CHANNELS_MANUAL_PRICE.includes(ch)
+                                const nextPrice =
+                                  manual && fromMap != null && Number.isFinite(fromMap)
+                                    ? fromMap
+                                    : !manual && fromMap != null && Number.isFinite(fromMap)
+                                      ? fromMap
+                                      : r.unit_price
+                                return {
+                                  ...r,
+                                  product_id: match.id,
+                                  product_name: match.product_name,
+                                  unit_price: nextPrice,
+                                }
+                              }),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={row.quantity}
+                          onChange={(e) => {
+                            const q = parseInt(e.target.value, 10)
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, quantity: Number.isFinite(q) ? q : 1 } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded text-right"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          disabled={row.is_free}
+                          value={row.unit_price}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value)
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, unit_price: Number.isFinite(v) ? v : 0 } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded text-right disabled:bg-gray-100"
+                        />
+                      </td>
+                      <td className="p-1 text-center">
+                        <input
+                          type="checkbox"
+                          checked={row.is_free}
+                          onChange={(e) =>
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, is_free: e.target.checked } : r)),
+                            )
+                          }
+                        />
+                      </td>
+                      <td className="p-1">
+                        <button
+                          type="button"
+                          className="text-red-600 text-xs hover:underline"
+                          onClick={() => setClaimDraftItems((prev) => prev.filter((_, i) => i !== idx))}
+                        >
+                          ลบ
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <datalist id="claim-product-datalist">
+              {products
+                .filter((pr) => isProductCategoryActiveForOrder(pr))
+                .map((pr) => (
+                  <option key={pr.id} value={pr.product_name} />
+                ))}
+            </datalist>
+            <button
+              type="button"
+              onClick={() => {
+                const last = claimDraftItems[claimDraftItems.length - 1]
+                const row: ClaimDraftRow = {
+                  key: `new-${Date.now()}`,
+                  product_id: last?.product_id ?? null,
+                  product_name: last?.product_name ?? '',
+                  quantity: 1,
+                  unit_price: last?.unit_price ?? 0,
+                  ink_color: null,
+                  product_type: 'ชั้น1',
+                  cartoon_pattern: null,
+                  line_pattern: null,
+                  font: null,
+                  line_1: null,
+                  line_2: null,
+                  line_3: null,
+                  no_name_line: false,
+                  is_free: false,
+                  notes: null,
+                  file_attachment: null,
+                }
+                setClaimDraftItems((prev) => [...prev, row])
+              }}
+              className="mb-3 text-sm text-blue-600 hover:underline"
+            >
+              + เพิ่มรายการ
+            </button>
+            <div className="text-sm text-gray-700 mb-3 space-y-0.5">
+              <p>
+                ยอดรวมรายการ (ก่อนค่าขนส่ง/ส่วนลด):{' '}
+                <strong>
+                  {claimDraftItems
+                    .reduce((s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)), 0)
+                    .toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                </strong>
+              </p>
+              <p>
+                ยอดสุทธิเสนอ (ประมาณ):{' '}
+                <strong>
+                  {(
+                    claimDraftItems.reduce(
+                      (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
+                      0,
+                    ) +
+                    (Number(selectedClaimRefOrder.shipping_cost) || 0) -
+                    (Number(selectedClaimRefOrder.discount) || 0)
+                  ).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                </strong>
+                <span className="text-gray-500">
+                  {' '}
+                  (เทียบบิลเดิม {Number(selectedClaimRefOrder.total_amount || 0).toLocaleString('th-TH', {
+                    minimumFractionDigits: 2,
+                  })})
+                </span>
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setClaimStep(2)}
+                className="px-4 py-2 border rounded-lg hover:bg-gray-100"
+              >
+                ย้อนกลับ
+              </button>
+              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleClaimSubmitForApproval()}
+                disabled={
+                  !claimDraftIsValid(claimDraftItems) ||
+                  !selectedClaimType.trim() ||
+                  !claimDescription.trim() ||
+                  claimConfirmSubmitting
+                }
                 className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {claimConfirmSubmitting ? 'กำลังสร้าง...' : 'ยืนยันสร้างบิลเคลม'}
+                {claimConfirmSubmitting ? 'กำลังส่ง...' : 'ส่งอนุมัติเคลม'}
               </button>
             </div>
           </>

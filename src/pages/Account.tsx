@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
+import { fetchClaimTypeLabelMap, claimTypeLabel } from '../lib/claimTypeLabels'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getEasySlipQuota } from '../lib/slipVerification'
@@ -11,11 +12,25 @@ import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import AmendmentSection from '../components/account/AmendmentSection'
+import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'slip-age' | 'trial-balance'
-type AccountTab = 'refunds' | 'tax-invoice' | 'approvals'
-type ApprovalFilter = 'refund' | 'tax-invoice'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'trial-balance'
+type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
+type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
+
+type ClaimHistoryRow = {
+  id: string
+  ref_order_id: string
+  claim_type: string
+  status: string
+  created_at: string
+  reviewed_at: string | null
+  rejected_reason: string | null
+  created_claim_order_id: string | null
+  ref_snapshot: { bill_no?: string; total_amount?: number } | null
+  new_order?: { bill_no: string | null } | null
+}
 
 type VerifiedSlipRow = {
   id: string
@@ -150,7 +165,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
   'dashboard', 'slip-verification', 'manual-slip-check',
-  'bill-edit', 'amendment', 'slip-age', 'trial-balance',
+  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'trial-balance',
 ]
 
 /** แถบเมนูหลักบัญชี — รวมลิงก์เข้า Dashboard แยกแท็บโอนคืน / ใบกำกับภาษี */
@@ -159,7 +174,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   section: AccountSection
   label: string
   dashboardTab?: AccountTab
-  count?: 'manualSlip' | 'amendment' | 'refunds' | 'taxInvoice'
+  count?: 'manualSlip' | 'amendment' | 'refunds' | 'taxInvoice' | 'claimPending'
   accessKey?: string
 }> = [
   { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', accessKey: 'account-dashboard' },
@@ -167,6 +182,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
   { id: 'nav-bill-edit', section: 'bill-edit', label: 'แก้ไขบิล' },
   { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
+  { id: 'nav-claim-approval', section: 'claim-approval', label: 'อนุมัติเคลม', count: 'claimPending', accessKey: 'account-claim-approval' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
   { id: 'nav-trial', section: 'trial-balance', label: 'งบต้นทุนขาย' },
   { id: 'nav-refunds', section: 'dashboard', label: 'รายการโอนคืน', dashboardTab: 'refunds', count: 'refunds', accessKey: 'account-refunds' },
@@ -205,6 +221,7 @@ export default function Account() {
   const [historyLoading, setHistoryLoading] = useState(true)
   const [historyTaxInvoices, setHistoryTaxInvoices] = useState<BillingRequestOrder[]>([])
   const [historyRefunds, setHistoryRefunds] = useState<Refund[]>([])
+  const [historyClaimRequests, setHistoryClaimRequests] = useState<ClaimHistoryRow[]>([])
   const [viewOrderId, setViewOrderId] = useState<string | null>(null)
   /** เมื่อเปิดจากแถวรายการโอนคืน — แสดงรายละเอียดโอนเกินในโมดัลข้อมูลบิล */
   const [viewBillRefund, setViewBillRefund] = useState<Refund | null>(null)
@@ -214,6 +231,7 @@ export default function Account() {
   const [billViewSlipLoading, setBillViewSlipLoading] = useState(false)
   const [billViewSlipFailed, setBillViewSlipFailed] = useState<Set<number>>(new Set())
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>('refund')
+  const [claimLabels, setClaimLabels] = useState<Record<string, string>>({})
   const [slipPopupOrderId, setSlipPopupOrderId] = useState<string | null>(null)
   const [slipPopupBillNo, setSlipPopupBillNo] = useState<string>('')
   const [slipPopupUrls, setSlipPopupUrls] = useState<string[]>([])
@@ -257,19 +275,23 @@ export default function Account() {
 
   const [manualSlipPendingOrdersCount, setManualSlipPendingOrdersCount] = useState(0)
   const [amendmentPendingCount, setAmendmentPendingCount] = useState(0)
+  const [claimPendingCount, setClaimPendingCount] = useState(0)
   const [queueCountsLoading, setQueueCountsLoading] = useState(true)
 
   async function loadQueueCounts() {
     try {
-      const [slipRes, amendRes] = await Promise.all([
+      const [slipRes, amendRes, claimRes] = await Promise.all([
         supabase.from('ac_manual_slip_checks').select('order_id').eq('status', 'pending'),
         supabase.from('or_order_amendments').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabase.from('or_claim_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       ])
       if (slipRes.error) throw slipRes.error
       if (amendRes.error) throw amendRes.error
+      if (claimRes.error) throw claimRes.error
       const orderIds = new Set((slipRes.data || []).map((r: { order_id: string }) => r.order_id))
       setManualSlipPendingOrdersCount(orderIds.size)
       setAmendmentPendingCount(amendRes.count ?? 0)
+      setClaimPendingCount(claimRes.count ?? 0)
     } catch (e) {
       console.error('Error loading account queue counts:', e)
     } finally {
@@ -443,6 +465,10 @@ export default function Account() {
     })
   }, [])
 
+  useEffect(() => {
+    void fetchClaimTypeLabelMap().then(setClaimLabels)
+  }, [])
+
   // เรียลไทม์: Realtime เมื่อข้อมูลคิวบัญชีเปลี่ยน
   useEffect(() => {
     const channel = supabase
@@ -460,10 +486,22 @@ export default function Account() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => {
         loadQueueCounts()
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => {
+        loadQueueCounts()
+        loadHistory()
+      })
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
+  }, [])
+
+  useEffect(() => {
+    const onRefreshHistory = () => {
+      void loadHistory()
+    }
+    window.addEventListener('account-refresh-history', onRefreshHistory as EventListener)
+    return () => window.removeEventListener('account-refresh-history', onRefreshHistory as EventListener)
   }, [])
 
   // เรียลไทม์: โพลทุก 30 วินาทีเมื่ออยู่ที่ Dashboard และแท็บเปิดอยู่
@@ -616,7 +654,7 @@ export default function Account() {
     if (!initialLoadDone.current) setHistoryLoading(true)
     try {
       const historyExcludeStatuses = '("ตรวจสอบไม่ผ่าน","รอลงข้อมูล","ลงข้อมูลผิด")'
-      const [taxRes, refundRes] = await Promise.all([
+      const [taxRes, refundRes, claimRes] = await Promise.all([
         supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
@@ -628,10 +666,18 @@ export default function Account() {
           .select('*, or_orders(bill_no, customer_name, customer_address)')
           .in('status', ['approved', 'rejected'])
           .order('created_at', { ascending: false }),
+        supabase
+          .from('or_claim_requests')
+          .select(
+            'id, ref_order_id, claim_type, status, created_at, reviewed_at, rejected_reason, created_claim_order_id, ref_snapshot',
+          )
+          .in('status', ['approved', 'rejected'])
+          .order('reviewed_at', { ascending: false }),
       ])
 
       if ((taxRes as any).error) throw (taxRes as any).error
       if ((refundRes as any).error) throw (refundRes as any).error
+      if ((claimRes as any).error) throw (claimRes as any).error
 
       const taxData = ((taxRes as any).data || []) as BillingRequestOrder[]
       const confirmedTax = taxData.filter((o: BillingRequestOrder) => {
@@ -641,6 +687,24 @@ export default function Account() {
 
       setHistoryTaxInvoices(confirmedTax)
       setHistoryRefunds(((refundRes as any).data || []) as Refund[])
+
+      const claimRows = ((claimRes as any).data || []) as Omit<ClaimHistoryRow, 'new_order'>[]
+      const claimOrderIds = [
+        ...new Set(claimRows.map((r) => r.created_claim_order_id).filter((id): id is string => Boolean(id))),
+      ]
+      let claimBillById: Record<string, string> = {}
+      if (claimOrderIds.length > 0) {
+        const { data: ordRows } = await supabase.from('or_orders').select('id, bill_no').in('id', claimOrderIds)
+        claimBillById = Object.fromEntries((ordRows || []).map((o: { id: string; bill_no: string }) => [o.id, o.bill_no]))
+      }
+      setHistoryClaimRequests(
+        claimRows.map((r) => ({
+          ...r,
+          new_order: r.created_claim_order_id
+            ? { bill_no: claimBillById[r.created_claim_order_id] ?? null }
+            : null,
+        })),
+      )
     } catch (error: any) {
       console.error('Error loading history:', error)
     } finally {
@@ -754,6 +818,7 @@ export default function Account() {
       return activeTab === 'approvals' || (activeTab === 'refunds' && dashboardFromOverview)
     }
     if (item.dashboardTab === 'refunds') return activeTab === 'refunds' && !dashboardFromOverview
+    if (item.dashboardTab === 'claim-approval') return activeTab === 'claim-approval' && !dashboardFromOverview
     if (item.dashboardTab === 'tax-invoice') return activeTab === 'tax-invoice'
     return false
   }
@@ -782,6 +847,12 @@ export default function Account() {
       return {
         text: billingLoading ? '–' : String(taxInvoiceOrders.length),
         pillClass: 'bg-sky-100 text-sky-800',
+      }
+    }
+    if (item.count === 'claimPending') {
+      return {
+        text: queueCountsLoading ? '–' : String(claimPendingCount),
+        pillClass: 'bg-amber-100 text-amber-800',
       }
     }
     return null
@@ -1019,6 +1090,8 @@ export default function Account() {
           orderToAmend={orderToAmend || undefined}
           onDone={() => { setOrderToAmend(null) }}
         />
+      ) : accountSection === 'claim-approval' ? (
+        <ClaimApprovalSection />
       ) : accountSection === 'slip-age' ? (
         <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
           <div className="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-indigo-50">
@@ -1177,6 +1250,18 @@ export default function Account() {
           </span>
         </button>
         )}
+        {hasAccess('account-claim-approval') && (
+        <button
+          type="button"
+          onClick={() => { setActiveTab('claim-approval'); setDashboardFromOverview(false) }}
+          className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'claim-approval' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+        >
+          อนุมัติเคลม
+          <span className="min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold bg-amber-100 text-amber-800">
+            {queueCountsLoading ? '–' : claimPendingCount}
+          </span>
+        </button>
+        )}
         {hasAccess('account-tax-invoice') && (
         <button
           type="button"
@@ -1213,6 +1298,13 @@ export default function Account() {
               className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${approvalFilter === 'refund' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
             >
               โอนคืน
+            </button>
+            <button
+              type="button"
+              onClick={() => setApprovalFilter('claim')}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${approvalFilter === 'claim' ? 'bg-amber-100 text-amber-900' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+            >
+              เคลม
             </button>
             <button
               type="button"
@@ -1358,10 +1450,74 @@ export default function Account() {
                   </table>
                 </div>
               ))}
+            {approvalFilter === 'claim' && (historyClaimRequests.length === 0 ? (
+                <div className="text-center py-12 text-gray-500 text-base">ไม่พบประวัติการอนุมัติเคลม</div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-gray-100">
+                  <table className="w-full text-base">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200">
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">บิลอ้างอิง</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">บิลเคลม (REQ)</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">หัวข้อเคลม</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดเดิม</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ดำเนินการ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 min-w-[12rem]">หมายเหตุ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyClaimRequests.map((row) => (
+                        <tr
+                          key={row.id}
+                          onClick={() => {
+                            if (row.status === 'approved' && row.created_claim_order_id) {
+                              setViewOrderId(row.created_claim_order_id)
+                              setViewBillRefund(null)
+                            } else {
+                              setViewOrderId(row.ref_order_id)
+                              setViewBillRefund(null)
+                            }
+                          }}
+                          className="border-b border-gray-100 hover:bg-amber-50/50 transition-colors cursor-pointer"
+                        >
+                          <td className="px-4 py-3 font-medium text-gray-800">{row.ref_snapshot?.bill_no || '–'}</td>
+                          <td className="px-4 py-3 text-amber-800 font-medium">
+                            {row.status === 'approved' ? row.new_order?.bill_no || '–' : '–'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700">
+                            {claimTypeLabel(claimLabels, row.claim_type)}
+                          </td>
+                          <td className="px-4 py-3 text-gray-700 tabular-nums">
+                            ฿{Number(row.ref_snapshot?.total_amount ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${
+                                row.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                              }`}
+                            >
+                              {row.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 text-sm">
+                            {row.reviewed_at ? formatDateTime(row.reviewed_at) : '–'}
+                          </td>
+                          <td className="px-4 py-3 text-gray-600 text-sm whitespace-pre-wrap break-words">
+                            {row.status === 'rejected' && row.rejected_reason ? row.rejected_reason : '–'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
           </div>
         )}
       </section>
       )}
+
+      {activeTab === 'claim-approval' && hasAccess('account-claim-approval') && <ClaimApprovalSection />}
 
       {activeTab === 'refunds' && hasAccess('account-refunds') && (
       <section className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">

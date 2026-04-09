@@ -200,7 +200,6 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     warehouse: 0,
     purchase: 0,
   })
-  const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const { hasAccess } = useMenuAccess()
 
   const loadCounts = useCallback(async () => {
@@ -231,13 +230,14 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         (c.refund_pending || 0) +
         (c.tax_pending || 0) +
         (c.manual_slip_pending || 0) +
-        (c.amendment_pending || 0)
+        (c.amendment_pending || 0) +
+        (c.claim_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
       const qcTotal = qcWoCount + (c.qc_reject || 0)
       const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
 
       setMenuCounts({
-        orders: c.orders || 0,
+        orders: (c.orders || 0) + (c.orders_req_claim_shipping || 0),
         'admin-qc': c.admin_qc || 0,
         plan: planWorkQueueRes.count || 0,
         machinery: machineryWorkingRes.count || 0,
@@ -251,7 +251,6 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
       window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
       const pendingReturnCount = pendingReturnsRes.count || 0
-      setWarehousePendingReturnCount(pendingReturnCount)
 
       // ── แจ้ง TopBar ให้ใช้ค่า warehouse count จาก RPC (ลด query ซ้ำ) ──
       window.dispatchEvent(new CustomEvent('sidebar-warehouse-count', { detail: { count: c.warehouse || 0 } }))
@@ -280,6 +279,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_amendments' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_requisitions' }, () => debouncedLoadCounts())
@@ -416,9 +416,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           {filteredMenuItems.map((item) => {
             const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/')
             const baseCount = menuCounts[item.key] ?? 0
-            const displayCount = item.key === 'warehouse'
-              ? baseCount + warehousePendingReturnCount
-              : baseCount
+            /** คลัง: แสดงเฉพาะจำนวน "ถึงจุดสั่งซื้อ" (ไม่บวกคืนของค้าง — แยก badge ที่แท็บคืนของ) */
+            const displayCount = baseCount
             return (
               <li key={item.key}>
                 <Link
