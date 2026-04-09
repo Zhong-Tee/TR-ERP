@@ -114,32 +114,54 @@ export default function OrderDetailView({
     }
   }
 
-  // ตรวจว่า order มีข้อมูลครบหรือไม่ (ถ้า partial เช่นจาก WorkOrderSelectionList จะไม่มี status)
-  const isPartial = !initialOrder.status && !initialOrder.customer_address
+  // โหลดบิลเต็มเมื่อ payload ไม่ครบ — รวมกรณี WorkOrderManageList (มี status/ที่อยู่ แต่ไม่ select billing_details)
+  const isPartial =
+    (!initialOrder.status && !initialOrder.customer_address) ||
+    initialOrder.billing_details === undefined
+
   const order = (isPartial && fullOrder) ? fullOrder : initialOrder
 
   const inlineItems = ((order as any).or_order_items || []) as OrderItem[]
   const billing = order.billing_details
+  const billingPhone =
+    (typeof billing?.mobile_phone === 'string' && billing.mobile_phone.trim()) ||
+    (billing && typeof (billing as { mobilePhone?: unknown }).mobilePhone === 'string'
+      ? String((billing as { mobilePhone?: string }).mobilePhone).trim()
+      : '')
 
-  // ── Parse address เมื่อ billing ไม่มีข้อมูล structured (แขวง/ตำบล, เขต/อำเภอ, จังหวัด, รหัสไปรษณีย์, เบอร์โทร) ──
-  const hasBillingAddr = !!(billing?.sub_district || billing?.district || billing?.province || billing?.postal_code || billing?.mobile_phone)
+  // Parse ที่อยู่เพื่อดึงเบอร์จากข้อความเมื่อยังไม่มี mobile_phone ใน billing (เช่น billing มีแต่จังหวัดจากบิลอ้างอิง)
   const [parsedAddr, setParsedAddr] = useState<ParsedAddress | null>(null)
   useEffect(() => {
-    if (hasBillingAddr || !order.customer_address) { setParsedAddr(null); return }
+    if (!order.customer_address?.trim() || billingPhone) {
+      setParsedAddr(null)
+      return
+    }
     let cancelled = false
     ;(async () => {
       const parsed = await parseAddressText(order.customer_address, supabase)
       if (!cancelled) setParsedAddr(parsed)
     })()
-    return () => { cancelled = true }
-  }, [order.customer_address, hasBillingAddr])
+    return () => {
+      cancelled = true
+    }
+  }, [order.customer_address, billingPhone])
 
   // ค่าที่จะแสดง: ใช้ billing ก่อน ถ้าไม่มีให้ใช้ parsed
   const displaySubDistrict = billing?.sub_district || parsedAddr?.subDistrict || null
   const displayDistrict = billing?.district || parsedAddr?.district || null
   const displayProvince = billing?.province || parsedAddr?.province || null
   const displayPostalCode = billing?.postal_code || parsedAddr?.postalCode || null
-  const displayPhone = billing?.mobile_phone || (parsedAddr?.mobilePhoneCandidates?.[0] ? e164ToLocal(parsedAddr.mobilePhoneCandidates[0]) : parsedAddr?.mobilePhone) || null
+  const displayPhone =
+    billingPhone ||
+    (parsedAddr?.mobilePhoneCandidates?.[0]
+      ? e164ToLocal(parsedAddr.mobilePhoneCandidates[0])
+      : parsedAddr?.mobilePhone) ||
+    null
+
+  useEffect(() => {
+    setFullOrder(null)
+    setLoadedItems(null)
+  }, [initialOrder.id])
 
   // Lazy-load full order เมื่อได้ข้อมูลไม่ครบ
   useEffect(() => {
