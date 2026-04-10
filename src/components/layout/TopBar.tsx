@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import { canClearAllChats, canUseIssueChat, resolveMenuKeyFromPath } from '../../config/accessPolicy'
+import { dispatchIssueOnCount } from '../../lib/issueOnCountBroadcast'
 
 interface TopBarProps {
   sidebarOpen: boolean
@@ -221,6 +222,15 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     prevIssueCountRef.current = issueOnCount
     prevChatCountRef.current = newChatCount
   }, [canSeeChat, issueOnCount, newChatCount])
+
+  // แจ้ง Plan / Sidebar ให้ใช้ตัวเลขเดียวกับ TopBar โดยไม่ subscribe ซ้ำ
+  useEffect(() => {
+    if (!canSeeChat) {
+      dispatchIssueOnCount(0)
+      return
+    }
+    dispatchIssueOnCount(issueOnCount)
+  }, [canSeeChat, issueOnCount])
 
   // ── เมื่อ user อ่านแชทแล้ว → รีเฟรช count ──
   useEffect(() => {
@@ -561,7 +571,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                   }`}
                 >
                   <span className="font-medium text-gray-700">New Issue</span>
-                  <span className={`px-2.5 py-1 rounded-full text-sm font-bold bg-yellow-400 text-emerald-900 ${
+                  <span className={`px-2.5 py-1 rounded-full text-sm font-bold bg-yellow-400 text-red-600 ${
                     issueOnCount > 0 ? 'animate-bounce' : ''
                   }`}>
                     {issueOnCount}

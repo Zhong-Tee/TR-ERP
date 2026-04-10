@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderItem, OrderStatus, Product, CartoonPattern, BankSetting } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -13,6 +13,7 @@ import {
 import Modal from '../ui/Modal'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
+import { countThaiBillChars } from '../../lib/thaiBillCharCount'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -478,6 +479,17 @@ function SlipUploadSimple({
   )
 }
 
+export type OrderFormNameLinePayload = {
+  item_uid: string
+  line_1: string | null
+  line_2: string | null
+  line_3: string | null
+}
+
+export type OrderFormRef = {
+  getNameLinesPayload: () => OrderFormNameLinePayload[]
+}
+
 interface OrderFormProps {
   order?: Order | null
   /** options.switchToTab: 'complete' = หลัง save ให้สลับไปแท็บ "ตรวจสอบไม่ผ่าน" (ใช้เมื่อปฏิเสธโอนเกิน) */
@@ -488,6 +500,8 @@ interface OrderFormProps {
   readOnly?: boolean
   /** โหมดดูอย่างเดียว (จาก ตรวจสอบแล้ว/ยกเลิก): ซ่อนขอเอกสารและปุ่มบันทึก/ยกเลิก แสดงเฉพาะปุ่มกลับ */
   viewOnly?: boolean
+  /** จากบัญชี > แก้ไขบิล: แก้ได้เฉพาะบรรทัดชื่อ — บันทึกผ่านปุ่มด้านบนของ BillEditSection */
+  billEditScope?: 'full' | 'nameLinesOnly'
 }
 
 type ImportedOrderItem = {
@@ -579,8 +593,12 @@ const PLASTIC_INK_BONUS_MAP: Record<string, { product_code: string; product_name
   'พลาสติกน้ำเงิน': { product_code: '110000323', product_name: 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)' },
 }
 
-export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOnly = false, viewOnly = false }: OrderFormProps) {
+const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
+  { order, onSave, onCancel, onOpenOrder, readOnly = false, viewOnly = false, billEditScope = 'full' },
+  ref,
+) {
   const { user } = useAuthContext()
+  const nameLinesOnlyMode = billEditScope === 'nameLinesOnly'
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
   const [productStockMap, setProductStockMap] = useState<Record<string, ProductStockSnapshot>>({})
@@ -3873,6 +3891,15 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return pattern?.line_count ?? null
   }
 
+  /** ลิมิตสำหรับแสดงเตือนบนบิล — null/0 = ไม่จำกัด */
+  function getEffectiveLineCharLimit(pattern: CartoonPattern | null, line: 1 | 2 | 3): number | null {
+    if (!pattern) return null
+    const raw =
+      line === 1 ? pattern.line_1_max_chars : line === 2 ? pattern.line_2_max_chars : pattern.line_3_max_chars
+    if (raw == null || raw === 0) return null
+    return raw
+  }
+
   function applyLineCountToItem(index: number, lineCount: number | null) {
     if (lineCount == null) return
     const updates: Partial<OrderItem> = {}
@@ -3901,7 +3928,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     if (lines.length <= 1) return false
 
     // กันกรณีฟอร์มเป็นโหมดอ่านอย่างเดียว
-    if (formDisabled) return true
+    if (readOnly || viewOnly || billEditScope === 'nameLinesOnly') return true
 
     const newItems = [...items]
     let rowIndex = startIndex
@@ -3944,8 +3971,24 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     return list.slice().sort((a, b) => (a.pattern_name || '').localeCompare(b.pattern_name || ''))
   }
 
-  /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป */
-  const formDisabled = readOnly || viewOnly
+  /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป; nameLinesOnly ล็อกทุกอย่างยกเว้นบรรทัดชื่อ */
+  const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getNameLinesPayload: (): OrderFormNameLinePayload[] =>
+        items
+          .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
+          .map((it) => ({
+            item_uid: String(it.item_uid),
+            line_1: it.line_1 != null && String(it.line_1).trim() !== '' ? String(it.line_1) : null,
+            line_2: it.line_2 != null && String(it.line_2).trim() !== '' ? String(it.line_2) : null,
+            line_3: it.line_3 != null && String(it.line_3).trim() !== '' ? String(it.line_3) : null,
+          })),
+    }),
+    [items],
+  )
 
   return (
     <>
@@ -3955,6 +3998,11 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
             <p className="text-sm font-semibold text-red-800 mb-1">หมายเหตุ (รายการที่ต้องแก้ไข):</p>
             <p className="text-red-900 whitespace-pre-wrap">{reviewRemarks}</p>
+          </div>
+        )}
+        {nameLinesOnlyMode && order && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+            <strong>แก้เฉพาะบรรทัดชื่อ (1–3)</strong> — กด «บันทึกการแก้ไข» ด้านบนของหน้านี้เพื่อบันทึก
           </div>
         )}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -4426,6 +4474,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                 const patternInputValue =
                   patternSearchTerm[index] !== undefined ? patternSearchTerm[index] : (item.cartoon_pattern || '')
                 const lineLimit = getLineCountForPattern(item.cartoon_pattern)
+                const patternForLimits = getPatternByName(item.cartoon_pattern ?? '')
                 const stock = getStockSnapshot(item.product_id || null)
                 // OH: แสดงยอดขายได้ (on_hand − reserved) ให้ตรงกับ validateItemsAgainstStock
                 const sellableQty = Number(stock.available_to_sell || 0)
@@ -4802,54 +4851,109 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
                     </div>
                   </td>
                   <td className="border p-1.5">
-                    <input
-                      type="text"
-                      value={item.line_1 || ''}
-                      onChange={(e) => updateItem(index, 'line_1', e.target.value)}
-                      onPaste={(e) => {
-                        const text = e.clipboardData.getData('text')
-                        const handled = handleLine1Paste(index, text)
-                        if (handled) e.preventDefault()
-                      }}
-                      disabled={formDisabled || !isFieldEnabled(index, 'line_1') || !!(item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'line_1') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 1)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                    />
+                    {(() => {
+                      const line1Disabled =
+                        readOnly ||
+                        viewOnly ||
+                        !isFieldEnabled(index, 'line_1') ||
+                        !!(item as { no_name_line?: boolean }).no_name_line ||
+                        (lineLimit != null && lineLimit < 1)
+                      const line1Max = getEffectiveLineCharLimit(patternForLimits, 1)
+                      const line1Len = countThaiBillChars(item.line_1 || '')
+                      const line1Warn = !line1Disabled && line1Max != null && line1Len > line1Max
+                      return (
+                        <div className="flex items-center gap-0.5 min-w-0">
+                          <input
+                            type="text"
+                            value={item.line_1 || ''}
+                            onChange={(e) => updateItem(index, 'line_1', e.target.value)}
+                            onPaste={(e) => {
+                              const text = e.clipboardData.getData('text')
+                              const handled = handleLine1Paste(index, text)
+                              if (handled) e.preventDefault()
+                            }}
+                            disabled={line1Disabled}
+                            className={`flex-1 min-w-0 px-1.5 py-1 border rounded text-xs ${line1Disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['line_1'] ?? reviewErrorFields?.line_1) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                          />
+                          {line1Warn ? (
+                            <span
+                              className="text-amber-600 font-bold text-sm shrink-0 cursor-help select-none leading-none"
+                              title={`เกิน ${line1Len - line1Max!} ตัว`}
+                            >
+                              !
+                            </span>
+                          ) : null}
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="border p-1.5">
-                    <input
-                      type="text"
-                      value={item.line_2 || ''}
-                      onChange={(e) => updateItem(index, 'line_2', e.target.value)}
-                      disabled={
-                        formDisabled ||
+                    {(() => {
+                      const line2Disabled =
+                        readOnly ||
+                        viewOnly ||
                         !isFieldEnabled(index, 'line_2') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
                         (lineLimit != null && lineLimit < 2)
-                      }
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${
-                        (formDisabled || !isFieldEnabled(index, 'line_2') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 2))
-                          ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
-                          : ''
-                      } ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                    />
+                      const line2Max = getEffectiveLineCharLimit(patternForLimits, 2)
+                      const line2Len = countThaiBillChars(item.line_2 || '')
+                      const line2Warn = !line2Disabled && line2Max != null && line2Len > line2Max
+                      return (
+                        <div className="flex items-center gap-0.5 min-w-0">
+                          <input
+                            type="text"
+                            value={item.line_2 || ''}
+                            onChange={(e) => updateItem(index, 'line_2', e.target.value)}
+                            disabled={line2Disabled}
+                            className={`flex-1 min-w-0 px-1.5 py-1 border rounded text-xs ${
+                              line2Disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                            } ${(reviewErrorFieldsByItem?.[index]?.['line_2'] ?? reviewErrorFields?.line_2) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                          />
+                          {line2Warn ? (
+                            <span
+                              className="text-amber-600 font-bold text-sm shrink-0 cursor-help select-none leading-none"
+                              title={`เกิน ${line2Len - line2Max!} ตัว`}
+                            >
+                              !
+                            </span>
+                          ) : null}
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="border p-1.5">
-                    <input
-                      type="text"
-                      value={item.line_3 || ''}
-                      onChange={(e) => updateItem(index, 'line_3', e.target.value)}
-                      disabled={
-                        formDisabled ||
+                    {(() => {
+                      const line3Disabled =
+                        readOnly ||
+                        viewOnly ||
                         !isFieldEnabled(index, 'line_3') ||
                         !!(item as { no_name_line?: boolean }).no_name_line ||
                         (lineLimit != null && lineLimit < 3)
-                      }
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${
-                        (formDisabled || !isFieldEnabled(index, 'line_3') || (item as { no_name_line?: boolean }).no_name_line || (lineLimit != null && lineLimit < 3))
-                          ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
-                          : ''
-                      } ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-                    />
+                      const line3Max = getEffectiveLineCharLimit(patternForLimits, 3)
+                      const line3Len = countThaiBillChars(item.line_3 || '')
+                      const line3Warn = !line3Disabled && line3Max != null && line3Len > line3Max
+                      return (
+                        <div className="flex items-center gap-0.5 min-w-0">
+                          <input
+                            type="text"
+                            value={item.line_3 || ''}
+                            onChange={(e) => updateItem(index, 'line_3', e.target.value)}
+                            disabled={line3Disabled}
+                            className={`flex-1 min-w-0 px-1.5 py-1 border rounded text-xs ${
+                              line3Disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
+                            } ${(reviewErrorFieldsByItem?.[index]?.['line_3'] ?? reviewErrorFields?.line_3) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                          />
+                          {line3Warn ? (
+                            <span
+                              className="text-amber-600 font-bold text-sm shrink-0 cursor-help select-none leading-none"
+                              title={`เกิน ${line3Len - line3Max!} ตัว`}
+                            >
+                              !
+                            </span>
+                          ) : null}
+                        </div>
+                      )
+                    })()}
                   </td>
                   <td className="border p-1.5">
                     <input
@@ -5373,7 +5477,7 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
       </div>
       )}
 
-      <div className="flex gap-4">
+      <div className="flex gap-4 flex-wrap items-center">
         {viewOnly ? (
           <button
             type="button"
@@ -5382,6 +5486,10 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
           >
             กลับ
           </button>
+        ) : nameLinesOnlyMode && order ? (
+          <p className="text-sm text-gray-600">
+            ใช้ปุ่ม <span className="font-semibold text-blue-700">บันทึกการแก้ไข</span> ด้านบนของหน้าแก้ไขบิล
+          </p>
         ) : (
         <>
         <button
@@ -6537,4 +6645,6 @@ export default function OrderForm({ order, onSave, onCancel, onOpenOrder, readOn
     </Modal>
     </>
   )
-}
+})
+
+export default OrderForm

@@ -212,6 +212,19 @@ function isWorkOrderCancelledRecord(wo: WorkOrder): boolean {
   return Number(wo.order_count) === 0
 }
 
+/** ให้ตรงกับเงื่อนไขค้นหาที่ใช้กับ or_orders (ไฮไลต์แถวในตาราง) */
+function orderMatchesSearch(order: Order, needleLower: string): boolean {
+  if (!needleLower) return false
+  const fields = [
+    order.bill_no,
+    order.customer_name,
+    order.recipient_name,
+    order.tracking_number,
+    order.channel_order_no,
+  ]
+  return fields.some((f) => String(f || '').toLowerCase().includes(needleLower))
+}
+
 /** Flash Express template: 24 headers (ต้องตรง 100% กับ template ที่ Flash Express กำหนด) */
 const FLASH_EXPRESS_H = [
   "Customer_order_number\n(เลขออเดอร์ของลูกค้า)",
@@ -309,7 +322,8 @@ export default function WorkOrderManageList({
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [channelByWo, setChannelByWo] = useState<Record<string, string>>({}) // key = work_order_id
   const [loading, setLoading] = useState(true)
-  const [expandedWo, setExpandedWo] = useState<string | null>(null) // work_order_id
+  /** ใบงานที่คลี่อยู่ — รองรับหลายใบ (เช่น หลังค้นหา) */
+  const [expandedWoIds, setExpandedWoIds] = useState<Set<string>>(() => new Set())
   const [ordersByWo, setOrdersByWo] = useState<Record<string, Order[]>>({}) // key = work_order_id
   const [selectedByWo, setSelectedByWo] = useState<Record<string, Set<string>>>({}) // key = work_order_id
   const [editingTrackingId, setEditingTrackingId] = useState<string | null>(null)
@@ -375,20 +389,30 @@ export default function WorkOrderManageList({
       const { data, error } = await query
       if (error) throw error
       let list: WorkOrder[] = (data || []) as WorkOrder[]
-      if (searchTerm.trim()) {
+      const searchRaw = searchTerm.trim()
+      if (searchRaw) {
+        const needle = searchRaw.toLowerCase()
         let orderMatchQuery = supabase
           .from('or_orders')
           .select('work_order_id')
           .not('work_order_id', 'is', null)
-          .or(`bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%`)
+          .or(
+            `bill_no.ilike.%${searchRaw}%,customer_name.ilike.%${searchRaw}%,recipient_name.ilike.%${searchRaw}%,tracking_number.ilike.%${searchRaw}%,channel_order_no.ilike.%${searchRaw}%`
+          )
         if (mode === 'active') {
           orderMatchQuery = orderMatchQuery
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
             .neq('status', 'จัดส่งแล้ว')
         }
         const { data: orderMatch } = await orderMatchQuery
-        const woIds = new Set((orderMatch || []).map((r: { work_order_id: string }) => r.work_order_id))
-        list = list.filter((w) => woIds.has(w.id))
+        const woIdsFromOrders = new Set((orderMatch || []).map((r: { work_order_id: string }) => r.work_order_id))
+        list = list.filter(
+          (w) =>
+            woIdsFromOrders.has(w.id) ||
+            String(w.work_order_name || '')
+              .toLowerCase()
+              .includes(needle)
+        )
       }
 
       if (mode === 'active' && list.length > 0) {
@@ -406,7 +430,6 @@ export default function WorkOrderManageList({
       onCountChange?.(list.length)
       setOrdersByWo({})
       setSelectedByWo({})
-      setExpandedWo(null)
 
       let nextBillCounts: Record<string, number> = {}
       if (list.length > 0) {
@@ -424,6 +447,17 @@ export default function WorkOrderManageList({
         }
       }
       setBillCountByWo(nextBillCounts)
+
+      const q = searchTerm.trim()
+      if (q && list.length > 0) {
+        const toExpand = list.filter((w) => !isWorkOrderCancelledRecord(w)).map((w) => w.id)
+        setExpandedWoIds(new Set(toExpand))
+        if (toExpand.length > 0) {
+          await loadOrdersForWorkOrdersBatch(toExpand)
+        }
+      } else {
+        setExpandedWoIds(new Set())
+      }
 
       if (list.length > 0) {
         const workOrderIds = list.map((w) => w.id)
@@ -453,6 +487,64 @@ export default function WorkOrderManageList({
     }
   }
 
+  function filterOrdersRowsForMode(rows: unknown[] | null): Order[] {
+    let r = (rows || []) as Order[]
+    if (mode === 'active') {
+      r = r.filter((row: any) => {
+        if (!row?.status) return true
+        const status = String(row.status)
+        if (status === 'จัดส่งแล้ว') return false
+        return !FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN.includes(status as any)
+      })
+    }
+    return r
+  }
+
+  async function loadOrdersForWorkOrdersBatch(workOrderIds: string[]) {
+    if (workOrderIds.length === 0) return
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
+        .in('work_order_id', workOrderIds)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      const rows = filterOrdersRowsForMode(data)
+      const grouped: Record<string, Order[]> = {}
+      for (const id of workOrderIds) {
+        grouped[id] = []
+      }
+      for (const row of rows) {
+        const wid = String(row.work_order_id || '')
+        if (grouped[wid]) grouped[wid].push(row)
+      }
+      setOrdersByWo((prev) => {
+        const next = { ...prev }
+        for (const id of workOrderIds) {
+          next[id] = grouped[id] || []
+        }
+        return next
+      })
+      setBillCountByWo((prev) => {
+        const next = { ...prev }
+        for (const id of workOrderIds) {
+          next[id] = (grouped[id] || []).length
+        }
+        return next
+      })
+      setSelectedByWo((prev) => {
+        const next = { ...prev }
+        for (const id of workOrderIds) {
+          next[id] = new Set<string>()
+        }
+        return next
+      })
+    } catch (error: any) {
+      console.error('Error loading orders batch:', error)
+      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาดในการโหลดบิล: ' + error.message })
+    }
+  }
+
   async function loadOrdersForWo(workOrderId: string) {
     try {
       const { data, error } = await supabase
@@ -460,18 +552,8 @@ export default function WorkOrderManageList({
         .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
         .eq('work_order_id', workOrderId)
         .order('created_at', { ascending: false })
-      let rows = data
-      if (mode === 'active') {
-        rows = (rows || []).filter((row: any) => {
-          if (!row?.status) return true
-          const status = String(row.status)
-          if (status === 'จัดส่งแล้ว') return false
-          return !FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN.includes(status as any)
-        })
-      }
-
       if (error) throw error
-      const list = (rows || []) as Order[]
+      const list = filterOrdersRowsForMode(data)
       setOrdersByWo((prev) => ({ ...prev, [workOrderId]: list }))
       setBillCountByWo((prev) => ({ ...prev, [workOrderId]: list.length }))
       setSelectedByWo((prev) => ({ ...prev, [workOrderId]: new Set<string>() }))
@@ -484,12 +566,14 @@ export default function WorkOrderManageList({
   function toggleExpand(wo: WorkOrder) {
     // ใบงานที่ถูกยกเลิกแล้วไม่ให้ขยาย (ไม่มีบิลด้านในแล้ว)
     if (isWorkOrderCancelledRecord(wo)) return
-    if (expandedWo === wo.id) {
-      setExpandedWo(null)
-      return
-    }
-    setExpandedWo(wo.id)
-    if (!ordersByWo[wo.id]) {
+    const willExpand = !expandedWoIds.has(wo.id)
+    setExpandedWoIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(wo.id)) next.delete(wo.id)
+      else next.add(wo.id)
+      return next
+    })
+    if (willExpand && !ordersByWo[wo.id]) {
       loadOrdersForWo(wo.id)
     }
   }
@@ -1427,8 +1511,8 @@ export default function WorkOrderManageList({
           updated += 1
         }
       }
-      const woOrders = ordersByWo[workOrderName]
-      if (woOrders) await loadOrdersForWo(workOrderName)
+      const woRecord = workOrders.find((w) => w.work_order_name === workOrderName)
+      if (woRecord) await loadOrdersForWo(woRecord.id)
       onRefresh?.()
       setMessageModal({ open: true, message: `นำเข้าเลขพัสดุสำเร็จ ${updated} / ${updates.length} รายการ` })
     } catch (err: any) {
@@ -1450,14 +1534,17 @@ export default function WorkOrderManageList({
     <div className="space-y-4">
       {workOrders.length === 0 ? (
         <div className="text-center py-12 text-gray-500 bg-white rounded-lg border">
-          ยังไม่มีใบงานที่สร้าง — สร้างได้ที่เมนู ใบสั่งงาน
+          {searchTerm.trim()
+            ? 'ไม่พบใบงานตามคำค้น — ลองคำอื่น หรือล้างช่องค้นหา'
+            : 'ยังไม่มีใบงานที่สร้าง — สร้างได้ที่เมนู ใบสั่งงาน'}
         </div>
       ) : (
         <div className="space-y-2">
           {workOrders.map((wo) => {
             const orders = ordersByWo[wo.id] || []
             const selectedIds = selectedByWo[wo.id] || new Set<string>()
-            const isExpanded = expandedWo === wo.id
+            const isExpanded = expandedWoIds.has(wo.id)
+            const searchNeedle = searchTerm.trim().toLowerCase()
             const isCancelledWorkOrder = isWorkOrderCancelledRecord(wo)
             const channelCode = channelByWo[wo.id] ?? ''
             const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
@@ -1625,8 +1712,17 @@ export default function WorkOrderManageList({
                               </tr>
                             </thead>
                             <tbody>
-                              {orders.map((order) => (
-                                  <tr key={order.id} className="border-b border-gray-100 hover:bg-gray-50">
+                              {orders.map((order) => {
+                                const rowMatchesSearch = searchNeedle.length > 0 && orderMatchesSearch(order, searchNeedle)
+                                return (
+                                  <tr
+                                    key={order.id}
+                                    className={`border-b border-gray-100 ${
+                                      rowMatchesSearch
+                                        ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-400/70'
+                                        : 'hover:bg-gray-50'
+                                    }`}
+                                  >
                                     {mode === 'active' && (
                                       <td className="p-3 align-middle">
                                         <input
@@ -1700,7 +1796,8 @@ export default function WorkOrderManageList({
                                       )}
                                     </td>
                                   </tr>
-                              ))}
+                                )
+                              })}
                             </tbody>
                           </table>
                         </div>

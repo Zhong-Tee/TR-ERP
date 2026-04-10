@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Order, OrderStatus } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
-import OrderForm from '../order/OrderForm'
+import OrderForm, { type OrderFormRef } from '../order/OrderForm'
 import Modal from '../ui/Modal'
 
 const ALL_STATUSES: OrderStatus[] = [
@@ -49,6 +49,7 @@ type Revision = {
 
 type EditEligibility = {
   can_direct_edit?: boolean
+  can_edit_name_lines_only?: boolean
   needs_amendment?: boolean
   needs_credit_note?: boolean
   has_wms_activity?: boolean
@@ -92,11 +93,18 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
+  /** กรองเฉพาะบิลที่มีประวัติแก้ไข — ช่วงวันที่ใช้กับวันที่บันทึกแก้ไข (edited_at) ไม่ใช่ entry_date */
+  const [filterEditedOnly, setFilterEditedOnly] = useState(false)
+  /** จำนวนบิลที่ตรงเงื่อนไขล่าสุด vs จำนวนแถวในตาราง (สูงสุด 50); filterEditedOnly ต้องตรงกับตอนค้นหา */
+  const [searchStats, setSearchStats] = useState<{ matched: number; shown: number; editedOnly: boolean } | null>(null)
 
   const [selectedOrder, setSelectedOrder] = useState<(Order & { order_items?: any[] }) | null>(null)
+  const [editScope, setEditScope] = useState<'full' | 'nameLinesOnly'>('full')
+  const orderFormRef = useRef<OrderFormRef>(null)
   const [orderLoading, setOrderLoading] = useState(false)
   const [snapshotBefore, setSnapshotBefore] = useState<Record<string, unknown> | null>(null)
   const [statusOverride, setStatusOverride] = useState<OrderStatus | ''>('')
+  const [nameLinesSaving, setNameLinesSaving] = useState(false)
 
   // Guard modal
   const [guardModal, setGuardModal] = useState<{ open: boolean; eligibility: EditEligibility | null; orderId: string }>({ open: false, eligibility: null, orderId: '' })
@@ -124,23 +132,88 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
   const handleSearch = useCallback(async () => {
     setSearching(true)
     setHasSearched(true)
+    setSearchStats(null)
     try {
+      const selectOrderFields =
+        'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no'
+
+      const applyOrderFilters = (q: ReturnType<typeof supabase.from>) => {
+        let query = q
+        if (searchQuery.trim()) {
+          const s = searchQuery.trim()
+          query = query.or(`bill_no.ilike.%${s}%,channel_order_no.ilike.%${s}%,customer_name.ilike.%${s}%,customer_address.ilike.%${s}%`)
+        }
+        if (filterChannel) query = query.eq('channel_code', filterChannel)
+        return query
+      }
+
+      if (filterEditedOnly) {
+        const startIso = new Date(`${filterDateFrom}T00:00:00`).toISOString()
+        const endIso = new Date(`${filterDateTo}T23:59:59.999`).toISOString()
+        const { data: logRows, error: logErr } = await supabase
+          .from('ac_bill_edit_logs')
+          .select('order_id')
+          .gte('edited_at', startIso)
+          .lte('edited_at', endIso)
+          .limit(8000)
+        if (logErr) throw logErr
+        const editedOrderIds = [...new Set((logRows || []).map((row: { order_id: string }) => row.order_id).filter(Boolean))]
+        if (editedOrderIds.length === 0) {
+          setSearchResults([])
+          setSearchStats({ matched: 0, shown: 0, editedOnly: true })
+          return
+        }
+
+        const chunkSize = 100
+        const merged: SearchResult[] = []
+        for (let i = 0; i < editedOrderIds.length; i += chunkSize) {
+          const chunk = editedOrderIds.slice(i, i + chunkSize)
+          let q = supabase.from('or_orders').select(selectOrderFields).in('id', chunk).order('created_at', { ascending: false })
+          q = applyOrderFilters(q)
+          const { data: chunkData, error: chunkErr } = await q
+          if (chunkErr) throw chunkErr
+          merged.push(...((chunkData || []) as SearchResult[]))
+        }
+
+        const byId = new Map<string, SearchResult>()
+        for (const row of merged) {
+          if (!byId.has(row.id)) byId.set(row.id, row)
+        }
+        const sorted = [...byId.values()].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        )
+        if (sorted.length === 0) {
+          setSearchResults([])
+          setSearchStats({ matched: 0, shown: 0, editedOnly: true })
+          return
+        }
+        const results = sorted.slice(0, 50)
+        results.forEach((r) => {
+          r.has_edit_log = true
+        })
+        setSearchResults(results)
+        setSearchStats({ matched: sorted.length, shown: results.length, editedOnly: true })
+        return
+      }
+
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, channel_order_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no')
+        .select(selectOrderFields)
         .order('created_at', { ascending: false })
         .limit(50)
 
-      if (searchQuery.trim()) {
-        const q = searchQuery.trim()
-        query = query.or(`bill_no.ilike.%${q}%,channel_order_no.ilike.%${q}%,customer_name.ilike.%${q}%,customer_address.ilike.%${q}%`)
-      }
-      if (filterChannel) query = query.eq('channel_code', filterChannel)
+      query = applyOrderFilters(query)
       if (filterDateFrom) query = query.gte('entry_date', filterDateFrom)
       if (filterDateTo) query = query.lte('entry_date', filterDateTo)
 
-      const { data, error } = await query
+      let countQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true })
+      countQuery = applyOrderFilters(countQuery)
+      if (filterDateFrom) countQuery = countQuery.gte('entry_date', filterDateFrom)
+      if (filterDateTo) countQuery = countQuery.lte('entry_date', filterDateTo)
+
+      const [{ data, error }, { count: totalCount, error: countError }] = await Promise.all([query, countQuery])
       if (error) throw error
+      if (countError) console.warn('Bill search count:', countError)
       const results = (data || []) as SearchResult[]
 
       if (results.length > 0) {
@@ -150,17 +223,22 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
           .select('order_id')
           .in('order_id', orderIds)
         const editedIds = new Set((logData || []).map((l: { order_id: string }) => l.order_id))
-        results.forEach((r) => { r.has_edit_log = editedIds.has(r.id) })
+        results.forEach((r) => {
+          r.has_edit_log = editedIds.has(r.id)
+        })
       }
 
+      const matched = totalCount ?? results.length
       setSearchResults(results)
+      setSearchStats({ matched, shown: results.length, editedOnly: false })
     } catch (e: any) {
       console.error('Search error:', e)
       setSearchResults([])
+      setSearchStats(null)
     } finally {
       setSearching(false)
     }
-  }, [searchQuery, filterChannel, filterDateFrom, filterDateTo])
+  }, [searchQuery, filterChannel, filterDateFrom, filterDateTo, filterEditedOnly])
 
   // Guard check before opening edit
   const handleSelectOrder = async (orderId: string) => {
@@ -172,7 +250,9 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       const elig = eligibility as EditEligibility
 
       if (elig.can_direct_edit) {
-        await loadOrderForEdit(orderId)
+        await loadOrderForEdit(orderId, { scope: 'full' })
+      } else if (elig.can_edit_name_lines_only) {
+        await loadOrderForEdit(orderId, { scope: 'nameLinesOnly' })
       } else {
         setGuardModal({ open: true, eligibility: elig, orderId })
       }
@@ -184,7 +264,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     }
   }
 
-  const loadOrderForEdit = async (orderId: string) => {
+  const loadOrderForEdit = async (orderId: string, opts?: { scope?: 'full' | 'nameLinesOnly' }) => {
     setOrderLoading(true)
     try {
       const { data, error } = await supabase
@@ -199,7 +279,12 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       }
       setSelectedOrder(order)
       setStatusOverride(order.status)
-      setSnapshotBefore(structuredClone(data) as Record<string, unknown>)
+      setEditScope(opts?.scope ?? 'full')
+      if (opts?.scope === 'nameLinesOnly') {
+        setSnapshotBefore(null)
+      } else {
+        setSnapshotBefore(structuredClone(data) as Record<string, unknown>)
+      }
     } catch (e) {
       console.error('Error loading order:', e)
     } finally {
@@ -224,6 +309,68 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
         order.order_items = (data as any).or_order_items
       }
 
+      if (onRequestAmendment) {
+        onRequestAmendment(order)
+      }
+    } catch (e: any) {
+      console.error('Error loading order:', e)
+      setSaveResultModal({ open: true, success: false, message: 'โหลดข้อมูลบิลล้มเหลว' })
+    } finally {
+      setOrderLoading(false)
+    }
+  }
+
+  const handleSaveNameLinesOnly = async () => {
+    if (!selectedOrder || editScope !== 'nameLinesOnly') return
+    const payload = orderFormRef.current?.getNameLinesPayload() ?? []
+    if (payload.length === 0) {
+      setSaveResultModal({ open: true, success: false, message: 'ไม่พบรายการสินค้าที่มี item_uid' })
+      return
+    }
+    setNameLinesSaving(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_update_order_item_name_lines', {
+        p_order_id: selectedOrder.id,
+        p_lines: payload as unknown as Record<string, unknown>[],
+        p_edited_by: user?.username || user?.email || 'unknown',
+      })
+      if (error) throw error
+      const row = data as { success?: boolean; changes_count?: number } | null
+      const n = row?.changes_count ?? 0
+      setSaveResultModal({
+        open: true,
+        success: true,
+        message: n > 0 ? `บันทึกสำเร็จ — แก้ ${n} ช่อง` : 'บันทึกสำเร็จ — ไม่มีการเปลี่ยนแปลง',
+      })
+      setSelectedOrder(null)
+      setSnapshotBefore(null)
+      setEditScope('full')
+      if (hasSearched) handleSearch()
+    } catch (e: any) {
+      setSaveResultModal({ open: true, success: false, message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setNameLinesSaving(false)
+    }
+  }
+
+  const handleRequestAmendmentFromToolbar = async () => {
+    if (!selectedOrder) return
+    const orderId = selectedOrder.id
+    setOrderLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      const order = data as Order & { order_items?: any[] }
+      if ((data as any).or_order_items) {
+        order.order_items = (data as any).or_order_items
+      }
+      setSelectedOrder(null)
+      setSnapshotBefore(null)
+      setEditScope('full')
       if (onRequestAmendment) {
         onRequestAmendment(order)
       }
@@ -272,6 +419,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       setSaveResultModal({ open: true, success: true, message: changes.length > 0 ? `บันทึกสำเร็จ — มีการเปลี่ยนแปลง ${changes.length} รายการ` : 'บันทึกสำเร็จ — ไม่มีการเปลี่ยนแปลง' })
       setSelectedOrder(null)
       setSnapshotBefore(null)
+      setEditScope('full')
       if (hasSearched) handleSearch()
     } catch (e: any) {
       setSaveResultModal({ open: true, success: false, message: 'บันทึกไม่สำเร็จ: ' + (e?.message || e) })
@@ -341,7 +489,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
   function getEditZoneBadge(status: string): { label: string; color: string } {
     if (status === 'จัดส่งแล้ว') return { label: 'เคลม', color: 'bg-red-100 text-red-700' }
     if (status === 'ยกเลิก') return { label: 'ปิด', color: 'bg-gray-200 text-gray-500' }
-    if (['ใบสั่งงาน', 'ใบงานกำลังผลิต'].includes(status)) return { label: 'ขอยกเลิก', color: 'bg-amber-100 text-amber-700' }
+    if (['ใบสั่งงาน', 'ใบงานกำลังผลิต'].includes(status)) return { label: 'ขอยกเลิก/แก้ชื่อได้', color: 'bg-amber-100 text-amber-700' }
     return { label: 'แก้ไขได้', color: 'bg-green-100 text-green-700' }
   }
 
@@ -352,8 +500,15 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     system: 'ระบบ',
   }
 
+  const closeEditView = () => {
+    setSelectedOrder(null)
+    setSnapshotBefore(null)
+    setEditScope('full')
+  }
+
   // ──────────── Editing View ────────────
   if (selectedOrder) {
+    const isNameLinesOnly = editScope === 'nameLinesOnly'
     return (
       <div className="space-y-4">
         <div className="bg-white rounded-xl border shadow-sm p-4 flex flex-wrap items-center gap-4">
@@ -365,50 +520,72 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                 Rev.{(selectedOrder as any).revision_no}
               </span>
             )}
-            <span className="text-gray-400 mx-1">|</span>
-            <span className="font-bold text-gray-700 whitespace-nowrap">เปลี่ยนสถานะ:</span>
-            <select
-              value={statusOverride}
-              onChange={(e) => setStatusOverride(e.target.value as OrderStatus)}
-              className="border rounded-lg px-3 py-2 text-sm bg-white font-semibold min-w-[180px]"
-            >
-              {ALL_STATUSES.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
+            {isNameLinesOnly ? (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold ml-1">
+                แก้เฉพาะบรรทัดชื่อ
+              </span>
+            ) : (
+              <>
+                <span className="text-gray-400 mx-1">|</span>
+                <span className="font-bold text-gray-700 whitespace-nowrap">เปลี่ยนสถานะ:</span>
+                <select
+                  value={statusOverride}
+                  onChange={(e) => setStatusOverride(e.target.value as OrderStatus)}
+                  className="border rounded-lg px-3 py-2 text-sm bg-white font-semibold min-w-[180px]"
+                >
+                  {ALL_STATUSES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </>
+            )}
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => handleViewRevisions(selectedOrder.id, selectedOrder.bill_no || '')}
-              className="px-4 py-2 border border-purple-300 rounded-lg text-sm font-semibold text-purple-600 hover:bg-purple-50 transition"
-            >
-              <i className="fas fa-code-branch mr-1"></i> Revisions
-            </button>
+          <div className="flex flex-wrap gap-2">
+            {!isNameLinesOnly && (
+              <button
+                onClick={() => handleViewRevisions(selectedOrder.id, selectedOrder.bill_no || '')}
+                className="px-4 py-2 border border-purple-300 rounded-lg text-sm font-semibold text-purple-600 hover:bg-purple-50 transition"
+              >
+                <i className="fas fa-code-branch mr-1"></i> Revisions
+              </button>
+            )}
             <button
               onClick={() => handleViewLogs(selectedOrder.id, selectedOrder.bill_no || '')}
               className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
             >
               <i className="fas fa-history mr-1"></i> ประวัติการแก้ไข
             </button>
+            {isNameLinesOnly && onRequestAmendment && (
+              <button
+                type="button"
+                onClick={() => handleRequestAmendmentFromToolbar()}
+                className="px-4 py-2 border border-amber-400 rounded-lg text-sm font-semibold text-amber-800 hover:bg-amber-50 transition"
+              >
+                <i className="fas fa-ban mr-1"></i> ขอยกเลิกบิลนี้
+              </button>
+            )}
             <button
-              onClick={() => { setSelectedOrder(null); setSnapshotBefore(null) }}
+              onClick={closeEditView}
               className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
             >
-              ยกเลิก
+              ปิด
             </button>
             <button
-              onClick={handleSaveBillEdit}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition"
+              onClick={isNameLinesOnly ? handleSaveNameLinesOnly : handleSaveBillEdit}
+              disabled={nameLinesSaving}
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition disabled:opacity-50"
             >
-              <i className="fas fa-save mr-1"></i> บันทึกการแก้ไข
+              <i className="fas fa-save mr-1"></i> {nameLinesSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
             </button>
           </div>
         </div>
 
         <OrderForm
+          ref={orderFormRef}
           order={selectedOrder}
           onSave={() => { handleSaveBillEdit() }}
-          onCancel={() => { setSelectedOrder(null); setSnapshotBefore(null) }}
+          onCancel={closeEditView}
+          billEditScope={isNameLinesOnly ? 'nameLinesOnly' : 'full'}
         />
 
         {renderLogsModal()}
@@ -428,12 +605,22 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่เริ่มต้น</label>
+            <label className="block text-sm font-semibold text-gray-600 mb-1">
+              วันที่เริ่มต้น
+              {filterEditedOnly && (
+                <span className="block text-xs font-normal text-teal-700 mt-0.5">(ตามวันที่แก้ไขในประวัติ)</span>
+              )}
+            </label>
             <input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)}
               className="w-full border rounded-lg px-3 py-2 text-sm" />
           </div>
           <div>
-            <label className="block text-sm font-semibold text-gray-600 mb-1">วันที่สิ้นสุด</label>
+            <label className="block text-sm font-semibold text-gray-600 mb-1">
+              วันที่สิ้นสุด
+              {filterEditedOnly && (
+                <span className="block text-xs font-normal text-teal-700 mt-0.5">(ตามวันที่แก้ไขในประวัติ)</span>
+              )}
+            </label>
             <input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)}
               className="w-full border rounded-lg px-3 py-2 text-sm" />
           </div>
@@ -460,14 +647,52 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
             </div>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-gray-100">
+          <button
+            type="button"
+            onClick={() => setFilterEditedOnly((v) => !v)}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold border transition ${
+              filterEditedOnly
+                ? 'bg-teal-600 text-white border-teal-600 shadow-sm'
+                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            <i className={`fas fa-filter ${filterEditedOnly ? 'text-white' : 'text-teal-600'}`}></i>
+            เฉพาะมีการแก้ไข
+          </button>
+          <p className="text-xs text-gray-500 max-w-xl flex-1 min-w-[200px]">
+            {filterEditedOnly
+              ? 'แสดงเฉพาะบิลที่มีประวัติแก้ไขในช่วงวันที่ด้านบน (วันเวลาบันทึกในระบบ)'
+              : 'เปิดตัวกรองนี้แล้วกดค้นหา เพื่อดูเฉพาะบิลที่เคยมีการแก้ไขในช่วงวันที่ที่เลือก'}
+          </p>
+          {hasSearched && !searching && searchStats !== null && searchStats.editedOnly === filterEditedOnly && (
+            <span className="text-sm font-semibold text-gray-800 tabular-nums whitespace-nowrap shrink-0">
+              พบ {searchStats.matched.toLocaleString('th-TH')} รายการ
+              {searchStats.matched !== searchStats.shown && (
+                <span className="font-normal text-gray-600"> · แสดงในตาราง {searchStats.shown.toLocaleString('th-TH')} รายการ</span>
+              )}
+            </span>
+          )}
+        </div>
       </div>
 
       {hasSearched && (
         <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
+          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between flex-wrap gap-2">
             <h3 className="font-semibold text-gray-800">
               ผลการค้นหา
-              <span className="text-sm font-normal text-gray-500 ml-2">({searchResults.length} รายการ)</span>
+              {!searching && searchStats !== null && searchStats.editedOnly === filterEditedOnly && (
+                <span className="text-sm font-normal text-gray-600 ml-2">
+                  พบ <span className="font-semibold text-gray-900 tabular-nums">{searchStats.matched.toLocaleString('th-TH')}</span> รายการ
+                  {searchStats.matched !== searchStats.shown && (
+                    <span>
+                      {' '}
+                      · แสดงในตาราง{' '}
+                      <span className="font-semibold text-gray-900 tabular-nums">{searchStats.shown.toLocaleString('th-TH')}</span> รายการ
+                    </span>
+                  )}
+                </span>
+              )}
             </h3>
           </div>
           {searching ? (
@@ -477,7 +702,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
           ) : searchResults.length === 0 ? (
             <div className="text-center py-12 text-gray-400">
               <i className="fas fa-inbox text-4xl mb-3 block"></i>
-              <p>ไม่พบบิลที่ค้นหา</p>
+              <p>{filterEditedOnly ? 'ไม่พบบิลที่มีการแก้ไขในช่วงวันที่นี้ (หรือไม่ตรงช่องทาง/คำค้น)' : 'ไม่พบบิลที่ค้นหา'}</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -502,12 +727,22 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                       <tr key={r.id} className="hover:bg-blue-50/50 cursor-pointer transition-colors"
                         onClick={() => handleSelectOrder(r.id)}>
                         <td className="px-4 py-3">
-                          <span className="font-mono font-bold text-blue-600">{r.bill_no}</span>
-                          {(r.revision_no ?? 0) > 0 && (
-                            <span className="ml-1 text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-600 font-semibold">
-                              R{r.revision_no}
-                            </span>
-                          )}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-mono font-bold text-blue-600">{r.bill_no}</span>
+                            {r.has_edit_log && (
+                              <span
+                                className="text-xs px-2 py-0.5 rounded-full font-semibold bg-teal-100 text-teal-800 border border-teal-200"
+                                title="บิลนี้มีประวัติการแก้ไขจากเมนูแก้ไขบิล"
+                              >
+                                มีการแก้ไข
+                              </span>
+                            )}
+                            {(r.revision_no ?? 0) > 0 && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-600 font-semibold">
+                                R{r.revision_no}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold">{r.channel_code}</span>

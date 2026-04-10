@@ -15,6 +15,10 @@ import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
+import { ISSUE_ON_COUNT_EVENT } from '../lib/issueOnCountBroadcast'
+import type { Order } from '../types'
+import OrderDetailView from '../components/order/OrderDetailView'
+import { STOP_PRODUCTION_ISSUE_SLUG } from '../lib/issueTypeSlugs'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
@@ -497,6 +501,15 @@ const isWorkOrderDisplayName = (name?: string | null) => /-R\d+$/i.test(String(n
 
 const PLAN_TV_PATH = '/plan/tv'
 
+/** Issue ประเภทหยุดผลิต (slug) — จัดกลุ่มตาม work_order_id ของบิล */
+type StopProdIssueRow = {
+  issue_id: string
+  order_id: string
+  bill_no: string
+  customer_name: string
+  title: string
+}
+
 export function getPlanTvDisplayUrl() {
   if (typeof window === 'undefined') return PLAN_TV_PATH
   return `${window.location.origin}${PLAN_TV_PATH}`
@@ -515,6 +528,15 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
   const [issueOpenCount, setIssueOpenCount] = useState(0)
+
+  useEffect(() => {
+    const onIssueOn = (e: Event) => {
+      const c = (e as CustomEvent<{ count?: number }>).detail?.count
+      if (typeof c === 'number') setIssueOpenCount(c)
+    }
+    window.addEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
+    return () => window.removeEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
+  }, [])
   const [issueWorkOrders, setIssueWorkOrders] = useState<Array<{ work_order_name: string }>>([])
   const [workOrdersCount, setWorkOrdersCount] = useState(0)
   const [manageNewCount, setManageNewCount] = useState(0)
@@ -531,6 +553,11 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [selectedReleasedOrderId, setSelectedReleasedOrderId] = useState<string | null>(null)
   const [releasedOrderLines, setReleasedOrderLines] = useState<any[]>([])
   const [releasedLinesLoading, setReleasedLinesLoading] = useState(false)
+  const [stopProdByWO, setStopProdByWO] = useState<Record<string, StopProdIssueRow[]>>({})
+  const [stopProdDetailWO, setStopProdDetailWO] = useState<string | null>(null)
+  const [stopProdSelectedOrderId, setStopProdSelectedOrderId] = useState<string | null>(null)
+  const [stopProdOrderDetail, setStopProdOrderDetail] = useState<Order | null>(null)
+  const [stopProdOrderLoading, setStopProdOrderLoading] = useState(false)
   const [stockActionLoading, setStockActionLoading] = useState<string | null>(null)
   const [editingJobId, setEditingJobId] = useState<string | null>(null)
   const [dashEdit, setDashEdit] = useState<{
@@ -579,6 +606,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [jChannelFilter, setJChannelFilter] = useState('')
   const [manageDateFrom, setManageDateFrom] = useState(() => localISODate())
   const [manageDateTo, setManageDateTo] = useState(() => localISODate())
+  /** ค้นหาใน จัดการใบงาน — ใช้ร่วมทั้งแท็บ ใบงานใหม่ / ใบงานทั้งหมด */
+  const [manageWorkOrderSearch, setManageWorkOrderSearch] = useState('')
   const [jStatusFilter, setJStatusFilter] = useState('')
   const [jChannels, setJChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [woStatusByName, setWoStatusByName] = useState<Record<string, string>>({})
@@ -606,6 +635,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     resultMessage: string
   }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
   const menuCountsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const stopProdDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const selectableDepts = settings.departments.filter((d) => !['เบิก', 'QC', 'PACK'].includes(d))
 
@@ -1102,6 +1132,100 @@ export default function Plan({ tvMode = false }: PlanProps) {
     },
     [cancelledByWO, loadCancelledWmsLines]
   )
+
+  const loadStopProductionByWorkOrder = useCallback(async () => {
+    try {
+      const { data: typeRow, error: typeErr } = await supabase
+        .from('or_issue_types')
+        .select('id')
+        .eq('slug', STOP_PRODUCTION_ISSUE_SLUG)
+        .maybeSingle()
+      if (typeErr || !typeRow?.id) {
+        setStopProdByWO({})
+        return
+      }
+      const typeId = typeRow.id as string
+      const { data: issueRows, error } = await supabase
+        .from('or_issues')
+        .select('id, title, order_id, or_orders(bill_no, customer_name, work_order_id)')
+        .eq('status', 'On')
+        .eq('type_id', typeId)
+      if (error) throw error
+      const map: Record<string, StopProdIssueRow[]> = {}
+      for (const r of issueRows || []) {
+        const row = r as {
+          id: string
+          title: string
+          order_id: string
+          or_orders: { bill_no?: string; customer_name?: string; work_order_id?: string | null } | null
+        }
+        const o = row.or_orders
+        const woId = o?.work_order_id ? String(o.work_order_id) : ''
+        if (!woId) continue
+        const entry: StopProdIssueRow = {
+          issue_id: String(row.id),
+          order_id: String(row.order_id),
+          bill_no: o?.bill_no || '-',
+          customer_name: o?.customer_name || '-',
+          title: row.title || '-',
+        }
+        if (!map[woId]) map[woId] = []
+        map[woId].push(entry)
+      }
+      setStopProdByWO(map)
+    } catch (e) {
+      console.error('loadStopProductionByWorkOrder:', e)
+    }
+  }, [])
+
+  const openStopProdBillsModal = useCallback((workOrderId: string) => {
+    setStopProdDetailWO(workOrderId)
+    setStopProdSelectedOrderId(null)
+    setStopProdOrderDetail(null)
+  }, [])
+
+  const loadStopProdOrderDetail = useCallback(async (orderId: string) => {
+    setStopProdOrderLoading(true)
+    setStopProdSelectedOrderId(orderId)
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('*, or_order_items(*)')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      setStopProdOrderDetail(data as Order)
+    } catch (e) {
+      console.error(e)
+      alert('โหลดรายละเอียดบิลไม่สำเร็จ')
+      setStopProdOrderDetail(null)
+    } finally {
+      setStopProdOrderLoading(false)
+    }
+  }, [])
+
+  const debouncedLoadStopProd = useCallback(() => {
+    if (stopProdDebounceRef.current) clearTimeout(stopProdDebounceRef.current)
+    stopProdDebounceRef.current = setTimeout(() => {
+      void loadStopProductionByWorkOrder()
+    }, 400)
+  }, [loadStopProductionByWorkOrder])
+
+  useEffect(() => () => {
+    if (stopProdDebounceRef.current) clearTimeout(stopProdDebounceRef.current)
+  }, [])
+
+  useEffect(() => {
+    void loadStopProductionByWorkOrder()
+    const ch = supabase
+      .channel('plan_stop_prod_issues')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, debouncedLoadStopProd)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, debouncedLoadStopProd)
+      .subscribe()
+    return () => {
+      supabase.removeChannel(ch)
+    }
+  }, [loadStopProductionByWorkOrder, debouncedLoadStopProd])
 
   const handleStockAction = useCallback(async (wmsOrderId: string, action: 'recall' | 'waste') => {
     setStockActionLoading(wmsOrderId)
@@ -1912,6 +2036,18 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
                           </button>
                         )}
+                        {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (j.work_order_id) openStopProdBillsModal(String(j.work_order_id))
+                            }}
+                            className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-amber-900 text-amber-50 border border-amber-950 hover:bg-amber-800 transition"
+                          >
+                            หยุดผลิต {stopProdByWO[String(j.work_order_id || '')].length}
+                          </button>
+                        )}
                       </td>
                       <td className="p-4 text-gray-700 whitespace-nowrap">{j.date}</td>
                       <td className="p-4 text-gray-700 whitespace-nowrap">{fmtCutTime(j.cut)}</td>
@@ -1986,7 +2122,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       {currentView === 'issue' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="p-4">
-            <IssueBoard scope="plan" workOrders={issueWorkOrders} onOpenCountChange={setIssueOpenCount} />
+            <IssueBoard scope="plan" workOrders={issueWorkOrders} />
           </div>
         </section>
       )}
@@ -2005,29 +2141,45 @@ export default function Plan({ tvMode = false }: PlanProps) {
       {currentView === 'work-orders-manage' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="p-4 space-y-4">
-            <div className="flex flex-wrap items-center gap-2 border-b border-gray-200 pb-3">
-              <button
-                type="button"
-                onClick={() => setManageSubView('new')}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
-                  manageSubView === 'new'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                ใบงานใหม่ ({manageNewCount})
-              </button>
-              <button
-                type="button"
-                onClick={() => setManageSubView('all')}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
-                  manageSubView === 'all'
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                ใบงานทั้งหมด ({workOrdersManageCount})
-              </button>
+            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-200 pb-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setManageSubView('new')}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                    manageSubView === 'new'
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  ใบงานใหม่ ({manageNewCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setManageSubView('all')}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                    manageSubView === 'all'
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  ใบงานทั้งหมด ({workOrdersManageCount})
+                </button>
+              </div>
+              <div className="flex flex-col gap-1 w-full min-w-0 sm:w-auto sm:max-w-md sm:min-w-[220px]">
+                <label htmlFor="plan-manage-wo-search" className="text-xs font-semibold text-gray-600">
+                  ค้นหา
+                </label>
+                <input
+                  id="plan-manage-wo-search"
+                  type="search"
+                  value={manageWorkOrderSearch}
+                  onChange={(e) => setManageWorkOrderSearch(e.target.value)}
+                  placeholder="ชื่อใบงาน, เลขบิล, ชื่อลูกค้า, เลขพัสดุ…"
+                  autoComplete="off"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
             </div>
 
             {manageSubView === 'all' && (
@@ -2084,12 +2236,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
             {manageSubView === 'new' ? (
               <WorkOrderManageList
                 mode="active"
+                searchTerm={manageWorkOrderSearch}
                 onCountChange={setManageNewCount}
                 onRefresh={loadMenuCounts}
               />
             ) : (
               <WorkOrderManageList
                 mode="all"
+                searchTerm={manageWorkOrderSearch}
                 channelFilter={jChannelFilter}
                 dateFrom={manageDateFrom}
                 dateTo={manageDateTo}
@@ -2247,6 +2401,18 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                           className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200"
                                         >
                                           ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
+                                        </button>
+                                      )}
+                                      {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            if (j.work_order_id) openStopProdBillsModal(String(j.work_order_id))
+                                          }}
+                                          className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-amber-900 text-amber-50 border border-amber-950 hover:bg-amber-800"
+                                        >
+                                          หยุดผลิต {stopProdByWO[String(j.work_order_id || '')].length}
                                         </button>
                                       )}
                                     </div>
@@ -2636,6 +2802,18 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                               >
                                 ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
+                              </button>
+                            )}
+                            {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (j.work_order_id) openStopProdBillsModal(String(j.work_order_id))
+                                }}
+                                className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-amber-900 text-amber-50 border border-amber-950 hover:bg-amber-800 transition"
+                              >
+                                หยุดผลิต {stopProdByWO[String(j.work_order_id || '')].length}
                               </button>
                             )}
                           </td>
@@ -3750,6 +3928,88 @@ export default function Plan({ tvMode = false }: PlanProps) {
               </button>
             </div>
           </div>
+        )}
+      </Modal>
+
+      {/* Ticket หยุดผลิต (ประเภท issue slug stop_production) */}
+      <Modal
+        open={!!stopProdDetailWO}
+        onClose={() => {
+          setStopProdDetailWO(null)
+          setStopProdSelectedOrderId(null)
+          setStopProdOrderDetail(null)
+        }}
+        contentClassName="max-w-4xl w-full max-h-[85vh] overflow-y-auto"
+      >
+        {stopProdDetailWO && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-amber-200 pb-3">
+              <h3 className="text-lg font-bold text-gray-800">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-200 text-amber-950 mr-2 text-sm font-black">
+                  ⏸
+                </span>
+                Ticket หยุดผลิต — ใบงาน{' '}
+                {jobs.find((j) => String(j.work_order_id || '') === stopProdDetailWO)?.name || stopProdDetailWO}
+              </h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              คลิกบิลเพื่อดูรายละเอียด (Ticket ปิดแล้วจะไม่แสดงในรายการ)
+            </p>
+            {(stopProdByWO[stopProdDetailWO] || []).length > 0 ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                {(stopProdByWO[stopProdDetailWO] || []).map((row) => (
+                  <button
+                    key={row.issue_id}
+                    type="button"
+                    onClick={() => void loadStopProdOrderDetail(row.order_id)}
+                    className={`w-full text-left px-3 py-2 rounded-lg border transition ${
+                      stopProdSelectedOrderId === row.order_id
+                        ? 'bg-amber-200 border-amber-600'
+                        : 'bg-white border-amber-300 hover:bg-amber-100/80'
+                    }`}
+                  >
+                    <span className="font-mono font-bold text-amber-950">{row.bill_no}</span>
+                    <span className="text-gray-700 ml-2">({row.customer_name})</span>
+                    <div className="text-xs text-gray-600 mt-0.5 line-clamp-2">{row.title}</div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-400 text-sm text-center py-4">ไม่มี Ticket หยุดผลิตที่เปิดอยู่</p>
+            )}
+            {stopProdOrderLoading && (
+              <div className="flex justify-center py-4">
+                <span className="animate-spin rounded-full h-8 w-8 border-2 border-amber-700 border-t-transparent" />
+              </div>
+            )}
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStopProdDetailWO(null)
+                  setStopProdSelectedOrderId(null)
+                  setStopProdOrderDetail(null)
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!stopProdOrderDetail}
+        onClose={() => setStopProdOrderDetail(null)}
+        contentClassName="max-w-5xl w-full max-h-[90vh] overflow-y-auto"
+      >
+        {stopProdOrderDetail && (
+          <OrderDetailView
+            order={stopProdOrderDetail}
+            onClose={() => setStopProdOrderDetail(null)}
+            readOnly={tvMode || !unlocked}
+          />
         )}
       </Modal>
 

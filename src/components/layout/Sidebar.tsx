@@ -9,6 +9,7 @@ import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
 import { resolveOwnerScopeAdminName } from '../../config/accessPolicy'
+import { ISSUE_ON_COUNT_EVENT } from '../../lib/issueOnCountBroadcast'
 import {
   FiPackage,
   FiCheckCircle,
@@ -200,7 +201,18 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     warehouse: 0,
     purchase: 0,
   })
+  /** นับ Issue สถานะ On (จาก TopBar broadcast — ไม่ query เพิ่ม) */
+  const [planIssueOnCount, setPlanIssueOnCount] = useState(0)
   const { hasAccess } = useMenuAccess()
+
+  useEffect(() => {
+    const onIssueOn = (e: Event) => {
+      const c = (e as CustomEvent<{ count?: number }>).detail?.count
+      if (typeof c === 'number') setPlanIssueOnCount(c)
+    }
+    window.addEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
+    return () => window.removeEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
+  }, [])
 
   const loadCounts = useCallback(async () => {
     try {
@@ -418,6 +430,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
             const baseCount = menuCounts[item.key] ?? 0
             /** คลัง: แสดงเฉพาะจำนวน "ถึงจุดสั่งซื้อ" (ไม่บวกคืนของค้าง — แยก badge ที่แท็บคืนของ) */
             const displayCount = baseCount
+            const withCount = MENU_KEYS_WITH_COUNT.includes(item.key as (typeof MENU_KEYS_WITH_COUNT)[number])
+            const isPlan = item.key === 'plan'
+            const planShowBadges = isPlan && (baseCount > 0 || planIssueOnCount > 0)
+            const showDefaultBadge = withCount && displayCount > 0 && !isPlan
             return (
               <li key={item.key}>
                 <Link
@@ -433,23 +449,53 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                     {item.icon}
                   </span>
                   {isOpen ? (
-                    <span className="whitespace-nowrap flex items-center gap-2 text-base">
+                    <span className="whitespace-nowrap flex items-center gap-1.5 text-base">
                       {item.label}
-                      {MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
-                        displayCount > 0 && (
-                          <span className={`min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm ${
-                            item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
-                          }`}>
+                      {isPlan ? (
+                        <>
+                          {baseCount > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-yellow-400 text-emerald-900">
+                              {baseCount > 99 ? '99+' : baseCount}
+                            </span>
+                          )}
+                          {planIssueOnCount > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-red-500 text-white">
+                              {planIssueOnCount > 99 ? '99+' : planIssueOnCount}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        showDefaultBadge && (
+                          <span
+                            className={`min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm ${
+                              item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                            }`}
+                          >
                             {displayCount > 99 ? '99+' : displayCount}
                           </span>
-                        )}
+                        )
+                      )}
+                    </span>
+                  ) : planShowBadges ? (
+                    <span className="absolute -top-1 -right-1 flex flex-row-reverse items-center gap-0.5 pointer-events-none">
+                      {planIssueOnCount > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-red-500 text-white">
+                          {planIssueOnCount > 99 ? '99+' : planIssueOnCount}
+                        </span>
+                      )}
+                      {baseCount > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-yellow-400 text-emerald-900">
+                          {baseCount > 99 ? '99+' : baseCount}
+                        </span>
+                      )}
                     </span>
                   ) : (
-                    MENU_KEYS_WITH_COUNT.includes(item.key as typeof MENU_KEYS_WITH_COUNT[number]) &&
-                    displayCount > 0 && (
-                      <span className={`absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm ${
-                        item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
-                      }`}>
+                    showDefaultBadge && (
+                      <span
+                        className={`absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm ${
+                          item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                        }`}
+                      >
                         {displayCount > 99 ? '99+' : displayCount}
                       </span>
                     )

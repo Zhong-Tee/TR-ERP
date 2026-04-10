@@ -42,7 +42,80 @@ async function uploadImageToBucket(file: File): Promise<void> {
   if (error) throw error
 }
 
-const PATTERN_TEMPLATE_HEADERS = ['pattern_name', 'product_categories', 'line_count'] as const
+/** คีย์คอลัมน์ Excel สำหรับลิมิตอักษร (รองรับ alias ภาษาอังกฤษตอน import) */
+const EXCEL_MAX_CHARS = {
+  line1: 'จำนวนอักษร(บรรทัด1)',
+  line2: 'จำนวนอักษร(บรรทัด2)',
+  line3: 'จำนวนอักษร(บรรทัด3)',
+} as const
+
+const PATTERN_TEMPLATE_HEADERS = [
+  'pattern_name',
+  'product_categories',
+  'line_count',
+  EXCEL_MAX_CHARS.line1,
+  EXCEL_MAX_CHARS.line2,
+  EXCEL_MAX_CHARS.line3,
+] as const
+
+function normalizeLineMaxChars(value: number | null | undefined): number | null {
+  if (value == null) return null
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return null
+  return Math.min(99, Math.max(0, n))
+}
+
+/** บรรทัดที่ปิดตาม line_count → null; บรรทัดที่เปิด → 0–99 (0 = ไม่จำกัด) */
+function maxCharsForLineCount(
+  lineCount: number | null,
+  m1: number | null | undefined,
+  m2: number | null | undefined,
+  m3: number | null | undefined
+): {
+  line_1_max_chars: number | null
+  line_2_max_chars: number | null
+  line_3_max_chars: number | null
+} {
+  const lc = lineCount == null ? 0 : lineCount
+  return {
+    line_1_max_chars: lc >= 1 ? normalizeLineMaxChars(m1 ?? 0) : null,
+    line_2_max_chars: lc >= 2 ? normalizeLineMaxChars(m2 ?? 0) : null,
+    line_3_max_chars: lc >= 3 ? normalizeLineMaxChars(m3 ?? 0) : null,
+  }
+}
+
+function parseExcelMaxCharsCell(raw: unknown): number | null {
+  if (raw === undefined || raw === null) return null
+  const s = String(raw).trim()
+  if (s === '') return null
+  const n = Number(s)
+  if (!Number.isFinite(n) || Math.round(n) !== n) {
+    throw new Error(`ค่าจำนวนอักษรไม่ถูกต้อง: "${s}"`)
+  }
+  if (n < 0 || n > 99) {
+    throw new Error(`จำนวนอักษรต้องอยู่ระหว่าง 0–99 (ได้ ${n})`)
+  }
+  return n
+}
+
+function readMaxCharsFromImportRow(row: Record<string, unknown>): {
+  line1: number | null
+  line2: number | null
+  line3: number | null
+} {
+  return {
+    line1: parseExcelMaxCharsCell(row[EXCEL_MAX_CHARS.line1] ?? row.line_1_max_chars),
+    line2: parseExcelMaxCharsCell(row[EXCEL_MAX_CHARS.line2] ?? row.line_2_max_chars),
+    line3: parseExcelMaxCharsCell(row[EXCEL_MAX_CHARS.line3] ?? row.line_3_max_chars),
+  }
+}
+
+function maxCharsEqual(
+  a: number | null | undefined,
+  b: number | null | undefined
+): boolean {
+  return (a ?? null) === (b ?? null)
+}
 
 export default function CartoonPatterns() {
   const [patterns, setPatterns] = useState<CartoonPattern[]>([])
@@ -54,6 +127,10 @@ export default function CartoonPatterns() {
   const [formPatternName, setFormPatternName] = useState('')
   const [formPatternCategories, setFormPatternCategories] = useState<string[]>([])
   const [formLineCount, setFormLineCount] = useState<number | ''>('')
+  /** ว่าง = ไม่จำกัด (บันทึกเป็น 0) */
+  const [formLine1Max, setFormLine1Max] = useState<number | ''>('')
+  const [formLine2Max, setFormLine2Max] = useState<number | ''>('')
+  const [formLine3Max, setFormLine3Max] = useState<number | ''>('')
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [patternToDelete, setPatternToDelete] = useState<CartoonPattern | null>(null)
@@ -180,6 +257,9 @@ export default function CartoonPatterns() {
     setFormPatternName('')
     setFormPatternCategories([])
     setFormLineCount('')
+    setFormLine1Max('')
+    setFormLine2Max('')
+    setFormLine3Max('')
     setEditingPattern(null)
     setUploadFile(null)
     setUploadPreview(null)
@@ -192,6 +272,10 @@ export default function CartoonPatterns() {
     const cats = pattern.product_categories
     setFormPatternCategories(Array.isArray(cats) ? cats.filter(Boolean) : (pattern.product_category ? [pattern.product_category] : []))
     setFormLineCount(pattern.line_count ?? '')
+    const lc = pattern.line_count ?? 0
+    setFormLine1Max(lc >= 1 && (pattern.line_1_max_chars ?? 0) > 0 ? pattern.line_1_max_chars! : '')
+    setFormLine2Max(lc >= 2 && (pattern.line_2_max_chars ?? 0) > 0 ? pattern.line_2_max_chars! : '')
+    setFormLine3Max(lc >= 3 && (pattern.line_3_max_chars ?? 0) > 0 ? pattern.line_3_max_chars! : '')
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('edit')
@@ -204,8 +288,16 @@ export default function CartoonPatterns() {
     setFormPatternName('')
     setFormPatternCategories([])
     setFormLineCount('')
+    setFormLine1Max('')
+    setFormLine2Max('')
+    setFormLine3Max('')
     setUploadFile(null)
     setUploadPreview(null)
+  }
+
+  function formMaxToDb(v: number | ''): number {
+    if (v === '') return 0
+    return normalizeLineMaxChars(v) ?? 0
   }
 
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -233,12 +325,19 @@ export default function CartoonPatterns() {
       const baseLineCount =
         formLineCount === '' ? getDefaultLineCountForCategories(formPatternCategories) : Number(formLineCount)
       const nextLineCount = normalizeLineCount(baseLineCount)
+      const maxFields = maxCharsForLineCount(
+        nextLineCount,
+        formMaxToDb(formLine1Max),
+        formMaxToDb(formLine2Max),
+        formMaxToDb(formLine3Max)
+      )
 
       if (modalMode === 'add') {
         const { error } = await supabase.from('cp_cartoon_patterns').insert({
           pattern_name: name,
           product_categories: nextCategories,
           line_count: nextLineCount,
+          ...maxFields,
           is_active: true,
         })
         if (error) throw error
@@ -250,6 +349,7 @@ export default function CartoonPatterns() {
             pattern_name: name,
             product_categories: nextCategories,
             line_count: nextLineCount,
+            ...maxFields,
           })
           .eq('id', editingPattern.id)
         if (error) throw error
@@ -291,7 +391,7 @@ export default function CartoonPatterns() {
   function downloadTemplate() {
     const ws = XLSX.utils.aoa_to_sheet([
       PATTERN_TEMPLATE_HEADERS as unknown as string[],
-      ['ลายตัวอย่าง', 'หมวด1, หมวด2', 3],
+      ['ลายตัวอย่าง', 'หมวด1, หมวด2', 3, 0, 0, 0],
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'ลายการ์ตูน')
@@ -302,14 +402,30 @@ export default function CartoonPatterns() {
     try {
       const { data, error } = await supabase
         .from('cp_cartoon_patterns')
-        .select('pattern_name, product_categories, line_count')
+        .select(
+          'pattern_name, product_categories, line_count, line_1_max_chars, line_2_max_chars, line_3_max_chars'
+        )
         .eq('is_active', true)
         .order('pattern_name', { ascending: true })
       if (error) throw error
-      const headers = ['pattern_name', 'product_categories', 'line_count']
+      const headers = [
+        'pattern_name',
+        'product_categories',
+        'line_count',
+        EXCEL_MAX_CHARS.line1,
+        EXCEL_MAX_CHARS.line2,
+        EXCEL_MAX_CHARS.line3,
+      ]
       const rows = (data || []).map((p: any) => {
         const cats = Array.isArray(p.product_categories) ? p.product_categories.join(', ') : ''
-        return [p.pattern_name ?? '', cats, p.line_count ?? '']
+        return [
+          p.pattern_name ?? '',
+          cats,
+          p.line_count ?? '',
+          p.line_1_max_chars ?? '',
+          p.line_2_max_chars ?? '',
+          p.line_3_max_chars ?? '',
+        ]
       })
       const wb = XLSX.utils.book_new()
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
@@ -340,7 +456,15 @@ export default function CartoonPatterns() {
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
       if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
-      type ImportItem = { pattern_name: string; product_categories: string[] | null; line_count: number | null; is_active: boolean }
+      type ImportItem = {
+        pattern_name: string
+        product_categories: string[] | null
+        line_count: number | null
+        line_1_max_chars: number | null
+        line_2_max_chars: number | null
+        line_3_max_chars: number | null
+        is_active: boolean
+      }
       const parsed: ImportItem[] = []
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i]
@@ -352,10 +476,23 @@ export default function CartoonPatterns() {
         const lineCount = normalizeLineCount(
           rawLineCount != null ? rawLineCount : categories.length > 0 ? getDefaultLineCountForCategories(categories) : null
         )
+        let rawMax: { line1: number | null; line2: number | null; line3: number | null }
+        try {
+          rawMax = readMaxCharsFromImportRow(row)
+        } catch (e: any) {
+          throw new Error(`แถว ${i + 2}: ${e?.message || e}`)
+        }
+        const maxFields = maxCharsForLineCount(
+          lineCount,
+          lineCount != null && lineCount >= 1 ? rawMax.line1 ?? 0 : 0,
+          lineCount != null && lineCount >= 2 ? rawMax.line2 ?? 0 : 0,
+          lineCount != null && lineCount >= 3 ? rawMax.line3 ?? 0 : 0
+        )
         parsed.push({
           pattern_name: name,
           product_categories: categories.length > 0 ? categories : null,
           line_count: lineCount,
+          ...maxFields,
           is_active: true,
         })
       }
@@ -379,7 +516,9 @@ export default function CartoonPatterns() {
       // ดึงข้อมูลลายที่มีอยู่ในระบบ (พร้อมข้อมูลเพื่อเปรียบเทียบ)
       const { data: existingPatterns } = await supabase
         .from('cp_cartoon_patterns')
-        .select('id, pattern_name, product_categories, line_count')
+        .select(
+          'id, pattern_name, product_categories, line_count, line_1_max_chars, line_2_max_chars, line_3_max_chars'
+        )
         .eq('is_active', true)
       const existingMap = new Map(
         (existingPatterns || []).map((p) => [p.pattern_name.toLowerCase(), p])
@@ -387,7 +526,14 @@ export default function CartoonPatterns() {
 
       // แยกรายการใหม่ vs รายการที่ต้องอัปเดต vs ไม่มีการเปลี่ยนแปลง
       const newItems: ImportItem[] = []
-      const toUpdate: Array<{ id: string; product_categories: string[] | null; line_count: number | null }> = []
+      const toUpdate: Array<{
+        id: string
+        product_categories: string[] | null
+        line_count: number | null
+        line_1_max_chars: number | null
+        line_2_max_chars: number | null
+        line_3_max_chars: number | null
+      }> = []
       let unchangedCount = 0
 
       for (const item of deduped) {
@@ -397,11 +543,18 @@ export default function CartoonPatterns() {
         } else {
           const catsChanged = !areCategoriesEqual(existing.product_categories, item.product_categories)
           const lineCountChanged = (existing.line_count ?? null) !== (item.line_count ?? null)
-          if (catsChanged || lineCountChanged) {
+          const maxChanged =
+            !maxCharsEqual(existing.line_1_max_chars, item.line_1_max_chars) ||
+            !maxCharsEqual(existing.line_2_max_chars, item.line_2_max_chars) ||
+            !maxCharsEqual(existing.line_3_max_chars, item.line_3_max_chars)
+          if (catsChanged || lineCountChanged || maxChanged) {
             toUpdate.push({
               id: existing.id,
               product_categories: item.product_categories,
               line_count: item.line_count,
+              line_1_max_chars: item.line_1_max_chars,
+              line_2_max_chars: item.line_2_max_chars,
+              line_3_max_chars: item.line_3_max_chars,
             })
           } else {
             unchangedCount++
@@ -433,6 +586,9 @@ export default function CartoonPatterns() {
           .update({
             product_categories: item.product_categories,
             line_count: item.line_count,
+            line_1_max_chars: item.line_1_max_chars,
+            line_2_max_chars: item.line_2_max_chars,
+            line_3_max_chars: item.line_3_max_chars,
             updated_at: new Date().toISOString(),
           })
           .eq('id', item.id)
@@ -469,6 +625,12 @@ export default function CartoonPatterns() {
       }
       if (Object.prototype.hasOwnProperty.call(changes, 'line_count')) {
         payload.line_count = normalizeLineCount(changes.line_count ?? null)
+      }
+      for (const k of ['line_1_max_chars', 'line_2_max_chars', 'line_3_max_chars'] as const) {
+        if (Object.prototype.hasOwnProperty.call(changes, k)) {
+          const v = (changes as CartoonPattern)[k]
+          payload[k] = v == null ? null : normalizeLineMaxChars(v)
+        }
       }
       const { error } = await supabase
         .from('cp_cartoon_patterns')
@@ -606,6 +768,12 @@ export default function CartoonPatterns() {
                   <th className="p-3 text-left font-semibold">ชื่อลายการ์ตูน</th>
                   <th className="p-3 text-left font-semibold">หมวดหมู่สินค้า</th>
                   <th className="p-3 text-left font-semibold">จำนวนบรรทัด</th>
+                  <th className="p-3 text-left font-semibold whitespace-nowrap">
+                    <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span>จำกัดอักษร (บรรทัด 1–3)</span>
+                      <span className="font-normal opacity-90">0 = ไม่จำกัด</span>
+                    </span>
+                  </th>
                   <th className="p-3 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
@@ -627,6 +795,12 @@ export default function CartoonPatterns() {
                           updatePatternInline(pattern.id, {
                             product_categories: cats.length > 0 ? cats : null,
                             line_count: nextLineCount,
+                            ...maxCharsForLineCount(
+                              nextLineCount,
+                              pattern.line_1_max_chars,
+                              pattern.line_2_max_chars,
+                              pattern.line_3_max_chars
+                            ),
                           })
                           setCategoryDrafts((prev) => {
                             const next = { ...prev }
@@ -636,7 +810,7 @@ export default function CartoonPatterns() {
                         }}
                       />
                     </td>
-                    <td className="p-3">
+                    <td className="p-3 align-middle">
                       <select
                         value={
                           normalizeLineCount(pattern.line_count ?? null) ??
@@ -644,7 +818,15 @@ export default function CartoonPatterns() {
                         }
                         onChange={(e) => {
                           const next = normalizeLineCount(Number(e.target.value)) ?? 0
-                          updatePatternInline(pattern.id, { line_count: next })
+                          updatePatternInline(pattern.id, {
+                            line_count: next,
+                            ...maxCharsForLineCount(
+                              next,
+                              pattern.line_1_max_chars,
+                              pattern.line_2_max_chars,
+                              pattern.line_3_max_chars
+                            ),
+                          })
                         }}
                         className="w-20 px-2 py-1 border rounded text-sm"
                       >
@@ -654,6 +836,18 @@ export default function CartoonPatterns() {
                           </option>
                         ))}
                       </select>
+                    </td>
+                    <td className="p-3 align-middle">
+                      <PatternInlineMaxChars
+                        pattern={pattern}
+                        lineCount={
+                          normalizeLineCount(pattern.line_count ?? null) ??
+                          getDefaultLineCountForCategories(
+                            pattern.product_categories || (pattern.product_category ? [pattern.product_category] : [])
+                          )
+                        }
+                        onCommit={(updates) => updatePatternInline(pattern.id, updates)}
+                      />
                     </td>
                     <td className="p-3 text-right">
                       <div className="flex gap-2 justify-end">
@@ -732,7 +926,7 @@ export default function CartoonPatterns() {
         open={modalMode !== null}
         onClose={closeModal}
         closeOnBackdropClick={false}
-        contentClassName="max-w-lg"
+        contentClassName="max-w-xl"
       >
         <div className="p-6">
           <h2 className="text-xl font-bold mb-4">
@@ -799,7 +993,17 @@ export default function CartoonPatterns() {
               <label className="block text-sm font-medium text-gray-700 mb-1">จำนวนบรรทัด</label>
               <select
                 value={formLineCount === '' ? '' : Number(formLineCount)}
-                onChange={(e) => setFormLineCount(Number(e.target.value))}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v === '') {
+                    setFormLineCount('')
+                    return
+                  }
+                  const num = Number(v)
+                  setFormLineCount(num)
+                  if (num < 2) setFormLine2Max('')
+                  if (num < 3) setFormLine3Max('')
+                }}
                 className="w-full px-3 py-2 border rounded-lg"
               >
                 <option value="">-- เลือกจำนวนบรรทัด --</option>
@@ -809,6 +1013,85 @@ export default function CartoonPatterns() {
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                จำนวนอักษรสูงสุดต่อบรรทัด (0 หรือว่าง = ไม่จำกัด, สูงสุด 99)
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <span className="text-xs text-gray-500 block mb-0.5">บรรทัด 1</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    disabled={
+                      (formLineCount === ''
+                        ? getDefaultLineCountForCategories(formPatternCategories)
+                        : Number(formLineCount)) < 1
+                    }
+                    value={formLine1Max}
+                    onChange={(e) => {
+                      const x = e.target.value
+                      if (x === '') setFormLine1Max('')
+                      else {
+                        const n = Math.min(99, Math.max(0, parseInt(x, 10) || 0))
+                        setFormLine1Max(n)
+                      }
+                    }}
+                    className="w-full px-2 py-1.5 border rounded-lg text-sm disabled:bg-gray-100"
+                    placeholder="∞"
+                  />
+                </div>
+                <div>
+                  <span className="text-xs text-gray-500 block mb-0.5">บรรทัด 2</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    disabled={
+                      (formLineCount === ''
+                        ? getDefaultLineCountForCategories(formPatternCategories)
+                        : Number(formLineCount)) < 2
+                    }
+                    value={formLine2Max}
+                    onChange={(e) => {
+                      const x = e.target.value
+                      if (x === '') setFormLine2Max('')
+                      else {
+                        const n = Math.min(99, Math.max(0, parseInt(x, 10) || 0))
+                        setFormLine2Max(n)
+                      }
+                    }}
+                    className="w-full px-2 py-1.5 border rounded-lg text-sm disabled:bg-gray-100"
+                    placeholder="∞"
+                  />
+                </div>
+                <div>
+                  <span className="text-xs text-gray-500 block mb-0.5">บรรทัด 3</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={99}
+                    disabled={
+                      (formLineCount === ''
+                        ? getDefaultLineCountForCategories(formPatternCategories)
+                        : Number(formLineCount)) < 3
+                    }
+                    value={formLine3Max}
+                    onChange={(e) => {
+                      const x = e.target.value
+                      if (x === '') setFormLine3Max('')
+                      else {
+                        const n = Math.min(99, Math.max(0, parseInt(x, 10) || 0))
+                        setFormLine3Max(n)
+                      }
+                    }}
+                    className="w-full px-2 py-1.5 border rounded-lg text-sm disabled:bg-gray-100"
+                    placeholder="∞"
+                  />
+                </div>
+              </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">รูปลายการ์ตูน</label>
@@ -892,6 +1175,52 @@ export default function CartoonPatterns() {
           </div>
         </div>
       </Modal>
+    </div>
+  )
+}
+
+function PatternInlineMaxChars({
+  pattern,
+  lineCount,
+  onCommit,
+}: {
+  pattern: CartoonPattern
+  lineCount: number
+  onCommit: (updates: Partial<CartoonPattern>) => void
+}) {
+  const lc = lineCount
+  const commitLine = (line: 1 | 2 | 3, raw: string) => {
+    const num = raw.trim() === '' ? 0 : normalizeLineMaxChars(Number(raw)) ?? 0
+    const m1 = line === 1 ? num : (pattern.line_1_max_chars ?? 0)
+    const m2 = line === 2 ? num : (pattern.line_2_max_chars ?? 0)
+    const m3 = line === 3 ? num : (pattern.line_3_max_chars ?? 0)
+    onCommit(maxCharsForLineCount(lc, m1, m2, m3))
+  }
+  return (
+    <div className="flex gap-1 items-center min-h-[28px]">
+      {([1, 2, 3] as const).map((n) => {
+        const key: 'line_1_max_chars' | 'line_2_max_chars' | 'line_3_max_chars' =
+          n === 1 ? 'line_1_max_chars' : n === 2 ? 'line_2_max_chars' : 'line_3_max_chars'
+        const cur = pattern[key]
+        const disabled = lc < n
+        return (
+          <input
+            key={`${pattern.id}-${key}-${cur ?? 'x'}`}
+            type="number"
+            min={0}
+            max={99}
+            placeholder="∞"
+            disabled={disabled}
+            title={`บรรทัด ${n} — 0 หรือว่าง = ไม่จำกัด`}
+            defaultValue={cur != null && cur > 0 ? cur : ''}
+            className="w-12 px-1 py-1 border rounded text-xs disabled:bg-gray-100 disabled:cursor-not-allowed"
+            onBlur={(e) => {
+              if (disabled) return
+              commitLine(n, e.target.value)
+            }}
+          />
+        )
+      })}
     </div>
   )
 }

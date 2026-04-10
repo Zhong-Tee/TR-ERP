@@ -189,6 +189,8 @@ export interface IssueType {
   color: string
   is_active: boolean
   created_at: string
+  /** ค่าคงที่สำหรับ logic (เช่น stop_production) — แถวเก่าอาจเป็น null */
+  slug?: string | null
 }
 
 export interface Issue {
@@ -627,6 +629,10 @@ export interface CartoonPattern {
   /** หมวดหมู่สินค้าที่ลายนี้ใช้ได้ (รองรับหลายหมวดหมู่) */
   product_categories?: string[] | null
   line_count?: number | null
+  /** 0 = ไม่จำกัด; NULL = ไม่ใช้บรรทัดนั้นตาม line_count */
+  line_1_max_chars?: number | null
+  line_2_max_chars?: number | null
+  line_3_max_chars?: number | null
   /** @deprecated ลบคอลัมน์แล้ว รูปดึงจาก bucket cartoon-patterns ตาม pattern_name */
   image_url?: string | null
   is_active: boolean

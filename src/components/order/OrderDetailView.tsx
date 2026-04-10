@@ -10,6 +10,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import Modal from '../ui/Modal'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
+import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
 function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
@@ -38,6 +39,7 @@ export default function OrderDetailView({
   const [issueTypes, setIssueTypes] = useState<IssueType[]>([])
   const [ticketOpen, setTicketOpen] = useState(false)
   const [ticketTypeId, setTicketTypeId] = useState('')
+  const [ticketPreferStopProduction, setTicketPreferStopProduction] = useState(false)
   const [ticketTitle, setTicketTitle] = useState('')
   const [ticketCreating, setTicketCreating] = useState(false)
   const [ticketSuccessOpen, setTicketSuccessOpen] = useState(false)
@@ -202,6 +204,15 @@ export default function OrderDetailView({
   const displayItems = useMemo(() => sortOrderItemsForExport(items as any[]), [items])
   const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
 
+  const stopProductionTicketTypeId = useMemo(
+    () => issueTypes.find((t) => (t.slug || '').trim() === STOP_PRODUCTION_ISSUE_SLUG)?.id ?? '',
+    [issueTypes]
+  )
+
+  useEffect(() => {
+    if (!ticketOpen) setTicketPreferStopProduction(false)
+  }, [ticketOpen])
+
   const fmt = (n: number | null | undefined) =>
     Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -252,6 +263,10 @@ export default function OrderDetailView({
       alert('กรุณากรอกหัวข้อ')
       return
     }
+    if (ticketPreferStopProduction && !stopProductionTicketTypeId) {
+      alert('ไม่พบประเภท "หยุดผลิต" ในระบบ กรุณารัน migration หรือติดต่อผู้ดูแล')
+      return
+    }
     setTicketCreating(true)
     try {
       const { error } = await supabase.from('or_issues').insert({
@@ -266,6 +281,7 @@ export default function OrderDetailView({
       setTicketOpen(false)
       setTicketTitle('')
       setTicketTypeId('')
+      setTicketPreferStopProduction(false)
       setTicketSuccessOpen(true)
     } catch (error: any) {
       console.error('Error creating issue:', error)
@@ -589,16 +605,25 @@ export default function OrderDetailView({
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">ประเภท</label>
-              <select
-                value={ticketTypeId}
-                onChange={(e) => setTicketTypeId(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg bg-white"
-              >
-                <option value="">-- ไม่ระบุ --</option>
-                {issueTypes.map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
+              {ticketPreferStopProduction ? (
+                <div className="w-full px-3 py-2 border rounded-lg bg-amber-50 border-amber-200 text-amber-950 text-sm font-medium">
+                  หยุดผลิต
+                  {!stopProductionTicketTypeId && (
+                    <span className="block text-xs text-red-600 font-normal mt-1">ยังไม่มีประเภทนี้ในฐานข้อมูล</span>
+                  )}
+                </div>
+              ) : (
+                <select
+                  value={ticketTypeId}
+                  onChange={(e) => setTicketTypeId(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg bg-white"
+                >
+                  <option value="">-- ไม่ระบุ --</option>
+                  {issueTypes.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              )}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">หัวข้อ</label>
@@ -610,23 +635,50 @@ export default function OrderDetailView({
                 onKeyDown={(e) => { if (e.key === 'Enter') handleCreateTicket() }}
               />
             </div>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => setTicketOpen(false)}
+                onClick={() => {
+                  setTicketPreferStopProduction((prev) => {
+                    const next = !prev
+                    if (next) setTicketTypeId(stopProductionTicketTypeId || '')
+                    else setTicketTypeId('')
+                    return next
+                  })
+                }}
                 disabled={ticketCreating}
-                className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                title="ตั้งประเภท Ticket เป็น หยุดผลิต (แสดงป้ายบน Plan)"
+                className={`px-4 py-1.5 text-sm font-semibold rounded-lg border transition-colors disabled:opacity-50 ${
+                  ticketPreferStopProduction
+                    ? 'bg-amber-800 text-white border-amber-950 ring-2 ring-amber-400'
+                    : 'bg-white text-amber-900 border-amber-700 hover:bg-amber-50'
+                }`}
               >
-                ยกเลิก
+                หยุดผลิต
               </button>
-              <button
-                type="button"
-                onClick={handleCreateTicket}
-                disabled={ticketCreating || ticketWorkOrderLoading || !ticketWorkOrderName}
-                className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {ticketCreating ? 'กำลังบันทึก...' : 'บันทึก'}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTicketOpen(false)}
+                  disabled={ticketCreating}
+                  className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCreateTicket}
+                  disabled={
+                    ticketCreating ||
+                    ticketWorkOrderLoading ||
+                    !ticketWorkOrderName ||
+                    (ticketPreferStopProduction && !stopProductionTicketTypeId)
+                  }
+                  className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {ticketCreating ? 'กำลังบันทึก...' : 'บันทึก'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

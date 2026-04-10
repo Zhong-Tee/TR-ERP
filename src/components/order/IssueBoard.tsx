@@ -10,6 +10,7 @@ import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
 import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
+import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
@@ -74,6 +75,7 @@ export default function IssueBoard({
   const [createOrderId, setCreateOrderId] = useState('')
   const [createTitle, setCreateTitle] = useState('')
   const [createTypeId, setCreateTypeId] = useState('')
+  const [preferStopProduction, setPreferStopProduction] = useState(false)
   const [ordersForWorkOrder, setOrdersForWorkOrder] = useState<Order[]>([])
   const [billSearch, setBillSearch] = useState('')
   const [billSearchResults, setBillSearchResults] = useState<Order[]>([])
@@ -137,6 +139,15 @@ export default function IssueBoard({
   }
 
   const availableWorkOrders = scope === 'plan' ? workOrderOptions : allWorkOrderNames
+
+  const stopProductionTypeId = useMemo(
+    () => types.find((t) => (t.slug || '').trim() === STOP_PRODUCTION_ISSUE_SLUG)?.id ?? '',
+    [types]
+  )
+
+  useEffect(() => {
+    if (!createOpen) setPreferStopProduction(false)
+  }, [createOpen])
 
   useEffect(() => {
     loadTypes()
@@ -522,6 +533,12 @@ export default function IssueBoard({
       alert('กรุณาเลือกบิลและกรอกหัวข้อ')
       return
     }
+    if (preferStopProduction) {
+      if (!stopProductionTypeId) {
+        alert('ไม่พบประเภท "หยุดผลิต" ในระบบ กรุณารัน migration หรือติดต่อผู้ดูแล')
+        return
+      }
+    }
     setCreating(true)
     try {
       const payload = {
@@ -539,6 +556,7 @@ export default function IssueBoard({
       setCreateWorkOrder('')
       setCreateTitle('')
       setCreateTypeId('')
+      setPreferStopProduction(false)
       setBillSearch('')
       setBillSearchResults([])
       await loadIssues()
@@ -1122,16 +1140,25 @@ export default function IssueBoard({
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">ประเภท</label>
-            <select
-              value={createTypeId}
-              onChange={(e) => setCreateTypeId(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg bg-white"
-            >
-              <option value="">-- ไม่ระบุ --</option>
-              {types.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
+            {preferStopProduction ? (
+              <div className="w-full px-3 py-2 border rounded-lg bg-amber-50 border-amber-200 text-amber-950 text-sm font-medium">
+                หยุดผลิต
+                {!stopProductionTypeId && (
+                  <span className="block text-xs text-red-600 font-normal mt-1">ยังไม่มีประเภทนี้ในฐานข้อมูล</span>
+                )}
+              </div>
+            ) : (
+              <select
+                value={createTypeId}
+                onChange={(e) => setCreateTypeId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg bg-white"
+              >
+                <option value="">-- ไม่ระบุ --</option>
+                {types.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">หัวข้อ</label>
@@ -1142,23 +1169,48 @@ export default function IssueBoard({
               placeholder="เช่น งานด่วน/ต้องแก้ไข"
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
-              onClick={() => setCreateOpen(false)}
+              onClick={() => {
+                setPreferStopProduction((prev) => {
+                  const next = !prev
+                  if (next) {
+                    setCreateTypeId(stopProductionTypeId || '')
+                  } else {
+                    setCreateTypeId('')
+                  }
+                  return next
+                })
+              }}
               disabled={creating}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              title="ตั้งประเภท Ticket เป็น หยุดผลิต (แสดงป้ายบน Plan)"
+              className={`px-4 py-2 rounded-lg border text-sm font-semibold transition-colors disabled:opacity-50 ${
+                preferStopProduction
+                  ? 'bg-amber-800 text-white border-amber-950 ring-2 ring-amber-400'
+                  : 'bg-white text-amber-900 border-amber-700 hover:bg-amber-50'
+              }`}
             >
-              ยกเลิก
+              หยุดผลิต
             </button>
-            <button
-              type="button"
-              onClick={createIssue}
-              disabled={creating}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {creating ? 'กำลังบันทึก...' : 'บันทึก'}
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                disabled={creating}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={createIssue}
+                disabled={creating || (preferStopProduction && !stopProductionTypeId)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creating ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
           </div>
         </div>
       </Modal>
