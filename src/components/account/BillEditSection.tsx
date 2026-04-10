@@ -137,7 +137,12 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       const selectOrderFields =
         'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no'
 
-      const applyOrderFilters = (q: ReturnType<typeof supabase.from>) => {
+      /** รองรับทั้ง select(...) และ select(..., { count, head }) — ห้ามใช้ ReturnType<typeof supabase.from> (เป็น QueryBuilder ก่อน select) */
+      const applyOrderFilters = <
+        Q extends { or: (filters: string) => Q; eq: (column: string, value: string) => Q },
+      >(
+        q: Q,
+      ): Q => {
         let query = q
         if (searchQuery.trim()) {
           const s = searchQuery.trim()
