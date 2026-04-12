@@ -1,8 +1,11 @@
 import OrderReviewList from '../components/order/OrderReviewList'
 import { supabase } from '../lib/supabase'
 import { useState, useEffect } from 'react'
+import { useAuthContext } from '../contexts/AuthContext'
+import { canSeeOfficeChannel } from '../config/accessPolicy'
 
 export default function AdminQC() {
+  const { user } = useAuthContext()
   const [count, setCount] = useState(0)
 
   useEffect(() => {
@@ -22,16 +25,21 @@ export default function AdminQC() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [user?.role])
 
   async function loadCount() {
     try {
-      const { count: verifiedCount } = await supabase
+      let q = supabase
         .from('or_orders')
         .select('id', { count: 'exact', head: true })
-        .eq('status', 'ตรวจสอบแล้ว')
-      
-      setCount(verifiedCount || 0)
+        .eq('status', 'รอตรวจคำสั่งซื้อ')
+        .neq('channel_code', 'PUMP')
+      if (!canSeeOfficeChannel(user?.role)) {
+        q = q.neq('channel_code', 'OFFICE')
+      }
+      const { count: pendingCount } = await q
+
+      setCount(pendingCount || 0)
     } catch (error) {
       console.error('Error loading count:', error)
     }
@@ -52,7 +60,7 @@ export default function AdminQC() {
       <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
         <div className="flex items-center justify-between py-3">
           <span className="text-base font-semibold text-gray-700">รายการบิลที่รอตรวจสอบ</span>
-          <span className="text-sm text-gray-500">ตรวจสอบแล้ว: <strong className="text-blue-600">{count}</strong> รายการ</span>
+          <span className="text-sm text-gray-500">รอตรวจคำสั่งซื้อ: <strong className="text-blue-600">{count}</strong> รายการ</span>
         </div>
       </div>
       <OrderReviewList onStatusUpdate={refreshCounts} />

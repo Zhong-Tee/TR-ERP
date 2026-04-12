@@ -424,7 +424,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       let query = supabase
         .from('or_orders')
         .select('*, or_order_items(*)')
-        .eq('status', 'ตรวจสอบแล้ว')
+        .eq('status', 'รอตรวจคำสั่งซื้อ')
         .neq('channel_code', 'PUMP')
         .order('created_at', { ascending: true })
       if (!canSeeOfficeChannel(user?.role)) {

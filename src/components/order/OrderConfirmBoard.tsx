@@ -3,7 +3,7 @@ import { FiMessageCircle } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
-import { formatDateTime } from '../../lib/utils'
+import { formatDateTime, getBangkokCalendarDayUtcBoundsISO } from '../../lib/utils'
 import { buildBillLineItemsExportMulti, buildProductionLikeExportMulti } from '../../lib/orderProductionExcel'
 import { Order, OrderStatus, OrderChatLog } from '../../types'
 import Modal from '../ui/Modal'
@@ -542,13 +542,20 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         confirmed: confirmedOrders,
         completed: actualCompleted,
       })
+      const { startIso: tabDayStart, endIso: tabDayEnd } = getBangkokCalendarDayUtcBoundsISO()
+      const t0 = new Date(tabDayStart).getTime()
+      const t1 = new Date(tabDayEnd).getTime()
+      const inBangkokToday = (o: Order) => {
+        const t = new Date(o.created_at).getTime()
+        return t >= t0 && t <= t1
+      }
       onCountChange?.(
-        newOrders.length +
-          noDesignOrders.length +
-          designOrders.length +
-          designedOrders.length +
-          waitingOrders.length +
-          confirmedOrders.length
+        newOrders.filter(inBangkokToday).length +
+          noDesignOrders.filter(inBangkokToday).length +
+          designOrders.filter(inBangkokToday).length +
+          designedOrders.filter(inBangkokToday).length +
+          waitingOrders.filter(inBangkokToday).length +
+          confirmedOrders.filter(inBangkokToday).length
       )
     } catch (error) {
       console.error('Error loading confirm orders:', error)

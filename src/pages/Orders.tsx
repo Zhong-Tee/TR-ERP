@@ -15,6 +15,7 @@ import {
   resolveSalesPumpOwnerAdminName,
 } from '../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
+import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 
 type Tab =
   | 'all'
@@ -35,6 +36,7 @@ const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
 const ALL_STATUS_FILTER_OPTIONS = [
   'รอลงข้อมูล',
+  'รอตรวจคำสั่งซื้อ',
   'ลงข้อมูลผิด',
   'ตรวจสอบไม่ผ่าน',
   'ตรวจสอบไม่สำเร็จ',
@@ -206,16 +208,21 @@ export default function Orders() {
         'รอคอนเฟิร์ม',
         'คอนเฟิร์มแล้ว',
       ] as const
+      const { startIso: confirmDayStart, endIso: confirmDayEnd } = getBangkokCalendarDayUtcBoundsISO()
       const { count: confirmPump } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('channel_code', 'PUMP')
-          .in('status', [...confirmStatusList]),
+          .in('status', [...confirmStatusList])
+          .gte('created_at', confirmDayStart)
+          .lte('created_at', confirmDayEnd),
       )
       const { count: confirmOtherChannels } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .eq('requires_confirm_design', true)
           .neq('channel_code', 'PUMP')
-          .in('status', [...confirmStatusList]),
+          .in('status', [...confirmStatusList])
+          .gte('created_at', confirmDayStart)
+          .lte('created_at', confirmDayEnd),
       )
       const confirmCountTotal = (confirmPump ?? 0) + (confirmOtherChannels ?? 0)
 
