@@ -59,7 +59,7 @@ type ConsolidatableRow = {
 /** รวมแถวที่เป็นสินค้า condo stamp ชุดเดียวกัน (รหัส + จุดเก็บ + ชื่อ) และสถานะเดียวกันทุกแถว */
 export function consolidateCondoStampWmsDisplayRows<T extends ConsolidatableRow>(
   rows: T[]
-): (T & { _consolidated_wms_ids?: string[]; _consolidated_line_count?: number })[] {
+): (T & { _consolidated_wms_ids?: string[] | null; _consolidated_line_count?: number | null })[] {
   if (!rows || rows.length === 0) return []
 
   const byKey = new Map<string, T[]>()
@@ -71,7 +71,7 @@ export function consolidateCondoStampWmsDisplayRows<T extends ConsolidatableRow>
   }
 
   const mergedKeysHandled = new Set<string>()
-  const out: (T & { _consolidated_wms_ids?: string[]; _consolidated_line_count?: number })[] = []
+  const out: (T & { _consolidated_wms_ids?: string[] | null; _consolidated_line_count?: number | null })[] = []
 
   for (const r of rows) {
     if (!isConsolidatableCondoStampWmsRow(r)) {
@@ -143,7 +143,11 @@ function groupKeyForDuplicateRow(row: {
  */
 export function consolidateDuplicateWmsRows<T extends ConsolidatableRow>(
   rows: T[]
-): (T & { _consolidated_wms_ids?: string[]; _consolidated_line_count?: number; _consolidated_statuses?: string[] })[] {
+): (T & {
+  _consolidated_wms_ids?: string[] | null
+  _consolidated_line_count?: number | null
+  _consolidated_statuses?: string[] | null
+})[] {
   if (!rows || rows.length === 0) return []
 
   const byKey = new Map<string, T[]>()
@@ -157,9 +161,9 @@ export function consolidateDuplicateWmsRows<T extends ConsolidatableRow>(
 
   const mergedKeysHandled = new Set<string>()
   const out: (T & {
-    _consolidated_wms_ids?: string[]
-    _consolidated_line_count?: number
-    _consolidated_statuses?: string[]
+    _consolidated_wms_ids?: string[] | null
+    _consolidated_line_count?: number | null
+    _consolidated_statuses?: string[] | null
   })[] = []
 
   for (const r of rows) {
