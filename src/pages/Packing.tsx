@@ -2291,9 +2291,16 @@ export default function Packing() {
                     <div className="bg-white p-4 rounded-lg shadow space-y-3">
                       <div className="space-y-2">
                         <h3 className="font-semibold text-center">ขั้นตอนที่ 1: สแกนเลขพัสดุ</h3>
+                        {(() => {
+                          const parcelDisabled =
+                            isViewOnly ||
+                            currentGroup[0].parcelScanned ||
+                            currentGroup[0].isOrderComplete ||
+                            !isQcPassGroup(currentGroup)
+                          return (
                         <input
                           ref={parcelScanRef}
-                          className="w-full border-2 border-green-500 rounded px-3 py-2 text-center"
+                          className="w-full border-2 border-green-500 rounded px-3 py-2 text-center bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:ring-2 focus:ring-green-200 focus:border-green-600 disabled:bg-slate-300 disabled:text-slate-700 disabled:placeholder:text-slate-600 disabled:border-slate-500 disabled:cursor-not-allowed"
                           placeholder="ยิงบาร์โค้ดเลขพัสดุที่กล่อง"
                           value={parcelScanValue}
                           onChange={(event) => setParcelScanValue(event.target.value.toUpperCase())}
@@ -2303,14 +2310,24 @@ export default function Packing() {
                               handleParcelScan()
                             }
                           }}
-                          disabled={isViewOnly || currentGroup[0].parcelScanned || currentGroup[0].isOrderComplete || !isQcPassGroup(currentGroup)}
+                          disabled={parcelDisabled}
                         />
+                          )
+                        })()}
                       </div>
                       <div className="space-y-2">
                         <h3 className="font-semibold text-center">ขั้นตอนที่ 2: สแกนสินค้า</h3>
+                        {(() => {
+                          const itemDisabled =
+                            isViewOnly ||
+                            !isQcPassGroup(currentGroup) ||
+                            !currentGroup[0].parcelScanned ||
+                            currentGroup[0].isOrderComplete ||
+                            currentGroup.every((item) => item.scanned)
+                          return (
                         <input
                           ref={itemScanRef}
-                          className="w-full border-2 border-blue-500 rounded px-3 py-2 text-center"
+                          className="w-full border-2 border-blue-500 rounded px-3 py-2 text-center bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-600 disabled:bg-slate-300 disabled:text-slate-700 disabled:placeholder:text-slate-600 disabled:border-slate-500 disabled:cursor-not-allowed"
                           placeholder="ยิงบาร์โค้ด Item UID"
                           value={itemScanValue}
                           onChange={(event) => setItemScanValue(event.target.value.toUpperCase())}
@@ -2320,14 +2337,10 @@ export default function Packing() {
                               handleItemScan()
                             }
                           }}
-                          disabled={
-                            isViewOnly ||
-                            !isQcPassGroup(currentGroup) ||
-                            !currentGroup[0].parcelScanned ||
-                            currentGroup[0].isOrderComplete ||
-                            currentGroup.every((item) => item.scanned)
-                          }
+                          disabled={itemDisabled}
                         />
+                          )
+                        })()}
                       </div>
                       <div
                         className={`text-center font-semibold ${

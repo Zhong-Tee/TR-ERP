@@ -15,7 +15,11 @@ import SentAlertsModal from './SentAlertsModal'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
 import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
-import { consolidateCondoStampWmsDisplayRows, getWmsConsolidatedRowIds } from '../../../lib/wmsCondoStampConsolidation'
+import {
+  consolidateCondoStampWmsDisplayRows,
+  consolidateDuplicateWmsRows,
+  getWmsConsolidatedRowIds,
+} from '../../../lib/wmsCondoStampConsolidation'
 
 type ViewKey = 'menu' | 'pick' | 'parcel-return' | 'gr-receive'
 
@@ -27,6 +31,7 @@ const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; col
 
 const WORKABLE_STATUSES = ['pending', 'wrong', 'not_find']
 type PickerScope = { type: 'work_order' | 'order'; id: string }
+const FINISHED_STATUSES = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled']
 
 const displayPickingDepartmentLabel = (dept: string): string => {
   if (dept === 'เบิก') return 'ETC'
@@ -184,7 +189,17 @@ export default function PickerLayout() {
     const planSettings = await fetchPlanDeptSettings()
     setPickerPlanSettings(planSettings)
     const enrichedItems = await enrichWmsRowsWithPickingDepartment(sortedItems, planSettings)
-    const consolidatedItems = consolidateCondoStampWmsDisplayRows(enrichedItems as any[])
+    const consolidatedItems = consolidateDuplicateWmsRows(consolidateCondoStampWmsDisplayRows(enrichedItems as any[]) as any[]).map(
+      (row: any) => {
+        if (row.status !== 'mixed') return row
+        const statuses = Array.isArray(row._consolidated_statuses) ? row._consolidated_statuses : []
+        const hasWorkable = statuses.some((s: string) => WORKABLE_STATUSES.includes(s))
+        if (hasWorkable) return { ...row, status: 'pending' }
+        const hasFinished = statuses.some((s: string) => FINISHED_STATUSES.includes(s))
+        if (hasFinished) return { ...row, status: 'picked' }
+        return { ...row, status: 'pending' }
+      }
+    )
     setPickerItems(consolidatedItems)
 
     const hasWorkableItems = consolidatedItems.some((i) => WORKABLE_STATUSES.includes(i.status))

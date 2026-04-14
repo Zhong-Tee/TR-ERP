@@ -250,8 +250,8 @@ export default function NewOrdersSection() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <h2 className="text-xl font-black mb-4">ใบงานใหม่</h2>
-      <p className="text-sm text-slate-600 mb-3">
+      <h2 className="text-xl font-black mb-4 pl-2">ใบงานใหม่</h2>
+      <p className="text-sm text-slate-600 mb-3 pl-2">
         แสดง<strong>เฉพาะ</strong>ใบงานที่ยัง<strong>ไม่ได้มอบหมาย Picker</strong> และมีสินค้าที่ต้องหยิบคลัง — ใบงานที่มอบหมายแล้วหรือปิดงานแล้วดูที่เมนู{' '}
         <strong>รายการใบงาน</strong> หรือหน้ามือถือของ Picker
       </p>

@@ -239,6 +239,7 @@ export const WMS_STATUS_LABELS: Record<string, string> = {
   wrong: 'หยิบผิด',
   not_find: 'ไม่เจอสินค้า',
   returned: 'คืนเข้าคลัง',
+  mixed: 'หลายสถานะ',
 }
 
 const PRODUCT_IMAGE_BUCKET = 'product-images'

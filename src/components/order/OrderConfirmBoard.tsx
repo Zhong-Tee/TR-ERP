@@ -899,36 +899,36 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   return (
     <div className="space-y-4 w-full min-w-0 max-w-full">
       {/* ── Filter bar + แท็บ (แถวเดียวกันเมื่อมุมมองตาราง) ── */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4 flex flex-wrap items-end gap-3 w-full min-w-0">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 sm:p-4 flex flex-wrap items-center gap-3 w-full min-w-0">
         {isTableConfirmView ? (
           <>
-            <div className="flex flex-wrap items-end gap-2 sm:gap-3 flex-1 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 shadow-sm">
-              <div className="shrink-0">
-                <label className="block text-xs font-semibold text-gray-700 mb-0.5">จากวันที่</label>
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 shadow-sm">
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap">จากวันที่</span>
                 <input
                   type="date"
                   value={fromDate}
                   onChange={(e) => setFromDate(e.target.value)}
-                  className="px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                  className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
                 />
               </div>
-              <div className="shrink-0">
-                <label className="block text-xs font-semibold text-gray-700 mb-0.5">ถึงวันที่</label>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap">ถึงวันที่</span>
                 <input
                   type="date"
                   value={toDate}
                   onChange={(e) => setToDate(e.target.value)}
-                  className="px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
+                  className="h-10 box-border px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm min-w-0"
                 />
               </div>
-              <div className="min-w-[8rem] flex-1 max-w-xs">
-                <label className="block text-xs font-semibold text-gray-700 mb-0.5">ค้นหาชื่อ</label>
+              <div className="flex items-center gap-2 min-w-[8rem] flex-1 max-w-xs">
+                <span className="text-sm font-medium text-gray-600 whitespace-nowrap shrink-0">ค้นหาชื่อ</span>
                 <input
                   type="text"
                   value={confirmTableSearch}
                   onChange={(e) => setConfirmTableSearch(e.target.value)}
                   placeholder="พิมพ์บางส่วนของชื่อ"
-                  className="w-full px-2 py-1.5 sm:px-3 sm:py-2 border border-gray-300 rounded-lg bg-white text-sm"
+                  className="h-10 box-border w-full px-2 sm:px-3 border border-gray-300 rounded-lg bg-white text-sm"
                 />
               </div>
               <button
@@ -939,7 +939,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   setFromDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
                   setToDate(new Date().toISOString().split('T')[0])
                 }}
-                className="shrink-0 rounded-lg border border-gray-300 bg-gray-100 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+                className="shrink-0 inline-flex h-10 items-center justify-center rounded-lg border border-gray-300 bg-gray-100 px-3 text-sm font-medium text-gray-700 hover:bg-gray-200"
               >
                 ล้างตัวกรอง
               </button>
@@ -949,14 +949,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               <button
                 type="button"
                 onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
-                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                  'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
+                  'bg-white text-blue-600 hover:bg-blue-50 border-2 border-blue-300 shadow-sm'
                 }`}
               >
                 <ColumnIcon columnKey="new" />
                 งานใหม่
                 <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
                     'bg-blue-100 text-blue-600'
                   }`}
                 >
@@ -966,17 +966,17 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               <button
                 type="button"
                 onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
-                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
                   viewMode === 'noDesign'
-                    ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md ring-2 ring-orange-300'
-                    : 'bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm'
+                    ? 'border-2 border-transparent bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md'
+                    : 'border-2 border-orange-300 bg-white text-orange-600 shadow-sm hover:bg-orange-50'
                 }`}
               >
                 <ColumnIcon columnKey="noDesign" />
                 ไม่ต้องออกแบบ
                 <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-200 text-orange-900'
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                    viewMode === 'noDesign' ? 'bg-white/20 text-white' : 'bg-orange-100 text-orange-600'
                   }`}
                 >
                   {ordersByKey.noDesign.length}
@@ -985,16 +985,16 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               <button
                 type="button"
                 onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
-                className={`inline-flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl font-semibold text-sm transition-all ${
+                className={`inline-flex h-10 box-border items-center justify-center gap-2 px-3 sm:px-4 rounded-xl font-semibold text-sm transition-all ${
                   viewMode === 'completed'
-                    ? 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md ring-2 ring-teal-300'
-                    : 'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
+                    ? 'border-2 border-transparent bg-gradient-to-r from-teal-500 to-cyan-600 text-white shadow-md'
+                    : 'border-2 border-teal-300 bg-white text-teal-600 shadow-sm hover:bg-teal-50'
                 }`}
               >
                 <ColumnIcon columnKey="completed" />
                 เสร็จสิ้น
                 <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
                     'bg-teal-100 text-teal-600'
                   }`}
                 >
@@ -1015,7 +1015,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 type="date"
                 value={fromDate}
                 onChange={(e) => setFromDate(e.target.value)}
-                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+                className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
               />
             </div>
 
@@ -1025,7 +1025,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 type="date"
                 value={toDate}
                 onChange={(e) => setToDate(e.target.value)}
-                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
+                className="h-10 box-border px-3 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none transition-all"
               />
             </div>
 
@@ -1034,7 +1034,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 type="button"
                 onClick={() => void handleCopyAllNewOrders()}
                 disabled={copyingAllNew || ordersByKey.new.length === 0}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm bg-white text-blue-700 hover:bg-blue-50 border border-blue-300 shadow-sm disabled:opacity-50"
+                className="inline-flex h-10 box-border items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm bg-white text-blue-700 hover:bg-blue-50 border-2 border-blue-300 shadow-sm disabled:opacity-50"
               >
                 {copyingAllNew ? 'กำลังคัดลอก...' : 'คัดลอก'}
               </button>
@@ -1045,17 +1045,17 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
             <button
               type="button"
               onClick={() => setViewMode((v) => (v === 'new' ? 'default' : 'new'))}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
+              className={`inline-flex h-10 box-border items-center justify-center gap-2 px-4 rounded-xl font-semibold text-sm transition-all ${
                 viewMode === 'new'
-                  ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md ring-2 ring-blue-300'
-                  : 'bg-white text-blue-600 hover:bg-blue-50 border border-blue-300 shadow-sm'
+                  ? 'border-2 border-transparent bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md'
+                  : 'border-2 border-blue-300 bg-white text-blue-600 shadow-sm hover:bg-blue-50'
               }`}
             >
               <ColumnIcon columnKey="new" />
               งานใหม่
               <span
-                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  'bg-blue-100 text-blue-600'
+                className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
+                  viewMode === 'new' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-600'
                 }`}
               >
                 {ordersByKey.new.length}
@@ -1065,11 +1065,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
             <button
               type="button"
               onClick={() => setViewMode((v) => (v === 'noDesign' ? 'default' : 'noDesign'))}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-400 shadow-sm"
+              className="inline-flex h-10 box-border items-center justify-center gap-2 border-2 border-orange-300 bg-white px-4 rounded-xl font-semibold text-sm text-orange-600 shadow-sm transition-all hover:bg-orange-50"
             >
               <ColumnIcon columnKey="noDesign" />
               ไม่ต้องออกแบบ
-              <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-orange-200 text-orange-900">
+              <span className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full bg-orange-100 px-2 text-xs font-bold text-orange-600">
                 {ordersByKey.noDesign.length}
               </span>
             </button>
@@ -1077,17 +1077,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
             <button
               type="button"
               onClick={() => setViewMode((v) => (v === 'completed' ? 'default' : 'completed'))}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                'bg-white text-teal-600 hover:bg-teal-50 border border-teal-300 shadow-sm'
-              }`}
+              className="inline-flex h-10 box-border items-center justify-center gap-2 border-2 border-teal-300 bg-white px-4 rounded-xl font-semibold text-sm text-teal-600 shadow-sm transition-all hover:bg-teal-50"
             >
               <ColumnIcon columnKey="completed" />
               เสร็จสิ้น
-              <span
-                className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                  'bg-teal-100 text-teal-600'
-                }`}
-              >
+              <span className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full bg-teal-100 px-2 text-xs font-bold text-teal-600">
                 {ordersByKey.completed.length}
               </span>
             </button>

@@ -135,6 +135,7 @@ export default function QC() {
     startDate: new Date().toISOString().split('T')[0],
     endDate: new Date().toISOString().split('T')[0],
     user: '',
+    workOrder: '',
   })
   const [showSessionModal, setShowSessionModal] = useState(false)
   const [finishConfirmOpen, setFinishConfirmOpen] = useState(false)
@@ -447,8 +448,12 @@ export default function QC() {
     }
   }, [currentItem])
 
+  // Reset checklist selection whenever the *selected item* changes (even if product_code is the same).
   useEffect(() => {
     setCheckedIds(new Set())
+  }, [currentItem?.uid])
+
+  useEffect(() => {
     if (currentItem?.product_code) {
       fetchChecklistForProduct(currentItem.product_code)
         .then(setChecklistItems)
@@ -458,8 +463,12 @@ export default function QC() {
     }
   }, [currentItem?.product_code])
 
+  // Reset reject checklist selection whenever the *selected reject record* changes.
   useEffect(() => {
     setRejectCheckedIds(new Set())
+  }, [currentRejectItem?.id])
+
+  useEffect(() => {
     if (currentRejectItem?.product_code) {
       fetchChecklistForProduct(currentRejectItem.product_code)
         .then(setRejectChecklistItems)
@@ -837,8 +846,27 @@ export default function QC() {
   async function loadReports() {
     setLoading(true)
     try {
-      const data = await fetchReports(reportFilter)
-      setReports(data)
+      const base = await fetchReports({
+        startDate: reportFilter.startDate,
+        endDate: reportFilter.endDate,
+        user: reportFilter.user,
+      })
+
+      // Filter by work order name / filename (WO-...)
+      const woQuery = String(reportFilter.workOrder || '').trim()
+      const woFiltered = !woQuery
+        ? base
+        : base.filter((s) => {
+            const filename = String(s.filename || '')
+            const q = woQuery.toUpperCase()
+            const f = filename.toUpperCase()
+            if (f.includes(q)) return true
+            // also allow typing without "WO-" prefix
+            if (!q.startsWith('WO-') && f.includes(`WO-${q}`)) return true
+            return false
+          })
+
+      setReports(woFiltered)
     } catch (e: any) {
       alert('โหลดรายงานไม่สำเร็จ: ' + (e?.message || e))
     } finally {
@@ -2234,6 +2262,16 @@ export default function QC() {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase">Work Order</label>
+                <input
+                  type="text"
+                  value={reportFilter.workOrder}
+                  onChange={(e) => setReportFilter((f) => ({ ...f, workOrder: e.target.value }))}
+                  placeholder="เช่น FBTR-... หรือ WO-FBTR-..."
+                  className="border rounded px-2 py-1"
+                />
               </div>
               <button onClick={loadReports} className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold self-end">
                 Filter

@@ -4,6 +4,7 @@ import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
 import {
   consolidateCondoStampWmsDisplayRows,
+  consolidateDuplicateWmsRows,
   getWmsConsolidatedRowIds,
   getCondoStampDisplayQty,
   getCondoStampLayersLabel,
@@ -54,7 +55,7 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
     }
 
     const sortedData = consolidateCondoStampWmsDisplayRows(sortOrderItems(data || []) as any[])
-    setItems(sortedData)
+    setItems(consolidateDuplicateWmsRows(sortedData as any[]))
     setLoading(false)
   }
 
@@ -94,6 +95,7 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
     correct: 'bg-green-100 text-green-800 border-green-300',
     wrong: 'bg-red-600 text-white border-red-700',
     not_find: 'bg-orange-100 text-orange-800 border-orange-300',
+    mixed: 'bg-slate-200 text-slate-800 border-slate-300',
   }
 
   const dropdownStatuses = ['pending', 'picked', 'out_of_stock']
@@ -176,6 +178,11 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                             onChange={(e) => updateItemStatus(item, e.target.value)}
                             className={`text-[11px] p-1.5 border rounded-lg font-bold outline-none transition-colors ${currentColorClass}`}
                           >
+                            {item.status === 'mixed' && (
+                              <option value="mixed" disabled className="bg-white text-slate-800">
+                                {WMS_STATUS_LABELS['mixed'] || 'หลายสถานะ'}
+                              </option>
+                            )}
                             {dropdownStatuses.map((s) => (
                               <option key={s} value={s} className="bg-white text-slate-800">
                                 {WMS_STATUS_LABELS[s] || s}

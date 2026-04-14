@@ -25,7 +25,8 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
           ) : (
             items.map((item, idx) => {
               const layersBracket = getCondoStampLayersLabel(item)
-              const isFinished = ['picked', 'correct', 'out_of_stock'].includes(item.status)
+              const statuses = Array.isArray(item._consolidated_statuses) ? item._consolidated_statuses : [item.status]
+              const isFinished = statuses.every((s: any) => ['picked', 'correct', 'out_of_stock'].includes(String(s)))
               const isCurrent = item.id === currentItemId
 
               let statusIcon = <div className="w-6 h-6 rounded-full border-2 border-gray-200"></div>
@@ -46,7 +47,7 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
               return (
                 <div
                   key={getWmsConsolidatedRowIds(item).join('-')}
-                  onClick={() => onJumpTo(item.id)}
+                  onClick={() => onJumpTo(getWmsConsolidatedRowIds(item)[0] || item.id)}
                   className={`flex items-center justify-between p-3 border rounded-2xl transition-all cursor-pointer active:scale-95 ${bgClass}`}
                 >
                   <div className="flex items-center gap-3 overflow-hidden">
