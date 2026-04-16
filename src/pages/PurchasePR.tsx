@@ -42,6 +42,14 @@ export default function PurchasePR() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
+  function parseOrderPoint(raw: unknown): number | null {
+    if (raw == null) return null
+    const s = String(raw).trim()
+    if (!s) return null
+    const n = Number(s.replace(/,/g, ''))
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
   // list state
   const [prs, setPrs] = useState<(InventoryPR & { _itemCount?: number })[]>([])
   const [products, setProducts] = useState<(Product & { last_price?: number | null })[]>([])
@@ -177,6 +185,23 @@ export default function PurchasePR() {
     if (filterCategory) filtered = filtered.filter((p) => p.product_category === filterCategory)
     return filtered
   }, [products, productSearch, filterType, filterSeller, filterCategory, selectedSupplierName])
+
+  /** ผู้ขายที่มีสินค้า "ถึงจุดสั่งซื้อ" (stock < order_point) */
+  const reorderPointCountBySeller = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const prod of products as any[]) {
+      const seller = (prod as any)?.seller_name as string | undefined
+      if (!seller) continue
+      if (!prod?.order_point) continue
+      const op = parseFloat(String(prod.order_point).replace(/,/g, ''))
+      if (Number.isNaN(op) || op <= 0) continue
+      const onHand = (stockBalances as any)[prod.id] ?? 0
+      if (onHand < op) {
+        map[seller] = (map[seller] || 0) + 1
+      }
+    }
+    return map
+  }, [products, stockBalances])
 
   /* ── Supplier panel products ── */
   const supplierProducts = useMemo(() => {
@@ -608,7 +633,11 @@ export default function PurchasePR() {
               >
                 <option value="">-- เลือกผู้ขาย (บังคับ) --</option>
                 {sellers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                  <option key={s.id} value={s.id}>
+                    {reorderPointCountBySeller[s.name]
+                      ? `⚠ ${s.name} (${reorderPointCountBySeller[s.name]})`
+                      : s.name}
+                  </option>
                 ))}
               </select>
               <div className="flex-1">
@@ -682,6 +711,9 @@ export default function PurchasePR() {
                 {draftItems.map((item, index) => {
                   const prod = item.product_id ? productMap.get(item.product_id) : null
                   const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                  const op = prod ? parseOrderPoint(prod.order_point) : null
+                  const onHand = prod ? (stockBalances[prod.id] ?? 0) : 0
+                  const isBelowOP = op != null && onHand < op
                   return (
                     <div key={`draft-${index}`} className={`border rounded-lg p-3 transition-colors ${supplierPanelIndex === index ? 'bg-emerald-50 border-emerald-300' : 'bg-gray-50/50'}`}>
                       <div className="flex gap-3">
@@ -740,6 +772,9 @@ export default function PurchasePR() {
                               )}
                               <span className="text-orange-600 font-medium">
                                 คงเหลือ: {(stockBalances[prod.id] ?? 0).toLocaleString()}
+                              </span>
+                              <span className={`${isBelowOP ? 'text-red-600' : 'text-gray-500'} font-medium`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
                               </span>
                             </div>
                           )}
@@ -852,6 +887,8 @@ export default function PurchasePR() {
                   ) : (
                     supplierProducts.map((p) => {
                       const stock = stockBalances[p.id] ?? 0
+                      const op = parseOrderPoint((p as any)?.order_point)
+                      const isBelowOP = op != null && stock < op
                       const imgUrl = getPublicUrl('product-images', p.product_code)
                       const alreadyAdded = draftItems.some((d) => d.product_id === p.id)
                       return (
@@ -869,6 +906,9 @@ export default function PurchasePR() {
                             <div className="flex gap-3 mt-0.5">
                               <span className={`text-xs font-semibold ${stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
                                 คงเหลือ: {stock.toLocaleString()}
+                              </span>
+                              <span className={`text-xs font-semibold ${isBelowOP ? 'text-red-600' : 'text-gray-500'}`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
                               </span>
                               {p.product_category && <span className="text-xs text-gray-400">{p.product_category}</span>}
                             </div>
@@ -899,7 +939,7 @@ export default function PurchasePR() {
             <div className="text-sm text-gray-500">
               รายการทั้งหมด: <span className="font-bold text-gray-800">{draftItems.filter((i) => i.product_id).length}</span> รายการ
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-3 mr-20">
               <button onClick={closeCreate} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors">
                 ยกเลิก
               </button>
