@@ -197,7 +197,7 @@ export interface POListFilters {
 export async function loadPOList(filters: POListFilters = {}): Promise<InventoryPO[]> {
   let q = supabase
     .from('inv_po')
-    .select('*, inv_pr(pr_no, pr_type), inv_po_items(id, qty)')
+    .select('*, inv_pr(pr_no, pr_type), inv_po_items(id, qty, unit_price)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {

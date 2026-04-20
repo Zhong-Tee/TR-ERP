@@ -520,15 +520,18 @@ export default function Settings() {
     const seq = ++roleMenusLoadSeqRef.current
     setRoleMenusLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('st_user_menus')
-        .select('role, menu_key, has_access')
-        .in(
-          'role',
-          Array.from(new Set(settingsRoles.flatMap((role) => getRoleLookupCandidates(role)))),
-        )
-        .limit(5000)
-      if (error) throw error
+      const roleList = Array.from(new Set(settingsRoles.flatMap((role) => getRoleLookupCandidates(role)))).map((r) =>
+        normalizeRole(r),
+      )
+      // โหลดทีละ role ด้วย .eq('role', ...) — หลีก .in() และหลีก limit ไม่มี order ที่อาจตัดแถวบาง role (เช่น store) ออก
+      const results = await Promise.all(
+        roleList.map((r) => supabase.from('st_user_menus').select('role, menu_key, has_access').eq('role', r)),
+      )
+      const data: { role: string; menu_key: string; has_access: boolean }[] = []
+      for (const res of results) {
+        if (res.error) throw res.error
+        if (res.data?.length) data.push(...(res.data as { role: string; menu_key: string; has_access: boolean }[]))
+      }
       const map: Record<string, Record<string, boolean>> = {}
       /** (role::menu_key) ที่มีแถวใน DB และ has_access = false — ห้ามสืบทอดจากเมนูหลัก (สอดคล้อง hasAccess) */
       const explicitDeny = new Set<string>()
@@ -1013,14 +1016,15 @@ export default function Settings() {
 
       const payload: Array<{ role: string; menu_key: string; menu_name: string; has_access: boolean }> = []
       const currentRoleMenus = roleMenusRef.current
-      Object.entries(currentRoleMenus).forEach(([role, menus]) => {
+      settingsRoles.forEach((role) => {
+        const menus = currentRoleMenus[role] ?? {}
         const r = normalizeRole(role)
         MENU_ROLE_OPTIONS.forEach((menu) => {
           payload.push({
             role: r,
             menu_key: menu.key,
             menu_name: menu.label,
-            has_access: menus?.[menu.key] ?? false,
+            has_access: menus[menu.key] ?? false,
           })
         })
       })

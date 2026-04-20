@@ -1219,7 +1219,7 @@ export default function PurchaseGR() {
 
       {/* ── Receive GR Modal ── */}
       <Modal open={receiveOpen} onClose={clearReceiveDraft} closeOnBackdropClick={false} contentClassName="max-w-6xl">
-        <div className="p-4 md:p-6 space-y-5">
+        <div className="p-4 md:p-6 space-y-5 text-gray-900">
           <h2 className="text-lg md:text-xl font-bold text-gray-900">
             {isFollowUp ? 'รับสินค้าเพิ่ม (Follow-up GR)' : 'ตรวจรับสินค้า (GR)'}
           </h2>
@@ -1248,19 +1248,33 @@ export default function PurchaseGR() {
           )}
 
           {/* items table */}
-          <div className="md:hidden space-y-3">
+          <div className="md:hidden space-y-2">
             {receiveItems.map((item, index) => {
               const qtyReceived = Number(item.qty_received) || 0
               const shortage = Math.max(item.qty_ordered - qtyReceived, 0)
               const imgUrl = getPublicUrl('product-images', item.product_code)
               return (
-                <div key={`mobile-${item.product_id}-${index}`} className={`border rounded-lg p-3 space-y-3 ${shortage > 0 ? 'bg-red-50/40 border-red-200' : 'bg-white'}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
+                <div key={`mobile-${item.product_id}-${index}`} className={`border rounded-lg p-3 space-y-2 ${shortage > 0 ? 'bg-red-50/40 border-red-200' : 'bg-white'}`}>
+                  <div
+                    className="min-w-0 truncate leading-snug text-gray-900"
+                    title={`#${index + 1} · รหัส ${item.product_code} · ${item.product_name}`}
+                  >
+                    <span className="text-[11px] font-semibold text-gray-600 tabular-nums">#{index + 1}</span>
+                    <span className="text-[11px] text-gray-300"> · </span>
+                    <span className="text-[11px] text-gray-500">รหัส</span>{' '}
+                    <span className="text-[11px] font-medium text-gray-800">{item.product_code}</span>
+                    <span className="text-[11px] text-gray-300"> · </span>
+                    <span className="text-[11px] text-gray-500">ชื่อ</span>{' '}
+                    <span className="text-sm font-semibold text-gray-900">{item.product_name}</span>
+                  </div>
+                  {item.item_note && (
+                    <div className="text-[11px] text-amber-700 leading-snug line-clamp-2">* {item.item_note}</div>
+                  )}
+                  <div className="flex items-start justify-between gap-2.5">
                     <button
                       type="button"
                       onClick={() => { if (imgUrl) openZoomGallery([imgUrl], 0) }}
-                      className="w-12 h-12 rounded bg-gray-200 overflow-hidden shrink-0 border"
+                      className="w-12 h-12 rounded bg-gray-200 overflow-hidden shrink-0 border self-start"
                     >
                       {imgUrl ? (
                         <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
@@ -1268,12 +1282,7 @@ export default function PurchaseGR() {
                         <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
                       )}
                     </button>
-                    <div className="min-w-0">
-                      <div className="font-medium text-sm">{item.product_code} - {item.product_name}</div>
-                      {item.item_note && <div className="text-xs text-amber-600 mt-0.5">* {item.item_note}</div>}
-                    </div>
-                    </div>
-                    <div className="flex items-start gap-2 text-xs shrink-0">
+                    <div className="flex items-start gap-1.5 text-[11px] shrink-0 self-start">
                       {isFollowUp && (
                         <div className="rounded bg-blue-50 px-2.5 py-1.5 text-center min-w-[66px]">
                           <div className="text-gray-500 leading-tight">รับแล้ว</div>
@@ -1295,7 +1304,7 @@ export default function PurchaseGR() {
                     </div>
                   </div>
 
-                  <div>
+                  <div className="pt-0.5">
                     <label className="block text-xs text-gray-600 mb-1">รับ</label>
                     <input
                       type="number"
@@ -1375,7 +1384,7 @@ export default function PurchaseGR() {
                                 type="button"
                                 disabled={imageIndex === 0}
                                 onClick={() => reorderReceiveItemImage(index, image.id, -1)}
-                                className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                                className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
                               >
                                 ←
                               </button>
@@ -1383,7 +1392,7 @@ export default function PurchaseGR() {
                                 type="button"
                                 disabled={imageIndex === item.images.length - 1}
                                 onClick={() => reorderReceiveItemImage(index, image.id, 1)}
-                                className="px-1.5 py-0.5 text-[10px] border rounded disabled:opacity-40"
+                                className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
                               >
                                 →
                               </button>
@@ -1401,7 +1410,7 @@ export default function PurchaseGR() {
                         type="text"
                         value={item.shortage_note}
                         onChange={(e) => updateReceiveItem(index, { shortage_note: e.target.value })}
-                        className="w-full px-2 py-1.5 border rounded-lg text-xs border-red-200"
+                        className="w-full px-2 py-1.5 border rounded-lg text-xs border-red-200 text-gray-900 placeholder:text-gray-400"
                         placeholder="ระบุเหตุผล..."
                       />
                     </div>
@@ -1415,6 +1424,7 @@ export default function PurchaseGR() {
               <thead>
                 <tr className="bg-gray-50 border-b">
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
+                  <th className="px-3 py-2.5 text-center font-semibold text-gray-600 w-14">ลำดับ</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                   {isFollowUp && (
                     <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">รับแล้ว</th>
@@ -1444,8 +1454,16 @@ export default function PurchaseGR() {
                           )}
                         </div>
                       </td>
+                      <td className="px-3 py-2 text-center text-gray-700 tabular-nums font-medium">{index + 1}</td>
                       <td className="px-3 py-2">
-                        <div className="font-medium">{item.product_code} - {item.product_name}</div>
+                        <div className="text-xs">
+                          <span className="text-gray-500">รหัสสินค้า </span>
+                          <span className="font-medium text-gray-900">{item.product_code}</span>
+                        </div>
+                        <div className="text-xs mt-0.5">
+                          <span className="text-gray-500">ชื่อสินค้า </span>
+                          <span className="font-medium text-gray-900">{item.product_name}</span>
+                        </div>
                         {item.item_note && (
                           <div className="text-xs text-amber-600 mt-0.5">* {item.item_note}</div>
                         )}
@@ -1569,7 +1587,7 @@ export default function PurchaseGR() {
                             type="text"
                             value={item.shortage_note}
                             onChange={(e) => updateReceiveItem(index, { shortage_note: e.target.value })}
-                            className="w-full px-2 py-1.5 border rounded-lg text-xs border-red-200"
+                            className="w-full px-2 py-1.5 border rounded-lg text-xs border-red-200 text-gray-900 placeholder:text-gray-400"
                             placeholder="ระบุเหตุผล..."
                           />
                         )}
@@ -1580,7 +1598,7 @@ export default function PurchaseGR() {
               </tbody>
               <tfoot>
                 <tr className="bg-gray-50 border-t">
-                  <td colSpan={isFollowUp ? 3 : 2} className="px-3 py-2.5 text-right font-semibold text-gray-700">รวม</td>
+                  <td colSpan={isFollowUp ? 4 : 3} className="px-3 py-2.5 text-right font-semibold text-gray-700">รวม</td>
                   <td className="px-3 py-2.5 text-right font-medium">{totalOrdered.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-medium">{totalReceived.toLocaleString()}</td>
                   <td className="px-3 py-2.5 text-right font-semibold text-red-600">
@@ -1672,11 +1690,11 @@ export default function PurchaseGR() {
             />
           </div>
 
-          <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={clearReceiveDraft} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+          <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
+            <button type="button" onClick={clearReceiveDraft} className="px-5 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-800 bg-white">
               ยกเลิก
             </button>
-            <button onClick={handleReceive} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
+            <button type="button" onClick={handleReceive} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
               {saving ? 'กำลังบันทึก...' : hasExcess ? 'รับเกิน' : hasShortage ? 'รับบางส่วน' : 'รับเข้าคลัง'}
             </button>
           </div>
@@ -1685,7 +1703,7 @@ export default function PurchaseGR() {
 
       {/* ── Detail Modal ── */}
       <Modal open={!!viewing} onClose={() => setViewing(null)} contentClassName="max-w-4xl">
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-5 text-gray-900">
           {detailLoading ? (
             <div className="flex justify-center py-12">
               <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500" />
@@ -1978,7 +1996,7 @@ export default function PurchaseGR() {
       </Modal>
 
       <Modal open={!!pendingImageSelection} onClose={closePendingImageSelection} closeOnBackdropClick={false} contentClassName="max-w-lg">
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 text-gray-900">
           <h3 className="text-lg font-bold text-gray-900">ตรวจสอบรูปก่อนเพิ่ม</h3>
           <p className="text-xs text-gray-500">ตรวจสอบรูปให้ถูกต้อง แล้วกดเพิ่มรูป</p>
           <div className="grid grid-cols-3 gap-2 max-h-[45vh] overflow-y-auto">
@@ -1986,11 +2004,19 @@ export default function PurchaseGR() {
               <img key={img.id} src={img.previewUrl} alt="" className="w-full aspect-square object-cover rounded border" />
             ))}
           </div>
-          <div className="flex justify-end gap-2 pt-2 border-t">
-            <button onClick={closePendingImageSelection} className="px-4 py-2 border rounded-lg text-sm hover:bg-gray-50">
+          <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 pt-2 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={closePendingImageSelection}
+              className="w-full sm:w-auto px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 bg-white hover:bg-gray-50"
+            >
               ยกเลิก
             </button>
-            <button onClick={confirmPendingImageSelection} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700">
+            <button
+              type="button"
+              onClick={confirmPendingImageSelection}
+              className="w-full sm:w-auto px-4 py-2.5 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700"
+            >
               เพิ่มรูป
             </button>
           </div>
@@ -2036,7 +2062,7 @@ export default function PurchaseGR() {
         </div>
       </Modal>
       <Modal open={etaEditOpen} onClose={() => setEtaEditOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-md">
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 text-gray-900">
           <h2 className="text-lg font-bold text-gray-900">แก้ไขกำหนดรับเข้า</h2>
           {etaEditPO && (
             <div className="bg-orange-50 rounded-lg p-3 text-sm text-orange-800">
@@ -2049,14 +2075,19 @@ export default function PurchaseGR() {
               type="date"
               value={etaEditDate}
               onChange={(e) => setEtaEditDate(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
+              className="w-full px-3 py-2 border rounded-lg text-sm text-gray-900"
             />
           </div>
-          <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setEtaEditOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm">
+          <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={() => setEtaEditOpen(false)}
+              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-800 bg-white"
+            >
               ยกเลิก
             </button>
             <button
+              type="button"
               onClick={saveEtaEdit}
               disabled={etaSaving}
               className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 text-sm font-semibold"

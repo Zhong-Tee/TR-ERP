@@ -90,6 +90,7 @@ export default function PurchasePO() {
   const [updating, setUpdating] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const exportRef = useRef<HTMLDivElement>(null)
+  const createExportRef = useRef<HTMLDivElement>(null)
 
   // GR history for detail modal
   const [grHistory, setGrHistory] = useState<InventoryGR[]>([])
@@ -133,7 +134,30 @@ export default function PurchasePO() {
     } finally {
       setExporting(false)
     }
-  }, [viewing])
+  }, [viewing, showMessage])
+
+  const handleExportCreatePNG = useCallback(async () => {
+    if (!selectedPR || !createExportRef.current) return
+    setExporting(true)
+    try {
+      const canvas = await html2canvas(createExportRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      })
+      const link = document.createElement('a')
+      link.download = `${selectedPR.pr_no}_draft_order.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (e) {
+      console.error('Export failed:', e)
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ดาวน์โหลดไม่สำเร็จ' })
+    } finally {
+      setExporting(false)
+    }
+  }, [selectedPR, showMessage])
 
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
@@ -562,7 +586,23 @@ export default function PurchasePO() {
                       ? Number(po.intl_shipping_cost) * Number(po.intl_exchange_rate)
                       : null
                   const shippingPerPiece = shippingThb != null && totalQty > 0 ? shippingThb / totalQty : null
-                  const unitPrice = po.total_amount != null && totalQty > 0 ? Number(po.total_amount) / totalQty : null
+                  const hasLinePrices = items.length > 0 && items.every((i: any) => i.unit_price != null)
+                  const merchFromLines = hasLinePrices
+                    ? items.reduce((s: number, i: any) => s + (Number(i.qty) || 0) * Number(i.unit_price), 0)
+                    : null
+                  const merchCore = merchFromLines ?? (po.total_amount != null ? Number(po.total_amount) : null)
+                  const listTotalDisplay =
+                    merchCore != null
+                      ? shippingThb != null
+                        ? merchCore + shippingThb
+                        : merchCore
+                      : po.grand_total != null
+                        ? Number(po.grand_total)
+                        : po.total_amount != null
+                          ? Number(po.total_amount)
+                          : null
+                  const unitPrice =
+                    merchCore != null && totalQty > 0 ? merchCore / totalQty : null
                   return (
                     <tr key={po.id} className="hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-gray-900">{po.po_no}</td>
@@ -575,11 +615,13 @@ export default function PurchasePO() {
                       <td className="px-4 py-3 text-center text-gray-600">{itemCount || '-'}</td>
                       {canSeeFinancial && (
                         <>
-                          <td className="px-4 py-3 text-right font-medium">
-                            {po.grand_total != null ? Number(po.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : po.total_amount != null ? Number(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'}
+                          <td className="px-4 py-3 text-right font-medium tabular-nums">
+                            {listTotalDisplay != null
+                              ? listTotalDisplay.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                              : '-'}
                           </td>
-                          <td className="px-4 py-3 text-right text-gray-600">
-                            {unitPrice != null ? unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
+                          <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+                            {unitPrice != null ? unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' ฿' : '-'}
                           </td>
                           <td className="px-4 py-3 text-right text-gray-600">
                             {shippingThb != null && shippingPerPiece != null
@@ -805,9 +847,68 @@ export default function PurchasePO() {
                 />
               </div>
 
+              {/* Hidden export area for PNG (create from PR — same supplier sheet layout as PO detail) */}
+              <div style={{ position: 'absolute', left: '-9999px', top: 0 }}>
+                <div ref={createExportRef} style={{ width: 800, padding: 32, backgroundColor: '#fff', fontFamily: 'sans-serif' }}>
+                  <div style={{ textAlign: 'center', marginBottom: 20 }}>
+                    <div style={{ fontSize: 22, fontWeight: 700, color: '#111' }}>采购订单</div>
+                    <div style={{ fontSize: 14, color: '#666', marginTop: 6 }}>
+                      PR: {selectedPR.pr_no} &nbsp;|&nbsp; 订购日期: {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}
+                    </div>
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#f3f4f6' }}>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600, width: 140 }}>图片</th>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600, width: 80 }}>数量</th>
+                        <th style={{ border: '1px solid #d1d5db', padding: '10px 8px', textAlign: 'center', fontWeight: 600 }}>产品</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {((selectedPR.inv_pr_items || []) as any[]).map((item: any) => {
+                        const prod = item.pr_products
+                        const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                        return (
+                          <tr key={item.id || item.product_id}>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
+                              {imgUrl ? (
+                                <img src={imgUrl} alt="" crossOrigin="anonymous" style={{ width: 125, height: 125, objectFit: 'cover', display: 'inline-block', borderRadius: 4 }} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                              ) : (
+                                <div style={{ width: 125, height: 125, backgroundColor: '#e5e7eb', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af', borderRadius: 4 }}>No Image</div>
+                              )}
+                            </td>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle', fontSize: 16, fontWeight: 600 }}>
+                              {Number(item.qty).toLocaleString()}
+                            </td>
+                            <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: 600, fontSize: 15 }}>{prod?.product_name_cn || '-'}</div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-3 pt-2 border-t">
                 <button onClick={() => setCreateOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
                   ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportCreatePNG}
+                  disabled={exporting || saving}
+                  className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+                >
+                  {exporting ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  )}
+                  ดาวน์โหลด PNG
                 </button>
                 <button onClick={handleCreate} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
                   {saving ? 'กำลังสร้าง...' : 'สร้าง PO'}
@@ -851,7 +952,7 @@ export default function PurchasePO() {
                 {canSeeFinancial && (
                   <div className="bg-gray-50 rounded-lg p-3">
                     <div className="text-gray-500 text-xs">ยอดรวมสินค้า</div>
-                    <div className="font-medium">{viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
+                    <div className="font-medium tabular-nums">{viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 }) : '-'} บาท</div>
                   </div>
                 )}
                 {viewing.expected_arrival_date && (
@@ -869,7 +970,25 @@ export default function PurchasePO() {
                 {canSeeFinancial && (
                   <div className="bg-emerald-50 rounded-lg p-3">
                     <div className="text-emerald-600 text-xs">ยอดรวมทั้งหมด</div>
-                    <div className="font-bold text-emerald-800">{viewing.grand_total != null ? Number(viewing.grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 }) : viewing.total_amount != null ? Number(viewing.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '-'} บาท</div>
+                    <div className="font-bold text-emerald-800 tabular-nums">
+                      {(() => {
+                        const shipThb =
+                          viewing.intl_shipping_cost_thb != null
+                            ? Number(viewing.intl_shipping_cost_thb)
+                            : viewing.intl_shipping_cost != null && viewing.intl_exchange_rate != null
+                              ? Number(viewing.intl_shipping_cost) * Number(viewing.intl_exchange_rate)
+                              : null
+                        const grand =
+                          viewing.total_amount != null
+                            ? shipThb != null
+                              ? Number(viewing.total_amount) + shipThb
+                              : viewing.grand_total != null
+                                ? Number(viewing.grand_total)
+                                : Number(viewing.total_amount)
+                            : null
+                        return grand != null ? `${grand.toLocaleString('th-TH', { minimumFractionDigits: 2 })} บาท` : '-'
+                      })()}
+                    </div>
                   </div>
                 )}
               </div>
