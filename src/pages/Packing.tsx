@@ -4,6 +4,7 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
+import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -36,7 +37,10 @@ type PackingItem = {
   cartoon_pattern: string | null
   line_pattern: string | null
   font: string | null
-  item_uid: string
+  /** Unit UID (bill_no-Seq) — scanned per-piece like QC */
+  unit_uid: string
+  /** Source line UID from or_order_items (for tracing only) */
+  source_line_uid: string | null
   scanned: boolean
   parcelScanned: boolean
   isOrderComplete: boolean
@@ -65,42 +69,77 @@ type WorkOrderStatus = {
 
 function buildPackingItemsFromOrder(
   order: OrderWithItems,
-  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>
+  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+  scannedUnitKeySet: Set<string>
 ): PackingItem[] {
   const isOrderShipped = order.status === 'จัดส่งแล้ว'
   const isParcelScanned = order.packing_meta?.parcelScanned || false
   const packingTag = order.packing_meta?.dailyPackingTag ?? null
   const rows: PackingItem[] = []
   const items = order.or_order_items || order.order_items || []
-  items.forEach((item) => {
-    const qcStatus = item.item_uid ? qcStatusMap[item.item_uid] || null : null
-    rows.push({
-      tracking_number: order.tracking_number || '',
-      customer_name: order.customer_name || '',
-      order_id: order.id,
-      product_name: item.product_name || '',
-      product_code: item.pr_products?.product_code || null,
-      details: [item.line_1, item.line_2, item.line_3].filter(Boolean).join(' // '),
-      ink_color: item.ink_color,
-      shelf_location: item.product_type,
-      cartoon_pattern: item.cartoon_pattern,
-      line_pattern: item.line_pattern,
-      font: item.font,
-      item_uid: item.item_uid,
-      scanned: item.packing_status === 'สแกนแล้ว',
-      parcelScanned: isParcelScanned,
-      isOrderComplete: isOrderShipped,
-      needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
-      needsCashBill: false,
-      claim_type: order.claim_type,
-      claim_details: order.claim_details,
-      file_attachment: item.file_attachment,
-      notes: item.notes,
-      qc_status: qcStatus,
-      packingTag,
-    })
+  const sorted = [...items].sort((a: any, b: any) => {
+    const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+    if (ta !== 0) return ta
+    return String(a.id || '').localeCompare(String(b.id || ''))
+  })
+
+  const bill = String(order.bill_no || '').trim() || '—'
+  let seq = 0
+  sorted.forEach((item: any) => {
+    const copies = normalizedLineQuantity(item.quantity)
+    for (let c = 0; c < copies; c += 1) {
+      seq += 1
+      const unitUid = flatBillUnitUid(bill, seq)
+      const key = `${order.id}\u0001${unitUid}`
+      const qcStatus = qcStatusMap[unitUid] || null
+      rows.push({
+        tracking_number: order.tracking_number || '',
+        customer_name: order.customer_name || '',
+        order_id: order.id,
+        product_name: item.product_name || '',
+        product_code: item.pr_products?.product_code || null,
+        details: [item.line_1, item.line_2, item.line_3].filter(Boolean).join(' // '),
+        ink_color: item.ink_color,
+        shelf_location: item.product_type,
+        cartoon_pattern: item.cartoon_pattern,
+        line_pattern: item.line_pattern,
+        font: item.font,
+        unit_uid: unitUid,
+        source_line_uid: item.item_uid ?? null,
+        scanned: scannedUnitKeySet.has(key),
+        parcelScanned: isParcelScanned,
+        isOrderComplete: isOrderShipped,
+        needsTaxInvoice: order.billing_details?.request_tax_invoice || false,
+        needsCashBill: false,
+        claim_type: order.claim_type,
+        claim_details: order.claim_details,
+        file_attachment: item.file_attachment,
+        notes: item.notes,
+        qc_status: qcStatus,
+        packingTag,
+      })
+    }
   })
   return rows
+}
+
+async function fetchPackingUnitScanKeySet(orderIds: string[]): Promise<Set<string>> {
+  const set = new Set<string>()
+  const ids = Array.from(new Set(orderIds.filter((x) => !!x)))
+  if (ids.length === 0) return set
+  const { data, error } = await supabase
+    .from('pk_packing_unit_scans')
+    .select('order_id, unit_uid')
+    .in('order_id', ids)
+  if (error) {
+    console.warn('packing unit scans load error:', error)
+    return set
+  }
+  ;(data || []).forEach((r: any) => {
+    if (!r?.order_id || !r?.unit_uid) return
+    set.add(`${r.order_id}\u0001${String(r.unit_uid).trim()}`)
+  })
+  return set
 }
 
 type RecordingState = {
@@ -536,6 +575,22 @@ export default function Packing() {
     setTagSearchMeta(null)
     try {
       let orderId: string | null = null
+
+      // Unit UID (bill_no-seq) like QC / Packing scan
+      const unitMatch = q.match(/^(.*)-(\d+)$/)
+      if (unitMatch) {
+        const billNo = String(unitMatch[1] || '').trim()
+        if (billNo) {
+          const { data: byBill, error: billErr } = await supabase
+            .from('or_orders')
+            .select('id')
+            .eq('bill_no', billNo)
+            .maybeSingle()
+          if (billErr) throw billErr
+          if (byBill?.id) orderId = byBill.id
+        }
+      }
+
       const { data: byUid, error: uidErr } = await supabase
         .from('or_order_items')
         .select('order_id')
@@ -576,9 +631,15 @@ export default function Packing() {
       if (oErr || !order) throw oErr || new Error('ไม่พบออร์เดอร์')
 
       const ord = order as OrderWithItems
-      const itemUids = (ord.or_order_items || []).map((i) => i.item_uid).filter(Boolean)
-      const qcStatusMap = await fetchQcStatusMap(itemUids as string[])
-      const rows = buildPackingItemsFromOrder(ord, qcStatusMap)
+      const scannedKeySet = await fetchPackingUnitScanKeySet([ord.id])
+      const totalUnits = (ord.or_order_items || []).reduce(
+        (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
+        0
+      )
+      const bill = String(ord.bill_no || '').trim() || '—'
+      const unitUids = Array.from({ length: totalUnits }, (_, i) => flatBillUnitUid(bill, i + 1))
+      const qcStatusMap = await fetchQcStatusMap(unitUids)
+      const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet)
       setTagSearchRows(rows)
       setTagSearchMeta({
         workOrderName: ord.work_order_name ?? null,
@@ -747,11 +808,11 @@ export default function Packing() {
     if (!tagSearchRows || tagSearchRows.length === 0) return null
     const q = tagSearchInput.trim().toUpperCase()
     if (q) {
-      const exact = tagSearchRows.find((item) => item.item_uid.toUpperCase() === q)
-      if (exact) return exact.item_uid
+      const exact = tagSearchRows.find((item) => item.unit_uid.toUpperCase() === q)
+      if (exact) return exact.unit_uid
     }
     const nextPending = tagSearchRows.find((item) => !item.scanned)
-    return nextPending?.item_uid ?? null
+    return nextPending?.unit_uid ?? null
   }, [tagSearchRows, tagSearchInput])
 
   const shippedChannels = useMemo(() => {
@@ -861,7 +922,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(item_uid, packing_status)')
+            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(id, item_uid, quantity)')
             .in('work_order_name', names)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
@@ -882,20 +943,43 @@ export default function Packing() {
           (skipLogsData || []).map((s: any) => s.work_order_name as string)
         )
 
-        const allItemUids = (allProductionOrders || []).flatMap((o: any) =>
-          (o.or_order_items || []).map((oi: any) => oi.item_uid).filter(Boolean)
-        )
-        const qcStatusMap = await fetchQcStatusMap(allItemUids)
+        const allUnitUids: string[] = []
+        ;(allProductionOrders || []).forEach((o: any) => {
+          const bill = String(o.bill_no || '').trim() || '—'
+          let seq = 0
+          ;(o.or_order_items || []).forEach((oi: any) => {
+            const n = normalizedLineQuantity(oi.quantity)
+            for (let i = 0; i < n; i += 1) {
+              seq += 1
+              allUnitUids.push(flatBillUnitUid(bill, seq))
+            }
+          })
+        })
+        const qcStatusMap = await fetchQcStatusMap(allUnitUids)
+
+        const allOrderIds = (allProductionOrders || []).map((o: any) => o.id).filter(Boolean)
+        const scannedKeySet = await fetchPackingUnitScanKeySet(allOrderIds)
 
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
           const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_name === wo.work_order_name)
           const hasTracking = ordersInWo.some((o: any) => o.tracking_number)
-          const isPartiallyPacked = ordersInWo.some(
-            (o: any) =>
-              o.packing_meta?.parcelScanned ||
-              (o.or_order_items || []).some((oi: any) => oi.packing_status === 'สแกนแล้ว')
-          )
+          const isPartiallyPacked = ordersInWo.some((o: any) => {
+            if (o.packing_meta?.parcelScanned) return true
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            const anyScanned = (o.or_order_items || []).some((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                const unitUid = flatBillUnitUid(bill, seq)
+                const key = `${o.id}\u0001${unitUid}`
+                if (scannedKeySet.has(key)) return true
+              }
+              return false
+            })
+            return anyScanned
+          })
           let totalItems = 0
           let packedItems = 0
           let readyBills = 0
@@ -903,17 +987,28 @@ export default function Packing() {
           const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
           billsWithTracking.forEach((o: any) => {
             const items = o.or_order_items || []
-            totalItems += items.length
-            const isReady = items.length > 0 && items.every((oi: any) => {
-              const uid = oi.item_uid
-              if (!uid) return false
-              const status = qcStatusMap[uid]
-              return status === 'pass' || status === 'skip'
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            let unitTotal = 0
+            let unitReady = 0
+            let unitScanned = 0
+            items.forEach((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              unitTotal += n
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                const unitUid = flatBillUnitUid(bill, seq)
+                const st = qcStatusMap[unitUid]
+                if (st === 'pass' || st === 'skip') unitReady += 1
+                const key = `${o.id}\u0001${unitUid}`
+                if (scannedKeySet.has(key)) unitScanned += 1
+              }
             })
+            totalItems += unitTotal
+            const isReady = unitTotal > 0 && unitReady === unitTotal
             if (isReady) readyBills++
-            const scannedCount = items.filter((oi: any) => oi.packing_status === 'สแกนแล้ว').length
-            packedItems += scannedCount
-            if (items.length > 0 && scannedCount === items.length) packedBills++
+            packedItems += unitScanned
+            if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
           })
           statusMap[wo.work_order_name] = {
             hasTracking,
@@ -987,11 +1082,20 @@ export default function Packing() {
       if (error) throw error
       const orders = (data || []) as OrderWithItems[]
       const ordersWithTracking = orders.filter((order) => order.tracking_number && order.tracking_number.trim() !== '')
-      const itemUids = ordersWithTracking.flatMap((order) =>
-        (order.or_order_items || order.order_items || []).map((item) => item.item_uid).filter(Boolean)
-      )
-      const qcStatusMap = await fetchQcStatusMap(itemUids)
-      await prepareDataForPacking(ordersWithTracking, qcStatusMap)
+      const scannedKeySet = await fetchPackingUnitScanKeySet(ordersWithTracking.map((o) => o.id))
+      const unitUids: string[] = []
+      ordersWithTracking.forEach((order) => {
+        const bill = String(order.bill_no || '').trim() || '—'
+        const totalUnits = (order.or_order_items || order.order_items || []).reduce(
+          (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
+          0
+        )
+        for (let i = 0; i < totalUnits; i += 1) {
+          unitUids.push(flatBillUnitUid(bill, i + 1))
+        }
+      })
+      const qcStatusMap = await fetchQcStatusMap(unitUids)
+      await prepareDataForPacking(ordersWithTracking, qcStatusMap, scannedKeySet)
       setView('main')
     } catch (error: any) {
       openAlert('ดึงข้อมูลไม่ได้: ' + error.message)
@@ -1025,10 +1129,14 @@ export default function Packing() {
     return map
   }
 
-  async function prepareDataForPacking(orders: OrderWithItems[], qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>) {
+  async function prepareDataForPacking(
+    orders: OrderWithItems[],
+    qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+    scannedKeySet: Set<string>
+  ) {
     const flatData: PackingItem[] = []
     orders.forEach((order) => {
-      flatData.push(...buildPackingItemsFromOrder(order, qcStatusMap))
+      flatData.push(...buildPackingItemsFromOrder(order, qcStatusMap, scannedKeySet))
     })
 
     const grouped: Record<string, PackingItem[]> = {}
@@ -1095,11 +1203,11 @@ export default function Packing() {
     const group = aggregatedDataRef.current[index]
     if (!group) return
 
-    const itemUids = group.map((item) => item.item_uid)
-    const { error: itemError } = await supabase
-      .from('or_order_items')
-      .update({ packing_status: null, item_scan_time: null })
-      .in('item_uid', itemUids)
+    const orderId = group[0].order_id
+    const { error: scanErr } = await supabase
+      .from('pk_packing_unit_scans')
+      .delete()
+      .eq('order_id', orderId)
 
     const { error: orderError } = await supabase
       .from('or_orders')
@@ -1111,10 +1219,10 @@ export default function Packing() {
       })
       .eq('id', group[0].order_id)
 
-    if (!itemError && !orderError) {
+    if (!scanErr && !orderError) {
       await loadPackingData(currentWorkOrderName)
     } else {
-      console.error('Reset Error:', itemError || orderError)
+      console.error('Reset Error:', scanErr || orderError)
     }
   }
 
@@ -1208,30 +1316,30 @@ export default function Packing() {
       setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
       return
     }
-    const itemToScan = group.find((item) => !item.scanned && item.item_uid === scanValue)
+    const itemToScan = group.find((item) => !item.scanned && item.unit_uid === scanValue)
     if (itemToScan) {
-      const { data: updatedItems, error: itemError } = await supabase
-        .from('or_order_items')
-        .update({ item_scan_time: new Date().toISOString(), packing_status: 'สแกนแล้ว' })
-        .eq('item_uid', itemToScan.item_uid)
-        .select('id')
-      if (itemError) {
-        console.error('Error updating item scan:', itemError)
+      const { error: scanError } = await supabase
+        .from('pk_packing_unit_scans')
+        .upsert(
+          {
+            order_id: itemToScan.order_id,
+            unit_uid: itemToScan.unit_uid,
+            scanned_by: user?.id ?? null,
+            scanned_at: new Date().toISOString(),
+            status: 'scanned',
+          },
+          { onConflict: 'order_id,unit_uid' }
+        )
+      if (scanError) {
+        console.error('Error saving unit scan:', scanError)
         playErrorSound()
-        setStatusMessage({ text: '❌ บันทึกไม่สำเร็จ: ' + itemError.message, type: 'error' })
-        return
-      }
-      if (!updatedItems || updatedItems.length === 0) {
-        console.error('RLS blocked update – packing_staff may lack UPDATE permission on or_order_items')
-        playErrorSound()
-        setStatusMessage({ text: '❌ ไม่สามารถบันทึกสถานะสแกนได้ (สิทธิ์ไม่พอ)', type: 'error' })
+        setStatusMessage({ text: '❌ บันทึกไม่สำเร็จ: ' + scanError.message, type: 'error' })
         return
       }
       const scannedBy = user?.username || user?.email || 'unknown'
-      const itemId = updatedItems[0]?.id ?? null
       const { error: logError } = await supabase.from('pk_packing_logs').insert({
         order_id: itemToScan.order_id,
-        item_id: itemId,
+        item_id: null,
         packed_by: scannedBy,
         notes: 'item_scan'
       })
@@ -1244,13 +1352,13 @@ export default function Packing() {
       setAggregatedData((prev) =>
         prev.map((g, idx) =>
           idx === currentIndex
-            ? g.map((item) => (item.item_uid === itemToScan.item_uid ? { ...item, scanned: true } : item))
+            ? g.map((item) => (item.unit_uid === itemToScan.unit_uid ? { ...item, scanned: true } : item))
             : g
         )
       )
 
       const updatedGroup = group.map((item) =>
-        item.item_uid === itemToScan.item_uid ? { ...item, scanned: true } : item
+        item.unit_uid === itemToScan.unit_uid ? { ...item, scanned: true } : item
       )
       if (updatedGroup.every((item) => item.scanned)) {
         clearInactivityTimer()
@@ -1931,7 +2039,7 @@ export default function Packing() {
                     <tbody>
                       {tagSearchRows
                         .slice()
-                        .sort((a, b) => naturalSortCompare(a.item_uid, b.item_uid))
+                        .sort((a, b) => naturalSortCompare(a.unit_uid, b.unit_uid))
                         .map((item) => {
                           const combinedPattern = [item.cartoon_pattern, item.line_pattern].filter(Boolean).join(' // ')
                           const displayNotes = (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
@@ -1947,9 +2055,9 @@ export default function Packing() {
                           const patternImageUrl = patternName ? getPublicUrl('cartoon-patterns', patternName, '.jpg') : ''
                           return (
                             <tr
-                              key={item.item_uid}
+                              key={item.unit_uid}
                               className={
-                                item.item_uid === tagSearchActiveItemUid
+                                item.unit_uid === tagSearchActiveItemUid
                                   ? 'bg-amber-100 ring-2 ring-amber-400'
                                   : item.scanned
                                     ? 'bg-green-50'
@@ -1965,7 +2073,7 @@ export default function Packing() {
                                       <span className="text-xs text-gray-400">ไม่มีรูป</span>
                                     )}
                                   </div>
-                                  <small className="mt-1">{item.item_uid}</small>
+                                  <small className="mt-1">{item.unit_uid}</small>
                                 </div>
                               </td>
                               <td className="p-2 border align-middle">
@@ -2491,7 +2599,7 @@ export default function Packing() {
                         {currentGroup
                           .slice()
                           .sort((a, b) => {
-                            if (a.scanned === b.scanned) return naturalSortCompare(a.item_uid, b.item_uid)
+                            if (a.scanned === b.scanned) return naturalSortCompare(a.unit_uid, b.unit_uid)
                             return a.scanned ? 1 : -1
                           })
                           .map((item) => {
@@ -2508,7 +2616,7 @@ export default function Packing() {
                             const patternName = item.cartoon_pattern || item.line_pattern || ''
                             const patternImageUrl = patternName ? getPublicUrl('cartoon-patterns', patternName, '.jpg') : ''
                             return (
-                              <tr key={item.item_uid} className={item.scanned ? 'bg-green-50' : ''}>
+                              <tr key={item.unit_uid} className={item.scanned ? 'bg-green-50' : ''}>
                                 <td className="p-2 border align-middle">
                                   <div className="flex flex-col items-center">
                                     <div
@@ -2528,7 +2636,7 @@ export default function Packing() {
                                         <span className="text-xs text-gray-400">ไม่มีรูป</span>
                                       )}
                                     </div>
-                                    <small className="mt-1">{item.item_uid}</small>
+                                    <small className="mt-1">{item.unit_uid}</small>
                                   </div>
                                 </td>
                                 <td className="p-2 border align-middle">

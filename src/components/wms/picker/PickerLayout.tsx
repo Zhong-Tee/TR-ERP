@@ -16,8 +16,6 @@ import ProductionParcelReturn from '../production/ProductionParcelReturn'
 import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
 import {
-  consolidateCondoStampWmsDisplayRows,
-  consolidateDuplicateWmsRows,
   getWmsConsolidatedRowIds,
 } from '../../../lib/wmsCondoStampConsolidation'
 
@@ -31,7 +29,6 @@ const MENU_ITEMS: { key: ViewKey; label: string; icon: string; desc: string; col
 
 const WORKABLE_STATUSES = ['pending', 'wrong', 'not_find']
 type PickerScope = { type: 'work_order' | 'order'; id: string }
-const FINISHED_STATUSES = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled']
 
 const displayPickingDepartmentLabel = (dept: string): string => {
   if (dept === 'เบิก') return 'ETC'
@@ -189,20 +186,11 @@ export default function PickerLayout() {
     const planSettings = await fetchPlanDeptSettings()
     setPickerPlanSettings(planSettings)
     const enrichedItems = await enrichWmsRowsWithPickingDepartment(sortedItems, planSettings)
-    const consolidatedItems = consolidateDuplicateWmsRows(consolidateCondoStampWmsDisplayRows(enrichedItems as any[]) as any[]).map(
-      (row: any) => {
-        if (row.status !== 'mixed') return row
-        const statuses = Array.isArray(row._consolidated_statuses) ? row._consolidated_statuses : []
-        const hasWorkable = statuses.some((s: string) => WORKABLE_STATUSES.includes(s))
-        if (hasWorkable) return { ...row, status: 'pending' }
-        const hasFinished = statuses.some((s: string) => FINISHED_STATUSES.includes(s))
-        if (hasFinished) return { ...row, status: 'picked' }
-        return { ...row, status: 'pending' }
-      }
-    )
-    setPickerItems(consolidatedItems)
+    // NOTE: Do not consolidate duplicate rows for Picker.
+    // We must show each WMS row as-is so "qty 5" can be 5 lines if it exists as 5 rows.
+    setPickerItems(enrichedItems as any[])
 
-    const hasWorkableItems = consolidatedItems.some((i) => WORKABLE_STATUSES.includes(i.status))
+    const hasWorkableItems = (enrichedItems as any[]).some((i) => WORKABLE_STATUSES.includes(i.status))
     if (!hasWorkableItems) {
       showMessage({ message: 'ใบงานนี้จัดการครบทุกรายการแล้ว!' })
       setCurrentOrderId(null)
@@ -210,7 +198,7 @@ export default function PickerLayout() {
       return null
     }
 
-    return consolidatedItems
+    return enrichedItems as any[]
   }
 
   const selectOrder = (orderId: string) => {

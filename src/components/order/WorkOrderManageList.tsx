@@ -5,6 +5,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
+import * as ExcelJS from 'exceljs'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
@@ -225,32 +226,34 @@ function orderMatchesSearch(order: Order, needleLower: string): boolean {
   return fields.some((f) => String(f || '').toLowerCase().includes(needleLower))
 }
 
-/** Flash Express template: 24 headers (ต้องตรง 100% กับ template ที่ Flash Express กำหนด) */
+/** Flash Express template: ต้องตรง 100% กับ template ที่กำหนด */
 const FLASH_EXPRESS_H = [
-  "Customer_order_number\n(เลขออเดอร์ของลูกค้า)",
-  "*Consignee_name\n(ชื่อผู้รับ)",
-  "*Address\n(ทิ่อยู่)",
-  "*Postal_code\n(รหัสไปรษณีย์)",
-  "*Phone_number\n(เบอร์โทรศัพท์)",
-  "Phone_number2\n(เบอร์โทรศัพท์)",
-  "Number of parcels \n\uFF08\u0E08\u0E33\u0E19\u0E27\u0E19\u0E1E\u0E31\u0E2A\u0E14\u0E38\uFF09",
-  "COD\n(ยอดเรียกเก็บ)",
-  "Item description1(Name|Size/Weight|color|quantity)",
-  "Item description2(Name|Size/Weight|color|quantity)",
-  "Item description3(Name|Size/Weight|color|quantity)",
-  "Item description4(Name|Size/Weight|color|quantity)",
-  "Item description5(Name|Size/Weight|color|quantity)",
-  "Item_type\n(ประเภทสินค้า)",
-  "*Weight_kg\n(น้ำหนัก)",
-  "Length\n(ยาว)",
-  "Width\n(กว้าง)",
-  "Height\n(สูง)",
-  "Declared_value\n(มูลค่าสินค้าที่ระบุโดยลูกค้า)",
-  "Box_shield",
-  "Document return service\n(บริการส่งคืนเอกสาร)",
-  "*Product_type         \uFF08\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E2A\u0E34\u0E19\u0E04\u0E49\u0E32\uFF09",
-  "*Payment method\n\uFF08\u0E27\u0E34\u0E18\u0E35\u0E0A\u0E33\u0E23\u0E30\u0E40\u0E07\u0E34\u0E19\uFF09",
-  "Remark\n(หมายเหตุ)",
+  "客户订单号\r\nCustomer_order_number\r\n(เลขออเดอร์ของลูกค้า)",
+  "收件人名称\r\n*Consignee_name\r\n(ชื่อผู้รับ)",
+  "地址\r\n*Address\r\n(ทิ่อยู่)",
+  "邮编\r\n*Postal_code\r\n(รหัสไปรษณีย์)",
+  "手机号\r\n*Phone_number\r\n(เบอร์โทรศัพท์)",
+  "手机号2\r\nPhone_number2\r\n(เบอร์โทรศัพท์)",
+  "包裹数量\r\nNumber of parcels \r\n（จำนวนพัสดุ）",
+  "COD\r\n(ยอดเรียกเก็บ)",
+  "\r\n商品描述1（名称|尺寸/重量|颜色|数量）\r\nItem description1(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 1 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
+  "商品描述2（名称|尺寸/重量|颜色|数量）\r\nItem description2(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 2 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
+  "商品描述3（名称|尺寸/重量|颜色|数量）\r\nItem description3(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 3 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
+  "商品描述4（名称|尺寸/重量|颜色|数量）\r\nItem description4(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 4 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
+  "商品描述5（名称|尺寸/重量|颜色|数量）\r\nItem description5(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 5 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
+  "物品类型\r\nItem_type\r\n(ประเภทสินค้า)",
+  "重量\r\n*Weight_kg\r\n(น้ำหนัก)",
+  "长\r\nLength\r\n(ยาว)",
+  "宽\r\nWidth\r\n(กว้าง)",
+  "高\r\nHeight\r\n(สูง)",
+  "申报价值\r\nDeclared_value\r\n(มูลค่าสินค้าที่ระบุโดยลูกค้า)",
+  "Box_shield ",
+  "文件归还服务\r\nDocument return service\r\n(บริการส่งคืนเอกสาร)",
+  "寄件产品\r\n*Product_type         \r\n(ประเภทสินค้า）",
+  "付款方式\r\n*Payment method\r\n（วิธีชำระเงิน）",
+  "备注\r\nRemark\r\n(หมายเหตุ)",
+  "配送偏好地点备注\r\nDelivery Preference_location note \r\nหมายเหตุความต้องการในการจัดส่ง ",
+  "配送联系偏好备注\r\nDelivery Preference_contact note \r\nหมายเหตุการติดต่อในการจัดส่ง",
 ]
 
 /** คอลัมน์ Preview ใบปะหน้า — key ตรงกับ WaybillPreviewRow */
@@ -1211,49 +1214,86 @@ export default function WorkOrderManageList({
     return !row.consigneeName.trim() || !row.address.trim() || !row.postalCode.trim() || !row.phone1.trim()
   }
 
-  /** Export ไฟล์ Excel (.xlsx) ตาม Flash Express template 24 คอลัมน์ */
-  function exportWaybillXlsx() {
+  /** Export ไฟล์ Excel (.xlsx) ตาม Flash Express template */
+  async function exportWaybillXlsx() {
     const { workOrderName, rows } = waybillPreviewModal
     if (rows.length === 0) return
-    const aoa: string[][] = [FLASH_EXPRESS_H]
-    for (const row of rows) {
-      const r = new Array(FLASH_EXPRESS_H.length).fill('')
-      r[0] = row.billNo            // Customer_order_number
-      r[1] = row.consigneeName     // *Consignee_name
-      r[2] = row.address           // *Address
-      r[3] = row.postalCode        // *Postal_code
-      r[4] = row.phone1            // *Phone_number
-      r[5] = row.phone2            // Phone_number2
-      r[6] = '1'                   // Number of parcels
-      r[7] = row.cod               // COD
-      // Item descriptions (8-12) = empty
-      r[13] = 'อื่นๆ'             // Item_type
-      r[14] = '0.1'               // *Weight_kg
-      r[15] = '1'                  // Length
-      r[16] = '1'                  // Width
-      r[17] = '1'                  // Height
-      // Declared_value (18) = empty
-      // Box_shield (19) = empty
-      // Document return service (20) = empty
-      r[21] = 'Standard'           // *Product_type
-      r[22] = 'payment by sender'  // *Payment method
-      r[23] = row.billNo           // Remark
-      aoa.push(r)
+    try {
+      // ต้องวางไฟล์ไว้ที่ public/templates/ เพื่อให้ fetch ได้
+      const templateUrl = '/templates/fp_waybill_template_th_26-03-2026.xlsx'
+      const res = await fetch(templateUrl)
+      if (!res.ok) throw new Error(`โหลด template ไม่สำเร็จ: ${res.status} ${res.statusText}`)
+      const templateBuf = await res.arrayBuffer()
+
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(templateBuf)
+
+      const worksheet = workbook.getWorksheet('Order Template') ?? workbook.worksheets[0]
+      if (!worksheet) throw new Error('ไม่พบ worksheet ในไฟล์ template')
+
+      // ใช้ style แถวที่ 2 เป็น “แม่แบบ” สำหรับแถวข้อมูลทั้งหมด
+      const styleRow = worksheet.getRow(2)
+      const styleHeight = styleRow.height
+
+      const deepClone = <T,>(v: T): T => {
+        try {
+          return structuredClone(v)
+        } catch {
+          return JSON.parse(JSON.stringify(v)) as T
+        }
+      }
+
+      const colCount = FLASH_EXPRESS_H.length // 26 ตาม template ใหม่
+      rows.forEach((row, idx) => {
+        const excelRowNumber = 2 + idx
+        const excelRow = worksheet.getRow(excelRowNumber)
+        if (styleHeight != null) excelRow.height = styleHeight
+
+        const r = new Array(colCount).fill('')
+        r[0] = row.billNo            // Customer_order_number
+        r[1] = row.consigneeName     // *Consignee_name
+        r[2] = row.address           // *Address
+        r[3] = row.postalCode        // *Postal_code
+        r[4] = row.phone1            // *Phone_number
+        r[5] = row.phone2            // Phone_number2
+        r[6] = '1'                   // Number of parcels
+        r[7] = row.cod               // COD
+        // Item descriptions (8-12) = empty
+        r[13] = 'อื่นๆ'             // Item_type
+        r[14] = '0.1'               // *Weight_kg
+        r[15] = '1'                  // Length
+        r[16] = '1'                  // Width
+        r[17] = '1'                  // Height
+        // Declared_value (18) = empty
+        // Box_shield (19) = empty
+        // Document return service (20) = empty
+        r[21] = 'Standard'           // *Product_type
+        r[22] = 'payment by sender'  // *Payment method
+        r[23] = row.billNo           // Remark
+        // 24-25: Delivery Preference notes (ว่าง)
+
+        for (let c = 1; c <= colCount; c++) {
+          const cell = excelRow.getCell(c)
+          const styleCell = styleRow.getCell(c)
+          if (styleCell?.style) cell.style = deepClone(styleCell.style)
+          cell.value = r[c - 1]
+        }
+        excelRow.commit()
+      })
+
+      const buffer = await workbook.xlsx.writeBuffer()
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${workOrderName || 'output'}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด Export ใบปะหน้า: ' + (err?.message ?? err) })
     }
-    const ws = XLSX.utils.aoa_to_sheet(aoa)
-    ws['!cols'] = FLASH_EXPRESS_H.map(h => ({ wch: Math.min(45, Math.max(14, h.split('\n')[0].length + 6)) }))
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Export')
-    const wbOut = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-    const blob = new Blob([wbOut], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${workOrderName || 'output'}.xlsx`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
   }
 
   async function openPickingSlipModal(workOrderId: string, workOrderName: string) {

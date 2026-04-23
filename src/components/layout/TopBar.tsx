@@ -277,6 +277,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   }
 
   const warehouseTabs = [
+    { path: '/warehouse/sub', label: 'คลังย่อย' },
     { path: '/warehouse', label: 'คลังสินค้า' },
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
@@ -375,7 +376,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   return (
     <>
       <header
-        className={`bg-emerald-500 text-white h-16 flex items-center justify-between px-6 border-b border-emerald-600 shadow-soft fixed top-0 right-0 z-40 transition-all duration-300 ${
+        className={`bg-white text-slate-900 h-16 flex items-center justify-between px-6 border-b border-slate-200 shadow-sm fixed top-0 right-0 z-40 transition-all duration-300 ${
           sidebarOpen ? 'left-64' : 'left-20'
         }`}
       >
@@ -383,7 +384,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           {onToggleSidebar && (
             <button
               onClick={onToggleSidebar}
-              className="p-2 hover:bg-white/20 rounded-lg transition-colors text-white"
+              className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-700"
               title={sidebarOpen ? 'ปิดเมนู' : 'เปิดเมนู'}
               aria-label={sidebarOpen ? 'ปิดเมนู' : 'เปิดเมนู'}
             >
@@ -392,10 +393,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               </svg>
             </button>
           )}
-          <h2 className="text-2xl font-semibold text-white">
+          <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
             {menuTitle}
             {menuCount !== null && !location.pathname.startsWith('/products') && (
-              <span className="ml-2 text-xl font-semibold text-emerald-100 tabular-nums">({menuCount})</span>
+              <span className="ml-2 text-xl font-semibold text-slate-500 tabular-nums">({menuCount})</span>
             )}
           </h2>
           <div className="flex items-center gap-2">
@@ -406,7 +407,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                 onClick={() => handleIssueClick(tab.key)}
                 className={`px-3 py-1.5 rounded-full text-sm font-semibold transition-colors shadow-sm ${
                   tab.key === 'on'
-                    ? 'bg-yellow-400 text-emerald-900 hover:bg-yellow-300'
+                    ? 'bg-amber-400 text-amber-950 hover:bg-amber-300'
                     : 'bg-orange-500 text-white hover:bg-orange-400'
                 }`}
               >
@@ -429,9 +430,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
         <div className="flex items-center gap-4">
         {user && (
-          <div className="text-sm text-emerald-100">
+          <div className="text-sm text-slate-600">
             <span className="mr-4">{user.username || user.email}</span>
-            <span className="text-emerald-200">({user.role})</span>
+            <span className="text-slate-400">({user.role})</span>
           </div>
         )}
         <button

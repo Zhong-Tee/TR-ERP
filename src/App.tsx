@@ -23,6 +23,7 @@ import Settings from './pages/Settings'
 import Warehouse from './pages/Warehouse'
 import WarehouseAudit from './pages/WarehouseAudit'
 import WarehouseAdjust from './pages/WarehouseAdjust'
+import WarehouseSub from './pages/WarehouseSub'
 import CreateAuditForm from './components/audit/CreateAuditForm'
 import MobileCountView from './components/audit/MobileCountView'
 import AuditReviewView from './components/audit/AuditReviewView'
@@ -322,6 +323,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
             <Layout>
               <Products />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/sub"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'store', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'production', 'hr']}>
+            <Layout>
+              <WarehouseSub />
             </Layout>
           </ProtectedRoute>
         }

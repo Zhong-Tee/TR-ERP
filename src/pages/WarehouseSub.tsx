@@ -1,0 +1,1246 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '../lib/supabase'
+import { useAuthContext } from '../contexts/AuthContext'
+import Modal from '../components/ui/Modal'
+import { useWmsModal } from '../components/wms/useWmsModal'
+import { getPublicUrl } from '../lib/qcApi'
+
+type SubWarehouse = {
+  id: string
+  name: string
+  is_active: boolean
+  created_at: string
+}
+
+type AssignedProductRow = {
+  product_id: string
+  product_code: string
+  product_name: string
+  unit_name: string | null
+  qty_on_hand: number
+}
+
+type DailySheetRow = {
+  product_id: string
+  product_code: string
+  product_name: string
+  unit_name: string | null
+  received_opening: number
+  replenish_day: number
+  reduce_day: number
+  wms_opening: number
+  wms_day: number
+  balance_opening: number
+  balance_eod: number
+}
+
+type MoveRow = {
+  id: string
+  created_at: string
+  created_by: string | null
+  product_id: string
+  product_code: string
+  product_name: string
+  unit_name: string | null
+  qty_delta: number
+  reason: string | null
+  note: string | null
+  balance_after: number
+}
+
+type ProductLookupRow = {
+  id: string
+  product_code: string
+  product_name: string
+  unit_name: string | null
+}
+
+const BUCKET_PRODUCT_IMAGES = 'product-images'
+
+/** คลังย่อย: 990000430 / 990000431 ใช้ยอดผลิต WMS รวมจากตรายาง A1–A4 (มุมมองช่วงวันที่ + RPC รายวัน) */
+const SUB_WHS_WMS_BUNDLE_SOURCES = ['110000096', '110000097', '110000098', '110000099'] as const
+const SUB_WHS_WMS_BUNDLE_TARGETS = ['990000430', '990000431'] as const
+
+function applySubWarehouseWmsBundleAliases(map: Record<string, number>) {
+  const sum = SUB_WHS_WMS_BUNDLE_SOURCES.reduce((acc, code) => acc + (map[code] ?? 0), 0)
+  for (const code of SUB_WHS_WMS_BUNDLE_TARGETS) {
+    map[code] = sum
+  }
+}
+
+function sanitizeExportFilenamePart(raw: string) {
+  return raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 60) || 'export'
+}
+
+function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
+  return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
+}
+
+function toLocalYmd(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function startOfDayIso(ymd: string): string {
+  return `${ymd}T00:00:00`
+}
+
+function endOfDayIso(ymd: string): string {
+  return `${ymd}T23:59:59`
+}
+
+export default function WarehouseSub() {
+  const { user } = useAuthContext()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+
+  const [subWarehouses, setSubWarehouses] = useState<SubWarehouse[]>([])
+  const [loadingSubs, setLoadingSubs] = useState(false)
+  const [selectedSubId, setSelectedSubId] = useState<string>('')
+
+  const [products, setProducts] = useState<AssignedProductRow[]>([])
+  const [loadingProducts, setLoadingProducts] = useState(false)
+
+  const [moves, setMoves] = useState<MoveRow[]>([])
+  const [loadingMoves, setLoadingMoves] = useState(false)
+
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 7)
+    return toLocalYmd(d)
+  })
+  const [dateTo, setDateTo] = useState(() => toLocalYmd(new Date()))
+  const [historyProductCode, setHistoryProductCode] = useState('')
+
+  const [wmsCorrectMap, setWmsCorrectMap] = useState<Record<string, number>>({})
+  const [loadingWms, setLoadingWms] = useState(false)
+
+  /** วันที่นับสต๊อครายวัน (เขตเวลาไทย — ฝั่ง RPC) */
+  const [countDate, setCountDate] = useState(() => toLocalYmd(new Date()))
+  const [productViewMode, setProductViewMode] = useState<'daily' | 'range'>('daily')
+  const [dailyRows, setDailyRows] = useState<DailySheetRow[]>([])
+  const [loadingDaily, setLoadingDaily] = useState(false)
+
+  const productStockExportRef = useRef<HTMLDivElement>(null)
+  const [savingTableImage, setSavingTableImage] = useState(false)
+
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [newSubName, setNewSubName] = useState('')
+  const [creatingSub, setCreatingSub] = useState(false)
+
+  const [addProductModalOpen, setAddProductModalOpen] = useState(false)
+  const [productSearch, setProductSearch] = useState('')
+  const [productSearchLoading, setProductSearchLoading] = useState(false)
+  const [productOptions, setProductOptions] = useState<ProductLookupRow[]>([])
+  const [selectedProductId, setSelectedProductId] = useState<string>('')
+  const [addingProduct, setAddingProduct] = useState(false)
+
+  const [adjustModalOpen, setAdjustModalOpen] = useState(false)
+  const [adjustProductId, setAdjustProductId] = useState<string>('')
+  const [adjustType, setAdjustType] = useState<'add' | 'remove'>('add')
+  const [adjustQty, setAdjustQty] = useState<string>('')
+  const [adjustReason, setAdjustReason] = useState<string>('เติมสต๊อค')
+  const [adjustNote, setAdjustNote] = useState<string>('')
+  const [adjustSaving, setAdjustSaving] = useState(false)
+
+  const selectedSub = useMemo(
+    () => subWarehouses.find((s) => s.id === selectedSubId) || null,
+    [subWarehouses, selectedSubId],
+  )
+
+  async function loadSubWarehouses() {
+    setLoadingSubs(true)
+    try {
+      const { data, error } = await supabase
+        .from('wh_sub_warehouses')
+        .select('id, name, is_active, created_at')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      const list = (data || []) as SubWarehouse[]
+      setSubWarehouses(list)
+      if (!selectedSubId && list.length > 0) {
+        setSelectedSubId(list[0].id)
+      }
+    } catch (e: any) {
+      console.error('Load sub warehouses failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'โหลดคลังย่อยไม่สำเร็จ: ' + (e?.message || String(e)) })
+    } finally {
+      setLoadingSubs(false)
+    }
+  }
+
+  async function loadAssignedProducts(subId: string) {
+    setLoadingProducts(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_balances', {
+        p_sub_warehouse_id: subId,
+      })
+      if (error) throw error
+      const rows = (data || []).map((r: any) => ({
+        product_id: String(r.product_id),
+        product_code: String(r.product_code || ''),
+        product_name: String(r.product_name || ''),
+        unit_name: r.unit_name != null ? String(r.unit_name) : null,
+        qty_on_hand: Number(r.qty_on_hand || 0),
+      })) as AssignedProductRow[]
+      setProducts(rows)
+    } catch (e: any) {
+      console.error('Load assigned products failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'โหลดรายการสินค้าไม่สำเร็จ: ' + (e?.message || String(e)) })
+      setProducts([])
+    } finally {
+      setLoadingProducts(false)
+    }
+  }
+
+  async function loadMoves(subId: string) {
+    if (!dateFrom || !dateTo) return
+    setLoadingMoves(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_moves', {
+        p_sub_warehouse_id: subId,
+        p_date_from: dateFrom,
+        p_date_to: dateTo,
+        p_product_code: historyProductCode.trim() || null,
+      })
+      if (error) throw error
+      const rows = (data || []).map((r: any) => ({
+        id: String(r.id),
+        created_at: String(r.created_at),
+        created_by: r.created_by ? String(r.created_by) : null,
+        product_id: String(r.product_id),
+        product_code: String(r.product_code || ''),
+        product_name: String(r.product_name || ''),
+        unit_name: r.unit_name != null ? String(r.unit_name) : null,
+        qty_delta: Number(r.qty_delta || 0),
+        reason: r.reason != null ? String(r.reason) : null,
+        note: r.note != null ? String(r.note) : null,
+        balance_after: Number(r.balance_after || 0),
+      })) as MoveRow[]
+      setMoves(rows)
+    } catch (e: any) {
+      console.error('Load moves failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'โหลดประวัติไม่สำเร็จ: ' + (e?.message || String(e)) })
+      setMoves([])
+    } finally {
+      setLoadingMoves(false)
+    }
+  }
+
+  async function loadWmsCorrect() {
+    if (!dateFrom || !dateTo) return
+    setLoadingWms(true)
+    try {
+      const fromIso = startOfDayIso(dateFrom)
+      const toIso = endOfDayIso(dateTo)
+      const { data, error } = await supabase.rpc('rpc_get_wms_correct_qty_by_product', {
+        p_from: fromIso,
+        p_to: toIso,
+      })
+      if (error) throw error
+      const map: Record<string, number> = {}
+      ;(data || []).forEach((r: any) => {
+        const code = String(r.product_code || '')
+        if (!code) return
+        map[code] = Number(r.correct_qty || 0)
+      })
+      applySubWarehouseWmsBundleAliases(map)
+      setWmsCorrectMap(map)
+    } catch (e: any) {
+      console.error('Load WMS correct qty failed:', e)
+      setWmsCorrectMap({})
+    } finally {
+      setLoadingWms(false)
+    }
+  }
+
+  async function loadDailySheet(subId: string) {
+    if (!countDate) return
+    setLoadingDaily(true)
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_daily_stock_sheet', {
+        p_sub_warehouse_id: subId,
+        p_date: countDate,
+      })
+      if (error) throw error
+      const rows = (data || []).map((r: any) => ({
+        product_id: String(r.product_id),
+        product_code: String(r.product_code || ''),
+        product_name: String(r.product_name || ''),
+        unit_name: r.unit_name != null ? String(r.unit_name) : null,
+        received_opening: Number(r.received_opening || 0),
+        replenish_day: Number(r.replenish_day || 0),
+        reduce_day: Number(r.reduce_day || 0),
+        wms_opening: Number(r.wms_opening || 0),
+        wms_day: Number(r.wms_day || 0),
+        balance_opening: Number(r.balance_opening || 0),
+        balance_eod: Number(r.balance_eod || 0),
+      })) as DailySheetRow[]
+      setDailyRows(rows)
+    } catch (e: any) {
+      console.error('Load daily stock sheet failed:', e)
+      setDailyRows([])
+      showMessage({
+        title: 'ผิดพลาด',
+        message: 'โหลดสรุปรายวันไม่สำเร็จ — ตรวจว่าได้รัน migration ล่าสุดของคลังย่อยแล้ว หรือลองรีเฟรช: ' + (e?.message || String(e)),
+      })
+    } finally {
+      setLoadingDaily(false)
+    }
+  }
+
+  const refreshAllForSelected = useCallback(async () => {
+    if (!selectedSubId) return
+    await Promise.all([
+      loadAssignedProducts(selectedSubId),
+      loadMoves(selectedSubId),
+      loadWmsCorrect(),
+      loadDailySheet(selectedSubId),
+    ])
+  }, [selectedSubId, dateFrom, dateTo, historyProductCode, countDate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    loadSubWarehouses()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!selectedSubId) return
+    refreshAllForSelected()
+  }, [selectedSubId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedSubId) return
+    void loadDailySheet(selectedSubId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- countDate only; sub handled by refreshAll
+  }, [countDate])
+
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!addProductModalOpen) return
+    const term = productSearch.trim()
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+    searchDebounceRef.current = setTimeout(async () => {
+      if (!term) {
+        setProductOptions([])
+        return
+      }
+      setProductSearchLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('pr_products')
+          .select('id, product_code, product_name, unit_name')
+          .eq('is_active', true)
+          .or(`product_code.ilike.%${term}%,product_name.ilike.%${term}%`)
+          .order('product_code', { ascending: true })
+          .limit(20)
+        if (error) throw error
+        setProductOptions((data || []) as ProductLookupRow[])
+      } catch (e) {
+        console.error('Search products failed:', e)
+        setProductOptions([])
+      } finally {
+        setProductSearchLoading(false)
+      }
+    }, 300)
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+    }
+  }, [productSearch, addProductModalOpen])
+
+  const openAddProduct = () => {
+    if (!selectedSubId) {
+      showMessage({ message: 'กรุณาเลือกคลังย่อยก่อน' })
+      return
+    }
+    setProductSearch('')
+    setProductOptions([])
+    setSelectedProductId('')
+    setAddProductModalOpen(true)
+  }
+
+  const openAdjustForProduct = (productId: string) => {
+    setAdjustProductId(productId)
+    setAdjustType('add')
+    setAdjustQty('')
+    setAdjustReason('เติมสต๊อค')
+    setAdjustNote('')
+    setAdjustModalOpen(true)
+  }
+
+  const createSubWarehouse = async () => {
+    const name = newSubName.trim()
+    if (!name) {
+      showMessage({ message: 'กรุณากรอกชื่อคลังย่อย' })
+      return
+    }
+    setCreatingSub(true)
+    try {
+      const { error } = await supabase.from('wh_sub_warehouses').insert([
+        {
+          name,
+          created_by: user?.id || null,
+          is_active: true,
+        },
+      ])
+      if (error) throw error
+      setCreateModalOpen(false)
+      setNewSubName('')
+      await loadSubWarehouses()
+      showMessage({ title: 'สำเร็จ', message: 'เพิ่มคลังย่อยแล้ว' })
+    } catch (e: any) {
+      console.error('Create sub warehouse failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'เพิ่มคลังย่อยไม่สำเร็จ: ' + (e?.message || String(e)) })
+    } finally {
+      setCreatingSub(false)
+    }
+  }
+
+  const addProductToSubWarehouse = async () => {
+    if (!selectedSubId) return
+    if (!selectedProductId) {
+      showMessage({ message: 'กรุณาเลือกสินค้า' })
+      return
+    }
+    setAddingProduct(true)
+    try {
+      const { error } = await supabase.from('wh_sub_warehouse_products').insert([
+        {
+          sub_warehouse_id: selectedSubId,
+          product_id: selectedProductId,
+        },
+      ])
+      if (error) throw error
+      setAddProductModalOpen(false)
+      await Promise.all([loadAssignedProducts(selectedSubId), loadDailySheet(selectedSubId)])
+      showMessage({ title: 'สำเร็จ', message: 'เพิ่มสินค้าเข้าคลังย่อยแล้ว' })
+    } catch (e: any) {
+      console.error('Add product failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'เพิ่มสินค้าไม่สำเร็จ: ' + (e?.message || String(e)) })
+    } finally {
+      setAddingProduct(false)
+    }
+  }
+
+  const saveAdjust = async () => {
+    if (!selectedSubId || !adjustProductId) return
+    const q = Number(String(adjustQty || '').replace(/,/g, '').trim())
+    if (!Number.isFinite(q) || q <= 0) {
+      showMessage({ message: 'กรุณากรอกจำนวนให้ถูกต้อง' })
+      return
+    }
+    const delta = adjustType === 'add' ? q : -q
+    setAdjustSaving(true)
+    try {
+      const { error } = await supabase.from('wh_sub_warehouse_stock_moves').insert([
+        {
+          sub_warehouse_id: selectedSubId,
+          product_id: adjustProductId,
+          qty_delta: delta,
+          reason: adjustReason.trim() || null,
+          note: adjustNote.trim() || null,
+          created_by: user?.id || null,
+        },
+      ])
+      if (error) throw error
+      setAdjustModalOpen(false)
+      await Promise.all([loadAssignedProducts(selectedSubId), loadMoves(selectedSubId), loadDailySheet(selectedSubId)])
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกสต๊อคคลังย่อยแล้ว' })
+    } catch (e: any) {
+      console.error('Save adjust failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (e?.message || String(e)) })
+    } finally {
+      setAdjustSaving(false)
+    }
+  }
+
+  const deleteAssignedProduct = async (productId: string) => {
+    if (!selectedSubId) return
+    const ok = await showConfirm({
+      title: 'ลบสินค้าออกจากคลังย่อย',
+      message: 'ต้องการลบสินค้าออกจากคลังย่อยหรือไม่? (ประวัติการเคลื่อนไหวยังอยู่)',
+    })
+    if (!ok) return
+    try {
+      const { error } = await supabase
+        .from('wh_sub_warehouse_products')
+        .delete()
+        .eq('sub_warehouse_id', selectedSubId)
+        .eq('product_id', productId)
+      if (error) throw error
+      await Promise.all([loadAssignedProducts(selectedSubId), loadDailySheet(selectedSubId)])
+      showMessage({ title: 'สำเร็จ', message: 'ลบสินค้าออกจากคลังย่อยแล้ว' })
+    } catch (e: any) {
+      console.error('Delete assigned product failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'ลบสินค้าไม่สำเร็จ: ' + (e?.message || String(e)) })
+    }
+  }
+
+  const canQuery = !!selectedSubId && !!dateFrom && !!dateTo
+  const headerTitle = selectedSub ? `คลังย่อย: ${selectedSub.name}` : 'คลังย่อย'
+
+  const canSaveProductTableImage =
+    products.length > 0 &&
+    !(productViewMode === 'daily' && !loadingDaily && dailyRows.length === 0)
+
+  const saveProductTableImage = useCallback(async () => {
+    const el = productStockExportRef.current
+    if (!el) return
+    if (!products.length) {
+      showMessage({ message: 'ไม่มีรายการสินค้าให้บันทึกเป็นภาพ' })
+      return
+    }
+    if (productViewMode === 'daily' && !loadingDaily && dailyRows.length === 0) {
+      showMessage({ message: 'ไม่มีข้อมูลตารางให้บันทึกเป็นภาพ' })
+      return
+    }
+    setSavingTableImage(true)
+    try {
+      const html2canvas = (await import('html2canvas')).default
+      const canvas = await html2canvas(el, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+      })
+      const subPart = sanitizeExportFilenamePart(selectedSub?.name || 'sub')
+      const datePart = productViewMode === 'daily' ? countDate : `${dateFrom}_${dateTo}`
+      const modePart = productViewMode === 'daily' ? 'daily' : 'range'
+      const link = document.createElement('a')
+      link.download = `${subPart}_${modePart}_${datePart}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (e) {
+      console.error('Save table image failed:', e)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกภาพไม่สำเร็จ' })
+    } finally {
+      setSavingTableImage(false)
+    }
+  }, [
+    products.length,
+    productViewMode,
+    loadingDaily,
+    dailyRows.length,
+    selectedSub?.name,
+    countDate,
+    dateFrom,
+    dateTo,
+    showMessage,
+  ])
+
+  return (
+    <div className="space-y-6 mt-4">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-black text-slate-800">{headerTitle}</h1>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setCreateModalOpen(true)}
+            className="px-4 py-2 rounded-xl font-semibold text-sm bg-emerald-600 text-white hover:bg-emerald-700"
+          >
+            + เพิ่มชื่อคลังย่อย
+          </button>
+          <button
+            type="button"
+            onClick={openAddProduct}
+            className="px-4 py-2 rounded-xl font-semibold text-sm bg-blue-600 text-white hover:bg-blue-700"
+          >
+            + เพิ่มสินค้า
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        {/* Top controls: split left/right (รายชื่อคลังย่อย / ตัวกรองประวัติ) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="min-w-0 bg-white p-5 rounded-2xl shadow-sm border">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-black text-slate-800">รายชื่อคลังย่อย</div>
+              {loadingSubs && <div className="text-xs text-slate-400">กำลังโหลด...</div>}
+            </div>
+            {subWarehouses.length === 0 ? (
+              <div className="text-sm text-slate-500">ยังไม่มีคลังย่อย</div>
+            ) : (
+              <div className="space-y-2">
+                {subWarehouses.map((s) => {
+                  const active = s.id === selectedSubId
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSelectedSubId(s.id)}
+                      className={`w-full text-left px-3 py-2 rounded-xl border transition-colors ${
+                        active
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-bold'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {s.name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="min-w-0 bg-white p-5 rounded-2xl shadow-sm border">
+            <div className="font-black text-slate-800 mb-3">ตัวกรองประวัติ/ยอดผลิต</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-bold text-slate-600">จากวันที่</label>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600">ถึงวันที่</label>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="text-xs font-bold text-slate-600">ค้นหารหัส/ชื่อสินค้า (เฉพาะประวัติ)</label>
+                <input
+                  type="text"
+                  value={historyProductCode}
+                  onChange={(e) => setHistoryProductCode(e.target.value)}
+                  placeholder="เช่น 110000001 หรือ PCA"
+                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
+                />
+              </div>
+              <div className="sm:col-span-2 flex items-center justify-between gap-3 flex-wrap">
+                <button
+                  type="button"
+                  disabled={!canQuery || loadingMoves || loadingWms || loadingProducts || loadingDaily}
+                  onClick={refreshAllForSelected}
+                  className="px-4 py-2 rounded-xl font-semibold text-sm bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 w-full sm:w-auto"
+                >
+                  รีเฟรชข้อมูล
+                </button>
+                {(loadingMoves || loadingWms || loadingDaily) && (
+                  <div className="text-xs text-slate-400">กำลังโหลดข้อมูล…</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right side data should expand full width */}
+        <div className="min-w-0 flex flex-col gap-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden w-full">
+            <div className="px-7 py-5 bg-gradient-to-r from-emerald-50 via-white to-white border-b border-slate-200">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">สินค้าในคลังย่อย</div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => setProductViewMode('daily')}
+                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
+                          productViewMode === 'daily'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        นับสต๊อครายวัน
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProductViewMode('range')}
+                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
+                          productViewMode === 'range'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        ยอดรวมในช่วง
+                      </button>
+                    </div>
+                    {productViewMode === 'daily' && (
+                      <label className="flex items-center gap-3 text-sm font-bold text-slate-600">
+                        <span className="whitespace-nowrap">วันที่นับ</span>
+                        <input
+                          type="date"
+                          value={countDate}
+                          onChange={(e) => setCountDate(e.target.value)}
+                          className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-800 shadow-sm"
+                        />
+                      </label>
+                    )}
+                    {productViewMode === 'daily' && loadingDaily && (
+                      <span className="text-sm text-slate-400">กำลังคำนวณรายวัน…</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => void saveProductTableImage()}
+                    disabled={!canSaveProductTableImage || savingTableImage || loadingProducts}
+                    className="px-4 py-2.5 rounded-xl text-sm font-bold bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50 disabled:pointer-events-none shadow-sm whitespace-nowrap min-h-[44px]"
+                  >
+                    {savingTableImage ? 'กำลังบันทึก…' : 'บันทึกภาพ'}
+                  </button>
+                  <div className="text-sm text-slate-500 bg-white/70 border border-slate-200 rounded-2xl px-4 py-2.5">
+                    คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6">
+            <div
+              ref={productStockExportRef}
+              className="rounded-xl border border-slate-100 bg-white p-3 sm:p-4 shadow-sm"
+            >
+              <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-slate-100 pb-3">
+                <div className="text-sm font-black text-slate-800">สินค้าในคลังย่อย</div>
+                <div className="text-xs text-slate-500">
+                  {selectedSub?.name || '-'}
+                  {productViewMode === 'daily' ? ` · รายวัน ${countDate}` : ` · รวมช่วง ${dateFrom} – ${dateTo}`}
+                </div>
+              </div>
+            {loadingProducts ? (
+              <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
+            ) : products.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
+                <div className="text-base font-black text-slate-800">ยังไม่มีสินค้าในคลังย่อย</div>
+                <div className="text-sm text-slate-600 mt-2 max-w-xl mx-auto">
+                  กดปุ่ม <span className="font-bold text-blue-700">+ เพิ่มสินค้า</span> แล้วค้นหาด้วยรหัสสินค้าในระบบเพื่อเริ่มจดบันทึกสต๊อคคลังย่อย
+                </div>
+              </div>
+            ) : productViewMode === 'daily' ? (
+              loadingDaily && dailyRows.length === 0 ? (
+                <div className="py-14 text-center text-slate-400 font-semibold">กำลังโหลดสรุปรายวัน…</div>
+              ) : dailyRows.length === 0 ? (
+                <div className="py-14 text-center text-slate-500 text-sm">
+                  ไม่มีรายการสินค้า หรือโหลดสรุปรายวันไม่สำเร็จ — ลองกด <span className="font-bold text-slate-800">รีเฟรชข้อมูล</span>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[920px]">
+                    <thead>
+                      <tr className="bg-emerald-600 text-white">
+                        <th className="p-3 text-left rounded-tl-xl">รูป</th>
+                        <th className="p-3 text-left">รหัสสินค้า</th>
+                        <th className="p-3 text-left">ชื่อสินค้า</th>
+                        <th className="p-3 text-center">หน่วย</th>
+                        <th className="p-3 text-center whitespace-nowrap">คงเหลือต้นวัน</th>
+                        <th className="p-3 text-center whitespace-nowrap">เติมสต๊อค</th>
+                        <th className="p-3 text-center whitespace-nowrap">ลด (มือ)</th>
+                        <th className="p-3 text-center whitespace-nowrap">ผลิตใช้ไป</th>
+                        <th className="p-3 text-center whitespace-nowrap">คงเหลือ (สิ้นวัน)</th>
+                        <th className="p-3 text-center rounded-tr-xl">จัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {dailyRows.map((p) => {
+                        const dash = loadingDaily
+                        return (
+                          <tr key={p.product_id} className="hover:bg-emerald-50">
+                            <td className="p-3">
+                              <ProductImage code={p.product_code} name={p.product_name} />
+                            </td>
+                            <td className="p-3 font-semibold">{p.product_code}</td>
+                            <td className="p-3">{p.product_name}</td>
+                            <td className="p-3 text-center text-slate-500">{p.unit_name || '-'}</td>
+                            <td
+                              className={`p-3 text-center font-semibold tabular-nums ${
+                                !dash && p.balance_opening < 0 ? 'text-red-600' : ''
+                              }`}
+                            >
+                              {dash ? '…' : p.balance_opening.toLocaleString()}
+                            </td>
+                            <td className="p-3 text-center tabular-nums text-emerald-800 font-semibold">
+                              {dash ? '…' : p.replenish_day.toLocaleString()}
+                            </td>
+                            <td className="p-3 text-center tabular-nums text-slate-600">
+                              {dash ? '…' : p.reduce_day === 0 ? '0' : p.reduce_day.toLocaleString()}
+                            </td>
+                            <td className="p-3 text-center tabular-nums text-slate-800">
+                              {dash ? '…' : p.wms_day.toLocaleString()}
+                            </td>
+                            <td
+                              className={`p-3 text-center font-bold tabular-nums ${
+                                !dash && p.balance_eod < 0 ? 'text-red-600' : 'text-slate-900'
+                              }`}
+                            >
+                              {dash ? '…' : p.balance_eod.toLocaleString()}
+                            </td>
+                            <td className="p-3">
+                              <div className="grid w-full min-w-[13rem] grid-cols-3 items-center gap-1">
+                                <div aria-hidden className="min-w-0" />
+                                <div className="flex justify-center min-w-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => openAdjustForProduct(p.product_id)}
+                                    className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold"
+                                  >
+                                    เพิ่ม/ลด
+                                  </button>
+                                </div>
+                                <div className="flex justify-end min-w-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteAssignedProduct(p.product_id)}
+                                    className="px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold"
+                                  >
+                                    ลบ
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-emerald-600 text-white">
+                      <th className="p-3 text-left rounded-tl-xl">รูป</th>
+                      <th className="p-3 text-left">รหัสสินค้า</th>
+                      <th className="p-3 text-left">ชื่อสินค้า</th>
+                      <th className="p-3 text-center">หน่วย</th>
+                      <th className="p-3 text-center">รับเข้า</th>
+                      <th className="p-3 text-center">ยอดผลิต (WMS)</th>
+                      <th className="p-3 text-center">คงเหลือ</th>
+                      <th className="p-3 text-center rounded-tr-xl">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {products.map((p) => {
+                      const receivedIn = Number(p.qty_on_hand || 0)
+                      const wmsQty = wmsCorrectMap[p.product_code] ?? 0
+                      const onHand = receivedIn - Number(wmsQty || 0)
+                      return (
+                        <tr key={p.product_id} className="hover:bg-emerald-50">
+                          <td className="p-3">
+                            <ProductImage code={p.product_code} name={p.product_name} />
+                          </td>
+                          <td className="p-3 font-semibold">{p.product_code}</td>
+                          <td className="p-3">{p.product_name}</td>
+                          <td className="p-3 text-center text-slate-500">{p.unit_name || '-'}</td>
+                          <td className="p-3 text-center font-bold tabular-nums">
+                            {receivedIn.toLocaleString()}
+                          </td>
+                          <td className="p-3 text-center tabular-nums">
+                            {loadingWms ? '-' : Number(wmsQty || 0).toLocaleString()}
+                          </td>
+                          <td
+                            className={`p-3 text-center font-bold tabular-nums ${
+                              !loadingWms && onHand < 0 ? 'text-red-600' : 'text-slate-900'
+                            }`}
+                          >
+                            {loadingWms ? '-' : onHand.toLocaleString()}
+                          </td>
+                          <td className="p-3">
+                            <div className="grid w-full min-w-[13rem] grid-cols-3 items-center gap-1">
+                              <div aria-hidden className="min-w-0" />
+                              <div className="flex justify-center min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => openAdjustForProduct(p.product_id)}
+                                  className="px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold"
+                                >
+                                  เพิ่ม/ลด
+                                </button>
+                              </div>
+                              <div className="flex justify-end min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => deleteAssignedProduct(p.product_id)}
+                                  className="px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold"
+                                >
+                                  ลบ
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden w-full">
+            <div className="px-6 py-4 bg-gradient-to-r from-slate-50 via-white to-white border-b border-slate-200">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <div className="text-lg font-black text-slate-900">ประวัติการเติม/ลดสต๊อค</div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    ช่วงวันที่: <span className="font-bold text-slate-800">{dateFrom}</span> ถึง{' '}
+                    <span className="font-bold text-slate-800">{dateTo}</span>
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500 bg-white/70 border border-slate-200 rounded-xl px-3 py-2">
+                  กรองรหัสสินค้าได้จากกล่องซ้าย (เฉพาะประวัติ)
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6">
+            {loadingMoves ? (
+              <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
+            ) : moves.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
+                <div className="text-base font-black text-slate-800">ไม่มีประวัติในช่วงวันที่ที่เลือก</div>
+                <div className="text-sm text-slate-600 mt-2 max-w-xl mx-auto">
+                  ลองขยายช่วงวันที่ หรือกด <span className="font-bold text-slate-900">รีเฟรชข้อมูล</span> หลังมีการบันทึกสต๊อค
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-900 text-white">
+                      <th className="p-3 text-left rounded-tl-xl">เวลา</th>
+                      <th className="p-3 text-left">รหัส</th>
+                      <th className="p-3 text-left">สินค้า</th>
+                      <th className="p-3 text-right">+/-</th>
+                      <th className="p-3 text-right">คงเหลือหลังรายการ</th>
+                      <th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {moves.map((m) => {
+                      const dt = new Date(m.created_at).toLocaleString('th-TH')
+                      const delta = Number(m.qty_delta || 0)
+                      const deltaText = delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString()
+                      const deltaClass = delta > 0 ? 'text-emerald-700' : 'text-red-700'
+                      return (
+                        <tr key={m.id} className="hover:bg-slate-50">
+                          <td className="p-3 whitespace-nowrap text-slate-600">{dt}</td>
+                          <td className="p-3 font-semibold">{m.product_code}</td>
+                          <td className="p-3">{m.product_name}</td>
+                          <td className={`p-3 text-right font-bold tabular-nums ${deltaClass}`}>{deltaText}</td>
+                          <td className="p-3 text-right font-bold tabular-nums">
+                            {Number(m.balance_after || 0).toLocaleString()}
+                          </td>
+                          <td className="p-3 text-slate-600">
+                            <div className="font-semibold text-slate-700">{m.reason || '-'}</div>
+                            {m.note && <div className="text-xs text-slate-500">{m.note}</div>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Modal
+        open={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        closeOnBackdropClick
+        contentClassName="max-w-xl w-full"
+      >
+        <div className="p-6 space-y-5 text-slate-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xl font-black text-slate-900">เพิ่มชื่อคลังย่อย</div>
+              <div className="text-sm text-slate-500 mt-1">
+                สร้างคลังย่อยเพื่อใช้จดบันทึกจำนวนสต๊อคแยกจากสต๊อคหลัก
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCreateModalOpen(false)}
+              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
+              aria-label="ปิด"
+              title="ปิด"
+            >
+              ×
+            </button>
+          </div>
+          <div className="h-px bg-slate-200" />
+          <div>
+            <label className="text-sm font-semibold text-slate-700">ชื่อคลังย่อย</label>
+            <input
+              type="text"
+              value={newSubName}
+              onChange={(e) => setNewSubName(e.target.value)}
+              placeholder="เช่น คลังย่อยหน้าร้าน"
+              className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              autoFocus
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setCreateModalOpen(false)}
+              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              disabled={creatingSub}
+              onClick={createSubWarehouse}
+              className="px-5 py-2.5 rounded-xl font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
+            >
+              {creatingSub ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={addProductModalOpen}
+        onClose={() => setAddProductModalOpen(false)}
+        closeOnBackdropClick
+        contentClassName="max-w-2xl w-full"
+      >
+        <div className="p-6 space-y-5 text-slate-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xl font-black text-slate-900">เพิ่มสินค้าเข้าคลังย่อย</div>
+              <div className="text-sm text-slate-500 mt-1">
+                ค้นหาด้วยรหัสสินค้าในระบบ แล้วเลือกเพื่อเพิ่มเข้า “{selectedSub?.name || 'คลังย่อย'}”
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAddProductModalOpen(false)}
+              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
+              aria-label="ปิด"
+              title="ปิด"
+            >
+              ×
+            </button>
+          </div>
+          <div className="h-px bg-slate-200" />
+          <div>
+            <label className="text-sm font-semibold text-slate-700">ค้นหาด้วยรหัส/ชื่อสินค้า</label>
+            <input
+              type="text"
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="พิมพ์รหัสสินค้า..."
+              className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              autoFocus
+            />
+            {productSearchLoading && (
+              <div className="text-xs text-slate-400 mt-1">กำลังค้นหา...</div>
+            )}
+          </div>
+
+          <div className="max-h-72 overflow-auto border border-slate-200 rounded-2xl bg-white">
+            {productOptions.length === 0 ? (
+              <div className="p-4 text-sm text-slate-500">พิมพ์เพื่อค้นหา</div>
+            ) : (
+              <div className="divide-y">
+                {productOptions.map((p) => {
+                  const active = p.id === selectedProductId
+                  return (
+                    <button
+                      type="button"
+                      key={p.id}
+                      onClick={() => setSelectedProductId(p.id)}
+                      className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors ${
+                        active ? 'bg-blue-50' : 'bg-white'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-black text-slate-900">{p.product_code}</div>
+                          <div className="text-sm text-slate-600">{p.product_name}</div>
+                        </div>
+                        <div className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-lg whitespace-nowrap">
+                          {p.unit_name || '-'}
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddProductModalOpen(false)}
+              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              disabled={addingProduct || !selectedProductId}
+              onClick={addProductToSubWarehouse}
+              className="px-5 py-2.5 rounded-xl font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm"
+            >
+              {addingProduct ? 'กำลังเพิ่ม...' : 'เพิ่มสินค้า'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={adjustModalOpen}
+        onClose={() => setAdjustModalOpen(false)}
+        closeOnBackdropClick
+        contentClassName="max-w-2xl w-full"
+      >
+        <div className="p-6 space-y-5 text-slate-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xl font-black text-slate-900">เพิ่ม/ลดสต๊อคคลังย่อย</div>
+              <div className="text-sm text-slate-500 mt-1">
+                บันทึกรับเข้า/ลดยอดในคลังย่อย (ไม่ตัด/ไม่เพิ่มสต๊อคหลัก)
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAdjustModalOpen(false)}
+              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
+              aria-label="ปิด"
+              title="ปิด"
+            >
+              ×
+            </button>
+          </div>
+          <div className="h-px bg-slate-200" />
+          <div>
+            <label className="text-sm font-semibold text-slate-700">ประเภท</label>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAdjustType('add')}
+                className={`px-4 py-2 rounded-xl font-semibold border ${
+                  adjustType === 'add'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                }`}
+              >
+                เพิ่ม
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdjustType('remove')}
+                className={`px-4 py-2 rounded-xl font-semibold border ${
+                  adjustType === 'remove'
+                    ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                    : 'bg-white text-red-700 border-red-200 hover:bg-red-50'
+                }`}
+              >
+                ลด
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-semibold text-slate-700">จำนวน</label>
+              <input
+                type="number"
+                value={adjustQty}
+                onChange={(e) => setAdjustQty(e.target.value)}
+                placeholder="เช่น 10"
+                className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-semibold text-slate-700">เหตุผล</label>
+              <input
+                type="text"
+                value={adjustReason}
+                onChange={(e) => setAdjustReason(e.target.value)}
+                placeholder="เช่น เติมสต๊อค"
+                className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-semibold text-slate-700">หมายเหตุ (ไม่บังคับ)</label>
+            <input
+              type="text"
+              value={adjustNote}
+              onChange={(e) => setAdjustNote(e.target.value)}
+              placeholder="รายละเอียดเพิ่มเติม..."
+              className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAdjustModalOpen(false)}
+              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              disabled={adjustSaving}
+              onClick={saveAdjust}
+              className="px-5 py-2.5 rounded-xl font-semibold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 shadow-sm"
+            >
+              {adjustSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {MessageModal}
+      {ConfirmModal}
+    </div>
+  )
+}
+
+function ProductImage({ code, name }: { code: string; name: string }) {
+  const [failed, setFailed] = useState(false)
+  const url = code ? getProductImageUrl(code) : ''
+  const displayUrl = url && !failed ? url : ''
+  if (!displayUrl) {
+    return (
+      <div className="w-10 h-10 bg-slate-200 rounded-lg flex items-center justify-center text-slate-400 text-[10px]">
+        ไม่มีรูป
+      </div>
+    )
+  }
+  return (
+    <a
+      href={displayUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block w-10 h-10 rounded-lg overflow-hidden hover:ring-2 hover:ring-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+      title="คลิกเพื่อเปิดรูปในแท็บใหม่"
+    >
+      <img
+        src={displayUrl}
+        alt={name}
+        className="w-10 h-10 object-cover"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  )
+}
+

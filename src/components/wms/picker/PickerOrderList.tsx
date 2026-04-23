@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
-import { countWmsOrdersAsDisplayLines } from '../../../lib/wmsCondoStampConsolidation'
 
 interface PickerOrderListProps {
   onSelectOrder: (orderId: string) => void
@@ -71,7 +70,8 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
     )
 
     for (const g of Object.values(grouped) as any[]) {
-      g.count = countWmsOrdersAsDisplayLines(g.items)
+      // Picker should show raw row counts (no consolidation).
+      g.count = Array.isArray(g.items) ? g.items.length : 0
       delete g.items
     }
 

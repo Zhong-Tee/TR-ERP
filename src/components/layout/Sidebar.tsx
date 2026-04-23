@@ -408,17 +408,16 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   return (
     <aside
-      className={`text-white h-screen fixed left-0 top-0 overflow-hidden transition-all duration-300 z-20 flex flex-col ${
+      className={`h-screen fixed left-0 top-0 overflow-hidden transition-all duration-300 z-20 flex flex-col border-r border-slate-200 bg-white text-slate-700 ${
         isOpen ? 'w-64' : 'w-20'
       }`}
-      style={{ backgroundColor: '#059669' }}
     >
-      <div className={`p-6 border-b border-white/20 ${!isOpen ? 'px-3' : ''}`}>
+      <div className={`p-6 border-b border-slate-200 ${!isOpen ? 'px-3' : ''}`}>
         <div className="flex items-center justify-center">
           {isOpen ? (
-            <h1 className="text-2xl font-semibold text-white">TR-ERP</h1>
+            <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">TR-ERP</h1>
           ) : (
-            <h1 className="text-xl font-semibold text-white">TR</h1>
+            <h1 className="text-xl font-semibold text-slate-900 tracking-tight">TR</h1>
           )}
         </div>
       </div>
@@ -441,11 +440,17 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                   className={`relative flex items-center gap-3 rounded-xl transition-colors font-medium ${
                     isOpen ? 'px-4 py-3' : 'px-3 py-3 justify-center'
                   } ${
-                    isActive ? 'bg-white/25 text-white font-semibold' : 'text-emerald-100 hover:bg-white/15 hover:text-white'
+                    isActive
+                      ? 'bg-emerald-50 text-emerald-900 ring-1 ring-emerald-100 font-semibold'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                   }`}
                   title={!isOpen ? item.label : undefined}
                 >
-                  <span className="text-2xl flex-shrink-0">
+                  <span
+                    className={`text-2xl flex-shrink-0 transition-colors ${
+                      isActive ? 'text-emerald-600' : 'text-slate-500'
+                    }`}
+                  >
                     {item.icon}
                   </span>
                   {isOpen ? (
@@ -454,7 +459,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                       {isPlan ? (
                         <>
                           {baseCount > 0 && (
-                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-yellow-400 text-emerald-900">
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-amber-400 text-amber-950">
                               {baseCount > 99 ? '99+' : baseCount}
                             </span>
                           )}
@@ -468,7 +473,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                         showDefaultBadge && (
                           <span
                             className={`min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm ${
-                              item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                              item.key === 'warehouse' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-amber-950'
                             }`}
                           >
                             {displayCount > 99 ? '99+' : displayCount}
@@ -484,7 +489,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                         </span>
                       )}
                       {baseCount > 0 && (
-                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-yellow-400 text-emerald-900">
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-amber-400 text-amber-950">
                           {baseCount > 99 ? '99+' : baseCount}
                         </span>
                       )}
@@ -493,7 +498,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                     showDefaultBadge && (
                       <span
                         className={`absolute -top-1 -right-1 min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm ${
-                          item.key === 'warehouse' ? 'bg-orange-400 text-white' : 'bg-yellow-400 text-emerald-900'
+                          item.key === 'warehouse' ? 'bg-orange-500 text-white' : 'bg-amber-400 text-amber-950'
                         }`}
                       >
                         {displayCount > 99 ? '99+' : displayCount}

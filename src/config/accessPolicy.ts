@@ -62,6 +62,7 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
 ]
 
 const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
+  { prefix: '/warehouse/sub', key: 'warehouse-sub' },
   { prefix: '/warehouse/audit', key: 'warehouse-audit' },
   { prefix: '/warehouse/adjust', key: 'warehouse-adjust' },
   { prefix: '/warehouse/returns', key: 'warehouse-returns' },
@@ -88,6 +89,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
 
 export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> = {
   '/warehouse': [
+    { path: '/warehouse/sub', key: 'warehouse-sub' },
     { path: '/warehouse', key: 'warehouse' },
     { path: '/warehouse/audit', key: 'warehouse-audit' },
     { path: '/warehouse/adjust', key: 'warehouse-adjust' },
@@ -132,6 +134,7 @@ const MENU_KEY_ALIASES: Record<string, string[]> = {
 }
 
 const MENU_KEY_PARENT_MAP: Record<string, string> = {
+  'warehouse-sub': 'warehouse',
   'products-inactive': 'products',
   'purchase-pr': 'purchase',
   'purchase-po': 'purchase',

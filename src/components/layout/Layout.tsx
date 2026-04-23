@@ -21,7 +21,7 @@ export default function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex h-screen min-h-0 bg-gradient-to-br from-primary-50 via-secondary-50 to-accent-50 overflow-hidden">
+    <div className="flex h-screen min-h-0 bg-slate-50 overflow-hidden">
       <Sidebar isOpen={sidebarOpen} onToggle={toggleSidebar} />
       <div
         className={`flex-1 min-w-0 min-h-0 flex flex-col transition-all duration-300 bg-transparent ${sidebarOpen ? 'ml-64' : 'ml-20'}`}

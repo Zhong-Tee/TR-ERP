@@ -461,6 +461,7 @@ export default function Settings() {
     { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },
     // ── คลัง ──
     { key: 'warehouse', label: 'คลัง', group: '' },
+    { key: 'warehouse-sub', label: 'คลังย่อย', group: 'warehouse' },
     { key: 'warehouse-stock', label: 'คลังสินค้า', group: 'warehouse' },
     { key: 'warehouse-audit', label: 'Audit', group: 'warehouse' },
     { key: 'warehouse-adjust', label: 'ปรับสต๊อค', group: 'warehouse' },
