@@ -59,6 +59,9 @@ export function useWmsModal() {
   }, [])
 
   const showConfirm = useCallback((options: ConfirmOptions) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7673/ingest/f8abaf9b-e7c6-47c0-b905-d540d1d7d499',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'116651'},body:JSON.stringify({sessionId:'116651',runId:'pre-fix',hypothesisId:'H1',location:'src/components/wms/useWmsModal.tsx:61',message:'showConfirm called',data:{keys:Object.keys(options||{}),hasTitle:!!options?.title,confirmTextLen:(options?.confirmText||'').length,cancelTextLen:(options?.cancelText||'').length},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion agent log
     return new Promise<boolean>((resolve) => {
       confirmResolverRef.current = resolve
       setConfirmState({

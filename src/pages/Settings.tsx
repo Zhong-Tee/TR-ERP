@@ -435,7 +435,6 @@ export default function Settings() {
       message: `ต้องการลบ prefix "${prefix}" ของช่องทาง ${channelCode} ใช่หรือไม่?`,
       confirmText: 'ลบ',
       cancelText: 'ยกเลิก',
-      tone: 'danger',
     })
     if (!ok) return
 
