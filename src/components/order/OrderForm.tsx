@@ -605,6 +605,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [productChannelPriceMap, setProductChannelPriceMap] = useState<Record<string, number>>({})
   const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
   const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
   const [fonts, setFonts] = useState<{ font_code: string; font_name: string }[]>([])
@@ -1240,7 +1241,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   async function loadInitialData() {
     try {
-      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, stockBalancesRes] = await Promise.all([
+      const [productsRes, patternsRes, channelsRes, inkTypesRes, fontsRes, categorySettingsRes, promotionsRes, productOverridesRes, stockBalancesRes, orderNoPrefixesRes] = await Promise.all([
         supabase.from('pr_products').select('*').eq('is_active', true).in('product_type', ['FG', 'PP']),
         supabase.from('cp_cartoon_patterns').select('*').eq('is_active', true),
         supabase.from('channels').select('channel_code, channel_name'),
@@ -1250,6 +1251,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
         supabase.from('pr_product_field_overrides').select('*'),
         supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock'),
+        supabase.from('or_channel_order_no_prefixes').select('channel_code, prefix, is_active').eq('is_active', true),
       ])
 
       if (productsRes.data) setProducts(productsRes.data)
@@ -1275,6 +1277,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       if (promotionsRes.data) setPromotions(promotionsRes.data)
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
+
+      if (orderNoPrefixesRes.data && Array.isArray(orderNoPrefixesRes.data)) {
+        const map: Record<string, string[]> = {}
+        ;(orderNoPrefixesRes.data || []).forEach((row: any) => {
+          const cc = String(row.channel_code || '').trim()
+          const px = String(row.prefix || '').trim()
+          if (!cc || !px) return
+          if (!map[cc]) map[cc] = []
+          if (!map[cc].includes(px)) map[cc].push(px)
+        })
+        Object.keys(map).forEach((k) => map[k].sort((a, b) => a.localeCompare(b)))
+        setChannelOrderNoPrefixMap(map)
+      } else {
+        setChannelOrderNoPrefixMap({})
+      }
       
       // โหลดการตั้งค่าฟิลด์ต่อหมวดหมู่ (แปลงเป็น boolean จริง เพื่อกันค่า string "false" ที่เป็น truthy)
       const settingsMap: Record<string, Record<string, boolean>> = {}
@@ -1506,6 +1523,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       return
     }
 
+    {
+      const channelCode = (formData.channel_code || '').trim()
+      const orderNo = (formData.channel_order_no || '').trim()
+      const expected = channelOrderNoPrefixMap[channelCode] || []
+      const shouldCheck = expected.length > 0 && orderNo !== ''
+      if (shouldCheck && !expected.some((p) => orderNo.startsWith(p))) {
+        setMessageModal({
+          open: true,
+          title: 'แจ้งเตือน',
+          message: `เลขคำสั่งซื้อไม่ตรงตามช่องทาง (ต้องขึ้นต้นด้วย: ${expected.join(', ')})`,
+        })
+        return
+      }
+    }
+
     if (!order?.bill_no) {
       setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากดสร้างบิลก่อนบันทึก' })
       return
@@ -1590,6 +1622,33 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.error('User not found')
       setLoading(false)
       return
+    }
+
+    // Validation: prefix เลขคำสั่งซื้อให้ตรงช่องทาง (กันหลุดจาก flow อื่น)
+    {
+      const channelCode = (formData.channel_code || '').trim()
+      if (!channelCode) {
+        setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
+        return
+      }
+      const orderNo = (formData.channel_order_no || '').trim()
+      const expected = channelOrderNoPrefixMap[channelCode] || []
+      const shouldCheck = expected.length > 0 && orderNo !== ''
+      if (shouldCheck && !expected.some((p) => orderNo.startsWith(p))) {
+        setMessageModal({
+          open: true,
+          title: 'แจ้งเตือน',
+          message: `เลขคำสั่งซื้อไม่ตรงตามช่องทาง (ต้องขึ้นต้นด้วย: ${expected.join(', ')})`,
+        })
+        return
+      }
+      // ถ้าบันทึก "ข้อมูลครบ" และช่องทางต้องมีเลขคำสั่งซื้อ → บล็อกเมื่อยังไม่กรอก
+      if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && CHANNELS_SHOW_ORDER_NO.includes(channelCode)) {
+        if (!orderNo) {
+          setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขคำสั่งซื้อ' })
+          return
+        }
+      }
     }
     if (Number(formData.discount || 0) > 0 && !String(formData.promotion || '').trim()) {
       setMessageModal({
@@ -4289,6 +4348,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   type="text"
                   value={formData.channel_order_no}
                   onChange={(e) => setFormData({ ...formData, channel_order_no: e.target.value })}
+                  onBlur={() => {
+                    const channelCode = (formData.channel_code || '').trim()
+                    if (!CHANNELS_SHOW_ORDER_NO.includes(channelCode)) return
+                    const orderNo = (formData.channel_order_no || '').trim()
+                    if (!orderNo) return
+                    const expected = channelOrderNoPrefixMap[channelCode] || []
+                    if (expected.length === 0) return
+                    if (!expected.some((p) => orderNo.startsWith(p))) {
+                      setMessageModal({
+                        open: true,
+                        title: 'แจ้งเตือน',
+                        message: `เลขคำสั่งซื้อไม่ตรงตามช่องทาง (ต้องขึ้นต้นด้วย: ${expected.join(', ')})`,
+                      })
+                    }
+                  }}
                   disabled={formDisabled}
                   className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
@@ -5530,6 +5604,19 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 if (!formData.channel_order_no || formData.channel_order_no.trim() === '') {
                   setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขคำสั่งซื้อ' })
                   return
+                }
+                {
+                  const channelCode = (formData.channel_code || '').trim()
+                  const orderNo = (formData.channel_order_no || '').trim()
+                  const expected = channelOrderNoPrefixMap[channelCode] || []
+                  if (expected.length > 0 && orderNo && !expected.some((p) => orderNo.startsWith(p))) {
+                    setMessageModal({
+                      open: true,
+                      title: 'แจ้งเตือน',
+                      message: `เลขคำสั่งซื้อไม่ตรงตามช่องทาง (ต้องขึ้นต้นด้วย: ${expected.join(', ')})`,
+                    })
+                    return
+                  }
                 }
                 // ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED ไม่บังคับกรอกชื่อลูกค้าเมื่อบันทึกข้อมูลครบ
                 if (!CHANNELS_COMPLETE_TO_VERIFIED.includes(formData.channel_code) && (!formData.customer_name || formData.customer_name.trim() === '')) {

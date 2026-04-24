@@ -164,6 +164,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'settings-banks': 'settings',
   'settings-bill-header': 'settings',
   'settings-product-settings': 'settings',
+  'settings-bill-channel-map': 'settings',
   'settings-sellers': 'settings',
   'settings-promotions': 'settings',
   'settings-issue-types': 'settings',
@@ -199,6 +200,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'packing-queue': 'packing',
   'packing-tagSearch': 'packing',
   'account-claim-approval': 'account',
+  'account-ecommerce': 'account',
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {

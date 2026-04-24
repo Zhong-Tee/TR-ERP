@@ -16,6 +16,7 @@ const SETTINGS_TABS = [
   { key: 'role-settings', label: 'ตั้งค่า Role' },
   { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
   { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
+  { key: 'bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง' },
   { key: 'sellers', label: 'ผู้ขาย' },
   { key: 'promotions', label: 'โปรโมชั่น' },
   { key: 'issue-types', label: 'ประเภท Issue' },
@@ -31,6 +32,15 @@ export default function Settings() {
   const [users, setUsers] = useState<User[]>([])
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  // ตั้งค่าเลขบิล-ช่องทาง (prefix เลขคำสั่งซื้อ)
+  const [orderNoPrefixRows, setOrderNoPrefixRows] = useState<
+    { id: string; channel_code: string; prefix: string; is_active: boolean }[]
+  >([])
+  const [orderNoPrefixByChannel, setOrderNoPrefixByChannel] = useState<Record<string, string[]>>({})
+  const [orderNoPrefixLoading, setOrderNoPrefixLoading] = useState(false)
+  const [orderNoPrefixSaving, setOrderNoPrefixSaving] = useState(false)
+  const [selectedPrefixChannel, setSelectedPrefixChannel] = useState<string>('')
+  const [prefixInput, setPrefixInput] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<SettingsTabKey>('users')
 
@@ -232,6 +242,12 @@ export default function Settings() {
       loadAllProducts()
       loadProductOverrides()
     }
+    if (activeTab === 'bill-channel-map') {
+      loadChannelOrderNoPrefixes()
+      if (!selectedPrefixChannel && channels.length > 0) {
+        setSelectedPrefixChannel(channels[0].channel_code)
+      }
+    }
     if (activeTab === 'role-settings') {
       loadRoleMenus()
     }
@@ -332,6 +348,99 @@ export default function Settings() {
     } catch (error: any) {
       console.error('Error loading channels:', error)
     }
+  }
+
+  async function loadChannelOrderNoPrefixes() {
+    setOrderNoPrefixLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_channel_order_no_prefixes')
+        .select('id, channel_code, prefix, is_active, created_at')
+        .eq('is_active', true)
+        .order('channel_code', { ascending: true })
+        .order('prefix', { ascending: true })
+
+      if (error) throw error
+      const rows = (data || []) as { id: string; channel_code: string; prefix: string; is_active: boolean }[]
+      setOrderNoPrefixRows(rows)
+
+      const map: Record<string, string[]> = {}
+      rows.forEach((r) => {
+        const cc = String(r.channel_code || '').trim()
+        const px = String(r.prefix || '').trim()
+        if (!cc || !px) return
+        if (!map[cc]) map[cc] = []
+        if (!map[cc].includes(px)) map[cc].push(px)
+      })
+      setOrderNoPrefixByChannel(map)
+    } catch (error: any) {
+      console.error('Error loading channel order_no prefixes:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'โหลดข้อมูล prefix ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setOrderNoPrefixLoading(false)
+    }
+  }
+
+  const normalizePrefixToken = (s: string) => String(s || '').trim()
+
+  function getSelectedChannelPrefixes(channelCode: string): string[] {
+    const cc = String(channelCode || '').trim()
+    return (orderNoPrefixByChannel[cc] || []).slice().sort((a, b) => a.localeCompare(b))
+  }
+
+  function setSelectedChannelPrefixes(channelCode: string, prefixes: string[]) {
+    const cc = String(channelCode || '').trim()
+    const next = Array.from(new Set(prefixes.map(normalizePrefixToken).filter(Boolean))).sort((a, b) => a.localeCompare(b))
+    setOrderNoPrefixByChannel((prev) => ({ ...prev, [cc]: next }))
+  }
+
+  async function saveSelectedChannelPrefixes() {
+    const channelCode = String(selectedPrefixChannel || '').trim()
+    if (!channelCode) {
+      showMessage({ title: 'แจ้งเตือน', message: 'กรุณาเลือกช่องทาง' })
+      return
+    }
+    const desired = getSelectedChannelPrefixes(channelCode)
+    setOrderNoPrefixSaving(true)
+    try {
+      const existingRows = orderNoPrefixRows.filter((r) => String(r.channel_code || '').trim() === channelCode)
+      const existingPrefixes = Array.from(new Set(existingRows.map((r) => normalizePrefixToken(r.prefix)).filter(Boolean)))
+      const toInsert = desired.filter((p) => !existingPrefixes.includes(p))
+      const toDelete = existingRows.filter((r) => !desired.includes(normalizePrefixToken(r.prefix)))
+
+      if (toDelete.length > 0) {
+        const ids = toDelete.map((r) => r.id).filter(Boolean)
+        const { error } = await supabase.from('or_channel_order_no_prefixes').delete().in('id', ids)
+        if (error) throw error
+      }
+      if (toInsert.length > 0) {
+        const payload = toInsert.map((p) => ({ channel_code: channelCode, prefix: p, is_active: true }))
+        const { error } = await supabase.from('or_channel_order_no_prefixes').insert(payload)
+        if (error) throw error
+      }
+
+      await loadChannelOrderNoPrefixes()
+      showMessage({ title: 'สำเร็จ', message: 'บันทึกการตั้งค่า prefix สำเร็จ' })
+    } catch (error: any) {
+      console.error('Error saving channel order_no prefixes:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setOrderNoPrefixSaving(false)
+    }
+  }
+
+  async function removePrefix(channelCode: string, prefix: string) {
+    const ok = await showConfirm({
+      title: 'ยืนยันการลบ',
+      message: `ต้องการลบ prefix "${prefix}" ของช่องทาง ${channelCode} ใช่หรือไม่?`,
+      confirmText: 'ลบ',
+      cancelText: 'ยกเลิก',
+      tone: 'danger',
+    })
+    if (!ok) return
+
+    const current = getSelectedChannelPrefixes(channelCode)
+    setSelectedChannelPrefixes(channelCode, current.filter((p) => p !== prefix))
   }
 
   async function loadUsers() {
@@ -453,6 +562,7 @@ export default function Settings() {
     { key: 'account-refunds', label: 'รายการโอนคืน', group: 'account' },
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
+    { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
     { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },
@@ -500,6 +610,7 @@ export default function Settings() {
     { key: 'settings-banks', label: 'ตั้งค่าข้อมูลธนาคาร', group: 'settings' },
     { key: 'settings-bill-header', label: 'ตั้งค่าหัวบิล', group: 'settings' },
     { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
+    { key: 'settings-bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง', group: 'settings' },
     { key: 'settings-sellers', label: 'ผู้ขาย', group: 'settings' },
     { key: 'settings-promotions', label: 'โปรโมชั่น', group: 'settings' },
     { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
@@ -3067,6 +3178,133 @@ export default function Settings() {
           )}
         </div>
         </>
+      )}
+
+      {/* ตั้งค่าเลขบิล-ช่องทาง Tab */}
+      {activeTab === 'bill-channel-map' && hasAccess('settings-bill-channel-map') && (
+        <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold">ตั้งค่าเลขบิล-ช่องทาง</h2>
+              <p className="text-sm text-gray-600 max-w-3xl">
+                ผูกช่องทางกับ prefix ของ <span className="font-semibold">เลขคำสั่งซื้อ</span> เพื่อกันกรอกผิดช่องทางในหน้าออเดอร์
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => loadChannelOrderNoPrefixes()}
+                disabled={orderNoPrefixLoading}
+                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-50 font-semibold text-sm disabled:opacity-50"
+              >
+                {orderNoPrefixLoading ? 'กำลังโหลด...' : 'รีเฟรช'}
+              </button>
+              <button
+                type="button"
+                onClick={saveSelectedChannelPrefixes}
+                disabled={orderNoPrefixSaving || orderNoPrefixLoading}
+                className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm disabled:opacity-50"
+              >
+                {orderNoPrefixSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-gray-700">ช่องทาง</label>
+              <select
+                value={selectedPrefixChannel}
+                onChange={(e) => setSelectedPrefixChannel(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
+              >
+                {channels.map((c) => (
+                  <option key={c.channel_code} value={c.channel_code}>
+                    {c.channel_code} — {c.channel_name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500">
+                ถ้าไม่มี prefix ในช่องทางนั้น ระบบจะไม่บังคับตรวจ (เพื่อไม่กระทบช่องทางที่ยังไม่ตั้งค่า)
+              </p>
+            </div>
+
+            <div className="lg:col-span-2 space-y-2">
+              <label className="block text-sm font-semibold text-gray-700">Prefix ของเลขคำสั่งซื้อ (หลายค่าได้)</label>
+              <div className="flex gap-2 flex-wrap">
+                <input
+                  type="text"
+                  value={prefixInput}
+                  onChange={(e) => setPrefixInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    e.preventDefault()
+                    const channelCode = String(selectedPrefixChannel || '').trim()
+                    if (!channelCode) return
+                    const tokens = String(prefixInput || '')
+                      .split(',')
+                      .map(normalizePrefixToken)
+                      .filter(Boolean)
+                    if (tokens.length === 0) return
+                    const current = getSelectedChannelPrefixes(channelCode)
+                    setSelectedChannelPrefixes(channelCode, current.concat(tokens))
+                    setPrefixInput('')
+                  }}
+                  placeholder="พิมพ์ prefix เช่น 26,27 แล้วกด Enter"
+                  className="flex-1 min-w-[220px] px-3 py-2 border border-gray-300 rounded-xl text-base"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const channelCode = String(selectedPrefixChannel || '').trim()
+                    if (!channelCode) return
+                    const tokens = String(prefixInput || '')
+                      .split(',')
+                      .map(normalizePrefixToken)
+                      .filter(Boolean)
+                    if (tokens.length === 0) return
+                    const current = getSelectedChannelPrefixes(channelCode)
+                    setSelectedChannelPrefixes(channelCode, current.concat(tokens))
+                    setPrefixInput('')
+                  }}
+                  className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold"
+                >
+                  เพิ่ม
+                </button>
+              </div>
+
+              <div className="mt-2">
+                {selectedPrefixChannel ? (
+                  getSelectedChannelPrefixes(selectedPrefixChannel).length === 0 ? (
+                    <div className="text-sm text-gray-400 italic py-3">ยังไม่มี prefix สำหรับช่องทางนี้</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {getSelectedChannelPrefixes(selectedPrefixChannel).map((p) => (
+                        <span
+                          key={p}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 text-sm font-semibold"
+                          title={`prefix: ${p}`}
+                        >
+                          {p}
+                          <button
+                            type="button"
+                            onClick={() => void removePrefix(selectedPrefixChannel, p)}
+                            className="text-slate-500 hover:text-red-600 font-bold"
+                            aria-label="remove prefix"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <div className="text-sm text-gray-400 italic py-3">กรุณาเลือกช่องทาง</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ผู้ขาย Tab */}

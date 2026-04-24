@@ -34,6 +34,21 @@ type DailySheetRow = {
   balance_eod: number
 }
 
+type WmsMapLineUi = {
+  id: string
+  product_id: string
+  product_code: string
+  product_name: string
+}
+
+type WmsMapGroupUi = {
+  id: string
+  name: string
+  sub_warehouse_id: string | null
+  spares: WmsMapLineUi[]
+  sources: WmsMapLineUi[]
+}
+
 type MoveRow = {
   id: string
   created_at: string
@@ -56,17 +71,6 @@ type ProductLookupRow = {
 }
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
-
-/** คลังย่อย: 990000430 / 990000431 ใช้ยอดผลิต WMS รวมจากตรายาง A1–A4 (มุมมองช่วงวันที่ + RPC รายวัน) */
-const SUB_WHS_WMS_BUNDLE_SOURCES = ['110000096', '110000097', '110000098', '110000099'] as const
-const SUB_WHS_WMS_BUNDLE_TARGETS = ['990000430', '990000431'] as const
-
-function applySubWarehouseWmsBundleAliases(map: Record<string, number>) {
-  const sum = SUB_WHS_WMS_BUNDLE_SOURCES.reduce((acc, code) => acc + (map[code] ?? 0), 0)
-  for (const code of SUB_WHS_WMS_BUNDLE_TARGETS) {
-    map[code] = sum
-  }
-}
 
 function sanitizeExportFilenamePart(raw: string) {
   return raw.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim().slice(0, 60) || 'export'
@@ -144,10 +148,261 @@ export default function WarehouseSub() {
   const [adjustNote, setAdjustNote] = useState<string>('')
   const [adjustSaving, setAdjustSaving] = useState(false)
 
+  const [rubberMapModalOpen, setRubberMapModalOpen] = useState(false)
+  const [mapModalLoading, setMapModalLoading] = useState(false)
+  const [mapUiGroups, setMapUiGroups] = useState<WmsMapGroupUi[]>([])
+  const [mapNewGroupName, setMapNewGroupName] = useState('กลุ่มจับคู่ใหม่')
+  const [mapNewGroupScope, setMapNewGroupScope] = useState<'current' | 'all'>('current')
+  const [mapLineDraft, setMapLineDraft] = useState<Record<string, { spare: string; source: string }>>({})
+
   const selectedSub = useMemo(
     () => subWarehouses.find((s) => s.id === selectedSubId) || null,
     [subWarehouses, selectedSubId],
   )
+
+  async function applyDynamicWmsMapsToCorrectMap(map: Record<string, number>, subId: string) {
+    if (!subId) return
+    try {
+      const { data: groups, error } = await supabase
+        .from('wh_sub_wms_map_groups')
+        .select('id')
+        .or(`sub_warehouse_id.is.null,sub_warehouse_id.eq.${subId}`)
+      if (error || !groups?.length) return
+      const gids = groups.map((g: { id: string }) => String(g.id))
+      const { data: spareRows } = await supabase
+        .from('wh_sub_wms_map_spares')
+        .select('group_id, product_id')
+        .in('group_id', gids)
+      const { data: sourceRows } = await supabase
+        .from('wh_sub_wms_map_sources')
+        .select('group_id, product_id')
+        .in('group_id', gids)
+      if (!spareRows?.length) return
+      const pids = [
+        ...new Set([
+          ...spareRows.map((r: { product_id: string }) => String(r.product_id)),
+          ...(sourceRows || []).map((r: { product_id: string }) => String(r.product_id)),
+        ]),
+      ]
+      const { data: prods } = await supabase.from('pr_products').select('id, product_code').in('id', pids)
+      const idToCode: Record<string, string> = {}
+      ;(prods || []).forEach((p: { id: string; product_code: string }) => {
+        idToCode[String(p.id)] = String(p.product_code || '')
+      })
+      const sumByGroup: Record<string, number> = {}
+      gids.forEach((gid) => {
+        sumByGroup[gid] = 0
+      })
+      ;(sourceRows || []).forEach((s: { group_id: string; product_id: string }) => {
+        const code = idToCode[String(s.product_id)]
+        if (!code) return
+        const gid = String(s.group_id)
+        sumByGroup[gid] = (sumByGroup[gid] ?? 0) + (map[code] ?? 0)
+      })
+      spareRows.forEach((s: { group_id: string; product_id: string }) => {
+        const code = idToCode[String(s.product_id)]
+        if (!code) return
+        const gid = String(s.group_id)
+        map[code] = sumByGroup[gid] ?? 0
+      })
+    } catch (e) {
+      console.warn('applyDynamicWmsMapsToCorrectMap skipped:', e)
+    }
+  }
+
+  async function loadRubberMapData() {
+    if (!selectedSubId) return
+    setMapModalLoading(true)
+    try {
+      const { data: groups, error: ge } = await supabase
+        .from('wh_sub_wms_map_groups')
+        .select('id, name, sub_warehouse_id, created_at')
+        .or(`sub_warehouse_id.is.null,sub_warehouse_id.eq.${selectedSubId}`)
+        .order('created_at', { ascending: true })
+      if (ge) throw ge
+      const gids = (groups || []).map((g: { id: string }) => String(g.id))
+      if (gids.length === 0) {
+        setMapUiGroups([])
+        return
+      }
+      const { data: spareRows } = await supabase.from('wh_sub_wms_map_spares').select('id, group_id, product_id').in('group_id', gids)
+      const { data: sourceRows } = await supabase.from('wh_sub_wms_map_sources').select('id, group_id, product_id').in('group_id', gids)
+      const allPid = [
+        ...new Set([
+          ...(spareRows || []).map((r: { product_id: string }) => String(r.product_id)),
+          ...(sourceRows || []).map((r: { product_id: string }) => String(r.product_id)),
+        ]),
+      ]
+      const idToProd: Record<string, { code: string; name: string }> = {}
+      if (allPid.length > 0) {
+        const { data: prods } = await supabase
+          .from('pr_products')
+          .select('id, product_code, product_name')
+          .in('id', allPid)
+        ;(prods || []).forEach((p: { id: string; product_code: string; product_name: string }) => {
+          idToProd[String(p.id)] = {
+            code: String(p.product_code || ''),
+            name: String(p.product_name || ''),
+          }
+        })
+      }
+      const next: WmsMapGroupUi[] = (groups || []).map((g: { id: string; name: string; sub_warehouse_id: string | null }) => {
+        const gid = String(g.id)
+        const spares = (spareRows || [])
+          .filter((r: { group_id: string }) => String(r.group_id) === gid)
+          .map((r: { id: string; product_id: string }) => {
+            const meta = idToProd[String(r.product_id)] || { code: '', name: '' }
+            return {
+              id: String(r.id),
+              product_id: String(r.product_id),
+              product_code: meta.code,
+              product_name: meta.name,
+            }
+          })
+        const sources = (sourceRows || [])
+          .filter((r: { group_id: string }) => String(r.group_id) === gid)
+          .map((r: { id: string; product_id: string }) => {
+            const meta = idToProd[String(r.product_id)] || { code: '', name: '' }
+            return {
+              id: String(r.id),
+              product_id: String(r.product_id),
+              product_code: meta.code,
+              product_name: meta.name,
+            }
+          })
+        return {
+          id: gid,
+          name: String(g.name || ''),
+          sub_warehouse_id: g.sub_warehouse_id != null ? String(g.sub_warehouse_id) : null,
+          spares,
+          sources,
+        }
+      })
+      setMapUiGroups(next)
+    } catch (e: any) {
+      console.error('loadRubberMapData failed:', e)
+      showMessage({
+        title: 'ผิดพลาด',
+        message: 'โหลดตั้งค่าจับคู่ไม่สำเร็จ — ตรวจว่าได้รัน migration 244 แล้ว: ' + (e?.message || String(e)),
+      })
+      setMapUiGroups([])
+    } finally {
+      setMapModalLoading(false)
+    }
+  }
+
+  async function createWmsMapGroup() {
+    if (!selectedSubId) return
+    const name = mapNewGroupName.trim() || 'กลุ่มจับคู่'
+    const subVal = mapNewGroupScope === 'all' ? null : selectedSubId
+    try {
+      const { error } = await supabase.from('wh_sub_wms_map_groups').insert({
+        name,
+        sub_warehouse_id: subVal,
+      })
+      if (error) throw error
+      setMapNewGroupName('กลุ่มจับคู่ใหม่')
+      await loadRubberMapData()
+      await refreshAllForSelected()
+      showMessage({ title: 'สำเร็จ', message: 'สร้างกลุ่มจับคู่แล้ว' })
+    } catch (e: any) {
+      console.error(e)
+      showMessage({ title: 'ผิดพลาด', message: e?.message || String(e) })
+    }
+  }
+
+  async function deleteWmsMapGroup(groupId: string) {
+    const ok = await showConfirm({
+      title: 'ลบกลุ่มจับคู่',
+      message: 'ลบกลุ่มนี้และรายการอะไหล่/สินค้าผลิตที่ผูกไว้ทั้งหมด?',
+    })
+    if (!ok) return
+    try {
+      const { error } = await supabase.from('wh_sub_wms_map_groups').delete().eq('id', groupId)
+      if (error) throw error
+      await loadRubberMapData()
+      await refreshAllForSelected()
+      showMessage({ title: 'สำเร็จ', message: 'ลบกลุ่มแล้ว' })
+    } catch (e: any) {
+      showMessage({ title: 'ผิดพลาด', message: e?.message || String(e) })
+    }
+  }
+
+  async function updateWmsMapGroupName(groupId: string, name: string) {
+    try {
+      const { error } = await supabase
+        .from('wh_sub_wms_map_groups')
+        .update({ name: name.trim() || 'กลุ่มจับคู่' })
+        .eq('id', groupId)
+      if (error) throw error
+      await loadRubberMapData()
+    } catch (e: any) {
+      showMessage({ title: 'ผิดพลาด', message: e?.message || String(e) })
+    }
+  }
+
+  async function addWmsMapLine(groupId: string, kind: 'spare' | 'source', rawCode: string) {
+    const code = rawCode.trim()
+    if (!code) {
+      showMessage({ message: 'กรอกรหัสสินค้า' })
+      return
+    }
+    try {
+      const { data: prod, error: pe } = await supabase
+        .from('pr_products')
+        .select('id')
+        .eq('product_code', code)
+        .eq('is_active', true)
+        .maybeSingle()
+      if (pe) throw pe
+      if (!prod?.id) {
+        showMessage({ message: 'ไม่พบรหัสสินค้าในระบบ (ต้อง is_active)' })
+        return
+      }
+      const table = kind === 'spare' ? 'wh_sub_wms_map_spares' : 'wh_sub_wms_map_sources'
+      const { error } = await supabase.from(table).insert({
+        group_id: groupId,
+        product_id: String(prod.id),
+      })
+      if (error) throw error
+      setMapLineDraft((d) => ({
+        ...d,
+        [groupId]: {
+          spare: kind === 'spare' ? '' : d[groupId]?.spare ?? '',
+          source: kind === 'source' ? '' : d[groupId]?.source ?? '',
+        },
+      }))
+      await loadRubberMapData()
+      await refreshAllForSelected()
+    } catch (e: any) {
+      const msg = e?.message || String(e)
+      if (String(msg).includes('duplicate') || e?.code === '23505') {
+        showMessage({ message: 'รายการซ้ำ (อะไหล่หนึ่งรหัสต่อหนึ่งกลุ่มเท่านั้น หรือสินค้าผลิตซ้ำในกลุ่มเดียวกัน)' })
+        return
+      }
+      showMessage({ title: 'ผิดพลาด', message: msg })
+    }
+  }
+
+  async function removeWmsMapLine(table: 'wh_sub_wms_map_spares' | 'wh_sub_wms_map_sources', rowId: string) {
+    try {
+      const { error } = await supabase.from(table).delete().eq('id', rowId)
+      if (error) throw error
+      await loadRubberMapData()
+      await refreshAllForSelected()
+    } catch (e: any) {
+      showMessage({ title: 'ผิดพลาด', message: e?.message || String(e) })
+    }
+  }
+
+  function openRubberMapSettings() {
+    if (!selectedSubId) {
+      showMessage({ message: 'กรุณาเลือกคลังย่อยก่อน' })
+      return
+    }
+    setRubberMapModalOpen(true)
+    void loadRubberMapData()
+  }
 
   async function loadSubWarehouses() {
     setLoadingSubs(true)
@@ -246,7 +501,7 @@ export default function WarehouseSub() {
         if (!code) return
         map[code] = Number(r.correct_qty || 0)
       })
-      applySubWarehouseWmsBundleAliases(map)
+      await applyDynamicWmsMapsToCorrectMap(map, selectedSubId)
       setWmsCorrectMap(map)
     } catch (e: any) {
       console.error('Load WMS correct qty failed:', e)
@@ -551,6 +806,14 @@ export default function WarehouseSub() {
             className="px-4 py-2 rounded-xl font-semibold text-sm bg-blue-600 text-white hover:bg-blue-700"
           >
             + เพิ่มสินค้า
+          </button>
+          <button
+            type="button"
+            onClick={openRubberMapSettings}
+            disabled={!selectedSubId}
+            className="px-4 py-2 rounded-xl font-semibold text-sm bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+          >
+            ตั้งค่าหน้ายาง
           </button>
         </div>
       </div>
@@ -1204,6 +1467,226 @@ export default function WarehouseSub() {
               className="px-5 py-2.5 rounded-xl font-semibold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 shadow-sm"
             >
               {adjustSaving ? 'กำลังบันทึก...' : 'บันทึก'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={rubberMapModalOpen}
+        onClose={() => setRubberMapModalOpen(false)}
+        closeOnBackdropClick
+        contentClassName="max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+      >
+        <div className="p-6 space-y-5 text-slate-900">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xl font-black text-slate-900">ตั้งค่าหน้ายาง</div>
+              <div className="text-sm text-slate-500 mt-1">
+                จับคู่ <span className="font-semibold">สินค้าอะไหล่</span> ในคลังย่อย กับ{' '}
+                <span className="font-semibold">สินค้าผลิต</span> — ยอดผลิต WMS (correct) ของสินค้าผลิตจะถูกรวมแล้วแสดงแทนที่รหัสอะไหล่แต่ละรายการ
+              </div>
+              <div className="text-xs text-slate-500 mt-1">
+                คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span> · แสดงกลุ่มที่ใช้กับคลังนี้หรือกลุ่ม “ทุกคลังย่อย”
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRubberMapModalOpen(false)}
+              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center shrink-0"
+              aria-label="ปิด"
+            >
+              ×
+            </button>
+          </div>
+          <div className="h-px bg-slate-200" />
+
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+            <div className="text-sm font-black text-slate-800">สร้างกลุ่มจับคู่ใหม่</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-bold text-slate-600">ชื่อกลุ่ม</label>
+                <input
+                  type="text"
+                  value={mapNewGroupName}
+                  onChange={(e) => setMapNewGroupName(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-600">ขอบเขต</label>
+                <select
+                  value={mapNewGroupScope}
+                  onChange={(e) => setMapNewGroupScope(e.target.value as 'current' | 'all')}
+                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 bg-white font-semibold"
+                >
+                  <option value="current">เฉพาะคลังย่อยที่เลือก</option>
+                  <option value="all">ทุกคลังย่อย</option>
+                </select>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void createWmsMapGroup()}
+              className="px-4 py-2 rounded-xl font-bold text-sm bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              สร้างกลุ่ม
+            </button>
+          </div>
+
+          {mapModalLoading ? (
+            <div className="py-12 text-center text-slate-400 font-semibold">กำลังโหลด...</div>
+          ) : mapUiGroups.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-sm">ยังไม่มีกลุ่ม — สร้างกลุ่มแล้วเพิ่มรหัสอะไหล่และสินค้าผลิตได้เลย</div>
+          ) : (
+            <div className="space-y-6">
+              {mapUiGroups.map((g) => (
+                <div key={g.id} className="rounded-2xl border border-slate-200 p-4 space-y-4 bg-white">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <label className="text-xs font-bold text-slate-600">ชื่อกลุ่ม</label>
+                      <input
+                        type="text"
+                        defaultValue={g.name}
+                        key={`${g.id}-name`}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim()
+                          if (v && v !== g.name) void updateWmsMapGroupName(g.id, v)
+                        }}
+                        className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200 font-semibold"
+                      />
+                      <div className="text-xs text-slate-500 mt-1">
+                        {g.sub_warehouse_id
+                          ? `เฉพาะคลัง: ${subWarehouses.find((s) => s.id === g.sub_warehouse_id)?.name || g.sub_warehouse_id}`
+                          : 'ใช้ได้ทุกคลังย่อย (เมื่อมีสินค้านั้นในรายการ)'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void deleteWmsMapGroup(g.id)}
+                      className="px-3 py-2 rounded-xl text-sm font-bold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 shrink-0"
+                    >
+                      ลบกลุ่ม
+                    </button>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-black text-slate-800 mb-2">สินค้าอะไหล่ (หลายรายการได้)</div>
+                    <div className="overflow-x-auto rounded-xl border border-slate-100">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-slate-100 text-left">
+                            <th className="p-2">รหัส</th>
+                            <th className="p-2">ชื่อ</th>
+                            <th className="p-2 w-24"> </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.spares.map((r) => (
+                            <tr key={r.id} className="border-t border-slate-100">
+                              <td className="p-2 font-mono font-semibold">{r.product_code}</td>
+                              <td className="p-2 text-slate-700">{r.product_name}</td>
+                              <td className="p-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void removeWmsMapLine('wh_sub_wms_map_spares', r.id)}
+                                  className="text-red-600 font-bold text-xs hover:underline"
+                                >
+                                  ลบ
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <input
+                        type="text"
+                        placeholder="รหัสสินค้าอะไหล่"
+                        value={mapLineDraft[g.id]?.spare ?? ''}
+                        onChange={(e) =>
+                          setMapLineDraft((prev) => ({
+                            ...prev,
+                            [g.id]: { spare: e.target.value, source: prev[g.id]?.source ?? '' },
+                          }))
+                        }
+                        className="min-w-[10rem] flex-1 px-3 py-2 rounded-xl border border-slate-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void addWmsMapLine(g.id, 'spare', mapLineDraft[g.id]?.spare ?? '')}
+                        className="px-3 py-2 rounded-xl font-bold text-sm bg-slate-800 text-white hover:bg-slate-900"
+                      >
+                        เพิ่มอะไหล่
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-black text-slate-800 mb-2">สินค้าผลิต (รวมยอด WMS)</div>
+                    <div className="overflow-x-auto rounded-xl border border-slate-100">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-slate-100 text-left">
+                            <th className="p-2">รหัส</th>
+                            <th className="p-2">ชื่อ</th>
+                            <th className="p-2 w-24"> </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.sources.map((r) => (
+                            <tr key={r.id} className="border-t border-slate-100">
+                              <td className="p-2 font-mono font-semibold">{r.product_code}</td>
+                              <td className="p-2 text-slate-700">{r.product_name}</td>
+                              <td className="p-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void removeWmsMapLine('wh_sub_wms_map_sources', r.id)}
+                                  className="text-red-600 font-bold text-xs hover:underline"
+                                >
+                                  ลบ
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <input
+                        type="text"
+                        placeholder="รหัสสินค้าผลิต"
+                        value={mapLineDraft[g.id]?.source ?? ''}
+                        onChange={(e) =>
+                          setMapLineDraft((prev) => ({
+                            ...prev,
+                            [g.id]: { spare: prev[g.id]?.spare ?? '', source: e.target.value },
+                          }))
+                        }
+                        className="min-w-[10rem] flex-1 px-3 py-2 rounded-xl border border-slate-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void addWmsMapLine(g.id, 'source', mapLineDraft[g.id]?.source ?? '')}
+                        className="px-3 py-2 rounded-xl font-bold text-sm bg-emerald-700 text-white hover:bg-emerald-800"
+                      >
+                        เพิ่มสินค้าผลิต
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRubberMapModalOpen(false)}
+              className="px-5 py-2.5 rounded-xl font-semibold bg-slate-900 text-white hover:bg-slate-800"
+            >
+              ปิด
             </button>
           </div>
         </div>

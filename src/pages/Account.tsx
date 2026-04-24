@@ -11,11 +11,12 @@ import BillEditSection from '../components/account/BillEditSection'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import TrialBalanceSection from '../components/account/TrialBalanceSection'
+import EcommerceSection from '../components/account/EcommerceSection'
 import AmendmentSection from '../components/account/AmendmentSection'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'trial-balance'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'trial-balance'
 type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
@@ -165,7 +166,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
   'dashboard', 'slip-verification', 'manual-slip-check',
-  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'trial-balance',
+  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'trial-balance',
 ]
 
 /** แถบเมนูหลักบัญชี — รวมลิงก์เข้า Dashboard แยกแท็บโอนคืน / ใบกำกับภาษี */
@@ -184,6 +185,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
   { id: 'nav-claim-approval', section: 'claim-approval', label: 'อนุมัติเคลม', count: 'claimPending', accessKey: 'account-claim-approval' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
+  { id: 'nav-ecommerce', section: 'ecommerce', label: 'Ecommerce', accessKey: 'account-ecommerce' },
   { id: 'nav-trial', section: 'trial-balance', label: 'งบต้นทุนขาย' },
   { id: 'nav-refunds', section: 'dashboard', label: 'รายการโอนคืน', dashboardTab: 'refunds', count: 'refunds', accessKey: 'account-refunds' },
   { id: 'nav-tax-inv', section: 'dashboard', label: 'ขอใบกำกับภาษี', dashboardTab: 'tax-invoice', count: 'taxInvoice', accessKey: 'account-tax-invoice' },
@@ -1174,6 +1176,8 @@ export default function Account() {
             </div>
           </div>
         </section>
+      ) : accountSection === 'ecommerce' ? (
+        <EcommerceSection />
       ) : accountSection === 'trial-balance' ? (
         <TrialBalanceSection />
       ) : (
