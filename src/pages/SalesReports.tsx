@@ -9,6 +9,7 @@ import { FiDownload, FiSearch, FiChevronUp, FiChevronDown } from 'react-icons/fi
 interface RawOrder {
   channel_code: string
   bill_no: string
+  work_order_name: string | null
   total_amount: number
   price: number
   shipping_cost: number
@@ -179,18 +180,41 @@ function groupByDate(orders: RawOrder[]) {
   return Object.values(map).sort((a, b) => a.date.localeCompare(b.date))
 }
 
+function getWorkOrderRoundNumber(name: string) {
+  const match = name.match(/-R(\d+)\b/i)
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY
+}
+
 function groupByAdmin(orders: RawOrder[]) {
-  const map: Record<string, { admin: string; orders: number; revenue: number; items: number }> = {}
+  const map: Record<string, {
+    admin: string
+    orders: number
+    revenue: number
+    items: number
+    workOrders: Record<string, number>
+  }> = {}
   orders.forEach((o) => {
     const a = o.admin_user || 'N/A'
-    if (!map[a]) map[a] = { admin: a, orders: 0, revenue: 0, items: 0 }
+    const workOrderName = o.work_order_name || 'ไม่มีชื่อใบงาน'
+    if (!map[a]) map[a] = { admin: a, orders: 0, revenue: 0, items: 0, workOrders: {} }
     map[a].orders += 1
     map[a].revenue += Number(o.total_amount) || 0
+    map[a].workOrders[workOrderName] = (map[a].workOrders[workOrderName] || 0) + 1
     o.or_order_items?.forEach((it) => {
       map[a].items += Number(it.quantity) || 0
     })
   })
-  return Object.values(map).sort((a, b) => b.revenue - a.revenue)
+  return Object.values(map)
+    .map((row) => ({
+      ...row,
+      workOrderBreakdown: Object.entries(row.workOrders)
+        .map(([name, orders]) => ({ name, orders }))
+        .sort((a, b) => {
+          const roundDiff = getWorkOrderRoundNumber(a.name) - getWorkOrderRoundNumber(b.name)
+          return roundDiff || a.name.localeCompare(b.name)
+        }),
+    }))
+    .sort((a, b) => b.revenue - a.revenue)
 }
 
 /* ------------------------------------------------------------------ */
@@ -249,7 +273,7 @@ export default function SalesReports() {
     let q = supabase
       .from('or_orders')
       .select(
-        `channel_code, bill_no, total_amount, price, shipping_cost, discount,
+        `channel_code, bill_no, work_order_name, total_amount, price, shipping_cost, discount,
          entry_date, admin_user, status, payment_method, promotion, customer_name,
          or_order_items(product_name, product_id, product_type, quantity, unit_price, is_free)`
       )
@@ -339,6 +363,7 @@ export default function SalesReports() {
   const orderList = useMemo(() => {
     return orders.map((o) => ({
       bill_no: o.bill_no,
+      work_order_name: o.work_order_name || '-',
       channel: o.channel_code,
       customer: o.customer_name,
       total: Number(o.total_amount) || 0,
@@ -403,14 +428,20 @@ export default function SalesReports() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(dayRows), 'รายวัน')
 
     // Sheet 5: By Admin
-    const admRows = [['แอดมิน', 'จำนวนบิล', 'ยอดขาย', 'จำนวนชิ้น']]
-    adminData.forEach((r) => admRows.push([r.admin, r.orders as any, r.revenue as any, r.items as any]))
+    const admRows = [['แอดมิน', 'จำนวนบิล', 'ยอดขาย', 'จำนวนชิ้น', 'จำนวนบิลตามชื่อใบงาน']]
+    adminData.forEach((r) => admRows.push([
+      r.admin,
+      r.orders as any,
+      r.revenue as any,
+      r.items as any,
+      r.workOrderBreakdown.map((wo) => `${wo.name}: ${wo.orders} บิล`).join(', '),
+    ]))
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(admRows), 'ตามแอดมิน')
 
     // Sheet 6: Order List
-    const olRows = [['เลขบิล', 'ช่องทาง', 'ลูกค้า', 'ยอดรวม', 'ค่าส่ง', 'ส่วนลด', 'สถานะ', 'วันที่', 'แอดมิน', 'ชำระโดย', 'จำนวนชิ้น']]
+    const olRows = [['เลขบิล', 'ชื่อใบงาน', 'ช่องทาง', 'ลูกค้า', 'ยอดรวม', 'ค่าส่ง', 'ส่วนลด', 'สถานะ', 'วันที่', 'แอดมิน', 'ชำระโดย', 'จำนวนชิ้น']]
     orderList.forEach((r) =>
-      olRows.push([r.bill_no, r.channel, r.customer, r.total as any, r.shipping as any, r.discount as any, r.status, r.date, r.admin, r.payment, r.items as any])
+      olRows.push([r.bill_no, r.work_order_name, r.channel, r.customer, r.total as any, r.shipping as any, r.discount as any, r.status, r.date, r.admin, r.payment, r.items as any])
     )
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(olRows), 'รายการบิล')
 
@@ -893,6 +924,7 @@ export default function SalesReports() {
                             <th className="p-3 text-left font-semibold rounded-tl-lg">#</th>
                             <th className="p-3 text-left font-semibold">แอดมิน</th>
                             <th className="p-3 text-right font-semibold">จำนวนบิล</th>
+                            <th className="p-3 text-center font-semibold">จำนวนบิลตามชื่อใบงาน</th>
                             <th className="p-3 text-right font-semibold">ยอดขาย</th>
                             <th className="p-3 text-right font-semibold">เฉลี่ย/บิล</th>
                             <th className="p-3 text-right font-semibold">จำนวนชิ้น</th>
@@ -907,6 +939,19 @@ export default function SalesReports() {
                                 <td className="p-3 text-gray-400 font-medium">{i + 1}</td>
                                 <td className="p-3 font-medium">{r.admin}</td>
                                 <td className="p-3 text-right">{fmtInt(r.orders)}</td>
+                                <td className="p-3 text-left">
+                                  <div className="grid grid-cols-5 gap-1.5">
+                                    {r.workOrderBreakdown.map((wo) => (
+                                      <span
+                                        key={`${r.admin}-${wo.name}`}
+                                        className="inline-flex items-center gap-1 rounded-full border border-indigo-100 bg-indigo-50 px-2.5 py-1 text-sm font-medium text-indigo-700"
+                                      >
+                                        <span className="font-semibold">{wo.name}</span>
+                                        <span className="text-indigo-500">{fmtInt(wo.orders)} บิล</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
                                 <td className="p-3 text-right font-semibold text-emerald-600">฿{fmt(r.revenue)}</td>
                                 <td className="p-3 text-right">{r.orders ? '฿' + fmt(r.revenue / r.orders) : '-'}</td>
                                 <td className="p-3 text-right">{fmtInt(r.items)}</td>
@@ -926,6 +971,7 @@ export default function SalesReports() {
                           <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
                             <td className="p-3" colSpan={2}>รวม ({adminData.length} คน)</td>
                             <td className="p-3 text-right">{fmtInt(kpi.orderCount)}</td>
+                            <td className="p-3" />
                             <td className="p-3 text-right text-emerald-600">฿{fmt(kpi.totalRevenue)}</td>
                             <td className="p-3 text-right">฿{fmt(kpi.avgOrderValue)}</td>
                             <td className="p-3 text-right">{fmtInt(kpi.totalItems)}</td>
@@ -948,6 +994,7 @@ export default function SalesReports() {
                             <tr className="bg-gradient-to-r from-gray-700 to-gray-800 text-white">
                               <th className="p-3 text-left font-semibold rounded-tl-lg">#</th>
                               <th className="p-3 text-left font-semibold">เลขบิล</th>
+                              <th className="p-3 text-left font-semibold">ชื่อใบงาน</th>
                               <th className="p-3 text-left font-semibold">ช่องทาง</th>
                               <th className="p-3 text-left font-semibold">ลูกค้า</th>
                               <th className="p-3 text-right font-semibold">ยอดรวม</th>
@@ -964,6 +1011,7 @@ export default function SalesReports() {
                               <tr key={r.bill_no} className={`border-t border-gray-100 hover:bg-gray-50 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
                                 <td className="p-3 text-gray-400 text-sm">{orderPage * ORDER_PAGE_SIZE + i + 1}</td>
                                 <td className="p-3 font-medium text-blue-600">{r.bill_no}</td>
+                                <td className="p-3 font-medium text-indigo-600">{r.work_order_name}</td>
                                 <td className="p-3">
                                   <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-sm font-semibold">{r.channel}</span>
                                 </td>

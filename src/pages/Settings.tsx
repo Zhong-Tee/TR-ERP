@@ -6,6 +6,7 @@ import { BANK_CODES } from '../types'
 import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
+import DataBackupClearPanel from '../components/settings/DataBackupClearPanel'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
@@ -22,6 +23,7 @@ const SETTINGS_TABS = [
   { key: 'issue-types', label: 'ประเภท Issue' },
   { key: 'chat-history', label: 'ประวัติแชท' },
   { key: 'easyslip', label: 'API EasySlip' },
+  { key: 'backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล' },
 ] as const
 
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
@@ -615,6 +617,7 @@ export default function Settings() {
     { key: 'settings-issue-types', label: 'ประเภท Issue', group: 'settings' },
     { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
     { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
+    { key: 'settings-backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล', group: 'settings' },
   ] as const
 
   const buildChildrenByParent = () => {
@@ -2053,6 +2056,11 @@ export default function Settings() {
           </nav>
         </div>
       </div>
+
+      {/* Backup / Clear Data Tab */}
+      {activeTab === 'backup-clear' && hasAccess('settings-backup-clear') && (
+        <DataBackupClearPanel />
+      )}
 
       {/* API EasySlip Tab */}
       {activeTab === 'easyslip' && hasAccess('settings-easyslip') && (

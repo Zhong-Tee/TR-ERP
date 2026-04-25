@@ -170,6 +170,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'settings-issue-types': 'settings',
   'settings-chat-history': 'settings',
   'settings-easyslip': 'settings',
+  'settings-backup-clear': 'settings',
   'orders-create': 'orders',
   'orders-all': 'orders',
   'orders-waiting': 'orders',

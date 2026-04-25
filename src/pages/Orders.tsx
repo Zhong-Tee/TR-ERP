@@ -53,6 +53,15 @@ const ALL_STATUS_FILTER_OPTIONS = [
   'ยกเลิก',
 ] as const
 
+function getDefaultStatusFilterForTab(tab: Tab): OrderStatus | '' {
+  if (tab === 'waiting') return 'รอลงข้อมูล'
+  if (tab === 'data-error') return 'ลงข้อมูลผิด'
+  if (tab === 'verified') return 'ตรวจสอบแล้ว'
+  if (tab === 'shipped') return 'จัดส่งแล้ว'
+  if (tab === 'cancelled') return 'ยกเลิก'
+  return ''
+}
+
 export default function Orders() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const { user } = useAuthContext()
@@ -60,6 +69,8 @@ export default function Orders() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
+  const [adminUserFilter, setAdminUserFilter] = useState('')
+  const [tabStatusFilter, setTabStatusFilter] = useState<OrderStatus | ''>('จัดส่งแล้ว')
   const [waitingCount, setWaitingCount] = useState(0)
   const [completeCount, setCompleteCount] = useState(0)
   const [verifiedCount, setVerifiedCount] = useState(0)
@@ -73,6 +84,7 @@ export default function Orders() {
   const [claimRejectedCount, setClaimRejectedCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  const [adminUsers, setAdminUsers] = useState<string[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
     const now = new Date()
@@ -84,7 +96,7 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
-  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
+  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('จัดส่งแล้ว')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
   const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
   /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */
@@ -96,7 +108,10 @@ export default function Orders() {
     if (menuAccessLoading) return
     if (!hasAccess(`orders-${activeTab}`)) {
       const first = ALL_TABS.find((t) => hasAccess(`orders-${t}`))
-      if (first) setActiveTab(first)
+      if (first) {
+        setActiveTab(first)
+        setTabStatusFilter(getDefaultStatusFilterForTab(first))
+      }
     }
   }, [menuAccessLoading])
 
@@ -131,6 +146,7 @@ export default function Orders() {
   function handleOrderClick(order: Order) {
     setSelectedOrder(order)
     setActiveTab('create')
+    setTabStatusFilter('')
   }
 
   /** คลิกที่รายการใน ตรวจสอบแล้ว/ยกเลิก → แสดงรายละเอียดเพื่อดู (read-only) โดยไม่สลับแท็บ */
@@ -141,7 +157,9 @@ export default function Orders() {
   /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน) */
   function handleSave(options?: { switchToTab?: 'complete' }) {
     setSelectedOrder(null)
-    setActiveTab(options?.switchToTab === 'complete' ? 'complete' : 'waiting')
+    const nextTab = options?.switchToTab === 'complete' ? 'complete' : 'waiting'
+    setActiveTab(nextTab)
+    setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
     // Refresh counts immediately
     refreshCounts()
   }
@@ -344,7 +362,7 @@ export default function Orders() {
     }
   }
 
-  // โหลด channels จากตาราง
+  // โหลด channels และรายชื่อผู้ลงข้อมูลจากตาราง
   useEffect(() => {
     async function loadChannels() {
       try {
@@ -360,7 +378,27 @@ export default function Orders() {
       }
     }
 
+    async function loadAdminUsers() {
+      try {
+        const { data, error } = await supabase
+          .from('or_orders')
+          .select('admin_user')
+          .not('admin_user', 'is', null)
+          .order('admin_user', { ascending: true })
+          .limit(2000)
+
+        if (error) throw error
+        const uniqueUsers = Array.from(new Set((data || [])
+          .map((row: { admin_user?: string | null }) => row.admin_user?.trim())
+          .filter((name): name is string => !!name)))
+        setAdminUsers(uniqueUsers)
+      } catch (error) {
+        console.error('Error loading admin users:', error)
+      }
+    }
+
     loadChannels()
+    loadAdminUsers()
   }, [])
 
   // โหลดตัวเลขทุกแท็บทันทีเมื่อเปิดหน้า (แบบขนาน) + realtime เมื่อ or_orders / ac_refunds เปลี่ยน
@@ -466,8 +504,10 @@ export default function Orders() {
               <button
                 key={tab.id}
                 onClick={() => {
-                  setActiveTab(tab.id as Tab)
+                  const nextTab = tab.id as Tab
+                  setActiveTab(nextTab)
                   setSelectedOrder(null)
+                  setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
                 }}
                 className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap flex-shrink-0 transition-colors ${
                   activeTab === tab.id
@@ -527,6 +567,33 @@ export default function Orders() {
                   </option>
                 ))}
               </select>
+              <select
+                value={adminUserFilter}
+                onChange={(e) => setAdminUserFilter(e.target.value)}
+                className="min-w-[180px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                aria-label="กรองชื่อผู้ลงข้อมูล"
+              >
+                <option value="">ผู้ลงข้อมูลทั้งหมด</option>
+                {adminUsers.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              {activeTab !== 'all' && activeTab !== 'issue' && (
+                <select
+                  value={tabStatusFilter}
+                  onChange={(e) => setTabStatusFilter((e.target.value || '') as OrderStatus | '')}
+                  className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                >
+                  <option value="">สถานะตามแท็บ</option>
+                  {ALL_STATUS_FILTER_OPTIONS.map((status) => (
+                    <option key={status} value={status}>
+                      {status}
+                    </option>
+                  ))}
+                </select>
+              )}
               {activeTab === 'all' && (
                 <>
                   <select
@@ -646,6 +713,7 @@ export default function Orders() {
             status={allStatusFilter ? allStatusFilter : undefined}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClickViewOnly}
             onCountChange={setAllCount}
             dateFrom={allDateFrom}
@@ -658,9 +726,10 @@ export default function Orders() {
           />
         ) : activeTab === 'waiting' ? (
           <OrderList
-            status="รอลงข้อมูล"
+            status={tabStatusFilter || 'รอลงข้อมูล'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
             onCountChange={suppressSalesTrListCountSync ? undefined : setWaitingCount}
@@ -671,9 +740,10 @@ export default function Orders() {
           />
         ) : activeTab === 'complete' ? (
           <OrderList
-            status={['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']}
+            status={tabStatusFilter || ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
             onCountChange={suppressSalesTrListCountSync ? undefined : setCompleteCount}
@@ -685,11 +755,12 @@ export default function Orders() {
           />
         ) : activeTab === 'verified' ? (
           <OrderList
-            status="ตรวจสอบแล้ว"
+            status={tabStatusFilter || 'ตรวจสอบแล้ว'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClickViewOnly}
-            verifiedOnly={true}
+            verifiedOnly={!tabStatusFilter}
             onCountChange={suppressSalesTrListCountSync ? undefined : setVerifiedCount}
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
@@ -725,9 +796,10 @@ export default function Orders() {
           />
         ) : activeTab === 'data-error' ? (
           <OrderList
-            status="ลงข้อมูลผิด"
+            status={tabStatusFilter || 'ลงข้อมูลผิด'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
             onCountChange={suppressSalesTrListCountSync ? undefined : setDataErrorCount}
@@ -735,9 +807,10 @@ export default function Orders() {
           />
         ) : activeTab === 'shipped' ? (
           <OrderList
-            status="จัดส่งแล้ว"
+            status={tabStatusFilter || 'จัดส่งแล้ว'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClickViewOnly}
             dateFrom={shippedDateFrom}
             dateTo={shippedDateTo}
@@ -749,9 +822,10 @@ export default function Orders() {
           />
         ) : activeTab === 'cancelled' ? (
           <OrderList
-            status="ยกเลิก"
+            status={tabStatusFilter || 'ยกเลิก'}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
+            adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClickViewOnly}
             onCountChange={setCancelledCount}
             showMoveToWaitingButton={true}

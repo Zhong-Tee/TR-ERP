@@ -17,6 +17,7 @@ interface OrderListProps {
   onOrderClick: (order: Order) => void
   searchTerm?: string
   channelFilter?: string
+  adminUserFilter?: string
   showBillingStatus?: boolean
   verifiedOnly?: boolean
   onCountChange?: (count: number) => void
@@ -52,6 +53,7 @@ export default function OrderList({
   onOrderClick,
   searchTerm = '',
   channelFilter = '',
+  adminUserFilter = '',
   showBillingStatus: _showBillingStatus = false,
   verifiedOnly = false,
   onCountChange,
@@ -157,6 +159,7 @@ export default function OrderList({
     status,
     searchTerm,
     channelFilter,
+    adminUserFilter,
     verifiedOnly,
     refreshTrigger,
     filterByRejectedOverpayRefund,
@@ -217,6 +220,9 @@ export default function OrderList({
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
         }
+        if (adminUserFilter.trim()) {
+          query = query.eq('admin_user', adminUserFilter.trim())
+        }
         query = applySalesOrderAdminScope(query)
         if (query === null) {
           setOrders([])
@@ -253,6 +259,9 @@ export default function OrderList({
 
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
+        }
+        if (adminUserFilter.trim()) {
+          query = query.eq('admin_user', adminUserFilter.trim())
         }
         if (dateFrom) {
           query = query.gte(dateField, `${dateFrom}T00:00:00.000Z`)
@@ -495,6 +504,11 @@ export default function OrderList({
                 <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-700 text-xl font-bold hover:text-blue-900 hover:underline transition-colors">
                   {order.bill_no}
                 </button>
+                {order.work_order_name && (
+                  <span className="text-xl font-bold text-emerald-700 select-all">
+                    {order.work_order_name}
+                  </span>
+                )}
                 {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                   <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-pink-100 text-pink-700 border border-pink-200">
                     เคลม
