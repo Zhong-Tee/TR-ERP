@@ -633,6 +633,57 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }))
   }
 
+  async function handleApproveAllOrders() {
+    if (orders.length === 0) return
+
+    setUpdating(true)
+    try {
+      const pumpOrderIds = orders.filter((order) => order.channel_code === 'PUMP').map((order) => order.id)
+      const defaultOrderIds = orders.filter((order) => order.channel_code !== 'PUMP').map((order) => order.id)
+
+      const updates = []
+      if (defaultOrderIds.length > 0) {
+        updates.push(
+          supabase
+            .from('or_orders')
+            .update({ status: 'ใบสั่งงาน' })
+            .in('id', defaultOrderIds)
+        )
+      }
+      if (pumpOrderIds.length > 0) {
+        updates.push(
+          supabase
+            .from('or_orders')
+            .update({ status: 'รอคอนเฟิร์ม' })
+            .in('id', pumpOrderIds)
+        )
+      }
+
+      const results = await Promise.all(updates)
+      const error = results.find((result) => result.error)?.error
+      if (error) throw error
+
+      const approvedCount = orders.length
+      const newOrders = await loadOrders(true)
+      setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
+      if (onStatusUpdate) onStatusUpdate()
+      setMessageModal({
+        open: true,
+        title: 'ตรวจผ่านทั้งหมดสำเร็จ',
+        message: `ตรวจผ่านทั้งหมด ${approvedCount} บิลแล้ว`,
+      })
+    } catch (error: any) {
+      console.error('Error approving all orders:', error)
+      setMessageModal({
+        open: true,
+        title: 'เกิดข้อผิดพลาด',
+        message: error?.message || 'เกิดข้อผิดพลาด',
+      })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -957,7 +1008,19 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       {/* การ์ดขวา - การตรวจสอบ */}
       <div className="bg-white rounded-lg shadow overflow-hidden flex flex-col min-h-0">
         <div className="p-4 border-b bg-gray-50 shrink-0">
-          <h2 className="text-lg font-bold">การตรวจสอบ</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-bold">การตรวจสอบ</h2>
+            {user?.role === 'superadmin' && (
+              <button
+                type="button"
+                onClick={handleApproveAllOrders}
+                disabled={updating || orders.length === 0}
+                className="px-3 py-1.5 text-sm font-bold rounded-md bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+              >
+                {updating ? 'กำลังตรวจผ่าน...' : 'ตรวจผ่านทั้งหมด'}
+              </button>
+            )}
+          </div>
           <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
         </div>
         {selectedOrder ? (

@@ -32,7 +32,15 @@ type OperationResult = {
   operationId: string
   status: 'success' | 'error'
   message: string
-  details?: unknown
+  details?: BackupRunResult | unknown
+}
+
+type BackupRunResult = {
+  success: boolean
+  operation_id: string
+  manifest_path: string
+  zip_path?: string
+  zip_signed_url?: string | null
 }
 
 type BackupListItem = {
@@ -72,6 +80,7 @@ type BackupManifest = {
     bucket?: string
     object_prefix?: string
     manifest_path?: string
+    zip_path?: string
   }
   hr_policy?: {
     preserve_default: boolean
@@ -335,6 +344,13 @@ function operationLabel(type: OperationType) {
   return 'สำรองข้อมูลอย่างเดียว'
 }
 
+function getBackupRunDetails(details: unknown): BackupRunResult | null {
+  if (!details || typeof details !== 'object') return null
+  const value = details as Partial<BackupRunResult>
+  if (!value.manifest_path && !value.zip_path && !value.zip_signed_url) return null
+  return value as BackupRunResult
+}
+
 export default function DataBackupClearPanel() {
   const [activePanelTab, setActivePanelTab] = useState<PanelTab>('actions')
   const [targetYear, setTargetYear] = useState(currentYear)
@@ -437,7 +453,7 @@ export default function DataBackupClearPanel() {
   }
 
   async function runBackup(operationId: string) {
-    return invokeDataBackup<{ success: boolean; operation_id: string; manifest_path: string }>({
+    return invokeDataBackup<BackupRunResult>({
       action: 'create_backup',
       operation_id: operationId,
     })
@@ -720,6 +736,8 @@ function ActionsView({
   runResetOnly: () => void
   runBackupOnly: () => void
 }) {
+  const backupDetails = getBackupRunDetails(result?.details)
+
   return (
     <>
       <div className="bg-white rounded-xl shadow p-5 space-y-4">
@@ -840,6 +858,22 @@ function ActionsView({
           <p className="text-sm mt-1">{result.message}</p>
           {result.operationId !== '-' && (
             <p className="text-xs mt-2 font-mono">operation_id: {result.operationId}</p>
+          )}
+          {result.status === 'success' && backupDetails?.zip_path && (
+            <div className="mt-3 rounded-lg bg-white/70 border border-green-200 p-3 text-sm text-green-900">
+              <p className="font-semibold">สร้างไฟล์ ZIP สำหรับ import แล้ว</p>
+              <p className="mt-1 font-mono text-xs break-all">{backupDetails.zip_path}</p>
+              {backupDetails.zip_signed_url && (
+                <a
+                  href={backupDetails.zip_signed_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex rounded-lg bg-green-700 px-3 py-2 text-sm font-semibold text-white hover:bg-green-800"
+                >
+                  ดาวน์โหลด ZIP
+                </a>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -996,6 +1030,7 @@ function BackupHistoryView({
                   <InfoRow label="สร้างเมื่อ" value={formatDateTime(manifest.created_at)} />
                   <InfoRow label="Bucket" value={manifest.storage?.bucket || '-'} />
                   <InfoRow label="Manifest" value={manifest.storage?.manifest_path || selectedBackup.manifest_path || '-'} mono />
+                  <InfoRow label="ZIP สำหรับ import" value={manifest.storage?.zip_path || '-'} mono />
                   <InfoRow label="Object Prefix" value={manifest.storage?.object_prefix || '-'} mono />
                   <InfoRow label="จำนวนตาราง" value={String(exportedTables.length)} />
                 </div>

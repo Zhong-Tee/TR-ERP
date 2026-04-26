@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import JSZip from 'https://esm.sh/jszip@3.10.1'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -129,12 +130,14 @@ async function exportTablePages({
   operationPrefix,
   tableName,
   pageSize,
+  zip,
 }: {
   supabaseAdmin: ReturnType<typeof createClient>
   bucketName: string
   operationPrefix: string
   tableName: string
   pageSize: number
+  zip?: JSZip
 }) {
   const files: Array<{ path: string; rows: number }> = []
   let page = 0
@@ -154,8 +157,10 @@ async function exportTablePages({
     const rows = data ?? []
     if (rows.length === 0 && page > 0) break
 
-    const filePath = `${operationPrefix}/tables/${tableName}/page-${String(page + 1).padStart(4, '0')}.json`
-    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' })
+    const relativePath = `tables/${tableName}/page-${String(page + 1).padStart(4, '0')}.json`
+    const filePath = `${operationPrefix}/${relativePath}`
+    const jsonText = JSON.stringify(rows, null, 2)
+    const blob = new Blob([jsonText], { type: 'application/json' })
     const { error: uploadError } = await supabaseAdmin.storage
       .from(bucketName)
       .upload(filePath, blob, {
@@ -167,6 +172,7 @@ async function exportTablePages({
       return { table_name: tableName, success: false, error: uploadError.message, files }
     }
 
+    zip?.file(relativePath, jsonText)
     files.push({ path: filePath, rows: rows.length })
     if (rows.length < pageSize) break
     page += 1
@@ -384,7 +390,20 @@ serve(async (req: Request) => {
       ...Object.values(PRESERVED_GROUPS).flat(),
     ]))
     const operationPrefix = `${operation.operation_type}/${operation.target_year || 'manual'}/${operationId}`
+    const manifestPath = `${operationPrefix}/manifest.json`
+    const zipPath = `${operationPrefix}/archive.zip`
     const exportedTables = []
+    const zip = new JSZip()
+
+    const { data: buckets } = await supabaseAdmin.storage.listBuckets()
+    if (!buckets?.some((bucket) => bucket.name === bucketName)) {
+      const { error: createBucketError } = await supabaseAdmin.storage.createBucket(bucketName, {
+        public: false,
+      })
+      if (createBucketError) {
+        throw new Error(`Backup bucket creation failed: ${createBucketError.message}`)
+      }
+    }
 
     for (const tableName of uniqueTables) {
       exportedTables.push(await exportTablePages({
@@ -393,6 +412,7 @@ serve(async (req: Request) => {
         operationPrefix,
         tableName,
         pageSize,
+        zip,
       }))
     }
 
@@ -415,23 +435,14 @@ serve(async (req: Request) => {
       storage: {
         bucket: bucketName,
         object_prefix: operationPrefix,
+        manifest_path: manifestPath,
+        zip_path: zipPath,
       },
     }
 
-    const manifestPath = `${operationPrefix}/manifest.json`
     const manifestBlob = new Blob([JSON.stringify(manifest, null, 2)], {
       type: 'application/json',
     })
-
-    const { data: buckets } = await supabaseAdmin.storage.listBuckets()
-    if (!buckets?.some((bucket) => bucket.name === bucketName)) {
-      const { error: createBucketError } = await supabaseAdmin.storage.createBucket(bucketName, {
-        public: false,
-      })
-      if (createBucketError) {
-        throw new Error(`Backup bucket creation failed: ${createBucketError.message}`)
-      }
-    }
 
     const { error: uploadError } = await supabaseAdmin.storage
       .from(bucketName)
@@ -444,17 +455,32 @@ serve(async (req: Request) => {
       throw new Error(`Backup manifest upload failed: ${uploadError.message}`)
     }
 
-    const manifestWithPath = {
-      ...manifest,
-      storage: {
-        ...manifest.storage,
-        manifest_path: manifestPath,
-      },
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+
+    const zipBlob = await zip.generateAsync({
+      type: 'blob',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+    })
+
+    const { error: zipUploadError } = await supabaseAdmin.storage
+      .from(bucketName)
+      .upload(zipPath, zipBlob, {
+        contentType: 'application/zip',
+        upsert: true,
+      })
+
+    if (zipUploadError) {
+      throw new Error(`Backup ZIP upload failed: ${zipUploadError.message}`)
     }
+
+    const { data: signedUrlData } = await supabaseAdmin.storage
+      .from(bucketName)
+      .createSignedUrl(zipPath, 60 * 60)
 
     const { error: markError } = await supabaseAdmin.rpc('rpc_data_operation_mark_backup_verified', {
       p_operation_id: operationId,
-      p_manifest: manifestWithPath,
+      p_manifest: manifest,
     })
 
     if (markError) throw markError
@@ -463,6 +489,8 @@ serve(async (req: Request) => {
       success: true,
       operation_id: operationId,
       manifest_path: manifestPath,
+      zip_path: zipPath,
+      zip_signed_url: signedUrlData?.signedUrl || null,
       transactional_table_count: transactionalCounts.length,
       warning: manifest.note,
     })
