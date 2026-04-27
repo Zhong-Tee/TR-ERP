@@ -7,6 +7,7 @@ import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
 import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../lib/planWorkQueue'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
@@ -619,6 +620,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [planProductCategories, setPlanProductCategories] = useState<string[]>([])
   /** จำนวนที่คำนวณจากหมวดสินค้า ต่อ work_order_id และแผนก */
   const [deptQtyByWorkOrderId, setDeptQtyByWorkOrderId] = useState<DeptQtyByWorkOrderId>({})
+  /** จำนวนบิลต่อใบงานใน Dashboard - นับจาก or_orders เพื่อไม่พึ่ง order_count ที่อาจค้าง */
+  const [dashBillCountByWorkOrderId, setDashBillCountByWorkOrderId] = useState<Record<string, number>>({})
   const [categoryModalDept, setCategoryModalDept] = useState<string | null>(null)
   const [categoryModalDraft, setCategoryModalDraft] = useState<string[]>([])
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
@@ -931,6 +934,56 @@ export default function Plan({ tvMode = false }: PlanProps) {
       supabase.removeChannel(channel)
     }
   }, [])
+
+  const loadDashboardBillCounts = useCallback(async () => {
+    const workOrderIds = Array.from(
+      new Set(
+        jobs
+          .map((j) => (j.work_order_id != null ? String(j.work_order_id) : ''))
+          .filter((id) => id !== '')
+      )
+    )
+    if (workOrderIds.length === 0) {
+      setDashBillCountByWorkOrderId({})
+      return
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('work_order_id')
+        .in('work_order_id', workOrderIds)
+        .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+      if (error) throw error
+
+      const next: Record<string, number> = {}
+      for (const row of data || []) {
+        const workOrderId = String((row as { work_order_id: string | null }).work_order_id || '')
+        if (!workOrderId) continue
+        next[workOrderId] = (next[workOrderId] || 0) + 1
+      }
+      setDashBillCountByWorkOrderId(next)
+    } catch (error) {
+      console.error('Plan: load dashboard bill counts', error)
+      setDashBillCountByWorkOrderId({})
+    }
+  }, [jobs])
+
+  useEffect(() => {
+    loadDashboardBillCounts()
+  }, [loadDashboardBillCounts])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('plan-dashboard-bill-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        loadDashboardBillCounts()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [loadDashboardBillCounts])
 
   // โหลดบิลที่มี WMS cancelled และยังไม่ตัดสินใจ stock_action (pending) แยกตามใบงาน
   const loadCancelledOrders = useCallback(async () => {
@@ -2699,7 +2752,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     <tr>
                       <th className="p-2 border-b border-gray-200" />
                       <th className="p-2 border-b border-gray-200" />
-                      <th className="p-2 border-l-2 border-gray-200 border-b border-gray-200" />
+                      <th className="p-2 text-center text-xs font-medium text-gray-500 border-l-2 border-gray-200 border-b border-gray-200">จำนวนบิล</th>
                       {settings.departments.map((dept) => (
                         <Fragment key={dept}>
                           <th className="p-2 text-center border-l border-gray-200 border-b border-gray-200">สถานะ</th>
@@ -2821,9 +2874,20 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             {(() => {
                               const ct = fmtCutTime(j.cut)
                               const isOvernight = j.cut && parseTimeToMin(ct) < parseTimeToMin(settings.dayStart)
-                              return isOvernight
-                                ? <span className="text-orange-600" title="ตัดใบงานก่อนเวลาเริ่มงาน (อาจเป็นข้ามวัน)">{ct} 🌙</span>
-                                : ct
+                              const workOrderId = String(j.work_order_id || '')
+                              const billCount = workOrderId ? dashBillCountByWorkOrderId[workOrderId] ?? 0 : 0
+                              return (
+                                <div className="flex flex-col items-center gap-1 leading-tight">
+                                  {isOvernight ? (
+                                    <span className="text-orange-600" title="ตัดใบงานก่อนเวลาเริ่มงาน (อาจเป็นข้ามวัน)">{ct} 🌙</span>
+                                  ) : (
+                                    <span>{ct}</span>
+                                  )}
+                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                    {billCount} บิล
+                                  </span>
+                                </div>
+                              )
                             })()}
                           </td>
                           {settings.departments.map((d, di) => {
