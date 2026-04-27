@@ -30,6 +30,33 @@ import type {
 
 const TABS = ['แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram'] as const
 
+type LevelForm = {
+  id?: string
+  title: string
+  position_id: string
+  level_order: string
+  salary_min: string
+  salary_max: string
+  salary_step: string
+  requirements: string
+}
+
+function getNextLevelOrder(levels: HRCareerLevel[]): number {
+  return levels.reduce((max, level) => Math.max(max, level.level_order), 0) + 1
+}
+
+function buildLevelForm(levelOrder = 1): LevelForm {
+  return {
+    title: '',
+    position_id: '',
+    level_order: String(levelOrder),
+    salary_min: '0',
+    salary_max: '0',
+    salary_step: '',
+    requirements: '',
+  }
+}
+
 function requirementsToText(reqs: { item: string; description: string }[] | undefined): string {
   if (!Array.isArray(reqs) || reqs.length === 0) return ''
   return reqs
@@ -109,24 +136,7 @@ export default function HRSettings() {
     department_id: '',
     description: '',
   })
-  const [levelForm, setLevelForm] = useState<{
-    id?: string
-    title: string
-    position_id: string
-    level_order: string
-    salary_min: string
-    salary_max: string
-    salary_step: string
-    requirements: string
-  }>({
-    title: '',
-    position_id: '',
-    level_order: '1',
-    salary_min: '0',
-    salary_max: '0',
-    salary_step: '',
-    requirements: '',
-  })
+  const [levelForm, setLevelForm] = useState<LevelForm>(buildLevelForm())
   const [templateForm, setTemplateForm] = useState<{
     id?: string
     name: string
@@ -192,24 +202,33 @@ export default function HRSettings() {
   useEffect(() => { loadAll() }, [loadAll])
 
   useEffect(() => {
-    if (!selectedTrackId) setLevels([])
-    else fetchCareerLevels(selectedTrackId).then(setLevels).catch(() => setLevels([]))
+    let cancelled = false
+    if (!selectedTrackId) {
+      setLevels([])
+      setLevelForm(buildLevelForm())
+      return
+    }
+    fetchCareerLevels(selectedTrackId)
+      .then((nextLevels) => {
+        if (cancelled) return
+        setLevels(nextLevels)
+        setLevelForm((prev) => (prev.id ? prev : buildLevelForm(getNextLevelOrder(nextLevels))))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setLevels([])
+        setLevelForm(buildLevelForm())
+      })
+    return () => {
+      cancelled = true
+    }
   }, [selectedTrackId])
 
   const resetDeptForm = () => setDeptForm({ name: '', description: '', telegram_group_id: '' })
   const resetPosForm = () => setPosForm({ name: '', department_id: '', level: '1' })
   const resetLeaveForm = () => setLeaveForm({ name: '', max_days_per_year: '', requires_doc: false, is_paid: true })
   const resetTrackForm = () => setTrackForm({ name: '', department_id: '', description: '' })
-  const resetLevelForm = () =>
-    setLevelForm({
-      title: '',
-      position_id: '',
-      level_order: '1',
-      salary_min: '0',
-      salary_max: '0',
-      salary_step: '',
-      requirements: '',
-    })
+  const resetLevelForm = () => setLevelForm(buildLevelForm(getNextLevelOrder(levels)))
   const resetTemplateForm = () =>
     setTemplateForm({
       name: '',
@@ -355,12 +374,17 @@ export default function HRSettings() {
       if (!levelTitle) {
         throw new Error('กรุณาระบุชื่อตำแหน่ง/ระดับ หรือเลือกตำแหน่งงาน')
       }
+      const levelOrder = Math.max(1, Math.trunc(Number(levelForm.level_order) || 1))
+      const duplicateOrderLevel = levels.find((lv) => lv.level_order === levelOrder && lv.id !== levelForm.id)
+      if (duplicateOrderLevel) {
+        throw new Error(`ลำดับ ${levelOrder} ถูกใช้กับระดับ "${duplicateOrderLevel.title}" ในสายงานนี้แล้ว กรุณาเลือกลำดับอื่น`)
+      }
       const parsedRequirements = parseRequirementsInput(levelForm.requirements)
       await upsertCareerLevel({
         id: levelForm.id,
         track_id: selectedTrackId,
         position_id: levelForm.position_id || undefined,
-        level_order: Number(levelForm.level_order) || 1,
+        level_order: levelOrder,
         title: levelTitle,
         salary_min: Number(levelForm.salary_min) || 0,
         salary_max: Number(levelForm.salary_max) || 0,
@@ -368,8 +392,9 @@ export default function HRSettings() {
         requirements: parsedRequirements,
       })
       setMessage('บันทึกระดับสายงานเรียบร้อย')
-      resetLevelForm()
-      setLevels(await fetchCareerLevels(selectedTrackId))
+      const nextLevels = await fetchCareerLevels(selectedTrackId)
+      setLevels(nextLevels)
+      setLevelForm(buildLevelForm(getNextLevelOrder(nextLevels)))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกระดับสายงานไม่สำเร็จ')
     } finally {
@@ -386,8 +411,9 @@ export default function HRSettings() {
     try {
       await deleteCareerLevel(id)
       setMessage('ลบระดับสายงานเรียบร้อย')
-      resetLevelForm()
-      setLevels(await fetchCareerLevels(selectedTrackId))
+      const nextLevels = await fetchCareerLevels(selectedTrackId)
+      setLevels(nextLevels)
+      setLevelForm(buildLevelForm(getNextLevelOrder(nextLevels)))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'ลบระดับสายงานไม่สำเร็จ')
     } finally {
@@ -811,7 +837,14 @@ export default function HRSettings() {
               <div className="space-y-2">
                 {salaryFilteredTracks.map((t) => (
                   <div key={t.id} className={`rounded-xl border p-3 ${selectedTrackId === t.id ? 'border-emerald-300 bg-emerald-50' : 'border-surface-200'}`}>
-                    <button type="button" onClick={() => setSelectedTrackId(t.id)} className="w-full text-left">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTrackId(t.id)
+                        setLevelForm(buildLevelForm())
+                      }}
+                      className="w-full text-left"
+                    >
                       <p className="font-medium">{t.name}</p>
                       <p className="text-xs text-gray-500">{t.description ?? '-'}</p>
                     </button>
