@@ -103,7 +103,19 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
               {mfaLoading ? 'กำลังตรวจสอบ...' : 'ยืนยัน OTP'}
             </button>
           </form>
-          <p className="text-center text-xs text-gray-400 mt-6">รหัสจะหมดอายุใน 30 วินาที</p>
+          <div className="text-center mt-4">
+            <button
+              type="button"
+              onClick={async () => {
+                await signOut().catch(() => {})
+                window.location.href = '/'
+              }}
+              className="text-sm text-gray-400 hover:text-gray-600 hover:underline"
+            >
+              ยกเลิก / กลับหน้า Login
+            </button>
+          </div>
+          <p className="text-center text-xs text-gray-400 mt-3">รหัสจะหมดอายุใน 30 วินาที</p>
         </div>
       </div>
     )
