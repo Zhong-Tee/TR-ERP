@@ -6,7 +6,7 @@ interface LoginProps {
 }
 
 export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
-  const { signIn, mfaPending, verifyMfa, sendPasswordResetEmail } = useAuthContext()
+  const { signIn, signOut, mfaPending, verifyMfa, sendPasswordResetEmail } = useAuthContext()
 
   // Login form state
   const [email, setEmail] = useState('')
