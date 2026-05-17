@@ -26,6 +26,11 @@ export function useAuth() {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
+        // Recovery flow: ไม่ต้องเช็ค MFA — ให้ ResetPassword page จัดการเอง
+        if (_event === 'PASSWORD_RECOVERY') {
+          setLoading(false)
+          return
+        }
         handleSessionWithMfaCheck(session.user.id)
       } else {
         setUser(null)

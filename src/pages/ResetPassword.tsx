@@ -16,38 +16,29 @@ export default function ResetPassword() {
   useEffect(() => {
     let handled = false
 
-    // เช็ค session ทันที กรณีที่ Supabase process token ก่อน listener ลงทะเบียน
+    // เช็ค session ทันที — Supabase มักล้าง URL hash หลัง process token แล้ว
+    // ดังนั้นไม่ต้องเช็ค hash อีก ถ้ามี session อยู่บนหน้านี้คือมาจาก recovery link
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session && !handled) {
-        const hash = window.location.hash
-        if (hash.includes('type=recovery') || hash.includes('access_token')) {
-          handled = true
-          setPageState('form')
-        }
-      }
-    })
-
-    // ยัง listen event ไว้ด้วย กรณี Supabase process token หลัง component mount
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY' && !handled) {
         handled = true
         setPageState('form')
       }
     })
 
-    // ตรวจสอบว่า URL มี recovery token หรือไม่
-    const hash = window.location.hash
-    const hasRecoveryToken = hash.includes('type=recovery') || hash.includes('access_token')
+    // Fallback: listen event กรณี Supabase process token หลัง component mount
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if ((event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) && !handled) {
+        handled = true
+        setPageState('form')
+      }
+    })
 
+    // timeout: ถ้าไม่มี session เลยหลัง 4 วินาที → invalid
     const timer = setTimeout(() => {
       if (!handled) {
-        setPageState(hasRecoveryToken ? 'invalid' : 'invalid')
+        setPageState('invalid')
       }
-    }, 3000)
-
-    if (!hasRecoveryToken) {
-      setPageState('invalid')
-    }
+    }, 4000)
 
     return () => {
       subscription.unsubscribe()
