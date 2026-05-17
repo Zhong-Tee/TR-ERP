@@ -14,25 +14,45 @@ export default function ResetPassword() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    // Supabase จะ emit PASSWORD_RECOVERY event เมื่อ URL มี recovery token
+    let handled = false
+
+    // เช็ค session ทันที กรณีที่ Supabase process token ก่อน listener ลงทะเบียน
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session && !handled) {
+        const hash = window.location.hash
+        if (hash.includes('type=recovery') || hash.includes('access_token')) {
+          handled = true
+          setPageState('form')
+        }
+      }
+    })
+
+    // ยัง listen event ไว้ด้วย กรณี Supabase process token หลัง component mount
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') {
+      if (event === 'PASSWORD_RECOVERY' && !handled) {
+        handled = true
         setPageState('form')
       }
     })
 
-    // ตรวจสอบ hash ใน URL (กรณี page load มี token อยู่แล้ว)
+    // ตรวจสอบว่า URL มี recovery token หรือไม่
     const hash = window.location.hash
-    if (hash.includes('type=recovery') || hash.includes('access_token')) {
-      // รอให้ Supabase process token จาก URL
-      setTimeout(() => {
-        setPageState((prev) => (prev === 'waiting' ? 'invalid' : prev))
-      }, 3000)
-    } else {
+    const hasRecoveryToken = hash.includes('type=recovery') || hash.includes('access_token')
+
+    const timer = setTimeout(() => {
+      if (!handled) {
+        setPageState(hasRecoveryToken ? 'invalid' : 'invalid')
+      }
+    }, 3000)
+
+    if (!hasRecoveryToken) {
       setPageState('invalid')
     }
 
-    return () => subscription.unsubscribe()
+    return () => {
+      subscription.unsubscribe()
+      clearTimeout(timer)
+    }
   }, [])
 
   const handleReset = async (e: React.FormEvent) => {
