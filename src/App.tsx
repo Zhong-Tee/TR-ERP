@@ -129,6 +129,12 @@ function AppRoutes() {
   const { user, loading } = useAuthContext()
   const location = useLocation()
 
+  // reset-password ต้องแสดงเสมอ ไม่ว่า auth state จะเป็นอะไร
+  // เพราะหลัง verify OTP สำเร็จ user จะถูก set แต่ยังต้องกรอก password ใหม่อยู่
+  if (location.pathname === '/reset-password') {
+    return <ResetPassword />
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
@@ -141,9 +147,6 @@ function AppRoutes() {
   }
 
   if (!user) {
-    if (location.pathname === '/reset-password') {
-      return <ResetPassword />
-    }
     if (location.pathname !== '/') {
       return <Navigate to="/" replace />
     }
