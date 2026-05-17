@@ -41,6 +41,7 @@ import Machinery from './pages/Machinery'
 import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
+import ResetPassword from './pages/ResetPassword'
 import {
   DESKTOP_MENU_PATH_ORDER,
   MACHINERY_MOBILE_ROLES,
@@ -140,6 +141,9 @@ function AppRoutes() {
   }
 
   if (!user) {
+    if (location.pathname === '/reset-password') {
+      return <ResetPassword />
+    }
     if (location.pathname !== '/') {
       return <Navigate to="/" replace />
     }

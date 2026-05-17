@@ -7,6 +7,7 @@ import { testEasySlipConnection, testEasySlipWithImage } from '../lib/slipVerifi
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import DataBackupClearPanel from '../components/settings/DataBackupClearPanel'
+import MfaEnrollPanel from '../components/settings/MfaEnrollPanel'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
@@ -24,6 +25,7 @@ const SETTINGS_TABS = [
   { key: 'chat-history', label: 'ประวัติแชท' },
   { key: 'easyslip', label: 'API EasySlip' },
   { key: 'backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล' },
+  { key: 'security', label: '🔐 ความปลอดภัย' },
 ] as const
 
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
@@ -492,6 +494,37 @@ export default function Settings() {
       console.error('Error updating user role:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
+  }
+
+  async function updateUserActive(userId: string, isActive: boolean) {
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ is_active: isActive })
+        .eq('id', userId)
+
+      if (error) throw error
+      showMessage({
+        title: 'สำเร็จ',
+        message: isActive ? 'เปิดใช้งานบัญชีสำเร็จ' : 'ระงับการใช้งานบัญชีสำเร็จ',
+      })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating user active status:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  async function handleToggleActive(targetUser: User) {
+    const willDeactivate = targetUser.is_active !== false
+    if (willDeactivate) {
+      const ok = await showConfirm({
+        title: 'ระงับการใช้งาน',
+        message: `ต้องการระงับการใช้งานของ "${targetUser.username || targetUser.email}" หรือไม่?\n\nUser จะถูก logout และไม่สามารถเข้าระบบได้จนกว่าจะเปิดใช้งานอีกครั้ง`,
+      })
+      if (!ok) return
+    }
+    await updateUserActive(targetUser.id, !willDeactivate)
   }
 
   const MENU_ROLE_OPTIONS = [
@@ -2285,18 +2318,25 @@ export default function Settings() {
                   <th className="p-3 text-left font-semibold rounded-tl-xl">อีเมล</th>
                   <th className="p-3 text-left font-semibold">Username</th>
                   <th className="p-3 text-left font-semibold">Role</th>
-                  <th className="p-3 text-left font-semibold rounded-tr-xl"></th>
+                  <th className="p-3 text-center font-semibold rounded-tr-xl">สถานะ</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((user, idx) => (
-                  <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                    <td className="p-3">{user.email || '-'}</td>
+                {filteredUsers.map((user, idx) => {
+                  const isInactive = user.is_active === false
+                  const isSelf = user.id === currentUser?.id
+                  return (
+                  <tr key={user.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${isInactive ? 'opacity-50' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                    <td className="p-3">
+                      <span className={isInactive ? 'line-through text-gray-400' : ''}>{user.email || '-'}</span>
+                      {isInactive && <span className="ml-2 text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded">ระงับแล้ว</span>}
+                    </td>
                     <td className="p-3">
                       <input
                         type="text"
                         defaultValue={user.username || ''}
                         placeholder="-"
+                        disabled={isInactive}
                         onBlur={(e) => {
                           const newVal = e.target.value.trim()
                           if (newVal !== (user.username || '')) {
@@ -2306,14 +2346,15 @@ export default function Settings() {
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
                         }}
-                        className="px-3 py-1 border border-gray-300 rounded w-full max-w-[200px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                        className="px-3 py-1 border border-gray-300 rounded w-full max-w-[200px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none disabled:bg-gray-100"
                       />
                     </td>
                     <td className="p-3">
                       <select
                         value={normalizeRole(user.role)}
                         onChange={(e) => updateUserRole(user.id, e.target.value)}
-                        className="px-3 py-1 border rounded"
+                        disabled={isInactive}
+                        className="px-3 py-1 border rounded disabled:bg-gray-100 disabled:text-gray-400"
                       >
                         {allRoles.map((role) => (
                           <option key={role} value={role}>
@@ -2322,9 +2363,26 @@ export default function Settings() {
                         ))}
                       </select>
                     </td>
-                    <td className="p-3"></td>
+                    <td className="p-3 text-center">
+                      <button
+                        type="button"
+                        title={isSelf ? 'ไม่สามารถระงับบัญชีตัวเองได้' : isInactive ? 'คลิกเพื่อเปิดใช้งาน' : 'คลิกเพื่อระงับการใช้งาน'}
+                        onClick={() => handleToggleActive(user)}
+                        disabled={isSelf}
+                        className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+                          !isInactive ? 'bg-green-500' : 'bg-gray-300'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${
+                            !isInactive ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -3893,6 +3951,13 @@ export default function Settings() {
         </div>
         )
       })()}
+      {/* Security Tab — MFA สำหรับ superadmin */}
+      {activeTab === 'security' && hasAccess('settings-security') && (
+        <div className="p-4 sm:p-6">
+          <MfaEnrollPanel />
+        </div>
+      )}
+
       {MessageModal}
       {ConfirmModal}
     </div>

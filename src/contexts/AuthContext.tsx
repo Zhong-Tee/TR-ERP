@@ -5,8 +5,11 @@ import type { User } from '../types'
 interface AuthContextType {
   user: User | null
   loading: boolean
+  mfaPending: boolean
   signIn: (email: string, password: string) => Promise<any>
   signOut: () => Promise<void>
+  verifyMfa: (code: string) => Promise<void>
+  sendPasswordResetEmail: (email: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)

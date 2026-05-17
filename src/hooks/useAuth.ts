@@ -7,27 +7,30 @@ export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [supabaseUser, setSupabaseUser] = useState<Session['user'] | null>(null)
+  const [mfaPending, setMfaPending] = useState(false)
+  const [mfaFactorId, setMfaFactorId] = useState<string | null>(null)
 
   useEffect(() => {
-    // Get initial session
+    // ใช้ non-async callback เพื่อไม่ return Promise (ซึ่ง Supabase internals อาจตีความผิด)
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
-        loadUserData(session.user.id)
+        handleSessionWithMfaCheck(session.user.id)
       } else {
         setLoading(false)
       }
     })
 
-    // Listen for auth changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
-        loadUserData(session.user.id)
+        handleSessionWithMfaCheck(session.user.id)
       } else {
         setUser(null)
+        setMfaPending(false)
+        setMfaFactorId(null)
         setLoading(false)
       }
     })
@@ -35,10 +38,36 @@ export function useAuth() {
     return () => subscription.unsubscribe()
   }, [])
 
+  async function handleSessionWithMfaCheck(userId: string) {
+    let mfaRequired = false
+    try {
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+      if (aal?.nextLevel === 'aal2' && aal?.currentLevel !== 'aal2') {
+        const { data: factors } = await supabase.auth.mfa.listFactors()
+        const verifiedTotp = factors?.totp?.find((f) => f.status === 'verified')
+        if (verifiedTotp) {
+          setMfaPending(true)
+          setMfaFactorId(verifiedTotp.id)
+          mfaRequired = true
+        }
+      }
+    } catch {
+      // MFA check ล้มเหลว → ข้ามไปโหลด user ปกติ
+    } finally {
+      if (mfaRequired) {
+        setLoading(false)
+        return
+      }
+    }
+    setMfaPending(false)
+    setMfaFactorId(null)
+    loadUserData(userId)
+  }
+
   async function loadUserData(userId: string) {
     try {
       console.log('Loading user data for userId:', userId)
-      
+
       const { data, error } = await supabase
         .from('us_users')
         .select('*')
@@ -47,18 +76,13 @@ export function useAuth() {
 
       if (error) {
         console.error('Error loading user data:', error)
-        console.error('Error code:', error.code)
-        console.error('Error message:', error.message)
-        
-        // ถ้าไม่พบ user ใน us_users
+
         if (error.code === 'PGRST116') {
           console.warn('User not found in us_users table. User ID:', userId)
-          console.warn('Please add this user to us_users table in Supabase Dashboard')
-          
-          // ลองสร้าง user อัตโนมัติ (ถ้า RLS อนุญาต)
+
           try {
             const { data: authUser } = await supabase.auth.getUser()
-            
+
             if (authUser?.user) {
               const { data: newUser, error: insertError } = await supabase
                 .from('us_users')
@@ -84,9 +108,19 @@ export function useAuth() {
             console.error('Error creating user:', createError)
           }
         }
-        
+
         setUser(null)
         setLoading(false)
+        return
+      }
+
+      // ตรวจสอบว่า user ถูกระงับการใช้งานหรือไม่
+      if (data.is_active === false) {
+        console.warn('User account is deactivated:', data.email)
+        setUser(null)
+        setLoading(false)
+        await supabase.auth.signOut().catch(() => {})
+        alert('บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ')
         return
       }
 
@@ -114,21 +148,46 @@ export function useAuth() {
     sessionStorage.removeItem('plan_unlocked')
     const { error } = await supabase.auth.signOut()
     if (error) {
-      // Session หมดอายุหรือหายไปแล้ว → ล้าง state แล้ว redirect ได้เลย
       if (error.message?.includes('session missing') || error.message?.includes('Session')) {
         setUser(null)
         setSupabaseUser(null)
+        setMfaPending(false)
+        setMfaFactorId(null)
         return
       }
       throw error
     }
   }
 
+  async function verifyMfa(code: string) {
+    if (!mfaFactorId) throw new Error('ไม่พบข้อมูล MFA กรุณา login ใหม่')
+    const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({
+      factorId: mfaFactorId,
+    })
+    if (challengeError) throw challengeError
+    const { error } = await supabase.auth.mfa.verify({
+      factorId: mfaFactorId,
+      challengeId: challenge.id,
+      code,
+    })
+    if (error) throw error
+    // onAuthStateChange จะ fire ด้วย AAL2 session แล้วเรียก loadUserData อัตโนมัติ
+  }
+
+  async function sendPasswordResetEmail(email: string) {
+    const redirectTo = `${window.location.origin}/reset-password`
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
+    if (error) throw error
+  }
+
   return {
     user,
     supabaseUser,
     loading,
+    mfaPending,
     signIn,
     signOut,
+    verifyMfa,
+    sendPasswordResetEmail,
   }
 }
