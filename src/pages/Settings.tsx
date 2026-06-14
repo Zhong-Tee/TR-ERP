@@ -527,6 +527,35 @@ export default function Settings() {
     await updateUserActive(targetUser.id, !willDeactivate)
   }
 
+  async function handleDeleteUser(targetUser: User) {
+    const ok = await showConfirm({
+      title: '⚠️ ลบผู้ใช้ถาวร',
+      message: `ต้องการลบ "${targetUser.username || targetUser.email}" ออกจากระบบหรือไม่?\n\nการลบเป็น ถาวร ไม่สามารถกู้คืนได้`,
+    })
+    if (!ok) return
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-user`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ userId: targetUser.id }),
+        }
+      )
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.error || 'เกิดข้อผิดพลาด')
+      showMessage({ title: 'สำเร็จ', message: `ลบผู้ใช้ "${targetUser.username || targetUser.email}" สำเร็จ` })
+      loadUsers()
+    } catch (err: any) {
+      showMessage({ title: 'ผิดพลาด', message: err.message })
+    }
+  }
+
   const MENU_ROLE_OPTIONS = [
     // ── Dashboard ──
     { key: 'dashboard', label: 'Dashboard', group: '' },
@@ -2318,7 +2347,10 @@ export default function Settings() {
                   <th className="p-3 text-left font-semibold rounded-tl-xl">อีเมล</th>
                   <th className="p-3 text-left font-semibold">Username</th>
                   <th className="p-3 text-left font-semibold">Role</th>
-                  <th className="p-3 text-center font-semibold rounded-tr-xl">สถานะ</th>
+                  <th className="p-3 text-center font-semibold">สถานะ</th>
+                  {currentUser?.role === 'superadmin' && (
+                    <th className="p-3 text-center font-semibold rounded-tr-xl">ลบ</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -2380,6 +2412,19 @@ export default function Settings() {
                         />
                       </button>
                     </td>
+                    {currentUser?.role === 'superadmin' && (
+                      <td className="p-3 text-center">
+                        <button
+                          type="button"
+                          title={isSelf ? 'ไม่สามารถลบบัญชีตัวเองได้' : user.role === 'superadmin' ? 'ไม่สามารถลบ superadmin ได้' : `ลบ ${user.username || user.email}`}
+                          onClick={() => handleDeleteUser(user)}
+                          disabled={isSelf || user.role === 'superadmin'}
+                          className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 hover:text-red-700 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    )}
                   </tr>
                   )
                 })}
