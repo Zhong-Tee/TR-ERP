@@ -34,6 +34,9 @@ export default function Settings() {
   const { user: currentUser } = useAuthContext()
   const { hasAccess, refreshMenuAccess } = useMenuAccess()
   const [users, setUsers] = useState<User[]>([])
+  const [showCreateUserModal, setShowCreateUserModal] = useState(false)
+  const [createUserForm, setCreateUserForm] = useState({ email: '', password: '', username: '', role: 'sales-tr' })
+  const [createUserLoading, setCreateUserLoading] = useState(false)
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   // ตั้งค่าเลขบิล-ช่องทาง (prefix เลขคำสั่งซื้อ)
@@ -553,6 +556,39 @@ export default function Settings() {
       loadUsers()
     } catch (err: any) {
       showMessage({ title: 'ผิดพลาด', message: err.message })
+    }
+  }
+
+  async function handleCreateUser() {
+    const { email, password, username, role } = createUserForm
+    if (!email.trim()) return showMessage({ title: 'แจ้งเตือน', message: 'กรุณากรอก Email' })
+    if (!password || password.length < 6) return showMessage({ title: 'แจ้งเตือน', message: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' })
+
+    setCreateUserLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ email: email.trim(), password, username: username.trim(), role }),
+        }
+      )
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.error || 'เกิดข้อผิดพลาด')
+
+      showMessage({ title: 'สำเร็จ', message: `สร้าง User "${username.trim() || email.trim()}" สำเร็จ` })
+      setShowCreateUserModal(false)
+      setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' })
+      loadUsers()
+    } catch (err: any) {
+      showMessage({ title: 'ผิดพลาด', message: err.message })
+    } finally {
+      setCreateUserLoading(false)
     }
   }
 
@@ -2304,6 +2340,15 @@ export default function Settings() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold">ผู้ใช้ทั้งหมด</h2>
             <div className="flex items-center gap-2">
+              {currentUser?.role === 'superadmin' && (
+                <button
+                  type="button"
+                  onClick={() => setShowCreateUserModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition"
+                >
+                  + สร้าง User ใหม่
+                </button>
+              )}
               <label className="text-sm font-medium text-gray-600">กรอง Role:</label>
               <select
                 value={userRoleFilter}
@@ -4005,6 +4050,79 @@ export default function Settings() {
 
       {MessageModal}
       {ConfirmModal}
+
+      {/* Modal สร้าง User ใหม่ */}
+      <Modal
+        open={showCreateUserModal}
+        onClose={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' }) }}
+        closeOnBackdropClick
+        contentClassName="max-w-md"
+      >
+        <div className="p-6">
+          <h2 className="text-lg font-bold mb-4">สร้าง User ใหม่</h2>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-red-500">*</span></label>
+              <input
+                type="email"
+                value={createUserForm.email}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="user@example.com"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+              <input
+                type="text"
+                value={createUserForm.username}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, username: e.target.value }))}
+                placeholder="ชื่อที่แสดงในระบบ"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">รหัสผ่าน <span className="text-red-500">*</span></label>
+              <input
+                type="password"
+                value={createUserForm.password}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, password: e.target.value }))}
+                placeholder="อย่างน้อย 6 ตัวอักษร"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Role <span className="text-red-500">*</span></label>
+              <select
+                value={createUserForm.role}
+                onChange={(e) => setCreateUserForm((f) => ({ ...f, role: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+              >
+                {allRoles.map((role) => (
+                  <option key={role} value={role}>{roleLabel(role)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-6">
+            <button
+              type="button"
+              onClick={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' }) }}
+              className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateUser}
+              disabled={createUserLoading}
+              className="px-4 py-2 text-sm bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+            >
+              {createUserLoading ? 'กำลังสร้าง...' : 'สร้าง User'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

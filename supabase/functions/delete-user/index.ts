@@ -94,7 +94,7 @@ serve(async (req) => {
       { table: 'pp_production_orders', column: 'rejected_by' },
       { table: 'wh_sub_warehouses', column: 'created_by' },
       { table: 'wh_sub_warehouse_stock_moves', column: 'created_by' },
-      { table: 'wms_packing_unit_scans', column: 'scanned_by' },
+      { table: 'pk_packing_unit_scans', column: 'scanned_by' },
       { table: 'inv_epoch_opening', column: 'created_by' },
     ]
 
