@@ -67,6 +67,7 @@ export default function Orders() {
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<Tab>('create')
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null)
+  const [createFormKey, setCreateFormKey] = useState(0)
   const [searchTerm, setSearchTerm] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
   const [adminUserFilter, setAdminUserFilter] = useState('')
@@ -154,12 +155,18 @@ export default function Orders() {
     setSelectedOrder(order)
   }
 
-  /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน) */
-  function handleSave(options?: { switchToTab?: 'complete' }) {
+  /** options.switchToTab: หลัง save แล้วให้สลับไปแท็บนั้น (เช่น ปฏิเสธโอนเกิน → ตรวจสอบไม่ผ่าน)
+   *  options.stayOnCreate: หลัง save แล้วให้อยู่หน้า สร้าง/แก้ไข และ reset form ว่าง เพื่อเปิดบิลต่อได้ทันที */
+  function handleSave(options?: { switchToTab?: 'complete'; stayOnCreate?: boolean }) {
     setSelectedOrder(null)
-    const nextTab = options?.switchToTab === 'complete' ? 'complete' : 'waiting'
-    setActiveTab(nextTab)
-    setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
+    if (options?.stayOnCreate) {
+      setActiveTab('create')
+      setCreateFormKey(k => k + 1)
+    } else {
+      const nextTab = options?.switchToTab === 'complete' ? 'complete' : 'waiting'
+      setActiveTab(nextTab)
+      setTabStatusFilter(getDefaultStatusFilterForTab(nextTab))
+    }
     // Refresh counts immediately
     refreshCounts()
   }
@@ -835,6 +842,7 @@ export default function Orders() {
           />
         ) : (
           <OrderForm
+            key={createFormKey}
             onSave={handleSave}
             onCancel={handleCancel}
             onOpenOrder={(o) => { setSelectedOrder(o); setActiveTab('create') }}

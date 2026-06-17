@@ -492,8 +492,9 @@ export type OrderFormRef = {
 
 interface OrderFormProps {
   order?: Order | null
-  /** options.switchToTab: 'complete' = หลัง save ให้สลับไปแท็บ "ตรวจสอบไม่ผ่าน" (ใช้เมื่อปฏิเสธโอนเกิน) */
-  onSave: (options?: { switchToTab?: 'complete' }) => void
+  /** options.switchToTab: 'complete' = หลัง save ให้สลับไปแท็บ "ตรวจสอบไม่ผ่าน" (ใช้เมื่อปฏิเสธโอนเกิน)
+   *  options.stayOnCreate: true = อยู่หน้า สร้าง/แก้ไข และ reset form ว่าง เพื่อเปิดบิลต่อได้ทันที */
+  onSave: (options?: { switchToTab?: 'complete'; stayOnCreate?: boolean }) => void
   onCancel: () => void
   /** เปิดบิลที่สร้างจากปุ่มเคลม (สร้างบิลเคลมแล้วให้ parent เปิดออเดอร์นั้น) */
   onOpenOrder?: (order: Order) => void
@@ -6046,7 +6047,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             }
           }
           setVerificationModal(null)
-          onSave()
+          // บันทึกสำเร็จ: อยู่หน้าสร้าง/แก้ไข และ reset form เพื่อเปิดบิลต่อได้ทันที
+          onSave({ stayOnCreate: true })
         }}
         type={verificationModal.type}
         accountMatch={verificationModal.accountMatch}
@@ -6119,7 +6121,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     .eq('id', verificationModal.orderId)
                   if (updateError) throw new Error(updateError.message)
                   setVerificationModal(null)
-                  onSave()
+                  onSave({ stayOnCreate: true })
                   window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
                 } catch (err: any) {
                   console.error('Error confirming overpay:', err)
