@@ -365,6 +365,82 @@ serve(async (req: Request) => {
       })
     }
 
+    if (action === 'execute_reset') {
+      if (operation.operation_type === 'backup_only') {
+        return jsonResponse({ success: false, error: 'operation นี้เป็นสำรองข้อมูลอย่างเดียว ไม่สามารถล้างข้อมูลได้' }, 400)
+      }
+
+      const confirmText = String(body.confirm_text || '')
+      const expectedConfirm =
+        operation.operation_type === 'annual_close'
+          ? `CLOSE YEAR ${operation.target_year}`
+          : 'RESET DATA'
+
+      if (confirmText !== expectedConfirm) {
+        return jsonResponse(
+          { success: false, error: `ข้อความยืนยันไม่ถูกต้อง ต้องพิมพ์: ${expectedConfirm}` },
+          400,
+        )
+      }
+
+      if (operation.operation_type === 'annual_close' && !operation.backup_verified_at) {
+        return jsonResponse({ success: false, error: 'ต้องสำรองและ verify backup ก่อนปิดงวดรายปี' }, 400)
+      }
+
+      const { data: resetData, error: resetError } = await supabaseAdmin.rpc('rpc_data_reset_execute', {
+        p_operation_id: operationId,
+        p_confirm_text: confirmText,
+      })
+
+      if (resetError) throw resetError
+
+      const { data: opAfter, error: opAfterError } = await supabaseAdmin
+        .from('erp_data_operations')
+        .select('status, error_message, reset_completed_at, stock_strategy')
+        .eq('id', operationId)
+        .single()
+
+      if (opAfterError) throw opAfterError
+      if (opAfter?.status !== 'completed') {
+        throw new Error(opAfter?.error_message || `ล้างข้อมูลไม่สำเร็จ (status: ${opAfter?.status || 'unknown'})`)
+      }
+
+      const [balances, lots, movements, orders] = await Promise.all([
+        countTable(supabaseAdmin, 'inv_stock_balances'),
+        countTable(supabaseAdmin, 'inv_stock_lots'),
+        countTable(supabaseAdmin, 'inv_stock_movements'),
+        countTable(supabaseAdmin, 'or_orders'),
+      ])
+
+      const verification = {
+        operation_status: opAfter.status,
+        reset_completed_at: opAfter.reset_completed_at,
+        stock_strategy: opAfter.stock_strategy,
+        inv_stock_balances: balances.row_count,
+        inv_stock_lots: lots.row_count,
+        inv_stock_movements: movements.row_count,
+        or_orders: orders.row_count,
+      }
+
+      const remainingRows = [
+        balances.row_count,
+        lots.row_count,
+        movements.row_count,
+        orders.row_count,
+      ].some((count) => (count ?? 0) > 0)
+
+      if (remainingRows) {
+        throw new Error('ล้างข้อมูลไม่สมบูรณ์ ยังพบข้อมูลธุรกรรมคงเหลือในระบบ')
+      }
+
+      return jsonResponse({
+        success: true,
+        operation_id: operationId,
+        reset: resetData,
+        verification,
+      })
+    }
+
     if (action !== 'create_backup') {
       return jsonResponse({ success: false, error: 'Unknown action' }, 400)
     }

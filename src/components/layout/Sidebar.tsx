@@ -412,12 +412,17 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         isOpen ? 'w-64' : 'w-20'
       }`}
     >
-      <div className={`p-6 border-b border-slate-200 ${!isOpen ? 'px-3' : ''}`}>
-        <div className="flex items-center justify-center">
-          {isOpen ? (
-            <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">TR-ERP</h1>
-          ) : (
-            <h1 className="text-xl font-semibold text-slate-900 tracking-tight">TR</h1>
+      <div className="flex h-[4.5rem] items-center justify-center border-b border-slate-200 px-3">
+        <div className="flex items-center gap-3">
+          <img
+            src="/icon.png?v=2"
+            alt="TR-ERP"
+            className="block h-10 w-10 flex-shrink-0 rounded-lg object-contain"
+          />
+          {isOpen && (
+            <h1 className="m-0 text-2xl font-semibold leading-none text-slate-900 tracking-tight">
+              TR-ERP
+            </h1>
           )}
         </div>
       </div>

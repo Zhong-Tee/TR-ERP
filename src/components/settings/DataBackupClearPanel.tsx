@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 
 type OperationType = 'annual_close' | 'reset_only' | 'backup_only'
+type PanelActionMode = OperationType | 'delete_products'
 type StockStrategy = 'opening' | 'zero'
 type PanelTab = 'actions' | 'backups'
 type BackupTableGroup = 'all' | 'orders' | 'warehouse' | 'purchase' | 'account' | 'wms_qc' | 'hr' | 'settings'
@@ -27,12 +28,19 @@ type PreviewResult = {
   }
 }
 
+type DeleteProductsResult = {
+  success: boolean
+  deleted_products: number
+  previous_product_count: number
+  note?: string
+}
+
 type OperationResult = {
-  mode: OperationType
+  mode: PanelActionMode
   operationId: string
   status: 'success' | 'error'
   message: string
-  details?: BackupRunResult | unknown
+  details?: BackupRunResult | DeleteProductsResult | unknown
 }
 
 type BackupRunResult = {
@@ -41,6 +49,21 @@ type BackupRunResult = {
   manifest_path: string
   zip_path?: string
   zip_signed_url?: string | null
+}
+
+type ResetRunResult = {
+  success: boolean
+  operation_id: string
+  reset?: unknown
+  verification?: {
+    operation_status: string
+    reset_completed_at: string | null
+    stock_strategy: string
+    inv_stock_balances: number | null
+    inv_stock_lots: number | null
+    inv_stock_movements: number | null
+    or_orders: number | null
+  }
 }
 
 type BackupListItem = {
@@ -268,6 +291,77 @@ function hasBlockingWork(blockers: Record<string, number | string> | undefined) 
   return Object.entries(blockers).some(([, value]) => typeof value === 'number' && value > 0)
 }
 
+function formatOperationError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message
+  if (error && typeof error === 'object') {
+    const obj = error as Record<string, unknown>
+    if (typeof obj.message === 'string' && obj.message) return obj.message
+    if (typeof obj.error === 'string' && obj.error) return obj.error
+    if (typeof obj.details === 'string' && obj.details) return obj.details
+    if (typeof obj.hint === 'string' && obj.hint) return obj.hint
+  }
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error)
+  } catch {
+    return 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'
+  }
+}
+
+async function parseFunctionInvokeFailure(error: unknown, data: unknown) {
+  if (data && typeof data === 'object') {
+    const payload = data as Record<string, unknown>
+    if (payload.success === false && typeof payload.error === 'string') {
+      return {
+        message: payload.error,
+        status: undefined as number | undefined,
+        body: payload,
+      }
+    }
+  }
+
+  if (error && typeof error === 'object') {
+    const fnError = error as { message?: string; context?: Response }
+    const status = fnError.context?.status
+    if (fnError.context) {
+      try {
+        const body = await fnError.context.clone().json()
+        if (body && typeof body === 'object' && typeof (body as { error?: string }).error === 'string') {
+          return { message: (body as { error: string }).error, status, body }
+        }
+        return { message: fnError.message || 'Edge function failed', status, body }
+      } catch {
+        return { message: fnError.message || 'Edge function failed', status }
+      }
+    }
+    if (fnError.message) return { message: fnError.message, status: undefined, body: undefined }
+  }
+
+  return { message: formatOperationError(error), status: undefined, body: undefined }
+}
+
+function buildResetSuccessMessage(
+  result: ResetRunResult,
+  stockStrategy: StockStrategy,
+  operationType: OperationType,
+  targetYear?: number,
+) {
+  const verification = result.verification
+  const baseMessage =
+    operationType === 'annual_close'
+      ? `ปิดงวดปี ${targetYear} สำเร็จ พร้อมสำรองข้อมูลและล้างข้อมูลธุรกรรม`
+      : stockStrategy === 'zero'
+        ? 'ล้างข้อมูลธุรกรรมสำเร็จ สต๊OCKเป็นศูนย์ โดยไม่ลบข้อมูล HR'
+        : 'ล้างข้อมูลธุรกรรมสำเร็จ โดยไม่ลบข้อมูล HR'
+
+  if (!verification) return baseMessage
+
+  return [
+    baseMessage,
+    `ยืนยันแล้ว: สต๊OCK ${formatCount(verification.inv_stock_balances)} · Lot ${formatCount(verification.inv_stock_lots)} · ออเดอร์ ${formatCount(verification.or_orders)}`,
+  ].join('\n')
+}
+
 function formatCount(value: number | null | undefined) {
   if (value === null || value === undefined) return '-'
   return value.toLocaleString()
@@ -338,9 +432,10 @@ function buildDisplayColumns(tableName: string, columns: string[], showTechnical
   return ordered.slice(0, showTechnical ? 20 : 12)
 }
 
-function operationLabel(type: OperationType) {
+function operationLabel(type: PanelActionMode) {
   if (type === 'annual_close') return 'ปิดงวดรายปี'
   if (type === 'reset_only') return 'ล้างข้อมูลอย่างเดียว'
+  if (type === 'delete_products') return 'ลบรายการสินค้า'
   return 'สำรองข้อมูลอย่างเดียว'
 }
 
@@ -355,7 +450,7 @@ export default function DataBackupClearPanel() {
   const [activePanelTab, setActivePanelTab] = useState<PanelTab>('actions')
   const [targetYear, setTargetYear] = useState(currentYear)
   const [stockStrategy, setStockStrategy] = useState<StockStrategy>('opening')
-  const [runningMode, setRunningMode] = useState<OperationType | null>(null)
+  const [runningMode, setRunningMode] = useState<PanelActionMode | null>(null)
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [result, setResult] = useState<OperationResult | null>(null)
 
@@ -424,9 +519,9 @@ export default function DataBackupClearPanel() {
 
   async function invokeDataBackup<T>(body: Record<string, unknown>) {
     const { data, error } = await supabase.functions.invoke('data-backup', { body })
-    if (error) throw error
-    if (!(data as { success?: boolean })?.success) {
-      throw new Error((data as { error?: string })?.error || 'เรียกใช้งาน data-backup ไม่สำเร็จ')
+    if (error || (data && typeof data === 'object' && (data as { success?: boolean }).success === false)) {
+      const failure = await parseFunctionInvokeFailure(error, data)
+      throw new Error(failure.message)
     }
     return data as T
   }
@@ -437,7 +532,7 @@ export default function DataBackupClearPanel() {
       p_target_year: operationType === 'annual_close' ? targetYear : null,
       p_stock_strategy: operationType === 'backup_only' ? 'opening' : stockStrategy,
     })
-    if (error) throw error
+    if (error) throw new Error(formatOperationError(error))
     const operationId = (data as { operation_id?: string })?.operation_id
     if (!operationId) throw new Error('ไม่พบ operation_id จากระบบ')
     return operationId
@@ -447,7 +542,7 @@ export default function DataBackupClearPanel() {
     const { data, error } = await supabase.rpc('rpc_data_operation_preview', {
       p_operation_id: operationId,
     })
-    if (error) throw error
+    if (error) throw new Error(formatOperationError(error))
     setPreview(data as PreviewResult)
     return data as PreviewResult
   }
@@ -459,6 +554,62 @@ export default function DataBackupClearPanel() {
     })
   }
 
+  async function verifyResetOperation(operationId: string) {
+    const { data: op, error: opError } = await supabase
+      .from('erp_data_operations')
+      .select('status, error_message, reset_completed_at, stock_strategy')
+      .eq('id', operationId)
+      .single()
+
+    if (opError) throw new Error(formatOperationError(opError))
+    if (op?.status !== 'completed') {
+      throw new Error(op?.error_message || `ล้างข้อมูลไม่สำเร็จ (status: ${op?.status || 'unknown'})`)
+    }
+
+    const countTable = async (table: string) => {
+      const { count, error } = await supabase.from(table).select('*', { count: 'exact', head: true })
+      if (error) throw new Error(formatOperationError(error))
+      return count ?? 0
+    }
+
+    const [balances, lots, movements, orders] = await Promise.all([
+      countTable('inv_stock_balances'),
+      countTable('inv_stock_lots'),
+      countTable('inv_stock_movements'),
+      countTable('or_orders'),
+    ])
+
+    if ([balances, lots, movements, orders].some((value) => value > 0)) {
+      throw new Error('ล้างข้อมูลไม่สมบูรณ์ ยังพบข้อมูลธุรกรรมคงเหลือในระบบ')
+    }
+
+    return {
+      operation_status: op.status,
+      reset_completed_at: op.reset_completed_at,
+      stock_strategy: op.stock_strategy,
+      inv_stock_balances: balances,
+      inv_stock_lots: lots,
+      inv_stock_movements: movements,
+      or_orders: orders,
+    }
+  }
+
+  async function runResetViaRpc(operationId: string, confirmText: string): Promise<ResetRunResult> {
+    const { data, error } = await supabase.rpc('rpc_data_reset_execute', {
+      p_operation_id: operationId,
+      p_confirm_text: confirmText,
+    })
+    if (error) throw new Error(formatOperationError(error))
+
+    const verification = await verifyResetOperation(operationId)
+    return {
+      success: true,
+      operation_id: operationId,
+      reset: data,
+      verification,
+    }
+  }
+
   async function runReset(operationId: string, operationType: OperationType) {
     const expectedText = operationType === 'annual_close' ? `CLOSE YEAR ${targetYear}` : 'RESET DATA'
     const message =
@@ -466,16 +617,94 @@ export default function DataBackupClearPanel() {
         ? `ยืนยันปิดงวดปี ${targetYear} และล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR\n\nกรุณาพิมพ์: ${expectedText}`
         : `ยืนยันล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR และไม่สำรองข้อมูล\n\nกรุณาพิมพ์: ${expectedText}`
     const confirmText = window.prompt(message)
+    if (confirmText === null) {
+      throw new Error('ยกเลิกการล้างข้อมูล')
+    }
     if (confirmText !== expectedText) {
       throw new Error(`ยกเลิก: ข้อความยืนยันไม่ตรงกับ "${expectedText}"`)
     }
 
-    const { data, error } = await supabase.rpc('rpc_data_reset_execute', {
-      p_operation_id: operationId,
-      p_confirm_text: confirmText,
-    })
-    if (error) throw error
-    return data
+    try {
+      return await invokeDataBackup<ResetRunResult>({
+        action: 'execute_reset',
+        operation_id: operationId,
+        confirm_text: confirmText,
+      })
+    } catch (error) {
+      const failureMessage = formatOperationError(error)
+      const shouldFallbackToRpc =
+        failureMessage === 'Unknown action' || failureMessage.includes('Unknown action')
+
+      if (shouldFallbackToRpc) {
+        return runResetViaRpc(operationId, confirmText)
+      }
+      throw error instanceof Error ? error : new Error(failureMessage)
+    }
+  }
+
+  async function runDeleteAllProducts() {
+    setRunningMode('delete_products')
+    setResult(null)
+
+    const expectedText = 'DELETE ALL PRODUCTS'
+    const confirmText = window.prompt(
+      `ยืนยันลบรายการสินค้า (pr_products) ทั้งหมด\n\n` +
+        `• ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)\n` +
+        `• ลบ recipe/ราคาช่องทาง/สินค้าคลังย่อยที่ผูกสินค้า\n` +
+        `• ไม่ลบข้อมูล HR\n\n` +
+        `กรุณาพิมพ์: ${expectedText}`,
+    )
+    if (confirmText === null) {
+      setRunningMode(null)
+      return
+    }
+    if (confirmText !== expectedText) {
+      setResult({
+        mode: 'delete_products',
+        operationId: '-',
+        status: 'error',
+        message: `ยกเลิก: ข้อความยืนยันไม่ตรงกับ "${expectedText}"`,
+      })
+      setRunningMode(null)
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('rpc_data_delete_all_products', {
+        p_confirm_text: confirmText,
+      })
+      if (error) throw new Error(formatOperationError(error))
+
+      const result = data as DeleteProductsResult
+      const { count, error: countError } = await supabase
+        .from('pr_products')
+        .select('*', { count: 'exact', head: true })
+      if (countError) throw new Error(formatOperationError(countError))
+      if ((count ?? 0) > 0) {
+        throw new Error(`ลบไม่สมบูรณ์ ยังเหลือสินค้า ${count} รายการ`)
+      }
+
+      setPreview(null)
+      setResult({
+        mode: 'delete_products',
+        operationId: '-',
+        status: 'success',
+        message: [
+          `ลบสินค้าสำเร็จ ${formatCount(result.deleted_products)} รายการ`,
+          'พร้อม Import สินค้า + สต๊อคเริ่มต้น ใหม่ได้',
+        ].join('\n'),
+        details: result,
+      })
+    } catch (error) {
+      setResult({
+        mode: 'delete_products',
+        operationId: '-',
+        status: 'error',
+        message: formatOperationError(error),
+      })
+    } finally {
+      setRunningMode(null)
+    }
   }
 
   async function loadBackups() {
@@ -487,7 +716,7 @@ export default function DataBackupClearPanel() {
       })
       setBackups(data.backups ?? [])
     } catch (error) {
-      setBackupError(error instanceof Error ? error.message : String(error))
+      setBackupError(formatOperationError(error))
     } finally {
       setBackupLoading(false)
     }
@@ -515,7 +744,7 @@ export default function DataBackupClearPanel() {
         await loadTablePage(backup.id, firstTable.table_name, 0)
       }
     } catch (error) {
-      setViewerError(error instanceof Error ? error.message : String(error))
+      setViewerError(formatOperationError(error))
     } finally {
       setManifestLoading(false)
     }
@@ -536,7 +765,7 @@ export default function DataBackupClearPanel() {
       setTablePageIndex(pageIndex)
     } catch (error) {
       setTablePage(null)
-      setViewerError(error instanceof Error ? error.message : String(error))
+      setViewerError(formatOperationError(error))
     } finally {
       setTablePageLoading(false)
     }
@@ -572,7 +801,7 @@ export default function DataBackupClearPanel() {
         mode: 'backup_only',
         operationId: '-',
         status: 'error',
-        message: error instanceof Error ? error.message : String(error),
+        message: formatOperationError(error),
       })
     } finally {
       setRunningMode(null)
@@ -582,26 +811,28 @@ export default function DataBackupClearPanel() {
   async function runResetOnly() {
     setRunningMode('reset_only')
     setResult(null)
+    let operationId = ''
     try {
-      const operationId = await createOperation('reset_only')
+      operationId = await createOperation('reset_only')
       const previewResult = await previewOperation(operationId)
       if (hasBlockingWork(previewResult.blockers)) {
         throw new Error('พบงานค้างในระบบ กรุณาตรวจสอบรายการ Preflight ก่อนล้างข้อมูล')
       }
       const resetResult = await runReset(operationId, 'reset_only')
+      setPreview(null)
       setResult({
         mode: 'reset_only',
         operationId,
         status: 'success',
-        message: 'ล้างข้อมูลธุรกรรมสำเร็จ โดยไม่ลบข้อมูล HR',
+        message: buildResetSuccessMessage(resetResult, stockStrategy, 'reset_only'),
         details: resetResult,
       })
     } catch (error) {
       setResult({
         mode: 'reset_only',
-        operationId: '-',
+        operationId: operationId || '-',
         status: 'error',
-        message: error instanceof Error ? error.message : String(error),
+        message: formatOperationError(error),
       })
     } finally {
       setRunningMode(null)
@@ -611,28 +842,30 @@ export default function DataBackupClearPanel() {
   async function runAnnualClose() {
     setRunningMode('annual_close')
     setResult(null)
+    let operationId = ''
     try {
-      const operationId = await createOperation('annual_close')
+      operationId = await createOperation('annual_close')
       const previewResult = await previewOperation(operationId)
       if (hasBlockingWork(previewResult.blockers)) {
         throw new Error('พบงานค้างในระบบ กรุณาตรวจสอบรายการ Preflight ก่อนปิดงวด')
       }
       await runBackup(operationId)
       const resetResult = await runReset(operationId, 'annual_close')
+      setPreview(null)
       setResult({
         mode: 'annual_close',
         operationId,
         status: 'success',
-        message: `ปิดงวดปี ${targetYear} สำเร็จ พร้อมสำรองข้อมูลและสร้างยอดยกมา`,
+        message: buildResetSuccessMessage(resetResult, stockStrategy, 'annual_close', targetYear),
         details: resetResult,
       })
       await loadBackups()
     } catch (error) {
       setResult({
         mode: 'annual_close',
-        operationId: '-',
+        operationId: operationId || '-',
         status: 'error',
-        message: error instanceof Error ? error.message : String(error),
+        message: formatOperationError(error),
       })
     } finally {
       setRunningMode(null)
@@ -673,6 +906,7 @@ export default function DataBackupClearPanel() {
           runAnnualClose={runAnnualClose}
           runResetOnly={runResetOnly}
           runBackupOnly={runBackupOnly}
+          runDeleteAllProducts={runDeleteAllProducts}
         />
       ) : (
         <BackupHistoryView
@@ -722,12 +956,13 @@ function ActionsView({
   runAnnualClose,
   runResetOnly,
   runBackupOnly,
+  runDeleteAllProducts,
 }: {
   targetYear: number
   setTargetYear: (value: number) => void
   stockStrategy: StockStrategy
   setStockStrategy: (value: StockStrategy) => void
-  runningMode: OperationType | null
+  runningMode: PanelActionMode | null
   isRunning: boolean
   preview: PreviewResult | null
   result: OperationResult | null
@@ -735,6 +970,7 @@ function ActionsView({
   runAnnualClose: () => void
   runResetOnly: () => void
   runBackupOnly: () => void
+  runDeleteAllProducts: () => void
 }) {
   const backupDetails = getBackupRunDetails(result?.details)
 
@@ -798,6 +1034,27 @@ function ActionsView({
         />
       </div>
 
+      <div className="bg-white rounded-xl shadow p-5 border-2 border-red-300 space-y-3">
+        <div>
+          <h3 className="font-semibold text-red-900">ลบ Master สินค้า</h3>
+          <p className="text-sm text-red-800 mt-1">
+            ลบรายการใน <span className="font-mono">pr_products</span> ทั้งหมด พร้อม recipe / ราคาช่องทาง / การผูกคลังย่อย
+            — ใช้หลัง <strong>ล้างข้อมูลอย่างเดียว</strong> แล้วเท่านั้น
+          </p>
+          <p className="text-xs text-red-700 mt-2">
+            ขั้นตอนแนะนำ: ① ล้างข้อมูลอย่างเดียว → ② ลบรายการสินค้า → ③ Import สินค้า + สต๊อคเริ่มต้น
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={runDeleteAllProducts}
+          disabled={isRunning}
+          className="px-4 py-2 rounded-lg bg-red-800 text-white hover:bg-red-900 disabled:opacity-50 text-sm font-semibold"
+        >
+          {runningMode === 'delete_products' ? 'กำลังลบสินค้า...' : 'ลบรายการสินค้า'}
+        </button>
+      </div>
+
       {preview && (
         <div className="bg-white rounded-xl shadow p-5 space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -855,7 +1112,7 @@ function ActionsView({
           }`}
         >
           <h3 className="font-semibold">{result.status === 'success' ? 'สำเร็จ' : 'ไม่สำเร็จ'}</h3>
-          <p className="text-sm mt-1">{result.message}</p>
+          <p className="text-sm mt-1 whitespace-pre-line">{result.message}</p>
           {result.operationId !== '-' && (
             <p className="text-xs mt-2 font-mono">operation_id: {result.operationId}</p>
           )}

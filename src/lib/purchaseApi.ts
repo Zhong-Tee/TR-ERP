@@ -598,7 +598,7 @@ export async function loadPurchaseBadgeCounts(): Promise<{ pr_pending: number; p
 export async function loadSellers() {
   const { data, error } = await supabase
     .from('pr_sellers')
-    .select('id, name, name_cn')
+    .select('id, name, name_cn, seller_type')
     .eq('is_active', true)
     .order('name')
   if (error) throw error

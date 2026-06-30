@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -32,7 +32,7 @@ const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
 
 interface DraftItem {
   product_id: string
-  qty: number
+  qty: number | ''
   unit: string
   estimated_price: number | null
   note: string
@@ -62,7 +62,7 @@ export default function PurchasePR() {
   const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
 
   // sellers list
-  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn?: string | null }[]>([])
+  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn?: string | null; seller_type?: string | null }[]>([])
 
   // create / edit modal
   const [createOpen, setCreateOpen] = useState(false)
@@ -70,13 +70,16 @@ export default function PurchasePR() {
   const [saving, setSaving] = useState(false)
   const [selectedSupplierId, setSelectedSupplierId] = useState('')
   const [selectedSupplierName, setSelectedSupplierName] = useState('')
-  const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
+  const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }])
   const [note, setNote] = useState('')
   const [prType, setPrType] = useState<'normal' | 'urgent'>('normal')
   const [productSearch, setProductSearch] = useState('')
   const [filterType, setFilterType] = useState('')
   const [filterSeller, setFilterSeller] = useState('')
-  const [filterCategory, setFilterCategory] = useState('')
+  const [filterSellerType, setFilterSellerType] = useState('')
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<string[]>([])
+  const [bulkPickerOpen, setBulkPickerOpen] = useState(false)
+  const bulkPickerRef = useRef<HTMLDivElement>(null)
 
   // supplier panel (right side)
   const [supplierPanelSeller, setSupplierPanelSeller] = useState('')
@@ -106,6 +109,17 @@ export default function PurchasePR() {
     return () => window.removeEventListener('purchase-pr-create', handleCreateFromTopBar)
   }, [handleCreateFromTopBar])
 
+  useEffect(() => {
+    if (!bulkPickerOpen) return
+    function onClickOutside(e: MouseEvent) {
+      if (bulkPickerRef.current && !bulkPickerRef.current.contains(e.target as Node)) {
+        setBulkPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [bulkPickerOpen])
+
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 400)
@@ -132,7 +146,7 @@ export default function PurchasePR() {
       setPrs(mappedPrs)
       if (!products.length) setProducts((prodData as any[]).filter((p: any) => p.product_type === 'FG' || p.product_type === 'RM'))
       if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
-      if (!sellers.length) setSellers(sellerData as { id: string; name: string; name_cn?: string | null }[])
+      if (!sellers.length) setSellers(sellerData as { id: string; name: string; name_cn?: string | null; seller_type?: string | null }[])
 
       const uids = mappedPrs.map((pr: any) => pr.requested_by).filter(Boolean)
       if (uids.length) {
@@ -159,13 +173,21 @@ export default function PurchasePR() {
     return Number.isFinite(n) && n > 0 ? n : null
   }
 
+  function getProductUnit(product?: (Product & { last_price?: number | null }) | null): string {
+    const name = product?.unit_name?.trim()
+    return name || 'ชิ้น'
+  }
+
   /* ── Filter options extracted from products ── */
   const uniqueTypes = useMemo(() => [...new Set(products.map((p) => p.product_type).filter(Boolean))].sort(), [products])
   const uniqueSellers = useMemo(() => [...new Set(products.map((p) => p.seller_name).filter(Boolean) as string[])].sort(), [products])
-  const uniqueCategories = useMemo(() => {
-    const base = filterType ? products.filter((p) => p.product_type === filterType) : products
-    return [...new Set(base.map((p) => p.product_category).filter(Boolean) as string[])].sort()
-  }, [products, filterType])
+  const sellerTypeByName = useMemo(() => {
+    const m = new Map<string, 'thailand' | 'foreign'>()
+    sellers.forEach((s) => {
+      m.set(s.name, s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    })
+    return m
+  }, [sellers])
 
   const filteredProducts = useMemo(() => {
     let filtered = products
@@ -182,9 +204,19 @@ export default function PurchasePR() {
     }
     if (filterType) filtered = filtered.filter((p) => p.product_type === filterType)
     if (filterSeller) filtered = filtered.filter((p) => p.seller_name === filterSeller)
-    if (filterCategory) filtered = filtered.filter((p) => p.product_category === filterCategory)
+    if (filterSellerType) {
+      filtered = filtered.filter((p) => {
+        if (!p.seller_name) return false
+        return sellerTypeByName.get(p.seller_name) === filterSellerType
+      })
+    }
     return filtered
-  }, [products, productSearch, filterType, filterSeller, filterCategory, selectedSupplierName])
+  }, [products, productSearch, filterType, filterSeller, filterSellerType, selectedSupplierName, sellerTypeByName])
+
+  const bulkPickableProducts = useMemo(() => {
+    const inDraft = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
+    return filteredProducts.filter((p) => !inDraft.has(p.id))
+  }, [filteredProducts, draftItems])
 
   /** ผู้ขายที่มีสินค้า "ถึงจุดสั่งซื้อ" (stock < order_point) */
   const reorderPointCountBySeller = useMemo(() => {
@@ -211,13 +243,98 @@ export default function PurchasePR() {
 
   /* ── Draft item helpers ── */
   function addDraftItem() {
-    setDraftItems((prev) => [...prev, { product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
+    setDraftItems((prev) => [...prev, { product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }])
   }
   function updateDraftItem(i: number, patch: Partial<DraftItem>) {
     setDraftItems((prev) => prev.map((item, idx) => (idx === i ? { ...item, ...patch } : item)))
   }
+  function setDraftQtyFromInput(index: number, value: string) {
+    if (value === '') {
+      updateDraftItem(index, { qty: '' })
+      return
+    }
+    const n = parseInt(value, 10)
+    if (!Number.isFinite(n) || n < 0) return
+    updateDraftItem(index, { qty: n })
+  }
+  function createEmptyDraftItem(): DraftItem {
+    return { product_id: '', qty: 1, unit: '', estimated_price: null, note: '' }
+  }
+
   function removeDraftItem(i: number) {
+    if (draftItems.length <= 1) {
+      setSelectedSupplierId('')
+      setSelectedSupplierName('')
+      setSupplierPanelSeller('')
+      setSupplierPanelIndex(-1)
+      setDraftItems([createEmptyDraftItem()])
+      return
+    }
     setDraftItems((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
+  function resolveSellerByName(sellerName: string) {
+    return sellers.find((s) => s.name === sellerName)
+  }
+
+  function buildDraftItem(productId: string): DraftItem {
+    const prod = productMap.get(productId)
+    return {
+      product_id: productId,
+      qty: 1,
+      unit: getProductUnit(prod),
+      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
+      note: '',
+    }
+  }
+
+  function applySupplierFromProducts(prods: (Product & { last_price?: number | null })[]): boolean {
+    const sellerNames = [...new Set(prods.map((p) => p.seller_name).filter(Boolean) as string[])]
+    if (sellerNames.length > 1) {
+      showMessage({ message: 'กรุณาเลือกสินค้าจากผู้ขายเดียวกัน' })
+      return false
+    }
+    const sellerName = sellerNames[0]
+    if (sellerName) {
+      if (selectedSupplierName && selectedSupplierName !== sellerName) {
+        showMessage({ message: `สินค้าที่เลือกเป็นของผู้ขาย "${sellerName}" ไม่ตรงกับผู้ขายที่เลือก "${selectedSupplierName}"` })
+        return false
+      }
+      if (!selectedSupplierId) {
+        const seller = resolveSellerByName(sellerName)
+        if (seller) {
+          setSelectedSupplierId(seller.id)
+          setSelectedSupplierName(seller.name)
+        }
+      }
+    }
+    return true
+  }
+
+  function toggleBulkProduct(productId: string) {
+    setBulkSelectedIds((prev) =>
+      prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]
+    )
+  }
+
+  function confirmBulkAddProducts() {
+    if (bulkSelectedIds.length === 0) return
+    const prods = bulkSelectedIds.map((id) => productMap.get(id)).filter(Boolean) as (Product & { last_price?: number | null })[]
+    if (!applySupplierFromProducts(prods)) return
+
+    const inDraft = new Set(draftItems.map((d) => d.product_id).filter(Boolean))
+    const toAdd = bulkSelectedIds.filter((id) => !inDraft.has(id)).map((id) => buildDraftItem(id))
+    if (toAdd.length === 0) {
+      showMessage({ message: 'สินค้าที่เลือกถูกเพิ่มในรายการแล้วทั้งหมด' })
+      return
+    }
+
+    setDraftItems((prev) => {
+      if (prev.length === 1 && !prev[0].product_id) return toAdd
+      return [...prev.filter((d) => d.product_id), ...toAdd]
+    })
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
   }
 
   function onSelectProduct(index: number, productId: string) {
@@ -226,8 +343,22 @@ export default function PurchasePR() {
       return
     }
     const prod = productMap.get(productId)
+    if (prod?.seller_name) {
+      if (selectedSupplierName && prod.seller_name !== selectedSupplierName) {
+        showMessage({ message: `สินค้านี้เป็นของผู้ขาย "${prod.seller_name}" ไม่ตรงกับผู้ขายที่เลือก "${selectedSupplierName}"` })
+        return
+      }
+      if (!selectedSupplierId) {
+        const seller = resolveSellerByName(prod.seller_name)
+        if (seller) {
+          setSelectedSupplierId(seller.id)
+          setSelectedSupplierName(seller.name)
+        }
+      }
+    }
     updateDraftItem(index, {
       product_id: productId,
+      unit: productId ? getProductUnit(prod) : '',
       estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
     })
   }
@@ -235,13 +366,8 @@ export default function PurchasePR() {
   function addSupplierProduct(productId: string) {
     if (draftItems.some((d) => d.product_id === productId)) return
     const prod = productMap.get(productId)
-    const newItem: DraftItem = {
-      product_id: productId,
-      qty: 1,
-      unit: 'ชิ้น',
-      estimated_price: canSeePrice ? getLastPurchasePrice(prod) : null,
-      note: '',
-    }
+    if (prod && !applySupplierFromProducts([prod])) return
+    const newItem = buildDraftItem(productId)
     setDraftItems((prev) => {
       const insertAt = supplierPanelIndex >= 0 ? supplierPanelIndex + 1 : prev.length
       return [...prev.slice(0, insertAt), newItem, ...prev.slice(insertAt)]
@@ -281,7 +407,7 @@ export default function PurchasePR() {
         reorderItems.push({
           product_id: prod.id,
           qty: Math.ceil(op - onHand),
-          unit: 'ชิ้น',
+          unit: getProductUnit(prod as any),
           estimated_price: canSeePrice ? getLastPurchasePrice(prod as any) : null,
           note: `คงเหลือ ${onHand} / จุดสั่งซื้อ ${prod.order_point}`,
         })
@@ -307,14 +433,18 @@ export default function PurchasePR() {
     setProductSearch('')
     setFilterType('')
     setFilterSeller('')
-    setFilterCategory('')
+    setFilterSellerType('')
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
   }
 
   function handleSupplierChange(sellerId: string) {
     const seller = sellers.find((s) => s.id === sellerId)
     setSelectedSupplierId(sellerId)
     setSelectedSupplierName(seller?.name || '')
-    setDraftItems([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
+    setDraftItems([createEmptyDraftItem()])
+    setBulkSelectedIds([])
+    setBulkPickerOpen(false)
     setSupplierPanelSeller('')
     setSupplierPanelIndex(-1)
   }
@@ -334,7 +464,7 @@ export default function PurchasePR() {
         return {
           product_id: item.product_id,
           qty: Number(item.qty) || 1,
-          unit: item.unit || 'ชิ้น',
+          unit: getProductUnit(currentProduct),
           estimated_price: getLastPurchasePrice(currentProduct) ?? (item.last_purchase_price != null ? Number(item.last_purchase_price) : null),
           note: item.note || '',
         }
@@ -348,18 +478,19 @@ export default function PurchasePR() {
   async function handleCreatePR() {
     if (!PR_ALLOWED_ROLES.includes(user?.role || '')) { showMessage({ message: 'ไม่มีสิทธิ์ทำรายการนี้' }); return }
     if (!selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
-    const valid = draftItems.filter((i) => i.product_id && i.qty > 0)
+    const valid = draftItems.filter((i) => i.product_id && (Number(i.qty) || 0) > 0)
     if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
     const ids = valid.map((i) => i.product_id)
     if (new Set(ids).size !== ids.length) { showMessage({ message: 'พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง' }); return }
     setSaving(true)
     try {
       const itemPayload = valid.map((i) => {
-        const lastPurchase = getLastPurchasePrice(productMap.get(i.product_id))
+        const product = productMap.get(i.product_id)
+        const lastPurchase = getLastPurchasePrice(product)
         return {
           product_id: i.product_id,
-          qty: i.qty,
-          unit: i.unit,
+          qty: Number(i.qty) || 0,
+          unit: getProductUnit(product),
           estimated_price: lastPurchase != null ? Number(lastPurchase) : null,
           note: i.note || undefined,
         }
@@ -384,7 +515,7 @@ export default function PurchasePR() {
           supplierName: selectedSupplierName,
         })
       }
-      setDraftItems([{ product_id: '', qty: 1, unit: 'ชิ้น', estimated_price: null, note: '' }])
+      setDraftItems([createEmptyDraftItem()])
       setNote('')
       setPrType('normal')
       closeCreate()
@@ -643,11 +774,10 @@ export default function PurchasePR() {
               <div className="flex-1">
                 <input
                   type="text"
-                  placeholder="ค้นหาสินค้า... (รหัส, ชื่อ, ชื่อจีน)"
+                  placeholder="ค้นหาสินค้า... (รหัส, ชื่อ, ชื่อจีน, ผู้ขาย)"
                   value={productSearch}
                   onChange={(e) => setProductSearch(e.target.value)}
-                  disabled={!selectedSupplierId}
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-400"
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
               <button
@@ -661,10 +791,10 @@ export default function PurchasePR() {
                 <i className="fas fa-times"></i>
               </button>
             </div>
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3 items-center">
               <select
                 value={filterType}
-                onChange={(e) => { setFilterType(e.target.value); setFilterCategory('') }}
+                onChange={(e) => setFilterType(e.target.value)}
                 className="px-3 py-1.5 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
               >
                 <option value="">ประเภท: ทั้งหมด</option>
@@ -683,18 +813,73 @@ export default function PurchasePR() {
                 ))}
               </select>
               <select
-                value={filterCategory}
-                onChange={(e) => setFilterCategory(e.target.value)}
+                value={filterSellerType}
+                onChange={(e) => setFilterSellerType(e.target.value)}
                 className="px-3 py-1.5 border rounded-lg text-sm bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
               >
-                <option value="">หมวดหมู่: ทั้งหมด</option>
-                {uniqueCategories.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
+                <option value="">ประเภทผู้ขาย: ทั้งหมด</option>
+                <option value="thailand">ประเทศไทย</option>
+                <option value="foreign">ต่างประเทศ</option>
               </select>
-              {(filterType || filterSeller || filterCategory) && (
+              <div ref={bulkPickerRef} className="relative min-w-[280px] flex-1 max-w-xl">
                 <button
-                  onClick={() => { setFilterType(''); setFilterSeller(''); setFilterCategory('') }}
+                  type="button"
+                  onClick={() => setBulkPickerOpen((open) => !open)}
+                  className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white text-left flex items-center justify-between gap-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
+                >
+                  <span className={`truncate ${bulkSelectedIds.length > 0 ? 'text-emerald-700 font-medium' : 'text-gray-600'}`}>
+                    {bulkSelectedIds.length > 0
+                      ? `เลือกแล้ว ${bulkSelectedIds.length} รายการ`
+                      : `เลือกสินค้า (${bulkPickableProducts.length} รายการ)`}
+                  </span>
+                  <i className={`fas fa-chevron-down text-xs text-gray-400 transition-transform shrink-0 ${bulkPickerOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {bulkPickerOpen && (
+                  <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                    <div className="max-h-[min(70vh,40rem)] overflow-y-auto">
+                      {bulkPickableProducts.length === 0 ? (
+                        <div className="px-3 py-4 text-sm text-gray-400 text-center">ไม่พบสินค้าให้เลือก</div>
+                      ) : (
+                        bulkPickableProducts.map((p) => {
+                          const checked = bulkSelectedIds.includes(p.id)
+                          return (
+                            <label
+                              key={p.id}
+                              className={`flex items-start gap-2.5 px-3 py-2 cursor-pointer text-sm border-b border-gray-50 last:border-b-0 ${
+                                checked ? 'bg-emerald-50' : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleBulkProduct(p.id)}
+                                className="mt-0.5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
+                              />
+                              <span className="min-w-0 leading-snug">
+                                <span className="font-medium text-gray-900">{p.product_code}</span>
+                                <span className="text-gray-600"> — {p.product_name}</span>
+                                {p.seller_name && <span className="text-gray-400"> ({p.seller_name})</span>}
+                              </span>
+                            </label>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+              {bulkSelectedIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={confirmBulkAddProducts}
+                  className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 transition-colors whitespace-nowrap"
+                >
+                  ยืนยัน ({bulkSelectedIds.length})
+                </button>
+              )}
+              {(filterType || filterSeller || filterSellerType) && (
+                <button
+                  onClick={() => { setFilterType(''); setFilterSeller(''); setFilterSellerType('') }}
                   className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
                 >
                   ล้างตัวกรอง
@@ -785,21 +970,26 @@ export default function PurchasePR() {
                               <label className="block text-xs text-gray-500 mb-0.5">จำนวน</label>
                               <input
                                 type="number"
-                                min={1}
+                                inputMode="numeric"
+                                min={0}
+                                step={1}
                                 value={item.qty}
-                                onChange={(e) => updateDraftItem(index, { qty: Number(e.target.value) || 1 })}
+                                onFocus={() => {
+                                  if (item.qty === 0) updateDraftItem(index, { qty: '' })
+                                }}
+                                onBlur={() => {
+                                  if (item.qty === '') updateDraftItem(index, { qty: 0 })
+                                }}
+                                onChange={(e) => setDraftQtyFromInput(index, e.target.value)}
+                                onWheel={(e) => (e.target as HTMLInputElement).blur()}
                                 className="w-full px-2 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
                               />
                             </div>
                             <div>
                               <label className="block text-xs text-gray-500 mb-0.5">หน่วย</label>
-                              <input
-                                type="text"
-                                value={item.unit}
-                                onChange={(e) => updateDraftItem(index, { unit: e.target.value })}
-                                className="w-full px-2 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
-                                placeholder="ชิ้น"
-                              />
+                              <div className="w-full px-2 py-1.5 border rounded-lg text-sm bg-gray-50 text-gray-700 min-h-[34px] flex items-center">
+                                {prod ? getProductUnit(prod) : '-'}
+                              </div>
                             </div>
                             {canSeePrice && (
                               <div>
@@ -814,8 +1004,7 @@ export default function PurchasePR() {
                             <div className="flex items-end">
                               <button
                                 onClick={() => removeDraftItem(index)}
-                                disabled={draftItems.length === 1}
-                                className="w-full px-2 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm disabled:opacity-30 transition-colors"
+                                className="w-full px-2 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm transition-colors"
                               >
                                 ลบ
                               </button>

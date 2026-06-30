@@ -56,14 +56,14 @@ export default function PurchasePO() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0])
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
 
   // create from PR
   const [availablePRs, setAvailablePRs] = useState<InventoryPR[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedPR, setSelectedPR] = useState<InventoryPR | null>(null)
-  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn: string | null }[]>([])
+  const [sellers, setSellers] = useState<{ id: string; name: string; name_cn: string | null; seller_type?: string | null }[]>([])
   const [selectedSellerId, setSelectedSellerId] = useState('')
   const [selectedSellerName, setSelectedSellerName] = useState('')
   const [priceEdits, setPriceEdits] = useState<PriceEdit[]>([])
@@ -173,7 +173,7 @@ export default function PurchasePO() {
       const [poData, partialPoData, prData, sellerData] = await Promise.all([
         loadPOList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
         loadPOList({ status: 'partial', search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
-        availablePRs.length ? Promise.resolve(availablePRs) : loadApprovedPRsWithoutPO(),
+        loadApprovedPRsWithoutPO(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
       const filtered = typeFilter !== 'all'
@@ -184,7 +184,7 @@ export default function PurchasePO() {
         ? partialPoData.filter((po: any) => po.inv_pr?.pr_type === typeFilter)
         : partialPoData
       setPartialCount(partialFiltered.length)
-      if (!availablePRs.length) setAvailablePRs(prData)
+      setAvailablePRs(prData)
       if (!sellers.length) setSellers(sellerData as any)
 
       const uids = poData.map((po: any) => po.created_by).filter(Boolean)
@@ -463,6 +463,41 @@ export default function PurchasePO() {
     { value: 'cancelled', label: 'ยกเลิก', color: 'text-red-700' },
   ]
 
+  const sellerTypeById = useMemo(() => {
+    const m = new Map<string, 'thailand' | 'foreign'>()
+    sellers.forEach((s) => {
+      m.set(s.id, s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    })
+    return m
+  }, [sellers])
+
+  const sellerTypeByName = useMemo(() => {
+    const m = new Map<string, 'thailand' | 'foreign'>()
+    sellers.forEach((s) => {
+      m.set(s.name, s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    })
+    return m
+  }, [sellers])
+
+  function getPRSellerType(pr: InventoryPR): 'thailand' | 'foreign' {
+    if (pr.supplier_id && sellerTypeById.has(pr.supplier_id)) {
+      return sellerTypeById.get(pr.supplier_id)!
+    }
+    if (pr.supplier_name && sellerTypeByName.has(pr.supplier_name)) {
+      return sellerTypeByName.get(pr.supplier_name)!
+    }
+    return 'foreign'
+  }
+
+  const thailandPRs = useMemo(
+    () => availablePRs.filter((pr) => getPRSellerType(pr) === 'thailand'),
+    [availablePRs, sellerTypeById, sellerTypeByName]
+  )
+  const foreignPRs = useMemo(
+    () => availablePRs.filter((pr) => getPRSellerType(pr) === 'foreign'),
+    [availablePRs, sellerTypeById, sellerTypeByName]
+  )
+
   const statusTabs = [
     { key: 'all', label: 'ทั้งหมด' },
     { key: 'open', label: 'เปิด' },
@@ -474,23 +509,49 @@ export default function PurchasePO() {
 
   return (
     <div className="space-y-4 mt-12">
-      {/* ── Approved PRs waiting for PO ── */}
-      {availablePRs.length > 0 && (
+      {/* ── Approved PRs waiting for PO (by seller type) ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-blue-800 mb-3">PR ที่อนุมัติแล้ว รอสร้าง PO ({availablePRs.length})</h3>
-          <div className="flex flex-wrap gap-2">
-            {availablePRs.map((pr) => (
-              <button
-                key={pr.id}
-                onClick={() => openCreateFromPR(pr)}
-                className="px-3 py-1.5 bg-white border border-blue-300 rounded-lg text-sm text-blue-700 hover:bg-blue-100 font-medium transition-colors"
-              >
-                {pr.pr_no} → สร้าง PO
-              </button>
-            ))}
-          </div>
+          <h3 className="text-sm font-semibold text-blue-800 mb-3">
+            PR ประเทศไทย รอสร้าง PO ({thailandPRs.length})
+          </h3>
+          {thailandPRs.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {thailandPRs.map((pr) => (
+                <button
+                  key={pr.id}
+                  onClick={() => openCreateFromPR(pr)}
+                  className="px-3 py-1.5 bg-white border border-blue-300 rounded-lg text-sm text-blue-700 hover:bg-blue-100 font-medium transition-colors"
+                >
+                  {pr.pr_no} → สร้าง PO
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-blue-600/70">ไม่มี PR รอสร้าง PO</p>
+          )}
         </div>
-      )}
+        <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-orange-800 mb-3">
+            PR ต่างประเทศ รอสร้าง PO ({foreignPRs.length})
+          </h3>
+          {foreignPRs.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {foreignPRs.map((pr) => (
+                <button
+                  key={pr.id}
+                  onClick={() => openCreateFromPR(pr)}
+                  className="px-3 py-1.5 bg-white border border-orange-300 rounded-lg text-sm text-orange-700 hover:bg-orange-100 font-medium transition-colors"
+                >
+                  {pr.pr_no} → สร้าง PO
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-orange-600/70">ไม่มี PR รอสร้าง PO</p>
+          )}
+        </div>
+      </div>
 
       {/* ── Filter Bar ── */}
       <div className="bg-white rounded-xl shadow-sm border p-4">
