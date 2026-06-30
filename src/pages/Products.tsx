@@ -129,12 +129,98 @@ async function uploadImageToBucket(file: File): Promise<void> {
 
 type ChannelPriceRow = { product_id: string; channel_code: string; sale_price: number }
 
-async function insertChannelPricesInChunks(rows: ChannelPriceRow[]): Promise<void> {
+type ImportProgressState = {
+  active: boolean
+  title: string
+  phase: string
+  current: number
+  total: number
+}
+
+const emptyImportProgress = (): ImportProgressState => ({
+  active: false,
+  title: '',
+  phase: '',
+  current: 0,
+  total: 0,
+})
+
+async function insertChannelPricesInChunks(
+  rows: ChannelPriceRow[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
   for (let i = 0; i < rows.length; i += DB_CHUNK_SIZE) {
     const chunk = rows.slice(i, i + DB_CHUNK_SIZE)
     const { error } = await supabase.from('pr_product_channel_prices').insert(chunk)
     if (error) throw error
+    onProgress?.(Math.min(i + chunk.length, rows.length), rows.length)
   }
+}
+
+function ImportProgressModal({ progress }: { progress: ImportProgressState }) {
+  if (!progress.active) return null
+
+  const hasTotal = progress.total > 0
+  const percent = hasTotal ? Math.min(100, Math.round((progress.current / progress.total) * 100)) : 0
+
+  return (
+    <Modal
+      open
+      onClose={() => {}}
+      closeOnBackdropClick={false}
+      stackClassName="z-[80]"
+      contentClassName="max-w-md w-full mx-4"
+    >
+      <div className="p-6">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-100">
+            <svg className="h-6 w-6 animate-spin text-blue-600" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-lg font-bold text-slate-800">{progress.title}</h3>
+            <p className="mt-1 text-sm text-slate-600">{progress.phase}</p>
+          </div>
+        </div>
+
+        <div className="mt-5 space-y-2">
+          {hasTotal ? (
+            <div className="flex items-center justify-between text-sm font-medium text-slate-700">
+              <span>
+                {progress.current.toLocaleString()} / {progress.total.toLocaleString()} รายการ
+              </span>
+              <span className="tabular-nums text-blue-700">{percent}%</span>
+            </div>
+          ) : (
+            <p className="text-sm font-medium text-slate-700">กำลังเตรียมข้อมูล...</p>
+          )}
+
+          <div className="h-2.5 overflow-hidden rounded-full bg-slate-200">
+            {hasTotal ? (
+              <div
+                className="h-full rounded-full bg-blue-600 transition-all duration-300 ease-out"
+                style={{ width: `${Math.max(percent, progress.current > 0 ? 4 : 0)}%` }}
+              />
+            ) : (
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-blue-500" />
+            )}
+          </div>
+
+          {hasTotal && percent >= 100 ? (
+            <p className="text-xs font-medium text-emerald-700">ใกล้เสร็จแล้ว กำลังสรุปผล...</p>
+          ) : (
+            <p className="text-xs text-slate-500">กรุณารอสักครู่ อย่าปิดหรือรีเฟรชหน้านี้</p>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
@@ -215,6 +301,7 @@ export default function Products() {
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadPreview, setUploadPreview] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
+  const [importProgress, setImportProgress] = useState<ImportProgressState>(emptyImportProgress)
   const [uploadingImages, setUploadingImages] = useState(false)
   const [sellerOptions, setSellerOptions] = useState<string[]>([])
   const [page, setPage] = useState(1)
@@ -237,6 +324,27 @@ export default function Products() {
   const [initImportErrors, setInitImportErrors] = useState<string[]>([])
   const [initImporting, setInitImporting] = useState(false)
   const initImportInputRef = useRef<HTMLInputElement>(null)
+
+  function showImportProgress(update: Partial<ImportProgressState> & Pick<ImportProgressState, 'title' | 'phase'>) {
+    setImportProgress((prev) => ({
+      ...prev,
+      active: true,
+      current: update.current ?? prev.current,
+      total: update.total ?? prev.total,
+      title: update.title,
+      phase: update.phase,
+    }))
+  }
+
+  function patchImportProgress(update: Partial<ImportProgressState>) {
+    setImportProgress((prev) => ({ ...prev, ...update }))
+  }
+
+  function hideImportProgress() {
+    setImportProgress(emptyImportProgress())
+  }
+
+  const isImportBusy = importing || initImporting
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const importInputRef = useRef<HTMLInputElement>(null)
@@ -667,6 +775,7 @@ export default function Products() {
 
   async function handleImport(file: File) {
     setImporting(true)
+    showImportProgress({ title: 'Import สินค้า', phase: 'กำลังอ่านและตรวจสอบไฟล์...', current: 0, total: 0 })
     try {
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
@@ -748,6 +857,11 @@ export default function Products() {
       const dupInFile = toInsert.length - deduped.length
 
       const importCodes = deduped.map((i) => i.product_code)
+      patchImportProgress({
+        total: deduped.length,
+        current: 0,
+        phase: `กำลังตรวจสอบรหัสสินค้าในระบบ (${deduped.length.toLocaleString()} รายการ)...`,
+      })
       // โหลดเฉพาะรหัสในไฟล์ (ไม่ดึงทั้งตาราง)
       const { data: existingProducts } = await supabase
         .from('pr_products')
@@ -763,6 +877,7 @@ export default function Products() {
       const updateItems = deduped.filter((item) => existingCodes.has(item.product_code.toLowerCase()))
 
       if (!newItems.length && !updateItems.length) {
+        hideImportProgress()
         showNotify('warning', 'ไม่มีข้อมูลที่จะนำเข้า', dupInFile > 0 ? `ซ้ำในไฟล์ ${dupInFile} รายการ` : '')
         loadProducts()
         loadCategories()
@@ -770,30 +885,39 @@ export default function Products() {
         return
       }
 
+      const totalProducts = deduped.length
+      let processedProducts = 0
+
       let insertedCount = 0
       let updatedCount = 0
 
       if (newItems.length) {
         const payload = newItems.map(({ channel_prices, ...rest }) => rest)
+        patchImportProgress({ phase: `กำลังเพิ่มสินค้าใหม่ (${newItems.length.toLocaleString()} รายการ)...` })
         for (let i = 0; i < payload.length; i += DB_CHUNK_SIZE) {
           const chunk = payload.slice(i, i + DB_CHUNK_SIZE)
           const { error } = await supabase.from('pr_products').insert(chunk)
           if (error) throw error
+          processedProducts += chunk.length
+          patchImportProgress({ current: processedProducts })
         }
         insertedCount = payload.length
       }
 
       if (updateItems.length) {
-        // ไม่อัปเดต is_active เมื่อนำเข้าซ้ำ (เดิมเป็นลูป update ทีละแถว)
         const updatePayload = updateItems.map(({ channel_prices, is_active: _a, ...rest }) => rest)
+        patchImportProgress({ phase: `กำลังอัปเดตสินค้า (${updateItems.length.toLocaleString()} รายการ)...` })
         for (let i = 0; i < updatePayload.length; i += DB_CHUNK_SIZE) {
           const chunk = updatePayload.slice(i, i + DB_CHUNK_SIZE)
           const { error } = await supabase.from('pr_products').upsert(chunk, { onConflict: 'product_code' })
           if (error) throw error
+          processedProducts += chunk.length
+          patchImportProgress({ current: processedProducts })
         }
         updatedCount = updateItems.length
       }
 
+      patchImportProgress({ phase: 'กำลังเตรียมข้อมูลราคาช่องทาง...' })
       const allCodes = deduped.map((i) => i.product_code)
       if (allCodes.length > 0) {
         const { data: productsWithIds, error: idErr } = await supabase
@@ -831,9 +955,16 @@ export default function Products() {
         }
       }
       if (priceRows.length > 0) {
-        await insertChannelPricesInChunks(priceRows)
+        patchImportProgress({ phase: `กำลังบันทึกราคาช่องทาง (${priceRows.length.toLocaleString()} รายการ)...` })
+        await insertChannelPricesInChunks(priceRows, (done, total) => {
+          patchImportProgress({
+            current: totalProducts,
+            phase: `กำลังบันทึกราคาช่องทาง ${done.toLocaleString()} / ${total.toLocaleString()} รายการ...`,
+          })
+        })
       }
 
+      patchImportProgress({ current: totalProducts, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
       const msgs: string[] = []
       if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
       if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
@@ -846,6 +977,7 @@ export default function Products() {
       console.error('Import error:', err)
       showNotify('error', 'นำเข้าสินค้าล้มเหลว', err?.message || String(err))
     } finally {
+      hideImportProgress()
       setImporting(false)
       importInputRef.current && (importInputRef.current.value = '')
     }
@@ -1031,12 +1163,24 @@ export default function Products() {
     }
 
     setInitImporting(true)
+    const allRowsPreview = [...newRows, ...updateRows]
+    const totalSteps = newRows.length + updateRows.length + allRowsPreview.length
+    let processedSteps = 0
+    showImportProgress({
+      title: 'Import สินค้า + สต๊อคเริ่มต้น',
+      phase: 'กำลังเตรียมนำเข้าข้อมูล...',
+      current: 0,
+      total: Math.max(totalSteps, 1),
+    })
     try {
       let insertedCount = 0
       let updatedCount = 0
       const rpcErrors: Array<{ product_code: string; error: string }> = []
 
       if (newRows.length) {
+        patchImportProgress({
+          phase: `กำลังนำเข้าสินค้าและสต๊อคเริ่มต้น (${newRows.length.toLocaleString()} รายการ)...`,
+        })
         const payload = newRows.map((r) => ({
           product_code: r.product_code,
           product_name: r.product_name,
@@ -1065,8 +1209,13 @@ export default function Products() {
         const result = data as { imported: number; skipped: number; errors: Array<{ product_code: string; error: string }> }
         insertedCount = result.imported
         if (result.errors?.length) rpcErrors.push(...result.errors)
+        processedSteps += newRows.length
+        patchImportProgress({ current: processedSteps })
       }
 
+      if (updateRows.length) {
+        patchImportProgress({ phase: `กำลังอัปเดตสินค้า (${updateRows.length.toLocaleString()} รายการ)...` })
+      }
       for (const r of updateRows) {
         const { error } = await supabase
           .from('pr_products')
@@ -1091,13 +1240,20 @@ export default function Products() {
         if (error) {
           console.error(`Update failed for ${r.product_code}:`, error)
           rpcErrors.push({ product_code: r.product_code, error: error.message })
+          processedSteps++
+          patchImportProgress({ current: processedSteps })
           continue
         }
         updatedCount++
+        processedSteps++
+        patchImportProgress({
+          current: processedSteps,
+          phase: `กำลังอัปเดตสินค้า ${updatedCount.toLocaleString()} / ${updateRows.length.toLocaleString()} รายการ...`,
+        })
       }
 
       // save channel prices for both inserted and updated rows
-      const allRows = [...newRows, ...updateRows]
+      const allRows = allRowsPreview
       const allCodes = allRows.map((r) => r.product_code)
       if (allCodes.length > 0) {
         const { data: productRows, error: productRowsErr } = await supabase
@@ -1107,9 +1263,15 @@ export default function Products() {
         if (productRowsErr) throw productRowsErr
         const idMap = new Map<string, string>()
         ;(productRows || []).forEach((p: { id: string; product_code: string }) => idMap.set(p.product_code.toLowerCase(), p.id))
+        patchImportProgress({ phase: `กำลังบันทึกราคาช่องทาง (${allRows.length.toLocaleString()} รายการ)...` })
+        let pricedCount = 0
         for (const row of allRows) {
           const productId = idMap.get(row.product_code.toLowerCase())
-          if (!productId) continue
+          if (!productId) {
+            processedSteps++
+            patchImportProgress({ current: processedSteps })
+            continue
+          }
           const priceRows = Object.entries(row.channel_prices || {}).map(([channelCode, price]) => ({
             product_id: productId,
             channel_code: channelCode,
@@ -1126,9 +1288,16 @@ export default function Products() {
               .insert(priceRows)
             if (insErr) throw insErr
           }
+          pricedCount++
+          processedSteps++
+          patchImportProgress({
+            current: processedSteps,
+            phase: `กำลังบันทึกราคาช่องทาง ${pricedCount.toLocaleString()} / ${allRows.length.toLocaleString()} รายการ...`,
+          })
         }
       }
 
+      patchImportProgress({ current: totalSteps, phase: 'นำเข้าเสร็จสิ้น กำลังโหลดข้อมูลใหม่...' })
       const msgs: string[] = []
       if (insertedCount > 0) msgs.push(`เพิ่มสินค้าใหม่ ${insertedCount} รายการ`)
       if (updatedCount > 0) msgs.push(`อัปเดตสินค้าเดิม ${updatedCount} รายการ`)
@@ -1151,6 +1320,7 @@ export default function Products() {
       console.error('Init import error:', err)
       showNotify('error', 'นำเข้าล้มเหลว', err?.message || String(err))
     } finally {
+      hideImportProgress()
       setInitImporting(false)
     }
   }
@@ -1174,14 +1344,14 @@ export default function Products() {
           >
             Download Template
           </button>
-          <label className="px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold cursor-pointer inline-block">
+          <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
             {importing ? 'กำลังนำเข้า...' : 'Import สินค้า'}
             <input
               ref={importInputRef}
               type="file"
               accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
               className="hidden"
-              disabled={importing}
+              disabled={isImportBusy}
               onChange={(e) => {
                 const file = e.target.files?.[0]
                 e.target.value = ''
@@ -1198,13 +1368,14 @@ export default function Products() {
               >
                 Template สต๊อคเริ่มต้น
               </button>
-              <label className="px-3 py-2 rounded-xl bg-orange-600 text-white hover:bg-orange-700 text-sm font-semibold cursor-pointer inline-block">
-                Import สินค้า + สต๊อคเริ่มต้น
+              <label className={`px-3 py-2 rounded-xl bg-orange-600 text-white hover:bg-orange-700 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                {initImporting ? 'กำลังนำเข้า...' : 'Import สินค้า + สต๊อคเริ่มต้น'}
                 <input
                   ref={initImportInputRef}
                   type="file"
                   accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                   className="hidden"
+                  disabled={isImportBusy}
                   onChange={(e) => {
                     const file = e.target.files?.[0]
                     if (file) handleInitImportFile(file)
@@ -1887,6 +2058,8 @@ export default function Products() {
           </button>
         </div>
       </Modal>
+
+      <ImportProgressModal progress={importProgress} />
 
       {/* Notification Modal */}
       <Modal open={notifyModal.open} onClose={() => setNotifyModal((p) => ({ ...p, open: false }))} closeOnBackdropClick contentClassName="max-w-sm">

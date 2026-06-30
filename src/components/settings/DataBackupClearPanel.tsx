@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import DangerTypedConfirmModal from '../ui/DangerTypedConfirmModal'
 
 type OperationType = 'annual_close' | 'reset_only' | 'backup_only'
 type PanelActionMode = OperationType | 'delete_products' | 'delete_sellers'
@@ -454,6 +455,14 @@ function getBackupRunDetails(details: unknown): BackupRunResult | null {
   return value as BackupRunResult
 }
 
+type DangerConfirmRequest = {
+  title: string
+  description?: string
+  bullets: string[]
+  expectedText: string
+  confirmLabel?: string
+}
+
 export default function DataBackupClearPanel() {
   const [activePanelTab, setActivePanelTab] = useState<PanelTab>('actions')
   const [targetYear, setTargetYear] = useState(currentYear)
@@ -477,6 +486,23 @@ export default function DataBackupClearPanel() {
   const [tableSearch, setTableSearch] = useState('')
   const [showTechnicalColumns, setShowTechnicalColumns] = useState(false)
   const [selectedRow, setSelectedRow] = useState<Record<string, unknown> | null>(null)
+
+  const [dangerConfirmRequest, setDangerConfirmRequest] = useState<DangerConfirmRequest | null>(null)
+  const dangerConfirmResolverRef = useRef<((value: string | null) => void) | null>(null)
+
+  const requestDangerConfirm = useCallback((request: DangerConfirmRequest) => {
+    return new Promise<string | null>((resolve) => {
+      dangerConfirmResolverRef.current = resolve
+      setDangerConfirmRequest(request)
+    })
+  }, [])
+
+  const closeDangerConfirm = useCallback((value: string | null) => {
+    setDangerConfirmRequest(null)
+    const resolve = dangerConfirmResolverRef.current
+    dangerConfirmResolverRef.current = null
+    resolve?.(value)
+  }, [])
 
   const topTableCounts = useMemo(() => {
     return [...(preview?.table_counts ?? [])]
@@ -620,11 +646,19 @@ export default function DataBackupClearPanel() {
 
   async function runReset(operationId: string, operationType: OperationType) {
     const expectedText = operationType === 'annual_close' ? `CLOSE YEAR ${targetYear}` : 'RESET DATA'
-    const message =
-      operationType === 'annual_close'
-        ? `ยืนยันปิดงวดปี ${targetYear} และล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR\n\nกรุณาพิมพ์: ${expectedText}`
-        : `ยืนยันล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR และไม่สำรองข้อมูล\n\nกรุณาพิมพ์: ${expectedText}`
-    const confirmText = window.prompt(message)
+    const confirmText = await requestDangerConfirm({
+      title:
+        operationType === 'annual_close'
+          ? `ยืนยันปิดงวดปี ${targetYear}`
+          : 'ยืนยันล้างข้อมูลธุรกรรม',
+      description:
+        operationType === 'annual_close'
+          ? 'สำรองข้อมูลและล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR'
+          : 'ล้างข้อมูลธุรกรรมทั้งหมด โดยไม่สำรองข้อมูล และไม่ลบข้อมูล HR',
+      bullets: ['การดำเนินการนี้ไม่สามารถย้อนกลับได้', 'ไม่ลบข้อมูล HR'],
+      expectedText,
+      confirmLabel: operationType === 'annual_close' ? 'ปิดงวดและล้างข้อมูล' : 'ล้างข้อมูล',
+    })
     if (confirmText === null) {
       throw new Error('ยกเลิกการล้างข้อมูล')
     }
@@ -655,13 +689,17 @@ export default function DataBackupClearPanel() {
     setResult(null)
 
     const expectedText = 'DELETE ALL PRODUCTS'
-    const confirmText = window.prompt(
-      `ยืนยันลบรายการสินค้า (pr_products) ทั้งหมด\n\n` +
-        `• ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)\n` +
-        `• ลบ recipe/ราคาช่องทาง/สินค้าคลังย่อยที่ผูกสินค้า\n` +
-        `• ไม่ลบข้อมูล HR\n\n` +
-        `กรุณาพิมพ์: ${expectedText}`,
-    )
+    const confirmText = await requestDangerConfirm({
+      title: 'ยืนยันลบรายการสินค้า (pr_products) ทั้งหมด',
+      description: 'ลบ Master สินค้าและข้อมูลที่ผูกกับสินค้า — ใช้หลังล้างข้อมูลอย่างเดียวแล้วเท่านั้น',
+      bullets: [
+        'ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)',
+        'ลบ recipe / ราคาช่องทาง / สินค้าคลังย่อยที่ผูกสินค้า',
+        'ไม่ลบข้อมูล HR',
+      ],
+      expectedText,
+      confirmLabel: 'ลบรายการสินค้า',
+    })
     if (confirmText === null) {
       setRunningMode(null)
       return
@@ -720,13 +758,17 @@ export default function DataBackupClearPanel() {
     setResult(null)
 
     const expectedText = 'DELETE ALL SELLERS'
-    const confirmText = window.prompt(
-      `ยืนยันลบรายการผู้ขาย (pr_sellers) ทั้งหมด\n\n` +
-        `• ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)\n` +
-        `• ชื่อผู้ขายในสินค้า (seller_name) ยังคงอยู่ — ซิงก์จากสินค้าได้ใหม่\n` +
-        `• ไม่ลบข้อมูล HR\n\n` +
-        `กรุณาพิมพ์: ${expectedText}`,
-    )
+    const confirmText = await requestDangerConfirm({
+      title: 'ยืนยันลบรายการผู้ขาย (pr_sellers) ทั้งหมด',
+      description: 'ลบ Master ผู้ขายทั้งหมด — ใช้หลังล้างข้อมูลอย่างเดียวแล้วเท่านั้น',
+      bullets: [
+        'ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)',
+        'ชื่อผู้ขายในสินค้า (seller_name) ยังคงอยู่ — ซิงก์จากสินค้าได้ใหม่',
+        'ไม่ลบข้อมูล HR',
+      ],
+      expectedText,
+      confirmLabel: 'ลบรายการผู้ขาย',
+    })
     if (confirmText === null) {
       setRunningMode(null)
       return
@@ -1013,6 +1055,18 @@ export default function DataBackupClearPanel() {
           loadTablePage={loadTablePage}
         />
       )}
+      {dangerConfirmRequest ? (
+        <DangerTypedConfirmModal
+          open
+          title={dangerConfirmRequest.title}
+          description={dangerConfirmRequest.description}
+          bullets={dangerConfirmRequest.bullets}
+          expectedText={dangerConfirmRequest.expectedText}
+          confirmLabel={dangerConfirmRequest.confirmLabel}
+          onCancel={() => closeDangerConfirm(null)}
+          onConfirm={(typedText) => closeDangerConfirm(typedText)}
+        />
+      ) : null}
     </div>
   )
 }

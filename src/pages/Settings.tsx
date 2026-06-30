@@ -203,6 +203,8 @@ export default function Settings() {
   const [sellerSaving, setSellerSaving] = useState(false)
   const [sellerSyncing, setSellerSyncing] = useState(false)
   const [sellerEditingId, setSellerEditingId] = useState<string | null>(null)
+  const [showSellerModal, setShowSellerModal] = useState(false)
+  const [sellerSearchInput, setSellerSearchInput] = useState('')
   /** กรองตารางผู้ขาย: ทั้งหมด / ไทย / ต่างประเทศ */
   const [sellerTypeTableFilter, setSellerTypeTableFilter] = useState<'all' | 'thailand' | 'foreign'>('all')
   /** กรองการมองเห็น: ใช้งาน / ซ่อน / ทั้งหมด */
@@ -227,13 +229,24 @@ export default function Settings() {
     return sellers
   }, [sellers, sellerVisibilityFilter])
 
-  const sellersFilteredForTable = useMemo(() => {
-    if (sellerTypeTableFilter === 'all') return sellersAfterVisibility
+  const sellersAfterSearch = useMemo(() => {
+    const q = sellerSearchInput.trim().toLowerCase()
+    if (!q) return sellersAfterVisibility
     return sellersAfterVisibility.filter((s) => {
+      const haystack = [s.name, s.name_cn, s.purchase_channel]
+        .map((v) => (v || '').toLowerCase())
+        .join(' ')
+      return haystack.includes(q)
+    })
+  }, [sellersAfterVisibility, sellerSearchInput])
+
+  const sellersFilteredForTable = useMemo(() => {
+    if (sellerTypeTableFilter === 'all') return sellersAfterSearch
+    return sellersAfterSearch.filter((s) => {
       const t = s.seller_type === 'thailand' ? 'thailand' : 'foreign'
       return t === sellerTypeTableFilter
     })
-  }, [sellersAfterVisibility, sellerTypeTableFilter])
+  }, [sellersAfterSearch, sellerTypeTableFilter])
 
   useEffect(() => {
     loadUsers()
@@ -1059,6 +1072,39 @@ export default function Settings() {
     }
   }
 
+  function resetSellerForm() {
+    setSellerName('')
+    setSellerNameCn('')
+    setSellerPurchaseChannel('')
+    setSellerType('foreign')
+    setSellerEditingId(null)
+  }
+
+  function openSellerModalForAdd() {
+    resetSellerForm()
+    setShowSellerModal(true)
+  }
+
+  function openSellerModalForEdit(s: {
+    id: string
+    name: string
+    name_cn: string
+    purchase_channel: string
+    seller_type: string
+  }) {
+    setSellerEditingId(s.id)
+    setSellerName(s.name)
+    setSellerNameCn(s.name_cn || '')
+    setSellerPurchaseChannel(s.purchase_channel || '')
+    setSellerType(s.seller_type === 'thailand' ? 'thailand' : 'foreign')
+    setShowSellerModal(true)
+  }
+
+  function closeSellerModal() {
+    setShowSellerModal(false)
+    resetSellerForm()
+  }
+
   async function saveSeller() {
     if (!sellerName.trim()) {
       showMessage({ message: 'กรุณากรอกชื่อผู้ขาย' })
@@ -1084,11 +1130,7 @@ export default function Settings() {
           .insert(payload)
         if (error) throw error
       }
-      setSellerName('')
-      setSellerNameCn('')
-      setSellerPurchaseChannel('')
-      setSellerType('foreign')
-      setSellerEditingId(null)
+      closeSellerModal()
       await fetchSellersTable()
     } catch (error: any) {
       console.error('Error saving seller:', error)
@@ -3477,82 +3519,32 @@ export default function Settings() {
                 คุณยังแก้ไขรายละเอียดผู้ขายได้จากปุ่มแก้ไข
               </p>
             </div>
-            <button
-              type="button"
-              onClick={syncSellersFromProductsManual}
-              disabled={sellerSyncing}
-              className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold text-sm disabled:opacity-50 whitespace-nowrap"
-            >
-              {sellerSyncing ? 'กำลังซิงก์...' : 'ซิงก์จากสินค้าตอนนี้'}
-            </button>
-          </div>
-          <div className="flex gap-2 items-end flex-wrap">
-            <div className="flex-1 min-w-[180px]">
-              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขาย</label>
-              <input
-                type="text"
-                value={sellerName}
-                onChange={(e) => setSellerName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
-                placeholder="กรอกชื่อผู้ขาย"
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
-              />
-            </div>
-            <div className="flex-1 min-w-[180px]">
-              <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขายภาษาจีน</label>
-              <input
-                type="text"
-                value={sellerNameCn}
-                onChange={(e) => setSellerNameCn(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
-                placeholder="กรอกชื่อภาษาจีน"
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
-              />
-            </div>
-            <div className="flex-1 min-w-[180px]">
-              <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทางซื้อ</label>
-              <input
-                type="text"
-                value={sellerPurchaseChannel}
-                onChange={(e) => setSellerPurchaseChannel(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
-                placeholder="เช่น Taobao, 1688, Alibaba"
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
-              />
-            </div>
-            <div className="w-full sm:w-auto sm:min-w-[160px]">
-              <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทผู้ขาย</label>
-              <select
-                value={sellerType}
-                onChange={(e) => setSellerType(e.target.value as 'thailand' | 'foreign')}
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
-              >
-                <option value="thailand">ประเทศไทย</option>
-                <option value="foreign">ต่างประเทศ</option>
-              </select>
-            </div>
-            <button
-              onClick={saveSeller}
-              disabled={sellerSaving}
-              className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
-            >
-              {sellerSaving ? 'กำลังบันทึก...' : sellerEditingId ? 'อัปเดต' : 'เพิ่ม'}
-            </button>
-            {sellerEditingId && (
+            <div className="flex flex-wrap gap-2 shrink-0">
               <button
-                onClick={() => {
-                  setSellerEditingId(null)
-                  setSellerName('')
-                  setSellerNameCn('')
-                  setSellerPurchaseChannel('')
-                  setSellerType('foreign')
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100"
+                type="button"
+                onClick={syncSellersFromProductsManual}
+                disabled={sellerSyncing}
+                className="px-4 py-2 border border-blue-600 text-blue-700 rounded-xl hover:bg-blue-50 font-semibold text-sm disabled:opacity-50 whitespace-nowrap"
               >
-                ยกเลิก
+                {sellerSyncing ? 'กำลังซิงก์...' : 'ซิงก์จากสินค้าตอนนี้'}
               </button>
-            )}
+              <button
+                type="button"
+                onClick={openSellerModalForAdd}
+                className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold text-sm whitespace-nowrap"
+              >
+                เพิ่มผู้ขาย
+              </button>
+            </div>
           </div>
+
+          <input
+            type="text"
+            placeholder="ค้นหาชื่อผู้ขาย, ชื่อภาษาจีน หรือช่องทางซื้อ..."
+            value={sellerSearchInput}
+            onChange={(e) => setSellerSearchInput(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+          />
           {sellers.length === 0 ? (
             <p className="text-gray-400 italic text-center py-8">ยังไม่มีข้อมูลผู้ขาย</p>
           ) : (
@@ -3602,13 +3594,15 @@ export default function Settings() {
                       <option value="foreign">ต่างประเทศ</option>
                     </select>
                     <p className="text-xs text-gray-500 mt-1 min-h-[1.25rem] leading-snug tabular-nums">
-                      แสดง {sellersFilteredForTable.length} / {sellersAfterVisibility.length} รายการ
+                      แสดง {sellersFilteredForTable.length} / {sellersAfterSearch.length} รายการ
                     </p>
                   </div>
                 </div>
               </div>
               {sellersFilteredForTable.length === 0 ? (
-                <p className="text-gray-400 italic text-center py-8">ไม่มีรายการที่ตรงกับตัวกรอง</p>
+                <p className="text-gray-400 italic text-center py-8">
+                  {sellerSearchInput.trim() ? 'ไม่พบผู้ขายที่ตรงกับการค้นหา' : 'ไม่มีรายการที่ตรงกับตัวกรอง'}
+                </p>
               ) : (
             <table className="w-full text-sm">
               <thead>
@@ -3635,13 +3629,7 @@ export default function Settings() {
                       <div className="flex gap-2 justify-end items-center flex-wrap">
                         <button
                           type="button"
-                          onClick={() => {
-                            setSellerEditingId(s.id)
-                            setSellerName(s.name)
-                            setSellerNameCn(s.name_cn || '')
-                            setSellerPurchaseChannel(s.purchase_channel || '')
-                            setSellerType(s.seller_type === 'thailand' ? 'thailand' : 'foreign')
-                          }}
+                          onClick={() => openSellerModalForEdit(s)}
                           className="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold"
                         >
                           แก้ไข
@@ -3674,6 +3662,86 @@ export default function Settings() {
             </table>
               )}
             </>
+          )}
+
+          {showSellerModal && (
+            <Modal
+              open
+              onClose={closeSellerModal}
+              contentClassName="max-w-lg w-full mx-4 my-8 overflow-y-auto"
+            >
+              <div className="p-6">
+                <h3 className="text-xl font-bold mb-4">
+                  {sellerEditingId ? 'แก้ไขผู้ขาย' : 'เพิ่มผู้ขาย'}
+                </h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      ชื่อผู้ขาย <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={sellerName}
+                      onChange={(e) => setSellerName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="กรอกชื่อผู้ขาย"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ชื่อผู้ขายภาษาจีน</label>
+                    <input
+                      type="text"
+                      value={sellerNameCn}
+                      onChange={(e) => setSellerNameCn(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="กรอกชื่อภาษาจีน"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ช่องทางซื้อ</label>
+                    <input
+                      type="text"
+                      value={sellerPurchaseChannel}
+                      onChange={(e) => setSellerPurchaseChannel(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveSeller() }}
+                      placeholder="เช่น Taobao, 1688, Alibaba"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">ประเภทผู้ขาย</label>
+                    <select
+                      value={sellerType}
+                      onChange={(e) => setSellerType(e.target.value as 'thailand' | 'foreign')}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-base bg-white"
+                    >
+                      <option value="thailand">ประเทศไทย</option>
+                      <option value="foreign">ต่างประเทศ</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-3 mt-6">
+                  <button
+                    type="button"
+                    onClick={saveSeller}
+                    disabled={sellerSaving}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
+                  >
+                    {sellerSaving ? 'กำลังบันทึก...' : sellerEditingId ? 'อัปเดต' : 'เพิ่ม'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeSellerModal}
+                    className="flex-1 px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100 font-semibold"
+                  >
+                    ยกเลิก
+                  </button>
+                </div>
+              </div>
+            </Modal>
           )}
         </div>
       )}
