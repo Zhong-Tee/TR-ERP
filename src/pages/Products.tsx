@@ -45,6 +45,9 @@ const INIT_IMPORT_HEADERS = [
   'product_category',
   'product_type',
   'seller_name',
+  'seller_name_cn',
+  'seller_purchase_channel',
+  'seller_type',
   'unit_cost',
   'initial_stock',
   'safety_stock',
@@ -56,6 +59,22 @@ const INIT_IMPORT_HEADERS = [
   'unit_multiplier',
 ] as const
 
+type SellerTypeValue = 'thailand' | 'foreign'
+
+function parseSellerType(raw: unknown): SellerTypeValue | null {
+  const v = String(raw ?? '').trim().toLowerCase()
+  if (!v) return null
+  if (['thailand', 'th', 'ไทย', 'ประเทศไทย'].includes(v)) return 'thailand'
+  if (['foreign', 'intl', 'international', 'cn', 'ต่างประเทศ', 'ตปท'].includes(v)) return 'foreign'
+  return null
+}
+
+function sellerTypeLabel(value: SellerTypeValue | null | undefined) {
+  if (value === 'thailand') return 'ประเทศไทย'
+  if (value === 'foreign') return 'ต่างประเทศ'
+  return '-'
+}
+
 type ChannelOption = { channel_code: string; channel_name: string }
 
 interface InitImportRow {
@@ -65,6 +84,9 @@ interface InitImportRow {
   product_category: string
   product_type: string
   seller_name: string
+  seller_name_cn: string
+  seller_purchase_channel: string
+  seller_type: SellerTypeValue | null
   unit_cost: number
   initial_stock: number
   safety_stock: number
@@ -866,12 +888,13 @@ export default function Products() {
     const headers = [...INIT_IMPORT_HEADERS, ...channelPriceHeaders]
     const ws = XLSX.utils.aoa_to_sheet([
       headers,
-      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'ผู้ขาย A', 25.50, 500, 20, '25', 14, 'R001', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
-      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', '', 10.00, 1000, 50, '30', 21, '', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
+      ['110000001', 'CK02-SET สีแดง', '红色套装', 'CALENDAR', 'FG', 'AI DAI', '爱戴', '1688', 'foreign', 25.50, 500, 20, '25', 14, 'R001', 'ชั้น A', 'ชิ้น', 1, ...channelPriceHeaders.map(() => '')],
+      ['110000002', 'สินค้า B', '商品B', 'STICKER', 'RM', 'บริษัทไทย', '', 'Line', 'thailand', 10.00, 1000, 50, '30', 21, '', '', 'แพ็ค', 12, ...channelPriceHeaders.map(() => '')],
     ])
     ws['!cols'] = [
       { wch: 14 }, { wch: 28 }, { wch: 22 }, { wch: 14 }, { wch: 12 },
-      { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
+      { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 12 },
       { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 12 },
       ...channelPriceHeaders.map(() => ({ wch: 14 })),
     ]
@@ -939,6 +962,13 @@ export default function Products() {
         if (isNaN(initialStock) || initialStock < 0) { errors.push(`แถว ${rowNum}: initial_stock ไม่ถูกต้อง`); continue }
         if (isNaN(safetyStock) || safetyStock < 0) { errors.push(`แถว ${rowNum}: safety_stock ไม่ถูกต้อง`); continue }
 
+        const rawSellerType = String(row.seller_type ?? '').trim()
+        const sellerType = parseSellerType(rawSellerType)
+        if (rawSellerType && !sellerType) {
+          errors.push(`แถว ${rowNum}: seller_type ไม่ถูกต้อง (ใช้ thailand หรือ foreign)`)
+          continue
+        }
+
         parsed.push({
           product_code: code,
           product_name: name,
@@ -946,6 +976,9 @@ export default function Products() {
           product_category: String(row.product_category ?? '').trim(),
           product_type: validTypes.includes(rawType as ProductType) ? rawType : 'FG',
           seller_name: String(row.seller_name ?? '').trim(),
+          seller_name_cn: String(row.seller_name_cn ?? '').trim(),
+          seller_purchase_channel: String(row.seller_purchase_channel ?? '').trim(),
+          seller_type: sellerType,
           unit_cost: unitCost,
           initial_stock: initialStock,
           safety_stock: Math.min(safetyStock, initialStock),
@@ -1010,6 +1043,9 @@ export default function Products() {
           product_category: r.product_category || null,
           product_type: r.product_type || 'FG',
           seller_name: r.seller_name || null,
+          seller_name_cn: r.seller_name_cn || null,
+          seller_purchase_channel: r.seller_purchase_channel || null,
+          seller_type: r.seller_type || null,
           product_name_cn: r.product_name_cn || null,
           unit_cost: r.unit_cost,
           initial_stock: r.initial_stock,
@@ -1040,6 +1076,9 @@ export default function Products() {
             product_category: r.product_category || null,
             product_type: r.product_type || 'FG',
             seller_name: r.seller_name || null,
+            seller_name_cn: r.seller_name_cn || null,
+            seller_purchase_channel: r.seller_purchase_channel || null,
+            seller_type: r.seller_type || null,
             unit_cost: r.unit_cost,
             order_point: r.order_point || null,
             order_point_days: r.order_point_days,
@@ -1752,6 +1791,9 @@ export default function Products() {
                     <th className="px-2 py-2 text-left font-semibold">หมวดหมู่</th>
                     <th className="px-2 py-2 text-center font-semibold">ประเภท</th>
                     <th className="px-2 py-2 text-left font-semibold">ผู้ขาย</th>
+                    <th className="px-2 py-2 text-left font-semibold">ชื่อผู้ขายจีน</th>
+                    <th className="px-2 py-2 text-left font-semibold">ช่องทางซื้อ</th>
+                    <th className="px-2 py-2 text-left font-semibold">ประเภทผู้ขาย</th>
                     <th className="px-2 py-2 text-right font-semibold">ต้นทุน</th>
                     <th className="px-2 py-2 text-right font-semibold">สต๊อครวม</th>
                     <th className="px-2 py-2 text-right font-semibold">Safety</th>
@@ -1792,6 +1834,9 @@ export default function Products() {
                           </span>
                         </td>
                         <td className="px-2 py-1.5">{row.seller_name || '-'}</td>
+                        <td className="px-2 py-1.5">{row.seller_name_cn || '-'}</td>
+                        <td className="px-2 py-1.5">{row.seller_purchase_channel || '-'}</td>
+                        <td className="px-2 py-1.5">{sellerTypeLabel(row.seller_type)}</td>
                         <td className="px-2 py-1.5 text-right">{row.unit_cost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         <td className="px-2 py-1.5 text-right font-semibold">{row.initial_stock.toLocaleString()}</td>
                         <td className="px-2 py-1.5 text-right">{row.safety_stock.toLocaleString()}</td>

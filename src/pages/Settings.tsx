@@ -1040,11 +1040,15 @@ export default function Settings() {
       const { data, error } = await supabase.rpc('rpc_sync_pr_sellers_from_products')
       if (error) throw error
       const inserted = (data as { inserted?: number })?.inserted ?? 0
+      const updated = (data as { updated?: number })?.updated ?? 0
+      const parts: string[] = []
+      if (inserted > 0) parts.push(`เพิ่ม ${inserted} รายการ`)
+      if (updated > 0) parts.push(`อัปเดต ${updated} รายการ`)
       showMessage({
         message:
-          inserted > 0
-            ? `ดึงชื่อผู้ขายจากสินค้าเพิ่มแล้ว ${inserted} รายการ`
-            : 'ชื่อผู้ขายในสินค้ามีในรายการแล้วทั้งหมด',
+          parts.length > 0
+            ? `ซิงก์ผู้ขายจากสินค้า: ${parts.join(', ')}`
+            : 'ข้อมูลผู้ขายในสินค้าตรงกับรายการแล้ว',
       })
       await fetchSellersTable()
     } catch (error: any) {
@@ -3469,8 +3473,8 @@ export default function Settings() {
             <div className="space-y-1">
               <h2 className="text-xl font-bold">จัดการผู้ขาย</h2>
               <p className="text-sm text-gray-600 max-w-2xl">
-                ระบบดึงชื่อผู้ขายที่ไม่ซ้ำจากรายการสินค้าให้อัตโนมัติเมื่อมีการเพิ่มหรือแก้ไขสินค้า
-                คุณยังกรอกชื่อภาษาจีน ช่องทางซื้อ และประเภทผู้ขาย (ไทย / ต่างประเทศ) ได้จากปุ่มแก้ไข
+                ระบบดึงชื่อและข้อมูลผู้ขาย (ชื่อจีน, ช่องทางซื้อ, ประเภท) จากรายการสินค้าให้อัตโนมัติเมื่อมีการเพิ่มหรือแก้ไขสินค้า
+                คุณยังแก้ไขรายละเอียดผู้ขายได้จากปุ่มแก้ไข
               </p>
             </div>
             <button

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 
 type OperationType = 'annual_close' | 'reset_only' | 'backup_only'
-type PanelActionMode = OperationType | 'delete_products'
+type PanelActionMode = OperationType | 'delete_products' | 'delete_sellers'
 type StockStrategy = 'opening' | 'zero'
 type PanelTab = 'actions' | 'backups'
 type BackupTableGroup = 'all' | 'orders' | 'warehouse' | 'purchase' | 'account' | 'wms_qc' | 'hr' | 'settings'
@@ -35,12 +35,19 @@ type DeleteProductsResult = {
   note?: string
 }
 
+type DeleteSellersResult = {
+  success: boolean
+  deleted_sellers: number
+  previous_seller_count: number
+  note?: string
+}
+
 type OperationResult = {
   mode: PanelActionMode
   operationId: string
   status: 'success' | 'error'
   message: string
-  details?: BackupRunResult | DeleteProductsResult | unknown
+  details?: BackupRunResult | DeleteProductsResult | DeleteSellersResult | unknown
 }
 
 type BackupRunResult = {
@@ -436,6 +443,7 @@ function operationLabel(type: PanelActionMode) {
   if (type === 'annual_close') return 'ปิดงวดรายปี'
   if (type === 'reset_only') return 'ล้างข้อมูลอย่างเดียว'
   if (type === 'delete_products') return 'ลบรายการสินค้า'
+  if (type === 'delete_sellers') return 'ลบรายการผู้ขาย'
   return 'สำรองข้อมูลอย่างเดียว'
 }
 
@@ -707,6 +715,71 @@ export default function DataBackupClearPanel() {
     }
   }
 
+  async function runDeleteAllSellers() {
+    setRunningMode('delete_sellers')
+    setResult(null)
+
+    const expectedText = 'DELETE ALL SELLERS'
+    const confirmText = window.prompt(
+      `ยืนยันลบรายการผู้ขาย (pr_sellers) ทั้งหมด\n\n` +
+        `• ต้องล้างข้อมูลธุรกรรมก่อน (ใช้ ล้างข้อมูลอย่างเดียว)\n` +
+        `• ชื่อผู้ขายในสินค้า (seller_name) ยังคงอยู่ — ซิงก์จากสินค้าได้ใหม่\n` +
+        `• ไม่ลบข้อมูล HR\n\n` +
+        `กรุณาพิมพ์: ${expectedText}`,
+    )
+    if (confirmText === null) {
+      setRunningMode(null)
+      return
+    }
+    if (confirmText !== expectedText) {
+      setResult({
+        mode: 'delete_sellers',
+        operationId: '-',
+        status: 'error',
+        message: `ยกเลิก: ข้อความยืนยันไม่ตรงกับ "${expectedText}"`,
+      })
+      setRunningMode(null)
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('rpc_data_delete_all_sellers', {
+        p_confirm_text: confirmText,
+      })
+      if (error) throw new Error(formatOperationError(error))
+
+      const deleteResult = data as DeleteSellersResult
+      const { count, error: countError } = await supabase
+        .from('pr_sellers')
+        .select('*', { count: 'exact', head: true })
+      if (countError) throw new Error(formatOperationError(countError))
+      if ((count ?? 0) > 0) {
+        throw new Error(`ลบไม่สมบูรณ์ ยังเหลือผู้ขาย ${count} รายการ`)
+      }
+
+      setPreview(null)
+      setResult({
+        mode: 'delete_sellers',
+        operationId: '-',
+        status: 'success',
+        message: [
+          `ลบผู้ขายสำเร็จ ${formatCount(deleteResult.deleted_sellers)} รายการ`,
+          deleteResult.note || 'ซิงก์จากสินค้าหรือเพิ่มมือใหม่ได้ที่แท็บผู้ขาย',
+        ].join('\n'),
+        details: deleteResult,
+      })
+    } catch (error) {
+      setResult({
+        mode: 'delete_sellers',
+        operationId: '-',
+        status: 'error',
+        message: formatOperationError(error),
+      })
+    } finally {
+      setRunningMode(null)
+    }
+  }
+
   async function loadBackups() {
     setBackupLoading(true)
     setBackupError(null)
@@ -907,6 +980,7 @@ export default function DataBackupClearPanel() {
           runResetOnly={runResetOnly}
           runBackupOnly={runBackupOnly}
           runDeleteAllProducts={runDeleteAllProducts}
+          runDeleteAllSellers={runDeleteAllSellers}
         />
       ) : (
         <BackupHistoryView
@@ -957,6 +1031,7 @@ function ActionsView({
   runResetOnly,
   runBackupOnly,
   runDeleteAllProducts,
+  runDeleteAllSellers,
 }: {
   targetYear: number
   setTargetYear: (value: number) => void
@@ -971,6 +1046,7 @@ function ActionsView({
   runResetOnly: () => void
   runBackupOnly: () => void
   runDeleteAllProducts: () => void
+  runDeleteAllSellers: () => void
 }) {
   const backupDetails = getBackupRunDetails(result?.details)
 
@@ -1052,6 +1128,27 @@ function ActionsView({
           className="px-4 py-2 rounded-lg bg-red-800 text-white hover:bg-red-900 disabled:opacity-50 text-sm font-semibold"
         >
           {runningMode === 'delete_products' ? 'กำลังลบสินค้า...' : 'ลบรายการสินค้า'}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl shadow p-5 border-2 border-red-300 space-y-3">
+        <div>
+          <h3 className="font-semibold text-red-900">ลบ Master ผู้ขาย</h3>
+          <p className="text-sm text-red-800 mt-1">
+            ลบรายการใน <span className="font-mono">pr_sellers</span> ทั้งหมด (ชื่อจีน, ช่องทางซื้อ, ประเภทผู้ขาย)
+            — ใช้หลัง <strong>ล้างข้อมูลอย่างเดียว</strong> แล้วเท่านั้น
+          </p>
+          <p className="text-xs text-red-700 mt-2">
+            ขั้นตอนแนะนำ: ① ล้างข้อมูลอย่างเดียว → ② ลบรายการสินค้า (ถ้าต้องการ) → ③ ลบรายการผู้ขาย → ④ Import / ซิงก์ใหม่
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={runDeleteAllSellers}
+          disabled={isRunning}
+          className="px-4 py-2 rounded-lg bg-red-800 text-white hover:bg-red-900 disabled:opacity-50 text-sm font-semibold"
+        >
+          {runningMode === 'delete_sellers' ? 'กำลังลบผู้ขาย...' : 'ลบรายการผู้ขาย'}
         </button>
       </div>
 
