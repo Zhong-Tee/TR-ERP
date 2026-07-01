@@ -137,6 +137,14 @@ type ImportProgressState = {
   total: number
 }
 
+type UploadImageResultState = {
+  open: boolean
+  total: number
+  success: number
+  failed: number
+  errors: string[]
+}
+
 const emptyImportProgress = (): ImportProgressState => ({
   active: false,
   title: '',
@@ -223,6 +231,95 @@ function ImportProgressModal({ progress }: { progress: ImportProgressState }) {
   )
 }
 
+function UploadImageResultModal({
+  result,
+  onClose,
+}: {
+  result: UploadImageResultState
+  onClose: () => void
+}) {
+  if (!result.open) return null
+
+  const allSuccess = result.failed === 0
+  const allFailed = result.success === 0
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      closeOnBackdropClick
+      stackClassName="z-[80]"
+      contentClassName="max-w-lg w-full mx-4"
+    >
+      <div className="p-6">
+        <div className="text-center mb-5">
+          <div className={`mx-auto w-14 h-14 rounded-full flex items-center justify-center mb-3 ${
+            allSuccess ? 'bg-green-100' : allFailed ? 'bg-red-100' : 'bg-amber-100'
+          }`}>
+            {allSuccess && (
+              <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+            {allFailed && (
+              <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            )}
+            {!allSuccess && !allFailed && (
+              <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          </div>
+          <h3 className={`text-lg font-bold ${
+            allSuccess ? 'text-green-800' : allFailed ? 'text-red-800' : 'text-amber-800'
+          }`}>
+            {allSuccess ? 'อัปโหลดรูปสำเร็จ' : allFailed ? 'อัปโหลดรูปล้มเหลว' : 'อัปโหลดรูปเสร็จสิ้น (บางไฟล์ล้มเหลว)'}
+          </h3>
+          <p className="text-sm text-slate-500 mt-1">สรุปผลการอัปโหลดไปยัง Bucket {BUCKET_PRODUCT_IMAGES}</p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="bg-blue-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-blue-700">{result.total}</div>
+            <div className="text-xs text-blue-600">ทั้งหมด</div>
+          </div>
+          <div className="bg-green-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-green-700">{result.success}</div>
+            <div className="text-xs text-green-600">สำเร็จ</div>
+          </div>
+          <div className="bg-red-50 rounded-xl p-3 text-center">
+            <div className="text-2xl font-bold text-red-700">{result.failed}</div>
+            <div className="text-xs text-red-600">ล้มเหลว</div>
+          </div>
+        </div>
+
+        {result.errors.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+            <h4 className="text-sm font-semibold text-red-700 mb-1">ไฟล์ที่อัปโหลดไม่สำเร็จ</h4>
+            <ul className="text-xs text-red-600 space-y-0.5 max-h-32 overflow-y-auto">
+              {result.errors.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className={`w-full px-4 py-2.5 rounded-xl font-semibold text-white transition-colors ${
+            allSuccess ? 'bg-green-600 hover:bg-green-700'
+              : allFailed ? 'bg-red-600 hover:bg-red-700'
+              : 'bg-amber-500 hover:bg-amber-600'
+          }`}
+        >
+          ตกลง
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
   { value: 'FG', label: 'FG - สินค้าสำเร็จรูป' },
   { value: 'RM', label: 'RM - วัตถุดิบ' },
@@ -303,6 +400,13 @@ export default function Products() {
   const [importing, setImporting] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgressState>(emptyImportProgress)
   const [uploadingImages, setUploadingImages] = useState(false)
+  const [uploadImageResult, setUploadImageResult] = useState<UploadImageResultState>({
+    open: false,
+    total: 0,
+    success: 0,
+    failed: 0,
+    errors: [],
+  })
   const [sellerOptions, setSellerOptions] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
@@ -991,23 +1095,44 @@ export default function Products() {
       return
     }
     setUploadingImages(true)
+    setUploadImageResult({ open: false, total: 0, success: 0, failed: 0, errors: [] })
+    showImportProgress({
+      title: 'อัปโหลดรูปสินค้า',
+      phase: 'กำลังเตรียมอัปโหลด...',
+      current: 0,
+      total: imageFiles.length,
+    })
+    const uploadErrors: string[] = []
+    let ok = 0
     try {
-      let ok = 0
-      let fail = 0
-      for (const file of imageFiles) {
+      for (let i = 0; i < imageFiles.length; i++) {
+        const file = imageFiles[i]
+        patchImportProgress({
+          phase: `กำลังอัปโหลด ${(i + 1).toLocaleString()} / ${imageFiles.length.toLocaleString()} ไฟล์...`,
+        })
         try {
           await uploadImageToBucket(file)
           ok++
         } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e)
           console.error('Upload fail:', file.name, e)
-          fail++
+          uploadErrors.push(`${file.name}: ${errMsg}`)
         }
+        patchImportProgress({ current: i + 1 })
       }
-      if (ok) {
-        showNotify('success', 'อัปโหลดรูปสำเร็จ', `${ok} ไฟล์${fail ? ` ล้มเหลว ${fail} ไฟล์` : ''}`)
-      }
-      if (fail && !ok) showNotify('error', 'อัปโหลดรูปล้มเหลว', fail === 1 ? imageFiles[0].name : `${fail} ไฟล์`)
+      patchImportProgress({ current: imageFiles.length, phase: 'อัปโหลดเสร็จสิ้น กำลังสรุปผล...' })
+      setUploadImageResult({
+        open: true,
+        total: imageFiles.length,
+        success: ok,
+        failed: uploadErrors.length,
+        errors: uploadErrors,
+      })
+    } catch (err: any) {
+      console.error('Upload images error:', err)
+      showNotify('error', 'อัปโหลดรูปล้มเหลว', err?.message || String(err))
     } finally {
+      hideImportProgress()
       setUploadingImages(false)
       uploadImagesInputRef.current && (uploadImagesInputRef.current.value = '')
     }
@@ -1395,7 +1520,6 @@ export default function Products() {
               disabled={uploadingImages}
               onChange={(e) => {
                 const files = e.target.files
-                e.target.value = ''
                 if (files?.length) handleUploadImages(files)
               }}
             />
@@ -2060,6 +2184,11 @@ export default function Products() {
       </Modal>
 
       <ImportProgressModal progress={importProgress} />
+
+      <UploadImageResultModal
+        result={uploadImageResult}
+        onClose={() => setUploadImageResult((prev) => ({ ...prev, open: false }))}
+      />
 
       {/* Notification Modal */}
       <Modal open={notifyModal.open} onClose={() => setNotifyModal((p) => ({ ...p, open: false }))} closeOnBackdropClick contentClassName="max-w-sm">
