@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { fetchAudits, getAuditKPI } from '../lib/auditApi'
+import { fetchAudits, getAuditKPI, updateAuditShowSystemQty } from '../lib/auditApi'
 import type { AuditKPI } from '../lib/auditApi'
 import type { InventoryAudit } from '../types'
 import AuditKPICards from '../components/audit/AuditKPICards'
@@ -43,6 +43,22 @@ export default function WarehouseAudit() {
     }
   }
 
+  async function handleToggleShowSystemQty(auditId: string, value: boolean) {
+    // optimistic update
+    setAudits((prev) =>
+      prev.map((a) => (a.id === auditId ? { ...a, show_system_qty: value } : a))
+    )
+    try {
+      await updateAuditShowSystemQty(auditId, value)
+    } catch (e) {
+      console.error('Toggle show_system_qty failed:', e)
+      // revert on failure
+      setAudits((prev) =>
+        prev.map((a) => (a.id === auditId ? { ...a, show_system_qty: !value } : a))
+      )
+    }
+  }
+
   return (
     <div className="space-y-6 mt-12">
       {/* KPI Cards */}
@@ -55,6 +71,7 @@ export default function WarehouseAudit() {
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
         userMap={userMap}
+        onToggleShowSystemQty={handleToggleShowSystemQty}
       />
     </div>
   )

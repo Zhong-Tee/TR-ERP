@@ -79,6 +79,7 @@ interface CreateAuditInput {
   assignedTo: string[]
   note?: string
   userId: string
+  showSystemQty?: boolean
 }
 
 export async function createAudit(input: CreateAuditInput) {
@@ -96,6 +97,7 @@ export async function createAudit(input: CreateAuditInput) {
       frozen_at: new Date().toISOString(),
       created_by: input.userId,
       note: input.note?.trim() || null,
+      show_system_qty: input.showSystemQty ?? false,
     })
     .select('*')
     .single()
@@ -167,6 +169,16 @@ export async function createAudit(input: CreateAuditInput) {
   if (updateErr) throw updateErr
 
   return updatedAudit as InventoryAudit
+}
+
+// ── Update show_system_qty (existing audit) ──────────────────
+
+export async function updateAuditShowSystemQty(auditId: string, showSystemQty: boolean) {
+  const { error } = await supabase
+    .from('inv_audits')
+    .update({ show_system_qty: showSystemQty })
+    .eq('id', auditId)
+  if (error) throw error
 }
 
 // ── Save Count (single item) ─────────────────────────────────

@@ -31,6 +31,7 @@ export default function MobileCountView() {
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<Toast | null>(null)
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null)
+  const [searchTerm, setSearchTerm] = useState('')
 
   function showToast(type: ToastType, message: string) {
     setToast({ type, message })
@@ -68,6 +69,16 @@ export default function MobileCountView() {
     })
     return map
   }, [items])
+
+  const filteredItems = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase()
+    if (!keyword) return items
+    return items.filter((item) => {
+      const code = item.pr_products?.product_code?.toLowerCase() || ''
+      const name = item.pr_products?.product_name?.toLowerCase() || ''
+      return code.includes(keyword) || name.includes(keyword)
+    })
+  }, [items, searchTerm])
 
   function handleScanResult(code: string) {
     setScannerOpen(false)
@@ -157,6 +168,7 @@ export default function MobileCountView() {
       <div className="min-h-screen bg-slate-200 p-4 max-w-lg mx-auto">
         <ProductCountCard
           item={selectedItem}
+          showSystemQty={!!audit.show_system_qty}
           onSave={handleSaveCount}
           onCancel={() => setSelectedItem(null)}
           saving={saving}
@@ -219,8 +231,51 @@ export default function MobileCountView() {
       {/* Content */}
       <div className="flex-1 max-w-lg mx-auto w-full px-4 py-3 pb-24">
         {mode === 'list' && (
-          <div className="space-y-2">
-            {items.map((item) => {
+          <div className="space-y-3">
+            <div className="relative">
+              <svg
+                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+              </svg>
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="ค้นหาด้วยรหัสหรือชื่อสินค้า..."
+                className="w-full pl-10 pr-10 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center text-gray-400 hover:text-gray-600 rounded-full"
+                  aria-label="ล้างการค้นหา"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+
+            {searchTerm.trim() && (
+              <div className="text-xs text-gray-500 px-1">
+                พบ {filteredItems.length} จาก {items.length} รายการ
+              </div>
+            )}
+
+            {searchTerm.trim() && filteredItems.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-2">
+                <div className="text-gray-400 text-4xl">&#128269;</div>
+                <div className="text-gray-500 text-sm">ไม่พบสินค้าที่ตรงกับ &quot;{searchTerm.trim()}&quot;</div>
+              </div>
+            ) : (
+            filteredItems.map((item) => {
               const productCode = item.pr_products?.product_code || ''
               const productName = item.pr_products?.product_name || ''
               const imageUrl = getPublicUrl('product-images', productCode, '.jpg')
@@ -256,6 +311,11 @@ export default function MobileCountView() {
                     <div className="text-xs text-red-600 font-medium mt-0.5">
                       {item.system_location || item.storage_location || '-'}
                     </div>
+                    {audit.show_system_qty && (
+                      <div className="text-xs text-blue-700 font-semibold mt-0.5">
+                        สต๊อค: {item.system_qty}
+                      </div>
+                    )}
                   </div>
                   <div className="flex-shrink-0">
                     {isCounted ? (
@@ -280,7 +340,8 @@ export default function MobileCountView() {
                   </div>
                 </button>
               )
-            })}
+            })
+            )}
           </div>
         )}
 

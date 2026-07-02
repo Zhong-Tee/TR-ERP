@@ -7,6 +7,7 @@ interface AuditListProps {
   statusFilter: string
   onStatusFilterChange: (status: string) => void
   userMap: Record<string, string>
+  onToggleShowSystemQty: (auditId: string, value: boolean) => void
 }
 
 const STATUS_OPTIONS = [
@@ -50,6 +51,7 @@ export default function AuditList({
   statusFilter,
   onStatusFilterChange,
   userMap,
+  onToggleShowSystemQty,
 }: AuditListProps) {
   const navigate = useNavigate()
 
@@ -103,6 +105,7 @@ export default function AuditList({
                 <th className="p-3 text-right font-semibold">จุดเก็บ</th>
                 <th className="p-3 text-right font-semibold">Safety</th>
                 <th className="p-3 text-center font-semibold">รายการ</th>
+                <th className="p-3 text-center font-semibold">แสดงสต๊อค</th>
                 <th className="p-3 text-left font-semibold">Auditor</th>
                 <th className="p-3 text-left font-semibold">ผู้สร้าง</th>
                 <th className="p-3 text-left font-semibold">วันที่</th>
@@ -130,6 +133,25 @@ export default function AuditList({
                     {audit.safety_stock_accuracy_percent != null ? `${audit.safety_stock_accuracy_percent.toFixed(1)}%` : '-'}
                   </td>
                   <td className="p-3 text-center">{audit.total_items || 0}</td>
+                  <td className="p-3">
+                    {audit.status === 'in_progress' ? (
+                      <label className="flex items-center justify-center cursor-pointer" title="แสดงตัวเลขสต๊อคคงเหลือให้ผู้ตรวจนับ">
+                        <input
+                          type="checkbox"
+                          checked={!!audit.show_system_qty}
+                          onChange={(e) => onToggleShowSystemQty(audit.id, e.target.checked)}
+                          className="peer sr-only"
+                        />
+                        <span className="relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white" />
+                      </label>
+                    ) : (
+                      <div className="flex items-center justify-center">
+                        <span className={`text-xs font-semibold ${audit.show_system_qty ? 'text-blue-600' : 'text-gray-400'}`}>
+                          {audit.show_system_qty ? 'เปิด' : 'ปิด'}
+                        </span>
+                      </div>
+                    )}
+                  </td>
                   <td className="p-3 text-xs text-gray-600">
                     {audit.assigned_to && audit.assigned_to.length > 0
                       ? audit.assigned_to.map((uid) => userMap[uid] || uid).join(', ')

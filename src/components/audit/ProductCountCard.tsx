@@ -4,6 +4,7 @@ import type { InventoryAuditItem } from '../../types'
 
 interface ProductCountCardProps {
   item: InventoryAuditItem
+  showSystemQty?: boolean
   onSave: (data: {
     countedQty: number
     locationMatch: boolean
@@ -14,7 +15,7 @@ interface ProductCountCardProps {
   saving: boolean
 }
 
-export default function ProductCountCard({ item, onSave, onCancel, saving }: ProductCountCardProps) {
+export default function ProductCountCard({ item, showSystemQty = false, onSave, onCancel, saving }: ProductCountCardProps) {
   const [countedQty, setCountedQty] = useState<string>(
     item.is_counted ? String(item.counted_qty ?? '') : ''
   )
@@ -74,6 +75,12 @@ export default function ProductCountCard({ item, onSave, onCancel, saving }: Pro
           <div className="text-sm text-red-600 font-semibold mt-1">
             จุดเก็บ: {systemLocation}
           </div>
+          {showSystemQty && (
+            <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
+              <span className="text-xs font-medium text-blue-700">สต๊อคคงเหลือ (ระบบ)</span>
+              <span className="text-lg font-bold text-blue-800">{item.system_qty}</span>
+            </div>
+          )}
         </div>
 
         {/* Counted Qty - Blind Count */}

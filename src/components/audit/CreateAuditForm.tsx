@@ -11,6 +11,7 @@ export default function CreateAuditForm() {
   const { user } = useAuthContext()
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState('')
+  const [showSystemQty, setShowSystemQty] = useState(false)
 
   // Scope
   const [auditType, setAuditType] = useState<AuditType>('full')
@@ -86,6 +87,7 @@ export default function CreateAuditForm() {
         assignedTo: selectedAuditors,
         note,
         userId: user.id,
+        showSystemQty,
       })
       showModal(
         'success',
@@ -142,6 +144,31 @@ export default function CreateAuditForm() {
           selectedProductIds={selectedProductIds}
           onProductIdsChange={setSelectedProductIds}
         />
+      </div>
+
+      {/* Show System Qty Toggle */}
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold text-gray-700">แสดงตัวเลขสต๊อคคงเหลือ</div>
+            <div className="text-sm text-gray-500 mt-1">
+              เปิดเพื่อให้ผู้ตรวจนับเห็นจำนวนสต๊อคในระบบ (snapshot ตอนสร้างใบ Audit)
+              ปิดเพื่อนับแบบไม่เห็นตัวเลข (Blind Count)
+            </div>
+          </div>
+          <label className="flex items-center gap-3 cursor-pointer flex-shrink-0">
+            <span className="text-sm font-medium text-gray-600">
+              {showSystemQty ? 'เปิด' : 'ปิด'}
+            </span>
+            <input
+              type="checkbox"
+              checked={showSystemQty}
+              onChange={(e) => setShowSystemQty(e.target.checked)}
+              className="peer sr-only"
+            />
+            <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
+          </label>
+        </div>
       </div>
 
       {/* Assign Auditor */}
