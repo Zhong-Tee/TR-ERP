@@ -23,6 +23,7 @@ export interface TaxInvoicePDFProps {
   customerPhone?: string
   items: TaxInvoiceItem[]
   discount: number
+  shippingCost?: number
   subtotal: number
   netAmount: number
   vatRate: number
@@ -333,6 +334,7 @@ export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
     customerPhone,
     items,
     discount,
+    shippingCost = 0,
     subtotal,
     netAmount,
     vatRate,
@@ -497,6 +499,12 @@ export default function TaxInvoicePDF(props: TaxInvoicePDFProps) {
               <Text style={s.summaryLabel}>{'รวมเป็นเงิน / AMOUNT' + Z}</Text>
               <Text style={s.summaryValue}>{formatCurrency(subtotal) + Z}</Text>
             </View>
+            {shippingCost > 0 && (
+              <View style={s.summaryRow}>
+                <Text style={s.summaryLabel}>{'ค่าขนส่ง / SHIPPING' + Z}</Text>
+                <Text style={s.summaryValue}>{formatCurrency(shippingCost) + Z}</Text>
+              </View>
+            )}
             <View style={s.summaryRow}>
               <Text style={s.summaryLabel}>{'มูลค่าสินค้าที่นำมาคิดภาษี / NET AMOUNT' + Z}</Text>
               <Text style={s.summaryValue}>{formatCurrency(netAmount) + Z}</Text>

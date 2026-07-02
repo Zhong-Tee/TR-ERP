@@ -97,7 +97,7 @@ export default function Orders() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
   })
   const [allDateTo, setAllDateTo] = useState(() => new Date().toISOString().split('T')[0])
-  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('จัดส่งแล้ว')
+  const [allStatusFilter, setAllStatusFilter] = useState<OrderStatus | ''>('')
   const [salesTrAdminValues, setSalesTrAdminValues] = useState<string[]>([])
   const [salesTrTeamRows, setSalesTrTeamRows] = useState<{ username?: string | null; email?: string | null }[]>([])
   /** กรองตามสมาชิกทีม ('' = ทั้งทีม) — ใช้ร่วมหลายแท็บ */

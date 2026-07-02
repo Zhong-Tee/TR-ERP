@@ -292,3 +292,51 @@ export async function parseAddressText(
     subDistrictOptions: subDistrictOptions.length > 0 ? subDistrictOptions : undefined,
   }
 }
+
+export interface AddressParts {
+  /** ชื่อผู้รับ ที่แยกจากต้นข้อความ (คำก่อนเลขที่/หมู่/ต./อ./จ.) */
+  recipientName: string
+  /** เบอร์โทร (รูปแบบ 0 ตามด้วย 9 หลัก) */
+  phone: string
+  /** ที่อยู่ที่ตัดชื่อผู้รับและเบอร์โทรออกแล้ว (ยังคงแขวง/เขต/จังหวัด/รหัสไปรษณีย์ไว้) */
+  address: string
+}
+
+/**
+ * แยกข้อความที่อยู่แบบก้อนเดียว (ชื่อผู้รับ + เบอร์โทร + ที่อยู่) ออกเป็นหัวข้อ
+ * แบบ synchronous (ไม่แตะ DB) — ใช้สำหรับ "แสดงผล" ในหน้าดูรายละเอียดบิล
+ * ต่างจาก parseAddressText ตรงที่ยังคงแขวง/เขต/จังหวัด/รหัสไปรษณีย์ไว้ในช่องที่อยู่
+ */
+export function splitAddressParts(raw: string | null | undefined, fallbackRecipientName?: string | null): AddressParts {
+  const text = (raw ?? '').replace(/\r\n/g, '\n').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
+  const fallback = (fallbackRecipientName ?? '').trim()
+  if (!text) return { recipientName: fallback, phone: '', address: '' }
+
+  const { candidates, rest } = extractPhonesFromText(text)
+  const phone = candidates[0] ? e164ToLocal(candidates[0]) : ''
+
+  // ตัดคำนำหน้าเบอร์โทร (tel / โทร / เบอร์) ที่หลงเหลือหลังจากตัดตัวเลขออก
+  let body = rest
+    .replace(/\b(tel|โทร\.?|เบอร์(?:โทร)?\.?)\b[:\s]*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // ดึงชื่อผู้รับจากต้นข้อความ — คำก่อนเลขที่/หมู่/ต./อ./จ./บ้าน
+  const tokens = body.split(/\s+/).filter(Boolean)
+  const nameTokens: string[] = []
+  for (const t of tokens) {
+    if (/^\d/.test(t) || t === 'หมู่' || /^ต\./.test(t) || /^อ\./.test(t) || /^จ\./.test(t) || /^บ้าน/.test(t) || /^เลขที่/.test(t)) break
+    nameTokens.push(t)
+  }
+
+  let recipientName = ''
+  let address = body
+  // แยกชื่อออกเฉพาะเมื่อยังเหลือส่วนที่อยู่จริง (กันกรณีดูดทั้งก้อนเป็นชื่อ)
+  if (nameTokens.length > 0 && nameTokens.length < tokens.length) {
+    recipientName = nameTokens.join(' ').replace(/^ส่ง\s+/, '').trim()
+    address = tokens.slice(nameTokens.length).join(' ').trim()
+  }
+
+  if (!recipientName) recipientName = fallback
+  return { recipientName, phone, address }
+}

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime } from '../lib/utils'
+import { splitAddressParts } from '../lib/thaiAddress'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../lib/claimTypeLabels'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
@@ -54,6 +55,7 @@ type BillingRequestOrder = {
   bill_no: string
   customer_name: string
   total_amount: number
+  shipping_cost: number | null
   status: string
   created_at: string
   billing_details: any
@@ -591,7 +593,7 @@ export default function Account() {
       const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'
       const { data: taxData, error: taxError } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
+        .select('id, bill_no, customer_name, total_amount, shipping_cost, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
         .contains('billing_details', { request_tax_invoice: true })
         .not('status', 'in', excludeBillingStatuses)
         .order('created_at', { ascending: false })
@@ -659,7 +661,7 @@ export default function Account() {
       const [taxRes, refundRes, claimRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
+          .select('id, bill_no, customer_name, total_amount, shipping_cost, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_tax_invoice: true })
           .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
@@ -1390,19 +1392,19 @@ export default function Account() {
                 <div className="text-center py-12 text-gray-500 text-base">ไม่พบประวัติใบกำกับภาษีที่ยืนยันแล้ว</div>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-gray-100">
-                  <table className="w-full text-base">
+                  <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-gray-50 border-b border-gray-200">
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบริษัท</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">TAX ID</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดก่อนภาษี</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">มูลค่าภาษี</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดสุทธิ</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ยืนยัน</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">เลขบิล</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อลูกค้า</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อบริษัท</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">TAX ID</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ที่อยู่</th>
+                        <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">ยอดก่อนภาษี</th>
+                        <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">มูลค่าภาษี</th>
+                        <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">ยอดสุทธิ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">วันที่ยืนยัน</th>
+                        <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">การจัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1412,37 +1414,44 @@ export default function Account() {
                           <tr
                             key={o.id}
                             onClick={() => { setViewOrderId(o.id); setViewBillRefund(null) }}
-                            className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
+                            className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer align-top"
                           >
-                            <td className="px-4 py-3 font-semibold text-sky-700">
+                            <td className="px-4 py-3 font-semibold text-sky-700 whitespace-nowrap">
                               <span>{o.bill_no}</span>
                               {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
                                 <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-gray-800">{o.customer_name || '–'}</td>
-                            <td className="px-4 py-3 text-gray-700">{bd.tax_customer_name || '–'}</td>
-                            <td className="px-4 py-3 text-gray-700 tabular-nums">{bd.tax_id || '–'}</td>
-                            <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={bd.tax_customer_address}>{bd.tax_customer_address || '–'}</td>
-                            <td className="px-4 py-3 text-gray-700 tabular-nums">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return b.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
-                            <td className="px-4 py-3 text-gray-700 tabular-nums">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return (t - b).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
-                            <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-gray-500 text-sm">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
-                            <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center gap-1.5">
+                            <td className="px-4 py-3 text-gray-800">
+                              <span className="block max-w-[140px] truncate" title={o.customer_name || ''}>{o.customer_name || '–'}</span>
+                            </td>
+                            <td className="px-4 py-3 text-gray-700">
+                              <span className="block max-w-[160px] truncate" title={bd.tax_customer_name || ''}>{bd.tax_customer_name || '–'}</span>
+                            </td>
+                            <td className="px-4 py-3 text-gray-700 tabular-nums whitespace-nowrap">{bd.tax_id || '–'}</td>
+                            <td className="px-4 py-3 text-gray-600">
+                              <span className="block max-w-[220px] text-xs leading-snug line-clamp-2" title={bd.tax_customer_address || ''}>{bd.tax_customer_address || '–'}</span>
+                            </td>
+                            <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return b.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
+                            <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return (t - b).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
+                            <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums text-right whitespace-nowrap">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
+                            <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex flex-col gap-1.5 w-40">
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); viewTaxInvoice(o) }}
-                                  className="px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors inline-flex items-center gap-1.5"
+                                  className="w-full px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                                 >
-                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                   ออกใบกำกับภาษี
                                 </button>
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); openSlipPopup(o.id, o.bill_no) }}
-                                  className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors"
+                                  className="w-full px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
                                 >
+                                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                                   ดูสลิปโอน
                                 </button>
                               </div>
@@ -1632,6 +1641,7 @@ export default function Account() {
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ที่อยู่</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ยอดก่อนภาษี</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">มูลค่าภาษี</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ค่าจัดส่ง</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">ยอดสุทธิ</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">สถานะ</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-700 text-xs whitespace-nowrap">วันที่สร้าง</th>
@@ -1667,6 +1677,9 @@ export default function Account() {
                       </td>
                       <td className="px-3 py-2.5 text-gray-700 tabular-nums">
                         ฿{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="px-3 py-2.5 text-gray-700 tabular-nums">
+                        ฿{Number(o.shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="px-3 py-2.5 font-semibold text-emerald-600 tabular-nums">
                         ฿{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1781,9 +1794,20 @@ export default function Account() {
                     </p>
                     <p><span className="font-medium text-gray-600">สถานะ:</span> {viewOrder.status}</p>
                     <p className="col-span-2"><span className="font-medium text-gray-600">ลูกค้า:</span> {viewOrder.customer_name}</p>
-                    <p className="col-span-2"><span className="font-medium text-gray-600">ที่อยู่:</span> {viewOrder.customer_address || '–'}</p>
-                    <p><span className="font-medium text-gray-600">ยอดรวม:</span> ฿{Number(viewOrder.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
-                    <p><span className="font-medium text-gray-600">วันที่สร้าง:</span> {formatDateTime(viewOrder.created_at)}</p>
+                    {(() => {
+                      const parts = splitAddressParts(viewOrder.customer_address, (viewOrder as any).recipient_name)
+                      const recipient = ((viewOrder as any).recipient_name || '').trim() || parts.recipientName
+                      const phone = (viewOrder.billing_details?.mobile_phone || '').trim() || parts.phone
+                      const addr = parts.address || viewOrder.customer_address || '–'
+                      return (
+                        <>
+                          {recipient && <p className="col-span-2"><span className="font-medium text-gray-600">ชื่อผู้รับ:</span> {recipient}</p>}
+                          <p className="col-span-2"><span className="font-medium text-gray-600">ที่อยู่:</span> {addr}</p>
+                          {phone && <p className="col-span-2"><span className="font-medium text-gray-600">เบอร์โทร:</span> {phone}</p>}
+                        </>
+                      )
+                    })()}
+                    <p className="col-span-2"><span className="font-medium text-gray-600">วันที่สร้าง:</span> {formatDateTime(viewOrder.created_at)}</p>
                   </div>
                   {viewBillRefund && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
@@ -1870,6 +1894,49 @@ export default function Account() {
                       </table>
                     </div>
                   </div>
+                  <div className="flex justify-end">
+                    <div className="w-64 space-y-1">
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="font-medium text-gray-600">ค่าจัดส่ง</span>
+                        <span className="tabular-nums text-gray-800">฿{Number((viewOrder as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      <div className="flex justify-between py-2 px-3 rounded-lg bg-sky-50">
+                        <span className="font-semibold text-gray-700">ยอดรวม</span>
+                        <span className="font-bold tabular-nums text-emerald-600">฿{Number(viewOrder.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {(() => {
+                    const bd = viewOrder.billing_details || {}
+                    const hasTaxInvoice = bd.request_tax_invoice || bd.tax_customer_name || bd.tax_id || bd.tax_customer_address
+                    if (!hasTaxInvoice) return null
+                    return (
+                      <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-4 h-4 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                          <h4 className="font-semibold text-gray-800">ข้อมูลใบกำกับภาษี</h4>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">ชื่อบริษัท/ผู้เสียภาษี:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_name || '–'}</span>
+                          </p>
+                          <p>
+                            <span className="font-medium text-gray-600">เลขประจำตัวผู้เสียภาษี:</span>{' '}
+                            <span className="text-gray-800 tabular-nums">{bd.tax_id || '–'}</span>
+                          </p>
+                          <p>
+                            <span className="font-medium text-gray-600">เบอร์โทร:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_phone || '–'}</span>
+                          </p>
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">ที่อยู่:</span>{' '}
+                            <span className="text-gray-800">{bd.tax_customer_address || '–'}</span>
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })()}
                 </div>
               ) : (
                 <p className="text-gray-500">ไม่พบข้อมูลบิล</p>

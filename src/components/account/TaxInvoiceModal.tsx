@@ -15,6 +15,7 @@ interface TaxInvoiceOrder {
   bill_no: string
   customer_name: string
   total_amount: number
+  shipping_cost?: number | null
   channel_code?: string | null
   channel_order_no?: string | null
   billing_details?: {
@@ -197,11 +198,12 @@ export default function TaxInvoiceModal({
     return arr
   })()
 
+  const shippingCost = Number(order?.shipping_cost || 0)
   const subtotal = filledItems.reduce((s, r) => s + (r.amount || 0), 0)
   const afterDiscount = subtotal - discount
-  const netAmount = Math.round((afterDiscount / (1 + VAT_RATE / 100)) * 100) / 100
-  const vatAmount = Math.round((afterDiscount - netAmount) * 100) / 100
-  const grandTotal = afterDiscount
+  const grandTotal = afterDiscount + shippingCost
+  const netAmount = Math.round((grandTotal / (1 + VAT_RATE / 100)) * 100) / 100
+  const vatAmount = Math.round((grandTotal - netAmount) * 100) / 100
 
   /* REF DOC NO logic based on channel */
   const refDocNo = (() => {
@@ -254,6 +256,7 @@ export default function TaxInvoiceModal({
         customerPhone={customerPhone || undefined}
         items={filledItems.filter(r => r.description && r.quantity > 0)}
         discount={discount}
+        shippingCost={shippingCost}
         subtotal={subtotal}
         netAmount={netAmount}
         vatRate={VAT_RATE}
@@ -264,7 +267,7 @@ export default function TaxInvoiceModal({
         isCopy={false}
       />
     )
-  }, [selectedHeader, invoiceNo, invoiceDate, customerName, customerAddress, customerTaxId, customerBranch, customerPhone, filledItems, discount, subtotal, netAmount, vatAmount, grandTotal, refDocNo])
+  }, [selectedHeader, invoiceNo, invoiceDate, customerName, customerAddress, customerTaxId, customerBranch, customerPhone, filledItems, discount, shippingCost, subtotal, netAmount, vatAmount, grandTotal, refDocNo])
 
   const pdfDocument = useMemo(() => buildPdfElement(), [buildPdfElement])
 
@@ -330,6 +333,7 @@ export default function TaxInvoiceModal({
 
     const summaryRows: [string, string][] = [
       ['รวมเป็นเงิน / Amount', Number(subtotal || 0).toFixed(2)],
+      ...(shippingCost > 0 ? ([['ค่าขนส่ง / Shipping', Number(shippingCost).toFixed(2)]] as [string, string][]) : []),
       ['มูลค่าสินค้าที่นำมาคิดภาษี', Number(netAmount || 0).toFixed(2)],
       [`ภาษีมูลค่าเพิ่ม ${VAT_RATE}%`, Number(vatAmount || 0).toFixed(2)],
       ['รวมจำนวนเงิน / TOTAL', Number(grandTotal || 0).toFixed(2)],
@@ -598,6 +602,12 @@ export default function TaxInvoiceModal({
                 <span className="text-gray-600">รวมเป็นเงิน / Amount</span>
                 <span className="font-medium">{subtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
               </div>
+              {shippingCost > 0 && (
+                <div className="flex justify-between text-sm py-1 border-b border-gray-100">
+                  <span className="text-gray-600">ค่าขนส่ง / Shipping</span>
+                  <span className="font-medium">{shippingCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+                </div>
+              )}
               <div className="flex justify-between text-sm py-1 border-b border-gray-100">
                 <span className="text-gray-600">มูลค่าสินค้าที่นำมาคิดภาษี</span>
                 <span className="font-medium">{netAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>

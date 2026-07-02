@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Order, OrderItem, IssueType } from '../../types'
-import { parseAddressText, ParsedAddress } from '../../lib/thaiAddress'
+import { parseAddressText, ParsedAddress, splitAddressParts } from '../../lib/thaiAddress'
 import { e164ToLocal } from '../../lib/thaiPhone'
 import * as XLSX from 'xlsx'
 import { buildProductionLikeExport } from '../../lib/orderProductionExcel'
@@ -159,6 +159,11 @@ export default function OrderDetailView({
       ? e164ToLocal(parsedAddr.mobilePhoneCandidates[0])
       : parsedAddr?.mobilePhone) ||
     null
+
+  // แยก ชื่อผู้รับ / ที่อยู่ / เบอร์โทร ออกจากก้อนที่อยู่เพื่อแสดงผลให้อ่านง่าย
+  const addressParts = splitAddressParts(order.customer_address, order.recipient_name)
+  const displayRecipientName = order.recipient_name?.trim() || addressParts.recipientName || null
+  const displayAddress = addressParts.address || order.customer_address || null
 
   useEffect(() => {
     setFullOrder(null)
@@ -385,16 +390,16 @@ export default function OrderDetailView({
             <InfoRow label="ช่องทาง" value={order.channel_code} />
             <InfoRow label="สถานะ" value={order.status} />
             <InfoRow label="ชื่อลูกค้า" value={order.customer_name} />
-            <InfoRow label="ชื่อผู้รับ" value={order.recipient_name} />
+            <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
+            <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
             <div className="md:col-span-2">
-              <InfoRow label="ที่อยู่" value={order.customer_address} />
+              <InfoRow label="ที่อยู่" value={displayAddress} />
             </div>
             <InfoRow label="แขวง/ตำบล" value={displaySubDistrict} />
             <InfoRow label="เขต/อำเภอ" value={displayDistrict} />
             <InfoRow label="จังหวัด" value={displayProvince} />
             <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
-            <InfoRow label="เบอร์โทร" value={displayPhone} />
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
             <InfoRow label="ผู้ลงออเดอร์" value={order.admin_user} />
             <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
