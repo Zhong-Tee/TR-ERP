@@ -1397,11 +1397,11 @@ export default function Account() {
                       <tr className="bg-gray-50 border-b border-gray-200">
                         <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">เลขบิล</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อลูกค้า</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อบริษัท</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">TAX ID</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อบริษัท / TAX ID</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">ที่อยู่</th>
                         <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">ยอดก่อนภาษี</th>
                         <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">มูลค่าภาษี</th>
+                        <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">ค่าขนส่ง</th>
                         <th className="px-4 py-3 text-right font-semibold text-gray-700 whitespace-nowrap">ยอดสุทธิ</th>
                         <th className="px-4 py-3 text-left font-semibold text-gray-700 whitespace-nowrap">วันที่ยืนยัน</th>
                         <th className="px-4 py-3 text-center font-semibold text-gray-700 whitespace-nowrap">การจัดการ</th>
@@ -1426,14 +1426,15 @@ export default function Account() {
                               <span className="block max-w-[140px] truncate" title={o.customer_name || ''}>{o.customer_name || '–'}</span>
                             </td>
                             <td className="px-4 py-3 text-gray-700">
-                              <span className="block max-w-[160px] truncate" title={bd.tax_customer_name || ''}>{bd.tax_customer_name || '–'}</span>
+                              <span className="block max-w-[180px] truncate" title={bd.tax_customer_name || ''}>{bd.tax_customer_name || '–'}</span>
+                              <span className="block text-xs text-gray-400 tabular-nums mt-0.5">{bd.tax_id ? `TAX ID: ${bd.tax_id}` : '–'}</span>
                             </td>
-                            <td className="px-4 py-3 text-gray-700 tabular-nums whitespace-nowrap">{bd.tax_id || '–'}</td>
                             <td className="px-4 py-3 text-gray-600">
                               <span className="block max-w-[220px] text-xs leading-snug line-clamp-2" title={bd.tax_customer_address || ''}>{bd.tax_customer_address || '–'}</span>
                             </td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return b.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return (t - b).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
+                            <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{Number((o as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums text-right whitespace-nowrap">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
                             <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>

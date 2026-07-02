@@ -412,7 +412,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         isOpen ? 'w-64' : 'w-20'
       }`}
     >
-      <div className="flex h-[4.5rem] items-center justify-center border-b border-slate-200 px-3">
+      <div className="relative flex h-[4.5rem] items-center justify-center border-b border-slate-200 px-3">
         <div className="flex items-center gap-3">
           <img
             src="/icon.png?v=2"
@@ -425,6 +425,9 @@ export default function Sidebar({ isOpen }: SidebarProps) {
             </h1>
           )}
         </div>
+        {isOpen && (
+          <span className="absolute bottom-1 right-2 text-[10px] leading-none text-slate-400">v{__APP_VERSION__}</span>
+        )}
       </div>
 
       <nav className="p-4 flex-1 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
