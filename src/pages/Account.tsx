@@ -1908,7 +1908,7 @@ export default function Account() {
                     </div>
                   </div>
                   {(() => {
-                    const bd = viewOrder.billing_details || {}
+                    const bd: any = viewOrder.billing_details || {}
                     const hasTaxInvoice = bd.request_tax_invoice || bd.tax_customer_name || bd.tax_id || bd.tax_customer_address
                     if (!hasTaxInvoice) return null
                     return (
