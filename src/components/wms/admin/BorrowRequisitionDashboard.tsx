@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
+import { buildIlikeOr } from '../../../lib/searchFilter'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { useWmsModal } from '../useWmsModal'
 import { getProductImageUrl } from '../wmsUtils'
@@ -295,7 +296,7 @@ export default function BorrowRequisitionDashboard() {
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
         .eq('product_type', crProductType)
-        .or(`product_code.ilike.%${crSearchTerm}%,product_name.ilike.%${crSearchTerm}%`)
+        .or(buildIlikeOr(crSearchTerm, ['product_code', 'product_name']))
         .limit(20)
       setCrProducts(data || [])
     } catch {} finally { setCrSearching(false) }

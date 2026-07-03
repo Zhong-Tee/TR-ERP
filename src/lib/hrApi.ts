@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { buildIlikeOr } from './searchFilter'
 import type {
   HRDepartment, HRPosition, HREmployee, HRLeaveType, HRLeaveRequest,
   HRLeaveBalance, HRCandidate, HRInterview, HRInterviewScore,
@@ -1165,7 +1166,7 @@ export async function fetchAssets(filters?: {
   if (filters?.assignedEmployeeId) q = q.eq('assigned_employee_id', filters.assignedEmployeeId)
   if (filters?.search?.trim()) {
     const term = filters.search.trim()
-    q = q.or(`name.ilike.%${term}%,asset_code.ilike.%${term}%,category.ilike.%${term}%,location.ilike.%${term}%`)
+    q = q.or(buildIlikeOr(term, ['name', 'asset_code', 'category', 'location']))
   }
   const { data, error } = await q
   if (error) pgError(error)

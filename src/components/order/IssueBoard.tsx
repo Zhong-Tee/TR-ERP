@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { formatDateTime } from '../../lib/utils'
 import { Issue, IssueMessage, IssueType, Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -514,7 +515,7 @@ export default function IssueBoard({
         const { data, error } = await supabase
           .from('or_orders')
           .select('id, bill_no, customer_name, work_order_name')
-          .or(`bill_no.ilike.%${q}%,customer_name.ilike.%${q}%`)
+          .or(buildIlikeOr(q, ['bill_no', 'customer_name']))
           .order('created_at', { ascending: false })
           .limit(20)
         if (error) throw error

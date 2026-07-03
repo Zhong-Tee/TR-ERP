@@ -2,6 +2,7 @@
  * QC System API: work orders, items by WO, settings_reasons, ink_types, storage URL.
  */
 import { supabase } from './supabase'
+import { buildIlikeOr } from './searchFilter'
 import * as XLSX from 'xlsx'
 import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
@@ -826,7 +827,7 @@ export async function searchProducts(query: string): Promise<{ product_code: str
     .from('pr_products')
     .select('product_code, product_name')
     .eq('is_active', true)
-    .or(`product_code.ilike.%${query}%,product_name.ilike.%${query}%`)
+    .or(buildIlikeOr(query, ['product_code', 'product_name']))
     .limit(20)
   if (error) throw error
   return data || []

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, OrderStatus } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
@@ -146,7 +147,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
         let query = q
         if (searchQuery.trim()) {
           const s = searchQuery.trim()
-          query = query.or(`bill_no.ilike.%${s}%,channel_order_no.ilike.%${s}%,customer_name.ilike.%${s}%,customer_address.ilike.%${s}%`)
+          query = query.or(buildIlikeOr(s, ['bill_no', 'channel_order_no', 'customer_name', 'customer_address']))
         }
         if (filterChannel) query = query.eq('channel_code', filterChannel)
         return query

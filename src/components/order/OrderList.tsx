@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -214,7 +215,7 @@ export default function OrderList({
           .order('created_at', { ascending: false })
         if (searchTerm) {
           query = query.or(
-            `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
+            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
           )
         }
         if (channelFilter) {
@@ -253,7 +254,7 @@ export default function OrderList({
 
         if (searchTerm) {
           query = query.or(
-            `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%`
+            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
           )
         }
 

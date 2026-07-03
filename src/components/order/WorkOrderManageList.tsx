@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, WorkOrder } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
@@ -400,7 +401,7 @@ export default function WorkOrderManageList({
           .select('work_order_id')
           .not('work_order_id', 'is', null)
           .or(
-            `bill_no.ilike.%${searchRaw}%,customer_name.ilike.%${searchRaw}%,recipient_name.ilike.%${searchRaw}%,tracking_number.ilike.%${searchRaw}%,channel_order_no.ilike.%${searchRaw}%`
+            buildIlikeOr(searchRaw, ['bill_no', 'customer_name', 'recipient_name', 'tracking_number', 'channel_order_no'])
           )
         if (mode === 'active') {
           orderMatchQuery = orderMatchQuery

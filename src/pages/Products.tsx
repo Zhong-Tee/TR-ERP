@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
+import { buildIlikeOr } from '../lib/searchFilter'
 import { getPublicUrl } from '../lib/qcApi'
 import { getNextProductCode } from '../lib/purchaseApi'
 import Modal from '../components/ui/Modal'
@@ -559,9 +560,7 @@ export default function Products() {
       }
 
       if (appliedSearch) {
-        query = query.or(
-          `product_code.ilike.%${appliedSearch}%,product_name.ilike.%${appliedSearch}%`
-        )
+        query = query.or(buildIlikeOr(appliedSearch, ['product_code', 'product_name']))
       }
       if (categoryFilter) {
         query = query.eq('product_category', categoryFilter)

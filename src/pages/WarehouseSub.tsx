@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { buildIlikeOr } from '../lib/searchFilter'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
@@ -588,7 +589,7 @@ export default function WarehouseSub() {
           .from('pr_products')
           .select('id, product_code, product_name, unit_name')
           .eq('is_active', true)
-          .or(`product_code.ilike.%${term}%,product_name.ilike.%${term}%`)
+          .or(buildIlikeOr(term, ['product_code', 'product_name']))
           .order('product_code', { ascending: true })
           .limit(20)
         if (error) throw error

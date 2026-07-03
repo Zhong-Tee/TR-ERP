@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { buildIlikeOr } from '../../../lib/searchFilter'
 import BarcodeScanner from './BarcodeScanner'
 import { getProductImageUrl } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
@@ -122,7 +123,7 @@ export default function ProductionBorrow() {
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
         .eq('product_type', productTypeFilter)
-        .or(`product_code.ilike.%${searchTerm}%,product_name.ilike.%${searchTerm}%`)
+        .or(buildIlikeOr(searchTerm, ['product_code', 'product_name']))
         .limit(20)
       if (error) throw error
       setProducts(data || [])

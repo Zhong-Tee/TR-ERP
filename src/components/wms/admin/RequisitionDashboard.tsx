@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import { buildIlikeOr } from '../../../lib/searchFilter'
 import { getProductImageUrl } from '../wmsUtils'
 import RequisitionDetailModal from './RequisitionDetailModal'
 import Modal from '../../ui/Modal'
@@ -294,7 +295,7 @@ export default function RequisitionDashboard() {
         .select('product_code, product_name, storage_location')
         .eq('is_active', true)
         .eq('product_type', cProductType)
-        .or(`product_code.ilike.%${cSearchTerm}%,product_name.ilike.%${cSearchTerm}%`)
+        .or(buildIlikeOr(cSearchTerm, ['product_code', 'product_name']))
         .limit(20)
       setCProducts(data || [])
     } finally {

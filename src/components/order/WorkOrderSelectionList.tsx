@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { localISODate } from '../../lib/localDate'
 import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
@@ -55,7 +56,7 @@ export default function WorkOrderSelectionList({
 
       if (searchTerm) {
         query = query.or(
-          `bill_no.ilike.%${searchTerm}%,customer_name.ilike.%${searchTerm}%,admin_user.ilike.%${searchTerm}%,tracking_number.ilike.%${searchTerm}%,channel_order_no.ilike.%${searchTerm}%,recipient_name.ilike.%${searchTerm}%`
+          buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'admin_user', 'tracking_number', 'channel_order_no', 'recipient_name'])
         )
       }
 
