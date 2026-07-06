@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -10,6 +10,13 @@ type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: 
 
 const PARCEL_TYPES = ['กล่อง', 'ซองกระดาษ', 'ซองบับเบิล', 'ถุงพัสดุ'] as const
 type ParcelType = (typeof PARCEL_TYPES)[number]
+
+/** ตัดช่องว่าง/อักขระซ่อน (เว้นวรรค, ขึ้นบรรทัดใหม่, zero-width) แล้วแปลงพิมพ์ใหญ่ — ใช้เทียบเลขพัสดุให้ทนต่อข้อมูลที่มีช่องว่างติดมา */
+function normalizeTracking(value: string | null | undefined): string {
+  return String(value ?? '')
+    .replace(/[\s\u200B-\u200D\uFEFF]/g, '')
+    .toUpperCase()
+}
 
 function normalizeParcelType(value: string | null | undefined): ParcelType {
   const v = String(value || '').trim()
@@ -189,7 +196,7 @@ export default function TransportVerification() {
   }
 
   async function handleScan() {
-    const trackingNo = scanValue.trim().toUpperCase()
+    const trackingNo = normalizeTracking(scanValue)
     setScanValue('')
     if (!trackingNo) return
     if (!activeCarrier) {
@@ -198,7 +205,7 @@ export default function TransportVerification() {
     }
     try {
       const orderIndex = orders.findIndex(
-        (o) => String(o.tracking_number || '').toUpperCase() === trackingNo
+        (o) => normalizeTracking(o.tracking_number) === trackingNo
       )
       const order = orders[orderIndex]
       if (!order) throw new Error('ไม่พบเลขพัสดุ!')

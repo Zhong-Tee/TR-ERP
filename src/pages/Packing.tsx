@@ -259,6 +259,7 @@ export default function Packing() {
     type: ''
   })
   const [searchTerm, setSearchTerm] = useState('')
+  const [showUnpackedOnly, setShowUnpackedOnly] = useState(false)
   const [parcelScanValue, setParcelScanValue] = useState('')
   const [itemScanValue, setItemScanValue] = useState('')
   const [recordingState, setRecordingState] = useState<RecordingState>({ status: 'idle', tracking: null })
@@ -1010,11 +1011,31 @@ export default function Packing() {
             packedItems += unitScanned
             if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
           })
+
+          // ตรวจว่า "ทุกชิ้นในใบงานถูกข้าม QC (skip)" หรือไม่ — ใช้เป็น fallback ของ qcSkipped
+          // เผื่อกรณี qc_skip_logs หาย/ชื่อไม่ตรง แต่ข้อมูลจริงใน qc_records บอกว่า skip ครบทุกชิ้น
+          // นับจากทุกบิลในใบงาน (ไม่จำกัดเฉพาะที่มีเลขพัสดุ) ให้ตรงกับป้าย "ไม่ต้อง QC" เดิม
+          let allUnitCount = 0
+          let skipUnitCount = 0
+          ordersInWo.forEach((o: any) => {
+            const bill = String(o.bill_no || '').trim() || '—'
+            let seq = 0
+            ;(o.or_order_items || []).forEach((oi: any) => {
+              const n = normalizedLineQuantity(oi.quantity)
+              for (let i = 0; i < n; i += 1) {
+                seq += 1
+                allUnitCount += 1
+                if (qcStatusMap[flatBillUnitUid(bill, seq)] === 'skip') skipUnitCount += 1
+              }
+            })
+          })
+          const allUnitsSkipped = allUnitCount > 0 && skipUnitCount === allUnitCount
+
           statusMap[wo.work_order_name] = {
             hasTracking,
             isPartiallyPacked,
             qcCompleted: finishedWoSet.has(wo.work_order_name),
-            qcSkipped: skippedWoSet.has(wo.work_order_name),
+            qcSkipped: skippedWoSet.has(wo.work_order_name) || allUnitsSkipped,
             readyBills,
             totalItems,
             packedItems,
@@ -2335,6 +2356,20 @@ export default function Packing() {
                   onChange={(event) => setSearchTerm(event.target.value)}
                 />
               </div>
+              <button
+                type="button"
+                onClick={() => setShowUnpackedOnly((v) => !v)}
+                className={`inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+                  showUnpackedOnly
+                    ? 'border-amber-500 bg-amber-500 text-white shadow-sm hover:bg-amber-600'
+                    : 'border-amber-300 bg-white text-amber-700 hover:bg-amber-50'
+                }`}
+              >
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L14 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 018 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
+                </svg>
+                {showUnpackedOnly ? 'แสดงทั้งหมด' : 'แสดงเฉพาะที่ยังไม่แพ็ค'}
+              </button>
               <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1">
                 {aggregatedData.map((group, index) => {
                   const isDone = group[0].isOrderComplete
@@ -2348,6 +2383,9 @@ export default function Packing() {
                     !trackingDisp.toLowerCase().includes(searchNorm) &&
                     !tracking.toLowerCase().includes(searchTerm.toLowerCase())
                   ) {
+                    return null
+                  }
+                  if (showUnpackedOnly && (isDone || isFullScanned)) {
                     return null
                   }
                   return (

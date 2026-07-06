@@ -263,6 +263,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   }, [user?.id])
   const [selectedNoDesignIds, setSelectedNoDesignIds] = useState<Set<string>>(new Set())
   const [selectedCompletedIds, setSelectedCompletedIds] = useState<Set<string>>(new Set())
+  const [selectedNewIds, setSelectedNewIds] = useState<Set<string>>(new Set())
+  const [bulkNewTargetStatus, setBulkNewTargetStatus] = useState<OrderStatus>('รอออกแบบ')
+  const [bulkUpdatingNew, setBulkUpdatingNew] = useState(false)
+  const [bulkNoDesignTargetStatus, setBulkNoDesignTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
+  const [bulkUpdatingNoDesign, setBulkUpdatingNoDesign] = useState(false)
+  const [bulkCompletedTargetStatus, setBulkCompletedTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
+  const [bulkUpdatingCompleted, setBulkUpdatingCompleted] = useState(false)
   const [confirmTableSearch, setConfirmTableSearch] = useState('')
   const [exportingNoDesign, setExportingNoDesign] = useState(false)
   const [exportingCompleted, setExportingCompleted] = useState(false)
@@ -336,6 +343,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   useEffect(() => {
     setSelectedNoDesignIds(new Set())
     setSelectedCompletedIds(new Set())
+    setSelectedNewIds(new Set())
   }, [fromDate, toDate, refreshKey, viewMode])
 
   /* ── Data Loading ── */
@@ -623,6 +631,50 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       const msg = error instanceof Error ? error.message : String(error)
       console.error('moveOrderToNoDesign:', error)
       alert('เกิดข้อผิดพลาด: ' + msg)
+    }
+  }
+
+  function toggleNewSelect(id: string) {
+    setSelectedNewIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleBulkChangeStatus(
+    orders: Order[],
+    targetStatus: OrderStatus,
+    setUpdating: (b: boolean) => void,
+    clearSelection: () => void,
+  ) {
+    if (orders.length === 0) {
+      alert('กรุณาเลือกรายการที่ต้องการเปลี่ยนสถานะ')
+      return
+    }
+    if (isProduction) {
+      const targetOk = canProductionChangeStatus(targetStatus)
+      const currentOk = orders.every((o) => canProductionChangeStatus(o.status as OrderStatus))
+      if (!targetOk || !currentOk) {
+        alert('สิทธิ์ production เปลี่ยนสถานะได้เฉพาะ Order ใหม่, รอออกแบบ, ออกแบบแล้ว, ไม่ต้องออกแบบ, คอนเฟิร์มแล้ว')
+        return
+      }
+    }
+    setUpdating(true)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: targetStatus })
+        .in('id', orders.map((o) => o.id))
+      if (error) throw error
+      clearSelection()
+      setRefreshKey((k) => k + 1)
+    } catch (error: any) {
+      console.error('Bulk change status:', error)
+      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    } finally {
+      setUpdating(false)
     }
   }
 
@@ -1093,7 +1145,54 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       <div className={`grid grid-cols-1 gap-4 min-h-0 w-full min-w-0 ${gridCols}`}>
         {viewMode === 'new' ? (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden w-full min-w-0">
-            <div className="overflow-x-auto rounded-xl border border-gray-200">
+            <div className="p-4 space-y-4 w-full min-w-0">
+              {ordersByKey.new.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedNewIds((prev) =>
+                        prev.size === ordersByKey.new.length
+                          ? new Set()
+                          : new Set(ordersByKey.new.map((o) => o.id))
+                      )
+                    }
+                    className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                  >
+                    {selectedNewIds.size === ordersByKey.new.length ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-600 whitespace-nowrap">เปลี่ยนเป็น</span>
+                    <select
+                      value={bulkNewTargetStatus}
+                      onChange={(e) => setBulkNewTargetStatus(e.target.value as OrderStatus)}
+                      className="h-10 rounded-xl border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                    >
+                      {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS)
+                        .filter((opt) => opt.value !== 'ตรวจสอบแล้ว')
+                        .map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleBulkChangeStatus(
+                        ordersByKey.new.filter((o) => selectedNewIds.has(o.id)),
+                        bulkNewTargetStatus,
+                        setBulkUpdatingNew,
+                        () => setSelectedNewIds(new Set()),
+                      )
+                    }
+                    disabled={bulkUpdatingNew || selectedNewIds.size === 0}
+                    className="rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-blue-600 hover:to-blue-700 disabled:opacity-40"
+                  >
+                    {bulkUpdatingNew ? 'กำลังเปลี่ยน...' : `เปลี่ยนสถานะแบบกลุ่ม (${selectedNewIds.size})`}
+                  </button>
+                </div>
+              )}
+              <div className="overflow-x-auto rounded-xl border border-gray-200">
               {ordersByKey.new.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-gray-400 bg-white">
                   <svg className="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1105,6 +1204,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 <table className="min-w-full text-base">
                   <thead className="bg-blue-600 text-white sticky top-0">
                     <tr>
+                      <th className="p-4 text-left font-semibold w-12"> </th>
                       <th className="p-4 text-left font-semibold whitespace-nowrap">วันที่</th>
                       <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
                       <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
@@ -1122,6 +1222,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
                         }`}
                       >
+                        <td className="p-4 align-top">
+                          <input
+                            type="checkbox"
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4"
+                            checked={selectedNewIds.has(order.id)}
+                            onChange={() => toggleNewSelect(order.id)}
+                          />
+                        </td>
                         <td className="p-4 text-gray-700 whitespace-nowrap align-top">
                           {formatDateTime(order.created_at)}
                         </td>
@@ -1210,26 +1318,31 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   </tbody>
                 </table>
               )}
+              </div>
             </div>
           </section>
         ) : isTableConfirmView && tableColumn ? (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col min-h-0 w-full min-w-0">
             <div className="p-4 space-y-4 w-full min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (viewMode === 'noDesign') {
-                      setSelectedNoDesignIds(new Set(filteredTableOrders.map((o) => o.id)))
-                    } else {
-                      setSelectedCompletedIds(new Set(filteredTableOrders.map((o) => o.id)))
-                    }
-                  }}
-                  disabled={filteredTableOrders.length === 0}
-                  className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
-                >
-                  เลือกทั้งหมด
-                </button>
+                {(() => {
+                  const selectedIds = viewMode === 'noDesign' ? selectedNoDesignIds : selectedCompletedIds
+                  const setSelectedIds = viewMode === 'noDesign' ? setSelectedNoDesignIds : setSelectedCompletedIds
+                  const allSelected =
+                    filteredTableOrders.length > 0 && filteredTableOrders.every((o) => selectedIds.has(o.id))
+                  return (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedIds(allSelected ? new Set() : new Set(filteredTableOrders.map((o) => o.id)))
+                      }
+                      disabled={filteredTableOrders.length === 0}
+                      className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                    >
+                      {allSelected ? 'ยกเลิกเลือกทั้งหมด' : 'เลือกทั้งหมด'}
+                    </button>
+                  )
+                })()}
                 <button
                   type="button"
                   onClick={viewMode === 'noDesign' ? handleExportSelectedNoDesign : handleExportCompletedLines}
@@ -1251,6 +1364,52 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     : exportingCompleted
                       ? 'กำลังสร้างไฟล์...'
                       : 'Export Excel'}
+                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-600 whitespace-nowrap">เปลี่ยนเป็น</span>
+                  <select
+                    value={viewMode === 'noDesign' ? bulkNoDesignTargetStatus : bulkCompletedTargetStatus}
+                    onChange={(e) =>
+                      viewMode === 'noDesign'
+                        ? setBulkNoDesignTargetStatus(e.target.value as OrderStatus)
+                        : setBulkCompletedTargetStatus(e.target.value as OrderStatus)
+                    }
+                    className="h-10 rounded-xl border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400"
+                  >
+                    {(isProduction ? STATUS_OPTIONS.filter((opt) => canProductionChangeStatus(opt.value)) : STATUS_OPTIONS)
+                      .filter((opt) => opt.value !== tableColumn.status)
+                      .map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    viewMode === 'noDesign'
+                      ? void handleBulkChangeStatus(
+                          ordersByKey.noDesign.filter((o) => selectedNoDesignIds.has(o.id)),
+                          bulkNoDesignTargetStatus,
+                          setBulkUpdatingNoDesign,
+                          () => setSelectedNoDesignIds(new Set()),
+                        )
+                      : void handleBulkChangeStatus(
+                          ordersByKey.completed.filter((o) => selectedCompletedIds.has(o.id)),
+                          bulkCompletedTargetStatus,
+                          setBulkUpdatingCompleted,
+                          () => setSelectedCompletedIds(new Set()),
+                        )
+                  }
+                  disabled={
+                    viewMode === 'noDesign'
+                      ? bulkUpdatingNoDesign || selectedNoDesignIds.size === 0
+                      : bulkUpdatingCompleted || selectedCompletedIds.size === 0
+                  }
+                  className="rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-blue-600 hover:to-blue-700 disabled:opacity-40"
+                >
+                  {(viewMode === 'noDesign' ? bulkUpdatingNoDesign : bulkUpdatingCompleted)
+                    ? 'กำลังเปลี่ยน...'
+                    : `เปลี่ยนสถานะแบบกลุ่ม (${viewMode === 'noDesign' ? selectedNoDesignIds.size : selectedCompletedIds.size})`}
                 </button>
               </div>
 
