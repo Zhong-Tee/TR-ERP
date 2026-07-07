@@ -11,6 +11,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { isSalesPumpOwnerScopedRole, isSalesTrTeamRole } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
+import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
 import OrderDetailView from './OrderDetailView'
 
 /** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
@@ -158,6 +159,7 @@ const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = [
   'ออกแบบแล้ว',
   'ไม่ต้องออกแบบ',
   'คอนเฟิร์มแล้ว',
+  'เสร็จสิ้น',
 ]
 
 /* ─────────────────────── Column Icon ─────────────────────── */
@@ -268,6 +270,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [bulkUpdatingNew, setBulkUpdatingNew] = useState(false)
   const [bulkNoDesignTargetStatus, setBulkNoDesignTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
   const [bulkUpdatingNoDesign, setBulkUpdatingNoDesign] = useState(false)
+  const [copyingNoDesign, setCopyingNoDesign] = useState(false)
   const [bulkCompletedTargetStatus, setBulkCompletedTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
   const [bulkUpdatingCompleted, setBulkUpdatingCompleted] = useState(false)
   const [confirmTableSearch, setConfirmTableSearch] = useState('')
@@ -675,6 +678,42 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     } finally {
       setUpdating(false)
+    }
+  }
+
+  /** คัดลอกข้อมูลใบงาน (TSV) ของ "ทุกบิล" ในกลุ่มไม่ต้องออกแบบ ลง clipboard */
+  async function handleCopyNoDesignProduction() {
+    const orders = ordersByKey.noDesign
+    if (orders.length === 0) {
+      setCopyFeedbackModal({
+        open: true,
+        title: 'ไม่พบข้อมูล',
+        message: 'ไม่มีรายการในกลุ่ม "ไม่ต้องออกแบบ" สำหรับคัดลอก',
+      })
+      return
+    }
+    setCopyingNoDesign(true)
+    try {
+      const rows = await buildProductionExportRows(orders as any, (o: any) => o.work_order_name ?? '')
+      if (rows.length === 0) {
+        setCopyFeedbackModal({ open: true, title: 'ไม่พบข้อมูล', message: 'ไม่พบรายการสินค้า' })
+        return
+      }
+      await navigator.clipboard.writeText(productionRowsToTsv(rows))
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกสำเร็จ',
+        message: `คัดลอกข้อมูลใบงานเรียบร้อย ${rows.length} แถว จาก ${orders.length} บิล\n(ไม่รวมหัวตาราง)`,
+      })
+    } catch (err: any) {
+      console.error('Error copying no-design orders data:', err)
+      setCopyFeedbackModal({
+        open: true,
+        title: 'คัดลอกไม่สำเร็จ',
+        message: 'คัดลอกไม่สำเร็จ: ' + (err?.message ?? err),
+      })
+    } finally {
+      setCopyingNoDesign(false)
     }
   }
 
@@ -1411,6 +1450,16 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     ? 'กำลังเปลี่ยน...'
                     : `เปลี่ยนสถานะแบบกลุ่ม (${viewMode === 'noDesign' ? selectedNoDesignIds.size : selectedCompletedIds.size})`}
                 </button>
+                {viewMode === 'noDesign' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyNoDesignProduction()}
+                    disabled={copyingNoDesign || ordersByKey.noDesign.length === 0}
+                    className="rounded-xl border border-orange-300 bg-orange-50 px-4 py-2.5 text-sm font-semibold text-orange-700 shadow-sm hover:bg-orange-100 disabled:opacity-40"
+                  >
+                    {copyingNoDesign ? 'กำลังคัดลอก...' : 'คัดลอกข้อมูลใบงาน'}
+                  </button>
+                )}
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -1908,7 +1957,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       >
         <div className="p-6 text-center">
           <h4 className="text-base font-bold text-gray-800 mb-2">{copyFeedbackModal.title}</h4>
-          <p className="text-sm text-gray-600 mb-4">{copyFeedbackModal.message}</p>
+          <p className="text-sm text-gray-600 mb-4 whitespace-pre-line">{copyFeedbackModal.message}</p>
           <button
             type="button"
             onClick={() => setCopyFeedbackModal({ open: false, title: '', message: '' })}

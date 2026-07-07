@@ -12,6 +12,7 @@ import { isRoleInAllowedList } from '../../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
+import { EXPORT_ITEM_COLUMNS, buildProductionExportRows as buildProductionExportRowsShared } from '../../lib/productionExportRows'
 import {
   fetchPlanDeptSettings,
   resolvePickingDepartment,
@@ -269,21 +270,6 @@ const WAYBILL_PREVIEW_COLS: Array<{ key: string; label: string; width: string; r
 ]
 
 /** คอลัมน์ระดับรายการใน Export ไฟล์ผลิต — แมป key → ชื่อคอลัมน์ใน pr_category_field_settings */
-const EXPORT_ITEM_COLUMNS: Array<{ key: string; label: string; settingsKey: string }> = [
-  { key: 'product_name', label: 'ชื่อสินค้า', settingsKey: 'product_name' },
-  { key: 'ink_color', label: 'สีหมึก', settingsKey: 'ink_color' },
-  { key: 'product_type', label: 'ชั้นที่', settingsKey: 'layer' },
-  { key: 'cartoon_pattern', label: 'ลายการ์ตูน', settingsKey: 'cartoon_pattern' },
-  { key: 'line_pattern', label: 'ลายเส้น', settingsKey: 'line_pattern' },
-  { key: 'font', label: 'ฟอนต์', settingsKey: 'font' },
-  { key: 'line_1', label: 'บรรทัด 1', settingsKey: 'line_1' },
-  { key: 'line_2', label: 'บรรทัด 2', settingsKey: 'line_2' },
-  { key: 'line_3', label: 'บรรทัด 3', settingsKey: 'line_3' },
-  { key: 'quantity', label: 'จำนวน', settingsKey: 'quantity' },
-  { key: 'notes', label: 'หมายเหตุ', settingsKey: 'notes' },
-  { key: 'file_attachment', label: 'ไฟล์แนบ', settingsKey: 'attachment' },
-]
-
 interface WorkOrderManageListProps {
   searchTerm?: string
   channelFilter?: string
@@ -958,65 +944,11 @@ export default function WorkOrderManageList({
 
   async function buildProductionExportRows(workOrderId: string, workOrderNameForDisplay: string): Promise<unknown[][]> {
     const orders = await fetchOrdersWithItems(workOrderId)
-    const ordersInWorkOrder = orders.sort((a, b) => (a.bill_no || '').localeCompare(b.bill_no || ''))
-    if (ordersInWorkOrder.length === 0) {
+    if (orders.length === 0) {
       setMessageModal({ open: true, message: 'ไม่พบข้อมูล' })
       return []
     }
-    const dataToExport: unknown[][] = []
-    /** สินค้าที่แสดงคอลัมน์ "ชั้นที่" */
-    const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
-    const visibleColumns = EXPORT_ITEM_COLUMNS
-
-    const allItemsFlat = ordersInWorkOrder.flatMap((order) => order.or_order_items || (order as any).order_items || [])
-    const productIds = Array.from(new Set(allItemsFlat.map((item: any) => item.product_id).filter(Boolean)))
-    const productCodeByProductId: Record<string, string> = {}
-    const productCategoryByProductId: Record<string, string> = {}
-    if (productIds.length > 0) {
-      const { data: products, error: productsError } = await supabase
-        .from('pr_products')
-        .select('id, product_code, product_category')
-        .in('id', productIds)
-      if (productsError) throw productsError
-      ;(products || []).forEach((p: { id: string; product_code?: string | null; product_category?: string | null }) => {
-        const id = String(p.id)
-        productCodeByProductId[id] = String(p.product_code ?? '').trim()
-        productCategoryByProductId[id] = String(p.product_category ?? '').trim()
-      })
-    }
-
-    ordersInWorkOrder.forEach((order) => {
-      const rawItems = order.or_order_items || (order as any).order_items || []
-      const items = sortOrderItemsForExport(rawItems)
-      const bill = String(order.bill_no ?? '').trim() || '—'
-      let unitSeq = 0
-      items.forEach((item: any) => {
-        const noName = !!item.no_name_line
-        const cleanNotes = noName ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : '')) : (item.notes || '').replace(/\[SET-.*?\]/g, '').trim()
-        const productName = String(item.product_name ?? '').trim()
-        const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
-        const pid = item.product_id ? String(item.product_id) : ''
-        const productCode = pid ? productCodeByProductId[pid] ?? '' : ''
-        const category = pid ? productCategoryByProductId[pid] || 'N/A' : 'N/A'
-        const copies = normalizedLineQuantity(item.quantity)
-        for (let c = 0; c < copies; c++) {
-          unitSeq++
-          const displayUid = flatBillUnitUid(bill, unitSeq)
-          const row: unknown[] = [workOrderNameForDisplay, order.bill_no, displayUid, productCode]
-          visibleColumns.forEach((col) => {
-            if (col.key === 'notes') row.push(cleanNotes)
-            else if (col.key === 'line_1' || col.key === 'line_2' || col.key === 'line_3') row.push(forceText(item[col.key]))
-            else if (col.key === 'quantity') row.push(1)
-            else if (col.key === 'product_type') row.push(showLayer ? (item.product_type ?? '') : '')
-            else if (col.key === 'cartoon_pattern' || col.key === 'line_pattern') row.push(item[col.key] != null && String(item[col.key]).trim() !== '' ? item[col.key] : 0)
-            else row.push(item[col.key] ?? '')
-          })
-          row.push(category)
-          dataToExport.push(row)
-        }
-      })
-    })
-
+    const dataToExport = await buildProductionExportRowsShared(orders as any, () => workOrderNameForDisplay)
     if (dataToExport.length === 0) {
       setMessageModal({ open: true, message: 'ไม่พบรายการสินค้า' })
     }

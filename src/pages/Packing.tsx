@@ -241,6 +241,9 @@ export default function Packing() {
       shipped_time: string | null
       channel_code: string | null
       shipped_by: string | null
+      bill_no: string | null
+      customer_name: string | null
+      tracking_number: string | null
     }>
   >([])
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
@@ -250,6 +253,7 @@ export default function Packing() {
   const [shippedDateTo, setShippedDateTo] = useState(() => new Date().toISOString().split('T')[0])
   const [shippedChannelFilter, setShippedChannelFilter] = useState('')
   const [shippedPackerFilter, setShippedPackerFilter] = useState('')
+  const [shippedSearch, setShippedSearch] = useState('')
   const [aggregatedData, setAggregatedData] = useState<PackingItem[][]>([])
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [currentWorkOrderName, setCurrentWorkOrderName] = useState<string | null>(null)
@@ -757,7 +761,7 @@ export default function Packing() {
   }, [workOrders.length])
 
   const shippedOrdersFiltered = useMemo(() => {
-    return shippedOrders.filter((row) => {
+    const base = shippedOrders.filter((row) => {
       if (!row.work_order_name) return false
       const date = row.shipped_time ? new Date(row.shipped_time).toISOString().slice(0, 10) : ''
       if (shippedDateFrom && date < shippedDateFrom) return false
@@ -766,7 +770,19 @@ export default function Packing() {
       if (shippedPackerFilter && row.shipped_by !== shippedPackerFilter) return false
       return true
     })
-  }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter])
+    const q = shippedSearch.trim().toLowerCase()
+    if (!q) return base
+    const qNoSpace = q.replace(/\s+/g, '')
+    const rowMatches = (row: (typeof shippedOrders)[number]) => {
+      const bill = (row.bill_no || '').toLowerCase()
+      const customer = (row.customer_name || '').toLowerCase()
+      const tracking = (row.tracking_number || '').toLowerCase().replace(/\s+/g, '')
+      return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && tracking.includes(qNoSpace))
+    }
+    // แสดงทั้งใบงานที่มีบิลตรงคำค้นอย่างน้อย 1 บิล (จำนวนบิลบนการ์ดจึงยังครบ)
+    const matchedWo = new Set(base.filter(rowMatches).map((r) => r.work_order_name))
+    return base.filter((row) => matchedWo.has(row.work_order_name))
+  }, [shippedOrders, shippedDateFrom, shippedDateTo, shippedChannelFilter, shippedPackerFilter, shippedSearch])
 
   const shippedWorkOrders = useMemo(() => {
     const grouped = new Map<
@@ -1076,7 +1092,7 @@ export default function Packing() {
 
       const { data: shippedData, error: shippedError } = await supabase
         .from('or_orders')
-        .select('id, work_order_name, shipped_time, channel_code, shipped_by')
+        .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number')
         .eq('status', 'จัดส่งแล้ว')
         .not('work_order_name', 'is', null)
       if (shippedError) throw shippedError
@@ -1903,6 +1919,25 @@ export default function Packing() {
             )
           ) : selectionTab === 'shipped' ? (
             <div className="space-y-4">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={shippedSearch}
+                  onChange={(e) => setShippedSearch(e.target.value)}
+                  placeholder="ค้นหาเลขบิล ชื่อลูกค้า หรือเลขพัสดุ"
+                  className="w-full border rounded-lg pl-3 pr-9 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                />
+                {shippedSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setShippedSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-lg leading-none"
+                    aria-label="ล้างการค้นหา"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">วันที่เริ่มต้น</label>
