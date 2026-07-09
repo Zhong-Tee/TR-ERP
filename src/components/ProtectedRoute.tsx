@@ -77,6 +77,14 @@ export default function ProtectedRoute({
     return <Navigate to="/" replace />
   }
 
+  // /employee: role employee หรือผู้ใช้ role อื่นที่เปิดสวิตช์ employee_access
+  if (
+    location.pathname.startsWith('/employee') &&
+    (user.role === 'employee' || user.employee_access === true)
+  ) {
+    return <>{children}</>
+  }
+
   // Auditor: bypass menuAccess, only allow /warehouse/audit paths
   if (user.role === 'auditor') {
     const isAuditPath = location.pathname.startsWith('/warehouse/audit')

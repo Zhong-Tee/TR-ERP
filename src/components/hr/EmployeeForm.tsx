@@ -4,11 +4,14 @@ import {
   upsertEmployee,
   fetchDepartments,
   fetchPositions,
+  fetchClockLocations,
+  fetchWorkSchedules,
   uploadHRFile,
   getHRFileUrl,
   previewNextEmployeeCode,
 } from '../../lib/hrApi'
-import type { HREmployee, HRDepartment, HRPosition } from '../../types'
+import { supabase } from '../../lib/supabase'
+import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule } from '../../types'
 
 const BUCKET_PHOTOS = 'hr-photos'
 const BUCKET_DOCUMENTS = 'hr-documents'
@@ -54,6 +57,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [error, setError] = useState<string | null>(null)
   const [departments, setDepartments] = useState<HRDepartment[]>([])
   const [positions, setPositions] = useState<HRPosition[]>([])
+  const [clockLocations, setClockLocations] = useState<HRClockLocation[]>([])
+  const [workSchedules, setWorkSchedules] = useState<HRWorkSchedule[]>([])
 
   const [prefix, setPrefix] = useState('')
   const [first_name, setFirstName] = useState('')
@@ -81,8 +86,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [salary, setSalary] = useState<number | ''>('')
   const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
   const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
-  const [fingerprint_id_old, setFingerprintIdOld] = useState('')
-  const [fingerprint_id_new, setFingerprintIdNew] = useState('')
+  const [clock_location_id, setClockLocationId] = useState('')
+  const [work_schedule_id, setWorkScheduleId] = useState('')
   const [user_id, setUserId] = useState('')
   const [telegram_chat_id, setTelegramChatId] = useState('')
 
@@ -94,12 +99,16 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
   const loadOptions = useCallback(async () => {
     try {
-      const [deptRes, posRes] = await Promise.all([
+      const [deptRes, posRes, clockLocRes, schedRes] = await Promise.all([
         fetchDepartments(),
         fetchPositions(),
+        fetchClockLocations(true).catch(() => [] as HRClockLocation[]),
+        fetchWorkSchedules(true).catch(() => [] as HRWorkSchedule[]),
       ])
       setDepartments(deptRes)
       setPositions(posRes)
+      setClockLocations(clockLocRes)
+      setWorkSchedules(schedRes)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดตัวเลือกไม่สำเร็จ')
     }
@@ -171,8 +180,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       setSalary(employee.salary ?? '')
       setEmploymentStatus(employee.employment_status)
       setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
-      setFingerprintIdOld(employee.fingerprint_id_old ?? '')
-      setFingerprintIdNew(employee.fingerprint_id_new ?? '')
+      setClockLocationId(employee.clock_location_id ?? '')
+      setWorkScheduleId(employee.work_schedule_id ?? '')
       setUserId(employee.user_id ?? '')
       setTelegramChatId(employee.telegram_chat_id ?? '')
       setDocuments(
@@ -283,8 +292,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         salary: typeof salary === 'number' ? salary : undefined,
         employment_status,
         contract_type,
-        fingerprint_id_old: fingerprint_id_old || undefined,
-        fingerprint_id_new: fingerprint_id_new || undefined,
+        clock_location_id: clock_location_id || undefined,
+        work_schedule_id: work_schedule_id || undefined,
         user_id: user_id || undefined,
         telegram_chat_id: telegram_chat_id || undefined,
         documents: documents.length ? documents : undefined,
@@ -299,6 +308,11 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         await upsertEmployee({ id: saved.id, photo_url: path })
       } else if (photoPath && saved?.id) {
         await upsertEmployee({ id: saved.id, photo_url: photoPath })
+      }
+
+      // พนักงานเข้าใหม่ → แจ้ง Telegram กลุ่ม HR (fire-and-forget ไม่ block การบันทึก)
+      if (!employee?.id && saved?.id) {
+        supabase.functions.invoke('hr-employee-notify', { body: { employee_ids: [saved.id] } }).catch(() => {})
       }
 
       onSave()
@@ -650,13 +664,14 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เงินเดือน</span>
                 <input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={salary === '' ? '' : salary}
-                  onChange={(e) =>
-                    setSalary(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)
-                  }
+                  type="text"
+                  inputMode="numeric"
+                  value={salary === '' ? '' : Number(salary).toLocaleString('en-US')}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '')
+                    setSalary(digits === '' ? '' : Number(digits))
+                  }}
+                  placeholder="เช่น 12,000"
                   className={fieldClass}
                 />
               </label>
@@ -689,22 +704,34 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 </select>
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ตึกเก่า)</span>
-                <input
-                  type="text"
-                  value={fingerprint_id_old}
-                  onChange={(e) => setFingerprintIdOld(e.target.value)}
+                <span className="block text-sm font-medium text-gray-700 mb-1">จุดบันทึกเวลา (GPS)</span>
+                <select
+                  value={clock_location_id}
+                  onChange={(e) => setClockLocationId(e.target.value)}
                   className={fieldClass}
-                />
+                >
+                  <option value="">— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —</option>
+                  {clockLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name} (รัศมี {loc.radius_m} ม.)
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">รหัสลายนิ้วมือ (ตึกใหม่)</span>
-                <input
-                  type="text"
-                  value={fingerprint_id_new}
-                  onChange={(e) => setFingerprintIdNew(e.target.value)}
+                <span className="block text-sm font-medium text-gray-700 mb-1">มาตรฐานเวลาทำงาน</span>
+                <select
+                  value={work_schedule_id}
+                  onChange={(e) => setWorkScheduleId(e.target.value)}
                   className={fieldClass}
-                />
+                >
+                  <option value="">— ใช้ชุดค่าเริ่มต้น —</option>
+                  {workSchedules.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.work_start.slice(0, 5)}–{s.work_end.slice(0, 5)} น.){s.is_default ? ' • ค่าเริ่มต้น' : ''}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">User ID (ลิงก์ระบบ)</span>

@@ -9,6 +9,7 @@ import {
   uploadHRFile,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import { supabase } from '../../../lib/supabase'
 import type { HRLeaveType } from '../../../types'
 
 const BUCKET_MEDICAL = 'hr-medical-certs'
@@ -74,6 +75,10 @@ export default function EmployeeLeave() {
   const [submitting, setSubmitting] = useState(false)
   const [uploadingCert, setUploadingCert] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const docInputRef = useRef<HTMLInputElement>(null)
+  const [docFile, setDocFile] = useState<File | null>(null)
+  const [docError, setDocError] = useState<string | null>(null)
+  const [showBalance, setShowBalance] = useState(false)
 
   const [form, setForm] = useState({
     leave_type_id: '',
@@ -83,6 +88,9 @@ export default function EmployeeLeave() {
   })
 
   const totalDays = form.start_date && form.end_date ? diffDays(form.start_date, form.end_date) : 0
+  const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
+  const requiresDoc = !!selectedType?.requires_doc
+  const docLabel = selectedType?.doc_label || 'เอกสารประกอบการลา'
 
   const load = useCallback(async () => {
     if (!user?.id) return
@@ -115,9 +123,13 @@ export default function EmployeeLeave() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!employee || !form.leave_type_id || !form.start_date || !form.end_date) return
+    if (requiresDoc && !docFile) {
+      setDocError(`กรุณาแนบ${docLabel}`)
+      return
+    }
     setSubmitting(true)
     try {
-      await createLeaveRequest({
+      const createdLeave = await createLeaveRequest({
         employee_id: employee.id,
         leave_type_id: form.leave_type_id,
         start_date: form.start_date,
@@ -128,7 +140,17 @@ export default function EmployeeLeave() {
         notified_before: false,
         notified_morning: false,
       })
+      // แนบเอกสารตอนขอลา (ถ้าประเภทนั้นบังคับ)
+      if (docFile) {
+        const path = `${employee.id}/${createdLeave.id}_${Date.now()}_${docFile.name}`
+        await uploadHRFile(BUCKET_MEDICAL, path, docFile)
+        await updateLeaveRequest(createdLeave.id, { medical_cert_url: path })
+      }
+      // แจ้งใบลาใหม่เข้ากลุ่ม HR (fire-and-forget)
+      supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: createdLeave.id } }).catch(() => {})
       setForm({ leave_type_id: leaveTypes[0]?.id ?? '', start_date: '', end_date: '', reason: '' })
+      setDocFile(null)
+      setDocError(null)
       setFormOpen(false)
       await load()
     } catch (err) {
@@ -182,9 +204,22 @@ export default function EmployeeLeave() {
   return (
     <div className="space-y-6">
       <section>
-        <h2 className="text-xl font-semibold text-gray-900 mb-3">วันลาคงเหลือ</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xl font-semibold text-gray-900">วันลาคงเหลือ</h2>
+          {(summary?.balances?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowBalance((v) => !v)}
+              className="text-sm text-emerald-600 font-medium underline"
+            >
+              {showBalance ? 'ซ่อน' : 'ดูทั้งหมด'}
+            </button>
+          )}
+        </div>
         <div className="space-y-3">
-          {summary?.balances?.length ? (
+          {!summary?.balances?.length ? (
+            <p className="text-gray-500 text-sm">ไม่มีข้อมูลวันลาในปีนี้</p>
+          ) : showBalance ? (
             summary.balances.map((b) => {
               const max = Math.max(b.entitled_days ?? 1, 1)
               const pct = ((b.remaining ?? 0) / max) * 100
@@ -205,9 +240,7 @@ export default function EmployeeLeave() {
                 </div>
               )
             })
-          ) : (
-            <p className="text-gray-500 text-sm">ไม่มีข้อมูลวันลาในปีนี้</p>
-          )}
+          ) : null}
         </div>
       </section>
 
@@ -269,6 +302,35 @@ export default function EmployeeLeave() {
                   placeholder="ระบุเหตุผล..."
                 />
               </div>
+              {requiresDoc && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {docLabel} <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      setDocFile(e.target.files?.[0] ?? null)
+                      setDocError(null)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => docInputRef.current?.click()}
+                    className="w-full flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-emerald-300 text-emerald-700 py-3 active:bg-emerald-50"
+                  >
+                    <FiUpload className="w-5 h-5" />
+                    {docFile ? 'เปลี่ยนไฟล์' : `แนบ${docLabel}`}
+                  </button>
+                  {docFile && (
+                    <p className="text-xs text-gray-600 mt-1.5 truncate">📎 {docFile.name}</p>
+                  )}
+                  {docError && <p className="text-xs text-red-500 mt-1.5">{docError}</p>}
+                </div>
+              )}
               <div className="flex gap-2">
                 <button
                   type="button"

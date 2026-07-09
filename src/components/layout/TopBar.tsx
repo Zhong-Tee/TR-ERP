@@ -26,6 +26,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })
+  // Badge เมนู HR: จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
+  const [hrLeavePending, setHrLeavePending] = useState(0)
+  const [hrOtPending, setHrOtPending] = useState(0)
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
   const [notifyBlinking, setNotifyBlinking] = useState(false)
   /** ตำแหน่งแนวตั้งของป้ายแจ้งเตือน (px จากขอบล่าง) — ลากขึ้น/ลงได้ จำค่าไว้ใน localStorage */
@@ -349,7 +352,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
-    { path: '/hr/leave', label: 'ระบบลางาน' },
+    { path: '/hr/leave', label: 'ระบบลางาน/OT' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },
     { path: '/hr/contracts', label: 'สัญญาจ้าง' },
@@ -376,10 +379,21 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           : []
   const showProductsSubBarCount = location.pathname.startsWith('/products') && menuCount !== null
 
+  // จองพื้นที่เท่าความสูงจริงของแถบเมนูย่อย — เมนูยาวจนมี scrollbar แนวนอน (เช่น HR) จะสูงกว่า 4.5rem
+  const subnavRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    const height = activeSubTabs.length > 0 ? '4.5rem' : '0rem'
-    document.documentElement.style.setProperty('--subnav-height', height)
+    const el = subnavRef.current
+    if (activeSubTabs.length === 0 || !el) {
+      document.documentElement.style.setProperty('--subnav-height', '0rem')
+      return
+    }
+    const update = () =>
+      document.documentElement.style.setProperty('--subnav-height', `${el.offsetHeight}px`)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
     return () => {
+      ro.disconnect()
       document.documentElement.style.setProperty('--subnav-height', '0rem')
     }
   }, [activeSubTabs.length])
@@ -411,6 +425,35 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       supabase.removeChannel(channel)
     }
   }, [])
+
+  // Badge เมนู HR "ระบบลางาน/OT": จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
+  const canSeeHrLeave = hasAccess('hr-leave')
+  useEffect(() => {
+    if (!canSeeHrLeave) return
+    const loadHrPending = async () => {
+      try {
+        const [leaveRes, otRes] = await Promise.all([
+          supabase.from('hr_leave_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+          supabase.from('hr_ot_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+        ])
+        setHrLeavePending(leaveRes.count || 0)
+        setHrOtPending(otRes.count || 0)
+      } catch (error) {
+        console.error('Error loading HR pending count:', error)
+      }
+    }
+
+    loadHrPending()
+    const channel = supabase
+      .channel('topbar-hr-pending-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, loadHrPending)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, loadHrPending)
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [canSeeHrLeave])
 
   return (
     <>
@@ -485,6 +528,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       </header>
       {activeSubTabs.length > 0 && (
         <div
+          ref={subnavRef}
           className={`fixed top-16 right-0 z-30 border-b border-surface-200 bg-white shadow-soft transition-all duration-300 ${
             sidebarOpen ? 'left-64' : 'left-20'
           }`}
@@ -504,7 +548,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                           ? purchaseBadge.pr_approved_no_po
                           : tab.path === '/purchase/gr' && purchaseBadge.po_waiting_gr > 0
                             ? purchaseBadge.po_waiting_gr
-                            : null
+                            : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending) > 0
+                              ? hrLeavePending + hrOtPending
+                              : null
                   return (
                     <Link
                       key={tab.path}

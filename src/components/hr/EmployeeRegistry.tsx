@@ -10,6 +10,7 @@ import {
   deleteEmployee,
   getHRFileUrl,
 } from '../../lib/hrApi'
+import { supabase } from '../../lib/supabase'
 import type { HREmployee, HRDepartment, HRPosition } from '../../types'
 import Modal from '../ui/Modal'
 import EmployeeForm from './EmployeeForm'
@@ -40,8 +41,6 @@ const EMPLOYEE_TEMPLATE_HEADERS = [
   'เงินเดือน',
   'สถานะการจ้าง',
   'ประเภทสัญญาจ้าง',
-  'รหัสลายนิ้วมือ (ตึกเก่า)',
-  'รหัสลายนิ้วมือ (ตึกใหม่)',
   'Telegram Chat ID',
   'ชื่อผู้ติดต่อฉุกเฉิน',
   'โทรศัพท์ผู้ติดต่อฉุกเฉิน',
@@ -77,8 +76,6 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   15000,
   'active',
   'permanent',
-  '',
-  '',
   '',
   'สมศรี ใจดี',
   '0899999999',
@@ -283,8 +280,6 @@ function buildEmployeePayload(
     salary: Number.isFinite(salary) ? salary : undefined,
     employment_status: getEmploymentStatus(row['สถานะการจ้าง']),
     contract_type: getContractType(row['ประเภทสัญญาจ้าง']),
-    fingerprint_id_old: optionalText(row['รหัสลายนิ้วมือ (ตึกเก่า)']),
-    fingerprint_id_new: optionalText(row['รหัสลายนิ้วมือ (ตึกใหม่)']),
     telegram_chat_id: optionalText(row['Telegram Chat ID']),
   }
 }
@@ -485,15 +480,22 @@ export default function EmployeeRegistry() {
 
       let created = 0
       let updated = 0
+      const createdIds: string[] = []
       for (const row of rows) {
         const code = normalizeLookup(row['รหัสพนักงาน'])
         const existingEmployee = code ? existingByCode.get(code) : undefined
-        await upsertEmployee(buildEmployeePayload(row, allDepartments, allPositions, existingEmployee))
+        const savedEmp = await upsertEmployee(buildEmployeePayload(row, allDepartments, allPositions, existingEmployee))
         if (existingEmployee) {
           updated += 1
         } else {
           created += 1
+          if (savedEmp?.id) createdIds.push(savedEmp.id)
         }
+      }
+
+      // พนักงานเข้าใหม่จากการ Import → แจ้ง Telegram กลุ่ม HR เป็นข้อความสรุปฉบับเดียว
+      if (createdIds.length > 0) {
+        supabase.functions.invoke('hr-employee-notify', { body: { employee_ids: createdIds } }).catch(() => {})
       }
 
       await loadData()
@@ -631,6 +633,7 @@ export default function EmployeeRegistry() {
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ชื่อ-นามสกุล</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">เบอร์โทร</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ชื่อเล่น</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันเกิด</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">แผนก</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ตำแหน่ง</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ประเภทสัญญาจ้าง</th>
@@ -643,7 +646,7 @@ export default function EmployeeRegistry() {
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="py-12 text-center text-gray-500">
+                    <td colSpan={12} className="py-12 text-center text-gray-500">
                       ไม่พบพนักงาน
                     </td>
                   </tr>
@@ -674,6 +677,11 @@ export default function EmployeeRegistry() {
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-600">{emp.phone ?? '-'}</td>
                       <td className="py-3 px-4 text-sm text-gray-600">{emp.nickname ?? '-'}</td>
+                      <td className="py-3 px-4 text-sm text-gray-600">
+                        {emp.birth_date
+                          ? new Date(emp.birth_date).toLocaleDateString('th-TH')
+                          : '-'}
+                      </td>
                       <td className="py-3 px-4 text-sm text-gray-600">
                         {(emp.department as HRDepartment)?.name ?? '-'}
                       </td>

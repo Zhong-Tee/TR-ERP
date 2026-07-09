@@ -91,7 +91,7 @@ Deno.serve(async (req) => {
     // 1. Leave reminder (day before): leaves starting tomorrow that haven't been notified
     const { data: upcomingLeaves } = await supabase
       .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees(first_name, last_name, nickname, department:hr_departments(name))')
+      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))')
       .eq('status', 'approved')
       .eq('start_date', futureDateStr)
       .eq('notified_before', false)
@@ -124,7 +124,7 @@ Deno.serve(async (req) => {
     // 2. Morning notification: who is on leave today
     const { data: todayLeaves } = await supabase
       .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees(first_name, last_name, nickname, department:hr_departments(name))')
+      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))')
       .eq('status', 'approved')
       .lte('start_date', todayStr)
       .gte('end_date', todayStr)

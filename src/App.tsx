@@ -52,7 +52,7 @@ import {
 const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
 const HRInterviewSchedule = lazy(() => import('./components/hr/InterviewSchedule'))
-const HRAttendanceCalc = lazy(() => import('./components/hr/AttendanceCalc'))
+const HRTimeAttendance = lazy(() => import('./components/hr/TimeAttendance'))
 const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates'))
 const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
 const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
@@ -68,11 +68,18 @@ const HRLoading = () => (
   </div>
 )
 
+const MOBILE_MAX_WIDTH = 1024
+
 function SmartRedirect() {
   const { user, signOut } = useAuthContext()
   const { menuAccessLoading, hasAccess } = useMenuAccess()
 
   if (!user) return <Navigate to="/" replace />
+
+  // เปิดสวิตช์ employee_access + เข้าจากมือถือ → เข้าหน้า Employee ทันที (ไม่ต้องสร้าง user role employee แยก)
+  if (user.employee_access === true && window.innerWidth <= MOBILE_MAX_WIDTH) {
+    return <Navigate to="/employee" replace />
+  }
 
   // Special roles: redirect immediately without waiting for menuAccess
   if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
@@ -156,22 +163,28 @@ function AppRoutes() {
   const isWmsMobileRole = user ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) : false
   const isMachineryMobileLayout = user ? MACHINERY_MOBILE_ROLES.includes(user.role) : false
 
+  // ผู้ใช้ที่เปิดสวิตช์ employee_access เข้า /employee ได้ทุก role — ไม่โดน redirect ของ role มือถือ
+  const onEmployeePortalWithAccess =
+    user?.employee_access === true && location.pathname.startsWith('/employee')
+
   if (
     user &&
     user.role === TECHNICIAN_ROLE &&
+    !onEmployeePortalWithAccess &&
     location.pathname !== '/machinery' &&
     location.pathname !== '/technician'
   ) {
     return <Navigate to="/technician" replace />
   }
 
-  if (user && user.role === 'picker' && location.pathname !== '/wms') {
+  if (user && user.role === 'picker' && !onEmployeePortalWithAccess && location.pathname !== '/wms') {
     return <Navigate to="/wms" replace />
   }
 
   if (
     user &&
     (user.role === 'production_mb' || user.role === 'manager') &&
+    !onEmployeePortalWithAccess &&
     location.pathname !== '/wms' &&
     location.pathname !== '/machinery'
   ) {
@@ -548,7 +561,7 @@ function AppRoutes() {
         path="/hr/attendance"
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'hr']}>
-            <Layout><Suspense fallback={<HRLoading />}><HRAttendanceCalc /></Suspense></Layout>
+            <Layout><Suspense fallback={<HRLoading />}><HRTimeAttendance /></Suspense></Layout>
           </ProtectedRoute>
         }
       />

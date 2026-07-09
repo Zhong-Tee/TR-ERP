@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiSearch, FiCalendar, FiUser, FiFileText, FiExternalLink } from 'react-icons/fi'
+import { FiSearch, FiCalendar, FiUser, FiFileText, FiExternalLink, FiClock } from 'react-icons/fi'
 import {
   fetchLeaveRequests,
   updateLeaveRequest,
   fetchLeaveTypes,
+  fetchOTRequests,
+  updateOTRequest,
   getHRFileUrl,
 } from '../../lib/hrApi'
-import type { HRLeaveRequest } from '../../types'
+import type { HRLeaveRequest, HROTRequest } from '../../types'
 import Modal from '../ui/Modal'
+import { useAuthContext } from '../../contexts/AuthContext'
+import { supabase } from '../../lib/supabase'
 
 const BUCKET_DOCS = 'hr-docs'
 
@@ -54,6 +58,12 @@ function statusLabel(status: HRLeaveRequest['status']): string {
   return labels[status] ?? status
 }
 
+/** ประเภทลาหลักที่โชว์ในตาราง (ที่เหลือดูใน popup) */
+const MAIN_LEAVE_KEYWORDS = ['กิจ', 'ป่วย', 'พักร้อน'] as const
+const isMainLeaveType = (name: string) => MAIN_LEAVE_KEYWORDS.some((k) => name.includes(k))
+
+type LeaveBalanceRow = { id: string; name: string; entitled: number; used: number; remaining: number }
+
 function employeeDisplayName(req: HRLeaveRequest): string {
   const emp = req.employee as { first_name?: string; last_name?: string; nickname?: string } | undefined
   if (!emp) return '-'
@@ -67,12 +77,25 @@ function medicalCertUrl(url: string | undefined): string | null {
   return getHRFileUrl(BUCKET_DOCS, url)
 }
 
+function otEmployeeName(req: HROTRequest): string {
+  const emp = req.employee as { first_name?: string; last_name?: string; nickname?: string } | undefined
+  if (!emp) return '-'
+  const name = [emp.first_name, emp.last_name].filter(Boolean).join(' ')
+  return emp.nickname ? `${name} (${emp.nickname})` : name
+}
+
 export default function LeaveManagement() {
+  const { user } = useAuthContext()
+  const canApproveOT = user?.role === 'superadmin' || user?.role === 'admin'
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
+  const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
+  const [otStatusFilter, setOtStatusFilter] = useState<StatusFilter>('all')
+  const [otRejectingId, setOtRejectingId] = useState<string | null>(null)
+  const [balanceView, setBalanceView] = useState<{ name: string; rows: LeaveBalanceRow[] } | null>(null)
   const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'list' | 'approval'>('list')
+  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot'>('list')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchName, setSearchName] = useState('')
   const [showCalendar, setShowCalendar] = useState(false)
@@ -93,12 +116,14 @@ export default function LeaveManagement() {
     setLoading(true)
     setError(null)
     try {
-      const [reqs, types] = await Promise.all([
+      const [reqs, types, ots] = await Promise.all([
         fetchLeaveRequests(),
         fetchLeaveTypes(),
+        fetchOTRequests(),
       ])
       setRequests(reqs)
       setLeaveTypes(types)
+      setOtRequests(ots)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
     } finally {
@@ -121,6 +146,15 @@ export default function LeaveManagement() {
   })
 
   const pendingRequests = requests.filter((r) => r.status === 'pending')
+  const pendingOtRequests = otRequests.filter((r) => r.status === 'pending')
+  const filteredOtRequests = otRequests.filter((r) => {
+    if (otStatusFilter !== 'all' && r.status !== otStatusFilter) return false
+    if (searchName.trim()) {
+      const name = otEmployeeName(r).toLowerCase()
+      if (!name.includes(searchName.trim().toLowerCase())) return false
+    }
+    return true
+  })
   const calendarRequests = requests.filter((r) => r.status === 'approved' || r.status === 'pending')
 
   const today = new Date()
@@ -169,15 +203,13 @@ export default function LeaveManagement() {
     return acc
   }, {})
 
-  const getLeaveRemainingByTypes = (employeeId: string, dateForYear: string): string => {
+  const getLeaveBalanceRows = (employeeId: string, dateForYear: string) => {
     const year = new Date(dateForYear).getFullYear()
-    const parts = leaveTypes.map((t) => {
-      const max = Number(t.max_days_per_year ?? 0)
+    return leaveTypes.map((t) => {
+      const entitled = Number(t.max_days_per_year ?? 0)
       const used = approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0
-      const remaining = Math.max(0, max - used)
-      return `${t.name}: ${remaining}`
+      return { id: t.id, name: t.name, entitled, used, remaining: Math.max(0, entitled - used) }
     })
-    return parts.length ? parts.join(' | ') : '-'
   }
 
   const handleApprove = async (id: string) => {
@@ -189,6 +221,7 @@ export default function LeaveManagement() {
         approved_by: currentEmployeeId ?? undefined,
         approved_at: new Date().toISOString(),
       })
+      supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: id, event: 'approved' } }).catch(() => {})
       setSuccessMessage('อนุมัติการลาสำเร็จ')
       setRejectingId(null)
       setRejectReason('')
@@ -214,6 +247,7 @@ export default function LeaveManagement() {
         status: 'rejected',
         reject_reason: reason,
       })
+      supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: rejectingId, event: 'rejected' } }).catch(() => {})
       setSuccessMessage('ไม่อนุมัติการลาแล้ว')
       setRejectingId(null)
       setRejectReason('')
@@ -234,6 +268,50 @@ export default function LeaveManagement() {
   const closeRejectModal = () => {
     setRejectingId(null)
     setRejectReason('')
+  }
+
+  const handleApproveOT = async (id: string) => {
+    setActionLoading(true)
+    setError(null)
+    try {
+      await updateOTRequest(id, {
+        status: 'approved',
+        approved_at: new Date().toISOString(),
+      })
+      supabase.functions.invoke('hr-ot-notify', { body: { ot_id: id, event: 'approved' } }).catch(() => {})
+      setSuccessMessage('อนุมัติคำขอ OT สำเร็จ')
+      await loadData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'อนุมัติไม่สำเร็จ')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleRejectOT = async () => {
+    if (!otRejectingId) return
+    const reason = rejectReason.trim()
+    if (!reason) {
+      setError('กรุณาระบุเหตุผลในการไม่อนุมัติ')
+      return
+    }
+    setActionLoading(true)
+    setError(null)
+    try {
+      await updateOTRequest(otRejectingId, {
+        status: 'rejected',
+        reject_reason: reason,
+      })
+      supabase.functions.invoke('hr-ot-notify', { body: { ot_id: otRejectingId, event: 'rejected' } }).catch(() => {})
+      setSuccessMessage('ไม่อนุมัติคำขอ OT แล้ว')
+      setOtRejectingId(null)
+      setRejectReason('')
+      await loadData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ดำเนินการไม่สำเร็จ')
+    } finally {
+      setActionLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -276,6 +354,23 @@ export default function LeaveManagement() {
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab('ot')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                activeTab === 'ot'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
+              }`}
+            >
+              <FiClock className="w-4 h-4" />
+              คำขอ OT
+              {pendingOtRequests.length > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-amber-500 text-white text-xs">
+                  {pendingOtRequests.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowCalendar(!showCalendar)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
                 showCalendar
@@ -287,6 +382,30 @@ export default function LeaveManagement() {
               ปฏิทินลา
             </button>
           </div>
+          {activeTab === 'ot' && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <select
+                value={otStatusFilter}
+                onChange={(e) => setOtStatusFilter(e.target.value as StatusFilter)}
+                className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800"
+              >
+                <option value="all">ทุกสถานะ</option>
+                <option value="pending">รออนุมัติ</option>
+                <option value="approved">อนุมัติ</option>
+                <option value="rejected">ไม่อนุมัติ</option>
+              </select>
+              <div className="relative">
+                <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" />
+                <input
+                  type="text"
+                  placeholder="ค้นหาชื่อพนักงาน..."
+                  value={searchName}
+                  onChange={(e) => setSearchName(e.target.value)}
+                  className="pl-9 pr-4 py-2 rounded-lg border border-surface-300 bg-white text-sm w-56"
+                />
+              </div>
+            </div>
+          )}
           {activeTab === 'list' && (
             <div className="flex items-center gap-3 flex-wrap">
               <select
@@ -421,6 +540,89 @@ export default function LeaveManagement() {
           <div className="flex items-center justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
           </div>
+        ) : activeTab === 'ot' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่ทำ OT</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชั่วโมง</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                  {canApproveOT && (
+                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredOtRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={canApproveOT ? 7 : 6} className="px-6 py-12 text-center text-surface-500 text-sm">
+                      ไม่มีคำขอ OT
+                    </td>
+                  </tr>
+                ) : (
+                  filteredOtRequests.map((req) => (
+                    <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
+                      <td className="px-6 py-3 text-sm text-surface-800">{otEmployeeName(req)}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700">
+                        {asDateOnly(req.request_date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-surface-700">
+                        {req.ot_start.slice(0, 5)} – {req.ot_end.slice(0, 5)} น.
+                      </td>
+                      <td className="px-6 py-3 text-sm text-surface-700">{req.hours ?? '-'}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700 max-w-[240px] truncate" title={req.reason ?? ''}>
+                        {req.reason ?? '-'}
+                        {req.reject_reason && (
+                          <div className="text-xs text-red-500 truncate" title={req.reject_reason}>
+                            เหตุผลไม่อนุมัติ: {req.reject_reason}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-3">
+                        <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium border ${statusBadgeClass(req.status)}`}>
+                          {req.status === 'pending' ? 'รออนุมัติ' : statusLabel(req.status)}
+                        </span>
+                      </td>
+                      {canApproveOT && (
+                        <td className="px-6 py-3">
+                          {req.status === 'pending' ? (
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleApproveOT(req.id)}
+                                disabled={actionLoading}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+                              >
+                                อนุมัติ
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOtRejectingId(req.id)
+                                  setRejectReason('')
+                                  setError(null)
+                                }}
+                                disabled={actionLoading}
+                                className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-sm font-medium hover:bg-red-200 disabled:opacity-50"
+                              >
+                                ไม่อนุมัติ
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-surface-400 text-sm">-</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : activeTab === 'list' ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
@@ -461,11 +663,30 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
-                      <td
-                        className="px-6 py-3 text-xs text-surface-700 max-w-[320px] truncate"
-                        title={getLeaveRemainingByTypes(req.employee_id, req.start_date)}
-                      >
-                        {getLeaveRemainingByTypes(req.employee_id, req.start_date)}
+                      <td className="px-6 py-3 text-xs text-surface-700">
+                        {(() => {
+                          const rows = getLeaveBalanceRows(req.employee_id, req.start_date)
+                          const main = rows.filter((r) => isMainLeaveType(r.name))
+                          return (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span>
+                                {main.length
+                                  ? main.map((r) => `${r.name}: ${r.remaining}`).join(' | ')
+                                  : '-'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setBalanceView({ name: employeeDisplayName(req), rows })
+                                }}
+                                className="text-emerald-600 hover:underline whitespace-nowrap"
+                              >
+                                ดูทั้งหมด
+                              </button>
+                            </div>
+                          )
+                        })()}
                       </td>
                       <td className="px-6 py-3">
                         <span
@@ -632,6 +853,95 @@ export default function LeaveManagement() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* OT reject reason modal */}
+      <Modal
+        open={!!otRejectingId}
+        onClose={() => {
+          setOtRejectingId(null)
+          setRejectReason('')
+        }}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-surface-800 mb-2">เหตุผลในการไม่อนุมัติ OT</h3>
+          <p className="text-sm text-surface-600 mb-4">กรุณาระบุเหตุผล (จำเป็น)</p>
+          <textarea
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder="เหตุผล..."
+            rows={4}
+            className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-800 placeholder:text-surface-400"
+          />
+          <div className="flex justify-end gap-2 mt-4">
+            <button
+              type="button"
+              onClick={() => {
+                setOtRejectingId(null)
+                setRejectReason('')
+              }}
+              className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={handleRejectOT}
+              disabled={actionLoading || !rejectReason.trim()}
+              className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+            >
+              ยืนยันไม่อนุมัติ
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* วันลาคงเหลือทั้งหมด */}
+      <Modal
+        open={!!balanceView}
+        onClose={() => setBalanceView(null)}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        {balanceView && (
+          <div className="p-6">
+            <h3 className="text-lg font-semibold text-surface-800 mb-1">วันลาคงเหลือทั้งหมด</h3>
+            <p className="text-sm text-surface-500 mb-4">{balanceView.name}</p>
+            <div className="overflow-hidden rounded-lg border border-surface-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-surface-50 text-surface-600">
+                    <th className="px-4 py-2 text-left font-semibold">ประเภทลา</th>
+                    <th className="px-4 py-2 text-center font-semibold">สิทธิ์</th>
+                    <th className="px-4 py-2 text-center font-semibold">ใช้ไป</th>
+                    <th className="px-4 py-2 text-center font-semibold">คงเหลือ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {balanceView.rows.map((r) => (
+                    <tr key={r.id} className="border-t border-surface-100">
+                      <td className="px-4 py-2 text-surface-800">{r.name}</td>
+                      <td className="px-4 py-2 text-center text-surface-600">{r.entitled || '-'}</td>
+                      <td className="px-4 py-2 text-center text-surface-600">{r.used}</td>
+                      <td className="px-4 py-2 text-center font-semibold text-emerald-700">{r.remaining}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setBalanceView(null)}
+                className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
