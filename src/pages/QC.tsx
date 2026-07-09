@@ -484,7 +484,7 @@ export default function QC() {
 
   const focusBarcodeInput = useCallback(() => {
     setTimeout(() => {
-      barcodeInputRef.current?.focus()
+      barcodeInputRef.current?.focus({ preventScroll: true })
     }, 0)
   }, [])
 
@@ -598,7 +598,7 @@ export default function QC() {
     } else if (q) {
       alert('ไม่พบ UID นี้')
     }
-    barcodeInputRef.current?.focus()
+    barcodeInputRef.current?.focus({ preventScroll: true })
   }
 
   function selectItem(item: QCItem) {
@@ -1365,7 +1365,7 @@ export default function QC() {
         </div>
       </div>
 
-      <div className="pt-4 flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden overflow-hidden">
+      <div className="pt-4 flex flex-col flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         {/* QC Operation */}
         {currentView === 'qc' && (
           <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
@@ -1455,9 +1455,9 @@ export default function QC() {
 
             {qcState.step === 'working' && (
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3 md:flex-row md:items-end md:gap-4 w-full min-w-0">
-                  <div className="flex flex-wrap items-end gap-6 sm:gap-8 min-w-0 shrink-0">
-                    <div className="flex flex-wrap items-end gap-6 sm:gap-8">
+                <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between lg:gap-6 w-full min-w-0">
+                  <div className="flex items-start gap-6 sm:gap-8 min-w-0 flex-1">
+                    <div className="flex items-end gap-6 sm:gap-8 shrink-0">
                       <div className="text-center">
                         <div className="text-xs text-gray-500 uppercase">Total</div>
                         <div className="text-2xl font-bold">{totalItems}</div>
@@ -1476,9 +1476,9 @@ export default function QC() {
                       </div>
                     </div>
                     {remainingByDept.length > 0 && (
-                      <div className="flex flex-col items-start justify-end border-l border-gray-200 pl-4 sm:pl-5 min-h-[3.5rem]">
+                      <div className="flex flex-col items-start border-l border-gray-200 pl-4 sm:pl-5 min-w-0 flex-1">
                         <div className="text-sm sm:text-base font-bold text-slate-600 tracking-wide">คงเหลือแยกแผนก (หมวดสินค้า)</div>
-                        <div className="flex flex-wrap gap-x-3 sm:gap-x-4 gap-y-1 mt-1 max-w-[min(100%,32rem)]">
+                        <div className="flex flex-wrap gap-x-3 sm:gap-x-4 gap-y-1 mt-1 max-w-[min(100%,44rem)]">
                           {remainingByDept.map(([dept, n]) => (
                             <span key={dept} className="text-base sm:text-lg whitespace-nowrap">
                               <span className="text-gray-700 font-medium">{dept}</span>{' '}
@@ -1488,11 +1488,14 @@ export default function QC() {
                         </div>
                       </div>
                     )}
-                    <div className="flex items-end min-h-[3.5rem] shrink-0">
+                  </div>
+                  {/* กลุ่มปุ่มควบคุมฝั่งขวา — ยึดตำแหน่งคงที่ ไม่ขยับตามจำนวนหมวดสินค้า */}
+                  <div className="flex flex-col gap-2 shrink-0 lg:items-end">
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
                       <button
                         type="button"
                         onClick={() => setShowNotQcOnly((v) => !v)}
-                        className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
+                        className={`px-3 py-1.5 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap ${
                           showNotQcOnly
                             ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700'
                             : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
@@ -1501,49 +1504,47 @@ export default function QC() {
                       >
                         รายการไม่ได้ QC
                       </button>
+                      {qcState.startTime && (
+                        <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-1.5">
+                          <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
+                          <span className="text-sm font-bold text-indigo-700 tabular-nums">
+                            {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  {qcState.startTime && (
-                    <div className="flex w-full justify-center md:flex-1 md:items-end min-w-0 py-0.5 md:min-w-[10rem]">
-                      <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2 shrink-0">
-                        <span className="text-sm text-indigo-500 font-medium">⏱ เวลาเริ่ม:</span>
-                        <span className="text-lg font-bold text-indigo-700">
-                          {qcState.startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex gap-2 items-center flex-wrap shrink-0 md:justify-end">
-                    {qcState.filename && (
-                      <div className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-sm font-semibold whitespace-nowrap">
-                        ใบงาน: {qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : qcState.filename}
-                      </div>
-                    )}
-                    <input
-                      ref={barcodeInputRef}
-                      type="text"
-                      value={barcodeQuery}
-                      onChange={(e) => setBarcodeQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-                      placeholder="สแกน UID"
-                      className="border rounded-lg px-3 py-1.5 w-48 uppercase"
-                    />
-                    <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
-                      ค้นหา
-                    </button>
-                    {canFinishSession && (
-                      <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
-                        FINISH JOB
+                    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                      {qcState.filename && (
+                        <div className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-sm font-semibold whitespace-nowrap">
+                          ใบงาน: {qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : qcState.filename}
+                        </div>
+                      )}
+                      <input
+                        ref={barcodeInputRef}
+                        type="text"
+                        value={barcodeQuery}
+                        onChange={(e) => setBarcodeQuery(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+                        placeholder="สแกน UID"
+                        className="border rounded-lg px-3 py-1.5 w-48 uppercase"
+                      />
+                      <button onClick={handleScan} className="px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200">
+                        ค้นหา
                       </button>
-                    )}
+                      {canFinishSession && (
+                        <button onClick={() => setFinishConfirmOpen(true)} className="px-6 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-bold">
+                          FINISH JOB
+                        </button>
+                      )}
+                      <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
+                        สลับใบงาน
+                      </button>
+                    </div>
                     {activeRemainingItems === 0 && activeFailedItems > 0 && (
-                      <span className="text-sm text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg">
+                      <span className="text-sm text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg lg:text-right">
                         มีรายการไม่ผ่าน {activeFailedItems} รายการ (เฉพาะที่ยัง Active) — ต้อง Pass ทุกรายการจึงจะจบงานได้
                       </span>
                     )}
-                    <button onClick={handleSwitchJob} className="px-4 py-1.5 border border-blue-500 text-blue-600 rounded-lg hover:bg-blue-50">
-                      สลับใบงาน
-                    </button>
                   </div>
                 </div>
 

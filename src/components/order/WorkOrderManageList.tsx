@@ -367,6 +367,7 @@ export default function WorkOrderManageList({
   const [wsBatchSize, setWsBatchSize] = useState(25)
   const trackingFileInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfInputRef = useRef<HTMLInputElement>(null)
+  const waybillPdfFolderInputRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
     loadWorkOrders()
   }, [channelFilter, searchTerm, dateFrom, dateTo, mode])
@@ -723,13 +724,15 @@ export default function WorkOrderManageList({
   }
 
   async function openWaybillSorterModal(workOrderId: string, workOrderNameForDisplay: string) {
+    // เรียงบิลใหม่สุดก่อน — ต้องตรงกับลำดับไฟล์ใบปะหน้า Excel (openWaybillPreview) และ Barcode CSV (fetchOrdersWithItems)
     const { data: ordersData } = await supabase
       .from('or_orders')
       .select('id, tracking_number, bill_no')
       .eq('work_order_id', workOrderId)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .not('tracking_number', 'is', null)
-      .order('bill_no', { ascending: true })
+      .order('created_at', { ascending: false })
+      .order('bill_no', { ascending: false })
     const withTracking = (ordersData || []).filter((o) => o.tracking_number && String(o.tracking_number).trim() !== '')
     const trackingNumbers = withTracking.map((o) => String(o.tracking_number).trim())
     if (trackingNumbers.length === 0) {
@@ -748,8 +751,14 @@ export default function WorkOrderManageList({
     setWsLog((prev) => (overwriteFirst && prev.length > 0 ? [message, ...prev.slice(1)] : [message, ...prev]))
   }
 
-  async function processWaybillPdfs(files: FileList | null) {
-    if (!files || files.length === 0 || !waybillSorterModal.workOrderName) return
+  async function processWaybillPdfs(fileInput: FileList | null) {
+    if (!fileInput || fileInput.length === 0 || !waybillSorterModal.workOrderName) return
+    // กรองเฉพาะ PDF — กรณีเลือกทั้งโฟลเดอร์อาจมีไฟล์ชนิดอื่นปนมา
+    const files = Array.from(fileInput).filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name))
+    if (files.length === 0) {
+      setWsLog(['ไม่พบไฟล์ PDF ในโฟลเดอร์/รายการที่เลือก'])
+      return
+    }
     const workOrderName = waybillSorterModal.workOrderName
     const trackingNumbersRaw = waybillSorterModal.trackingNumbers
     setWsProcessing(true)
@@ -828,7 +837,8 @@ export default function WorkOrderManageList({
         setWsProgress(Math.round((idx / files.length) * 100))
         await sleep(0)
         const buf = await file.arrayBuffer()
-        const pdf = await pdfjsLib.getDocument({ data: buf }).promise
+        // pdf.js จะโอน buffer ไปให้ worker (detach) — ต้องส่งสำเนา เก็บต้นฉบับไว้ให้ pdf-lib ใช้รวมไฟล์
+        const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise
         const results: { trackingKeyText: string; pageIndex: number }[] = []
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i)
@@ -959,6 +969,7 @@ export default function WorkOrderManageList({
       .eq('work_order_id', workOrderId)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .order('created_at', { ascending: false })
+      .order('bill_no', { ascending: false })
     if (error) throw error
     const list = (data || []) as OrderWithItems[]
     return list
@@ -1969,13 +1980,24 @@ export default function WorkOrderManageList({
           <h2 className="text-lg font-bold text-gray-900 mb-2">เรียงใบปะหน้าตามใบงาน</h2>
           <p className="text-gray-600 text-sm mb-4">ใบงาน: {waybillSorterModal.workOrderName}</p>
 
-          <div className="flex justify-center mb-4">
+          <div className="flex justify-center gap-2 mb-4">
             <input
               ref={waybillPdfInputRef}
               type="file"
               accept="application/pdf"
               multiple
               className="hidden"
+              onChange={(e) => {
+                processWaybillPdfs(e.target.files)
+                e.target.value = ''
+              }}
+            />
+            <input
+              ref={waybillPdfFolderInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)}
               onChange={(e) => {
                 processWaybillPdfs(e.target.files)
                 e.target.value = ''
@@ -1989,8 +2011,16 @@ export default function WorkOrderManageList({
             >
               เลือกไฟล์ PDF ใบปะหน้า
             </button>
+            <button
+              type="button"
+              onClick={() => waybillPdfFolderInputRef.current?.click()}
+              disabled={wsProcessing}
+              className="px-4 py-2 rounded-lg border border-blue-600 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+            >
+              📁 เลือกโฟลเดอร์
+            </button>
           </div>
-          <p className="text-center text-xs text-gray-500 mb-4">เลือกหลายไฟล์ PDF ได้ (หรือโฟลเดอร์ในบางเบราว์เซอร์)</p>
+          <p className="text-center text-xs text-gray-500 mb-4">เลือกหลายไฟล์ PDF พร้อมกันได้ หรือเลือกทั้งโฟลเดอร์ (ระบบใช้เฉพาะไฟล์ .pdf ในโฟลเดอร์)</p>
 
           <div className="grid grid-cols-2 gap-4 mb-4 py-4 border-y border-gray-200">
             <div className="text-center">
