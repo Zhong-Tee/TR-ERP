@@ -586,12 +586,12 @@ const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 /** ช่องทาง OFFICE — ไม่ต้องกรอก: ชื่อ, ที่อยู่, เลขพัสดุ, ชื่อช่องทาง, โปรโมชั่น, สลิป */
 const CHANNELS_SKIP_CUSTOMER_FIELDS = ['OFFICE']
 
-/** แมปสีหมึกพลาสติก → รหัสสินค้าหมึกแฟลชพลาสติกที่แถม */
-const PLASTIC_INK_BONUS_MAP: Record<string, { product_code: string; product_name: string }> = {
-  'พลาสติกดำ': { product_code: '110000321', product_name: 'หมึกแฟลชพลาสติก 5 ml. (ดำ)' },
-  'พลาสติกเขียว': { product_code: '110000320', product_name: 'หมึกแฟลชพลาสติก 5 ml. (เขียว)' },
-  'พลาสติกแดง': { product_code: '110000322', product_name: 'หมึกแฟลชพลาสติก 5 ml. (แดง)' },
-  'พลาสติกน้ำเงิน': { product_code: '110000323', product_name: 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)' },
+/** แมปสีหมึกพลาสติก → ชื่อสินค้าหมึกแฟลชพลาสติกที่แถม (จับคู่ด้วยชื่อ เพราะรหัสสินค้าอาจถูกล้าง/เปลี่ยนใหม่ได้) */
+const PLASTIC_INK_BONUS_MAP: Record<string, { product_name: string }> = {
+  'พลาสติกดำ': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (ดำ)' },
+  'พลาสติกเขียว': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (เขียว)' },
+  'พลาสติกแดง': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (แดง)' },
+  'พลาสติกน้ำเงิน': { product_name: 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)' },
 }
 
 const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
@@ -701,6 +701,36 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const scheduledPickupInputRef = useRef<HTMLInputElement>(null)
   /** PUMP: true = คิว Confirm งานใหม่ (ต้องออกแบบ), false = คิว ไม่ต้องออกแบบ เมื่อถึงสถานะตรวจสอบแล้ว */
   const [requiresConfirmDesign, setRequiresConfirmDesign] = useState(false)
+
+  /** ป้องกันวาง (Ctrl+V) ซ้ำในช่องบรรทัด 1-3: คัดลอก 1 ครั้ง วางได้ช่องละ 1 ครั้ง (คนละช่องวางได้) */
+  const linePastedFieldsRef = useRef<Set<string>>(new Set())
+  const lastLinePasteTextRef = useRef('')
+  useEffect(() => {
+    // คัดลอก/ตัดครั้งใหม่ในแอพ หรือสลับหน้าต่างไปคัดลอกจากที่อื่น → ทุกช่องกลับมาวางได้อีกครั้ง
+    const resetLinePasteGuard = () => {
+      linePastedFieldsRef.current = new Set()
+    }
+    document.addEventListener('copy', resetLinePasteGuard)
+    document.addEventListener('cut', resetLinePasteGuard)
+    window.addEventListener('focus', resetLinePasteGuard)
+    return () => {
+      document.removeEventListener('copy', resetLinePasteGuard)
+      document.removeEventListener('cut', resetLinePasteGuard)
+      window.removeEventListener('focus', resetLinePasteGuard)
+    }
+  }, [])
+
+  /** คืน true = ต้องบล็อคการวางแบบเงียบๆ (ช่องนี้เพิ่งวางข้อความเดิมไปแล้ว ต้องคัดลอกใหม่ก่อน) */
+  function checkDuplicateLinePaste(text: string, fieldKey: string): boolean {
+    if (text !== lastLinePasteTextRef.current) {
+      // ข้อความใหม่ในคลิปบอร์ด → เริ่มนับสิทธิ์การวางใหม่ทุกช่อง
+      lastLinePasteTextRef.current = text
+      linePastedFieldsRef.current = new Set()
+    }
+    if (linePastedFieldsRef.current.has(fieldKey)) return true
+    linePastedFieldsRef.current.add(fieldKey)
+    return false
+  }
 
   const [formData, setFormData] = useState({
     channel_code: '',
@@ -3828,7 +3858,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   function removeItem(index: number) {
     const item = items[index]
-    const allBonusCodes = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_code))
+    const allBonusNames = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_name))
 
     // ---- กรณีสินค้าคอนโด: ลบแถว ชั้น1 พร้อมแถวย่อย ชั้น2-5 ----
     if (isCondoProduct(item.product_name) && item.product_type === 'ชั้น1') {
@@ -3891,7 +3921,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     let removeBonus = false
     if (nextItem && (nextItem as { is_free?: boolean }).is_free) {
       const nextProduct = products.find(p => p.id === nextItem.product_id)
-      if (nextProduct && allBonusCodes.has(nextProduct.product_code)) {
+      if (nextProduct && allBonusNames.has(nextProduct.product_name)) {
         removeBonus = true
       }
     }
@@ -4700,15 +4730,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         const selectedInk = e.target.value
                         updateItem(index, 'ink_color', selectedInk)
 
-                        // รวม product_code ของหมึกแฟลชพลาสติกทั้งหมด (ใช้หาแถวแถมที่มีอยู่แล้ว)
-                        const allBonusCodes = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_code))
+                        // รวมชื่อสินค้าหมึกแฟลชพลาสติกทั้งหมด (ใช้หาแถวแถมที่มีอยู่แล้ว)
+                        const allBonusNames = new Set(Object.values(PLASTIC_INK_BONUS_MAP).map(b => b.product_name))
 
-                        // หาแถวแถมหมึกพลาสติกที่มีอยู่แล้วหลังแถวนี้ (แถวถัดไปที่เป็น is_free + product_code ตรง)
+                        // หาแถวแถมหมึกพลาสติกที่มีอยู่แล้วหลังแถวนี้ (แถวถัดไปที่เป็น is_free + ชื่อสินค้าตรง)
                         const findExistingBonusIndex = (fromIndex: number): number => {
                           const next = items[fromIndex + 1]
                           if (!next || !(next as { is_free?: boolean }).is_free) return -1
                           const nextProduct = products.find(p => p.id === next.product_id)
-                          if (nextProduct && allBonusCodes.has(nextProduct.product_code)) return fromIndex + 1
+                          if (nextProduct && allBonusNames.has(nextProduct.product_name)) return fromIndex + 1
                           return -1
                         }
 
@@ -4717,7 +4747,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
                         if (bonusInfo) {
                           // เลือกหมึกพลาสติก → ต้องมีแถวแถม
-                          const matchedProduct = products.find(p => p.product_code === bonusInfo.product_code)
+                          const matchedProduct = products.find(p => p.product_name === bonusInfo.product_name)
                           if (matchedProduct) {
                             if (existingBonusIdx >= 0) {
                               // มีแถวแถมอยู่แล้ว → เปลี่ยนเป็นหมึกสีใหม่
@@ -4944,6 +4974,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             onChange={(e) => updateItem(index, 'line_1', e.target.value)}
                             onPaste={(e) => {
                               const text = e.clipboardData.getData('text')
+                              if (checkDuplicateLinePaste(text, `${index}:line_1`)) {
+                                e.preventDefault()
+                                return
+                              }
                               const handled = handleLine1Paste(index, text)
                               if (handled) e.preventDefault()
                             }}
@@ -4979,6 +5013,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             type="text"
                             value={item.line_2 || ''}
                             onChange={(e) => updateItem(index, 'line_2', e.target.value)}
+                            onPaste={(e) => {
+                              if (checkDuplicateLinePaste(e.clipboardData.getData('text'), `${index}:line_2`)) e.preventDefault()
+                            }}
                             disabled={line2Disabled}
                             className={`flex-1 min-w-0 px-1.5 py-1 border rounded text-xs ${
                               line2Disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
@@ -5013,6 +5050,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                             type="text"
                             value={item.line_3 || ''}
                             onChange={(e) => updateItem(index, 'line_3', e.target.value)}
+                            onPaste={(e) => {
+                              if (checkDuplicateLinePaste(e.clipboardData.getData('text'), `${index}:line_3`)) e.preventDefault()
+                            }}
                             disabled={line3Disabled}
                             className={`flex-1 min-w-0 px-1.5 py-1 border rounded text-xs ${
                               line3Disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''
