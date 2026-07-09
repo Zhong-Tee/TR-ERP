@@ -1,16 +1,15 @@
-import { supabase } from './supabase'
+﻿import { supabase } from './supabase'
 import { buildIlikeOr } from './searchFilter'
 import type {
   HRDepartment, HRPosition, HREmployee, HRLeaveType, HRLeaveRequest,
   HRLeaveBalance, HRCandidate, HRInterview, HRInterviewScore,
-  HRAttendanceUpload, HRAttendanceSummary, HRAttendanceDaily,
   HRContractTemplate, HRContract, HRDocumentCategory, HRDocument,
   HRExam, HRExamResult, HROnboardingTemplate, HROnboardingPlan,
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
   HRNotification, HRNotificationSettings,
   HRWarning, HRCertificate, HRAsset,
+  HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule,
 } from '../types'
-import * as XLSX from 'xlsx'
 
 function pgError(e: unknown): never {
   if (e instanceof Error) throw e
@@ -271,45 +270,6 @@ export async function upsertInterviewScore(score: Partial<HRInterviewScore>) {
     .from('hr_interview_scores').insert(score).select().single()
   if (error) pgError(error)
   return data as HRInterviewScore
-}
-
-// ─── Attendance ─────────────────────────────────────────────────────────────
-
-export async function fetchAttendanceUploads() {
-  const { data, error } = await supabase.from('hr_attendance_uploads')
-    .select('*').order('created_at', { ascending: false })
-  if (error) pgError(error)
-  return data as HRAttendanceUpload[]
-}
-
-export async function fetchAttendanceSummary(uploadId: string) {
-  const { data, error } = await supabase.from('hr_attendance_summary')
-    .select('*').eq('upload_id', uploadId).order('employee_name')
-  if (error) pgError(error)
-  return data as HRAttendanceSummary[]
-}
-
-export async function fetchAttendanceDaily(uploadId: string, fingerprintId?: string) {
-  let q = supabase.from('hr_attendance_daily')
-    .select('*').eq('upload_id', uploadId).order('work_date')
-  if (fingerprintId) q = q.eq('fingerprint_id', fingerprintId)
-  const { data, error } = await q
-  if (error) pgError(error)
-  return data as HRAttendanceDaily[]
-}
-
-export async function batchUpsertAttendance(
-  upload: Record<string, unknown>,
-  summaries: Record<string, unknown>[],
-  dailies: Record<string, unknown>[],
-) {
-  const { data, error } = await supabase.rpc('batch_upsert_attendance', {
-    p_upload: upload,
-    p_summaries: summaries,
-    p_dailies: dailies,
-  })
-  if (error) pgError(error)
-  return data as string
 }
 
 // ─── Contracts ──────────────────────────────────────────────────────────────
@@ -823,239 +783,6 @@ function parseThaiDate(thai: string): string | undefined {
 }
 
 // =============================================================================
-// Excel Parser: ตึกใหม่ (New Building)
-// =============================================================================
-
-export interface ParsedAttendanceResult {
-  source: 'new_building' | 'old_building'
-  periodStart: string
-  periodEnd: string
-  summaries: Record<string, unknown>[]
-  dailies: Record<string, unknown>[]
-}
-
-export function parseNewBuildingExcel(file: ArrayBuffer): ParsedAttendanceResult {
-  const wb = XLSX.read(file, { type: 'array' })
-
-  const scheduleSheet = wb.Sheets[wb.SheetNames[0]]
-  const scheduleData = XLSX.utils.sheet_to_json<(string | number | null)[]>(scheduleSheet, { header: 1 })
-
-  let periodStart = ''
-  let periodEnd = ''
-  if (scheduleData[1]) {
-    const dateStr = String(scheduleData[1][1] || '')
-    const match = dateStr.match(/(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})/)
-    if (match) { periodStart = match[1]; periodEnd = match[2] }
-  }
-
-  const dayHeaders = scheduleData[2]?.slice(3) || []
-  const summaries: Record<string, unknown>[] = []
-  const dailies: Record<string, unknown>[] = []
-
-  for (let i = 4; i < scheduleData.length; i++) {
-    const row = scheduleData[i]
-    if (!row || !row[0]) continue
-    const fpId = String(row[0])
-    const name = String(row[1] || '')
-    const dept = String(row[2] || '')
-
-    for (let d = 3; d < row.length; d++) {
-      const dayNum = dayHeaders[d - 3]
-      if (!dayNum) continue
-      const shiftVal = row[d]
-      const workDate = periodStart ? computeDate(periodStart, Number(dayNum)) : ''
-      if (!workDate) continue
-
-      dailies.push({
-        fingerprint_id: fpId,
-        employee_name: name,
-        source: 'new_building',
-        work_date: workDate,
-        shift_code: shiftVal != null ? String(shiftVal) : null,
-        is_holiday: shiftVal == null,
-        is_absent: false,
-      })
-    }
-
-    summaries.push({
-      fingerprint_id: fpId,
-      employee_name: name,
-      department: dept,
-      source: 'new_building',
-      period_start: periodStart,
-      period_end: periodEnd,
-    })
-  }
-
-  const summarySheet = wb.Sheets[wb.SheetNames[1]]
-  if (summarySheet) {
-    const summaryData = XLSX.utils.sheet_to_json<(string | number | null)[]>(summarySheet, { header: 1 })
-    for (let i = 4; i < summaryData.length; i++) {
-      const row = summaryData[i]
-      if (!row || !row[0]) continue
-      const fpId = String(row[0])
-      const existing = summaries.find(s => s.fingerprint_id === fpId)
-      if (existing) {
-        existing.scheduled_hours = parseHoursToNumber(row[3])
-        existing.actual_hours = parseHoursToNumber(row[4])
-        existing.late_count = Number(row[5]) || 0
-        existing.late_minutes = Number(row[6]) || 0
-        existing.early_leave_count = Number(row[7]) || 0
-        existing.early_leave_minutes = Number(row[8]) || 0
-        const stdActual = String(row[11] || '')
-        const parts = stdActual.split('/')
-        existing.work_days_required = Number(parts[0]) || 0
-        existing.work_days_actual = Number(parts[1]) || 0
-        existing.absent_days = Number(row[12]) || 0
-        existing.leave_days = Number(row[13]) || 0
-      }
-    }
-  }
-
-  return { source: 'new_building', periodStart, periodEnd, summaries, dailies }
-}
-
-// =============================================================================
-// Excel Parser: ตึกเก่า (Old Building)
-// =============================================================================
-
-export function parseOldBuildingExcel(file: ArrayBuffer): ParsedAttendanceResult {
-  const wb = XLSX.read(file, { type: 'array' })
-
-  const summarySheet = wb.Sheets['สรุป']
-  const summaryData = XLSX.utils.sheet_to_json<(string | number | null)[]>(summarySheet, { header: 1 })
-
-  let periodStart = ''
-  let periodEnd = ''
-  if (summaryData[1]) {
-    const dateStr = String(summaryData[1][1] || '')
-    const match = dateStr.match(/(\d{4})\/(\d{2})\/(\d{2})\s*~\s*(\d{2})\/(\d{2})/)
-    if (match) {
-      periodStart = `${match[1]}-${match[2]}-${match[3]}`
-      periodEnd = `${match[1]}-${match[4]}-${match[5]}`
-    }
-  }
-
-  const summaries: Record<string, unknown>[] = []
-  const dailies: Record<string, unknown>[] = []
-
-  for (let i = 4; i < summaryData.length; i++) {
-    const row = summaryData[i]
-    if (!row || !row[0] || typeof row[0] !== 'string' && typeof row[0] !== 'number') continue
-    const no = String(row[0])
-    if (!/^\d+$/.test(no)) continue
-
-    const name = String(row[1] || '')
-    const dept = String(row[2] || '')
-    const stdActual = String(row[11] || '')
-    const parts = stdActual.split('/')
-
-    summaries.push({
-      fingerprint_id: no,
-      employee_name: name,
-      department: dept,
-      source: 'old_building',
-      period_start: periodStart,
-      period_end: periodEnd,
-      scheduled_hours: parseHoursToNumber(row[3]),
-      actual_hours: parseHoursToNumber(row[4]),
-      work_days_required: Number(parts[0]) || 0,
-      work_days_actual: Number(parts[1]) || 0,
-      absent_days: Number(row[13]) || 0,
-      late_count: Number(row[14]) || 0,
-    })
-  }
-
-  const shiftSheet = wb.Sheets['กะ']
-  if (shiftSheet) {
-    const shiftData = XLSX.utils.sheet_to_json<(string | number | null)[]>(shiftSheet, { header: 1 })
-    const dayHeaders = shiftData[2]?.slice(3) || []
-
-    for (let i = 4; i < shiftData.length; i++) {
-      const row = shiftData[i]
-      if (!row || !row[0]) continue
-      const no = String(row[0])
-      if (!/^\d+$/.test(no)) continue
-      const name = String(row[1] || '')
-
-      for (let d = 3; d < row.length; d++) {
-        const dayNum = dayHeaders[d - 3]
-        if (!dayNum) continue
-        const shiftVal = row[d]
-        const workDate = periodStart ? computeDate(periodStart, Number(dayNum)) : ''
-        if (!workDate) continue
-
-        dailies.push({
-          fingerprint_id: no,
-          employee_name: name,
-          source: 'old_building',
-          work_date: workDate,
-          shift_code: shiftVal != null ? String(shiftVal) : null,
-          is_holiday: shiftVal == null,
-          is_absent: false,
-        })
-      }
-    }
-  }
-
-  const systemSheet = wb.Sheets['ระบบ']
-  if (systemSheet) {
-    const sysData = XLSX.utils.sheet_to_json<(string | number | null)[]>(systemSheet, { header: 1 })
-    const dayHeaders = sysData[2]?.slice(3) || []
-
-    for (let i = 4; i < sysData.length; i++) {
-      const row = sysData[i]
-      if (!row || !row[0]) continue
-      const no = String(row[0])
-      if (!/^\d+$/.test(no)) continue
-      void String(row[1] || '')
-
-      for (let d = 3; d < row.length; d++) {
-        const dayNum = dayHeaders[d - 3]
-        if (!dayNum) continue
-        const cellVal = String(row[d] || '')
-        if (!cellVal) continue
-        const times = cellVal.split('\n').map(t => t.trim()).filter(Boolean)
-        const clockIn = times[0] || undefined
-        const clockOut = times[1] || undefined
-        const workDate = periodStart ? computeDate(periodStart, Number(dayNum)) : ''
-        if (!workDate) continue
-
-        const existing = dailies.find(
-          dd => dd.fingerprint_id === no && dd.work_date === workDate
-        )
-        if (existing) {
-          existing.clock_in = clockIn
-          existing.clock_out = clockOut
-        }
-      }
-    }
-  }
-
-  return { source: 'old_building', periodStart, periodEnd, summaries, dailies }
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function computeDate(periodStart: string, dayNum: number): string {
-  const d = new Date(periodStart)
-  d.setDate(dayNum)
-  if (isNaN(d.getTime())) return ''
-  return d.toISOString().split('T')[0]
-}
-
-function parseHoursToNumber(val: unknown): number | undefined {
-  if (val == null) return undefined
-  const s = String(val)
-  if (s.includes(':')) {
-    const [h, m] = s.split(':').map(Number)
-    return h + (m || 0) / 60
-  }
-  const n = parseFloat(s)
-  return isNaN(n) ? undefined : n
-}
-
-// =============================================================================
 // Warning Letters (ใบเตือน)
 // =============================================================================
 
@@ -1196,4 +923,173 @@ export async function upsertAsset(asset: Partial<HRAsset>) {
 export async function deleteAsset(id: string) {
   const { error } = await supabase.from('hr_assets').delete().eq('id', id)
   if (error) pgError(error)
+}
+
+// =============================================================================
+// Time Clock (บันทึกเวลาเข้า-ออกงานด้วย GPS + กล้อง)
+// =============================================================================
+
+/** ระยะทางระหว่างพิกัด 2 จุด (เมตร) — สูตร Haversine */
+export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(a))
+}
+
+// ─── Clock Locations (จุดพิกัดออฟฟิศ) ───────────────────────────────────────
+
+export async function fetchClockLocations(activeOnly = false) {
+  let q = supabase.from('hr_clock_locations').select('*').order('created_at', { ascending: true })
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRClockLocation[]
+}
+
+export async function upsertClockLocation(loc: Partial<HRClockLocation>) {
+  if (loc.id) {
+    const { data, error } = await supabase
+      .from('hr_clock_locations').update(loc).eq('id', loc.id).select().single()
+    if (error) pgError(error)
+    return data as HRClockLocation
+  }
+  const { data, error } = await supabase
+    .from('hr_clock_locations').insert(loc).select().single()
+  if (error) pgError(error)
+  return data as HRClockLocation
+}
+
+export async function deleteClockLocation(id: string) {
+  const { error } = await supabase.from('hr_clock_locations').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+// ─── Work Schedules (มาตรฐานเวลาทำงานหลายชุด) ──────────────────────────────
+
+export async function fetchWorkSchedules(activeOnly = false) {
+  let q = supabase.from('hr_work_schedules').select('*').order('created_at', { ascending: true })
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRWorkSchedule[]
+}
+
+export async function upsertWorkSchedule(s: Partial<HRWorkSchedule>) {
+  if (s.id) {
+    const { data, error } = await supabase
+      .from('hr_work_schedules').update(s).eq('id', s.id).select().single()
+    if (error) pgError(error)
+    return data as HRWorkSchedule
+  }
+  const { data, error } = await supabase
+    .from('hr_work_schedules').insert(s).select().single()
+  if (error) pgError(error)
+  return data as HRWorkSchedule
+}
+
+export async function deleteWorkSchedule(id: string) {
+  const { error } = await supabase.from('hr_work_schedules').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+// ─── Time Entries (บันทึกเวลา) ──────────────────────────────────────────────
+
+const TIME_ENTRY_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name))'
+
+export async function fetchTimeEntries(filters?: {
+  employee_id?: string
+  date_from?: string
+  date_to?: string
+  entry_type?: string
+  limit?: number
+}) {
+  let q = supabase.from('hr_time_entries')
+    .select(TIME_ENTRY_SELECT)
+    .order('entry_time', { ascending: false })
+  if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
+  if (filters?.date_from) q = q.gte('work_date', filters.date_from)
+  if (filters?.date_to) q = q.lte('work_date', filters.date_to)
+  if (filters?.entry_type) q = q.eq('entry_type', filters.entry_type)
+  q = q.limit(filters?.limit ?? 1000)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRTimeEntry[]
+}
+
+export async function createTimeEntry(entry: Partial<HRTimeEntry>) {
+  const payload = { ...entry }
+  delete payload.employee
+  const { data, error } = await supabase
+    .from('hr_time_entries').insert(payload).select().single()
+  if (error) pgError(error)
+  return data as HRTimeEntry
+}
+
+/** อัปโหลดรูปถ่ายตอนบันทึกเวลา (บังคับถ่ายจากกล้อง) → คืน path ใน bucket */
+export async function uploadTimeClockPhoto(employeeId: string, blob: Blob) {
+  const path = `${employeeId}/${Date.now()}.jpg`
+  const { data, error } = await supabase.storage.from('hr-time-clock').upload(path, blob, {
+    contentType: 'image/jpeg',
+    cacheControl: '3600',
+    upsert: false,
+  })
+  if (error) pgError(error)
+  return data.path
+}
+
+/** bucket hr-time-clock เป็น private → ใช้ signed URL */
+export async function getTimeClockPhotoUrl(path: string, expiresInSec = 3600) {
+  const { data, error } = await supabase.storage.from('hr-time-clock').createSignedUrl(path, expiresInSec)
+  if (error) pgError(error)
+  return data.signedUrl
+}
+
+/** ขอ signed URL หลายรูปในคำขอเดียว → คืน map path → url (สำหรับ thumbnail ในตาราง) */
+export async function getTimeClockPhotoUrls(paths: string[], expiresInSec = 3600) {
+  if (paths.length === 0) return {} as Record<string, string>
+  const { data, error } = await supabase.storage.from('hr-time-clock').createSignedUrls(paths, expiresInSec)
+  if (error) pgError(error)
+  const map: Record<string, string> = {}
+  for (const d of data) {
+    if (d.path && d.signedUrl) map[d.path] = d.signedUrl
+  }
+  return map
+}
+
+// ─── OT Requests (คำขอ OT) ──────────────────────────────────────────────────
+
+export async function fetchOTRequests(filters?: { status?: string; employee_id?: string; date_from?: string; date_to?: string }) {
+  let q = supabase.from('hr_ot_requests')
+    .select(TIME_ENTRY_SELECT)
+    .order('created_at', { ascending: false })
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
+  if (filters?.date_from) q = q.gte('request_date', filters.date_from)
+  if (filters?.date_to) q = q.lte('request_date', filters.date_to)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HROTRequest[]
+}
+
+export async function createOTRequest(req: Partial<HROTRequest>) {
+  const payload = { ...req }
+  delete payload.employee
+  const { data, error } = await supabase
+    .from('hr_ot_requests').insert(payload).select().single()
+  if (error) pgError(error)
+  return data as HROTRequest
+}
+
+export async function updateOTRequest(id: string, updates: Partial<HROTRequest>) {
+  const payload = { ...updates }
+  delete payload.employee
+  const { data, error } = await supabase
+    .from('hr_ot_requests').update(payload).eq('id', id).select().single()
+  if (error) pgError(error)
+  return data as HROTRequest
 }

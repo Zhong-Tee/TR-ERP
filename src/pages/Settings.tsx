@@ -8,6 +8,7 @@ import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import DataBackupClearPanel from '../components/settings/DataBackupClearPanel'
 import MfaEnrollPanel from '../components/settings/MfaEnrollPanel'
+import ClockLocationsPanel from '../components/settings/ClockLocationsPanel'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
@@ -16,6 +17,7 @@ import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
   { key: 'role-settings', label: 'ตั้งค่า Role' },
+  { key: 'clock-locations', label: 'จุดบันทึกเวลา (GPS)' },
   { key: 'banks', label: 'ตั้งค่าข้อมูลธนาคาร' },
   { key: 'product-settings', label: 'ตั้งค่าสินค้า' },
   { key: 'bill-channel-map', label: 'ตั้งค่าเลขบิล-ช่องทาง' },
@@ -531,6 +533,28 @@ export default function Settings() {
     }
   }
 
+  async function toggleEmployeeAccess(targetUser: User) {
+    const next = targetUser.employee_access !== true
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ employee_access: next })
+        .eq('id', targetUser.id)
+
+      if (error) throw error
+      showMessage({
+        title: 'สำเร็จ',
+        message: next
+          ? 'เปิดสิทธิ์ Employee สำเร็จ — user นี้เข้าหน้า Employee ผ่านมือถือได้ทันที'
+          : 'ปิดสิทธิ์ Employee สำเร็จ',
+      })
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating employee access:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
   async function handleToggleActive(targetUser: User) {
     const willDeactivate = targetUser.is_active !== false
     if (willDeactivate) {
@@ -704,7 +728,7 @@ export default function Settings() {
     // ── HR ──
     { key: 'hr', label: 'HR', group: '' },
     { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
-    { key: 'hr-leave', label: 'ระบบลางาน', group: 'hr' },
+    { key: 'hr-leave', label: 'ระบบลางาน/OT', group: 'hr' },
     { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
     { key: 'hr-attendance', label: 'เวลาทำงาน', group: 'hr' },
     { key: 'hr-contracts', label: 'สัญญาจ้าง', group: 'hr' },
@@ -719,6 +743,7 @@ export default function Settings() {
     { key: 'settings', label: 'ตั้งค่า', group: '' },
     { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
     { key: 'settings-role-settings', label: 'ตั้งค่า Role', group: 'settings' },
+    { key: 'settings-clock-locations', label: 'จุดบันทึกเวลา (GPS)', group: 'settings' },
     { key: 'settings-banks', label: 'ตั้งค่าข้อมูลธนาคาร', group: 'settings' },
     { key: 'settings-bill-header', label: 'ตั้งค่าหัวบิล', group: 'settings' },
     { key: 'settings-product-settings', label: 'ตั้งค่าสินค้า', group: 'settings' },
@@ -2206,6 +2231,11 @@ export default function Settings() {
         <DataBackupClearPanel />
       )}
 
+      {/* จุดบันทึกเวลา (GPS) Tab */}
+      {activeTab === 'clock-locations' && hasAccess('settings-clock-locations') && (
+        <ClockLocationsPanel canEdit={currentUser?.role === 'superadmin'} />
+      )}
+
       {/* API EasySlip Tab */}
       {activeTab === 'easyslip' && hasAccess('settings-easyslip') && (
         <div className="space-y-6">
@@ -2439,6 +2469,9 @@ export default function Settings() {
                   <th className="p-3 text-left font-semibold">Username</th>
                   <th className="p-3 text-left font-semibold">Role</th>
                   <th className="p-3 text-center font-semibold">สถานะ</th>
+                  <th className="p-3 text-center font-semibold" title="เปิดให้ user นี้เข้าหน้า Employee ผ่านมือถือ โดยไม่ต้องเปลี่ยน role">
+                    สิทธิ์ Employee
+                  </th>
                   {currentUser?.role === 'superadmin' && (
                     <th className="p-3 text-center font-semibold rounded-tr-xl">ลบ</th>
                   )}
@@ -2502,6 +2535,27 @@ export default function Settings() {
                           }`}
                         />
                       </button>
+                    </td>
+                    <td className="p-3 text-center">
+                      {user.role === 'employee' ? (
+                        <span className="text-xs text-gray-400" title="role employee เข้าหน้า Employee อยู่แล้ว">—</span>
+                      ) : (
+                        <button
+                          type="button"
+                          title={user.employee_access ? 'ปิดสิทธิ์เข้าหน้า Employee ผ่านมือถือ' : 'เปิดสิทธิ์เข้าหน้า Employee ผ่านมือถือ'}
+                          onClick={() => toggleEmployeeAccess(user)}
+                          disabled={isInactive}
+                          className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+                            user.employee_access ? 'bg-emerald-500' : 'bg-gray-300'
+                          }`}
+                        >
+                          <span
+                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition duration-200 ${
+                              user.employee_access ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      )}
                     </td>
                     {currentUser?.role === 'superadmin' && (
                       <td className="p-3 text-center">

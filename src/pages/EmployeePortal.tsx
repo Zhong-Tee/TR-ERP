@@ -1,13 +1,18 @@
 import { lazy, Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
-import { FiHome, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBell, FiSmartphone } from 'react-icons/fi'
+import { supabase } from '../lib/supabase'
+import { fetchEmployeeByUserId, fetchNotifications } from '../lib/hrApi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone } from 'react-icons/fi'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
+const EmployeeTimeClock = lazy(() => import('../components/hr/employee/EmployeeTimeClock'))
 const EmployeeLeave = lazy(() => import('../components/hr/employee/EmployeeLeave'))
 const EmployeeSalaryPath = lazy(() => import('../components/hr/employee/EmployeeSalaryPath'))
 const EmployeeOnboarding = lazy(() => import('../components/hr/employee/EmployeeOnboarding'))
 const EmployeeDocuments = lazy(() => import('../components/hr/employee/EmployeeDocuments'))
+const EmployeeAssets = lazy(() => import('../components/hr/employee/EmployeeAssets'))
+const EmployeeWarningsCerts = lazy(() => import('../components/hr/employee/EmployeeWarningsCerts'))
 
 const Loading = () => (
   <div className="flex items-center justify-center py-20">
@@ -58,10 +63,13 @@ function DesktopBlockScreen() {
 
 const TABS = [
   { id: 'dashboard', label: 'หน้าหลัก', icon: FiHome, Component: EmployeeDashboard },
+  { id: 'timeclock', label: 'ลงเวลา', icon: FiClock, Component: EmployeeTimeClock },
+  { id: 'warnings-certs', label: 'เตือน/รับรอง', icon: FiAward, Component: EmployeeWarningsCerts },
   { id: 'leave', label: 'ขอลา', icon: FiCalendar, Component: EmployeeLeave },
+  { id: 'documents', label: 'เอกสาร', icon: FiFileText, Component: EmployeeDocuments },
+  { id: 'assets', label: 'ทรัพย์สิน', icon: FiBox, Component: EmployeeAssets },
   { id: 'salary', label: 'เส้นทาง', icon: FiTrendingUp, Component: EmployeeSalaryPath },
   { id: 'onboarding', label: 'Onboarding', icon: FiBookOpen, Component: EmployeeOnboarding },
-  { id: 'documents', label: 'เอกสาร', icon: FiFileText, Component: EmployeeDocuments },
 ] as const
 
 const TAB_IDS = TABS.map((t) => t.id)
@@ -73,16 +81,50 @@ export default function EmployeePortal() {
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]['id']>(
     (tabFromUrl && TAB_IDS.includes(tabFromUrl as (typeof TAB_IDS)[number])) ? (tabFromUrl as (typeof TABS)[number]['id']) : 'dashboard'
   )
-  const { signOut } = useAuthContext()
+  const { user, signOut } = useAuthContext()
+  /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
+  const [resultUnread, setResultUnread] = useState(0)
 
   useEffect(() => {
     const t = searchParams.get('tab')
     if (t && TAB_IDS.includes(t as (typeof TAB_IDS)[number])) setActiveTab(t as (typeof TABS)[number]['id'])
   }, [searchParams])
 
+  // นับแจ้งเตือนผลอนุมัติที่ยังไม่อ่าน (เรียลไทม์)
+  useEffect(() => {
+    if (!user?.id) return
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    let cancelled = false
+    fetchEmployeeByUserId(user.id).then((emp) => {
+      if (!emp || cancelled) return
+      const loadCount = () =>
+        fetchNotifications(emp.id, true)
+          .then((list) => setResultUnread(list.filter((n) => n.type.includes('result')).length))
+          .catch(() => {})
+      loadCount()
+      channel = supabase
+        .channel('employee-portal-notif-count')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'hr_notifications', filter: `employee_id=eq.${emp.id}` },
+          loadCount,
+        )
+        .subscribe()
+    })
+    return () => {
+      cancelled = true
+      if (channel) supabase.removeChannel(channel)
+    }
+  }, [user?.id])
+
   const setActiveTabAndUrl = (id: (typeof TABS)[number]['id']) => {
     setActiveTab(id)
     setSearchParams(id === 'dashboard' ? {} : { tab: id })
+  }
+
+  const openResultNotifications = () => {
+    setActiveTab('dashboard')
+    setSearchParams({ notif: 'result' })
   }
 
   if (!isMobile) return <DesktopBlockScreen />
@@ -95,8 +137,18 @@ export default function EmployeePortal() {
       <header className="sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-emerald-600 text-white shadow-md">
         <h1 className="text-lg font-semibold">TR-ERP</h1>
         <div className="flex items-center gap-2">
-          <button type="button" className="p-2 rounded-full hover:bg-white/20" aria-label="แจ้งเตือน">
+          <button
+            type="button"
+            onClick={openResultNotifications}
+            className="relative p-2 rounded-full hover:bg-white/20"
+            aria-label="แจ้งเตือนผลอนุมัติ"
+          >
             <FiBell className="w-5 h-5" />
+            {resultUnread > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
+                {resultUnread > 99 ? '99+' : resultUnread}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -115,7 +167,7 @@ export default function EmployeePortal() {
       </main>
 
       <nav
-        className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around py-2 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)]"
+        className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-start sm:justify-around gap-0.5 py-2 px-1 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] overflow-x-auto scrollbar-thin"
         aria-label="แท็บนำทาง"
       >
         {TABS.map((tab) => {
@@ -126,12 +178,12 @@ export default function EmployeePortal() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTabAndUrl(tab.id)}
-              className={`flex flex-col items-center justify-center gap-0.5 min-w-[64px] py-2 px-2 rounded-lg transition-colors ${
+              className={`flex flex-col items-center justify-center gap-0.5 min-w-[52px] flex-shrink-0 py-2 px-1.5 rounded-lg transition-colors ${
                 isActive ? 'text-emerald-600 bg-emerald-50' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
               <Icon className="w-6 h-6" />
-              <span className="text-xs font-medium">{tab.label}</span>
+              <span className="text-[11px] font-medium whitespace-nowrap">{tab.label}</span>
             </button>
           )
         })}

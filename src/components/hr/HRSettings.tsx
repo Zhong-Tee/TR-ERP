@@ -125,10 +125,11 @@ export default function HRSettings() {
     department_id: '',
     level: '1',
   })
-  const [leaveForm, setLeaveForm] = useState<{ id?: string; name: string; max_days_per_year: string; requires_doc: boolean; is_paid: boolean }>({
+  const [leaveForm, setLeaveForm] = useState<{ id?: string; name: string; max_days_per_year: string; requires_doc: boolean; doc_label: string; is_paid: boolean }>({
     name: '',
     max_days_per_year: '',
     requires_doc: false,
+    doc_label: '',
     is_paid: true,
   })
   const [trackForm, setTrackForm] = useState<{ id?: string; name: string; department_id: string; description: string }>({
@@ -226,7 +227,7 @@ export default function HRSettings() {
 
   const resetDeptForm = () => setDeptForm({ name: '', description: '', telegram_group_id: '' })
   const resetPosForm = () => setPosForm({ name: '', department_id: '', level: '1' })
-  const resetLeaveForm = () => setLeaveForm({ name: '', max_days_per_year: '', requires_doc: false, is_paid: true })
+  const resetLeaveForm = () => setLeaveForm({ name: '', max_days_per_year: '', requires_doc: false, doc_label: '', is_paid: true })
   const resetTrackForm = () => setTrackForm({ name: '', department_id: '', description: '' })
   const resetLevelForm = () => setLevelForm(buildLevelForm(getNextLevelOrder(levels)))
   const resetTemplateForm = () =>
@@ -327,6 +328,7 @@ export default function HRSettings() {
         name: leaveForm.name.trim(),
         max_days_per_year: leaveForm.max_days_per_year.trim() === '' ? undefined : Number(leaveForm.max_days_per_year),
         requires_doc: leaveForm.requires_doc,
+        doc_label: leaveForm.requires_doc ? (leaveForm.doc_label.trim() || 'เอกสารประกอบการลา') : undefined,
         is_paid: leaveForm.is_paid,
       })
       setMessage('บันทึกประเภทการลาเรียบร้อย')
@@ -706,7 +708,7 @@ export default function HRSettings() {
                 <tr>
                   <th className="text-left py-2 px-3">ประเภทการลา</th>
                   <th className="text-left py-2 px-3">จำนวนวัน/ปี</th>
-                  <th className="text-left py-2 px-3">ต้องแนบเอกสาร</th>
+                  <th className="text-left py-2 px-3">เอกสารที่ต้องแนบ</th>
                   <th className="text-left py-2 px-3">ได้รับเงิน</th>
                   <th className="text-right py-2 px-3">จัดการ</th>
                 </tr>
@@ -716,7 +718,7 @@ export default function HRSettings() {
                   <tr key={lt.id} className="border-b border-surface-100">
                     <td className="py-2 px-3 font-medium">{lt.name}</td>
                     <td className="py-2 px-3">{lt.max_days_per_year ?? '-'}</td>
-                    <td className="py-2 px-3">{lt.requires_doc ? 'ใช่' : 'ไม่'}</td>
+                    <td className="py-2 px-3">{lt.requires_doc ? (lt.doc_label || 'ใช่') : '-'}</td>
                     <td className="py-2 px-3">{lt.is_paid ? 'ใช่' : 'ไม่'}</td>
                     <td className="py-2 px-3 text-right">
                       <button
@@ -727,6 +729,7 @@ export default function HRSettings() {
                             name: lt.name,
                             max_days_per_year: lt.max_days_per_year == null ? '' : String(lt.max_days_per_year),
                             requires_doc: lt.requires_doc,
+                            doc_label: lt.doc_label ?? '',
                             is_paid: lt.is_paid,
                           })
                         }
@@ -757,6 +760,18 @@ export default function HRSettings() {
               <input type="checkbox" checked={leaveForm.requires_doc} onChange={(e) => setLeaveForm((p) => ({ ...p, requires_doc: e.target.checked }))} />
               ต้องแนบเอกสาร
             </label>
+            {leaveForm.requires_doc && (
+              <label className="block text-sm">
+                <span className="text-gray-600">ชื่อเอกสารที่ต้องแนบ</span>
+                <input
+                  type="text"
+                  value={leaveForm.doc_label}
+                  onChange={(e) => setLeaveForm((p) => ({ ...p, doc_label: e.target.value }))}
+                  placeholder="เช่น ใบรับรองแพทย์"
+                  className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+                />
+              </label>
+            )}
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={leaveForm.is_paid} onChange={(e) => setLeaveForm((p) => ({ ...p, is_paid: e.target.checked }))} />
               ได้รับค่าจ้าง

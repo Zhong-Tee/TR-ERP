@@ -5,6 +5,8 @@ export interface User {
   username?: string
   role: UserRole
   is_active?: boolean
+  /** เปิดสิทธิ์เข้าหน้า Employee บนมือถือ โดยไม่ต้องเปลี่ยน role หลัก */
+  employee_access?: boolean
   created_at?: string
 }
 
@@ -997,8 +999,10 @@ export interface HREmployee {
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
   /** ประเภทสัญญาจ้าง: permanent=ประจำ, daily=รายวัน */
   contract_type?: 'permanent' | 'daily'
-  fingerprint_id_old?: string
-  fingerprint_id_new?: string
+  /** จุดบันทึกเวลา (hr_clock_locations) ที่พนักงานคนนี้ใช้ */
+  clock_location_id?: string
+  /** มาตรฐานเวลาทำงาน (hr_work_schedules) ของพนักงานคนนี้ — ว่าง = ใช้ชุดค่าเริ่มต้น */
+  work_schedule_id?: string
   user_id?: string
   telegram_chat_id?: string
   documents?: { name: string; url: string; type: string; uploaded_at: string }[]
@@ -1015,6 +1019,8 @@ export interface HRLeaveType {
   name: string
   max_days_per_year?: number
   requires_doc: boolean
+  /** ชื่อเอกสารที่ต้องแนบ (ป้ายปุ่มอัปโหลดตอนขอลา) เมื่อ requires_doc = true */
+  doc_label?: string
   is_paid: boolean
   created_at: string
 }
@@ -1111,61 +1117,70 @@ export interface HRInterviewScore {
   created_at: string
 }
 
-export interface HRAttendanceUpload {
+// ─── HR Time Clock (บันทึกเวลาเข้า-ออกงานด้วย GPS + กล้อง) ───────────────────
+
+export interface HRClockLocation {
   id: string
-  source: 'new_building' | 'old_building'
-  period_start: string
-  period_end: string
-  file_url?: string
-  uploaded_by?: string
-  row_count?: number
+  name: string
+  lat: number
+  lng: number
+  radius_m: number
+  is_active: boolean
   created_at: string
+  updated_at: string
 }
 
-export interface HRAttendanceSummary {
-  id: string
-  upload_id: string
-  employee_id?: string
-  fingerprint_id?: string
-  employee_name?: string
-  department?: string
-  source: string
-  period_start: string
-  period_end: string
-  scheduled_hours?: number
-  actual_hours?: number
-  overtime_hours: number
-  late_count: number
-  late_minutes: number
-  early_leave_count: number
-  early_leave_minutes: number
-  absent_days: number
-  leave_days: number
-  work_days_required: number
-  work_days_actual: number
-  raw_data?: Record<string, unknown>
-  created_at: string
-}
+export type HRTimeEntryType = 'clock_in' | 'clock_out' | 'ot_in' | 'ot_out'
 
-export interface HRAttendanceDaily {
+export interface HRTimeEntry {
   id: string
-  upload_id: string
-  employee_id?: string
-  fingerprint_id?: string
-  employee_name?: string
-  source: string
+  employee_id: string
+  entry_type: HRTimeEntryType
   work_date: string
-  shift_code?: string
-  clock_in?: string
-  clock_out?: string
-  clock_in_2?: string
-  clock_out_2?: string
-  late_minutes: number
-  early_minutes: number
-  is_absent: boolean
-  is_holiday: boolean
+  entry_time: string
+  lat?: number
+  lng?: number
+  accuracy_m?: number
+  distance_m?: number
+  location_id?: string
+  location_name?: string
+  photo_url?: string
   note?: string
   created_at: string
+  employee?: HREmployee
+}
+
+export interface HROTRequest {
+  id: string
+  employee_id: string
+  request_date: string
+  ot_start: string
+  ot_end: string
+  hours?: number
+  reason?: string
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  approved_by?: string
+  approved_at?: string
+  reject_reason?: string
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+}
+
+/** มาตรฐานเวลาทำงาน (หลายชุด ตั้งชื่อได้ กำหนดต่อพนักงานผ่าน hr_employees.work_schedule_id) */
+export interface HRWorkSchedule {
+  id: string
+  name: string
+  work_start: string
+  work_end: string
+  late_grace_min: number
+  /** วันทำงานต่อสัปดาห์ (ISO: 1=จันทร์ ... 7=อาทิตย์) คั่นด้วย comma */
+  work_days: string
+  /** ชุดค่าเริ่มต้นสำหรับพนักงานที่ยังไม่ได้กำหนด (มีได้ชุดเดียว) */
+  is_default: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface HRContractTemplate {
