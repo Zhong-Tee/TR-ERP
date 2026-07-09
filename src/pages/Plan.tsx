@@ -1809,7 +1809,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   [
                     ['dash', 'Dashboard (Master Plan)'],
                     ['work-orders', `ใบสั่งงาน (${workOrdersCount})`],
-                    ['work-orders-manage', `จัดการใบงาน (${workOrdersManageCount})`],
+                    // เลขบนแท็บ = ใบงานใหม่ (กำลังผลิต) ที่ต้องจัดการจริง — ไม่ผูกกับตัวกรองวันที่ของแท็บ "ใบงานทั้งหมด"
+                    ['work-orders-manage', `จัดการใบงาน (${manageNewCount})`],
                     ['dept', 'หน้าแผนก (คิวงาน)'],
                     ['jobs', 'ใบงานทั้งหมด'],
                     ['form', 'สร้าง/แก้ไขใบงาน'],

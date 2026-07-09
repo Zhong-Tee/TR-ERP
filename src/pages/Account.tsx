@@ -261,6 +261,8 @@ export default function Account() {
   const [billingResultModal, setBillingResultModal] = useState<{ open: boolean; title: string; message: string }>({ open: false, title: '', message: '' })
   /** Modal เปิดใบกำกับภาษี */
   const [taxInvoiceModal, setTaxInvoiceModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean; viewOnly: boolean }>({ open: false, order: null, submitting: false, viewOnly: false })
+  /** Modal ยืนยัน ปิดคำขอใบกำกับภาษี (บิลถูกยกเลิก) — ปิดแล้วคำขอจะไม่กลับมาแสดงซ้ำ */
+  const [closeTaxRequestModal, setCloseTaxRequestModal] = useState<{ open: boolean; order: BillingRequestOrder | null; submitting: boolean }>({ open: false, order: null, submitting: false })
   const [slipReceiverAccount, setSlipReceiverAccount] = useState<string | null>(null)
   /** รายการตรวจสลิป (เมนู รายการการตรวจสลิป) */
   const [verifiedSlipsList, setVerifiedSlipsList] = useState<VerifiedSlipRow[]>([])
@@ -590,7 +592,7 @@ export default function Account() {
     // แสดง spinner เฉพาะครั้งแรก — ป้องกันหน้ากระพริบเมื่อ refresh เบื้องหลัง
     if (!initialLoadDone.current) setBillingLoading(true)
     try {
-      const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน")'
+      const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ")'
       const { data: taxData, error: taxError } = await supabase
         .from('or_orders')
         .select('id, bill_no, customer_name, total_amount, shipping_cost, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
@@ -772,6 +774,40 @@ export default function Account() {
   /** เปิดใบกำกับภาษีแบบดูอย่างเดียว (จากเมนูรายการอนุมัติ) */
   function viewTaxInvoice(order: BillingRequestOrder) {
     setTaxInvoiceModal({ open: true, order, submitting: false, viewOnly: true })
+  }
+
+  /** ปิดคำขอใบกำกับภาษีของบิลที่ถูกยกเลิก — mark ใน billing_details เพื่อไม่ให้แสดงซ้ำ (แม้บิลถูกแก้ไขภายหลัง) */
+  async function submitCloseTaxRequest() {
+    const { order } = closeTaxRequestModal
+    if (!user || !order) return
+    setCloseTaxRequestModal((prev) => ({ ...prev, submitting: true }))
+    try {
+      const bd = order.billing_details || {}
+      const newBillingDetails = {
+        ...bd,
+        // ใช้ flag ชุดเดียวกับการยืนยัน เพื่อให้หายจากคิว/badge ทุกจุด (RPC sidebar นับจาก account_confirmed_tax)
+        account_confirmed_tax: true,
+        account_confirmed_tax_at: new Date().toISOString(),
+        account_confirmed_tax_by: user.id,
+        // flag แยกไว้บอกว่า "ปิดคำขอเพราะบิลยกเลิก" ไม่ใช่การอนุมัติออกใบกำกับ
+        tax_request_closed: true,
+        tax_request_closed_reason: 'ยกเลิกบิล',
+      }
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ billing_details: newBillingDetails })
+        .eq('id', order.id)
+      if (error) throw error
+      setCloseTaxRequestModal({ open: false, order: null, submitting: false })
+      setBillingResultModal({ open: true, title: 'สำเร็จ', message: `ปิดคำขอใบกำกับภาษีของบิล ${order.bill_no} แล้ว — รายการนี้จะไม่แสดงซ้ำอีก` })
+      await loadBillingRequests()
+      await loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error: any) {
+      console.error('Error closing tax invoice request:', error)
+      setCloseTaxRequestModal({ open: false, order: null, submitting: false })
+      setBillingResultModal({ open: true, title: 'เกิดข้อผิดพลาด', message: 'เกิดข้อผิดพลาดในการปิดคำขอ: ' + error.message })
+    }
   }
 
   async function submitTaxInvoiceConfirm(order: BillingRequestOrder) {
@@ -1410,16 +1446,20 @@ export default function Account() {
                     <tbody>
                       {historyTaxInvoices.map((o) => {
                         const bd = o.billing_details || {}
+                        const isClosedRequest = bd.tax_request_closed === true
                         return (
                           <tr
                             key={o.id}
                             onClick={() => { setViewOrderId(o.id); setViewBillRefund(null) }}
-                            className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer align-top"
+                            className={`border-b border-gray-100 transition-colors cursor-pointer align-top ${isClosedRequest ? 'bg-red-50/40 hover:bg-red-50' : 'hover:bg-sky-50/50'}`}
                           >
                             <td className="px-4 py-3 font-semibold text-sky-700 whitespace-nowrap">
                               <span>{o.bill_no}</span>
                               {((o as any).claim_type != null || (o.bill_no || '').startsWith('REQ')) && (
                                 <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">เคลม</span>
+                              )}
+                              {isClosedRequest && (
+                                <span className="ml-1.5 px-1.5 py-0.5 text-xs font-bold rounded bg-red-100 text-red-700 border border-red-300">ปิดคำขอ (ยกเลิกบิล)</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-gray-800">
@@ -1439,6 +1479,8 @@ export default function Account() {
                             <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
                             <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                               <div className="flex flex-col gap-1.5 w-40">
+                                {/* คำขอที่ถูกปิดเพราะยกเลิกบิล — บล็อคการออกใบกำกับภาษี */}
+                                {!isClosedRequest && (
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); viewTaxInvoice(o) }}
@@ -1447,6 +1489,7 @@ export default function Account() {
                                   <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                                   ออกใบกำกับภาษี
                                 </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); openSlipPopup(o.id, o.bill_no) }}
@@ -1655,11 +1698,12 @@ export default function Account() {
                   const total = Number(o.total_amount || 0)
                   const beforeVat = total ? total / 1.07 : 0
                   const vatAmount = total ? total - beforeVat : 0
+                  const isCancelledBill = o.status === 'ยกเลิก'
                   return (
                     <tr
                       key={o.id}
                       onClick={() => { setViewOrderId(o.id); setViewBillRefund(null) }}
-                      className="border-b border-gray-100 hover:bg-sky-50/50 transition-colors cursor-pointer"
+                      className={`border-b border-gray-100 transition-colors cursor-pointer ${isCancelledBill ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-sky-50/50'}`}
                     >
                       <td className="px-3 py-2.5 font-semibold text-sky-700">
                         <span>{o.bill_no}</span>
@@ -1686,17 +1730,32 @@ export default function Account() {
                         ฿{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="px-3 py-2.5">
-                        <span className={`inline-flex px-2 py-0.5 rounded-lg text-xs font-medium ${o.status === 'ตรวจสอบแล้ว' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>{o.status}</span>
+                        {isCancelledBill ? (
+                          <span className="inline-flex px-2 py-0.5 rounded-lg text-xs font-bold bg-red-100 text-red-700 border border-red-300">ยกเลิกบิล</span>
+                        ) : (
+                          <span className={`inline-flex px-2 py-0.5 rounded-lg text-xs font-medium ${o.status === 'ตรวจสอบแล้ว' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-700'}`}>{o.status}</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-gray-500 text-xs whitespace-nowrap">{formatDateTime(o.created_at)}</td>
                       <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); confirmTaxInvoice(o) }}
-                          className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
-                        >
-                          ยืนยัน
-                        </button>
+                        {isCancelledBill ? (
+                          // บิลยกเลิก — บล็อคการยืนยันออกใบกำกับ ให้ปิดคำขอแทน (ปิดแล้วไม่แสดงซ้ำ)
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setCloseTaxRequestModal({ open: true, order: o, submitting: false }) }}
+                            className="px-2.5 py-1 bg-white text-red-600 border border-red-300 rounded-lg hover:bg-red-50 text-xs font-medium transition-colors"
+                          >
+                            ปิดคำขอ
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); confirmTaxInvoice(o) }}
+                            className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
+                          >
+                            ยืนยัน
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )
@@ -2013,6 +2072,48 @@ export default function Account() {
                   </>
                 ) : (
                   'ยืนยัน'
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal ยืนยัน ปิดคำขอใบกำกับภาษี (บิลถูกยกเลิก) */}
+      {closeTaxRequestModal.open && closeTaxRequestModal.order && (
+        <Modal
+          open
+          onClose={() => { if (!closeTaxRequestModal.submitting) setCloseTaxRequestModal({ open: false, order: null, submitting: false }) }}
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">ปิดคำขอใบกำกับภาษี</h3>
+            <p className="text-gray-700 mb-2">
+              {`บิล ${closeTaxRequestModal.order.bill_no} ถูกยกเลิกแล้ว ต้องการปิดคำขอใบกำกับภาษีของบิลนี้หรือไม่?`}
+            </p>
+            <p className="text-sm text-red-600 mb-6">ปิดแล้วรายการนี้จะไม่กลับมาแสดงซ้ำอีก และจะไม่มีการออกใบกำกับภาษีให้บิลนี้</p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setCloseTaxRequestModal({ open: false, order: null, submitting: false })}
+                disabled={closeTaxRequestModal.submitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={submitCloseTaxRequest}
+                disabled={closeTaxRequestModal.submitting}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {closeTaxRequestModal.submitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                    กำลังดำเนินการ...
+                  </>
+                ) : (
+                  'ปิดคำขอ'
                 )}
               </button>
             </div>

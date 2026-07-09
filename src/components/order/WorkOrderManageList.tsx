@@ -19,6 +19,7 @@ import {
   deptExportOrder,
   isStampDepartmentName,
 } from '../../lib/planPickingDepartments'
+import { WAYBILL_TEMPLATE_BASE64 } from '../../assets/waybillTemplateBase64'
 
 function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
   if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
@@ -248,6 +249,8 @@ const FLASH_EXPRESS_H = [
   "长\r\nLength\r\n(ยาว)",
   "宽\r\nWidth\r\n(กว้าง)",
   "高\r\nHeight\r\n(สูง)",
+  "Flash_care",
+  "Flash_care_plus",
   "申报价值\r\nDeclared_value\r\n(มูลค่าสินค้าที่ระบุโดยลูกค้า)",
   "Box_shield ",
   "文件归还服务\r\nDocument return service\r\n(บริการส่งคืนเอกสาร)",
@@ -258,14 +261,31 @@ const FLASH_EXPRESS_H = [
   "配送联系偏好备注\r\nDelivery Preference_contact note \r\nหมายเหตุการติดต่อในการจัดส่ง",
 ]
 
+/** แถวแรกของข้อมูลใน template ใหม่ — แถว 1 หัวตาราง, แถว 2 คำอธิบายวิธีกรอกของ Flash */
+const FLASH_EXPRESS_DATA_START_ROW = 3
+
+/** Cache buffer ของ template ใบปะหน้า — decode จาก base64 ที่ฝังในบันเดิลครั้งเดียว ใช้ซ้ำได้ทุกครั้งที่ Export */
+let waybillTemplateBufCache: ArrayBuffer | null = null
+
+/** Decode template ใบปะหน้าที่ฝังเป็น base64 → ArrayBuffer (ไม่ต้อง fetch — ตัดปัญหา Failed to fetch) */
+function getWaybillTemplateBuf(): ArrayBuffer {
+  if (!waybillTemplateBufCache) {
+    const bin = atob(WAYBILL_TEMPLATE_BASE64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    waybillTemplateBufCache = bytes.buffer
+  }
+  return waybillTemplateBufCache
+}
+
 /** คอลัมน์ Preview ใบปะหน้า — key ตรงกับ WaybillPreviewRow */
 const WAYBILL_PREVIEW_COLS: Array<{ key: string; label: string; width: string; required?: boolean }> = [
-  { key: 'addressRaw', label: 'Address (ต้นฉบับ)', width: 'min-w-[260px] w-[280px]' },
-  { key: 'consigneeName', label: 'ชื่อผู้รับ', width: 'min-w-[200px] w-[240px]', required: true },
-  { key: 'address', label: 'ที่อยู่', width: 'min-w-[280px] w-[320px]', required: true },
-  { key: 'postalCode', label: 'รหัสไปรษณีย์', width: 'min-w-[90px] w-[100px]', required: true },
-  { key: 'phone1', label: 'เบอร์โทร', width: 'min-w-[120px] w-[130px]', required: true },
-  { key: 'phone2', label: 'เบอร์โทร 2', width: 'min-w-[120px] w-[130px]' },
+  { key: 'addressRaw', label: 'Address (ต้นฉบับ)', width: 'min-w-[320px]' },
+  { key: 'consigneeName', label: 'ชื่อผู้รับ', width: 'min-w-[240px]', required: true },
+  { key: 'address', label: 'ที่อยู่', width: 'min-w-[380px]', required: true },
+  { key: 'postalCode', label: 'รหัสไปรษณีย์', width: 'min-w-[100px] w-[110px]', required: true },
+  { key: 'phone1', label: 'เบอร์โทร', width: 'min-w-[130px] w-[140px]', required: true },
+  { key: 'phone2', label: 'เบอร์โทร 2', width: 'min-w-[130px] w-[140px]' },
   { key: 'cod', label: 'COD', width: 'min-w-[80px] w-[90px]' },
 ]
 
@@ -325,6 +345,8 @@ export default function WorkOrderManageList({
   const [billCountByWo, setBillCountByWo] = useState<Record<string, number>>({})
 
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, message: '' })
+  /** Modal แสดงสถานะกำลัง Export — กันกดซ้ำระหว่างสร้างไฟล์ */
+  const [exportLoading, setExportLoading] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
   const [pickingSlipModal, setPickingSlipModal] = useState<PickingSlipModal>({
     open: false,
@@ -956,6 +978,8 @@ export default function WorkOrderManageList({
   }
 
   async function exportProduction(workOrderId: string, workOrderNameForDisplay: string) {
+    if (exportLoading.open) return
+    setExportLoading({ open: true, message: 'กำลังสร้างไฟล์ผลิต (Excel)... กรุณารอสักครู่' })
     try {
       const dataToExport = await buildProductionExportRows(workOrderId, workOrderNameForDisplay)
       if (dataToExport.length === 0) return
@@ -967,10 +991,14 @@ export default function WorkOrderManageList({
       XLSX.writeFile(workbook, `Production_${workOrderNameForDisplay}.xlsx`)
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+    } finally {
+      setExportLoading({ open: false, message: '' })
     }
   }
 
   async function copyProduction(workOrderId: string, workOrderNameForDisplay: string) {
+    if (exportLoading.open) return
+    setExportLoading({ open: true, message: 'กำลังเตรียมข้อมูลสำหรับคัดลอก... กรุณารอสักครู่' })
     try {
       const dataToCopy = await buildProductionExportRows(workOrderId, workOrderNameForDisplay)
       if (dataToCopy.length === 0) return
@@ -986,10 +1014,14 @@ export default function WorkOrderManageList({
       setMessageModal({ open: true, message: `คัดลอกข้อมูลเรียบร้อย ${dataToCopy.length} แถว (ไม่รวมหัวตาราง)` })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'คัดลอกไม่สำเร็จ: ' + (err?.message ?? err) })
+    } finally {
+      setExportLoading({ open: false, message: '' })
     }
   }
 
   async function exportBarcode(workOrderId: string, workOrderNameForDisplay: string) {
+    if (exportLoading.open) return
+    setExportLoading({ open: true, message: 'กำลังสร้างไฟล์ Barcode (CSV)... กรุณารอสักครู่' })
     try {
       const orders = await fetchOrdersWithItems(workOrderId)
       if (orders.length === 0) {
@@ -1044,6 +1076,8 @@ export default function WorkOrderManageList({
       link.click()
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+    } finally {
+      setExportLoading({ open: false, message: '' })
     }
   }
 
@@ -1151,21 +1185,17 @@ export default function WorkOrderManageList({
   async function exportWaybillXlsx() {
     const { workOrderName, rows } = waybillPreviewModal
     if (rows.length === 0) return
+    if (exportLoading.open) return
+    setExportLoading({ open: true, message: 'กำลังสร้างไฟล์ใบปะหน้า Flash Express (.xlsx)... กรุณารอสักครู่' })
     try {
-      // ต้องวางไฟล์ไว้ที่ public/templates/ เพื่อให้ fetch ได้
-      const templateUrl = '/templates/fp_waybill_template_th_26-03-2026.xlsx'
-      const res = await fetch(templateUrl)
-      if (!res.ok) throw new Error(`โหลด template ไม่สำเร็จ: ${res.status} ${res.statusText}`)
-      const templateBuf = await res.arrayBuffer()
-
       const workbook = new ExcelJS.Workbook()
-      await workbook.xlsx.load(templateBuf)
+      await workbook.xlsx.load(getWaybillTemplateBuf())
 
       const worksheet = workbook.getWorksheet('Order Template') ?? workbook.worksheets[0]
       if (!worksheet) throw new Error('ไม่พบ worksheet ในไฟล์ template')
 
-      // ใช้ style แถวที่ 2 เป็น “แม่แบบ” สำหรับแถวข้อมูลทั้งหมด
-      const styleRow = worksheet.getRow(2)
+      // ใช้ style แถวข้อมูลแถวแรกของ template เป็น “แม่แบบ” — clone ครั้งเดียวต่อคอลัมน์ แล้วใช้ซ้ำทุกแถว (เร็วกว่า clone ทุก cell)
+      const styleRow = worksheet.getRow(FLASH_EXPRESS_DATA_START_ROW)
       const styleHeight = styleRow.height
 
       const deepClone = <T,>(v: T): T => {
@@ -1176,9 +1206,15 @@ export default function WorkOrderManageList({
         }
       }
 
-      const colCount = FLASH_EXPRESS_H.length // 26 ตาม template ใหม่
+      const colCount = FLASH_EXPRESS_H.length // 28 ตาม template ใหม่ (เพิ่ม Flash_care, Flash_care_plus)
+      const colStyles: Array<Partial<ExcelJS.Style> | undefined> = []
+      for (let c = 1; c <= colCount; c++) {
+        const s = styleRow.getCell(c).style
+        colStyles[c] = s && Object.keys(s).length > 0 ? deepClone(s) : undefined
+      }
+
       rows.forEach((row, idx) => {
-        const excelRowNumber = 2 + idx
+        const excelRowNumber = FLASH_EXPRESS_DATA_START_ROW + idx
         const excelRow = worksheet.getRow(excelRowNumber)
         if (styleHeight != null) excelRow.height = styleHeight
 
@@ -1197,18 +1233,20 @@ export default function WorkOrderManageList({
         r[15] = '1'                  // Length
         r[16] = '1'                  // Width
         r[17] = '1'                  // Height
-        // Declared_value (18) = empty
-        // Box_shield (19) = empty
-        // Document return service (20) = empty
-        r[21] = 'Standard'           // *Product_type
-        r[22] = 'payment by sender'  // *Payment method
-        r[23] = row.billNo           // Remark
-        // 24-25: Delivery Preference notes (ว่าง)
+        // Flash_care (18) = empty → Flash default N
+        // Flash_care_plus (19) = empty → Flash default N
+        // Declared_value (20) = empty
+        // Box_shield (21) = empty
+        // Document return service (22) = empty
+        r[23] = 'Standard'           // *Product_type
+        r[24] = 'payment by sender'  // *Payment method
+        r[25] = row.billNo           // Remark
+        // 26-27: Delivery Preference notes (ว่าง)
 
         for (let c = 1; c <= colCount; c++) {
           const cell = excelRow.getCell(c)
-          const styleCell = styleRow.getCell(c)
-          if (styleCell?.style) cell.style = deepClone(styleCell.style)
+          const colStyle = colStyles[c]
+          if (colStyle) cell.style = colStyle
           cell.value = r[c - 1]
         }
         excelRow.commit()
@@ -1226,6 +1264,8 @@ export default function WorkOrderManageList({
       URL.revokeObjectURL(url)
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด Export ใบปะหน้า: ' + (err?.message ?? err) })
+    } finally {
+      setExportLoading({ open: false, message: '' })
     }
   }
 
@@ -1784,8 +1824,8 @@ export default function WorkOrderManageList({
         </div>
       )}
 
-      {/* Modal แจ้งข้อความ */}
-      <Modal open={messageModal.open} onClose={() => setMessageModal({ open: false, message: '' })} closeOnBackdropClick contentClassName="max-w-md w-full">
+      {/* Modal แจ้งข้อความ — z-[80] ให้ลอยเหนือ modal อื่นทุกตัว (เช่น Preview ใบปะหน้า z-50, loading z-[70]) */}
+      <Modal open={messageModal.open} onClose={() => setMessageModal({ open: false, message: '' })} closeOnBackdropClick stackClassName="z-[80]" contentClassName="max-w-md w-full">
         <div className="p-5">
           <p className="text-gray-800 whitespace-pre-wrap">{messageModal.message}</p>
           <div className="mt-4 flex justify-end">
@@ -2024,11 +2064,11 @@ export default function WorkOrderManageList({
         </div>
       </Modal>
 
-      {/* Modal Preview ใบปะหน้า */}
+      {/* Modal Preview ใบปะหน้า — กว้างเกือบเต็มจอ ให้อ่านข้อมูลแต่ละคอลัมน์ง่าย */}
       <Modal
         open={waybillPreviewModal.open}
         onClose={() => setWaybillPreviewModal({ open: false, workOrderName: null, rows: [] })}
-        contentClassName="max-w-[1200px] w-full"
+        contentClassName="max-w-[1800px] w-full"
       >
         <div className="p-6">
           {/* Header */}
@@ -2049,10 +2089,10 @@ export default function WorkOrderManageList({
               <button
                 type="button"
                 onClick={exportWaybillXlsx}
-                disabled={waybillPreviewModal.rows.length === 0}
+                disabled={waybillPreviewModal.rows.length === 0 || exportLoading.open}
                 className="px-4 py-2 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition"
               >
-                Export เป็น Excel (.xlsx)
+                {exportLoading.open ? 'กำลัง Export...' : 'Export เป็น Excel (.xlsx)'}
               </button>
               <button
                 type="button"
@@ -2127,6 +2167,15 @@ export default function WorkOrderManageList({
       {/* Detail Modal */}
       <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
+      </Modal>
+
+      {/* Modal แสดงสถานะกำลัง Export — ซ้อนเหนือ modal อื่น (z-[70]) และปิดเองเมื่อเสร็จ */}
+      <Modal open={exportLoading.open} onClose={() => {}} stackClassName="z-[70]" contentClassName="max-w-sm w-full">
+        <div className="p-6 flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" aria-hidden />
+          <p className="text-gray-800 font-medium text-center">{exportLoading.message}</p>
+          <p className="text-xs text-gray-400 text-center">ระบบกำลังเตรียมไฟล์ — หน้าต่างนี้จะปิดเองเมื่อดาวน์โหลดเสร็จ</p>
+        </div>
       </Modal>
     </div>
   )

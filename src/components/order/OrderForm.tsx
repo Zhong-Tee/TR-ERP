@@ -769,10 +769,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** แสดง Modal แทน alert เมื่อยังไม่ได้เลือกสินค้าจาก dropdown */
   const [productSelectAlertOpen, setProductSelectAlertOpen] = useState(false)
 
-  async function handleAutoFillAddress() {
+  /** แยกที่อยู่อัตโนมัติ — addressText ใช้ตอนเรียกจาก onPaste (state ยังไม่อัปเดต), ไม่ส่ง = ใช้ค่าในช่องปัจจุบัน */
+  async function handleAutoFillAddress(addressText?: string) {
     setAutoFillAddressLoading(true)
     try {
-      const parsed = await parseAddressText(formData.customer_address || '', supabase)
+      const parsed = await parseAddressText(addressText ?? (formData.customer_address || ''), supabase)
       setMobilePhoneCandidates(parsed.mobilePhoneCandidates ?? [])
       setSubDistrictOptions(parsed.subDistrictOptions ?? [])
       const channelCode = formData.channel_code
@@ -4200,17 +4201,26 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <label className="block text-sm font-medium">ที่อยู่ลูกค้า</label>
               <button
                 type="button"
-                onClick={handleAutoFillAddress}
+                onClick={() => handleAutoFillAddress()}
                 disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled || autoFillAddressLoading}
                 className="text-sm px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}
               </button>
+              <span className="text-xs text-gray-400">วางแล้วแยกให้อัตโนมัติ</span>
             </div>
             <textarea
               value={formData.customer_address}
               onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
-              placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วกด Auto fill"
+              onPaste={(e) => {
+                // วางแล้วเรียก Auto fill อัตโนมัติ — คำนวณค่าหลังวาง (แทนที่ช่วงที่ select อยู่) เพราะ state ยังไม่อัปเดตตอน onPaste
+                const pasted = e.clipboardData.getData('text')
+                if (!pasted.trim()) return
+                const el = e.currentTarget
+                const next = el.value.slice(0, el.selectionStart ?? el.value.length) + pasted + el.value.slice(el.selectionEnd ?? el.value.length)
+                void handleAutoFillAddress(next)
+              }}
+              placeholder="วางที่อยู่พร้อมเบอร์โทรทั้งหมด แล้วแยกข้อมูลให้อัตโนมัติ"
               required={!CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code)}
               disabled={CHANNELS_BLOCK_ADDRESS.includes(formData.channel_code) || formDisabled}
               rows={3}
@@ -5073,7 +5083,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <td className="border p-1.5">
                     <input
                       type="number"
-                      value={item.quantity || 1}
+                      value={item.quantity === 0 ? '' : (item.quantity || 1)}
                       onChange={(e) => {
                         const v = e.target.value
                         updateItem(index, 'quantity', v === '' ? 0 : (parseInt(v) || 0))
@@ -5081,31 +5091,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       onBlur={() => {
                         if (!item.quantity) updateItem(index, 'quantity', 1)
                       }}
+                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       min="1"
                       disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
+                    {/* ราคา/หน่วย — ล็อกถาวร ราคามาจากระบบ (product master / ข้อมูลชำระเงิน) เท่านั้น */}
                     <input
                       type="number"
                       value={item.unit_price ?? ''}
-                      onChange={(e) => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)}
-                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                      onFocus={(e) => {
-                        if (e.target.value === '0') {
-                          e.target.value = ''
-                        }
-                      }}
-                      onBlur={(e) => {
-                        if (e.target.value === '') {
-                          updateItem(index, 'unit_price', 0)
-                        }
-                      }}
-                      step="0.01"
                       placeholder="0.00"
-                      disabled={formDisabled || isManualPriceChannel || isCondoSubRow(item) || !!(item as { is_free?: boolean }).is_free || !isFieldEnabled(index, 'unit_price')}
-                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || isManualPriceChannel || isCondoSubRow(item) || !!(item as { is_free?: boolean }).is_free || !isFieldEnabled(index, 'unit_price')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                      disabled
+                      title="ราคา/หน่วยกำหนดโดยระบบ แก้ไขเองไม่ได้"
+                      className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 bg-gray-100 text-gray-500 cursor-not-allowed ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
                   <td className="border p-1.5">
@@ -5703,7 +5703,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               const composedAddressSave = [formData.address_line, formData.sub_district, formData.district, formData.province, formData.postal_code].filter(Boolean).join(' ').trim()
               const hasAddressSave = (formData.customer_address?.trim() || composedAddressSave) !== ''
               if (!isAddressBlockedSave && !isSkipCustomerFields && !hasAddressSave) {
-                setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่แล้วกด Auto fill' })
+                setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกที่อยู่ลูกค้า หรือวางที่อยู่ในช่องเพื่อแยกข้อมูลอัตโนมัติ' })
                 return
               }
 

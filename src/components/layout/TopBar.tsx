@@ -28,6 +28,45 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
   const [notifyBlinking, setNotifyBlinking] = useState(false)
+  /** ตำแหน่งแนวตั้งของป้ายแจ้งเตือน (px จากขอบล่าง) — ลากขึ้น/ลงได้ จำค่าไว้ใน localStorage */
+  const [notifyBottom, setNotifyBottom] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('notify-widget-bottom'))
+    return Number.isFinite(saved) && saved >= 8 ? saved : 24
+  })
+  const notifyDragRef = useRef<{ pointerId: number; startY: number; startBottom: number; lastBottom: number; moved: boolean } | null>(null)
+  /** กันไม่ให้ click (เปิด/ปิดป้าย) ทำงานทันทีหลังปล่อยจากการลาก */
+  const notifySuppressClickRef = useRef(false)
+
+  function onNotifyDragPointerDown(e: React.PointerEvent<HTMLElement>) {
+    // ถ้ากดลงบนปุ่มลูกข้างใน (เช่น ปุ่มย่อ) ไม่เริ่มลาก — ให้ click ของปุ่มนั้นทำงานตามปกติ
+    const targetButton = (e.target as HTMLElement).closest('button')
+    if (targetButton && targetButton !== e.currentTarget) return
+    notifyDragRef.current = { pointerId: e.pointerId, startY: e.clientY, startBottom: notifyBottom, lastBottom: notifyBottom, moved: false }
+  }
+  function onNotifyDragPointerMove(e: React.PointerEvent<HTMLElement>) {
+    const d = notifyDragRef.current
+    if (!d || d.pointerId !== e.pointerId) return
+    const dy = d.startY - e.clientY // ลากขึ้น = ค่า bottom เพิ่ม
+    if (!d.moved && Math.abs(dy) < 5) return // ขยับน้อยกว่า 5px ถือว่าเป็นคลิก
+    if (!d.moved) {
+      d.moved = true
+      // จับ pointer เมื่อเริ่มลากจริงเท่านั้น — จับตั้งแต่ pointerdown จะทำให้ click ของปุ่มลูกไม่ทำงาน
+      e.currentTarget.setPointerCapture(e.pointerId)
+    }
+    const maxBottom = Math.max(8, window.innerHeight - 120) // กันลากหลุดขอบบน
+    const next = Math.min(Math.max(8, d.startBottom + dy), maxBottom)
+    d.lastBottom = next
+    setNotifyBottom(next)
+  }
+  function onNotifyDragPointerUp(e: React.PointerEvent<HTMLElement>) {
+    const d = notifyDragRef.current
+    if (!d || d.pointerId !== e.pointerId) return
+    notifyDragRef.current = null
+    if (d.moved) {
+      notifySuppressClickRef.current = true
+      localStorage.setItem('notify-widget-bottom', String(Math.round(d.lastBottom)))
+    }
+  }
   const prevIssueCountRef = useRef(0)
   const prevChatCountRef = useRef(0)
 
@@ -516,21 +555,30 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
         </div>
       )}
       {canSeeChat && (
-        <div className="fixed bottom-6 right-6 z-50">
+        <div className="fixed right-6 z-50" style={{ bottom: notifyBottom }}>
           {notifyCollapsed ? (
             <button
               type="button"
-              onClick={() => { setNotifyCollapsed(false); setNotifyBlinking(false) }}
-              className={`group -mr-6 rounded-l-xl border border-gray-200 bg-white shadow-xl px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 transition-colors ${
+              onClick={() => {
+                if (notifySuppressClickRef.current) { notifySuppressClickRef.current = false; return }
+                setNotifyCollapsed(false); setNotifyBlinking(false)
+              }}
+              onPointerDown={onNotifyDragPointerDown}
+              onPointerMove={onNotifyDragPointerMove}
+              onPointerUp={onNotifyDragPointerUp}
+              onPointerCancel={onNotifyDragPointerUp}
+              className={`group -mr-6 rounded-l-xl border border-gray-200 bg-white shadow-xl px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 transition-colors touch-none cursor-grab active:cursor-grabbing ${
                 notifyBlinking ? 'animate-pulse ring-2 ring-red-300' : ''
               }`}
-              title="ขยายแจ้งเตือน"
+              title="ขยายแจ้งเตือน (ลากขึ้น/ลงเพื่อย้ายตำแหน่ง)"
               aria-label="ขยายแจ้งเตือน"
             >
               <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              <span className="text-xs font-semibold text-gray-700 whitespace-nowrap">แจ้งเตือน</span>
+              <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
               {(issueOnCount > 0 || newChatCount > 0) && (
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-500 text-white animate-bounce">
                   {issueOnCount + newChatCount}
@@ -544,8 +592,18 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               }`}
               onClick={() => setNotifyBlinking(false)}
             >
-              <div className="px-3 py-2 bg-emerald-600 text-white flex items-center justify-between">
+              <div
+                className="px-3 py-2 bg-emerald-600 text-white flex items-center justify-between touch-none cursor-grab active:cursor-grabbing"
+                onPointerDown={onNotifyDragPointerDown}
+                onPointerMove={onNotifyDragPointerMove}
+                onPointerUp={onNotifyDragPointerUp}
+                onPointerCancel={onNotifyDragPointerUp}
+                title="ลากขึ้น/ลงเพื่อย้ายตำแหน่ง"
+              >
                 <div className="font-bold text-base flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                  </svg>
                   แจ้งเตือน
                   {notifyBlinking && (
                     <span className="inline-flex w-2.5 h-2.5 rounded-full bg-red-300 animate-ping" />
@@ -553,7 +611,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => { setNotifyCollapsed(true); setNotifyBlinking(false) }}
+                  onClick={() => {
+                    if (notifySuppressClickRef.current) { notifySuppressClickRef.current = false; return }
+                    setNotifyCollapsed(true); setNotifyBlinking(false)
+                  }}
                   className="w-7 h-7 rounded-lg bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
                   title="ย่อ"
                   aria-label="ย่อ"
