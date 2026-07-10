@@ -130,18 +130,18 @@ export default function EmployeeDashboard() {
   return (
     <div className="space-y-6">
       <section>
-        <h2 className="text-xl font-semibold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
-        <p className="text-gray-500 text-sm">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
+        <p className="text-gray-500 text-base">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
       </section>
 
       <section className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
         <div className="flex items-center justify-between mb-2">
-          <p className="text-sm text-emerald-700 font-semibold">วันลาคงเหลือ</p>
+          <p className="text-base text-emerald-700 font-semibold">วันลาคงเหลือ</p>
           {(leaveSummary?.balances?.length ?? 0) > 0 && (
             <button
               type="button"
               onClick={() => setShowAllBalance(true)}
-              className="text-xs text-emerald-700 font-medium underline"
+              className="text-sm text-emerald-700 font-medium underline"
             >
               ดูทั้งหมด
             </button>
@@ -152,22 +152,22 @@ export default function EmployeeDashboard() {
             {leaveSummary.balances
               .filter((b) => isMainLeaveType(b.leave_type_name))
               .map((b) => (
-                <div key={b.leave_type_name} className="rounded-xl bg-white/70 px-2 py-2 text-center">
-                  <p className="text-[11px] text-emerald-700 leading-tight">{b.leave_type_name}</p>
-                  <p className="text-xl font-bold text-emerald-800">{b.remaining}</p>
-                  <p className="text-[10px] text-emerald-600/70">วัน</p>
+                <div key={b.leave_type_name} className="rounded-xl bg-white/70 px-2 py-3 text-center">
+                  <p className="text-sm text-emerald-700 leading-tight">{b.leave_type_name}</p>
+                  <p className="text-3xl font-bold text-emerald-800">{b.remaining}</p>
+                  <p className="text-xs text-emerald-600/70">วัน</p>
                 </div>
               ))}
           </div>
         ) : (
-          <p className="text-sm text-emerald-600">ยังไม่มีข้อมูลสิทธิ์การลา</p>
+          <p className="text-base text-emerald-600">ยังไม่มีข้อมูลสิทธิ์การลา</p>
         )}
       </section>
 
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-            <FiBell className="w-5 h-5 text-emerald-600" />
+          <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <FiBell className="w-6 h-6 text-emerald-600" />
             แจ้งเตือน
           </h3>
           {dashboard && (dashboard.unread_notifications ?? 0) > 0 && (
@@ -196,7 +196,7 @@ export default function EmployeeDashboard() {
                 key={key}
                 type="button"
                 onClick={() => setNotifTab(key)}
-                className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
+                className={`flex-1 py-3 rounded-xl text-base font-medium transition-colors ${
                   notifTab === key
                     ? 'bg-emerald-600 text-white'
                     : 'bg-white text-gray-600 border border-gray-200'
@@ -226,16 +226,16 @@ export default function EmployeeDashboard() {
                         className={`w-full text-left p-4 active:bg-gray-50 ${!n.is_read ? 'bg-emerald-50/50' : ''}`}
                       >
                         <div className="flex items-start gap-3">
-                          <span className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${bg}`}>
-                            <Icon className={`w-5 h-5 ${color}`} />
+                          <span className={`shrink-0 w-11 h-11 rounded-full flex items-center justify-center ${bg}`}>
+                            <Icon className={`w-6 h-6 ${color}`} />
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              {!n.is_read && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />}
-                              <p className="font-medium text-gray-900 text-sm">{n.title}</p>
+                              {!n.is_read && <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />}
+                              <p className="font-semibold text-gray-900 text-base">{n.title}</p>
                             </div>
-                            {n.message && <p className="text-gray-600 text-xs mt-0.5 line-clamp-2">{n.message}</p>}
-                            <p className="text-gray-400 text-xs mt-1">{formatTimeAgo(n.created_at)}</p>
+                            {n.message && <p className="text-gray-600 text-sm mt-0.5 line-clamp-2">{n.message}</p>}
+                            <p className="text-gray-400 text-sm mt-1">{formatTimeAgo(n.created_at)}</p>
                           </div>
                         </div>
                       </button>
@@ -252,21 +252,21 @@ export default function EmployeeDashboard() {
       </section>
 
       <section>
-        <h3 className="font-semibold text-gray-900 mb-3">ดำเนินการด่วน</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">ดำเนินการด่วน</h3>
         <div className="grid grid-cols-2 gap-3">
           <Link
             to="/employee?tab=leave"
-            className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-white py-4 px-4 shadow-md active:bg-emerald-700"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-white py-5 px-4 shadow-md active:bg-emerald-700"
           >
-            <FiCalendar className="w-6 h-6" />
-            <span className="font-medium">ขอลา</span>
+            <FiCalendar className="w-7 h-7" />
+            <span className="font-semibold text-lg">ขอลา</span>
           </Link>
           <Link
             to="/employee?tab=timeclock"
-            className="flex items-center justify-center gap-2 rounded-2xl bg-white border-2 border-emerald-600 text-emerald-600 py-4 px-4 shadow-sm active:bg-emerald-50"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-white border-2 border-emerald-600 text-emerald-600 py-5 px-4 shadow-sm active:bg-emerald-50"
           >
-            <FiClock className="w-6 h-6" />
-            <span className="font-medium">ลงเวลา</span>
+            <FiClock className="w-7 h-7" />
+            <span className="font-semibold text-lg">ลงเวลา</span>
           </Link>
         </div>
       </section>
