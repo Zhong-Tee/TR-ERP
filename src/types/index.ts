@@ -986,10 +986,14 @@ export interface HREmployee {
   birth_date?: string
   gender?: string
   religion?: string
+  nationality?: string
+  /** ที่อยู่ตามบัตรประชาชน */
   address?: Record<string, string>
+  /** ที่อยู่ปัจจุบัน */
   current_address?: Record<string, string>
   phone?: string
   emergency_contact?: { name: string; phone: string; relationship: string }
+  emergency_contact_2?: { name: string; phone: string; relationship: string }
   photo_url?: string
   department_id?: string
   position_id?: string
@@ -1357,6 +1361,15 @@ export interface HREmployeeCareer {
   current_level_id: string
   current_salary?: number
   effective_date: string
+  created_at: string
+}
+
+export interface HRSalaryHistory {
+  id: string
+  employee_id: string
+  salary: number
+  effective_date: string
+  note?: string
   created_at: string
 }
 

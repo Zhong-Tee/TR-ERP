@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ChangeEvent } from 'react'
-import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload, FiX } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import {
   fetchEmployees,
@@ -14,6 +14,7 @@ import { supabase } from '../../lib/supabase'
 import type { HREmployee, HRDepartment, HRPosition } from '../../types'
 import Modal from '../ui/Modal'
 import EmployeeForm from './EmployeeForm'
+import SalaryHistoryPanel from './SalaryHistoryPanel'
 import { useWmsModal } from '../wms/useWmsModal'
 
 const BUCKET_PHOTOS = 'hr-photos'
@@ -33,6 +34,7 @@ const EMPLOYEE_TEMPLATE_HEADERS = [
   'วันเกิด',
   'เพศ',
   'ศาสนา',
+  'สัญชาติ',
   'โทรศัพท์',
   'แผนก',
   'ตำแหน่ง',
@@ -45,15 +47,27 @@ const EMPLOYEE_TEMPLATE_HEADERS = [
   'ชื่อผู้ติดต่อฉุกเฉิน',
   'โทรศัพท์ผู้ติดต่อฉุกเฉิน',
   'ความสัมพันธ์ผู้ติดต่อฉุกเฉิน',
-  'บ้านเลขที่',
-  'หมู่',
-  'ตรอก',
-  'ซอย',
-  'ถนน',
-  'ตำบล/แขวง',
-  'อำเภอ/เขต',
-  'จังหวัด',
-  'รหัสไปรษณีย์',
+  'ชื่อผู้ติดต่อฉุกเฉิน 2',
+  'โทรศัพท์ผู้ติดต่อฉุกเฉิน 2',
+  'ความสัมพันธ์ผู้ติดต่อฉุกเฉิน 2',
+  'บ้านเลขที่ (ตามบัตร)',
+  'หมู่ (ตามบัตร)',
+  'ตรอก (ตามบัตร)',
+  'ซอย (ตามบัตร)',
+  'ถนน (ตามบัตร)',
+  'ตำบล/แขวง (ตามบัตร)',
+  'อำเภอ/เขต (ตามบัตร)',
+  'จังหวัด (ตามบัตร)',
+  'รหัสไปรษณีย์ (ตามบัตร)',
+  'บ้านเลขที่ (ปัจจุบัน)',
+  'หมู่ (ปัจจุบัน)',
+  'ตรอก (ปัจจุบัน)',
+  'ซอย (ปัจจุบัน)',
+  'ถนน (ปัจจุบัน)',
+  'ตำบล/แขวง (ปัจจุบัน)',
+  'อำเภอ/เขต (ปัจจุบัน)',
+  'จังหวัด (ปัจจุบัน)',
+  'รหัสไปรษณีย์ (ปัจจุบัน)',
 ] as const
 
 const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
@@ -63,11 +77,12 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   'ใจดี',
   'Somchai',
   'Jaidee',
-  'ชาย',
+  'ตี๋',
   '1234567890123',
   '1990-01-31',
   'ชาย',
   'พุทธ',
+  'ไทย',
   '0812345678',
   'คลังสินค้า',
   'พนักงานคลัง',
@@ -80,6 +95,9 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   'สมศรี ใจดี',
   '0899999999',
   'มารดา',
+  'สมปอง ใจดี',
+  '0888888888',
+  'บิดา',
   '99/9',
   '1',
   '',
@@ -89,6 +107,15 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   'บางนา',
   'กรุงเทพมหานคร',
   '10260',
+  '88/8',
+  '',
+  '',
+  '5',
+  'เพชรเกษม',
+  'หลักสอง',
+  'บางแค',
+  'กรุงเทพมหานคร',
+  '10160',
 ] as const
 
 function photoDisplayUrl(photoUrl: string | undefined): string | null {
@@ -219,20 +246,37 @@ function findPositionId(row: EmployeeTemplateRow, positions: HRPosition[], depar
   return candidates.find((position) => !departmentId || position.department_id === departmentId)?.id ?? candidates[0]?.id
 }
 
-function buildAddress(row: EmployeeTemplateRow): Record<string, string> | undefined {
-  const fields: Array<[AddressField, string]> = [
-    ['house_no', 'บ้านเลขที่'],
-    ['moo', 'หมู่'],
-    ['trok', 'ตรอก'],
-    ['soi', 'ซอย'],
-    ['road', 'ถนน'],
-    ['tambon', 'ตำบล/แขวง'],
-    ['amphoe', 'อำเภอ/เขต'],
-    ['province', 'จังหวัด'],
-    ['postal_code', 'รหัสไปรษณีย์'],
-  ]
-  const address = fields.reduce<Record<string, string>>((acc, [key, header]) => {
-    const value = normalizeText(row[header])
+const ADDRESS_FIELD_KEYS: readonly AddressField[] = [
+  'house_no',
+  'moo',
+  'trok',
+  'soi',
+  'road',
+  'tambon',
+  'amphoe',
+  'province',
+  'postal_code',
+]
+
+const ADDRESS_FIELD_LABELS: Record<AddressField, string> = {
+  house_no: 'บ้านเลขที่',
+  moo: 'หมู่',
+  trok: 'ตรอก',
+  soi: 'ซอย',
+  road: 'ถนน',
+  tambon: 'ตำบล/แขวง',
+  amphoe: 'อำเภอ/เขต',
+  province: 'จังหวัด',
+  postal_code: 'รหัสไปรษณีย์',
+}
+
+/** อ่านที่อยู่จากแถว โดย suffix = ' (ตามบัตร)' หรือ ' (ปัจจุบัน)' */
+function buildAddressWithSuffix(
+  row: EmployeeTemplateRow,
+  suffix: string
+): Record<string, string> | undefined {
+  const address = ADDRESS_FIELD_KEYS.reduce<Record<string, string>>((acc, key) => {
+    const value = normalizeText(row[`${ADDRESS_FIELD_LABELS[key]}${suffix}`])
     if (value) acc[key] = value
     return acc
   }, {})
@@ -251,6 +295,9 @@ function buildEmployeePayload(
   const emergencyName = normalizeText(row['ชื่อผู้ติดต่อฉุกเฉิน'])
   const emergencyPhone = normalizeText(row['โทรศัพท์ผู้ติดต่อฉุกเฉิน'])
   const emergencyRelationship = normalizeText(row['ความสัมพันธ์ผู้ติดต่อฉุกเฉิน'])
+  const emergencyName2 = normalizeText(row['ชื่อผู้ติดต่อฉุกเฉิน 2'])
+  const emergencyPhone2 = normalizeText(row['โทรศัพท์ผู้ติดต่อฉุกเฉิน 2'])
+  const emergencyRelationship2 = normalizeText(row['ความสัมพันธ์ผู้ติดต่อฉุกเฉิน 2'])
   const salaryText = normalizeText(row['เงินเดือน'])
   const salary = salaryText ? Number(salaryText) : undefined
 
@@ -267,12 +314,18 @@ function buildEmployeePayload(
     birth_date: formatExcelDate(row['วันเกิด']),
     gender: optionalText(row['เพศ']),
     religion: optionalText(row['ศาสนา']),
+    nationality: optionalText(row['สัญชาติ']),
     phone: optionalText(row['โทรศัพท์']),
     emergency_contact:
       emergencyName || emergencyPhone || emergencyRelationship
         ? { name: emergencyName, phone: emergencyPhone, relationship: emergencyRelationship }
         : undefined,
-    address: buildAddress(row),
+    emergency_contact_2:
+      emergencyName2 || emergencyPhone2 || emergencyRelationship2
+        ? { name: emergencyName2, phone: emergencyPhone2, relationship: emergencyRelationship2 }
+        : undefined,
+    address: buildAddressWithSuffix(row, ' (ตามบัตร)'),
+    current_address: buildAddressWithSuffix(row, ' (ปัจจุบัน)'),
     department_id: departmentId,
     position_id: positionId,
     hire_date: formatExcelDate(row['วันที่เข้างาน']),
@@ -311,6 +364,8 @@ function downloadEmployeeRegistryTemplate() {
     ['สถานะการจ้าง', 'active = ปฏิบัติงาน, probation = ทดลองงาน, resigned = ลาออก, terminated = ถูกเลิกจ้าง'],
     ['ประเภทสัญญาจ้าง', 'permanent = ประจำ, daily = รายวัน'],
     ['แผนก/ตำแหน่ง', 'กรอกชื่อให้ตรงกับข้อมูลในระบบ หรือเว้นว่างไว้หากยังไม่ระบุ'],
+    ['ที่อยู่', 'มี 2 ชุด: (ตามบัตร) = ที่อยู่ตามบัตรประชาชน, (ปัจจุบัน) = ที่อยู่ที่พักอาศัยจริง'],
+    ['ผู้ติดต่อฉุกเฉิน', 'กรอกได้สูงสุด 2 คน (ชุดที่ 2 ลงท้ายด้วย " 2")'],
     ['รหัสพนักงาน', 'กรอกเมื่อต้องการกำหนดเอง หากเว้นว่างระบบ import อาจสร้างตามลำดับที่กำหนดไว้'],
     ['Sheet ที่นำเข้า', 'ระบบจะอ่านเฉพาะ sheet ชื่อ ทะเบียนพนักงาน'],
   ]
@@ -332,6 +387,7 @@ export default function EmployeeRegistry() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<HREmployee | undefined>(undefined)
   const [deleteConfirm, setDeleteConfirm] = useState<HREmployee | null>(null)
+  const [salaryHistoryEmp, setSalaryHistoryEmp] = useState<HREmployee | null>(null)
   const [importing, setImporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
@@ -395,6 +451,7 @@ export default function EmployeeRegistry() {
   const handleCloseModal = () => {
     setModalOpen(false)
     setEditingEmployee(undefined)
+    loadData()
   }
 
   const handleDeleteClick = (emp: HREmployee) => setDeleteConfirm(emp)
@@ -636,6 +693,7 @@ export default function EmployeeRegistry() {
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันเกิด</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">แผนก</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ตำแหน่ง</th>
+                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">เงินเดือน</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ประเภทสัญญาจ้าง</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">สถานะ</th>
                   <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันที่เข้างาน</th>
@@ -646,7 +704,7 @@ export default function EmployeeRegistry() {
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="py-12 text-center text-gray-500">
+                    <td colSpan={13} className="py-12 text-center text-gray-500">
                       ไม่พบพนักงาน
                     </td>
                   </tr>
@@ -687,6 +745,20 @@ export default function EmployeeRegistry() {
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-600">
                         {(emp.position as { name?: string })?.name ?? '-'}
+                      </td>
+                      <td className="py-3 px-4 text-sm text-right tabular-nums">
+                        {emp.salary != null ? (
+                          <button
+                            type="button"
+                            onClick={() => setSalaryHistoryEmp(emp)}
+                            className="font-medium text-emerald-700 hover:text-emerald-800 hover:underline"
+                            title="ดูประวัติเงินเดือน"
+                          >
+                            {Number(emp.salary).toLocaleString('th-TH')}
+                          </button>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-600">
                         {getContractTypeLabel(emp.contract_type)}
@@ -747,6 +819,41 @@ export default function EmployeeRegistry() {
           onSave={handleSave}
           onClose={handleCloseModal}
         />
+      </Modal>
+
+      {/* ประวัติเงินเดือน popup */}
+      <Modal
+        open={!!salaryHistoryEmp}
+        onClose={() => {
+          setSalaryHistoryEmp(null)
+          loadData()
+        }}
+        contentClassName="max-w-2xl"
+        closeOnBackdropClick
+      >
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">
+              ประวัติเงินเดือน
+              {salaryHistoryEmp && (
+                <span className="text-gray-500 font-normal">
+                  {' '}— {salaryHistoryEmp.prefix} {salaryHistoryEmp.first_name} {salaryHistoryEmp.last_name}
+                </span>
+              )}
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                setSalaryHistoryEmp(null)
+                loadData()
+              }}
+              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"
+            >
+              <FiX className="w-5 h-5" />
+            </button>
+          </div>
+          {salaryHistoryEmp && <SalaryHistoryPanel employeeId={salaryHistoryEmp.id} />}
+        </div>
       </Modal>
 
       {/* Delete confirmation */}

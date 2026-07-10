@@ -11,6 +11,7 @@ import {
   previewNextEmployeeCode,
 } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
+import SalaryHistoryPanel from './SalaryHistoryPanel'
 import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule } from '../../types'
 
 const BUCKET_PHOTOS = 'hr-photos'
@@ -51,6 +52,18 @@ const emptyAddress = (): Record<string, string> => ({
   postal_code: '',
 })
 
+const ADDRESS_FIELDS: readonly [string, string][] = [
+  ['house_no', 'บ้านเลขที่'],
+  ['moo', 'หมู่'],
+  ['trok', 'ตรอก'],
+  ['soi', 'ซอย'],
+  ['road', 'ถนน'],
+  ['tambon', 'ตำบล/แขวง'],
+  ['amphoe', 'อำเภอ/เขต'],
+  ['province', 'จังหวัด'],
+  ['postal_code', 'รหัสไปรษณีย์'],
+]
+
 export default function EmployeeForm({ employee, onSave, onClose }: EmployeeFormProps) {
   const [activeTab, setActiveTab] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -70,11 +83,16 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [birth_date, setBirthDate] = useState('')
   const [gender, setGender] = useState('')
   const [religion, setReligion] = useState('')
+  const [nationality, setNationality] = useState('')
   const [phone, setPhone] = useState('')
   const [emergency_name, setEmergencyName] = useState('')
   const [emergency_phone, setEmergencyPhone] = useState('')
   const [emergency_relationship, setEmergencyRelationship] = useState('')
+  const [emergency_name_2, setEmergencyName2] = useState('')
+  const [emergency_phone_2, setEmergencyPhone2] = useState('')
+  const [emergency_relationship_2, setEmergencyRelationship2] = useState('')
   const [address, setAddress] = useState<Record<string, string>>(emptyAddress())
+  const [current_address, setCurrentAddress] = useState<Record<string, string>>(emptyAddress())
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
 
@@ -153,13 +171,22 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       setBirthDate(employee.birth_date ? employee.birth_date.slice(0, 10) : '')
       setGender(employee.gender ?? '')
       setReligion(employee.religion ?? '')
+      setNationality(employee.nationality ?? '')
       setPhone(employee.phone ?? '')
       setEmergencyName(employee.emergency_contact?.name ?? '')
       setEmergencyPhone(employee.emergency_contact?.phone ?? '')
       setEmergencyRelationship(employee.emergency_contact?.relationship ?? '')
+      setEmergencyName2(employee.emergency_contact_2?.name ?? '')
+      setEmergencyPhone2(employee.emergency_contact_2?.phone ?? '')
+      setEmergencyRelationship2(employee.emergency_contact_2?.relationship ?? '')
       setAddress(
         employee.address && typeof employee.address === 'object'
           ? { ...emptyAddress(), ...employee.address }
+          : emptyAddress()
+      )
+      setCurrentAddress(
+        employee.current_address && typeof employee.current_address === 'object'
+          ? { ...emptyAddress(), ...employee.current_address }
           : emptyAddress()
       )
       setPhotoPreview(
@@ -246,6 +273,25 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
     setDocuments((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const renderAddressGrid = (
+    value: Record<string, string>,
+    onChange: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  ) => (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+      {ADDRESS_FIELDS.map(([key, label]) => (
+        <label key={key}>
+          <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+          <input
+            type="text"
+            value={value[key] ?? ''}
+            onChange={(e) => onChange((prev) => ({ ...prev, [key]: e.target.value }))}
+            className={fieldClass}
+          />
+        </label>
+      ))}
+    </div>
+  )
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -275,6 +321,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         birth_date: birth_date || undefined,
         gender: gender || undefined,
         religion: religion || undefined,
+        nationality: nationality || undefined,
         phone: phone || undefined,
         emergency_contact:
           emergency_name || emergency_phone || emergency_relationship
@@ -284,7 +331,18 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 relationship: emergency_relationship,
               }
             : undefined,
+        emergency_contact_2:
+          emergency_name_2 || emergency_phone_2 || emergency_relationship_2
+            ? {
+                name: emergency_name_2,
+                phone: emergency_phone_2,
+                relationship: emergency_relationship_2,
+              }
+            : undefined,
         address: Object.values(address).some(Boolean) ? address : undefined,
+        current_address: Object.values(current_address).some(Boolean)
+          ? current_address
+          : undefined,
         department_id: department_id || undefined,
         position_id: position_id || undefined,
         hire_date: hire_date || undefined,
@@ -326,7 +384,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const tabs = [
     { label: 'ข้อมูลส่วนตัว', index: 0 },
     { label: 'ข้อมูลการทำงาน', index: 1 },
-    { label: 'เอกสาร', index: 2 },
+    { label: 'ประวัติเงินเดือน', index: 2 },
+    { label: 'เอกสาร', index: 3 },
   ]
 
   return (
@@ -438,15 +497,6 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 />
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">เลขบัตรประชาชน</span>
-                <input
-                  type="text"
-                  value={citizen_id}
-                  onChange={(e) => setCitizenId(e.target.value)}
-                  className={fieldClass}
-                />
-              </label>
-              <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">วันเกิด</span>
                 <input
                   type="date"
@@ -455,6 +505,18 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   className={fieldClass}
                 />
               </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                <input
+                  type="text"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เพศ</span>
                 <select
@@ -483,78 +545,108 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   className={fieldClass}
                 />
               </label>
-              <label className="col-span-2">
-                <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">สัญชาติ</span>
                 <input
                   type="text"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  value={nationality}
+                  onChange={(e) => setNationality(e.target.value)}
                   className={fieldClass}
                 />
               </label>
             </div>
 
             <div className="border-t border-gray-200 pt-4">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">ข้อมูลบัตรประชาชน</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-4">
+                <label>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">เลขบัตรประชาชน</span>
+                  <input
+                    type="text"
+                    value={citizen_id}
+                    onChange={(e) => setCitizenId(e.target.value)}
+                    className={fieldClass}
+                  />
+                </label>
+              </div>
+              {renderAddressGrid(address, setAddress)}
+            </div>
+
+            <div className="border-t border-gray-200 pt-4">
               <h4 className="text-sm font-semibold text-gray-800 mb-2">ผู้ติดต่อฉุกเฉิน</h4>
-              <div className="grid grid-cols-3 gap-4">
-                <label>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ</span>
-                  <input
-                    type="text"
-                    value={emergency_name}
-                    onChange={(e) => setEmergencyName(e.target.value)}
-                    className={fieldClass}
-                  />
-                </label>
-                <label>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
-                  <input
-                    type="text"
-                    value={emergency_phone}
-                    onChange={(e) => setEmergencyPhone(e.target.value)}
-                    className={fieldClass}
-                  />
-                </label>
-                <label>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">ความสัมพันธ์</span>
-                  <input
-                    type="text"
-                    value={emergency_relationship}
-                    onChange={(e) => setEmergencyRelationship(e.target.value)}
-                    placeholder="บิดา, มารดา, ฯลฯ"
-                    className={fieldClass}
-                  />
-                </label>
+              <div className="space-y-4">
+                <div>
+                  <span className="block text-xs font-medium text-gray-500 mb-1">คนที่ 1</span>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ</span>
+                      <input
+                        type="text"
+                        value={emergency_name}
+                        onChange={(e) => setEmergencyName(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                      <input
+                        type="text"
+                        value={emergency_phone}
+                        onChange={(e) => setEmergencyPhone(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ความสัมพันธ์</span>
+                      <input
+                        type="text"
+                        value={emergency_relationship}
+                        onChange={(e) => setEmergencyRelationship(e.target.value)}
+                        placeholder="บิดา, มารดา, ฯลฯ"
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <span className="block text-xs font-medium text-gray-500 mb-1">คนที่ 2</span>
+                  <div className="grid grid-cols-3 gap-4">
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ชื่อ</span>
+                      <input
+                        type="text"
+                        value={emergency_name_2}
+                        onChange={(e) => setEmergencyName2(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">โทรศัพท์</span>
+                      <input
+                        type="text"
+                        value={emergency_phone_2}
+                        onChange={(e) => setEmergencyPhone2(e.target.value)}
+                        className={fieldClass}
+                      />
+                    </label>
+                    <label>
+                      <span className="block text-sm font-medium text-gray-700 mb-1">ความสัมพันธ์</span>
+                      <input
+                        type="text"
+                        value={emergency_relationship_2}
+                        onChange={(e) => setEmergencyRelationship2(e.target.value)}
+                        placeholder="บิดา, มารดา, ฯลฯ"
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
 
             <div className="border-t border-gray-200 pt-4">
-              <h4 className="text-sm font-semibold text-gray-800 mb-2">ที่อยู่</h4>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                {(['house_no', 'moo', 'trok', 'soi', 'road', 'tambon', 'amphoe', 'province', 'postal_code'] as const).map(
-                  (key) => (
-                    <label key={key}>
-                      <span className="block text-sm font-medium text-gray-700 mb-1">
-                        {key === 'house_no' && 'บ้านเลขที่'}
-                        {key === 'moo' && 'หมู่'}
-                        {key === 'trok' && 'ตรอก'}
-                        {key === 'soi' && 'ซอย'}
-                        {key === 'road' && 'ถนน'}
-                        {key === 'tambon' && 'ตำบล/แขวง'}
-                        {key === 'amphoe' && 'อำเภอ/เขต'}
-                        {key === 'province' && 'จังหวัด'}
-                        {key === 'postal_code' && 'รหัสไปรษณีย์'}
-                      </span>
-                      <input
-                        type="text"
-                        value={address[key] ?? ''}
-                        onChange={(e) => setAddress((prev) => ({ ...prev, [key]: e.target.value }))}
-                        className={fieldClass}
-                      />
-                    </label>
-                  )
-                )}
-              </div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">ที่อยู่ปัจจุบัน</h4>
+              {renderAddressGrid(current_address, setCurrentAddress)}
             </div>
 
             <div className="border-t border-gray-200 pt-4">
@@ -757,6 +849,22 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         )}
 
         {activeTab === 2 && (
+          <div className="space-y-4">
+            {employee?.id ? (
+              <SalaryHistoryPanel
+                employeeId={employee.id}
+                editable
+                onLatestSalaryChange={(latest) => setSalary(latest ?? '')}
+              />
+            ) : (
+              <p className="text-sm text-gray-600">
+                บันทึกพนักงานก่อน จึงจะเพิ่มประวัติเงินเดือนได้
+              </p>
+            )}
+          </div>
+        )}
+
+        {activeTab === 3 && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               เอกสารแนบของพนักงาน (อัปโหลดได้หลังจากบันทึกพนักงานแล้ว)

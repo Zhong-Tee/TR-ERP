@@ -6,6 +6,7 @@ import type {
   HRContractTemplate, HRContract, HRDocumentCategory, HRDocument,
   HRExam, HRExamResult, HROnboardingTemplate, HROnboardingPlan,
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
+  HRSalaryHistory,
   HRNotification, HRNotificationSettings,
   HRWarning, HRCertificate, HRAsset,
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule,
@@ -566,6 +567,53 @@ export async function upsertEmployeeCareer(c: Partial<HREmployeeCareer>) {
     .from('hr_employee_career').insert(c).select().single()
   if (error) pgError(error)
   return data as HREmployeeCareer
+}
+
+// ─── Salary History ─────────────────────────────────────────────────────────
+
+export async function fetchSalaryHistory(employeeId: string) {
+  const { data, error } = await supabase.from('hr_salary_history')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .order('effective_date', { ascending: false })
+    .order('created_at', { ascending: false })
+  if (error) pgError(error)
+  return data as HRSalaryHistory[]
+}
+
+/** sync hr_employees.salary ให้เท่ากับรายการล่าสุด (effective_date มากสุด) — คืนค่าเงินเดือนล่าสุด */
+async function syncEmployeeLatestSalary(employeeId: string): Promise<number | null> {
+  const { data, error } = await supabase.from('hr_salary_history')
+    .select('salary')
+    .eq('employee_id', employeeId)
+    .order('effective_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+  if (error) pgError(error)
+  const latest = data && data.length ? Number(data[0].salary) : null
+  if (latest != null) {
+    const { error: updErr } = await supabase.from('hr_employees')
+      .update({ salary: latest }).eq('id', employeeId)
+    if (updErr) pgError(updErr)
+  }
+  return latest
+}
+
+export async function addSalaryHistory(entry: {
+  employee_id: string
+  salary: number
+  effective_date: string
+  note?: string
+}): Promise<number | null> {
+  const { error } = await supabase.from('hr_salary_history').insert(entry)
+  if (error) pgError(error)
+  return syncEmployeeLatestSalary(entry.employee_id)
+}
+
+export async function deleteSalaryHistory(id: string, employeeId: string): Promise<number | null> {
+  const { error } = await supabase.from('hr_salary_history').delete().eq('id', id)
+  if (error) pgError(error)
+  return syncEmployeeLatestSalary(employeeId)
 }
 
 // ─── Notifications (In-App) ─────────────────────────────────────────────────
