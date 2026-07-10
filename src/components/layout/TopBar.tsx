@@ -444,6 +444,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
 
     loadHrPending()
+    // อัปเดตทันทีเมื่อหน้า HR แจ้ง (ยื่น/อนุมัติ/ปฏิเสธ) — ไม่ต้องรอ realtime
+    window.addEventListener('hr-counts-changed', loadHrPending)
     const channel = supabase
       .channel('topbar-hr-pending-count')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, loadHrPending)
@@ -451,6 +453,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       .subscribe()
 
     return () => {
+      window.removeEventListener('hr-counts-changed', loadHrPending)
       supabase.removeChannel(channel)
     }
   }, [canSeeHrLeave])

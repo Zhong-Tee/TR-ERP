@@ -34,7 +34,7 @@ Deno.serve(async (req) => {
 
     const { data: ot, error } = await supabase
       .from('hr_ot_requests')
-      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, department:hr_departments!department_id(name))')
+      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name))')
       .eq('id', ot_id)
       .single()
     if (error || !ot) throw new Error('OT request not found: ' + error?.message)
@@ -99,6 +99,36 @@ Deno.serve(async (req) => {
       status: ok ? 'sent' : 'failed',
       related_id: ot_id,
     })
+
+    // แจ้งผลอนุมัติ/ปฏิเสธ เข้าแชทส่วนตัวพนักงาน (ถ้ากรอก telegram_chat_id ไว้)
+    if ((event === 'approved' || event === 'rejected') && emp?.telegram_chat_id) {
+      const pLines = [
+        event === 'approved'
+          ? '✅ <b>คำขอ OT ของคุณได้รับการอนุมัติ</b>'
+          : '❌ <b>คำขอ OT ของคุณถูกปฏิเสธ</b>',
+        '',
+        `📅 วันที่: ${dateText}`,
+        `🕐 เวลา: ${String(ot.ot_start).slice(0, 5)}–${String(ot.ot_end).slice(0, 5)} น. (${ot.hours ?? '-'} ชม.)`,
+      ]
+      if (event === 'rejected' && ot.reject_reason) {
+        pLines.push('', `📝 เหตุผล: ${ot.reject_reason}`)
+      }
+      const personalText = pLines.join('\n')
+      try {
+        const pRes = await fetch(`${botBase}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: emp.telegram_chat_id, text: personalText, parse_mode: 'HTML' }),
+        })
+        await supabase.from('hr_notification_logs').insert({
+          type: `ot_${event}_personal`,
+          target_chat_id: String(emp.telegram_chat_id),
+          message: pRes.ok ? personalText : await pRes.text(),
+          status: pRes.ok ? 'sent' : 'failed',
+          related_id: ot_id,
+        })
+      } catch (_) { /* ไม่ให้กระทบผลรวม */ }
+    }
 
     return new Response(JSON.stringify({ success: ok, detail }), {
       status: 200,

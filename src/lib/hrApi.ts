@@ -170,7 +170,7 @@ export async function upsertLeaveType(lt: Partial<HRLeaveType>) {
 
 export async function fetchLeaveRequests(filters?: { status?: string; employee_id?: string }) {
   let q = supabase.from('hr_leave_requests')
-    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name)), leave_type:hr_leave_types!leave_type_id(name)')
+    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name), position:hr_positions!position_id(name)), leave_type:hr_leave_types!leave_type_id(name)')
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
@@ -652,6 +652,14 @@ export function getHRFileUrl(bucket: string, path: string) {
   return data.publicUrl
 }
 
+/** signed URL ของเอกสารแนบใบลา (bucket hr-medical-certs เป็น private) */
+export async function getMedicalCertUrl(path: string, expiresInSec = 3600) {
+  if (path.startsWith('http')) return path
+  const { data, error } = await supabase.storage.from('hr-medical-certs').createSignedUrl(path, expiresInSec)
+  if (error) pgError(error)
+  return data.signedUrl
+}
+
 // =============================================================================
 // SIAM-ID Data.txt Parser
 // =============================================================================
@@ -999,7 +1007,7 @@ export async function deleteWorkSchedule(id: string) {
 
 // ─── Time Entries (บันทึกเวลา) ──────────────────────────────────────────────
 
-const TIME_ENTRY_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name))'
+const TIME_ENTRY_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, work_schedule_id, department:hr_departments!department_id(name))'
 
 export async function fetchTimeEntries(filters?: {
   employee_id?: string

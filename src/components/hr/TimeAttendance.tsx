@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { FiRefreshCw, FiMapPin, FiCamera, FiX, FiSearch } from 'react-icons/fi'
+import { FiRefreshCw, FiMapPin, FiCamera, FiX, FiSearch, FiDownload } from 'react-icons/fi'
+import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
 import {
@@ -59,6 +60,18 @@ function parseTimeToMinutes(t: string): number {
   return h * 60 + (m || 0)
 }
 
+/** นาที → hh:mm น. เช่น 44 → 00:44 น., 644 → 10:44 น. */
+function minutesToHHMM(min: number): string {
+  const h = Math.floor(min / 60)
+  const m = Math.round(min % 60)
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} น.`
+}
+
+/** ชั่วโมง (ทศนิยม) → hh:mm น. เช่น 0.06 → 00:04 น., 3.5 → 03:30 น. */
+function hoursToHHMM(hours: number): string {
+  return minutesToHHMM(Math.round(hours * 60))
+}
+
 type SummaryRow = {
   employee: HREmployee
   scheduleName: string
@@ -89,7 +102,7 @@ export default function TimeAttendance() {
   const [entries, setEntries] = useState<HRTimeEntry[]>([])
   const [entriesLoading, setEntriesLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(todayStr())
+  const [dateFrom, setDateFrom] = useState(todayStr().slice(0, 7) + '-01')
   const [dateTo, setDateTo] = useState(todayStr())
   const [typeFilter, setTypeFilter] = useState('')
   const [photoView, setPhotoView] = useState<{ url: string; caption: string } | null>(null)
@@ -111,6 +124,16 @@ export default function TimeAttendance() {
     () => schedules.find((s) => s.is_default && s.is_active) ?? schedules.find((s) => s.is_active) ?? null,
     [schedules],
   )
+
+  /** นาทีที่สายเกินผ่อนผัน ของบันทึกเข้างาน (clock_in) ตามมาตรฐานเวลาของพนักงานคนนั้น — 0 = ไม่สาย/ไม่ใช่เข้างาน */
+  const entryLateMinutes = (entry: HRTimeEntry): number => {
+    if (entry.entry_type !== 'clock_in') return 0
+    const empSchedId = (entry.employee as (HREmployee & { work_schedule_id?: string }))?.work_schedule_id
+    const assigned = empSchedId ? schedules.find((s) => s.id === empSchedId && s.is_active) : undefined
+    const sched = assigned ?? defaultSchedule ?? FALLBACK_SCHEDULE
+    const startMin = parseTimeToMinutes(sched.work_start.slice(0, 5)) + (sched.late_grace_min ?? 0)
+    return Math.max(0, localMinutes(entry.entry_time) - startMin)
+  }
 
   const loadEntries = useCallback(async () => {
     setEntriesLoading(true)
@@ -353,6 +376,45 @@ export default function TimeAttendance() {
     )
   }, [summaryRows, summarySearch])
 
+  const exportEntries = () => {
+    const rows = filteredEntries.map((e) => {
+      const lm = entryLateMinutes(e)
+      return {
+        'รหัส': e.employee?.employee_code ?? '',
+        'พนักงาน': empName(e.employee),
+        'แผนก': (e.employee as HREmployee & { department?: { name?: string } })?.department?.name ?? '-',
+        'ประเภท': ENTRY_LABELS[e.entry_type],
+        'วันที่': new Date(e.work_date + 'T00:00:00').toLocaleDateString('th-TH'),
+        'เวลา': new Date(e.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        'สาย': e.entry_type === 'clock_in' ? (lm > 0 ? minutesToHHMM(lm) : 'ตรงเวลา') : '-',
+        'จุดบันทึก': e.location_name ?? '-',
+        'ระยะ (ม.)': e.distance_m != null ? Math.round(e.distance_m) : '',
+      }
+    })
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'บันทึกเวลา')
+    XLSX.writeFile(wb, `บันทึกเวลา_${dateFrom}_ถึง_${dateTo}.xlsx`)
+  }
+
+  const exportSummary = () => {
+    const rows = filteredSummary.map((r) => ({
+      'รหัส': r.employee.employee_code ?? '',
+      'พนักงาน': empName(r.employee),
+      'มาตรฐานเวลา': r.scheduleName,
+      'มาทำงาน (วัน)': r.presentDays,
+      'สาย (ครั้ง)': r.lateCount,
+      'สายรวม': r.lateMinutes > 0 ? minutesToHHMM(r.lateMinutes) : '-',
+      'ลา (วัน)': r.leaveDays,
+      'ขาด (วัน)': r.absentDays,
+      'OT จริง': r.otHours > 0 ? hoursToHHMM(r.otHours) : '-',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'สรุปรายเดือน')
+    XLSX.writeFile(wb, `สรุปเวลาทำงาน_${summaryMonth}.xlsx`)
+  }
+
   const inputClass =
     'px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none'
 
@@ -404,6 +466,19 @@ export default function TimeAttendance() {
                 className={`${inputClass} pl-9 w-56`}
               />
             </div>
+            <div className="text-sm">
+              <span className="block text-gray-500 mb-1">&nbsp;</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFrom(todayStr())
+                  setDateTo(todayStr())
+                }}
+                className="px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 text-sm font-medium rounded-lg hover:bg-emerald-100"
+              >
+                วันนี้
+              </button>
+            </div>
             <label className="text-sm">
               <span className="block text-gray-500 mb-1">จากวันที่</span>
               <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={inputClass} />
@@ -429,6 +504,14 @@ export default function TimeAttendance() {
             >
               <FiRefreshCw className={entriesLoading ? 'animate-spin' : ''} /> รีเฟรช
             </button>
+            <button
+              type="button"
+              onClick={exportEntries}
+              disabled={filteredEntries.length === 0}
+              className="flex items-center gap-1.5 px-3 py-2 border border-emerald-600 text-emerald-700 text-sm font-medium rounded-lg hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <FiDownload /> Export Excel
+            </button>
             <span className="text-sm text-gray-400 ml-auto">{filteredEntries.length} รายการ (อัปเดตสดอัตโนมัติ)</span>
           </div>
 
@@ -446,6 +529,7 @@ export default function TimeAttendance() {
                     <th className="p-3 text-center font-semibold">ประเภท</th>
                     <th className="p-3 text-center font-semibold">วันที่</th>
                     <th className="p-3 text-center font-semibold">เวลา</th>
+                    <th className="p-3 text-center font-semibold">สาย</th>
                     <th className="p-3 text-left font-semibold">จุดบันทึก</th>
                     <th className="p-3 text-center font-semibold">ระยะ (ม.)</th>
                     <th className="p-3 text-center font-semibold rounded-tr-xl">รูป</th>
@@ -469,6 +553,13 @@ export default function TimeAttendance() {
                       </td>
                       <td className="p-3 text-center font-semibold text-gray-800 tabular-nums">
                         {new Date(e.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </td>
+                      <td className="p-3 text-center tabular-nums">
+                        {e.entry_type === 'clock_in'
+                          ? entryLateMinutes(e) > 0
+                            ? <span className="text-red-600 font-semibold">{minutesToHHMM(entryLateMinutes(e))}</span>
+                            : <span className="text-emerald-600 text-xs">ตรงเวลา</span>
+                          : <span className="text-gray-300">-</span>}
                       </td>
                       <td className="p-3 text-gray-600">
                         <span className="flex items-center gap-1">
@@ -541,6 +632,14 @@ export default function TimeAttendance() {
             >
               <FiRefreshCw className={summaryLoading ? 'animate-spin' : ''} /> คำนวณใหม่
             </button>
+            <button
+              type="button"
+              onClick={exportSummary}
+              disabled={filteredSummary.length === 0}
+              className="flex items-center gap-1.5 px-3 py-2 border border-emerald-600 text-emerald-700 text-sm font-medium rounded-lg hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <FiDownload /> Export Excel
+            </button>
             <span className="text-xs text-gray-400 ml-auto">
               ขาดงาน = วันทำการที่ผ่านมา − วันที่มา − วันลา(อนุมัติ) • สาย/วันทำการ คิดตามมาตรฐานเวลาของแต่ละคน
             </span>
@@ -557,10 +656,10 @@ export default function TimeAttendance() {
                     <th className="p-3 text-left font-semibold">มาตรฐานเวลา</th>
                     <th className="p-3 text-center font-semibold">มาทำงาน (วัน)</th>
                     <th className="p-3 text-center font-semibold">สาย (ครั้ง)</th>
-                    <th className="p-3 text-center font-semibold">สายรวม (นาที)</th>
+                    <th className="p-3 text-center font-semibold">สายรวม</th>
                     <th className="p-3 text-center font-semibold">ลา (วัน)</th>
                     <th className="p-3 text-center font-semibold">ขาด (วัน)</th>
-                    <th className="p-3 text-center font-semibold rounded-tr-xl">OT จริง (ชม.)</th>
+                    <th className="p-3 text-center font-semibold rounded-tr-xl">OT จริง</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -573,10 +672,10 @@ export default function TimeAttendance() {
                       <td className="p-3 text-sm text-gray-600">{r.scheduleName}</td>
                       <td className="p-3 text-center">{r.presentDays}</td>
                       <td className={`p-3 text-center ${r.lateCount > 0 ? 'text-amber-600 font-semibold' : ''}`}>{r.lateCount}</td>
-                      <td className={`p-3 text-center ${r.lateMinutes > 0 ? 'text-amber-600' : ''}`}>{r.lateMinutes}</td>
+                      <td className={`p-3 text-center tabular-nums ${r.lateMinutes > 0 ? 'text-amber-600' : ''}`}>{r.lateMinutes > 0 ? minutesToHHMM(r.lateMinutes) : '-'}</td>
                       <td className="p-3 text-center">{r.leaveDays}</td>
                       <td className={`p-3 text-center ${r.absentDays > 0 ? 'text-red-600 font-semibold' : ''}`}>{r.absentDays}</td>
-                      <td className={`p-3 text-center ${r.otHours > 0 ? 'text-indigo-600 font-semibold' : ''}`}>{r.otHours}</td>
+                      <td className={`p-3 text-center tabular-nums ${r.otHours > 0 ? 'text-indigo-600 font-semibold' : ''}`}>{r.otHours > 0 ? hoursToHHMM(r.otHours) : '-'}</td>
                     </tr>
                   ))}
                 </tbody>

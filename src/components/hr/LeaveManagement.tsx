@@ -6,14 +6,12 @@ import {
   fetchLeaveTypes,
   fetchOTRequests,
   updateOTRequest,
-  getHRFileUrl,
+  getMedicalCertUrl,
 } from '../../lib/hrApi'
 import type { HRLeaveRequest, HROTRequest } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
-
-const BUCKET_DOCS = 'hr-docs'
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected'
 const WEEKDAY_LABELS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์'] as const
@@ -71,10 +69,23 @@ function employeeDisplayName(req: HRLeaveRequest): string {
   return emp.nickname ? `${name} (${emp.nickname})` : name
 }
 
-function medicalCertUrl(url: string | undefined): string | null {
-  if (!url) return null
-  if (url.startsWith('http')) return url
-  return getHRFileUrl(BUCKET_DOCS, url)
+function employeePositionName(req: HRLeaveRequest): string {
+  const emp = req.employee as { position?: { name?: string } } | undefined
+  return emp?.position?.name ?? '-'
+}
+
+/** เปิดเอกสารแนบใบลาผ่าน signed URL (bucket private) — เปิดแท็บก่อนกัน popup blocker */
+async function openMedicalCert(path?: string) {
+  if (!path) return
+  const w = window.open('', '_blank')
+  try {
+    const signed = await getMedicalCertUrl(path)
+    if (w) w.location.href = signed
+    else window.open(signed, '_blank')
+  } catch {
+    if (w) w.close()
+    alert('เปิดไฟล์ไม่สำเร็จ')
+  }
 }
 
 function otEmployeeName(req: HROTRequest): string {
@@ -95,10 +106,9 @@ export default function LeaveManagement() {
   const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot'>('list')
+  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'calendar'>('list')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchName, setSearchName] = useState('')
-  const [showCalendar, setShowCalendar] = useState(false)
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -124,6 +134,8 @@ export default function LeaveManagement() {
       setRequests(reqs)
       setLeaveTypes(types)
       setOtRequests(ots)
+      // แจ้ง sidebar/topbar ให้อัปเดต badge ทันที (ไม่ต้องรอ realtime)
+      window.dispatchEvent(new Event('hr-counts-changed'))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
     } finally {
@@ -134,6 +146,35 @@ export default function LeaveManagement() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  // โหลดข้อมูลใหม่แบบเงียบ (ไม่โชว์ spinner) สำหรับ realtime
+  const reloadSilent = useCallback(async () => {
+    try {
+      const [reqs, types, ots] = await Promise.all([
+        fetchLeaveRequests(),
+        fetchLeaveTypes(),
+        fetchOTRequests(),
+      ])
+      setRequests(reqs)
+      setLeaveTypes(types)
+      setOtRequests(ots)
+      window.dispatchEvent(new Event('hr-counts-changed'))
+    } catch {
+      /* เงียบไว้ — เดี๋ยว realtime ครั้งถัดไปหรือรีเฟรชจะอัปเดตเอง */
+    }
+  }, [])
+
+  // Realtime: มีการยื่น/อนุมัติ/ปฏิเสธ ใบลา หรือ คำขอ OT → อัปเดต badge + ตารางทันที
+  useEffect(() => {
+    const channel = supabase
+      .channel('leave-mgmt-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => reloadSilent())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, () => reloadSilent())
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [reloadSilent])
 
   const filteredRequests = requests.filter((req) => {
     if (activeTab === 'approval' && req.status !== 'pending') return false
@@ -371,9 +412,9 @@ export default function LeaveManagement() {
             </button>
             <button
               type="button"
-              onClick={() => setShowCalendar(!showCalendar)}
+              onClick={() => setActiveTab('calendar')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                showCalendar
+                activeTab === 'calendar'
                   ? 'bg-emerald-600 text-white'
                   : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
               }`}
@@ -443,12 +484,12 @@ export default function LeaveManagement() {
           </div>
         )}
 
-        {showCalendar && (
-          <div className="mx-6 mt-4 mb-2 rounded-xl border border-surface-200 bg-surface-50/70 p-4">
+        {activeTab === 'calendar' && (
+          <div className="mx-6 mt-4 mb-4 rounded-xl border border-surface-200 bg-surface-50/70 p-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
-                <h3 className="text-base font-semibold text-surface-800">ปฏิทินลา</h3>
-                <p className="text-sm text-surface-600">
+                <h3 className="text-sm font-semibold text-surface-800">ปฏิทินลา</h3>
+                <p className="text-xs text-surface-600">
                   วันนี้คือ{` `}
                   <span className="font-medium text-surface-800">
                     {thaiWeekdayName(today)} {today.toLocaleDateString('th-TH')}
@@ -456,16 +497,21 @@ export default function LeaveManagement() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {/* คำอธิบายสี */}
+                <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-surface-600">
+                  <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" /> อนุมัติ
+                  <span className="w-3 h-3 rounded bg-yellow-200 border border-yellow-400 ml-2" /> รออนุมัติ
+                </span>
                 <button
                   type="button"
                   onClick={() =>
                     setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
                   }
-                  className="px-3 py-1.5 rounded-lg border border-surface-300 bg-white text-sm text-surface-700 hover:bg-surface-100"
+                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-surface-700 hover:bg-surface-100"
                 >
                   เดือนก่อน
                 </button>
-                <div className="min-w-[170px] text-center text-sm font-semibold text-surface-800">
+                <div className="min-w-[130px] text-center text-xs font-semibold text-surface-800">
                   {monthYearLabel}
                 </div>
                 <button
@@ -473,70 +519,104 @@ export default function LeaveManagement() {
                   onClick={() =>
                     setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
                   }
-                  className="px-3 py-1.5 rounded-lg border border-surface-300 bg-white text-sm text-surface-700 hover:bg-surface-100"
+                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-surface-700 hover:bg-surface-100"
                 >
                   เดือนถัดไป
                 </button>
               </div>
             </div>
 
-            <div className="mt-4 grid grid-cols-7 gap-2">
-              {WEEKDAY_LABELS.map((day) => (
-                <div key={day} className="rounded-lg bg-surface-100 px-2 py-2 text-center text-xs font-semibold text-surface-600">
-                  {day}
-                </div>
-              ))}
-              {calendarCells.map((cell) => (
-                <div
-                  key={cell.key}
-                  className={`min-h-[110px] rounded-lg border p-2 ${
-                    cell.inMonth
-                      ? 'bg-white border-surface-200'
-                      : 'bg-surface-50 border-surface-100 text-surface-400'
-                  } ${cell.isToday ? 'ring-2 ring-emerald-500 border-emerald-300' : ''}`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
-                      {cell.date.getDate()}
-                    </span>
-                    {cell.leaves.length > 0 && cell.inMonth && (
-                      <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
-                        {cell.leaves.length} คนลา
-                      </span>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    {cell.leaves.slice(0, 3).map((req) => (
-                      <div
-                        key={`${cell.key}-${req.id}`}
-                        className={`rounded px-1.5 py-1 text-[11px] leading-tight truncate ${
-                          req.status === 'approved'
-                            ? 'bg-emerald-50 text-emerald-800'
-                            : 'bg-amber-50 text-amber-800'
-                        }`}
-                        title={`${employeeDisplayName(req)} · ${statusLabel(req.status)}`}
-                      >
-                        {employeeDisplayName(req)}
+            <div className="mt-3 flex flex-col lg:flex-row gap-3">
+              {/* ปฏิทิน (ซ้าย) */}
+              <div className="flex-1 min-w-0">
+                <div className="grid grid-cols-7 gap-1.5">
+                  {WEEKDAY_LABELS.map((day) => (
+                    <div key={day} className="rounded bg-surface-100 px-1 py-1.5 text-center text-xs font-semibold text-surface-600">
+                      {day}
+                    </div>
+                  ))}
+                  {calendarCells.map((cell) => {
+                    const hasPending = cell.leaves.some((r) => r.status === 'pending')
+                    return (
+                    <div
+                      key={cell.key}
+                      className={`min-h-[96px] rounded-lg border p-1.5 ${
+                        cell.inMonth
+                          ? hasPending
+                            ? 'bg-yellow-50 border-yellow-300'
+                            : 'bg-white border-surface-200'
+                          : 'bg-surface-50 border-surface-100 text-surface-400'
+                      } ${cell.isToday ? 'ring-2 ring-emerald-500 border-emerald-300' : ''}`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
+                          {cell.date.getDate()}
+                        </span>
+                        {cell.leaves.length > 0 && cell.inMonth && (
+                          <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
+                            {cell.leaves.length}
+                          </span>
+                        )}
                       </div>
-                    ))}
-                    {cell.leaves.length > 3 && (
-                      <div className="text-[11px] text-surface-500">+ อีก {cell.leaves.length - 3} คน</div>
-                    )}
-                  </div>
+                      <div className="space-y-0.5">
+                        {cell.leaves.slice(0, 3).map((req) => (
+                          <div
+                            key={`${cell.key}-${req.id}`}
+                            className={`rounded px-1.5 py-0.5 text-[11px] leading-tight truncate ${
+                              req.status === 'approved'
+                                ? 'bg-emerald-50 text-emerald-800'
+                                : 'bg-yellow-200 text-yellow-900 font-medium'
+                            }`}
+                            title={`${employeeDisplayName(req)} · ${statusLabel(req.status)}`}
+                          >
+                            {employeeDisplayName(req)}
+                          </div>
+                        ))}
+                        {cell.leaves.length > 3 && (
+                          <div className="text-[10px] text-surface-500">+ อีก {cell.leaves.length - 3}</div>
+                        )}
+                      </div>
+                    </div>
+                    )
+                  })}
                 </div>
-              ))}
-            </div>
+              </div>
 
-            <div className="mt-4 rounded-lg border border-surface-200 bg-white px-3 py-2 text-sm text-surface-700">
-              <span className="font-medium">รายการลาวันนี้:</span>{' '}
-              {todayLeaves.length === 0
-                ? 'ไม่มีผู้ลาวันนี้'
-                : todayLeaves.map((r) => employeeDisplayName(r)).join(', ')}
+              {/* รายการลาวันนี้ (ขวา) */}
+              <div className="lg:w-72 flex-shrink-0">
+                <div className="rounded-lg border border-surface-200 bg-white p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-semibold text-surface-800">รายการลาวันนี้</h4>
+                    <span className="text-xs rounded-full px-2.5 py-0.5 bg-emerald-100 text-emerald-700 font-semibold">
+                      {todayLeaves.length} คนลา
+                    </span>
+                  </div>
+                  {todayLeaves.length === 0 ? (
+                    <p className="text-sm text-surface-500 py-6 text-center">ไม่มีผู้ลาวันนี้</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {todayLeaves.map((r) => (
+                        <li
+                          key={`today-${r.id}`}
+                          className={`rounded-lg px-3 py-2 border ${
+                            r.status === 'approved'
+                              ? 'bg-emerald-50 border-emerald-100'
+                              : 'bg-yellow-50 border-yellow-200'
+                          }`}
+                        >
+                          <div className="text-sm font-medium text-surface-800 truncate">{employeeDisplayName(r)}</div>
+                          <div className="text-xs text-surface-500 truncate">{employeePositionName(r)}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {loading ? (
+        {activeTab === 'calendar' ? null : loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
           </div>
@@ -696,16 +776,17 @@ export default function LeaveManagement() {
                         </span>
                       </td>
                       <td className="px-6 py-3">
-                        {medicalCertUrl(req.medical_cert_url) ? (
-                          <a
-                            href={medicalCertUrl(req.medical_cert_url)!}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                        {req.medical_cert_url ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              openMedicalCert(req.medical_cert_url)
+                            }}
                             className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-sm"
-                            onClick={(e) => e.stopPropagation()}
                           >
                             <FiExternalLink className="w-4 h-4" /> ดูไฟล์
-                          </a>
+                          </button>
                         ) : (
                           <span className="text-surface-400 text-sm">-</span>
                         )}
@@ -792,16 +873,15 @@ export default function LeaveManagement() {
               {detailRequest.reject_reason && (
                 <p><span className="text-surface-500">เหตุผลไม่อนุมัติ:</span> {detailRequest.reject_reason}</p>
               )}
-              {medicalCertUrl(detailRequest.medical_cert_url) && (
+              {detailRequest.medical_cert_url && (
                 <p>
-                  <a
-                    href={medicalCertUrl(detailRequest.medical_cert_url)!}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => openMedicalCert(detailRequest.medical_cert_url)}
                     className="text-emerald-600 hover:underline inline-flex items-center gap-1"
                   >
-                    <FiFileText className="w-4 h-4" /> ใบรับรองแพทย์
-                  </a>
+                    <FiFileText className="w-4 h-4" /> เปิดเอกสารแนบ
+                  </button>
                 </p>
               )}
             </div>

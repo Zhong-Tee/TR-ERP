@@ -11,10 +11,6 @@ interface LeaveRequest {
   start_date: string
   end_date: string
   total_days: number
-  reason: string | null
-  status: string
-  notified_before: boolean
-  notified_morning: boolean
   leave_type: { name: string } | null
   employee: {
     first_name: string
@@ -32,152 +28,141 @@ interface NotificationSettings {
   leave_notify_morning_time: string
 }
 
+const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
+
+/** วันที่ตามเวลาไทย (UTC+7) offsetDays วันจากวันนี้ → YYYY-MM-DD */
+function bangkokDateStr(offsetDays = 0): string {
+  const bkk = new Date(Date.now() + 7 * 3600 * 1000)
+  bkk.setUTCDate(bkk.getUTCDate() + offsetDays)
+  return bkk.toISOString().split('T')[0]
+}
+
+/** YYYY-MM-DD → "10 ก.ค. 2569" */
+function thaiDate(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  return `${d} ${THAI_MONTHS[m - 1]} ${y + 543}`
+}
+
+function empLine(l: LeaveRequest, withDays: boolean): string {
+  const emp = l.employee
+  const name = emp?.nickname ? `${emp.first_name} ${emp.last_name} (${emp.nickname})` : `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim()
+  const dept = emp?.department?.name || '-'
+  const leaveType = l.leave_type?.name || '-'
+  return `• ${name} — ${dept}\n   ${leaveType}${withDays ? ` ${l.total_days} วัน` : ''}`
+}
+
 async function sendTelegramMessage(botToken: string, chatId: string, text: string) {
-  const url = `https://api.telegram.org/bot${botToken}/sendMessage`
-  const res = await fetch(url, {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
   })
-  if (!res.ok) {
-    const err = await res.text()
-    throw new Error(`Telegram API error: ${err}`)
-  }
+  if (!res.ok) throw new Error(`Telegram API error: ${await res.text()}`)
   return res.json()
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    const supabase = createClient(supabaseUrl, supabaseServiceKey)
+    // mode: 'morning' = สรุปคนลาวันนี้ | 'before' = แจ้งล่วงหน้า | 'all' = ทั้งคู่ (default)
+    let mode = 'all'
+    try {
+      const body = await req.json()
+      if (body?.mode) mode = String(body.mode)
+    } catch { /* ไม่มี body ก็ใช้ all */ }
 
-    const { data: settings } = await supabase
-      .from('hr_notification_settings')
-      .select('*')
-      .limit(1)
-      .single()
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    )
 
-    if (!settings || !settings.bot_token) {
+    const { data: settings } = await supabase.from('hr_notification_settings').select('*').limit(1).single()
+    if (!settings?.bot_token) {
       return new Response(JSON.stringify({ error: 'No notification settings configured' }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
-
     const config = settings as NotificationSettings
-    const today = new Date()
-    const todayStr = today.toISOString().split('T')[0]
-
-    const notifyBeforeDays = config.leave_notify_before_days || 1
-    const futureDate = new Date(today)
-    futureDate.setDate(futureDate.getDate() + notifyBeforeDays)
-    const futureDateStr = futureDate.toISOString().split('T')[0]
 
     const chatIds = [config.hr_group_chat_id, config.manager_group_chat_id].filter(Boolean) as string[]
     if (chatIds.length === 0) {
       return new Response(JSON.stringify({ message: 'No chat IDs configured' }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
 
+    const SELECT = '*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))'
     const logs: { type: string; status: string; message: string }[] = []
-
-    // 1. Leave reminder (day before): leaves starting tomorrow that haven't been notified
-    const { data: upcomingLeaves } = await supabase
-      .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))')
-      .eq('status', 'approved')
-      .eq('start_date', futureDateStr)
-      .eq('notified_before', false)
-
-    if (upcomingLeaves && upcomingLeaves.length > 0) {
-      const lines = (upcomingLeaves as LeaveRequest[]).map((l) => {
-        const emp = l.employee
-        const name = emp?.nickname || `${emp?.first_name} ${emp?.last_name}`
-        const dept = emp?.department?.name || '-'
-        const leaveType = l.leave_type?.name || '-'
-        return `- ${name} (${dept}) ${leaveType} ${l.total_days} วัน`
-      })
-
-      const message = `📋 <b>แจ้งเตือนการลาพรุ่งนี้</b> (${futureDateStr})\n\n${lines.join('\n')}`
-
+    const broadcast = async (type: string, text: string) => {
       for (const chatId of chatIds) {
         try {
-          await sendTelegramMessage(config.bot_token, chatId, message)
-          logs.push({ type: 'leave_reminder', status: 'sent', message: `Sent to ${chatId}` })
+          await sendTelegramMessage(config.bot_token, chatId, text)
+          logs.push({ type, status: 'sent', message: `Sent to ${chatId}` })
         } catch (e) {
-          logs.push({ type: 'leave_reminder', status: 'failed', message: String(e) })
+          logs.push({ type, status: 'failed', message: String(e) })
         }
-      }
-
-      for (const l of upcomingLeaves as LeaveRequest[]) {
-        await supabase.from('hr_leave_requests').update({ notified_before: true }).eq('id', l.id)
       }
     }
 
-    // 2. Morning notification: who is on leave today
-    const { data: todayLeaves } = await supabase
-      .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))')
-      .eq('status', 'approved')
-      .lte('start_date', todayStr)
-      .gte('end_date', todayStr)
-      .eq('notified_morning', false)
+    const todayStr = bangkokDateStr(0)
+    let upcomingCount = 0
+    let morningCount = 0
 
-    if (todayLeaves && todayLeaves.length > 0) {
-      const lines = (todayLeaves as LeaveRequest[]).map((l) => {
-        const emp = l.employee
-        const name = emp?.nickname || `${emp?.first_name} ${emp?.last_name}`
-        const dept = emp?.department?.name || '-'
-        const leaveType = l.leave_type?.name || '-'
-        return `- ${name} (${dept}) ${leaveType}`
-      })
+    // ─── แจ้งล่วงหน้า: คนที่จะลาในอีก N วัน (ยังไม่เคยแจ้ง) ───
+    if (mode === 'before' || mode === 'all') {
+      const notifyBeforeDays = config.leave_notify_before_days || 1
+      const futureStr = bangkokDateStr(notifyBeforeDays)
+      const { data: upcoming } = await supabase
+        .from('hr_leave_requests').select(SELECT)
+        .eq('status', 'approved').eq('start_date', futureStr).eq('notified_before', false)
 
-      const message = `🌅 <b>สรุปพนักงานลาวันนี้</b> (${todayStr})\nจำนวน ${todayLeaves.length} คน\n\n${lines.join('\n')}`
-
-      for (const chatId of chatIds) {
-        try {
-          await sendTelegramMessage(config.bot_token, chatId, message)
-          logs.push({ type: 'leave_morning', status: 'sent', message: `Sent to ${chatId}` })
-        } catch (e) {
-          logs.push({ type: 'leave_morning', status: 'failed', message: String(e) })
+      const list = (upcoming ?? []) as LeaveRequest[]
+      upcomingCount = list.length
+      // ไม่มีคนลา → ไม่แจ้ง
+      if (list.length > 0) {
+        const dayWord = notifyBeforeDays === 1 ? 'พรุ่งนี้' : `อีก ${notifyBeforeDays} วัน`
+        const text =
+          `📋 <b>แจ้งเตือนล่วงหน้า — มีคนลา${dayWord}</b>\n` +
+          `🗓 ${thaiDate(futureStr)} • จำนวน ${list.length} คน\n\n` +
+          list.map((l) => empLine(l, true)).join('\n')
+        await broadcast('leave_reminder', text)
+        for (const l of list) {
+          await supabase.from('hr_leave_requests').update({ notified_before: true }).eq('id', l.id)
         }
-      }
-
-      for (const l of todayLeaves as LeaveRequest[]) {
-        await supabase.from('hr_leave_requests').update({ notified_morning: true }).eq('id', l.id)
       }
     }
 
-    // Log all notifications
+    // ─── สรุปคนลาวันนี้ (ทุกเช้า) — แสดงทุกคนที่ลาวันนี้ รองรับลาหลายวัน ───
+    if (mode === 'morning' || mode === 'all') {
+      const { data: todayLeaves } = await supabase
+        .from('hr_leave_requests').select(SELECT)
+        .eq('status', 'approved').lte('start_date', todayStr).gte('end_date', todayStr)
+
+      const list = (todayLeaves ?? []) as LeaveRequest[]
+      morningCount = list.length
+      // ไม่มีคนลาวันนี้ → ไม่แจ้ง
+      if (list.length > 0) {
+        const text =
+          `🌅 <b>สรุปพนักงานลาวันนี้</b>\n` +
+          `🗓 ${thaiDate(todayStr)} • จำนวน ${list.length} คน\n\n` +
+          list.map((l) => empLine(l, false)).join('\n')
+        await broadcast('leave_morning', text)
+      }
+    }
+
     for (const log of logs) {
       await supabase.from('hr_notification_logs').insert({
-        type: log.type,
-        target_chat_id: chatIds.join(','),
-        message: log.message,
-        status: log.status,
+        type: log.type, target_chat_id: chatIds.join(','), message: log.message, status: log.status,
       })
     }
 
-    return new Response(JSON.stringify({
-      success: true,
-      upcoming_notified: upcomingLeaves?.length || 0,
-      morning_notified: todayLeaves?.length || 0,
-      logs,
-    }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    return new Response(JSON.stringify({ success: true, mode, upcomingCount, morningCount, logs }), {
+      status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   } catch (error) {
     return new Response(JSON.stringify({ error: String(error) }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
 })

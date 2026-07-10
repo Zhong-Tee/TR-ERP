@@ -135,7 +135,7 @@ export default function EmployeePortal() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-50 pb-20">
       <header className="sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-emerald-600 text-white shadow-md">
-        <h1 className="text-xl font-bold flex items-baseline gap-1.5">
+        <h1 className="text-lg font-semibold flex items-baseline gap-1.5">
           TR-ERP <span className="text-xs font-normal opacity-80">v{__APP_VERSION__}</span>
         </h1>
         <div className="flex items-center gap-2">
@@ -155,7 +155,7 @@ export default function EmployeePortal() {
           <button
             type="button"
             onClick={() => signOut()}
-            className="px-3.5 py-2 text-base font-medium bg-white/20 rounded-lg hover:bg-white/30"
+            className="px-3 py-1.5 text-sm font-medium bg-white/20 rounded-lg hover:bg-white/30"
           >
             ออกจากระบบ
           </button>
@@ -180,12 +180,12 @@ export default function EmployeePortal() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTabAndUrl(tab.id)}
-              className={`flex flex-col items-center justify-center gap-1 w-[19%] min-w-[19%] flex-shrink-0 py-2.5 px-1 rounded-lg transition-colors ${
+              className={`flex flex-col items-center justify-center gap-0.5 w-[19%] min-w-[19%] flex-shrink-0 py-2 px-1 rounded-lg transition-colors ${
                 isActive ? 'text-emerald-600 bg-emerald-50' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <Icon className="w-7 h-7" />
-              <span className="text-xs font-medium whitespace-nowrap">{tab.label}</span>
+              <Icon className="w-6 h-6" />
+              <span className="text-[11px] font-medium whitespace-nowrap">{tab.label}</span>
             </button>
           )
         })}

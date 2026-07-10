@@ -29,11 +29,18 @@ type RecentRequest = {
   start_date: string
   end_date: string
   total_days: number
+  leave_mode?: 'full_day' | 'hourly'
+  start_time?: string | null
+  end_time?: string | null
+  total_hours?: number | null
   status: string
   reason?: string
   medical_cert_url?: string | null
   created_at: string
 }
+
+/** ชั่วโมงต่อวันทำงานมาตรฐาน — ใช้แปลงลาเป็นชั่วโมง → สัดส่วนวัน */
+const HOURS_PER_DAY = 8
 
 function diffDays(start: string, end: string): number {
   const a = new Date(start)
@@ -56,7 +63,7 @@ function statusBadge(status: string) {
     cancelled: 'ยกเลิก',
   }
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${map[status] ?? 'bg-gray-100 text-gray-600'}`}>
+    <span className={`inline-flex items-center shrink-0 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${map[status] ?? 'bg-gray-100 text-gray-600'}`}>
       {labels[status] ?? status}
     </span>
   )
@@ -82,12 +89,30 @@ export default function EmployeeLeave() {
 
   const [form, setForm] = useState({
     leave_type_id: '',
+    leave_mode: 'full_day' as 'full_day' | 'hourly',
     start_date: '',
     end_date: '',
+    start_time: '09:00',
+    end_time: '12:00',
     reason: '',
   })
 
-  const totalDays = form.start_date && form.end_date ? diffDays(form.start_date, form.end_date) : 0
+  /** ชั่วโมงลา (โหมดชั่วโมง) — รองรับข้ามเที่ยงคืนไม่ได้ (ลาในวันเดียว) */
+  const totalHours = (() => {
+    if (form.leave_mode !== 'hourly' || !form.start_time || !form.end_time) return 0
+    const [sh, sm] = form.start_time.split(':').map(Number)
+    const [eh, em] = form.end_time.split(':').map(Number)
+    const mins = eh * 60 + em - (sh * 60 + sm)
+    return mins > 0 ? Math.round((mins / 60) * 100) / 100 : 0
+  })()
+
+  const totalDays =
+    form.leave_mode === 'hourly'
+      ? Math.round((totalHours / HOURS_PER_DAY) * 100) / 100
+      : form.start_date && form.end_date
+        ? diffDays(form.start_date, form.end_date)
+        : 0
+
   const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
   const requiresDoc = !!selectedType?.requires_doc
   const docLabel = selectedType?.doc_label || 'เอกสารประกอบการลา'
@@ -122,7 +147,17 @@ export default function EmployeeLeave() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!employee || !form.leave_type_id || !form.start_date || !form.end_date) return
+    if (!employee || !form.leave_type_id || !form.start_date) return
+    const isHourly = form.leave_mode === 'hourly'
+    if (!isHourly && !form.end_date) return
+    if (!form.reason.trim()) {
+      setDocError('กรุณากรอกเหตุผลการลา')
+      return
+    }
+    if (isHourly && totalHours <= 0) {
+      setDocError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม')
+      return
+    }
     if (requiresDoc && !docFile) {
       setDocError(`กรุณาแนบ${docLabel}`)
       return
@@ -132,8 +167,12 @@ export default function EmployeeLeave() {
       const createdLeave = await createLeaveRequest({
         employee_id: employee.id,
         leave_type_id: form.leave_type_id,
+        leave_mode: form.leave_mode,
         start_date: form.start_date,
-        end_date: form.end_date,
+        end_date: isHourly ? form.start_date : form.end_date,
+        start_time: isHourly ? form.start_time : undefined,
+        end_time: isHourly ? form.end_time : undefined,
+        total_hours: isHourly ? totalHours : undefined,
         total_days: totalDays,
         reason: form.reason || undefined,
         status: 'pending',
@@ -148,7 +187,15 @@ export default function EmployeeLeave() {
       }
       // แจ้งใบลาใหม่เข้ากลุ่ม HR (fire-and-forget)
       supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: createdLeave.id } }).catch(() => {})
-      setForm({ leave_type_id: leaveTypes[0]?.id ?? '', start_date: '', end_date: '', reason: '' })
+      setForm({
+        leave_type_id: leaveTypes[0]?.id ?? '',
+        leave_mode: 'full_day',
+        start_date: '',
+        end_date: '',
+        start_time: '09:00',
+        end_time: '12:00',
+        reason: '',
+      })
       setDocFile(null)
       setDocError(null)
       setFormOpen(false)
@@ -270,36 +317,103 @@ export default function EmployeeLeave() {
                   ))}
                 </select>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">วันเริ่ม</label>
-                  <input
-                    type="date"
-                    value={form.start_date}
-                    onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-3"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">วันสิ้นสุด</label>
-                  <input
-                    type="date"
-                    value={form.end_date}
-                    onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
-                    className="w-full rounded-xl border border-gray-300 px-4 py-3"
-                    required
-                  />
+              {/* เลือกช่วงลา: เต็มวัน / ชั่วโมง */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">ช่วงลา</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ['full_day', 'เต็มวัน'],
+                    ['hourly', 'เป็นชั่วโมง'],
+                  ] as ['full_day' | 'hourly', string][]).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, leave_mode: mode }))}
+                      className={`py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                        form.leave_mode === mode
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white text-gray-600 border-gray-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
-              <p className="text-sm text-gray-600">รวม {totalDays} วัน</p>
+
+              {form.leave_mode === 'full_day' ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">วันเริ่ม</label>
+                      <input
+                        type="date"
+                        value={form.start_date}
+                        onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">วันสิ้นสุด</label>
+                      <input
+                        type="date"
+                        value={form.end_date}
+                        onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600">รวม {totalDays} วัน</p>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">วันที่ลา</label>
+                    <input
+                      type="date"
+                      value={form.start_date}
+                      onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">เวลาเริ่ม</label>
+                      <input
+                        type="time"
+                        value={form.start_time}
+                        onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">เวลาสิ้นสุด</label>
+                      <input
+                        type="time"
+                        value={form.end_time}
+                        onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))}
+                        className="w-full rounded-xl border border-gray-300 px-4 py-3"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600">รวม {totalHours} ชั่วโมง</p>
+                </>
+              )}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">เหตุผล (ถ้ามี)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  เหตุผล <span className="text-red-500">*</span>
+                </label>
                 <textarea
                   value={form.reason}
                   onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))}
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 min-h-[80px]"
                   placeholder="ระบุเหตุผล..."
+                  required
                 />
               </div>
               {requiresDoc && (
@@ -405,7 +519,11 @@ export default function EmployeeLeave() {
                   <div className="flex justify-between items-start gap-2">
                     <div>
                       <p className="font-medium text-gray-900">{r.leave_type_name}</p>
-                      <p className="text-sm text-gray-600">{r.start_date} – {r.end_date} ({r.total_days} วัน)</p>
+                      <p className="text-sm text-gray-600">
+                        {r.leave_mode === 'hourly'
+                          ? `${r.start_date} ${(r.start_time ?? '').slice(0, 5)}–${(r.end_time ?? '').slice(0, 5)} น. (${r.total_hours ?? 0} ชม.)`
+                          : `${r.start_date} – ${r.end_date} (${r.total_days} วัน)`}
+                      </p>
                       {r.reason && <p className="text-xs text-gray-500 mt-1">{r.reason}</p>}
                     </div>
                     {statusBadge(r.status)}

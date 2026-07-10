@@ -1032,6 +1032,11 @@ export interface HRLeaveRequest {
   start_date: string
   end_date: string
   total_days: number
+  /** เต็มวัน หรือ ลาเป็นชั่วโมง */
+  leave_mode?: 'full_day' | 'hourly'
+  start_time?: string
+  end_time?: string
+  total_hours?: number
   reason?: string
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   approved_by?: string

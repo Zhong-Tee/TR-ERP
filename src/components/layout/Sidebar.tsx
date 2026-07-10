@@ -184,6 +184,7 @@ const MENU_KEYS_WITH_COUNT = [
   'packing',
   'warehouse',
   'purchase',
+  'hr',
 ] as const
 
 export default function Sidebar({ isOpen }: SidebarProps) {
@@ -200,6 +201,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     packing: 0,
     warehouse: 0,
     purchase: 0,
+    hr: 0,
   })
   /** นับ Issue สถานะ On (จาก TopBar broadcast — ไม่ query เพิ่ม) */
   const [planIssueOnCount, setPlanIssueOnCount] = useState(0)
@@ -219,7 +221,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
       // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
       const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes] =
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
@@ -235,6 +237,8 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           .from('pr_machinery_machines')
           .select('id', { count: 'exact', head: true })
           .eq('current_status', 'working'),
+        supabase.from('hr_leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       ])
 
       const c = rpcRes.data || {}
@@ -259,6 +263,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         packing: c.packing || 0,
         warehouse: c.warehouse || 0,
         purchase: purchaseTotal,
+        hr: (hrLeavePendingRes.count || 0) + (hrOtPendingRes.count || 0),
       })
 
       window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
@@ -303,11 +308,20 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_pr' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_po' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pr_machinery_machines' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, () => debouncedLoadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
     }
   }, [loadCounts, debouncedLoadCounts])
+
+  // ฟัง event จากหน้า HR (ยื่น/อนุมัติ/ปฏิเสธ ลา/OT) → โหลด count ใหม่ทันที
+  useEffect(() => {
+    const onHrChanged = () => loadCounts()
+    window.addEventListener('hr-counts-changed', onHrChanged)
+    return () => window.removeEventListener('hr-counts-changed', onHrChanged)
+  }, [loadCounts])
 
   // ฟัง event จากหน้า QC เมื่อมีการอัปเดตจำนวน (เร็วกว่า Realtime)
   useEffect(() => {

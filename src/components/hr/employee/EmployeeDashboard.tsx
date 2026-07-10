@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle } from 'react-icons/fi'
+import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle } from 'react-icons/fi'
 import type { IconType } from 'react-icons'
 import {
   fetchEmployeeByUserId,
-  getHRDashboard,
   getEmployeeLeaveSummary,
   fetchNotifications,
   markNotificationRead,
@@ -21,6 +20,13 @@ const isMainLeaveType = (name: string) => MAIN_LEAVE_KEYWORDS.some((k) => name.i
 
 /** true = รออนุมัติ, false = ผลอนุมัติ/อื่นๆ */
 const isPendingNotif = (type: string) => type.includes('pending')
+
+/** ผลอนุมัติจากหัวข้อแจ้งเตือน: อนุมัติ / ปฏิเสธ / null */
+function resultStatus(title: string): 'approved' | 'rejected' | null {
+  if (title.includes('ปฏิเสธ') || title.includes('ไม่อนุมัติ')) return 'rejected'
+  if (title.includes('อนุมัติ')) return 'approved'
+  return null
+}
 
 /** ไอคอน + สีตามประเภทแจ้งเตือน */
 function notifIcon(type: string): { Icon: IconType; color: string; bg: string } {
@@ -49,9 +55,6 @@ export default function EmployeeDashboard() {
   const { user } = useAuthContext()
   const [employee, setEmployee] = useState<HREmployee | null>(null)
   const [loading, setLoading] = useState(true)
-  const [dashboard, setDashboard] = useState<{
-    unread_notifications: number
-  } | null>(null)
   const [leaveSummary, setLeaveSummary] = useState<{
     balances: { leave_type_name: string; remaining: number; entitled_days: number; used_days: number }[]
   } | null>(null)
@@ -72,14 +75,12 @@ export default function EmployeeDashboard() {
         setLoading(false)
         return
       }
-      const [dash, summary, notifs, leavePending, otPending] = await Promise.all([
-        getHRDashboard(emp.id),
+      const [summary, notifs, leavePending, otPending] = await Promise.all([
         getEmployeeLeaveSummary(emp.id, new Date().getFullYear()),
         fetchNotifications(emp.id).then((n) => n.slice(0, 30)),
         fetchLeaveRequests({ status: 'pending' }).catch(() => []),
         fetchOTRequests({ status: 'pending' }).catch(() => []),
       ])
-      setDashboard(dash)
       setLeaveSummary(summary)
       setNotifications(notifs)
       setPendingRequestIds(new Set([...leavePending.map((r) => r.id), ...otPending.map((r) => r.id)]))
@@ -103,7 +104,6 @@ export default function EmployeeDashboard() {
     try {
       await markNotificationRead(id)
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)))
-      setDashboard((d) => (d ? { ...d, unread_notifications: Math.max(0, (d.unread_notifications ?? 0) - 1) } : null))
     } catch (e) {
       console.error(e)
     }
@@ -130,18 +130,18 @@ export default function EmployeeDashboard() {
   return (
     <div className="space-y-6">
       <section>
-        <h2 className="text-2xl font-bold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
-        <p className="text-gray-500 text-base">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
+        <h2 className="text-xl font-semibold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
+        <p className="text-gray-500 text-sm">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
       </section>
 
       <section className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
         <div className="flex items-center justify-between mb-2">
-          <p className="text-base text-emerald-700 font-semibold">วันลาคงเหลือ</p>
+          <p className="text-sm text-emerald-700 font-semibold">วันลาคงเหลือ</p>
           {(leaveSummary?.balances?.length ?? 0) > 0 && (
             <button
               type="button"
               onClick={() => setShowAllBalance(true)}
-              className="text-sm text-emerald-700 font-medium underline"
+              className="text-xs text-emerald-700 font-medium underline"
             >
               ดูทั้งหมด
             </button>
@@ -152,29 +152,24 @@ export default function EmployeeDashboard() {
             {leaveSummary.balances
               .filter((b) => isMainLeaveType(b.leave_type_name))
               .map((b) => (
-                <div key={b.leave_type_name} className="rounded-xl bg-white/70 px-2 py-3 text-center">
-                  <p className="text-sm text-emerald-700 leading-tight">{b.leave_type_name}</p>
-                  <p className="text-3xl font-bold text-emerald-800">{b.remaining}</p>
-                  <p className="text-xs text-emerald-600/70">วัน</p>
+                <div key={b.leave_type_name} className="rounded-xl bg-white/70 px-2 py-2 text-center">
+                  <p className="text-[11px] text-emerald-700 leading-tight">{b.leave_type_name}</p>
+                  <p className="text-xl font-bold text-emerald-800">{b.remaining}</p>
+                  <p className="text-[10px] text-emerald-600/70">วัน</p>
                 </div>
               ))}
           </div>
         ) : (
-          <p className="text-base text-emerald-600">ยังไม่มีข้อมูลสิทธิ์การลา</p>
+          <p className="text-sm text-emerald-600">ยังไม่มีข้อมูลสิทธิ์การลา</p>
         )}
       </section>
 
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <FiBell className="w-6 h-6 text-emerald-600" />
+          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+            <FiBell className="w-5 h-5 text-emerald-600" />
             แจ้งเตือน
           </h3>
-          {dashboard && (dashboard.unread_notifications ?? 0) > 0 && (
-            <span className="rounded-full bg-emerald-500 text-white text-xs font-bold min-w-[20px] h-5 flex items-center justify-center px-1.5">
-              {dashboard.unread_notifications}
-            </span>
-          )}
         </div>
 
         {/* แถบ รออนุมัติ / ผลอนุมัติ — แท็บรออนุมัติซ่อนรายการที่อนุมัติ/ปฏิเสธไปแล้ว */}
@@ -196,7 +191,7 @@ export default function EmployeeDashboard() {
                 key={key}
                 type="button"
                 onClick={() => setNotifTab(key)}
-                className={`flex-1 py-3 rounded-xl text-base font-medium transition-colors ${
+                className={`flex-1 py-2 rounded-xl text-sm font-medium transition-colors ${
                   notifTab === key
                     ? 'bg-emerald-600 text-white'
                     : 'bg-white text-gray-600 border border-gray-200'
@@ -226,17 +221,34 @@ export default function EmployeeDashboard() {
                         className={`w-full text-left p-4 active:bg-gray-50 ${!n.is_read ? 'bg-emerald-50/50' : ''}`}
                       >
                         <div className="flex items-start gap-3">
-                          <span className={`shrink-0 w-11 h-11 rounded-full flex items-center justify-center ${bg}`}>
-                            <Icon className={`w-6 h-6 ${color}`} />
+                          <span className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${bg}`}>
+                            <Icon className={`w-5 h-5 ${color}`} />
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              {!n.is_read && <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />}
-                              <p className="font-semibold text-gray-900 text-base">{n.title}</p>
+                              {!n.is_read && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />}
+                              <p className="font-medium text-gray-900 text-sm">{n.title}</p>
                             </div>
-                            {n.message && <p className="text-gray-600 text-sm mt-0.5 line-clamp-2">{n.message}</p>}
-                            <p className="text-gray-400 text-sm mt-1">{formatTimeAgo(n.created_at)}</p>
+                            {n.message && <p className="text-gray-600 text-xs mt-0.5 line-clamp-2">{n.message}</p>}
+                            <p className="text-gray-400 text-xs mt-1">{formatTimeAgo(n.created_at)}</p>
                           </div>
+                          {(() => {
+                            const st = resultStatus(n.title)
+                            if (!st) return null
+                            return (
+                              <span
+                                className={`shrink-0 self-start inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  st === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                                }`}
+                              >
+                                {st === 'approved' ? (
+                                  <><FiCheckCircle className="w-3.5 h-3.5" /> อนุมัติ</>
+                                ) : (
+                                  <><FiXCircle className="w-3.5 h-3.5" /> ปฏิเสธ</>
+                                )}
+                              </span>
+                            )
+                          })()}
                         </div>
                       </button>
                     </li>
@@ -252,21 +264,21 @@ export default function EmployeeDashboard() {
       </section>
 
       <section>
-        <h3 className="text-lg font-semibold text-gray-900 mb-3">ดำเนินการด่วน</h3>
+        <h3 className="font-semibold text-gray-900 mb-3">ดำเนินการด่วน</h3>
         <div className="grid grid-cols-2 gap-3">
           <Link
             to="/employee?tab=leave"
-            className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-white py-5 px-4 shadow-md active:bg-emerald-700"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 text-white py-4 px-4 shadow-md active:bg-emerald-700"
           >
-            <FiCalendar className="w-7 h-7" />
-            <span className="font-semibold text-lg">ขอลา</span>
+            <FiCalendar className="w-6 h-6" />
+            <span className="font-medium">ขอลา</span>
           </Link>
           <Link
             to="/employee?tab=timeclock"
-            className="flex items-center justify-center gap-2 rounded-2xl bg-white border-2 border-emerald-600 text-emerald-600 py-5 px-4 shadow-sm active:bg-emerald-50"
+            className="flex items-center justify-center gap-2 rounded-2xl bg-white border-2 border-emerald-600 text-emerald-600 py-4 px-4 shadow-sm active:bg-emerald-50"
           >
-            <FiClock className="w-7 h-7" />
-            <span className="font-semibold text-lg">ลงเวลา</span>
+            <FiClock className="w-6 h-6" />
+            <span className="font-medium">ลงเวลา</span>
           </Link>
         </div>
       </section>

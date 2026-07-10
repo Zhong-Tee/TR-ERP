@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
 
     const { data: leave, error } = await supabase
       .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, department:hr_departments!department_id(name))')
+      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name))')
       .eq('id', leave_id)
       .single()
     if (error || !leave) throw new Error('leave request not found: ' + error?.message)
@@ -51,10 +51,15 @@ Deno.serve(async (req) => {
     const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() + (emp?.nickname ? ` (${emp.nickname})` : '')
     const dept = emp?.department?.name ?? '-'
     const leaveType = leave.leave_type?.name ?? '-'
-    const dateRange =
-      leave.start_date === leave.end_date
-        ? thaiDate(leave.start_date)
-        : `${thaiDate(leave.start_date)} – ${thaiDate(leave.end_date)}`
+    // ลาแบบชั่วโมง: แสดงวัน + ช่วงเวลา + จำนวนชั่วโมง / เต็มวัน: แสดงช่วงวัน + จำนวนวัน
+    const durationText =
+      leave.leave_mode === 'hourly'
+        ? `${thaiDate(leave.start_date)} เวลา ${String(leave.start_time ?? '').slice(0, 5)}–${String(leave.end_time ?? '').slice(0, 5)} น. (${leave.total_hours ?? 0} ชม.)`
+        : `${
+            leave.start_date === leave.end_date
+              ? thaiDate(leave.start_date)
+              : `${thaiDate(leave.start_date)} – ${thaiDate(leave.end_date)}`
+          } (${leave.total_days} วัน)`
 
     const header =
       event === 'approved'
@@ -73,7 +78,7 @@ Deno.serve(async (req) => {
     const text =
       `${header}\n` +
       `👤 ${name} • ${dept}\n` +
-      `🗓 ${leaveType} ${dateRange} (${leave.total_days} วัน)\n` +
+      `🗓 ${leaveType} ${durationText}\n` +
       (event === 'created' && leave.reason ? `📝 ${leave.reason}\n` : '') +
       footer
 
@@ -107,6 +112,36 @@ Deno.serve(async (req) => {
       status: ok ? 'sent' : 'failed',
       related_id: leave_id,
     })
+
+    // แจ้งผลอนุมัติ/ปฏิเสธ เข้าแชทส่วนตัวพนักงาน (ถ้ากรอก telegram_chat_id ไว้)
+    if ((event === 'approved' || event === 'rejected') && emp?.telegram_chat_id) {
+      const pLines = [
+        event === 'approved'
+          ? '✅ <b>ใบลาของคุณได้รับการอนุมัติ</b>'
+          : '❌ <b>ใบลาของคุณถูกปฏิเสธ</b>',
+        '',
+        `📋 ประเภท: ${leaveType}`,
+        `🗓 ${durationText}`,
+      ]
+      if (event === 'rejected' && leave.reject_reason) {
+        pLines.push('', `📝 เหตุผล: ${leave.reject_reason}`)
+      }
+      const personalText = pLines.join('\n')
+      try {
+        const pRes = await fetch(`${botBase}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: emp.telegram_chat_id, text: personalText, parse_mode: 'HTML' }),
+        })
+        await supabase.from('hr_notification_logs').insert({
+          type: `leave_${event}_personal`,
+          target_chat_id: String(emp.telegram_chat_id),
+          message: pRes.ok ? personalText : await pRes.text(),
+          status: pRes.ok ? 'sent' : 'failed',
+          related_id: leave_id,
+        })
+      } catch (_) { /* ไม่ให้กระทบผลรวม */ }
+    }
 
     return new Response(JSON.stringify({ success: ok, detail }), {
       status: 200,
