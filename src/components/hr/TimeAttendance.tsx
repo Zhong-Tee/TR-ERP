@@ -452,7 +452,99 @@ export default function TimeAttendance() {
   }, [summaryRows, summarySearch])
 
   const exportEntries = () => {
-    const rows = filteredEntries.map((e) => {
+    const today = todayStr()
+    const deptName = (emp: HREmployee) =>
+      (emp as HREmployee & { department?: { name?: string } }).department?.name ?? '-'
+
+    // แบนข้อมูล Dashboard → รายการต่อคน-ต่อวัน แล้วเรียงตามชื่อ→วันที่
+    const flat = dashboardGroups
+      .flatMap(({ date, rows }) =>
+        rows.map((r) => ({
+          date,
+          r,
+          lateMin: r.clockIn ? entryLateMinutes(r.clockIn) : 0,
+          otMin: otMinutesOf(r),
+        })),
+      )
+      .sort(
+        (a, b) =>
+          empName(a.r.employee).localeCompare(empName(b.r.employee), 'th') || a.date.localeCompare(b.date),
+      )
+
+    // ── ชีต 1: รายวัน (ละเอียด) — เข้า/ออก/OT/สาย ต่อคนต่อวันในแถวเดียว ──
+    const dailyRows = flat.map((f) => {
+      const st = dashStatusOf(f.r, f.lateMin, f.date < today)
+      return {
+        'วันที่': new Date(f.date + 'T00:00:00').toLocaleDateString('th-TH'),
+        'รหัส': f.r.employee.employee_code ?? '',
+        'พนักงาน': empName(f.r.employee),
+        'แผนก': deptName(f.r.employee),
+        'เข้างาน': f.r.clockIn ? fmtClock(f.r.clockIn.entry_time) : '',
+        'ออกงาน': f.r.clockOut ? fmtClock(f.r.clockOut.entry_time) : '',
+        'สาย (วัน)': f.lateMin > 0 ? minutesToHHMM(f.lateMin) : f.r.clockIn ? 'ตรงเวลา' : '',
+        'เข้า OT': f.r.otIn ? fmtClock(f.r.otIn.entry_time) : '',
+        'ออก OT': f.r.otOut ? fmtClock(f.r.otOut.entry_time) : '',
+        'OT รวม (วัน)': f.otMin > 0 ? minutesToHHMM(f.otMin) : '',
+        'สถานะ': st.label,
+      }
+    })
+
+    // ── ชีต 2: สรุปต่อคน + แถวรวมทั้งหมด ──
+    type Agg = {
+      employee: HREmployee
+      present: number
+      lateCount: number
+      lateMin: number
+      otMin: number
+      missIn: number
+      missOut: number
+    }
+    const byEmp = new Map<string, Agg>()
+    for (const f of flat) {
+      const a =
+        byEmp.get(f.r.employee.id) ??
+        { employee: f.r.employee, present: 0, lateCount: 0, lateMin: 0, otMin: 0, missIn: 0, missOut: 0 }
+      if (f.r.clockIn) a.present++
+      if (f.lateMin > 0) {
+        a.lateCount++
+        a.lateMin += f.lateMin
+      }
+      a.otMin += f.otMin
+      const st = dashStatusOf(f.r, f.lateMin, f.date < today)
+      if (st.key === 'missing_in') a.missIn++
+      if (st.key === 'missing_out') a.missOut++
+      byEmp.set(f.r.employee.id, a)
+    }
+    const perEmp = [...byEmp.values()].sort((a, b) =>
+      empName(a.employee).localeCompare(empName(b.employee), 'th'),
+    )
+    const grandLate = perEmp.reduce((s, a) => s + a.lateMin, 0)
+    const grandOt = perEmp.reduce((s, a) => s + a.otMin, 0)
+    const summaryRows: Record<string, string | number>[] = perEmp.map((a) => ({
+      'รหัส': a.employee.employee_code ?? '',
+      'พนักงาน': empName(a.employee),
+      'แผนก': deptName(a.employee),
+      'มาทำงาน (วัน)': a.present,
+      'สาย (ครั้ง)': a.lateCount,
+      'สายรวม': a.lateMin > 0 ? minutesToHHMM(a.lateMin) : '-',
+      'OT รวม': a.otMin > 0 ? minutesToHHMM(a.otMin) : '-',
+      'ลืมเข้า (ครั้ง)': a.missIn || '',
+      'ลืมออก (ครั้ง)': a.missOut || '',
+    }))
+    summaryRows.push({
+      'รหัส': '',
+      'พนักงาน': '★ รวมทั้งหมด',
+      'แผนก': '',
+      'มาทำงาน (วัน)': '',
+      'สาย (ครั้ง)': perEmp.reduce((s, a) => s + a.lateCount, 0),
+      'สายรวม': grandLate > 0 ? minutesToHHMM(grandLate) : '-',
+      'OT รวม': grandOt > 0 ? minutesToHHMM(grandOt) : '-',
+      'ลืมเข้า (ครั้ง)': perEmp.reduce((s, a) => s + a.missIn, 0) || '',
+      'ลืมออก (ครั้ง)': perEmp.reduce((s, a) => s + a.missOut, 0) || '',
+    })
+
+    // ── ชีต 3: บันทึกดิบ (log ทุกครั้ง) เผื่อต้องการตรวจย้อน ──
+    const rawRows = filteredEntries.map((e) => {
       const lm = entryLateMinutes(e)
       return {
         'รหัส': e.employee?.employee_code ?? '',
@@ -466,10 +558,22 @@ export default function TimeAttendance() {
         'ระยะ (ม.)': e.distance_m != null ? Math.round(e.distance_m) : '',
       }
     })
-    const ws = XLSX.utils.json_to_sheet(rows)
+
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'บันทึกเวลา')
-    XLSX.writeFile(wb, `บันทึกเวลา_${dateFrom}_ถึง_${dateTo}.xlsx`)
+    const wsDaily = XLSX.utils.json_to_sheet(dailyRows)
+    wsDaily['!cols'] = [
+      { wch: 13 }, { wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 9 }, { wch: 9 },
+      { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 12 }, { wch: 12 },
+    ]
+    XLSX.utils.book_append_sheet(wb, wsDaily, 'รายวัน (ละเอียด)')
+    const wsSum = XLSX.utils.json_to_sheet(summaryRows)
+    wsSum['!cols'] = [
+      { wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
+      { wch: 12 }, { wch: 14 }, { wch: 14 },
+    ]
+    XLSX.utils.book_append_sheet(wb, wsSum, 'สรุปต่อคน')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows), 'บันทึกดิบ')
+    XLSX.writeFile(wb, `สรุปเวลาทำงาน_${dateFrom}_ถึง_${dateTo}.xlsx`)
   }
 
   const exportSummary = () => {
