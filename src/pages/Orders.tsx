@@ -15,6 +15,7 @@ import {
   resolveSalesPumpOwnerAdminName,
 } from '../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
+import { fetchLatestRejectedOverpayOrderIds } from '../lib/rejectedOverpayRefunds'
 import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 
 type Tab =
@@ -203,9 +204,26 @@ export default function Orders() {
       )
       
       // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
-      const { count: completeCount } = await applyOwnerFilter(
+      const { count: completeStatusCount } = await applyOwnerFilter(
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
       )
+
+      // นับเพิ่ม: บิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ (แสดงรวมในแท็บตรวจสอบไม่ผ่าน โดยไม่เปลี่ยนสถานะบิล)
+      let rejectedRefundCount = 0
+      try {
+        const rejectedIds = await fetchLatestRejectedOverpayOrderIds(supabase)
+        if (rejectedIds.length > 0) {
+          const { count } = await applyOwnerFilter(
+            supabase.from('or_orders').select('id', { count: 'exact', head: true })
+              .in('id', rejectedIds)
+              .not('status', 'in', '("ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ","ยกเลิก")')
+          )
+          rejectedRefundCount = count ?? 0
+        }
+      } catch (e) {
+        console.error('Error counting rejected overpay refunds:', e)
+      }
+      const completeCount = (completeStatusCount ?? 0) + rejectedRefundCount
 
       // Load verified count (OFFICE: เฉพาะ superadmin/admin เห็น)
       let verifiedQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
@@ -578,9 +596,9 @@ export default function Orders() {
                 value={adminUserFilter}
                 onChange={(e) => setAdminUserFilter(e.target.value)}
                 className="min-w-[180px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
-                aria-label="กรองชื่อผู้ลงข้อมูล"
+                aria-label="กรองชื่อผู้สร้างบิล"
               >
-                <option value="">ผู้ลงข้อมูลทั้งหมด</option>
+                <option value="">ผู้สร้างบิลทั้งหมด</option>
                 {adminUsers.map((name) => (
                   <option key={name} value={name}>
                     {name}
@@ -748,6 +766,7 @@ export default function Orders() {
         ) : activeTab === 'complete' ? (
           <OrderList
             status={tabStatusFilter || ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ']}
+            includeRejectedOverpayRefundOrders={!tabStatusFilter}
             searchTerm={searchTerm}
             channelFilter={channelFilter}
             adminUserFilter={adminUserFilter}

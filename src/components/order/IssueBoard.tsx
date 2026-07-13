@@ -740,7 +740,7 @@ export default function IssueBoard({
                       </span>
                     )}
                     <span className="px-3 py-1.5 rounded-lg bg-blue-100 text-blue-800 font-medium">
-                      ผู้ลงออเดอร์: {issue.order?.admin_user || '-'}
+                      ผู้สร้างบิล: {issue.order?.admin_user || '-'}
                     </span>
                     <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-medium">
                       ผู้เปิด Ticket: {issue.creatorName || '-'}

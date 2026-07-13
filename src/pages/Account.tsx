@@ -15,6 +15,7 @@ import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import EcommerceSection from '../components/account/EcommerceSection'
 import AmendmentSection from '../components/account/AmendmentSection'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
+import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
 import * as XLSX from 'xlsx'
 
 type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'trial-balance'
@@ -247,7 +248,9 @@ export default function Account() {
     refund: Refund | null
     action: 'approve' | 'reject' | null
     submitting: boolean
-  }>({ open: false, refund: null, action: null, submitting: false })
+    /** เหตุผลไม่อนุมัติ (เฉพาะ action = reject) */
+    rejectReason: string
+  }>({ open: false, refund: null, action: null, submitting: false, rejectReason: '' })
   /** Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน (แทน alert) */
   const [refundResultModal, setRefundResultModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
   /** Modal ยืนยัน ขอใบกำกับภาษี (แทน confirm) */
@@ -616,17 +619,17 @@ export default function Account() {
   }
 
   function openRefundActionModal(refund: Refund, action: 'approve' | 'reject') {
-    setRefundActionModal({ open: true, refund, action, submitting: false })
+    setRefundActionModal({ open: true, refund, action, submitting: false, rejectReason: '' })
   }
 
   function closeRefundActionModal() {
     if (!refundActionModal.submitting) {
-      setRefundActionModal({ open: false, refund: null, action: null, submitting: false })
+      setRefundActionModal({ open: false, refund: null, action: null, submitting: false, rejectReason: '' })
     }
   }
 
   async function submitRefundAction() {
-    const { refund, action } = refundActionModal
+    const { refund, action, rejectReason } = refundActionModal
     if (!user || !refund || !action) return
     setRefundActionModal((prev) => ({ ...prev, submitting: true }))
     try {
@@ -636,11 +639,12 @@ export default function Account() {
           status: action === 'approve' ? 'approved' : 'rejected',
           approved_by: user.id,
           approved_at: new Date().toISOString(),
+          rejected_reason: action === 'reject' ? (rejectReason.trim() || null) : null,
         })
         .eq('id', refund.id)
 
       if (error) throw error
-      setRefundActionModal({ open: false, refund: null, action: null, submitting: false })
+      setRefundActionModal({ open: false, refund: null, action: null, submitting: false, rejectReason: '' })
       setRefundResultModal({
         open: true,
         message: action === 'approve' ? 'อนุมัติการโอนคืนสำเร็จ' : 'ปฏิเสธการโอนคืนสำเร็จ',
@@ -1147,18 +1151,10 @@ export default function Account() {
                 </span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {[
-                  { name: 'K PLUS', bank: 'ธนาคารกสิกรไทย', logo: 'kbank', brandColor: '#138f2d' },
-                  { name: 'MAKE by KBank', bank: 'ธนาคารกสิกรไทย', logo: 'kbank', brandColor: '#138f2d' },
-                  { name: 'Krungthai NEXT', bank: 'ธนาคารกรุงไทย', logo: 'ktb', brandColor: '#1ba5e1' },
-                  { name: 'Paotang', bank: 'ธนาคารกรุงไทย', logo: 'ktb', brandColor: '#1ba5e1' },
-                  { name: 'Bangkok Bank', bank: 'ธนาคารกรุงเทพ', logo: 'bbl', brandColor: '#1e4598' },
-                  { name: 'CIMB THAI', bank: 'ธนาคารซีไอเอ็มบี', logo: 'cimb', brandColor: '#7e2f36' },
-                  { name: 'UOB TMRW Thailand', bank: 'ธนาคารยูโอบี', logo: 'uob', brandColor: '#0b3979' },
-                ].map((app) => (
+                {SLIP_BANK_APPS_30D.map((app) => (
                   <div key={app.name} className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-lg border border-gray-100 hover:border-green-200 hover:bg-green-50/30 transition-colors">
                     <div className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center p-2" style={{ backgroundColor: app.brandColor }}>
-                      <img src={`https://raw.githubusercontent.com/omise/banks-logo/master/th/${app.logo}.svg`} alt={app.bank} className="w-full h-full object-contain" />
+                      <img src={bankLogoUrl(app.logo)} alt={app.bank} className="w-full h-full object-contain" />
                     </div>
                     <div className="min-w-0">
                       <div className="font-semibold text-gray-800 text-sm">{app.name}</div>
@@ -1177,21 +1173,10 @@ export default function Account() {
                 </span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {[
-                  { name: 'SCB Easy', bank: 'ธนาคารไทยพาณิชย์', logo: 'scb', brandColor: '#4e2e7f' },
-                  { name: 'TTB Touch', bank: 'ธนาคารทหารไทยธนชาต', logo: 'ttb', brandColor: '#fc4f1f' },
-                  { name: 'MyMo by GSB', bank: 'ธนาคารออมสิน', logo: 'gsb', brandColor: '#eb198d' },
-                  { name: 'KMA-Krungsri', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
-                  { name: 'Kept', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
-                  { name: 'Dime!', bank: 'ธนาคารกรุงศรีอยุธยา', logo: 'bay', brandColor: '#fec43b' },
-                  { name: 'KKP MOBILE', bank: 'ธนาคารเกียรตินาคินภัทร', logo: 'kk', brandColor: '#199cc5' },
-                  { name: 'GHB ALL GEN', bank: 'ธนาคารอาคารสงเคราะห์', logo: 'ghb', brandColor: '#f57d23' },
-                  { name: 'TISCO My Wealth', bank: 'ธนาคารทิสโก้', logo: 'tisco', brandColor: '#12549f' },
-                  { name: 'LHB You', bank: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', logo: 'lhb', brandColor: '#6d6e71' },
-                ].map((app) => (
+                {SLIP_BANK_APPS_7D.map((app) => (
                   <div key={app.name} className="flex items-center gap-3 p-3.5 bg-gray-50 rounded-lg border border-gray-100 hover:border-amber-200 hover:bg-amber-50/30 transition-colors">
                     <div className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center p-2" style={{ backgroundColor: app.brandColor }}>
-                      <img src={`https://raw.githubusercontent.com/omise/banks-logo/master/th/${app.logo}.svg`} alt={app.bank} className="w-full h-full object-contain" />
+                      <img src={bankLogoUrl(app.logo)} alt={app.bank} className="w-full h-full object-contain" />
                     </div>
                     <div className="min-w-0">
                       <div className="font-semibold text-gray-800 text-sm">{app.name}</div>
@@ -1370,17 +1355,17 @@ export default function Account() {
                   <table className="w-full text-base">
                     <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบิล</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อลูกค้า</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ชื่อบัญชีรับคืน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ธนาคาร</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขบัญชี</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">ที่อยู่</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">จำนวนเงิน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ดำเนินการ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 min-w-[20rem] max-w-[28rem]">เหตุผลโอนเกิน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700">การจัดการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบิล</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อลูกค้า</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อบัญชีรับคืน</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ธนาคาร</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบัญชี</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ที่อยู่</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">จำนวนเงิน</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">สถานะ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">วันที่ดำเนินการ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap min-w-[20rem] max-w-[28rem]">เหตุผลโอนเกิน</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">การจัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1406,15 +1391,21 @@ export default function Account() {
                             <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${refund.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                               {refund.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
                             </span>
+                            {refund.status === 'rejected' && refund.rejected_reason?.trim() && (
+                              <div className="mt-1 text-xs text-red-600 max-w-[160px] whitespace-normal break-words" title={refund.rejected_reason}>
+                                เหตุผล: {refund.rejected_reason}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 text-gray-500 text-sm">{refund.approved_at ? formatDateTime(refund.approved_at) : '–'}</td>
                           <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
-                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                          <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); openSlipPopup(refund.order_id, (refund as any).or_orders?.bill_no || '–') }}
-                              className="px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
+                              className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
                             >
+                              <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               ดูสลิปโอน
                             </button>
                           </td>
@@ -1514,13 +1505,13 @@ export default function Account() {
                   <table className="w-full text-base">
                     <thead>
                       <tr className="bg-gray-50 border-b border-gray-200">
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">บิลอ้างอิง</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">บิลเคลม (REQ)</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">หัวข้อเคลม</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">ยอดเดิม</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">สถานะ</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700">วันที่ดำเนินการ</th>
-                        <th className="px-4 py-3 text-left font-semibold text-gray-700 min-w-[12rem]">หมายเหตุ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">บิลอ้างอิง</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">บิลเคลม (REQ)</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">หัวข้อเคลม</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ยอดเดิม</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">สถานะ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">วันที่ดำเนินการ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap min-w-[12rem]">หมายเหตุ</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2159,6 +2150,19 @@ export default function Account() {
                 ? `ต้องการอนุมัติการโอนคืน ฿${refundActionModal.refund.amount.toLocaleString()} หรือไม่?`
                 : `ต้องการปฏิเสธการโอนคืน ฿${refundActionModal.refund.amount.toLocaleString()} หรือไม่?`}
             </p>
+            {refundActionModal.action === 'reject' && (
+              <label className="block mb-6">
+                <span className="text-sm font-medium text-gray-700">เหตุผลไม่อนุมัติ</span>
+                <textarea
+                  value={refundActionModal.rejectReason}
+                  onChange={(e) => setRefundActionModal((prev) => ({ ...prev, rejectReason: e.target.value }))}
+                  disabled={refundActionModal.submitting}
+                  rows={3}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-red-300 focus:border-red-300 disabled:bg-gray-100 resize-none"
+                  placeholder="ระบุเหตุผลที่ไม่อนุมัติการโอนคืน..."
+                />
+              </label>
+            )}
             <div className="flex gap-3 justify-end">
               <button
                 type="button"

@@ -402,7 +402,7 @@ export default function WorkOrderSelectionList({
                   <th className="p-2 text-left font-medium min-w-[180px] whitespace-nowrap">ชื่อลูกค้า</th>
                   <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">ชื่อช่องทาง</th>
                   <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">เลขคำสั่งซื้อ</th>
-                  <th className="p-2 text-left font-medium min-w-[140px] whitespace-nowrap">ผู้ลงข้อมูล</th>
+                  <th className="p-2 text-left font-medium min-w-[140px] whitespace-nowrap">ผู้สร้างบิล</th>
                   <th className="p-2 text-left font-medium min-w-[170px] whitespace-nowrap">เลขพัสดุ</th>
                 </tr>
               </thead>

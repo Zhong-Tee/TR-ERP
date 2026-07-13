@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
+import { fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -31,6 +32,8 @@ interface OrderListProps {
   refreshTrigger?: number
   /** แสดงเฉพาะบิลที่มีรายการโอนคืน (โอนเกิน) ที่ถูกปฏิเสธ — ไม่กรองตาม status */
   filterByRejectedOverpayRefund?: boolean
+  /** แสดงบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ รวมเข้ากับรายการตาม status (ใช้กับแท็บตรวจสอบไม่ผ่าน) */
+  includeRejectedOverpayRefundOrders?: boolean
   /** แสดงปุ่ม "ลบบิล" (สำหรับเมนูรอลงข้อมูล) */
   showDeleteButton?: boolean
   onDelete?: (order: Order) => Promise<void>
@@ -63,6 +66,7 @@ export default function OrderList({
   onMoveToWaiting,
   refreshTrigger = 0,
   filterByRejectedOverpayRefund = false,
+  includeRejectedOverpayRefundOrders = false,
   showDeleteButton = false,
   onDelete,
   dateFrom = '',
@@ -164,6 +168,7 @@ export default function OrderList({
     verifiedOnly,
     refreshTrigger,
     filterByRejectedOverpayRefund,
+    includeRejectedOverpayRefundOrders,
     dateFrom,
     dateTo,
     salesTrTeamAdminValues,
@@ -282,8 +287,42 @@ export default function OrderList({
 
         if (error) throw error
         filteredData = data || []
+
+        // แท็บตรวจสอบไม่ผ่าน: รวมบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ (คงสถานะจริงของบิลไว้)
+        if (includeRejectedOverpayRefundOrders) {
+          const loadedIds = new Set(filteredData.map((o: any) => o.id))
+          const rejectedIds = (await fetchLatestRejectedOverpayOrderIds(supabase)).filter(
+            (id) => !loadedIds.has(id),
+          )
+          if (rejectedIds.length > 0) {
+            let extraQuery = supabase
+              .from('or_orders')
+              .select('*, or_order_items(*), or_order_reviews(*)')
+              .in('id', rejectedIds)
+              .neq('status', 'ยกเลิก')
+              .order('created_at', { ascending: false })
+            if (searchTerm) {
+              extraQuery = extraQuery.or(
+                buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
+              )
+            }
+            if (channelFilter) {
+              extraQuery = extraQuery.eq('channel_code', channelFilter)
+            }
+            if (adminUserFilter.trim()) {
+              extraQuery = extraQuery.eq('admin_user', adminUserFilter.trim())
+            }
+            const scopedExtraQuery = applySalesOrderAdminScope(extraQuery)
+            if (scopedExtraQuery !== null) {
+              const { data: extraData } = await scopedExtraQuery.limit(100)
+              filteredData = [...filteredData, ...(extraData || [])].sort(
+                (a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')),
+              )
+            }
+          }
+        }
       }
-      
+
       // กรองข้อมูล verifiedOnly ใน client-side (เพราะ join อาจไม่ทำงานถูกต้อง)
       // เมนู "ตรวจสอบแล้ว" แสดงทุกบิลที่ status = ตรวจสอบแล้ว (รวมบิลที่ไม่ได้ตรวจสลิปเพราะช่องทางไม่มี bank setting)
       const statusIncludesVerified = status != null && (
@@ -379,15 +418,17 @@ export default function OrderList({
 
         const orderIdsWithOverpayRefund = new Set((refundsData || []).map((r: any) => r.order_id))
 
-        // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน"
+        // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน" + เหตุผลไม่อนุมัติ
         const { data: rejectedRefundsData } = await supabase
           .from('ac_refunds')
-          .select('order_id')
+          .select('order_id, rejected_reason')
           .in('order_id', orderIds)
           .ilike('reason', '%โอนเกิน%')
           .eq('status', 'rejected')
 
-        const orderIdsWithRejectedOverpayRefund = new Set((rejectedRefundsData || []).map((r: any) => r.order_id))
+        const rejectedOverpayRefundByOrder = new Map<string, string | null>(
+          (rejectedRefundsData || []).map((r: any) => [r.order_id, r.rejected_reason ?? null]),
+        )
 
         // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
         const { data: manualSlipData } = await supabase
@@ -415,7 +456,8 @@ export default function OrderList({
           return {
             ...order,
             has_overpay_refund: orderIdsWithOverpayRefund.has(order.id),
-            has_rejected_overpay_refund: orderIdsWithRejectedOverpayRefund.has(order.id),
+            has_rejected_overpay_refund: rejectedOverpayRefundByOrder.has(order.id),
+            rejected_overpay_reason: rejectedOverpayRefundByOrder.get(order.id) ?? null,
             manual_slip_badge,
           }
         })
@@ -529,8 +571,14 @@ export default function OrderList({
                   </span>
                 )}
                 {(order as any).has_rejected_overpay_refund && (
-                  <span className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold">
+                  <span
+                    className="px-2.5 py-1 bg-accent-300 text-surface-900 rounded-full text-sm font-semibold"
+                    title={(order as any).rejected_overpay_reason ? `เหตุผลไม่อนุมัติ: ${(order as any).rejected_overpay_reason}` : undefined}
+                  >
                     ปฏิเสธโอนคืน
+                    {(order as any).rejected_overpay_reason && (
+                      <span className="font-medium">: {(order as any).rejected_overpay_reason}</span>
+                    )}
                   </span>
                 )}
                 {/* แสดง คำขอใบกำกับภาษี / บิลเงินสด สำหรับสถานะ รอลงข้อมูล, ลงข้อมูลผิด, ตรวจสอบไม่ผ่าน, ตรวจสอบแล้ว */}
@@ -693,7 +741,12 @@ export default function OrderList({
                   )}
                 </p>
                 <p className="mb-1 font-bold">
-                  ผู้ลงข้อมูล: {order.admin_user ?? '-'}
+                  ผู้สร้างบิล: {order.admin_user ?? '-'}
+                  {order.last_edited_by && (
+                    <span className="ml-4 font-medium text-surface-500">
+                      ผู้แก้ไขล่าสุด: {order.last_edited_by}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
@@ -775,7 +828,8 @@ export default function OrderList({
                   </button>
                 </div>
               ) : null}
-              {!hideActionButtons && showMoveToWaitingButton && onMoveToWaiting && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && order.status !== 'ยกเลิก' && (
+              {/* บิลปฏิเสธโอนคืนที่ถูกรวมเข้าแท็บตรวจสอบไม่ผ่าน (สถานะอื่น เช่น จัดส่งแล้ว) ไม่ให้ย้ายกลับรอลงข้อมูล */}
+              {!hideActionButtons && showMoveToWaitingButton && onMoveToWaiting && !includeRejectedOverpayRefundOrders && order.status !== 'ตรวจสอบไม่ผ่าน' && order.status !== 'ตรวจสอบไม่สำเร็จ' && order.status !== 'ยกเลิก' && (
                 <button
                   type="button"
                   onClick={async (e) => {

@@ -1731,7 +1731,7 @@ export default function WorkOrderManageList({
                                 <th className="p-3 text-left font-medium min-w-[120px]">ชื่อลูกค้า</th>
                                 <th className="p-3 text-left font-medium min-w-[100px]">ชื่อช่องทาง</th>
                                 <th className="p-3 text-left font-medium min-w-[110px]">เลขคำสั่งซื้อ</th>
-                                <th className="p-3 text-left font-medium min-w-[100px]">ผู้ลงข้อมูล</th>
+                                <th className="p-3 text-left font-medium min-w-[100px]">ผู้สร้างบิล</th>
                                 <th className="p-3 pl-2 text-left font-medium w-56">เลขพัสดุ</th>
                               </tr>
                             </thead>

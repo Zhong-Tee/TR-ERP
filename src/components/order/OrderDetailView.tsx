@@ -401,7 +401,8 @@ export default function OrderDetailView({
             <InfoRow label="จังหวัด" value={displayProvince} />
             <InfoRow label="รหัสไปรษณีย์" value={displayPostalCode} />
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
-            <InfoRow label="ผู้ลงออเดอร์" value={order.admin_user} />
+            <InfoRow label="ผู้สร้างบิล" value={order.admin_user} />
+            <InfoRow label="ผู้แก้ไขล่าสุด" value={order.last_edited_by ?? null} />
             <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
           </dl>
         </section>

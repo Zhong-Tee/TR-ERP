@@ -1811,6 +1811,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
 
       const { address_line: _al, sub_district: _sd, district: _d, province: _p, postal_code: _pc, mobile_phone: _mp, scheduled_pickup_at: _spForm, ...formDataForDb } = formData
+      const currentUserName = user.username || user.email
       const orderData = {
         ...formDataForDb,
         requires_confirm_design: requiresConfirmDesign,
@@ -1821,7 +1822,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         payment_date: paymentDate,
         payment_time: paymentTime,
         status: statusToSave,
-        admin_user: user.username || user.email,
         entry_date: new Date().toISOString().slice(0, 10),
         billing_details: (showTaxInvoice || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
         scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
@@ -1830,9 +1830,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       let orderId: string
       let currentBillNo: string | null = null
       if (order) {
+        // แก้ไขบิล: คง admin_user (ผู้สร้างบิล) ไว้ตามเดิม — บันทึกเฉพาะผู้แก้ไขล่าสุด
         const { error } = await supabase
           .from('or_orders')
-          .update(orderData)
+          .update({ ...orderData, last_edited_by: currentUserName })
           .eq('id', order.id)
         if (error) throw error
         orderId = order.id
@@ -1842,7 +1843,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         const billNo = await generateBillNo(formData.channel_code)
         const { data, error } = await supabase
           .from('or_orders')
-          .insert({ ...orderData, bill_no: billNo })
+          .insert({ ...orderData, admin_user: currentUserName, bill_no: billNo })
           .select()
           .single()
         if (error) throw error
@@ -4170,7 +4171,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               </>
             )}
             <span className="font-bold text-gray-700">
-              ผู้ลงออเดอร์: {order?.admin_user ?? user?.username ?? user?.email ?? '-'}
+              ผู้สร้างบิล: {order?.admin_user ?? user?.username ?? user?.email ?? '-'}
+              {order?.last_edited_by && (
+                <span className="ml-3 font-medium text-gray-500">
+                  ผู้แก้ไขล่าสุด: {order.last_edited_by}
+                </span>
+              )}
             </span>
             {order?.bill_no && (
               <div className="text-right flex items-center gap-2 justify-end">

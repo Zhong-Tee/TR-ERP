@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Modal from '../ui/Modal'
+import { THAI_BANKS, bankLogoUrl } from '../../config/thaiBanks'
 
 export type VerificationResultType = 'success' | 'failed' | 'over_transfer' | 'save_success'
 export type AmountStatus = 'match' | 'over' | 'under' | 'mismatch'
@@ -31,6 +32,115 @@ export interface VerificationResultModalProps {
   onConfirmOverpay?: (details: OverpayRefundBankDetails) => void | Promise<void>
   /** กำลังดำเนินการ (เช่น กำลังสร้างรายการโอนคืน) */
   confirmingOverpay?: boolean
+}
+
+/** ดรอปดาวน์เลือกธนาคาร — แสดง icon + ชื่อ (ข้อมูลเดียวกับหน้า อายุสลิป ในเมนูบัญชี) */
+function BankSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string
+  onChange: (bank: string) => void
+  disabled?: boolean
+}) {
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [searchText, setSearchText] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!dropdownOpen) return
+    setSearchText('')
+    searchInputRef.current?.focus()
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [dropdownOpen])
+
+  const selected = THAI_BANKS.find((b) => b.bank === value) || null
+  // ค้นหาได้ทั้งแบบพิมพ์ "ธนาคาร" นำหน้าและไม่นำหน้า เช่น "กสิกร" หรือ "ธนาคารกสิกร"
+  const query = searchText.trim().toLowerCase()
+  const filteredBanks = query
+    ? THAI_BANKS.filter((b) => {
+        const full = b.bank.toLowerCase()
+        const short = full.replace(/^ธนาคาร\s*/, '')
+        return full.includes(query) || short.includes(query.replace(/^ธนาคาร\s*/, ''))
+      })
+    : THAI_BANKS
+
+  return (
+    <div ref={containerRef} className="relative mt-1">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setDropdownOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={dropdownOpen}
+        className="w-full flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm text-left bg-white focus:ring-2 focus:ring-amber-400 focus:border-amber-400 disabled:bg-gray-100"
+      >
+        {selected ? (
+          <>
+            <span
+              className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center p-1"
+              style={{ backgroundColor: selected.brandColor }}
+            >
+              <img src={bankLogoUrl(selected.logo)} alt="" className="w-full h-full object-contain" />
+            </span>
+            <span className="flex-1 truncate text-gray-800">{selected.bank}</span>
+          </>
+        ) : (
+          <span className="flex-1 text-gray-400">-- เลือกธนาคาร --</span>
+        )}
+        <i className={`fas fa-chevron-${dropdownOpen ? 'up' : 'down'} text-gray-400 text-xs shrink-0`}></i>
+      </button>
+      {dropdownOpen && (
+        <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-200 bg-white shadow-lg">
+          <div className="p-2 border-b border-gray-100">
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="พิมพ์ชื่อธนาคารเพื่อค้นหา..."
+              className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
+            />
+          </div>
+          <ul role="listbox" className="max-h-64 overflow-y-auto py-1">
+            {filteredBanks.length === 0 && (
+              <li className="px-3 py-2 text-sm text-gray-400">ไม่พบธนาคารที่ค้นหา</li>
+            )}
+            {filteredBanks.map((b) => (
+              <li key={b.bank} role="option" aria-selected={b.bank === value}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange(b.bank)
+                    setDropdownOpen(false)
+                  }}
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-amber-50 ${
+                    b.bank === value ? 'bg-amber-50 font-medium' : ''
+                  }`}
+                >
+                  <span
+                    className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center p-1"
+                    style={{ backgroundColor: b.brandColor }}
+                  >
+                    <img src={bankLogoUrl(b.logo)} alt="" className="w-full h-full object-contain" />
+                  </span>
+                  <span className="truncate text-gray-800">{b.bank}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function StatusBadge({ match, isFailed }: { match: boolean | null; isFailed?: boolean }) {
@@ -111,6 +221,10 @@ export default function VerificationResultModal({
   const isFailed = type === 'failed'
   const showVerificationDetails = !isSaveSuccess && !(isOverTransfer && showOverpayBankForm)
 
+  // บังคับกรอกชื่อบัญชี + เลือกธนาคาร + เลขบัญชี ก่อนจึงกดส่งรายการโอนคืนได้
+  const overpayFormComplete =
+    recipientName.trim() !== '' && recipientBank.trim() !== '' && recipientAccountNo.trim() !== ''
+
   function handleSubmitOverpayBank() {
     const n = recipientName.trim()
     const b = recipientBank.trim()
@@ -131,7 +245,7 @@ export default function VerificationResultModal({
     <Modal
       open={open}
       onClose={onClose}
-      contentClassName="max-w-md max-h-[90vh]"
+      contentClassName={`max-w-md ${isOverTransfer && showOverpayBankForm ? 'h-full' : 'max-h-[90vh]'}`}
       role="dialog"
       ariaModal
       ariaLabelledby="verification-result-title"
@@ -163,7 +277,7 @@ export default function VerificationResultModal({
           <div className="space-y-3">
             <p className="text-sm text-gray-600">กรอกบัญชีที่ลูกค้าใช้รับเงินคืน (ข้อมูลจะแสดงในเมนูบัญชี — รายการโอนคืน)</p>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700">ชื่อบัญชี</span>
+              <span className="text-sm font-medium text-gray-700">ชื่อบัญชี <span className="text-red-500">*</span></span>
               <input
                 type="text"
                 value={recipientName}
@@ -173,19 +287,12 @@ export default function VerificationResultModal({
                 autoComplete="name"
               />
             </label>
+            <div>
+              <span className="text-sm font-medium text-gray-700">ธนาคาร <span className="text-red-500">*</span></span>
+              <BankSelect value={recipientBank} onChange={setRecipientBank} disabled={confirmingOverpay} />
+            </div>
             <label className="block">
-              <span className="text-sm font-medium text-gray-700">ธนาคาร</span>
-              <input
-                type="text"
-                value={recipientBank}
-                onChange={(e) => setRecipientBank(e.target.value)}
-                disabled={confirmingOverpay}
-                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 disabled:bg-gray-100"
-                placeholder="เช่น กสิกรไทย, SCB"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium text-gray-700">เลขบัญชี</span>
+              <span className="text-sm font-medium text-gray-700">เลขบัญชี <span className="text-red-500">*</span></span>
               <input
                 type="text"
                 value={recipientAccountNo}
@@ -259,8 +366,9 @@ export default function VerificationResultModal({
               <button
                 type="button"
                 onClick={handleSubmitOverpayBank}
-                disabled={confirmingOverpay}
-                className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+                disabled={confirmingOverpay || !overpayFormComplete}
+                title={!overpayFormComplete ? 'กรุณากรอกชื่อบัญชี ธนาคาร และเลขบัญชีให้ครบ' : undefined}
+                className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium flex items-center justify-center gap-2"
               >
                 {confirmingOverpay ? (
                   <>

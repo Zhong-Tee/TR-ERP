@@ -72,6 +72,8 @@ export interface Order {
   /** วันที่ เวลา นัดรับ (ช่องทาง SHOP PICKUP) */
   scheduled_pickup_at?: string | null
   admin_user: string
+  /** ผู้แก้ไขบิลล่าสุด — แสดงผลเท่านั้น ไม่มีผลต่อการมองเห็น (การมองเห็นใช้ admin_user = ผู้สร้างบิล) */
+  last_edited_by?: string | null
   entry_date: string
   work_order_name: string | null
   /** อ้างอิงใบงานด้วย UUID (รองรับ reuse เลขใบงาน) */
@@ -791,6 +793,8 @@ export interface Refund {
   status: 'pending' | 'approved' | 'rejected'
   approved_by: string | null
   approved_at: string | null
+  /** เหตุผลไม่อนุมัติ (กรอกตอนกดปฏิเสธ) */
+  rejected_reason?: string | null
   created_at: string
   /** บัญชีรับโอนคืน (โอนเกิน) */
   refund_recipient_account_name?: string | null
