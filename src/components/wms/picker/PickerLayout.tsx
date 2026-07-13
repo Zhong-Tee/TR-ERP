@@ -15,6 +15,7 @@ import SentAlertsModal from './SentAlertsModal'
 import ProductionParcelReturn from '../production/ProductionParcelReturn'
 import PurchaseGR from '../../../pages/PurchaseGR'
 import { useWmsModal } from '../useWmsModal'
+import ModeSwitchButton from '../../ModeSwitchButton'
 import {
   getWmsConsolidatedRowIds,
 } from '../../../lib/wmsCondoStampConsolidation'
@@ -367,23 +368,23 @@ export default function PickerLayout() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-slate-900 text-white flex flex-col overflow-hidden rounded-none">
-      <header className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 sticky top-0 z-20">
+    <div className="min-h-screen w-full bg-gray-50 text-gray-900 flex flex-col overflow-hidden rounded-none">
+      <header className="p-3 flex items-center justify-between bg-emerald-600 text-white shadow-md sticky top-0 z-20">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           {activeView !== 'menu' && (
             <button
               type="button"
               onClick={handleBackToMenu}
-              className="shrink-0 w-9 h-9 rounded-xl bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 active:bg-slate-500"
+              className="shrink-0 w-9 h-9 rounded-xl bg-white/20 text-white flex items-center justify-center hover:bg-white/30 active:bg-white/10"
             >
               <i className="fas fa-arrow-left text-sm" />
             </button>
           )}
           <div className="flex flex-col min-w-0">
-            <span className="text-xs text-gray-500 font-bold uppercase truncate">
+            <span className="text-xs text-emerald-100/80 font-bold uppercase truncate">
               {activeView === 'menu' ? 'พนักงานหยิบสินค้า' : activeLabel}
             </span>
-            <span className="text-sm font-black text-blue-400 leading-tight truncate">
+            <span className="text-sm font-black leading-tight truncate">
               {user?.username || user?.email || '---'}
             </span>
           </div>
@@ -391,8 +392,8 @@ export default function PickerLayout() {
 
         {activeView === 'pick' && !showOrderList && (
           <div className="flex flex-col items-center px-2">
-            <span className="text-[10px] text-gray-500 font-bold uppercase">ระยะเวลา</span>
-            <span className="text-lg font-mono font-black text-yellow-400">{timer}</span>
+            <span className="text-[10px] text-emerald-100/80 font-bold uppercase">ระยะเวลา</span>
+            <span className="text-lg font-mono font-black text-yellow-300">{timer}</span>
           </div>
         )}
 
@@ -418,11 +419,12 @@ export default function PickerLayout() {
               <span className="text-gray-400">{displayPickerItems.length}</span>
             </div>
           )}
+          <ModeSwitchButton />
           <button
             type="button"
             onClick={handleLogout}
             disabled={loggingOut}
-            className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50"
+            className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50 whitespace-nowrap"
           >
             {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
           </button>
@@ -433,8 +435,8 @@ export default function PickerLayout() {
         {activeView === 'menu' && (
           <div className="p-4 space-y-3">
             <div className="text-center py-4">
-              <div className="text-2xl font-black text-white">พนักงานหยิบสินค้า</div>
-              <div className="text-sm text-gray-400 mt-1">เลือกเมนูที่ต้องการ</div>
+              <div className="text-2xl font-black text-gray-800">พนักงานหยิบสินค้า</div>
+              <div className="text-sm text-gray-500 mt-1">เลือกเมนูที่ต้องการ</div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               {MENU_ITEMS.map((item) => (
@@ -458,7 +460,7 @@ export default function PickerLayout() {
             {showOrderList ? (
               <PickerOrderList onSelectOrder={selectOrder} currentUserId={user?.id} />
             ) : pickerItems.length > 0 && displayPickerItems.length === 0 ? (
-              <div className="text-center text-amber-300 font-bold py-16 px-4 leading-relaxed">
+              <div className="text-center text-amber-600 font-bold py-16 px-4 leading-relaxed">
                 ไม่มีรายการในแผนกนี้ — เลือก &quot;ทั้งหมด (ใบงาน)&quot; หรือแผนกอื่น
               </div>
             ) : currentItem ? (
@@ -469,7 +471,7 @@ export default function PickerLayout() {
                     <select
                       value={pickerDeptFilter}
                       onChange={(e) => setPickerDeptFilter(e.target.value)}
-                      className="w-full rounded-2xl bg-slate-800 text-white border border-slate-600 px-3 py-2.5 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full rounded-2xl bg-white text-gray-900 border border-gray-300 px-3 py-2.5 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="">ทั้งหมด (ใบงาน)</option>
                       {getDepartmentOptionsForWmsRows(pickerPlanSettings, pickerItems).map((d) => {

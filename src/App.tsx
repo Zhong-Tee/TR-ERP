@@ -41,6 +41,7 @@ import Machinery from './pages/Machinery'
 import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
+import ModeLauncher from './pages/ModeLauncher'
 import ResetPassword from './pages/ResetPassword'
 import {
   DESKTOP_MENU_PATH_ORDER,
@@ -48,6 +49,7 @@ import {
   TECHNICIAN_ROLE,
   WMS_MOBILE_SPECIAL_ROLES,
 } from './config/accessPolicy'
+import { getActiveMobileMode, getMobileAccess, hasDesktopOverride, modeAllowsPath } from './lib/mobileMode'
 
 const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
@@ -76,9 +78,15 @@ function SmartRedirect() {
 
   if (!user) return <Navigate to="/" replace />
 
-  // เปิดสวิตช์ employee_access + เข้าจากมือถือ → เข้าหน้า Employee ทันที (ไม่ต้องสร้าง user role employee แยก)
-  if (user.employee_access === true && window.innerWidth <= MOBILE_MAX_WIDTH) {
-    return <Navigate to="/employee" replace />
+  // เข้าจากมือถือ + มีสิทธิ์โหมดมือถือ → พาไปหน้าเลือกโหมด (เว้นแต่กด "โหมด PC Desktop" ไว้)
+  if (window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) {
+    if (getMobileAccess(user).length > 0) {
+      return <Navigate to="/mode" replace />
+    }
+    // เปิดสวิตช์ employee_access อย่างเดียว → เข้าหน้า Employee ทันที (พฤติกรรมเดิม)
+    if (user.employee_access === true) {
+      return <Navigate to="/employee" replace />
+    }
   }
 
   // Special roles: redirect immediately without waiting for menuAccess
@@ -128,7 +136,7 @@ function SmartRedirect() {
 
 function AuditRouteSwitch() {
   const { user } = useAuthContext()
-  if (user?.role === 'auditor') return <AuditorHome />
+  if (user?.role === 'auditor' || getActiveMobileMode(user) === 'auditor') return <AuditorHome />
   return <Layout><WarehouseAudit /></Layout>
 }
 
@@ -160,24 +168,45 @@ function AppRoutes() {
     return <Login onLoginSuccess={() => {}} />
   }
 
-  const isWmsMobileRole = user ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) : false
-  const isMachineryMobileLayout = user ? MACHINERY_MOBILE_ROLES.includes(user.role) : false
+  // โหมดมือถือที่สวมอยู่ (จากหน้าเลือกโหมด /mode) — ใช้ layout มือถือของ role นั้นแทน
+  const activeMobileMode = getActiveMobileMode(user)
+  const isWmsMobileRole = user
+    ? WMS_MOBILE_SPECIAL_ROLES.includes(user.role) ||
+      (activeMobileMode != null && WMS_MOBILE_SPECIAL_ROLES.includes(activeMobileMode))
+    : false
+  const isMachineryMobileLayout = user
+    ? MACHINERY_MOBILE_ROLES.includes(user.role) ||
+      (activeMobileMode != null && MACHINERY_MOBILE_ROLES.includes(activeMobileMode))
+    : false
 
   // ผู้ใช้ที่เปิดสวิตช์ employee_access เข้า /employee ได้ทุก role — ไม่โดน redirect ของ role มือถือ
   const onEmployeePortalWithAccess =
     user?.employee_access === true && location.pathname.startsWith('/employee')
 
+  // role มือถือที่ได้รับสิทธิ์หลายโหมด (mobile_access) → เข้า /mode และ path ของโหมดที่สวมอยู่ได้
+  // โดยไม่โดน redirect ประจำ role ของตัวเอง
+  const mobileModeExempt =
+    (location.pathname === '/mode' && getMobileAccess(user).length > 0) ||
+    (activeMobileMode != null && modeAllowsPath(activeMobileMode, location.pathname))
+
   if (
     user &&
     user.role === TECHNICIAN_ROLE &&
     !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
     location.pathname !== '/machinery' &&
     location.pathname !== '/technician'
   ) {
     return <Navigate to="/technician" replace />
   }
 
-  if (user && user.role === 'picker' && !onEmployeePortalWithAccess && location.pathname !== '/wms') {
+  if (
+    user &&
+    user.role === 'picker' &&
+    !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
+    location.pathname !== '/wms'
+  ) {
     return <Navigate to="/wms" replace />
   }
 
@@ -185,6 +214,7 @@ function AppRoutes() {
     user &&
     (user.role === 'production_mb' || user.role === 'manager') &&
     !onEmployeePortalWithAccess &&
+    !mobileModeExempt &&
     location.pathname !== '/wms' &&
     location.pathname !== '/machinery'
   ) {
@@ -634,6 +664,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['employee']}>
             <EmployeePortal />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/mode"
+        element={
+          <ProtectedRoute>
+            <ModeLauncher />
           </ProtectedRoute>
         }
       />

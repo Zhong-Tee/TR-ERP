@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { useWmsModal } from '../useWmsModal'
+import ModeSwitchButton from '../../ModeSwitchButton'
 
 /**
  * หน้า Home มือถือสำหรับช่างเทคนิค — เลือกเข้า Machinery (รูปแบบเดียวกับ Picker / ฝ่ายผลิต)
@@ -27,29 +28,32 @@ export default function TechnicianHome() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-slate-900 text-white flex flex-col overflow-hidden rounded-none">
-      <header className="p-3 border-b border-slate-800 flex justify-between items-center gap-2 bg-slate-900/90 sticky top-0 z-20">
+    <div className="min-h-screen w-full bg-gray-50 text-gray-900 flex flex-col overflow-hidden rounded-none">
+      <header className="p-3 flex justify-between items-center gap-2 bg-emerald-600 text-white shadow-md sticky top-0 z-20">
         <div className="flex flex-col min-w-0">
-          <span className="text-xs text-gray-500 font-bold uppercase truncate">ช่างเทคนิค</span>
-          <span className="text-sm font-black text-blue-400 leading-tight truncate">
+          <span className="text-xs text-emerald-100/80 font-bold uppercase truncate">ช่างเทคนิค</span>
+          <span className="text-sm font-black leading-tight truncate">
             {user?.username || user?.email || '---'}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => void handleLogout()}
-          disabled={loggingOut}
-          className="shrink-0 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50"
-        >
-          {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <ModeSwitchButton />
+          <button
+            type="button"
+            onClick={() => void handleLogout()}
+            disabled={loggingOut}
+            className="shrink-0 bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50 whitespace-nowrap"
+          >
+            {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto">
         <div className="p-4 space-y-3">
           <div className="text-center py-4">
-            <div className="text-2xl font-black text-white">ช่างเทคนิค</div>
-            <div className="text-sm text-gray-400 mt-1">เลือกเมนูที่ต้องการ</div>
+            <div className="text-2xl font-black text-gray-800">ช่างเทคนิค</div>
+            <div className="text-sm text-gray-500 mt-1">เลือกเมนูที่ต้องการ</div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <button

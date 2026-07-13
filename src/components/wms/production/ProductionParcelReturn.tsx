@@ -189,8 +189,8 @@ export default function ProductionParcelReturn() {
   return (
     <div className="p-3 space-y-3">
       {/* Scan / manual input */}
-      <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-3">
-        <div className="text-sm font-bold text-white">สแกนเลขพัสดุ</div>
+      <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-3">
+        <div className="text-sm font-bold text-gray-900">สแกนเลขพัสดุ</div>
         <button
           type="button"
           onClick={() => setShowScanner(true)}
@@ -206,7 +206,7 @@ export default function ProductionParcelReturn() {
             onChange={(e) => setTrackingInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && lookupTracking(trackingInput)}
             placeholder="หรือพิมพ์เลขพัสดุ..."
-            className="flex-1 rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white placeholder-gray-500"
+            className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
           />
           <button
             type="button"
@@ -222,77 +222,77 @@ export default function ProductionParcelReturn() {
       {/* Search result */}
       {searching && (
         <div className="flex justify-center py-6">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
         </div>
       )}
 
       {notFound && (
-        <div className="rounded-xl bg-red-900/30 border border-red-700 p-4 text-center">
-          <div className="text-red-400 font-bold text-sm">ไม่พบเลขพัสดุนี้ในบิลที่จัดส่งแล้ว</div>
-          <div className="text-xs text-gray-400 mt-1">ค้นหาเฉพาะบิลสถานะ "จัดส่งแล้ว" เท่านั้น</div>
+        <div className="rounded-xl bg-red-50 border border-red-300 p-4 text-center">
+          <div className="text-red-500 font-bold text-sm">ไม่พบเลขพัสดุนี้ในบิลที่จัดส่งแล้ว</div>
+          <div className="text-xs text-gray-500 mt-1">ค้นหาเฉพาะบิลสถานะ "จัดส่งแล้ว" เท่านั้น</div>
         </div>
       )}
 
       {matchedOrder && (
-        <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-3">
-          <div className="text-sm font-bold text-green-400">พบข้อมูลบิล</div>
+        <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-3">
+          <div className="text-sm font-bold text-green-600">พบข้อมูลบิล</div>
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div>
-              <span className="text-gray-400">เลขบิล:</span>
-              <div className="font-bold text-white">{matchedOrder.bill_no}</div>
+              <span className="text-gray-500">เลขบิล:</span>
+              <div className="font-bold text-gray-900">{matchedOrder.bill_no}</div>
             </div>
             <div>
-              <span className="text-gray-400">Tracking:</span>
-              <div className="font-bold text-white">{matchedOrder.tracking_number}</div>
+              <span className="text-gray-500">Tracking:</span>
+              <div className="font-bold text-gray-900">{matchedOrder.tracking_number}</div>
             </div>
             <div>
-              <span className="text-gray-400">ลูกค้า:</span>
-              <div className="font-bold text-white">{matchedOrder.customer_name}</div>
+              <span className="text-gray-500">ลูกค้า:</span>
+              <div className="font-bold text-gray-900">{matchedOrder.customer_name}</div>
             </div>
             <div>
-              <span className="text-gray-400">สถานะ:</span>
-              <div className="font-bold text-white">{matchedOrder.status}</div>
+              <span className="text-gray-500">สถานะ:</span>
+              <div className="font-bold text-gray-900">{matchedOrder.status}</div>
             </div>
           </div>
 
           {/* Items */}
           <div className="space-y-1">
-            <div className="text-xs text-gray-400 font-bold">รายการสินค้า ({matchedOrder.items.length})</div>
+            <div className="text-xs text-gray-500 font-bold">รายการสินค้า ({matchedOrder.items.length})</div>
             {matchedOrder.items.map((item, idx) => (
-              <div key={idx} className="flex items-center gap-2 bg-slate-700 rounded-lg px-2.5 py-1.5 text-xs">
+              <div key={idx} className="flex items-center gap-2 bg-gray-100 rounded-lg px-2.5 py-1.5 text-xs">
                 <img
                   src={getProductImageUrl(item.product_code)}
                   alt={item.product_code}
-                  className="w-10 h-10 rounded-lg object-cover bg-slate-600 border border-slate-500 shrink-0 cursor-pointer active:scale-95 transition-transform"
+                  className="w-10 h-10 rounded-lg object-cover bg-gray-200 border border-gray-300 shrink-0 cursor-pointer active:scale-95 transition-transform"
                   onClick={() => setLightboxImg(getProductImageUrl(item.product_code))}
                   onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="font-bold text-white truncate">{item.product_code}</div>
-                  <div className="text-[10px] text-gray-400 truncate">{item.product_name}</div>
+                  <div className="font-bold text-gray-900 truncate">{item.product_code}</div>
+                  <div className="text-[10px] text-gray-500 truncate">{item.product_name}</div>
                 </div>
-                <div className="text-white font-bold ml-2">x{item.qty}</div>
+                <div className="text-gray-900 font-bold ml-2">x{item.qty}</div>
               </div>
             ))}
           </div>
 
           {/* Reason & Note */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">เหตุผลตีกลับ *</label>
+            <label className="block text-xs text-gray-500 mb-1">เหตุผลตีกลับ *</label>
             <input
               type="text"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
               placeholder="ระบุเหตุผล"
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">หมายเหตุ</label>
+            <label className="block text-xs text-gray-500 mb-1">หมายเหตุ</label>
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-white"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
               rows={2}
               placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)"
             />
@@ -310,21 +310,21 @@ export default function ProductionParcelReturn() {
       )}
 
       {/* Recent returns */}
-      <div className="rounded-xl bg-slate-800 border border-slate-700 p-3">
-        <div className="text-sm font-bold text-white mb-2">รายการรับตีกลับล่าสุด</div>
+      <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3">
+        <div className="text-sm font-bold text-gray-900 mb-2">รายการรับตีกลับล่าสุด</div>
         {loadingRecent ? (
           <div className="flex justify-center py-4">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-400" />
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
           </div>
         ) : recentReturns.length === 0 ? (
           <p className="text-center text-gray-500 text-xs py-4">ยังไม่มีรายการ</p>
         ) : (
           <div className="space-y-1.5 max-h-60 overflow-y-auto">
             {recentReturns.map((r) => (
-              <div key={r.id} className="flex items-center justify-between bg-slate-700 rounded-lg px-2.5 py-2 text-xs">
+              <div key={r.id} className="flex items-center justify-between bg-gray-100 rounded-lg px-2.5 py-2 text-xs">
                 <div className="min-w-0 flex-1">
-                  <div className="font-bold text-white">{r.return_no}</div>
-                  <div className="text-[10px] text-gray-400">
+                  <div className="font-bold text-gray-900">{r.return_no}</div>
+                  <div className="text-[10px] text-gray-500">
                     {r.ref_bill_no || '-'} {r.tracking_number ? `| ${r.tracking_number}` : ''}
                   </div>
                 </div>
@@ -350,7 +350,7 @@ export default function ProductionParcelReturn() {
             <button
               type="button"
               onClick={() => setLightboxImg(null)}
-              className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-slate-700 border border-slate-500 text-white flex items-center justify-center text-sm font-bold hover:bg-red-600 transition-colors"
+              className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-white border border-gray-300 text-gray-700 flex items-center justify-center text-sm font-bold hover:bg-red-600 hover:text-white transition-colors"
             >
               ✕
             </button>

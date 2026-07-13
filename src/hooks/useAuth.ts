@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Session } from '@supabase/supabase-js'
 import type { User } from '../types'
+import { clearMobileModeStorage } from '../lib/mobileMode'
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
@@ -151,6 +152,8 @@ export function useAuth() {
 
   async function signOut() {
     sessionStorage.removeItem('plan_unlocked')
+    // ล้างโหมดมือถือ/PC Desktop ที่จำไว้ — ให้ login ครั้งถัดไปเริ่มจากหน้าเลือกโหมด
+    clearMobileModeStorage()
     const { error } = await supabase.auth.signOut()
     if (error) {
       if (error.message?.includes('session missing') || error.message?.includes('Session')) {

@@ -19,6 +19,7 @@ type ManualSlipRow = {
   status: 'pending' | 'approved' | 'rejected'
   reviewed_by: string | null
   reviewed_at: string | null
+  rejected_reason: string | null
 }
 
 type OrderGroup = {
@@ -29,6 +30,7 @@ type OrderGroup = {
   submitted_at: string
   reviewed_by: string | null
   reviewed_at: string | null
+  rejected_reason: string | null
   entries: ManualSlipRow[]
 }
 
@@ -53,8 +55,10 @@ export default function ManualSlipCheckSection() {
 
   const [actionModal, setActionModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
   const [actionSubmitting, setActionSubmitting] = useState(false)
+  const [actionRejectReason, setActionRejectReason] = useState('')
   const [disapproveModal, setDisapproveModal] = useState<{ open: boolean; group: OrderGroup | null }>({ open: false, group: null })
   const [disapproveSubmitting, setDisapproveSubmitting] = useState(false)
+  const [disapproveReason, setDisapproveReason] = useState('')
 
   const [editingCell, setEditingCell] = useState<EditingCell>(null)
   const [editValue, setEditValue] = useState<string>('')
@@ -150,6 +154,7 @@ export default function ManualSlipCheckSection() {
       const existing = map.get(row.order_id)
       if (existing) {
         existing.entries.push(row)
+        if (!existing.rejected_reason && row.rejected_reason) existing.rejected_reason = row.rejected_reason
       } else {
         map.set(row.order_id, {
           order_id: row.order_id,
@@ -159,6 +164,7 @@ export default function ManualSlipCheckSection() {
           submitted_at: row.submitted_at,
           reviewed_by: row.reviewed_by,
           reviewed_at: row.reviewed_at,
+          rejected_reason: row.rejected_reason,
           entries: [row],
         })
       }
@@ -250,11 +256,12 @@ export default function ManualSlipCheckSection() {
     }
   }
 
-  async function applyManualSlipDecision(group: OrderGroup, action: 'approved' | 'rejected') {
+  async function applyManualSlipDecision(group: OrderGroup, action: 'approved' | 'rejected', rejectedReason?: string) {
     const reviewData = {
       status: action,
       reviewed_by: user?.username || user?.email || 'unknown',
       reviewed_at: new Date().toISOString(),
+      rejected_reason: action === 'rejected' ? rejectedReason?.trim() || null : null,
     }
     const { error: updateErr } = await supabase
       .from('ac_manual_slip_checks')
@@ -288,8 +295,9 @@ export default function ManualSlipCheckSection() {
     if (!actionModal.group) return
     setActionSubmitting(true)
     try {
-      const { orderUpdateStatus } = await applyManualSlipDecision(actionModal.group, action)
+      const { orderUpdateStatus } = await applyManualSlipDecision(actionModal.group, action, actionRejectReason)
       setActionModal({ open: false, group: null })
+      setActionRejectReason('')
       await loadRows()
       setCheckResult({
         open: true,
@@ -313,9 +321,10 @@ export default function ManualSlipCheckSection() {
     if (!group || disapproveSubmitting) return
     setDisapproveSubmitting(true)
     try {
-      await applyManualSlipDecision(group, 'rejected')
+      await applyManualSlipDecision(group, 'rejected', disapproveReason)
       await loadRows()
       setDisapproveModal({ open: false, group: null })
+      setDisapproveReason('')
       setCheckResult({
         open: true,
         message: 'ไม่อนุมัติแล้ว — สถานะบิลยังเป็น "ตรวจสอบไม่ผ่าน" ฝั่งออเดอร์แสดงป้ายไม่อนุมัติ',
@@ -470,6 +479,12 @@ export default function ManualSlipCheckSection() {
                         <span className="ml-3">| ตรวจโดย: {group.reviewed_by} — {group.reviewed_at ? formatDateTime(group.reviewed_at) : ''}</span>
                       )}
                     </div>
+                    {group.rejected_reason && group.entries.some(e => e.status === 'rejected') && (
+                      <div className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2.5 py-1.5 mt-2 inline-block">
+                        <i className="fas fa-comment-dots mr-1"></i>
+                        เหตุผลที่ไม่อนุมัติ: <span className="font-semibold">{group.rejected_reason}</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Actions */}
@@ -567,7 +582,10 @@ export default function ManualSlipCheckSection() {
       <Modal
         open={disapproveModal.open}
         onClose={() => {
-          if (!disapproveSubmitting) setDisapproveModal({ open: false, group: null })
+          if (!disapproveSubmitting) {
+            setDisapproveModal({ open: false, group: null })
+            setDisapproveReason('')
+          }
         }}
         contentClassName="max-w-md"
         ariaLabelledby="disapprove-modal-title"
@@ -587,14 +605,29 @@ export default function ManualSlipCheckSection() {
                 </p>
               </div>
             </div>
-            <p className="text-sm text-gray-600 bg-red-50/80 border border-red-100 rounded-lg px-3 py-2.5 mb-6">
+            <p className="text-sm text-gray-600 bg-red-50/80 border border-red-100 rounded-lg px-3 py-2.5 mb-4">
               <span className="block">รายการจะถูกปิดในเมนูบัญชี และฝั่งออเดอร์จะแสดงป้าย</span>
               <span className="block mt-1 font-semibold text-red-800">ไม่อนุมัติ</span>
             </p>
+            <label className="block mb-6">
+              <span className="block text-sm font-semibold text-gray-700 mb-1">เหตุผลที่ไม่อนุมัติ</span>
+              <textarea
+                value={disapproveReason}
+                onChange={(e) => setDisapproveReason(e.target.value)}
+                rows={3}
+                placeholder="เช่น สลิปไม่ชัดเจน, ยอดโอนไม่ตรง, สลิปถูกใช้ไปแล้ว..."
+                disabled={disapproveSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400 resize-none disabled:opacity-50"
+              />
+              <span className="block text-xs text-gray-400 mt-1">จะแสดงที่เมนูออเดอร์ (ตรวจสอบไม่ผ่าน) ให้ผู้ส่งเห็น</span>
+            </label>
             <div className="flex gap-3">
               <button
                 type="button"
-                onClick={() => setDisapproveModal({ open: false, group: null })}
+                onClick={() => {
+                  setDisapproveModal({ open: false, group: null })
+                  setDisapproveReason('')
+                }}
                 disabled={disapproveSubmitting}
                 className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 transition disabled:opacity-50"
               >
@@ -621,7 +654,7 @@ export default function ManualSlipCheckSection() {
       </Modal>
 
       {/* Approve/Reject confirmation modal */}
-      <Modal open={actionModal.open} onClose={() => { if (!actionSubmitting) setActionModal({ open: false, group: null }) }} contentClassName="max-w-md">
+      <Modal open={actionModal.open} onClose={() => { if (!actionSubmitting) { setActionModal({ open: false, group: null }); setActionRejectReason('') } }} contentClassName="max-w-md">
         {actionModal.group && (
           <div className="p-6">
             <h3 className="text-lg font-bold text-gray-800 mb-2">ยืนยันการตรวจสอบ</h3>
@@ -631,9 +664,21 @@ export default function ManualSlipCheckSection() {
             <p className="text-gray-600 text-sm mb-4">
               จำนวน {actionModal.group.entries.length} สลิป — ยอดรวม ฿{actionModal.group.entries.reduce((sum, e) => sum + Number(e.transfer_amount), 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
             </p>
+            <label className="block mb-4">
+              <span className="block text-sm font-semibold text-gray-700 mb-1">เหตุผลที่ไม่อนุมัติ (กรณีปฏิเสธ)</span>
+              <textarea
+                value={actionRejectReason}
+                onChange={(e) => setActionRejectReason(e.target.value)}
+                rows={2}
+                placeholder="เช่น สลิปไม่ชัดเจน, ยอดโอนไม่ตรง, สลิปถูกใช้ไปแล้ว..."
+                disabled={actionSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400 resize-none disabled:opacity-50"
+              />
+              <span className="block text-xs text-gray-400 mt-1">ใช้เมื่อกด "ปฏิเสธ" — จะแสดงที่เมนูออเดอร์ (ตรวจสอบไม่ผ่าน)</span>
+            </label>
             <div className="flex gap-3">
               <button
-                onClick={() => setActionModal({ open: false, group: null })}
+                onClick={() => { setActionModal({ open: false, group: null }); setActionRejectReason('') }}
                 disabled={actionSubmitting}
                 className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg font-semibold text-gray-600 hover:bg-gray-50 transition disabled:opacity-50"
               >

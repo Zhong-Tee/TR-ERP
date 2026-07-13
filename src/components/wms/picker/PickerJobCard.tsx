@@ -121,7 +121,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
       <div className="flex gap-2 p-2">
         <button
           onClick={() => onNavigate(-1)}
-          className="w-20 bg-slate-800 text-white py-6 rounded-3xl text-3xl shadow-lg hover:bg-slate-700 active:scale-95 transition-all cursor-pointer"
+          className="w-20 bg-white border border-gray-200 text-gray-700 py-6 rounded-3xl text-3xl shadow-lg hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
           type="button"
         >
           <i className="fas fa-chevron-left"></i>
@@ -134,10 +134,10 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
           disabled={finished}
           className={`flex-1 py-6 rounded-3xl text-2xl font-black shadow-lg ${
             finished
-              ? 'bg-slate-500 opacity-60 cursor-not-allowed'
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
               : isMovedFromPlan
               ? 'bg-orange-500 hover:bg-orange-600 active:scale-95 transition-all cursor-pointer text-white'
-              : 'bg-green-500 hover:bg-green-600 active:scale-95 transition-all cursor-pointer'
+              : 'bg-green-500 hover:bg-green-600 active:scale-95 transition-all cursor-pointer text-white'
           }`}
           type="button"
         >
@@ -153,7 +153,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
         </button>
         <button
           onClick={() => onNavigate(1)}
-          className="w-20 bg-slate-800 text-white py-6 rounded-3xl text-3xl shadow-lg hover:bg-slate-700 active:scale-95 transition-all cursor-pointer"
+          className="w-20 bg-white border border-gray-200 text-gray-700 py-6 rounded-3xl text-3xl shadow-lg hover:bg-gray-100 active:scale-95 transition-all cursor-pointer"
           type="button"
         >
           <i className="fas fa-chevron-right"></i>

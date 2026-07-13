@@ -13,6 +13,7 @@ import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
 import { pumpVerifiedRoutingStatus } from '../lib/pumpConfirmRouting'
+import { MOBILE_MODE_ROLES, MOBILE_MODE_INFO, getMobileAccess, type MobileMode } from '../lib/mobileMode'
 
 const SETTINGS_TABS = [
   { key: 'users', label: 'จัดการสิทธิ์ผู้ใช้' },
@@ -193,6 +194,8 @@ export default function Settings() {
   const [issueTypeSaving, setIssueTypeSaving] = useState(false)
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+  /** user id ที่กำลังเปิด popover สิทธิ์ Mobile อยู่ */
+  const [mobileAccessUserId, setMobileAccessUserId] = useState<string | null>(null)
 
   // ผู้ขาย (Sellers) — seller_type: thailand | foreign
   const [sellers, setSellers] = useState<
@@ -551,6 +554,24 @@ export default function Settings() {
       loadUsers()
     } catch (error: any) {
       console.error('Error updating employee access:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  /** เปิด/ปิดสิทธิ์โหมดมือถือ (production_mb, manager, technician, picker, auditor) ทีละตัว */
+  async function toggleMobileAccess(targetUser: User, mode: MobileMode) {
+    const current = getMobileAccess(targetUser)
+    const next = current.includes(mode) ? current.filter((m) => m !== mode) : [...current, mode]
+    try {
+      const { error } = await supabase
+        .from('us_users')
+        .update({ mobile_access: next })
+        .eq('id', targetUser.id)
+
+      if (error) throw error
+      loadUsers()
+    } catch (error: any) {
+      console.error('Error updating mobile access:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
@@ -2472,6 +2493,9 @@ export default function Settings() {
                   <th className="p-3 text-center font-semibold" title="เปิดให้ user นี้เข้าหน้า Employee ผ่านมือถือ โดยไม่ต้องเปลี่ยน role">
                     สิทธิ์ Employee
                   </th>
+                  <th className="p-3 text-center font-semibold" title="เปิดสิทธิ์สวม role มือถือ (WMS ฝ่ายผลิต, อนุมัติใบเบิก, ช่างเทคนิค, หยิบสินค้า, ตรวจนับสต๊อก) โดยไม่ต้อง login หลาย user">
+                    สิทธิ์ Mobile
+                  </th>
                   {currentUser?.role === 'superadmin' && (
                     <th className="p-3 text-center font-semibold rounded-tr-xl">ลบ</th>
                   )}
@@ -2556,6 +2580,69 @@ export default function Settings() {
                           />
                         </button>
                       )}
+                    </td>
+                    <td className="p-3 text-center">
+                      {(() => {
+                        const granted = getMobileAccess(user)
+                        const open = mobileAccessUserId === user.id
+                        return (
+                          <div className="relative inline-block">
+                            <button
+                              type="button"
+                              disabled={isInactive}
+                              onClick={() => setMobileAccessUserId(open ? null : user.id)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                                granted.length > 0
+                                  ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
+                                  : 'bg-gray-50 border-gray-300 text-gray-500 hover:bg-gray-100'
+                              }`}
+                              title="เปิด/ปิดสิทธิ์ role มือถือของ user นี้"
+                            >
+                              {granted.length > 0 ? `${granted.length} โหมด` : '— ปิด —'} ▾
+                            </button>
+                            {open && (
+                              <>
+                                <div className="fixed inset-0 z-20" onClick={() => setMobileAccessUserId(null)} />
+                                <div className="absolute right-0 top-full mt-1 z-30 w-64 bg-white border border-gray-200 rounded-xl shadow-lg p-3 text-left space-y-2">
+                                  <p className="text-xs font-semibold text-gray-500 mb-1">สิทธิ์ Role มือถือ</p>
+                                  {MOBILE_MODE_ROLES.map((mode) => {
+                                    const isOwnRole = normalizeRole(user.role) === mode
+                                    const on = granted.includes(mode)
+                                    return (
+                                      <div key={mode} className="flex items-center justify-between gap-2">
+                                        <span className="text-sm text-gray-700">
+                                          {MOBILE_MODE_INFO[mode].emoji} {MOBILE_MODE_INFO[mode].label}
+                                          <span className="block text-[10px] text-gray-400">{mode}</span>
+                                        </span>
+                                        {isOwnRole ? (
+                                          <span className="text-xs text-gray-400" title="เป็น role นี้อยู่แล้ว">—</span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleMobileAccess(user, mode)}
+                                            className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                                              on ? 'bg-blue-500' : 'bg-gray-300'
+                                            }`}
+                                          >
+                                            <span
+                                              className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition duration-200 ${
+                                                on ? 'translate-x-5' : 'translate-x-0'
+                                              }`}
+                                            />
+                                          </button>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                  <p className="text-[10px] text-gray-400 pt-1 border-t border-gray-100">
+                                    เปิดแล้ว user จะเห็นหน้าเลือกโหมดเมื่อ login จากมือถือ
+                                  </p>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </td>
                     {currentUser?.role === 'superadmin' && (
                       <td className="p-3 text-center">

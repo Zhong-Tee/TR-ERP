@@ -433,16 +433,19 @@ export default function OrderList({
         // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
         const { data: manualSlipData } = await supabase
           .from('ac_manual_slip_checks')
-          .select('order_id, status')
+          .select('order_id, status, rejected_reason')
           .in('order_id', orderIds)
 
-        const manualSlipByOrder = new Map<string, { hasPending: boolean; hasRejected: boolean }>()
+        const manualSlipByOrder = new Map<string, { hasPending: boolean; hasRejected: boolean; rejectedReason: string | null }>()
         for (const r of manualSlipData || []) {
           const oid = (r as any).order_id as string
           const st = (r as any).status as string
-          const cur = manualSlipByOrder.get(oid) || { hasPending: false, hasRejected: false }
+          const cur = manualSlipByOrder.get(oid) || { hasPending: false, hasRejected: false, rejectedReason: null }
           if (st === 'pending') cur.hasPending = true
-          if (st === 'rejected') cur.hasRejected = true
+          if (st === 'rejected') {
+            cur.hasRejected = true
+            if (!cur.rejectedReason && (r as any).rejected_reason) cur.rejectedReason = (r as any).rejected_reason
+          }
           manualSlipByOrder.set(oid, cur)
         }
 
@@ -459,6 +462,7 @@ export default function OrderList({
             has_rejected_overpay_refund: rejectedOverpayRefundByOrder.has(order.id),
             rejected_overpay_reason: rejectedOverpayRefundByOrder.get(order.id) ?? null,
             manual_slip_badge,
+            manual_slip_rejected_reason: slip?.rejectedReason ?? null,
           }
         })
       }
@@ -757,8 +761,14 @@ export default function OrderList({
                 </span>
               )}
               {(order as any).manual_slip_badge === 'rejected' && (
-                <span className="px-2.5 py-1.5 bg-rose-100 text-rose-800 rounded-full text-xs font-semibold whitespace-nowrap border border-rose-200">
+                <span
+                  className="px-2.5 py-1.5 bg-rose-100 text-rose-800 rounded-full text-xs font-semibold border border-rose-200 max-w-[22rem]"
+                  title={(order as any).manual_slip_rejected_reason ? `เหตุผลที่ไม่อนุมัติ: ${(order as any).manual_slip_rejected_reason}` : undefined}
+                >
                   ไม่อนุมัติ
+                  {(order as any).manual_slip_rejected_reason && (
+                    <span className="font-medium">: {(order as any).manual_slip_rejected_reason}</span>
+                  )}
                 </span>
               )}
               <button

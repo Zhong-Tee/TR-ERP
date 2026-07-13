@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import { canClearAllChats, canUseIssueChat, resolveMenuKeyFromPath } from '../../config/accessPolicy'
 import { dispatchIssueOnCount } from '../../lib/issueOnCountBroadcast'
+import ModeSwitchButton from '../ModeSwitchButton'
 
 interface TopBarProps {
   sidebarOpen: boolean
@@ -520,6 +521,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
             <span className="text-slate-400">({user.role})</span>
           </div>
         )}
+        <ModeSwitchButton className="w-10 h-10 flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl transition-colors" />
         <button
           onClick={handleLogout}
           disabled={loggingOut}

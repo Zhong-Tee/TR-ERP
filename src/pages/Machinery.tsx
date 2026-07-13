@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FiImage, FiPrinter } from 'react-icons/fi'
-import { Link } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
@@ -27,6 +26,8 @@ import {
   type DailySummaryRow,
 } from '../lib/machineryApi'
 import { isSuperadmin } from '../config/accessPolicy'
+import { getActiveMobileMode } from '../lib/mobileMode'
+import ModeSwitchButton from '../components/ModeSwitchButton'
 
 type TabKey = 'monitor' | 'settings' | 'history'
 
@@ -95,7 +96,7 @@ function monitorPickerButtonClass(status: PrMachineryStatus, selected: boolean):
 }
 
 export default function Machinery() {
-  const { user } = useAuthContext()
+  const { user, signOut } = useAuthContext()
   const { hasAccess } = useMenuAccess()
   const [tab, setTab] = useState<TabKey>('monitor')
   const [machines, setMachines] = useState<MachineryMachine[]>([])
@@ -116,6 +117,14 @@ export default function Machinery() {
 
   const isMobileRole =
     user?.role === 'production_mb' || user?.role === 'manager' || user?.role === 'technician'
+  /** โหมดมือถือที่สวมอยู่ (superadmin/admin เลือกจากหน้า /mode) */
+  const activeMobileMode = getActiveMobileMode(user)
+  /** แสดงแบบมือถือเต็มจอ (ไม่มี desktop Layout) — role มือถือจริง หรือสวมโหมด machinery */
+  const isStandaloneMobile =
+    isMobileRole ||
+    activeMobileMode === 'production_mb' ||
+    activeMobileMode === 'manager' ||
+    activeMobileMode === 'technician'
   /** มือถือช่างเทคนิค: หัวตารางประวัติช่วงสถานะต้องทึบ ไม่ให้แถวทะลุตอน scroll */
   const isTechnicianMobileMachinery = user?.role === 'technician' && isMobileRole
 
@@ -407,10 +416,10 @@ export default function Machinery() {
   if (loading) {
     return (
       <div
-        className={`flex justify-center items-center py-24 ${isMobileRole ? 'min-h-screen w-full bg-slate-900' : ''}`}
+        className={`flex justify-center items-center py-24 ${isStandaloneMobile ? 'min-h-screen w-full bg-gray-50' : ''}`}
       >
         <div
-          className={`animate-spin rounded-full h-12 w-12 border-b-2 ${isMobileRole ? 'border-emerald-400' : 'border-emerald-600'}`}
+          className={`animate-spin rounded-full h-12 w-12 border-b-2 ${isMobileRole ? 'border-emerald-600' : 'border-emerald-600'}`}
         />
       </div>
     )
@@ -472,7 +481,7 @@ export default function Machinery() {
                 className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-2.5 text-left text-sm font-semibold ${
                   isPowerOff
                     ? 'border-slate-300 bg-white text-slate-900'
-                    : 'border-slate-500/80 bg-slate-950/80 text-white'
+                    : 'border-gray-300 bg-white text-gray-900'
                 } disabled:opacity-50`}
               >
                 <span className="min-w-0 truncate">{MACHINERY_STATUS_LABELS[m.current_status]}</span>
@@ -488,7 +497,7 @@ export default function Machinery() {
                   />
                   <ul
                     role="listbox"
-                    className="absolute bottom-full left-0 right-0 z-[200] mb-1 max-h-[min(50vh,16rem)] overflow-y-auto rounded-lg border border-slate-500 bg-slate-900 py-1 shadow-2xl shadow-black/70 touch-manipulation"
+                    className="absolute bottom-full left-0 right-0 z-[200] mb-1 max-h-[min(50vh,16rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg touch-manipulation"
                     onPointerDown={(e) => e.stopPropagation()}
                   >
                     {STATUS_ORDER.map((s) => (
@@ -499,8 +508,8 @@ export default function Machinery() {
                           aria-selected={s === m.current_status}
                           className={`w-full px-3 py-2.5 text-left text-sm ${
                             s === m.current_status
-                              ? 'bg-emerald-900/60 font-semibold text-emerald-200'
-                              : 'text-white hover:bg-slate-800 active:bg-slate-700'
+                              ? 'bg-emerald-50 font-semibold text-emerald-700'
+                              : 'text-gray-900 hover:bg-gray-100 active:bg-gray-200'
                           }`}
                           onPointerDown={(e) => e.stopPropagation()}
                           onClick={(e) => {
@@ -524,7 +533,7 @@ export default function Machinery() {
                 className={`w-full rounded-lg border px-2.5 py-2 text-sm ${
                   isPowerOff
                     ? 'border-slate-300 bg-white text-slate-900'
-                    : 'border-slate-500/80 bg-slate-950/80 text-white'
+                    : 'border-gray-300 bg-white text-gray-900'
                 }`}
                 value={m.current_status}
                 disabled={savingId === m.id}
@@ -543,60 +552,59 @@ export default function Machinery() {
     )
   }
 
-  const pageText = isMobileRole ? 'text-slate-100 text-sm sm:text-base' : 'text-gray-900 text-sm sm:text-base lg:text-lg'
+  const pageText = isMobileRole ? 'text-gray-900 text-sm sm:text-base' : 'text-gray-900 text-sm sm:text-base lg:text-lg'
 
   return (
-    <div className={isMobileRole ? 'min-h-screen w-full bg-slate-900' : 'w-full max-w-none'}>
+    <div className={isStandaloneMobile ? 'min-h-screen w-full bg-gray-50 flex flex-col' : 'w-full max-w-none'}>
+      {/* Topbar มือถือ — สไตล์เดียวกับเมนู Role มือถืออื่นๆ */}
+      {isStandaloneMobile && (
+        <header className="p-3 flex items-center justify-between gap-2 bg-emerald-600 text-white shadow-md sticky top-0 z-30">
+          <div className="flex flex-col min-w-0">
+            <span className="text-xs text-emerald-100/80 font-bold uppercase truncate">Machinery</span>
+            <span className="text-sm font-black leading-tight truncate">
+              {user?.username || user?.email || '---'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <ModeSwitchButton />
+            <button
+              type="button"
+              onClick={() => signOut()}
+              className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg whitespace-nowrap"
+            >
+              ออกจากระบบ
+            </button>
+          </div>
+        </header>
+      )}
       <div
         className={`w-full max-w-none mx-auto space-y-5 ${pageText} ${
-          isMobileRole ? 'px-3 pb-10 pt-2' : 'px-2 sm:px-4 lg:px-6 pb-8 pt-1'
+          isStandaloneMobile ? 'px-3 pb-10 pt-3' : 'px-2 sm:px-4 lg:px-6 pb-8 pt-1'
         }`}
       >
+      {!isStandaloneMobile && (
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <span
-            className={`mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${
-              isMobileRole
-                ? 'bg-slate-800 text-emerald-400 ring-1 ring-slate-600'
-                : 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80'
-            }`}
+            className="mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80"
             aria-hidden
           >
             <FiPrinter className="h-7 w-7" />
           </span>
           <div className="min-w-0">
-            <h1
-              className={`text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight ${
-                isMobileRole ? 'text-white' : 'text-gray-900'
-              }`}
-            >
+            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight text-gray-900">
               Machinery
             </h1>
-            {user?.role === 'technician' && (
-              <p className={`mt-0.5 text-xs font-medium ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>
-                มือถือ · ช่างเทคนิค
-              </p>
-            )}
           </div>
         </div>
-        <div className="ml-auto flex shrink-0 items-start gap-2">
-          {isMobileRole && (
-            <Link
-              to={user?.role === 'technician' ? '/technician' : '/wms'}
-              className="inline-flex items-center justify-center gap-2 text-sm font-bold px-4 py-2.5 rounded-xl text-white bg-gradient-to-b from-red-500 to-red-600 shadow-md shadow-red-500/35 ring-1 ring-inset ring-white/20 hover:from-red-600 hover:to-red-700 hover:shadow-lg hover:shadow-red-600/30 active:scale-[0.98] transition-all duration-150"
-            >
-              <i className="fas fa-arrow-left text-xs opacity-95" aria-hidden />
-              ย้อนกลับ
-            </Link>
-          )}
-        </div>
       </header>
+      )}
 
       {error && (
         <div
           className={`rounded-lg px-4 py-3 text-sm sm:text-base border ${
             isMobileRole
-              ? 'bg-red-950/50 text-red-200 border-red-800/60'
+              ? 'bg-red-50 text-red-800 border-red-200'
               : 'bg-red-50 text-red-800 border-red-200'
           }`}
         >
@@ -604,7 +612,7 @@ export default function Machinery() {
         </div>
       )}
 
-      <nav className={`flex gap-1 flex-wrap border-b ${isMobileRole ? 'border-slate-700' : 'border-gray-200'}`}>
+      <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
         {(['monitor', 'settings', 'history'] as TabKey[]).map((k) => {
           if (k === 'settings' && !showSettingsTab) return null
           const labels: Record<TabKey, string> = {
@@ -617,14 +625,12 @@ export default function Machinery() {
               key={k}
               type="button"
               onClick={() => setTab(k)}
-              className={`px-4 py-2.5 text-sm sm:text-base font-semibold rounded-t-lg border-b-2 -mb-px ${
+              className={`shrink-0 whitespace-nowrap py-2.5 text-sm sm:text-base font-semibold rounded-t-lg border-b-2 -mb-px ${
+                isStandaloneMobile ? 'px-3' : 'px-4'
+              } ${
                 tab === k
-                  ? isMobileRole
-                    ? 'border-emerald-500 text-emerald-400'
-                    : 'border-emerald-600 text-emerald-700'
-                  : isMobileRole
-                    ? 'border-transparent text-gray-400 hover:text-gray-200'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-emerald-600 text-emerald-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
               {labels[k]}
@@ -671,7 +677,7 @@ export default function Machinery() {
               </div>
               <div
                 className={`text-2xl sm:text-3xl font-black tabular-nums ${
-                  isMobileRole ? 'text-white' : 'text-emerald-900'
+                  isMobileRole ? 'text-emerald-900' : 'text-emerald-900'
                 }`}
               >
                 {machines.length}/{statusCounts.power_off}
@@ -686,10 +692,10 @@ export default function Machinery() {
                     : 'border-gray-200 bg-white shadow-sm'
                 }`}
               >
-                <div className={`text-xs ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>
+                <div className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>
                   {MACHINERY_STATUS_LABELS[s]}
                 </div>
-                <div className={`text-2xl sm:text-3xl font-black tabular-nums ${isMobileRole ? 'text-white' : 'text-gray-900'}`}>
+                <div className={`text-2xl sm:text-3xl font-black tabular-nums ${isMobileRole ? 'text-gray-900' : 'text-gray-900'}`}>
                   {statusCounts[s]}
                 </div>
               </div>
@@ -797,13 +803,13 @@ export default function Machinery() {
             }`}
           >
             <h2
-              className={`text-xl sm:text-2xl font-bold ${isMobileRole ? 'text-white' : 'text-gray-900'}`}
+              className={`text-xl sm:text-2xl font-bold ${isMobileRole ? 'text-gray-900' : 'text-gray-900'}`}
             >
               {form.id ? 'แก้ไขเครื่อง' : 'เพิ่มเครื่อง'}
             </h2>
             <div className="grid sm:grid-cols-2 gap-4">
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>ชื่อเครื่อง *</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>ชื่อเครื่อง *</span>
                 <input
                   className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
                     isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
@@ -814,7 +820,7 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>สถานที่</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>สถานที่</span>
                 <input
                   className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
                     isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
@@ -824,7 +830,7 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>เริ่มกะ</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>เริ่มกะ</span>
                 <input
                   type="time"
                   className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
@@ -835,7 +841,7 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>สิ้นสุดกะ</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>สิ้นสุดกะ</span>
                 <input
                   type="time"
                   className={`w-full border rounded-lg px-3 py-2.5 text-base ${
@@ -846,7 +852,7 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>
                   กำลังผลิต (หน่วย/ชม.)
                 </span>
                 <input
@@ -860,7 +866,7 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>ลำดับแสดง</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>ลำดับแสดง</span>
                 <input
                   type="number"
                   className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
@@ -871,7 +877,7 @@ export default function Machinery() {
                 />
               </label>
               <div className="sm:col-span-2 space-y-2">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>รูปเครื่อง (JPEG/PNG/WebP)</span>
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>รูปเครื่อง (JPEG/PNG/WebP)</span>
                 <input
                   type="file"
                   accept="image/jpeg,image/png,image/webp,image/gif"
@@ -1021,7 +1027,7 @@ export default function Machinery() {
         <section className="space-y-4">
           <div className="flex flex-wrap gap-3 items-end">
             <label className="text-sm">
-              <span className={`block text-xs ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>จากวันที่</span>
+              <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>จากวันที่</span>
               <input
                 type="date"
                 className={`border rounded-lg px-3 py-2 ${
@@ -1032,7 +1038,7 @@ export default function Machinery() {
               />
             </label>
             <label className="text-sm">
-              <span className={`block text-xs ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>ถึงวันที่</span>
+              <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>ถึงวันที่</span>
               <input
                 type="date"
                 className={`border rounded-lg px-3 py-2 ${
@@ -1043,7 +1049,7 @@ export default function Machinery() {
               />
             </label>
             <label className="text-sm">
-              <span className={`block text-xs ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>เครื่อง</span>
+              <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>เครื่อง</span>
               <select
                 className={`border rounded-lg px-3 py-2 min-w-[10rem] ${
                   isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
@@ -1060,7 +1066,7 @@ export default function Machinery() {
               </select>
             </label>
             <label className="text-sm">
-              <span className={`block text-xs ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>สถานะ</span>
+              <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>สถานะ</span>
               <select
                 className={`border rounded-lg px-3 py-2 min-w-[10rem] ${
                   isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
@@ -1079,7 +1085,7 @@ export default function Machinery() {
           </div>
 
           {histLoading && (
-            <p className={`text-sm ${isMobileRole ? 'text-gray-400' : 'text-gray-500'}`}>กำลังโหลดประวัติ…</p>
+            <p className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>กำลังโหลดประวัติ…</p>
           )}
 
           <h3 className={`font-bold text-base ${isMobileRole ? 'text-gray-200' : 'text-gray-800'}`}>
@@ -1092,14 +1098,14 @@ export default function Machinery() {
             className={`rounded-xl border shadow-sm ${
               isMobileRole
                 ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
-                : 'w-full overflow-hidden border-gray-200 bg-white shadow-md'
+                : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
             <table
               className={
                 isMobileRole
                   ? 'w-max min-w-max text-sm'
-                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+                  : 'min-w-full w-max border-collapse text-sm text-gray-800'
               }
             >
               <thead
@@ -1194,14 +1200,14 @@ export default function Machinery() {
             className={`rounded-xl border shadow-sm ${
               isMobileRole
                 ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
-                : 'w-full overflow-hidden border-gray-200 bg-white shadow-md'
+                : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
             <table
               className={
                 isMobileRole
                   ? 'w-max min-w-max text-sm'
-                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+                  : 'min-w-full w-max border-collapse text-sm text-gray-800'
               }
             >
               <thead
@@ -1286,14 +1292,14 @@ export default function Machinery() {
                 ? isTechnicianMobileMachinery
                   ? 'overflow-x-auto border-slate-600 bg-slate-800 shadow-black/30'
                   : 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
-                : 'w-full overflow-x-hidden border-gray-200 bg-white shadow-md'
+                : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
             <table
               className={
                 isMobileRole
                   ? 'w-max min-w-max text-xs sm:text-sm'
-                  : 'w-full table-fixed border-collapse text-sm text-gray-800'
+                  : 'min-w-full w-max border-collapse text-sm text-gray-800'
               }
             >
               <thead

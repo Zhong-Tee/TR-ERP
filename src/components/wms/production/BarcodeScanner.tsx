@@ -145,9 +145,9 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
 
   return (
     <Modal open={true} onClose={handleClose} closeOnBackdropClick={false} contentClassName="max-w-md">
-      <div className="bg-slate-800 rounded-2xl w-full overflow-hidden flex flex-col">
-        <div className="p-4 border-b border-slate-700 flex justify-between items-center">
-          <h2 className="text-xl font-black text-white">สแกนบาร์โค้ด</h2>
+      <div className="bg-white rounded-2xl w-full overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+          <h2 className="text-xl font-black text-gray-900">สแกนบาร์โค้ด</h2>
           <button
             onClick={handleClose}
             className="text-red-600 hover:text-red-800 text-3xl font-bold w-10 h-10 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
@@ -159,9 +159,9 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
         <div className="p-4 flex-1 flex flex-col items-center overflow-hidden">
           <div id="barcode-scanner" ref={scannerRef} className="w-full max-w-sm rounded-xl overflow-hidden bg-black" style={{ minHeight: '250px', maxHeight: '400px' }} />
 
-          {error && <div className="mt-4 text-red-400 text-sm text-center">{error}</div>}
+          {error && <div className="mt-4 text-red-500 text-sm text-center">{error}</div>}
 
-          {!isScanning && !error && <div className="mt-4 text-gray-400 text-sm text-center">กดปุ่มเริ่มสแกนเพื่อเปิดกล้อง</div>}
+          {!isScanning && !error && <div className="mt-4 text-gray-500 text-sm text-center">กดปุ่มเริ่มสแกนเพื่อเปิดกล้อง</div>}
 
         <div className="mt-4 flex gap-3 w-full">
           {!isScanning ? (
@@ -177,7 +177,7 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
           )}
           <button
             onClick={handleClose}
-            className="flex-1 bg-slate-600 text-white py-3 rounded-xl font-bold hover:bg-slate-700"
+            className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-300"
           >
             ปิด
           </button>

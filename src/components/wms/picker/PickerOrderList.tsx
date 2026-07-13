@@ -80,7 +80,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
   }
 
   if (loading) {
-    return <div className="text-center text-slate-400 py-10">กำลังโหลด...</div>
+    return <div className="text-center text-gray-500 py-10">กำลังโหลด...</div>
   }
 
   if (orders.length === 0) {
@@ -89,7 +89,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <h2 className="text-xl font-black mb-4">รายการใบงานที่ได้รับ</h2>
+      <h2 className="text-xl font-black text-gray-900 mb-4">รายการใบงานที่ได้รับ</h2>
       <div className="space-y-3 overflow-y-auto pb-4">
         {orders.map((o) => (
           <div

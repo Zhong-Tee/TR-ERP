@@ -40,7 +40,8 @@ const EMPLOYEE_TEMPLATE_HEADERS = [
   'ตำแหน่ง',
   'วันที่เข้างาน',
   'วันสิ้นสุดทดลองงาน',
-  'เงินเดือน',
+  'ฐานเงินเดือน',
+  'เงินพิเศษ/ประจำตำแหน่ง',
   'สถานะการจ้าง',
   'ประเภทสัญญาจ้าง',
   'Telegram Chat ID',
@@ -89,6 +90,7 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   '2026-01-01',
   '2026-04-01',
   15000,
+  2000,
   'active',
   'permanent',
   '',
@@ -298,8 +300,11 @@ function buildEmployeePayload(
   const emergencyName2 = normalizeText(row['ชื่อผู้ติดต่อฉุกเฉิน 2'])
   const emergencyPhone2 = normalizeText(row['โทรศัพท์ผู้ติดต่อฉุกเฉิน 2'])
   const emergencyRelationship2 = normalizeText(row['ความสัมพันธ์ผู้ติดต่อฉุกเฉิน 2'])
-  const salaryText = normalizeText(row['เงินเดือน'])
+  // รองรับทั้งหัวคอลัมน์ใหม่ 'ฐานเงินเดือน' และ template เก่าที่ใช้ 'เงินเดือน'
+  const salaryText = normalizeText(row['ฐานเงินเดือน'] ?? row['เงินเดือน']).replace(/,/g, '')
   const salary = salaryText ? Number(salaryText) : undefined
+  const allowanceText = normalizeText(row['เงินพิเศษ/ประจำตำแหน่ง']).replace(/,/g, '')
+  const positionAllowance = allowanceText ? Number(allowanceText) : undefined
 
   return {
     id: existingEmployee?.id,
@@ -331,6 +336,7 @@ function buildEmployeePayload(
     hire_date: formatExcelDate(row['วันที่เข้างาน']),
     probation_end_date: formatExcelDate(row['วันสิ้นสุดทดลองงาน']),
     salary: Number.isFinite(salary) ? salary : undefined,
+    position_allowance: Number.isFinite(positionAllowance) ? positionAllowance : undefined,
     employment_status: getEmploymentStatus(row['สถานะการจ้าง']),
     contract_type: getContractType(row['ประเภทสัญญาจ้าง']),
     telegram_chat_id: optionalText(row['Telegram Chat ID']),
@@ -363,6 +369,7 @@ function downloadEmployeeRegistryTemplate() {
     ['รูปแบบวันที่', 'ใช้รูปแบบ YYYY-MM-DD เช่น 2026-01-31'],
     ['สถานะการจ้าง', 'active = ปฏิบัติงาน, probation = ทดลองงาน, resigned = ลาออก, terminated = ถูกเลิกจ้าง'],
     ['ประเภทสัญญาจ้าง', 'permanent = ประจำ, daily = รายวัน'],
+    ['ฐานเงินเดือน / เงินพิเศษ', 'กรอกเป็นตัวเลข เช่น 15000 — ระบบจะนำ 2 ช่องนี้บวกกันแสดงในหน้ารายการ (template เก่าที่ใช้หัวคอลัมน์ "เงินเดือน" ยังนำเข้าได้ โดยถือเป็นฐานเงินเดือน)'],
     ['แผนก/ตำแหน่ง', 'กรอกชื่อให้ตรงกับข้อมูลในระบบ หรือเว้นว่างไว้หากยังไม่ระบุ'],
     ['ที่อยู่', 'มี 2 ชุด: (ตามบัตร) = ที่อยู่ตามบัตรประชาชน, (ปัจจุบัน) = ที่อยู่ที่พักอาศัยจริง'],
     ['ผู้ติดต่อฉุกเฉิน', 'กรอกได้สูงสุด 2 คน (ชุดที่ 2 ลงท้ายด้วย " 2")'],
@@ -686,19 +693,19 @@ export default function EmployeeRegistry() {
             <table className="w-full">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">รหัส</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ชื่อ-นามสกุล</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">เบอร์โทร</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ชื่อเล่น</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันเกิด</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">แผนก</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ตำแหน่ง</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700">เงินเดือน</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">ประเภทสัญญาจ้าง</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">สถานะ</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">วันที่เข้างาน</th>
-                  <th className="text-left py-3 px-4 text-sm font-semibold text-gray-700">อายุงาน</th>
-                  <th className="text-right py-3 px-4 text-sm font-semibold text-gray-700 w-24">Actions</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">รหัส</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ชื่อ-นามสกุล</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">เบอร์โทร</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ชื่อเล่น</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">วันเกิด</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">แผนก</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ตำแหน่ง</th>
+                  <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">เงินเดือน</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ประเภทสัญญาจ้าง</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">วันที่เข้างาน</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อายุงาน</th>
+                  <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap w-24">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -714,8 +721,8 @@ export default function EmployeeRegistry() {
                       key={emp.id}
                       className="border-b border-gray-100 hover:bg-emerald-50/50 transition"
                     >
-                      <td className="py-3 px-4 text-sm text-gray-900">{emp.employee_code}</td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3 text-sm text-gray-900">{emp.employee_code}</td>
+                      <td className="py-3 px-3">
                         <div className="flex items-center gap-2">
                           {photoDisplayUrl(emp.photo_url) ? (
                             <img
@@ -733,54 +740,54 @@ export default function EmployeeRegistry() {
                           </span>
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">{emp.phone ?? '-'}</td>
-                      <td className="py-3 px-4 text-sm text-gray-600">{emp.nickname ?? '-'}</td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">{emp.phone ?? '-'}</td>
+                      <td className="py-3 px-3 text-sm text-gray-600">{emp.nickname ?? '-'}</td>
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {emp.birth_date
                           ? new Date(emp.birth_date).toLocaleDateString('th-TH')
                           : '-'}
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {(emp.department as HRDepartment)?.name ?? '-'}
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {(emp.position as { name?: string })?.name ?? '-'}
                       </td>
-                      <td className="py-3 px-4 text-sm text-right tabular-nums">
-                        {emp.salary != null ? (
+                      <td className="py-3 px-3 text-sm text-right tabular-nums">
+                        {emp.salary != null || emp.position_allowance != null ? (
                           <button
                             type="button"
                             onClick={() => setSalaryHistoryEmp(emp)}
                             className="font-medium text-emerald-700 hover:text-emerald-800 hover:underline"
-                            title="ดูประวัติเงินเดือน"
+                            title={`ฐานเงินเดือน ${Number(emp.salary ?? 0).toLocaleString('th-TH')} + เงินพิเศษ/ประจำตำแหน่ง ${Number(emp.position_allowance ?? 0).toLocaleString('th-TH')} — คลิกดูรายละเอียด`}
                           >
-                            {Number(emp.salary).toLocaleString('th-TH')}
+                            {(Number(emp.salary ?? 0) + Number(emp.position_allowance ?? 0)).toLocaleString('th-TH')}
                           </button>
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {getContractTypeLabel(emp.contract_type)}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-3">
                         <span
-                          className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusBadgeClass(
+                          className={`inline-flex whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusBadgeClass(
                             emp.employment_status
                           )}`}
                         >
                           {getStatusLabel(emp.employment_status)}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {emp.hire_date
                           ? new Date(emp.hire_date).toLocaleDateString('th-TH')
                           : '-'}
                       </td>
-                      <td className="py-3 px-4 text-sm text-gray-600">
+                      <td className="py-3 px-3 text-sm text-gray-600">
                         {getTenureLabel(emp.hire_date)}
                       </td>
-                      <td className="py-3 px-4 text-right">
+                      <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -828,7 +835,7 @@ export default function EmployeeRegistry() {
           setSalaryHistoryEmp(null)
           loadData()
         }}
-        contentClassName="max-w-2xl"
+        contentClassName="max-w-3xl"
         closeOnBackdropClick
       >
         <div className="p-6">
@@ -852,6 +859,31 @@ export default function EmployeeRegistry() {
               <FiX className="w-5 h-5" />
             </button>
           </div>
+          {salaryHistoryEmp && (
+            <div className="mb-4 grid grid-cols-3 gap-3">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                <div className="text-xs text-gray-500 mb-1">ฐานเงินเดือน</div>
+                <div className="text-lg font-semibold text-gray-900 tabular-nums">
+                  {Number(salaryHistoryEmp.salary ?? 0).toLocaleString('th-TH')}
+                </div>
+              </div>
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                <div className="text-xs text-gray-500 mb-1">เงินพิเศษ/ประจำตำแหน่ง</div>
+                <div className="text-lg font-semibold text-gray-900 tabular-nums">
+                  {Number(salaryHistoryEmp.position_allowance ?? 0).toLocaleString('th-TH')}
+                </div>
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                <div className="text-xs text-emerald-700 mb-1">รวม</div>
+                <div className="text-lg font-semibold text-emerald-800 tabular-nums">
+                  {(
+                    Number(salaryHistoryEmp.salary ?? 0) +
+                    Number(salaryHistoryEmp.position_allowance ?? 0)
+                  ).toLocaleString('th-TH')}
+                </div>
+              </div>
+            </div>
+          )}
           {salaryHistoryEmp && <SalaryHistoryPanel employeeId={salaryHistoryEmp.id} />}
         </div>
       </Modal>

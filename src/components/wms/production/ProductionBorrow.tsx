@@ -263,12 +263,12 @@ export default function ProductionBorrow() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex border-b border-slate-700 px-3 pt-2">
+      <div className="flex border-b border-gray-200 px-3 pt-2">
         <button
           type="button"
           onClick={() => setActiveTab('create')}
           className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
-            activeTab === 'create' ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-400' : 'text-gray-400'
+            activeTab === 'create' ? 'bg-white text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
           }`}
         >
           สร้างใบยืม
@@ -277,7 +277,7 @@ export default function ProductionBorrow() {
           type="button"
           onClick={() => setActiveTab('list')}
           className={`px-4 py-2 text-sm font-bold rounded-t-lg ${
-            activeTab === 'list' ? 'bg-slate-800 text-blue-400 border-b-2 border-blue-400' : 'text-gray-400'
+            activeTab === 'list' ? 'bg-white text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'
           }`}
         >
           รายการใบยืม
@@ -286,24 +286,24 @@ export default function ProductionBorrow() {
 
       {activeTab === 'create' ? (
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          <div className="rounded-xl bg-slate-800 border border-slate-700 p-3">
+          <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-400">เลขที่ใบยืม</span>
-              <span className="text-sm font-bold text-blue-400">{borrowNo}</span>
+              <span className="text-xs text-gray-500">เลขที่ใบยืม</span>
+              <span className="text-sm font-bold text-blue-600">{borrowNo}</span>
             </div>
           </div>
 
           {/* Due date */}
-          <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2">
-            <label className="block text-xs text-gray-400">
-              วันกำหนดคืน <span className="text-red-400">*</span>
+          <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-2">
+            <label className="block text-xs text-gray-500">
+              วันกำหนดคืน <span className="text-red-500">*</span>
             </label>
             <input
               type="date"
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
-              className={`w-full rounded-lg border bg-slate-700 px-3 py-2 text-sm text-white ${
-                dueDate ? 'border-slate-600' : 'border-red-500/60'
+              className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 ${
+                dueDate ? 'border-gray-300' : 'border-red-500/60'
               }`}
             />
             <div className="flex gap-2">
@@ -316,7 +316,7 @@ export default function ProductionBorrow() {
                     dt.setDate(dt.getDate() + d)
                     setDueDate(dt.toISOString().slice(0, 10))
                   }}
-                  className="flex-1 py-1 rounded-lg bg-slate-600 text-xs text-gray-300 hover:bg-slate-500 font-bold"
+                  className="flex-1 py-1 rounded-lg bg-gray-200 text-xs text-gray-600 hover:bg-gray-300 font-bold"
                 >
                   {d} วัน
                 </button>
@@ -332,7 +332,7 @@ export default function ProductionBorrow() {
                 type="button"
                 onClick={() => setProductTypeFilter(pt)}
                 className={`flex-1 py-1.5 rounded-lg text-xs font-bold ${
-                  productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-slate-700 text-gray-300'
+                  productTypeFilter === pt ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
                 }`}
               >
                 {pt === 'FG' ? 'สินค้าสำเร็จรูป' : pt === 'RM' ? 'วัตถุดิบ' : 'สินค้าแปรรูป'}
@@ -348,7 +348,7 @@ export default function ProductionBorrow() {
               onChange={(e) => setSearchTerm(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && searchProducts()}
               placeholder="ค้นหาสินค้า..."
-              className="flex-1 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-gray-500"
+              className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
             />
             <button type="button" onClick={searchProducts} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold">
               ค้นหา
@@ -369,7 +369,7 @@ export default function ProductionBorrow() {
                   setSelectedProductCode('')
                 }
               }}
-              className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
             >
               <option value="">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</option>
               {allProducts.map((p) => (
@@ -389,17 +389,17 @@ export default function ProductionBorrow() {
                   key={p.product_code}
                   type="button"
                   onClick={() => addItem(p)}
-                  className="w-full flex items-center gap-2 p-2 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 text-left"
+                  className="w-full flex items-center gap-2 p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-100 text-left"
                 >
                   <img
                     src={getProductImageUrl(p.product_code)}
                     alt=""
-                    className="w-10 h-10 rounded-lg object-cover bg-slate-700"
+                    className="w-10 h-10 rounded-lg object-cover bg-gray-100"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-white truncate">{p.product_code}</div>
-                    <div className="text-[10px] text-gray-400 truncate">{p.product_name}</div>
+                    <div className="text-xs font-bold text-gray-900 truncate">{p.product_code}</div>
+                    <div className="text-[10px] text-gray-500 truncate">{p.product_name}</div>
                   </div>
                 </button>
               ))}
@@ -408,32 +408,32 @@ export default function ProductionBorrow() {
 
           {/* Selected items */}
           {selectedItems.length > 0 && (
-            <div className="rounded-xl bg-slate-800 border border-slate-700 p-3 space-y-2">
+            <div className="rounded-xl bg-white border border-gray-200 shadow-sm p-3 space-y-2">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-bold text-white">รายการยืม ({selectedItems.length})</span>
+                <span className="text-sm font-bold text-gray-900">รายการยืม ({selectedItems.length})</span>
               </div>
               {selectedItems.map((item) => (
-                <div key={item.product_code} className="bg-slate-700 rounded-lg p-2 space-y-2">
+                <div key={item.product_code} className="bg-gray-100 rounded-lg p-2 space-y-2">
                   <div className="flex items-center gap-2">
                     <img
                       src={getProductImageUrl(item.product_code)}
                       alt=""
-                      className="w-10 h-10 rounded-lg object-cover bg-slate-600"
+                      className="w-10 h-10 rounded-lg object-cover bg-gray-200"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="text-xs font-bold text-white truncate">{item.product_code}</div>
-                      <div className="text-[10px] text-gray-400 truncate">{item.product_name}</div>
+                      <div className="text-xs font-bold text-gray-900 truncate">{item.product_code}</div>
+                      <div className="text-[10px] text-gray-500 truncate">{item.product_name}</div>
                     </div>
-                    <button type="button" onClick={() => removeItem(item.product_code)} className="text-red-400 hover:text-red-300">
+                    <button type="button" onClick={() => removeItem(item.product_code)} className="text-red-500 hover:text-red-600">
                       <i className="fas fa-trash text-sm" />
                     </button>
                   </div>
                   <select
                     value={item.topic || ''}
                     onChange={(e) => updateItemTopic(item.product_code, e.target.value)}
-                    className={`w-full rounded-lg border bg-slate-600 px-3 py-2 text-sm text-white ${
-                      item.topic ? 'border-slate-500' : 'border-red-500/50'
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 ${
+                      item.topic ? 'border-gray-300' : 'border-red-500/50'
                     }`}
                   >
                     <option value="">-- หัวข้อยืม * --</option>
@@ -444,20 +444,20 @@ export default function ProductionBorrow() {
                   <textarea
                     value={item.item_note || ''}
                     onChange={(e) => updateItemNote(item.product_code, e.target.value)}
-                    className="w-full rounded-lg border border-slate-600 bg-slate-600 px-3 py-2 text-sm text-white placeholder-gray-400"
+                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
                     rows={2}
                     placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
                   />
                   <div className="flex items-center gap-1">
-                    <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">-</button>
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">-</button>
                     <input
                       type="number"
                       value={item.qty}
                       onChange={(e) => updateQty(item.product_code, Number(e.target.value) || 0)}
-                      className="w-12 text-center rounded bg-slate-600 text-white text-sm py-1"
+                      className="w-12 text-center rounded border border-gray-300 bg-white text-gray-900 text-sm py-1"
                       min={1}
                     />
-                    <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-slate-600 text-white font-bold text-sm">+</button>
+                    <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">+</button>
                   </div>
                 </div>
               ))}
@@ -478,15 +478,15 @@ export default function ProductionBorrow() {
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {loadingList ? (
             <div className="flex justify-center py-10">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
             </div>
           ) : borrowList.length === 0 ? (
             <p className="text-center text-gray-500 py-10">ยังไม่มีรายการยืม</p>
           ) : (
             borrowList.map((r) => (
-              <div key={r.id} className={`rounded-xl bg-slate-800 border p-3 ${isOverdue(r.due_date, r.status) ? 'border-red-500/60' : 'border-slate-700'}`}>
+              <div key={r.id} className={`rounded-xl bg-white border shadow-sm p-3 ${isOverdue(r.due_date, r.status) ? 'border-red-500/60' : 'border-gray-200'}`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold text-white">{r.borrow_no}</span>
+                  <span className="text-sm font-bold text-gray-900">{r.borrow_no}</span>
                   <div className="flex items-center gap-1.5">
                     {isOverdue(r.due_date, r.status) && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-white bg-red-500 animate-pulse">เลยกำหนด</span>
@@ -494,11 +494,11 @@ export default function ProductionBorrow() {
                     {statusBadge(r.status)}
                   </div>
                 </div>
-                <div className="text-[10px] text-gray-400 mt-1 flex flex-wrap gap-x-3">
+                <div className="text-[10px] text-gray-500 mt-1 flex flex-wrap gap-x-3">
                   <span>กำหนดคืน: {new Date(r.due_date).toLocaleDateString('th-TH')}</span>
                   <span>{new Date(r.created_at).toLocaleString('th-TH')}</span>
                 </div>
-                {r.note && <div className="text-xs text-gray-400 mt-1">{r.note}</div>}
+                {r.note && <div className="text-xs text-gray-500 mt-1">{r.note}</div>}
               </div>
             ))
           )}

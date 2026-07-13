@@ -9,6 +9,7 @@ import {
   TECHNICIAN_ROLE,
   WMS_MOBILE_SPECIAL_ROLES,
 } from '../config/accessPolicy'
+import { getActiveMobileMode, modeAllowsPath } from '../lib/mobileMode'
 
 /** หา path ของ parent menu แล้วหา sub-page แรกที่ user มีสิทธิ์ */
 function findFirstAccessibleSubPage(
@@ -77,11 +78,22 @@ export default function ProtectedRoute({
     return <Navigate to="/" replace />
   }
 
-  // /employee: role employee หรือผู้ใช้ role อื่นที่เปิดสวิตช์ employee_access
+  // /mode: หน้าเลือกโหมดมือถือ — ทุก user ที่ login แล้วเข้าได้
+  if (location.pathname === '/mode') {
+    return <>{children}</>
+  }
+
+  // /employee: role employee, ผู้ใช้ role อื่นที่เปิดสวิตช์ employee_access, หรือ superadmin (ใช้แท็บพิกัด GPS จากมือถือ)
   if (
     location.pathname.startsWith('/employee') &&
-    (user.role === 'employee' || user.employee_access === true)
+    (user.role === 'employee' || user.employee_access === true || user.role === 'superadmin')
   ) {
+    return <>{children}</>
+  }
+
+  // สวมโหมดมือถือจากหน้าเลือกโหมด → อนุญาต path ของโหมดนั้นโดยไม่ติด allowedRoles/menuAccess
+  const activeMobileMode = getActiveMobileMode(user)
+  if (activeMobileMode && modeAllowsPath(activeMobileMode, location.pathname)) {
     return <>{children}</>
   }
 

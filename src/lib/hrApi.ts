@@ -581,19 +581,33 @@ export async function fetchSalaryHistory(employeeId: string) {
   return data as HRSalaryHistory[]
 }
 
-/** sync hr_employees.salary ให้เท่ากับรายการล่าสุด (effective_date มากสุด) — คืนค่าเงินเดือนล่าสุด */
-async function syncEmployeeLatestSalary(employeeId: string): Promise<number | null> {
+export interface LatestSalary {
+  /** ฐานเงินเดือน */
+  salary: number
+  /** เงินพิเศษ/ประจำตำแหน่ง */
+  position_allowance: number | null
+}
+
+/** sync hr_employees.salary/position_allowance ให้เท่ากับรายการล่าสุด (effective_date มากสุด) — คืนค่าล่าสุด */
+async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalary | null> {
   const { data, error } = await supabase.from('hr_salary_history')
-    .select('salary')
+    .select('salary, position_allowance')
     .eq('employee_id', employeeId)
     .order('effective_date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
   if (error) pgError(error)
-  const latest = data && data.length ? Number(data[0].salary) : null
+  const latest: LatestSalary | null = data && data.length
+    ? {
+        salary: Number(data[0].salary),
+        position_allowance:
+          data[0].position_allowance != null ? Number(data[0].position_allowance) : null,
+      }
+    : null
   if (latest != null) {
     const { error: updErr } = await supabase.from('hr_employees')
-      .update({ salary: latest }).eq('id', employeeId)
+      .update({ salary: latest.salary, position_allowance: latest.position_allowance })
+      .eq('id', employeeId)
     if (updErr) pgError(updErr)
   }
   return latest
@@ -602,15 +616,16 @@ async function syncEmployeeLatestSalary(employeeId: string): Promise<number | nu
 export async function addSalaryHistory(entry: {
   employee_id: string
   salary: number
+  position_allowance?: number
   effective_date: string
   note?: string
-}): Promise<number | null> {
+}): Promise<LatestSalary | null> {
   const { error } = await supabase.from('hr_salary_history').insert(entry)
   if (error) pgError(error)
   return syncEmployeeLatestSalary(entry.employee_id)
 }
 
-export async function deleteSalaryHistory(id: string, employeeId: string): Promise<number | null> {
+export async function deleteSalaryHistory(id: string, employeeId: string): Promise<LatestSalary | null> {
   const { error } = await supabase.from('hr_salary_history').delete().eq('id', id)
   if (error) pgError(error)
   return syncEmployeeLatestSalary(employeeId)

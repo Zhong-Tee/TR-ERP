@@ -7,6 +7,8 @@ export interface User {
   is_active?: boolean
   /** เปิดสิทธิ์เข้าหน้า Employee บนมือถือ โดยไม่ต้องเปลี่ยน role หลัก */
   employee_access?: boolean
+  /** สิทธิ์โหมดมือถือหลาย role เช่น ["production_mb","picker"] — ดู src/lib/mobileMode.ts */
+  mobile_access?: string[]
   created_at?: string
 }
 
@@ -1001,7 +1003,10 @@ export interface HREmployee {
   photo_url?: string
   department_id?: string
   position_id?: string
+  /** ฐานเงินเดือน */
   salary?: number
+  /** เงินพิเศษ/ประจำตำแหน่ง */
+  position_allowance?: number
   hire_date?: string
   probation_end_date?: string
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
@@ -1371,7 +1376,10 @@ export interface HREmployeeCareer {
 export interface HRSalaryHistory {
   id: string
   employee_id: string
+  /** ฐานเงินเดือน */
   salary: number
+  /** เงินพิเศษ/ประจำตำแหน่ง */
+  position_allowance?: number
   effective_date: string
   note?: string
   created_at: string

@@ -83,6 +83,49 @@ type SummaryRow = {
   absentDays: number
 }
 
+/** แถว Dashboard: รวมบันทึกเข้า/ออก/OT ของพนักงาน 1 คนใน 1 วัน */
+type DashRow = {
+  employee: HREmployee
+  clockIn?: HRTimeEntry
+  clockOut?: HRTimeEntry
+  otIn?: HRTimeEntry
+  otOut?: HRTimeEntry
+}
+
+/** ISO → HH:mm (เวลาท้องถิ่น) */
+function fmtClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+}
+
+/** จำนวนนาที OT ของแถว (มีทั้งเข้า-ออก OT เท่านั้นจึงคำนวณได้) */
+function otMinutesOf(r: DashRow): number {
+  if (!r.otIn || !r.otOut) return 0
+  const ms = new Date(r.otOut.entry_time).getTime() - new Date(r.otIn.entry_time).getTime()
+  return ms > 0 ? Math.round(ms / 60000) : 0
+}
+
+type DashStatusKey = 'normal' | 'late' | 'missing_out' | 'working' | 'missing_in'
+/** สถานะการบันทึกของพนักงาน 1 คนในวันนั้น — sev สูง = ต้องรีบจัดการ (เรียงขึ้นบน) */
+function dashStatusOf(r: DashRow, lateMin: number, isPast: boolean): {
+  key: DashStatusKey
+  label: string
+  cls: string
+  tint: string
+  sev: number
+} {
+  if (r.clockIn && r.clockOut) {
+    return lateMin > 0
+      ? { key: 'late', label: 'สาย', cls: 'bg-amber-100 text-amber-800', tint: 'border-amber-200', sev: 2 }
+      : { key: 'normal', label: 'ปกติ', cls: 'bg-emerald-100 text-emerald-700', tint: 'border-emerald-200', sev: 0 }
+  }
+  if (r.clockIn && !r.clockOut) {
+    return isPast
+      ? { key: 'missing_out', label: 'ลืมออกงาน', cls: 'bg-rose-100 text-rose-700', tint: 'border-rose-300', sev: 3 }
+      : { key: 'working', label: 'ยังทำงานอยู่', cls: 'bg-sky-100 text-sky-700', tint: 'border-sky-200', sev: 1 }
+  }
+  return { key: 'missing_in', label: 'ลืมเข้างาน', cls: 'bg-rose-100 text-rose-700', tint: 'border-rose-300', sev: 3 }
+}
+
 /** ค่า fallback กรณียังไม่มีมาตรฐานเวลาในระบบ */
 const FALLBACK_SCHEDULE = {
   name: 'มาตรฐาน (08:00)',
@@ -105,6 +148,8 @@ export default function TimeAttendance() {
   const [dateFrom, setDateFrom] = useState(todayStr().slice(0, 7) + '-01')
   const [dateTo, setDateTo] = useState(todayStr())
   const [typeFilter, setTypeFilter] = useState('')
+  /** มุมมองแท็บบันทึกเวลาสด: ตารางดิบ หรือ Dashboard รายคน/รายวัน */
+  const [entriesView, setEntriesView] = useState<'table' | 'dashboard'>('table')
   const [photoView, setPhotoView] = useState<{ url: string; caption: string } | null>(null)
   const [photoLoading, setPhotoLoading] = useState(false)
   /** signed URL รูปย่อในตาราง (path → url) */
@@ -199,6 +244,36 @@ export default function TimeAttendance() {
       )
     })
   }, [entries, search])
+
+  /** จัดกลุ่มบันทึกเวลาเป็นรายวัน → รายคน สำหรับมุมมอง Dashboard */
+  const dashboardGroups = useMemo(() => {
+    const byDate = new Map<string, Map<string, DashRow>>()
+    for (const e of filteredEntries) {
+      if (!e.employee) continue
+      const dateMap = byDate.get(e.work_date) ?? new Map<string, DashRow>()
+      byDate.set(e.work_date, dateMap)
+      const cur: DashRow = dateMap.get(e.employee_id) ?? { employee: e.employee }
+      const t = new Date(e.entry_time).getTime()
+      if (e.entry_type === 'clock_in') {
+        if (!cur.clockIn || t < new Date(cur.clockIn.entry_time).getTime()) cur.clockIn = e
+      } else if (e.entry_type === 'clock_out') {
+        if (!cur.clockOut || t > new Date(cur.clockOut.entry_time).getTime()) cur.clockOut = e
+      } else if (e.entry_type === 'ot_in') {
+        if (!cur.otIn || t < new Date(cur.otIn.entry_time).getTime()) cur.otIn = e
+      } else if (e.entry_type === 'ot_out') {
+        if (!cur.otOut || t > new Date(cur.otOut.entry_time).getTime()) cur.otOut = e
+      }
+      dateMap.set(e.employee_id, cur)
+    }
+    return [...byDate.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, empMap]) => ({
+        date,
+        rows: [...empMap.values()].sort((a, b) =>
+          empName(a.employee).localeCompare(empName(b.employee), 'th'),
+        ),
+      }))
+  }, [filteredEntries])
 
   async function openPhoto(entry: HRTimeEntry) {
     if (!entry.photo_url) return
@@ -468,16 +543,28 @@ export default function TimeAttendance() {
             </div>
             <div className="text-sm">
               <span className="block text-gray-500 mb-1">&nbsp;</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setDateFrom(todayStr())
-                  setDateTo(todayStr())
-                }}
-                className="px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 text-sm font-medium rounded-lg hover:bg-emerald-100"
-              >
-                วันนี้
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom(todayStr())
+                    setDateTo(todayStr())
+                  }}
+                  className="px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 text-sm font-medium rounded-lg hover:bg-emerald-100"
+                >
+                  วันนี้
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom(monthStr() + '-01')
+                    setDateTo(todayStr())
+                  }}
+                  className="px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 text-sm font-medium rounded-lg hover:bg-emerald-100"
+                >
+                  เดือนนี้
+                </button>
+              </div>
             </div>
             <label className="text-sm">
               <span className="block text-gray-500 mb-1">จากวันที่</span>
@@ -512,13 +599,37 @@ export default function TimeAttendance() {
             >
               <FiDownload /> Export Excel
             </button>
-            <span className="text-sm text-gray-400 ml-auto">{filteredEntries.length} รายการ (อัปเดตสดอัตโนมัติ)</span>
+            <div className="ml-auto flex items-center gap-3">
+              <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setEntriesView('table')}
+                  className={`px-3 py-2 text-sm font-medium transition-colors ${
+                    entriesView === 'table' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  ตาราง
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEntriesView('dashboard')}
+                  className={`px-3 py-2 text-sm font-medium transition-colors border-l border-gray-200 ${
+                    entriesView === 'dashboard' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <i className="fas fa-table-cells-large mr-1.5" />Dashboard
+                </button>
+              </div>
+              <span className="text-sm text-gray-400">{filteredEntries.length} รายการ (อัปเดตสดอัตโนมัติ)</span>
+            </div>
           </div>
 
           {entriesLoading ? (
             <Loading />
           ) : filteredEntries.length === 0 ? (
             <div className="text-center py-12 text-gray-400">ไม่มีบันทึกเวลาในช่วงที่เลือก</div>
+          ) : entriesView === 'dashboard' ? (
+            <AttendanceDashboard groups={dashboardGroups} lateOf={entryLateMinutes} today={todayStr()} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -711,6 +822,178 @@ export default function TimeAttendance() {
           </>
         )}
       </Modal>
+    </div>
+  )
+}
+
+type DashFilter = 'all' | 'problem' | 'late' | 'missing'
+
+/** มุมมอง Dashboard: การ์ดรายคน/รายวัน — เห็นเวลาเข้า-ออก, สาย, การลืมบันทึก และ OT รวมได้ทันที */
+function AttendanceDashboard({
+  groups,
+  lateOf,
+  today,
+}: {
+  groups: { date: string; rows: DashRow[] }[]
+  lateOf: (e: HRTimeEntry) => number
+  today: string
+}) {
+  const [filter, setFilter] = useState<DashFilter>('all')
+
+  // เตรียมข้อมูลต่อวัน: คำนวณสถานะ/สาย/OT ล่วงหน้า, เรียงปัญหาขึ้นบน, และสรุปยอด
+  const prepared = groups.map(({ date, rows }) => {
+    const isPast = date < today
+    const items = rows
+      .map((r) => {
+        const lateMin = r.clockIn ? lateOf(r.clockIn) : 0
+        const otMin = otMinutesOf(r)
+        return { r, lateMin, otMin, status: dashStatusOf(r, lateMin, isPast) }
+      })
+      .sort((a, b) => b.status.sev - a.status.sev || empName(a.r.employee).localeCompare(empName(b.r.employee), 'th'))
+
+    const counts = { normal: 0, late: 0, missing_out: 0, working: 0, missing_in: 0 } as Record<DashStatusKey, number>
+    let otTotalMin = 0
+    for (const it of items) {
+      counts[it.status.key]++
+      otTotalMin += it.otMin
+    }
+    const problemCount = counts.missing_in + counts.missing_out
+    return { date, isPast, items, counts, otTotalMin, problemCount }
+  })
+
+  const matchesFilter = (key: DashStatusKey): boolean => {
+    if (filter === 'all') return true
+    if (filter === 'late') return key === 'late'
+    if (filter === 'missing') return key === 'missing_in' || key === 'missing_out'
+    return key === 'late' || key === 'missing_in' || key === 'missing_out' // problem
+  }
+
+  const filterTabs: { key: DashFilter; label: string }[] = [
+    { key: 'all', label: 'ทั้งหมด' },
+    { key: 'problem', label: 'เฉพาะมีปัญหา' },
+    { key: 'late', label: 'สาย' },
+    { key: 'missing', label: 'ลืมบันทึก' },
+  ]
+
+  const chip = (n: number, label: string, cls: string) =>
+    n > 0 ? (
+      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>
+        {label} {n}
+      </span>
+    ) : null
+
+  return (
+    <div className="space-y-5">
+      {/* ตัวกรอง */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-gray-500">แสดง:</span>
+        {filterTabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setFilter(t.key)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+              filter === t.key
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {prepared.map(({ date, items, counts, otTotalMin }) => {
+        const visible = items.filter((it) => matchesFilter(it.status.key))
+        if (visible.length === 0) return null
+        return (
+          <div key={date}>
+            <div className="flex flex-wrap items-center gap-2 mb-2.5">
+              <h3 className="font-bold text-gray-700">
+                {new Date(date + 'T00:00:00').toLocaleDateString('th-TH', {
+                  weekday: 'long',
+                  day: 'numeric',
+                  month: 'long',
+                  year: 'numeric',
+                })}
+              </h3>
+              <span className="text-xs text-gray-400">({items.length} คน)</span>
+              <div className="flex flex-wrap items-center gap-1.5 ml-1">
+                {chip(counts.normal, 'ปกติ', 'bg-emerald-100 text-emerald-700')}
+                {chip(counts.late, 'สาย', 'bg-amber-100 text-amber-800')}
+                {chip(counts.working, 'ทำงานอยู่', 'bg-sky-100 text-sky-700')}
+                {chip(counts.missing_out, 'ลืมออก', 'bg-rose-100 text-rose-700')}
+                {chip(counts.missing_in, 'ลืมเข้า', 'bg-rose-100 text-rose-700')}
+                {otTotalMin > 0 && (
+                  <span className="rounded-full px-2 py-0.5 text-xs font-semibold bg-indigo-100 text-indigo-700">
+                    OT รวม {minutesToHHMM(otTotalMin)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+              {visible.map(({ r, lateMin, otMin, status }) => {
+                const isPast = date < today
+                const dept = (r.employee as HREmployee & { department?: { name?: string } }).department?.name
+                return (
+                  <div key={r.employee.id} className={`rounded-xl border ${status.tint} bg-white p-3 shadow-sm`}>
+                    <div className="flex items-start justify-between gap-2 mb-2.5">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-gray-800 truncate">{empName(r.employee)}</div>
+                        <div className="text-xs text-gray-400 truncate">
+                          {r.employee.employee_code}
+                          {dept ? ` · ${dept}` : ''}
+                        </div>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${status.cls}`}>
+                        {status.label}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg bg-emerald-50/70 px-2.5 py-2">
+                        <div className="text-[11px] text-gray-500 mb-0.5">เข้างาน</div>
+                        {r.clockIn ? (
+                          <>
+                            <div className="font-bold text-gray-800 tabular-nums">{fmtClock(r.clockIn.entry_time)}</div>
+                            {lateMin > 0 ? (
+                              <div className="text-[11px] font-medium text-red-600">สาย {minutesToHHMM(lateMin)}</div>
+                            ) : (
+                              <div className="text-[11px] text-emerald-600">ตรงเวลา</div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="font-bold text-rose-500">ไม่มีบันทึก</div>
+                        )}
+                      </div>
+                      <div className="rounded-lg bg-rose-50/50 px-2.5 py-2">
+                        <div className="text-[11px] text-gray-500 mb-0.5">ออกงาน</div>
+                        {r.clockOut ? (
+                          <div className="font-bold text-gray-800 tabular-nums">{fmtClock(r.clockOut.entry_time)}</div>
+                        ) : isPast ? (
+                          <div className="font-bold text-rose-500">ไม่มีบันทึก</div>
+                        ) : (
+                          <div className="text-sm text-gray-400">ยังไม่ออก</div>
+                        )}
+                      </div>
+                    </div>
+                    {(r.otIn || r.otOut) && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="rounded-full bg-indigo-100 text-indigo-700 px-2 py-0.5 font-semibold">OT</span>
+                        <span className="tabular-nums text-gray-600">
+                          {r.otIn ? fmtClock(r.otIn.entry_time) : '—'} – {r.otOut ? fmtClock(r.otOut.entry_time) : '—'}
+                        </span>
+                        {otMin > 0 && (
+                          <span className="font-semibold text-indigo-700">รวม {minutesToHHMM(otMin)}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

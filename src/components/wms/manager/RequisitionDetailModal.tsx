@@ -151,9 +151,9 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
     return (
       <>
         <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-2xl">
-          <div className="bg-slate-800 rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-slate-700 flex justify-between items-center">
-              <h2 className="text-xl font-black text-white">ใบเบิก: {requisition.requisition_id}</h2>
+          <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-xl font-black text-gray-900">ใบเบิก: {requisition.requisition_id}</h2>
               <button
                 onClick={onClose}
                 className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
@@ -162,16 +162,16 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              <div className="text-center py-8 text-gray-400">
+              <div className="text-center py-8 text-gray-500">
                 <div className="text-lg font-bold mb-2">สถานะ: {requisition.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}</div>
                 {requisition.approved_at && <div className="text-sm">อนุมัติเมื่อ: {formatDate(requisition.approved_at)}</div>}
               </div>
               {loading ? (
-                <div className="text-center py-8 text-gray-400">กำลังโหลด...</div>
+                <div className="text-center py-8 text-gray-500">กำลังโหลด...</div>
               ) : (
                 <div className="space-y-2">
                   {items.map((item) => (
-                    <div key={item.id} className="flex items-center gap-3 p-3 bg-slate-700 rounded-xl">
+                    <div key={item.id} className="flex items-center gap-3 p-3 bg-gray-100 rounded-xl">
                       <img
                         src={imgUrl(item.product_code)}
                         className="w-16 h-16 object-cover rounded-lg"
@@ -182,11 +182,11 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         alt={item.product_name}
                       />
                       <div className="flex-1">
-                        <div className="font-bold text-white text-sm">{item.product_name}</div>
-                        <div className="text-xs text-gray-400">รหัส: {item.product_code}</div>
-                        <div className="text-xs text-red-400">จุดเก็บ: {item.location}</div>
+                        <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
+                        <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                        <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
-                      <div className="text-white font-bold">x{item.qty}</div>
+                      <div className="text-gray-900 font-bold">x{item.qty}</div>
                     </div>
                   ))}
                 </div>
@@ -203,9 +203,9 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   return (
     <>
       <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-2xl">
-        <div className="bg-slate-800 rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-slate-700 flex justify-between items-center">
-            <h2 className="text-xl font-black text-white">ใบเบิก: {requisition.requisition_id}</h2>
+        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+          <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+            <h2 className="text-xl font-black text-gray-900">ใบเบิก: {requisition.requisition_id}</h2>
             <button
               onClick={onClose}
               className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
@@ -215,24 +215,24 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">
-            <div className="bg-slate-700 p-4 rounded-xl mb-4">
-              <div className="text-sm text-gray-400 mb-1">สร้างโดย</div>
-              <div className="font-bold text-white">{requisition.created_by_user?.username || '---'}</div>
-              <div className="text-xs text-gray-400 mt-1">{formatDate(requisition.created_at)}</div>
+            <div className="bg-gray-100 p-4 rounded-xl mb-4">
+              <div className="text-sm text-gray-500 mb-1">สร้างโดย</div>
+              <div className="font-bold text-gray-900">{requisition.created_by_user?.username || '---'}</div>
+              <div className="text-xs text-gray-500 mt-1">{formatDate(requisition.created_at)}</div>
               {requisition.notes && (
-                <div className="mt-3 text-base text-gray-300 font-medium break-words">หมายเหตุ: {requisition.notes}</div>
+                <div className="mt-3 text-base text-gray-600 font-medium break-words">หมายเหตุ: {requisition.notes}</div>
               )}
             </div>
 
             <div className="mb-4">
-              <h3 className="text-sm font-bold text-gray-300 mb-3">รายการสินค้า ({items.length} รายการ)</h3>
+              <h3 className="text-sm font-bold text-gray-600 mb-3">รายการสินค้า ({items.length} รายการ)</h3>
               {loading ? (
-                <div className="text-center py-8 text-gray-400">กำลังโหลด...</div>
+                <div className="text-center py-8 text-gray-500">กำลังโหลด...</div>
               ) : (
                 <div className="space-y-2">
                   {items.map((item, idx) => (
-                    <div key={item.id} className="flex items-center gap-3 p-3 bg-slate-700 rounded-xl">
-                      <div className="text-lg font-black text-gray-400 w-8 text-center">{idx + 1}</div>
+                    <div key={item.id} className="flex items-center gap-3 p-3 bg-gray-100 rounded-xl">
+                      <div className="text-lg font-black text-gray-500 w-8 text-center">{idx + 1}</div>
                       <img
                         src={imgUrl(item.product_code)}
                         className="w-16 h-16 object-cover rounded-lg"
@@ -243,23 +243,23 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         alt={item.product_name}
                       />
                       <div className="flex-1">
-                        <div className="font-bold text-white text-sm">{item.product_name}</div>
-                        <div className="text-xs text-gray-400">รหัส: {item.product_code}</div>
-                        <div className="text-xs text-red-400">จุดเก็บ: {item.location}</div>
+                        <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
+                        <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                        <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
-                      <div className="text-white font-bold text-lg">x{item.qty}</div>
+                      <div className="text-gray-900 font-bold text-lg">x{item.qty}</div>
                     </div>
                   ))}
                 </div>
               )}
             </div>
 
-            <div className="bg-slate-700 p-4 rounded-xl mb-4">
-              <label className="block text-sm font-bold text-gray-300 mb-2">มอบหมายให้ Picker *</label>
+            <div className="bg-gray-100 p-4 rounded-xl mb-4">
+              <label className="block text-sm font-bold text-gray-600 mb-2">มอบหมายให้ Picker *</label>
               <select
                 value={selectedPicker}
                 onChange={(e) => setSelectedPicker(e.target.value)}
-                className="w-full bg-slate-600 text-white px-4 py-3 rounded-xl border border-slate-500 focus:border-blue-500 focus:outline-none"
+                className="w-full bg-white text-gray-900 px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:outline-none"
               >
                 <option value="">-- เลือกพนักงาน Picker --</option>
                 {pickers.map((picker) => (
@@ -271,7 +271,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
             </div>
           </div>
 
-          <div className="p-4 border-t border-slate-700 flex gap-3">
+          <div className="p-4 border-t border-gray-200 flex gap-3">
             <button
               onClick={handleReject}
               disabled={approving}

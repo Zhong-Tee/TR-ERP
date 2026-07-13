@@ -102,6 +102,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [hire_date, setHireDate] = useState('')
   const [probation_end_date, setProbationEndDate] = useState('')
   const [salary, setSalary] = useState<number | ''>('')
+  const [position_allowance, setPositionAllowance] = useState<number | ''>('')
   const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
   const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
   const [clock_location_id, setClockLocationId] = useState('')
@@ -205,6 +206,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         employee.probation_end_date ? employee.probation_end_date.slice(0, 10) : ''
       )
       setSalary(employee.salary ?? '')
+      setPositionAllowance(employee.position_allowance ?? '')
       setEmploymentStatus(employee.employment_status)
       setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
       setClockLocationId(employee.clock_location_id ?? '')
@@ -348,6 +350,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         hire_date: hire_date || undefined,
         probation_end_date: probation_end_date || undefined,
         salary: typeof salary === 'number' ? salary : undefined,
+        position_allowance: typeof position_allowance === 'number' ? position_allowance : undefined,
         employment_status,
         contract_type,
         clock_location_id: clock_location_id || undefined,
@@ -754,7 +757,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 />
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">เงินเดือน</span>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ฐานเงินเดือน</span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -764,6 +767,20 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     setSalary(digits === '' ? '' : Number(digits))
                   }}
                   placeholder="เช่น 12,000"
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินพิเศษ/ประจำตำแหน่ง</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={position_allowance === '' ? '' : Number(position_allowance).toLocaleString('en-US')}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '')
+                    setPositionAllowance(digits === '' ? '' : Number(digits))
+                  }}
+                  placeholder="เช่น 2,000"
                   className={fieldClass}
                 />
               </label>
@@ -854,7 +871,10 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
               <SalaryHistoryPanel
                 employeeId={employee.id}
                 editable
-                onLatestSalaryChange={(latest) => setSalary(latest ?? '')}
+                onLatestSalaryChange={(latest) => {
+                  setSalary(latest?.salary ?? '')
+                  setPositionAllowance(latest?.position_allowance ?? '')
+                }}
               />
             ) : (
               <p className="text-sm text-gray-600">

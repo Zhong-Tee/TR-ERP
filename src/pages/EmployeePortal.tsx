@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { fetchEmployeeByUserId, fetchNotifications } from '../lib/hrApi'
-import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone } from 'react-icons/fi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin } from 'react-icons/fi'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
 const EmployeeTimeClock = lazy(() => import('../components/hr/employee/EmployeeTimeClock'))
@@ -13,6 +13,8 @@ const EmployeeOnboarding = lazy(() => import('../components/hr/employee/Employee
 const EmployeeDocuments = lazy(() => import('../components/hr/employee/EmployeeDocuments'))
 const EmployeeAssets = lazy(() => import('../components/hr/employee/EmployeeAssets'))
 const EmployeeWarningsCerts = lazy(() => import('../components/hr/employee/EmployeeWarningsCerts'))
+const AdminClockLocationsMobile = lazy(() => import('../components/hr/employee/AdminClockLocationsMobile'))
+import ModeSwitchButton from '../components/ModeSwitchButton'
 
 const Loading = () => (
   <div className="flex items-center justify-center py-20">
@@ -72,22 +74,32 @@ const TABS = [
   { id: 'onboarding', label: 'Onboarding', icon: FiBookOpen, Component: EmployeeOnboarding },
 ] as const
 
-const TAB_IDS = TABS.map((t) => t.id)
+/** แท็บพิเศษของ superadmin — ดึงพิกัด GPS จากมือถือไปตั้งเป็นจุดพิกัดออฟฟิศ */
+const ADMIN_TABS = [
+  { id: 'admin-gps', label: 'พิกัด GPS', icon: FiMapPin, Component: AdminClockLocationsMobile },
+] as const
+
+const ALL_TABS = [...TABS, ...ADMIN_TABS]
+type TabDef = (typeof ALL_TABS)[number]
+type TabId = TabDef['id']
+
+const TAB_IDS = ALL_TABS.map((t) => t.id)
 
 export default function EmployeePortal() {
   const isMobile = useIsMobile()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabFromUrl = searchParams.get('tab')
-  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]['id']>(
-    (tabFromUrl && TAB_IDS.includes(tabFromUrl as (typeof TAB_IDS)[number])) ? (tabFromUrl as (typeof TABS)[number]['id']) : 'dashboard'
+  const [activeTab, setActiveTab] = useState<TabId>(
+    (tabFromUrl && TAB_IDS.includes(tabFromUrl as (typeof TAB_IDS)[number])) ? (tabFromUrl as TabId) : 'dashboard'
   )
   const { user, signOut } = useAuthContext()
+  const visibleTabs: readonly TabDef[] = user?.role === 'superadmin' ? ALL_TABS : TABS
   /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
   const [resultUnread, setResultUnread] = useState(0)
 
   useEffect(() => {
     const t = searchParams.get('tab')
-    if (t && TAB_IDS.includes(t as (typeof TAB_IDS)[number])) setActiveTab(t as (typeof TABS)[number]['id'])
+    if (t && TAB_IDS.includes(t as (typeof TAB_IDS)[number])) setActiveTab(t as TabId)
   }, [searchParams])
 
   // นับแจ้งเตือนผลอนุมัติที่ยังไม่อ่าน (เรียลไทม์)
@@ -117,7 +129,7 @@ export default function EmployeePortal() {
     }
   }, [user?.id])
 
-  const setActiveTabAndUrl = (id: (typeof TABS)[number]['id']) => {
+  const setActiveTabAndUrl = (id: TabId) => {
     setActiveTab(id)
     setSearchParams(id === 'dashboard' ? {} : { tab: id })
   }
@@ -129,20 +141,23 @@ export default function EmployeePortal() {
 
   if (!isMobile) return <DesktopBlockScreen />
 
-  const currentTab = TABS.find((t) => t.id === activeTab)
+  const currentTab = visibleTabs.find((t) => t.id === activeTab) ?? visibleTabs[0]
   const TabComponent = currentTab?.Component
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50 pb-20">
       <header className="sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-emerald-600 text-white shadow-md">
-        <h1 className="text-lg font-semibold flex items-baseline gap-1.5">
-          TR-ERP <span className="text-xs font-normal opacity-80">v{__APP_VERSION__}</span>
-        </h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col min-w-0">
+          <span className="text-xs text-emerald-100/80 font-bold uppercase truncate">พนักงาน</span>
+          <span className="text-sm font-black leading-tight truncate">
+            {user?.username || user?.email || '---'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={openResultNotifications}
-            className="relative p-2 rounded-full hover:bg-white/20"
+            className="relative p-2 rounded-full bg-white/15 hover:bg-white/30"
             aria-label="แจ้งเตือนผลอนุมัติ"
           >
             <FiBell className="w-5 h-5" />
@@ -152,10 +167,11 @@ export default function EmployeePortal() {
               </span>
             )}
           </button>
+          <ModeSwitchButton />
           <button
             type="button"
             onClick={() => signOut()}
-            className="px-3 py-1.5 text-sm font-medium bg-white/20 rounded-lg hover:bg-white/30"
+            className="px-3 py-1.5 text-xs font-bold bg-red-500 text-white rounded-lg hover:bg-red-600 whitespace-nowrap"
           >
             ออกจากระบบ
           </button>
@@ -172,7 +188,7 @@ export default function EmployeePortal() {
         className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-start gap-0.5 py-2 px-1 bg-white border-t border-gray-200 shadow-[0_-2px_10px_rgba(0,0,0,0.08)] overflow-x-auto scrollbar-thin"
         aria-label="แท็บนำทาง"
       >
-        {TABS.map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon
           const isActive = activeTab === tab.id
           return (
