@@ -801,7 +801,13 @@ export default function OrderList({
                   {formatDateTime(order.created_at)}
                 </div>
               </div>
-              {!hideActionButtons && (order.status === 'ตรวจสอบไม่ผ่าน' || order.status === 'ตรวจสอบไม่สำเร็จ') ? (
+              {!hideActionButtons && (
+                order.status === 'ตรวจสอบไม่ผ่าน' ||
+                order.status === 'ตรวจสอบไม่สำเร็จ' ||
+                // แท็บตรวจสอบไม่ผ่าน: บิลที่ถูกปฏิเสธจากโอนคืน/ตรวจสลิปมือ (สถานะจริงอาจเป็นอย่างอื่น) ก็ให้ปุ่มจัดการครบ
+                (includeRejectedOverpayRefundOrders &&
+                  ((order as any).has_rejected_overpay_refund || (order as any).manual_slip_badge === 'rejected'))
+              ) ? (
                 <div className="flex flex-col gap-1.5 items-end">
                   {showMoveToWaitingButton && onMoveToWaiting && (
                     <button
