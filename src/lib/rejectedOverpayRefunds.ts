@@ -23,3 +23,25 @@ export async function fetchLatestRejectedOverpayOrderIds(client: SupabaseClient)
     .filter(([, st]) => st === 'rejected')
     .map(([id]) => id)
 }
+
+/**
+ * บิลที่ "การตรวจสลิปมือล่าสุด" ถูกปฏิเสธ (ac_manual_slip_checks) — ใช้แสดงรวมในแท็บ ตรวจสอบไม่ผ่าน
+ * เทียบด้วยการส่งตรวจล่าสุดต่อบิล: ถ้าถูกส่งตรวจใหม่ (pending) หรืออนุมัติแล้ว บิลจะหลุดจากรายการนี้
+ */
+export async function fetchLatestRejectedManualSlipOrderIds(client: SupabaseClient): Promise<string[]> {
+  const { data } = await client
+    .from('ac_manual_slip_checks')
+    .select('order_id, status, submitted_at')
+    .order('submitted_at', { ascending: false })
+    .limit(4000)
+
+  const latestStatusByOrder = new Map<string, string>()
+  for (const r of (data || []) as { order_id: string | null; status: string }[]) {
+    if (r.order_id && !latestStatusByOrder.has(r.order_id)) {
+      latestStatusByOrder.set(r.order_id, r.status)
+    }
+  }
+  return [...latestStatusByOrder.entries()]
+    .filter(([, st]) => st === 'rejected')
+    .map(([id]) => id)
+}

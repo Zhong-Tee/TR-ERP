@@ -15,7 +15,7 @@ import {
   resolveSalesPumpOwnerAdminName,
 } from '../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues, fetchSalesTrTeamRows, flattenSalesTrAdminIdentifiers } from '../lib/salesTrTeam'
-import { fetchLatestRejectedOverpayOrderIds } from '../lib/rejectedOverpayRefunds'
+import { fetchLatestRejectedOverpayOrderIds, fetchLatestRejectedManualSlipOrderIds } from '../lib/rejectedOverpayRefunds'
 import { getBangkokCalendarDayUtcBoundsISO } from '../lib/utils'
 
 type Tab =
@@ -208,22 +208,26 @@ export default function Orders() {
         supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
       )
 
-      // นับเพิ่ม: บิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ (แสดงรวมในแท็บตรวจสอบไม่ผ่าน โดยไม่เปลี่ยนสถานะบิล)
-      let rejectedRefundCount = 0
+      // นับเพิ่ม: บิลที่รายการโอนคืน/ตรวจสลิปมือ ล่าสุดถูกปฏิเสธ (แสดงรวมในแท็บตรวจสอบไม่ผ่าน โดยไม่เปลี่ยนสถานะบิล)
+      let rejectedExtraCount = 0
       try {
-        const rejectedIds = await fetchLatestRejectedOverpayOrderIds(supabase)
+        const [rejectedRefundIds, rejectedManualSlipIds] = await Promise.all([
+          fetchLatestRejectedOverpayOrderIds(supabase),
+          fetchLatestRejectedManualSlipOrderIds(supabase),
+        ])
+        const rejectedIds = [...new Set([...rejectedRefundIds, ...rejectedManualSlipIds])]
         if (rejectedIds.length > 0) {
           const { count } = await applyOwnerFilter(
             supabase.from('or_orders').select('id', { count: 'exact', head: true })
               .in('id', rejectedIds)
               .not('status', 'in', '("ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ","ยกเลิก")')
           )
-          rejectedRefundCount = count ?? 0
+          rejectedExtraCount = count ?? 0
         }
       } catch (e) {
-        console.error('Error counting rejected overpay refunds:', e)
+        console.error('Error counting rejected overpay/manual-slip orders:', e)
       }
-      const completeCount = (completeStatusCount ?? 0) + rejectedRefundCount
+      const completeCount = (completeStatusCount ?? 0) + rejectedExtraCount
 
       // Load verified count (OFFICE: เฉพาะ superadmin/admin เห็น)
       let verifiedQuery = supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'ตรวจสอบแล้ว')
