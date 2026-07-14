@@ -125,8 +125,10 @@ export default function PurchaseGR() {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
-  /** ฝังใน Picker / Manager mobile — โทนเข้ากับพื้นหลัง slate-900 */
-  const embedDark = user?.role === 'picker' || user?.role === 'manager'
+  /** role มือถือที่รับสินค้า (picker/manager/auditor) ให้กรอกค่าขนส่งในประเทศตอน GR ได้ด้วย */
+  const canEnterGrShipping = canSeeFinancial || ['picker', 'manager', 'auditor'].includes(user?.role || '')
+  /** ฝังใน Manager mobile (พื้นหลัง slate-900) — โทนมืด; picker ใช้ธีมสว่างตามแอป (bg-gray-50) */
+  const embedDark = user?.role === 'manager'
 
   const [grs, setGrs] = useState<InventoryGR[]>([])
   const [loading, setLoading] = useState(true)
@@ -1270,138 +1272,141 @@ export default function PurchaseGR() {
                   {item.item_note && (
                     <div className="text-[11px] text-amber-700 leading-snug line-clamp-2">* {item.item_note}</div>
                   )}
-                  <div className="flex items-start justify-between gap-2.5">
+                  <div className="flex items-start gap-2">
                     <button
                       type="button"
                       onClick={() => { if (imgUrl) openZoomGallery([imgUrl], 0) }}
                       className="w-12 h-12 rounded bg-gray-200 overflow-hidden shrink-0 border self-start"
                     >
                       {imgUrl ? (
-                        <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                        <img src={imgUrl} alt="" className="w-full h-full object-cover cursor-zoom-in" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
                       )}
                     </button>
-                    <div className="flex items-start gap-1.5 text-[11px] shrink-0 self-start">
+                    <div className={`grid ${isFollowUp ? 'grid-cols-4' : 'grid-cols-3'} gap-1.5 text-[11px] flex-1 min-w-0`}>
                       {isFollowUp && (
-                        <div className="rounded bg-blue-50 px-2.5 py-1.5 text-center min-w-[66px]">
-                          <div className="text-gray-500 leading-tight">รับแล้ว</div>
-                          <div className="font-bold text-blue-700 mt-0.5 leading-tight">{item.qty_already_received.toLocaleString()}</div>
+                        <div className="rounded bg-blue-50 px-1 py-1.5 text-center min-w-0">
+                          <div className="text-gray-500 leading-tight truncate">รับแล้ว</div>
+                          <div className="font-bold text-blue-700 mt-0.5 leading-tight tabular-nums">{item.qty_already_received.toLocaleString()}</div>
                         </div>
                       )}
-                      <div className="rounded bg-gray-50 px-2.5 py-1.5 text-center min-w-[72px]">
-                        <div className="text-gray-500 leading-tight">{isFollowUp ? 'ค้างรับ' : 'สั่ง'}</div>
-                        <div className="font-bold mt-0.5 leading-tight text-gray-900">{Number(item.qty_ordered).toLocaleString()}</div>
+                      <div className="rounded bg-gray-50 px-1 py-1.5 text-center min-w-0">
+                        <div className="text-gray-500 leading-tight truncate">{isFollowUp ? 'ค้างรับ' : 'สั่ง'}</div>
+                        <div className="font-bold mt-0.5 leading-tight text-gray-900 tabular-nums">{Number(item.qty_ordered).toLocaleString()}</div>
                       </div>
-                      <div className="rounded bg-red-50 px-2.5 py-1.5 text-center min-w-[56px]">
-                        <div className="text-gray-500 leading-tight">ขาด</div>
-                        <div className="font-bold text-red-600 mt-0.5 leading-tight">{shortage.toLocaleString()}</div>
+                      <div className="rounded bg-red-50 px-1 py-1.5 text-center min-w-0">
+                        <div className="text-gray-500 leading-tight truncate">ขาด</div>
+                        <div className="font-bold text-red-600 mt-0.5 leading-tight tabular-nums">{shortage.toLocaleString()}</div>
                       </div>
-                      <div className="rounded bg-emerald-50 px-2.5 py-1.5 text-center min-w-[56px]">
-                        <div className="text-gray-500 leading-tight">เกิน</div>
-                        <div className="font-bold text-emerald-700 mt-0.5 leading-tight">{Math.max(qtyReceived - item.qty_ordered, 0).toLocaleString()}</div>
+                      <div className="rounded bg-emerald-50 px-1 py-1.5 text-center min-w-0">
+                        <div className="text-gray-500 leading-tight truncate">เกิน</div>
+                        <div className="font-bold text-emerald-700 mt-0.5 leading-tight tabular-nums">{Math.max(qtyReceived - item.qty_ordered, 0).toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
 
-                  <div className="pt-0.5">
-                    <label className="block text-xs text-gray-600 mb-1">รับ</label>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      min={0}
-                      step={1}
-                      value={item.qty_received}
-                      onFocus={() => {
-                        if (item.qty_received === 0) updateReceiveItem(index, { qty_received: '' })
-                      }}
-                      onBlur={() => {
-                        if (item.qty_received === '') updateReceiveItem(index, { qty_received: 0 })
-                      }}
-                      onChange={(e) => setReceiveQtyFromInput(index, e.target.value)}
-                      onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                      className="w-full px-3 py-2 border rounded-lg text-sm text-right bg-white text-gray-900 caret-gray-900"
-                    />
+                  {/* รับ (แคบ) + ปุ่มรูป GR บรรทัดเดียว */}
+                  <div className="flex items-end justify-between gap-3 pt-0.5">
+                    <div className="shrink-0">
+                      <label className="block text-xs text-gray-600 mb-1">รับ</label>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        min={0}
+                        step={1}
+                        value={item.qty_received}
+                        onFocus={() => {
+                          if (item.qty_received === 0) updateReceiveItem(index, { qty_received: '' })
+                        }}
+                        onBlur={() => {
+                          if (item.qty_received === '') updateReceiveItem(index, { qty_received: 0 })
+                        }}
+                        onChange={(e) => setReceiveQtyFromInput(index, e.target.value)}
+                        onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                        className="w-24 px-3 py-2 border rounded-lg text-sm text-right bg-white text-gray-900 caret-gray-900"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs text-gray-600">รูป GR (สูงสุด 5)</label>
+                        <span className="text-[11px] text-gray-500">{item.images.length}/{MAX_ITEM_IMAGES}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label htmlFor={`camera-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                          ถ่ายรูป
+                        </label>
+                        <input
+                          id={`camera-mobile-${index}`}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={(e) => {
+                            addReceiveItemImages(index, e.target.files)
+                            e.target.value = ''
+                          }}
+                          className="hidden"
+                        />
+                        <label htmlFor={`gallery-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                          เลือกรูป
+                        </label>
+                        <input
+                          id={`gallery-mobile-${index}`}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={(e) => {
+                            addReceiveItemImages(index, e.target.files)
+                            e.target.value = ''
+                          }}
+                          className="hidden"
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs text-gray-600">รูป GR (สูงสุด 5)</label>
-                      <span className="text-[11px] text-gray-500">{item.images.length}/{MAX_ITEM_IMAGES}</span>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <label htmlFor={`camera-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
-                        ถ่ายรูป
-                      </label>
-                      <input
-                        id={`camera-mobile-${index}`}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={(e) => {
-                          addReceiveItemImages(index, e.target.files)
-                          e.target.value = ''
-                        }}
-                        className="hidden"
-                      />
-                      <label htmlFor={`gallery-mobile-${index}`} className="px-3 py-2 rounded-lg border text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
-                        เลือกรูป
-                      </label>
-                      <input
-                        id={`gallery-mobile-${index}`}
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        onChange={(e) => {
-                          addReceiveItemImages(index, e.target.files)
-                          e.target.value = ''
-                        }}
-                        className="hidden"
-                      />
-                    </div>
-                    {item.images.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {item.images.map((image, imageIndex) => (
-                          <div key={image.id} className="relative">
+                  {item.images.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {item.images.map((image, imageIndex) => (
+                        <div key={image.id} className="relative">
+                          <button
+                            type="button"
+                            onClick={() => openZoomGallery(item.images.map((img) => img.previewUrl), imageIndex)}
+                            className="block"
+                          >
+                            <img src={image.previewUrl} alt="" className="w-16 h-16 rounded border object-cover" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeReceiveItemImage(index, image.id)}
+                            className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white text-[10px]"
+                            title="ลบรูป"
+                          >
+                            ×
+                          </button>
+                          <div className="mt-1 flex justify-center gap-1">
                             <button
                               type="button"
-                              onClick={() => openZoomGallery(item.images.map((img) => img.previewUrl), imageIndex)}
-                              className="block"
+                              disabled={imageIndex === 0}
+                              onClick={() => reorderReceiveItemImage(index, image.id, -1)}
+                              className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
                             >
-                              <img src={image.previewUrl} alt="" className="w-16 h-16 rounded border object-cover" />
+                              ←
                             </button>
                             <button
                               type="button"
-                              onClick={() => removeReceiveItemImage(index, image.id)}
-                              className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white text-[10px]"
-                              title="ลบรูป"
+                              disabled={imageIndex === item.images.length - 1}
+                              onClick={() => reorderReceiveItemImage(index, image.id, 1)}
+                              className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
                             >
-                              ×
+                              →
                             </button>
-                            <div className="mt-1 flex justify-center gap-1">
-                              <button
-                                type="button"
-                                disabled={imageIndex === 0}
-                                onClick={() => reorderReceiveItemImage(index, image.id, -1)}
-                                className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
-                              >
-                                ←
-                              </button>
-                              <button
-                                type="button"
-                                disabled={imageIndex === item.images.length - 1}
-                                onClick={() => reorderReceiveItemImage(index, image.id, 1)}
-                                className="px-1.5 py-0.5 text-[10px] border rounded text-gray-800 bg-white disabled:opacity-40"
-                              >
-                                →
-                              </button>
-                            </div>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {shortage > 0 && (
                     <div>
@@ -1633,7 +1638,7 @@ export default function PurchaseGR() {
             </div>
           )}
 
-          {canSeeFinancial && (
+          {canEnterGrShipping && (
             <div className="border rounded-lg">
               <button
                 onClick={() => setShippingExpanded(!shippingExpanded)}
