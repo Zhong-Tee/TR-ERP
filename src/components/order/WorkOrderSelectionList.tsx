@@ -45,7 +45,7 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, claim_shipping_confirmed_at')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at')
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
@@ -404,6 +404,7 @@ export default function WorkOrderSelectionList({
                   <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">เลขคำสั่งซื้อ</th>
                   <th className="p-2 text-left font-medium min-w-[140px] whitespace-nowrap">ผู้สร้างบิล</th>
                   <th className="p-2 text-left font-medium min-w-[170px] whitespace-nowrap">เลขพัสดุ</th>
+                  <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">วันที่ เวลา นัดรับ</th>
                 </tr>
               </thead>
               <tbody>
@@ -440,6 +441,20 @@ export default function WorkOrderSelectionList({
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.tracking_number ?? ''}>
                       {order.tracking_number ?? '-'}
+                    </td>
+                    <td className="p-2 align-middle text-gray-700 whitespace-nowrap">
+                      {(() => {
+                        const sp = (order as Order & { scheduled_pickup_at?: string | null }).scheduled_pickup_at
+                        if (!sp) return '-'
+                        const d = new Date(sp)
+                        if (isNaN(d.getTime())) return '-'
+                        const day = String(d.getDate()).padStart(2, '0')
+                        const month = String(d.getMonth() + 1).padStart(2, '0')
+                        const year = d.getFullYear() + 543
+                        const h = String(d.getHours()).padStart(2, '0')
+                        const m = String(d.getMinutes()).padStart(2, '0')
+                        return `${day}/${month}/${year} ${h}:${m} น.`
+                      })()}
                     </td>
                   </tr>
                 ))}

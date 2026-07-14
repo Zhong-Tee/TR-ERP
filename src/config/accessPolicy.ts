@@ -177,6 +177,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'orders-data-error': 'orders',
   'orders-complete': 'orders',
   'orders-verified': 'orders',
+  'orders-refund-return': 'orders',
   'orders-confirm': 'orders',
   'orders-shipped': 'orders',
   'orders-cancelled': 'orders',

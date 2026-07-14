@@ -14,6 +14,7 @@ import Modal from '../ui/Modal'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
 import { countThaiBillChars } from '../../lib/thaiBillCharCount'
+import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -585,6 +586,9 @@ const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP',
 const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 /** ช่องทาง OFFICE — ไม่ต้องกรอก: ชื่อ, ที่อยู่, เลขพัสดุ, ชื่อช่องทาง, โปรโมชั่น, สลิป */
 const CHANNELS_SKIP_CUSTOMER_FIELDS = ['OFFICE']
+/** ช่องทางที่ "ไม่ต้อง" ผูกบัญชีธนาคาร (Marketplace เก็บเงินแทน + OFFICE ภายใน) —
+ *  ช่องทางอื่นที่ชำระโดย "โอน" ต้องผูกบัญชี active ก่อน จึงจะเปิดบิลได้ (ไม่งั้นตรวจ EasySlip ไม่ได้) */
+const CHANNELS_NO_BANK_ACCOUNT_REQUIRED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'OFFICE']
 
 /** แมปสีหมึกพลาสติก → ชื่อสินค้าหมึกแฟลชพลาสติกที่แถม (จับคู่ด้วยชื่อ เพราะรหัสสินค้าอาจถูกล้าง/เปลี่ยนใหม่ได้) */
 const PLASTIC_INK_BONUS_MAP: Record<string, { product_name: string }> = {
@@ -606,6 +610,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [productChannelPriceMap, setProductChannelPriceMap] = useState<Record<string, number>>({})
   const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
+  /** metadata ช่องทางจาก migration 280 (โหลดแยกแบบ fail-safe — ถ้า migration ยังไม่รันจะว่าง แล้ว fallback พฤติกรรมเดิม) */
+  const [channelMeta, setChannelMeta] = useState<Record<string, { is_active: boolean; receive_transfer: boolean; roles: string[] }>>({})
   const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
   const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
@@ -891,9 +897,36 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
   }
 
+  /** โหลด metadata ช่องทาง (receive_transfer / is_active / role ที่มองเห็น) แบบ fail-safe
+   *  ถ้า migration 280 ยังไม่รัน (คอลัมน์/ตารางไม่มี) จะปล่อยว่าง แล้ว fallback เป็นพฤติกรรมเดิม */
+  async function loadChannelMeta() {
+    try {
+      const { data, error } = await supabase
+        .from('channels')
+        .select('channel_code, is_active, receive_transfer, channel_role_visibility(role)')
+      if (error) throw error
+      const map: Record<string, { is_active: boolean; receive_transfer: boolean; roles: string[] }> = {}
+      for (const c of (data || []) as any[]) {
+        map[c.channel_code] = {
+          is_active: c.is_active !== false,
+          receive_transfer: c.receive_transfer !== false,
+          roles: Array.isArray(c.channel_role_visibility)
+            ? c.channel_role_visibility.map((r: any) => r.role).filter(Boolean)
+            : [],
+        }
+      }
+      setChannelMeta(map)
+    } catch (error) {
+      // migration ยังไม่รัน — ใช้พฤติกรรมเดิม (hardcoded) แทน
+      console.warn('[OrderForm] channel metadata unavailable (migration 280 not applied?):', error)
+      setChannelMeta({})
+    }
+  }
+
   useEffect(() => {
     loadInitialData()
     loadBankSettings()
+    loadChannelMeta()
     async function loadOrderData() {
       if (order) {
         const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
@@ -1449,6 +1482,27 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
+
+  /** ช่องทางที่แสดงใน dropdown เปิดบิล — กรองตาม role + is_active (superadmin/admin เห็นทั้งหมด)
+   *  ถ้า channelMeta ว่าง (migration 280 ยังไม่รัน) จะไม่กรอง = พฤติกรรมเดิม
+   *  คงช่องทางของบิลที่กำลังแก้ไขไว้เสมอ แม้ภายหลังถูกจำกัด/ปิดใช้งาน */
+  const visibleChannels = useMemo(() => {
+    const isAdmin = isAdminOrSuperadmin(user?.role)
+    const myRole = normalizeRole(user?.role)
+    const list = channels.filter((ch) => {
+      const meta = channelMeta[ch.channel_code]
+      if (meta && !meta.is_active) return false
+      if (isAdmin) return true
+      const roles = meta?.roles || []
+      if (roles.length === 0) return true
+      return roles.includes(myRole)
+    })
+    if (formData.channel_code && !list.some((c) => c.channel_code === formData.channel_code)) {
+      const cur = channels.find((c) => c.channel_code === formData.channel_code)
+      if (cur) return [cur, ...list]
+    }
+    return list
+  }, [channels, channelMeta, user?.role, formData.channel_code])
 
   function getAutoProductPrice(productId?: string | null, channelCode?: string | null) {
     if (!productId || !channelCode) return 0
@@ -4111,7 +4165,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }`}
             >
               <option value="">-- เลือกช่องทาง --</option>
-              {channels.map((ch) => (
+              {visibleChannels.map((ch) => (
                 <option key={ch.channel_code} value={ch.channel_code}>
                   {ch.channel_name}
                 </option>
@@ -5544,18 +5598,42 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       </tbody>
                       <tfoot>
                         {(() => {
-                          const grandTotal = items
+                          const itemsSubtotal = items
                             .filter(item => item.product_id || item.product_name)
                             .reduce((sum, item) => {
                               const quantity = item.quantity || 1
                               const unitPrice = item.unit_price || 0
                               return sum + (quantity * unitPrice)
                             }, 0)
+                          // ฐานคำนวณส่วนลด: ช่องทางกรอกราคาเอง ใช้ราคาที่กรอก, อื่น ๆ ใช้ยอดสินค้า
+                          const basePrice = isManualPriceChannel ? (formData.price || 0) : itemsSubtotal
+                          const discountBaht = getDiscountInBaht(basePrice, formData.discount || 0, discountType)
+                          const shipping = formData.shipping_cost || 0
+                          // ยอดรวม (รวม VAT) = ยอดสินค้า - ส่วนลด + ค่าขนส่ง (สอดคล้องกับยอดรวมบิล)
+                          const grandTotal = Math.round((basePrice + shipping - discountBaht) * 100) / 100
                           const netAmount = grandTotal / 1.07
                           const vatAmount = grandTotal - netAmount
-                          
+
                           return (
                             <>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาสินค้า:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ส่วนลด:</td>
+                                <td className="p-2 pl-2 pr-4 text-right text-red-600">
+                                  {discountBaht > 0 ? '-' : ''}{discountBaht.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                              <tr className="border-t">
+                                <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ค่าขนส่ง:</td>
+                                <td className="p-2 pl-2 pr-4 text-right">
+                                  {shipping.toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
                               <tr className="border-t">
                                 <td colSpan={4} className="p-2 pl-2 pr-4 text-right">ราคาก่อนภาษี:</td>
                                 <td className="p-2 pl-2 pr-4 text-right">
@@ -5849,6 +5927,39 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               // ตรวจสอบสลิปโอน — ช่องทาง SHOP PICKUP / SHOP SHIPPING บังคับอัพโหลดสลิปก่อนกด บันทึก(ข้อมูลครบ)
               if (formData.payment_method === 'โอน') {
                 const channelCode = formData.channel_code?.trim() || ''
+                // บล็อกการเปิดบิล: ช่องทาง "โอนเข้าบัญชีตรง" ต้องผูกบัญชีธนาคาร active ก่อน
+                // ไม่งั้นสลิปจะไม่ถูกตรวจยอดผ่าน EasySlip อย่างถูกต้อง (fallback ไปบัญชีผิดตัว)
+                // ใช้ค่า receive_transfer จาก DB (migration 280) ถ้ามี; ถ้ายังไม่รัน migration ใช้ hardcoded เดิม
+                const chMeta = channelMeta[channelCode]
+                const channelReceivesTransfer = chMeta
+                  ? chMeta.receive_transfer
+                  : !CHANNELS_NO_BANK_ACCOUNT_REQUIRED.includes(channelCode)
+                if (channelReceivesTransfer) {
+                  const { data: linkRows, error: linkErr } = await supabase
+                    .from('bank_settings_channels')
+                    .select('bank_setting_id')
+                    .eq('channel_code', channelCode)
+                  let hasActiveLinkedBank = false
+                  if (!linkErr && linkRows && linkRows.length > 0) {
+                    const ids = linkRows.map((r: { bank_setting_id: string }) => r.bank_setting_id)
+                    const { data: activeBank } = await supabase
+                      .from('bank_settings')
+                      .select('id')
+                      .in('id', ids)
+                      .eq('is_active', true)
+                      .limit(1)
+                    hasActiveLinkedBank = !!(activeBank && activeBank.length > 0)
+                  }
+                  if (!hasActiveLinkedBank) {
+                    const channelName = channels.find((c) => c.channel_code === channelCode)?.channel_name || channelCode
+                    setMessageModal({
+                      open: true,
+                      title: 'ยังไม่ได้ผูกบัญชีธนาคาร',
+                      message: `ช่องทาง "${channelName}" ยังไม่ได้ผูกกับบัญชีธนาคาร จึงไม่สามารถตรวจสอบยอดเงินผ่าน EasySlip ได้\n\nกรุณาตั้งค่าที่ ตั้งค่า → ตั้งค่าข้อมูลธนาคาร ก่อนเปิดบิล`,
+                    })
+                    return
+                  }
+                }
                 if (CHANNELS_SHOW_SLIP_UPLOAD.includes(channelCode) && uploadedSlipPaths.length === 0) {
                   setMessageModal({
                     open: true,
@@ -6119,6 +6230,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     refund_recipient_account_name: bankDetails.refund_recipient_account_name,
                     refund_recipient_bank: bankDetails.refund_recipient_bank,
                     refund_recipient_account_number: bankDetails.refund_recipient_account_number,
+                    refund_recipient_reason: bankDetails.refund_recipient_reason || null,
                   }
 
                   // เช็คว่ามี pending refund ของ order นี้อยู่แล้วหรือไม่ — ถ้ามีให้อัพเดตแทน insert
@@ -6139,6 +6251,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         refund_recipient_account_name: refundData.refund_recipient_account_name,
                         refund_recipient_bank: refundData.refund_recipient_bank,
                         refund_recipient_account_number: refundData.refund_recipient_account_number,
+                        refund_recipient_reason: refundData.refund_recipient_reason,
                       })
                       .eq('id', existingRefund.id)
                     if (refundError) throw new Error(refundError.message)

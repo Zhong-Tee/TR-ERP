@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
-import { formatDateTime } from '../lib/utils'
+import { formatDateTime, downloadFileFromUrl } from '../lib/utils'
 import { splitAddressParts } from '../lib/thaiAddress'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../lib/claimTypeLabels'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
-import { getEasySlipQuota } from '../lib/slipVerification'
+import { getEasySlipQuota, uploadMultipleToStorage, getSignedUrlsFromStoragePaths } from '../lib/slipVerification'
 import Modal from '../components/ui/Modal'
 import BillEditSection from '../components/account/BillEditSection'
 import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection'
@@ -57,6 +57,7 @@ type BillingRequestOrder = {
   customer_name: string
   total_amount: number
   shipping_cost: number | null
+  discount: number | null
   status: string
   created_at: string
   billing_details: any
@@ -242,6 +243,13 @@ export default function Account() {
   const [slipPopupUrls, setSlipPopupUrls] = useState<string[]>([])
   const [slipPopupLoading, setSlipPopupLoading] = useState(false)
   const [slipPopupFailed, setSlipPopupFailed] = useState<Set<number>>(new Set())
+  /** สลิปโอนคืน (เราโอนคืนลูกค้า) — thumbnail ต่อ refund + อัปโหลด + viewer */
+  const [refundSlipThumbs, setRefundSlipThumbs] = useState<Record<string, string[]>>({})
+  const [refundSlipUploadingId, setRefundSlipUploadingId] = useState<string | null>(null)
+  const [refundSlipTargetId, setRefundSlipTargetId] = useState<string | null>(null)
+  const refundSlipInputRef = useRef<HTMLInputElement | null>(null)
+  const [refundSlipViewer, setRefundSlipViewer] = useState<{ billNo: string; urls: string[]; loading: boolean } | null>(null)
+  const [refundSlipViewerFailed, setRefundSlipViewerFailed] = useState<Set<number>>(new Set())
   /** Popup ยืนยัน อนุมัติ/ปฏิเสธ โอนคืน — ใช้ Modal เดียว */
   const [refundActionModal, setRefundActionModal] = useState<{
     open: boolean
@@ -462,6 +470,64 @@ export default function Account() {
     }
   }
 
+  // ── สลิปโอนคืน: โหลด thumbnail (signed URL) ของ refund ที่อนุมัติแล้ว + มีสลิป ──
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const map: Record<string, string[]> = {}
+      for (const r of historyRefunds) {
+        const paths = r.refund_slip_paths || []
+        if (r.status === 'approved' && paths.length > 0) {
+          const urls = await getSignedUrlsFromStoragePaths(paths)
+          if (cancelled) return
+          map[r.id] = urls
+        }
+      }
+      if (!cancelled) setRefundSlipThumbs(map)
+    })()
+    return () => { cancelled = true }
+  }, [historyRefunds])
+
+  function triggerRefundSlipUpload(refundId: string) {
+    setRefundSlipTargetId(refundId)
+    refundSlipInputRef.current?.click()
+  }
+
+  async function onRefundSlipFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    const refundId = refundSlipTargetId
+    if (!refundId || files.length === 0) { setRefundSlipTargetId(null); return }
+    setRefundSlipUploadingId(refundId)
+    try {
+      const newPaths = await uploadMultipleToStorage(files, 'slip-images', `refunds/${refundId}`)
+      const existing = historyRefunds.find((r) => r.id === refundId)?.refund_slip_paths || []
+      const merged = [...existing, ...newPaths]
+      const { error } = await supabase.from('ac_refunds').update({ refund_slip_paths: merged }).eq('id', refundId)
+      if (error) throw error
+      await loadHistory()
+    } catch (err: any) {
+      console.error('Error uploading refund slip:', err)
+      setRefundResultModal({ open: true, message: 'อัปโหลดสลิปโอนคืนไม่สำเร็จ: ' + (err?.message || err) })
+    } finally {
+      setRefundSlipUploadingId(null)
+      setRefundSlipTargetId(null)
+    }
+  }
+
+  async function openRefundSlipViewer(refund: Refund) {
+    const billNo = (refund as any).or_orders?.bill_no || '–'
+    setRefundSlipViewerFailed(new Set())
+    setRefundSlipViewer({ billNo, urls: [], loading: true })
+    try {
+      const urls = await getSignedUrlsFromStoragePaths(refund.refund_slip_paths || [])
+      setRefundSlipViewer({ billNo, urls, loading: false })
+    } catch (e) {
+      console.error('Error loading refund slip images:', e)
+      setRefundSlipViewer({ billNo, urls: [], loading: false })
+    }
+  }
+
   useEffect(() => {
     Promise.all([
       loadRefunds(),
@@ -598,7 +664,7 @@ export default function Account() {
       const excludeBillingStatuses = '("รอลงข้อมูล","ลงข้อมูลผิด","ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ")'
       const { data: taxData, error: taxError } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, total_amount, shipping_cost, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
+        .select('id, bill_no, customer_name, total_amount, shipping_cost, discount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
         .contains('billing_details', { request_tax_invoice: true })
         .not('status', 'in', excludeBillingStatuses)
         .order('created_at', { ascending: false })
@@ -667,7 +733,7 @@ export default function Account() {
       const [taxRes, refundRes, claimRes] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, total_amount, shipping_cost, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
+          .select('id, bill_no, customer_name, total_amount, shipping_cost, discount, status, created_at, billing_details, claim_type, channel_code, channel_order_no')
           .contains('billing_details', { request_tax_invoice: true })
           .not('status', 'in', historyExcludeStatuses)
           .order('created_at', { ascending: false }),
@@ -1398,16 +1464,66 @@ export default function Account() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-gray-500 text-sm">{refund.approved_at ? formatDateTime(refund.approved_at) : '–'}</td>
-                          <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>{formatRefundReason(refund.reason)}</td>
+                          <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>
+                            <div>{formatRefundReason(refund.reason)}</div>
+                            {refund.refund_recipient_reason?.trim() && (
+                              <div className="text-gray-800 mt-0.5">{refund.refund_recipient_reason.trim()}</div>
+                            )}
+                          </td>
                           <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); openSlipPopup(refund.order_id, (refund as any).or_orders?.bill_no || '–') }}
-                              className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
-                            >
-                              <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                              ดูสลิปโอน
-                            </button>
+                            <div className="flex flex-col items-start gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openSlipPopup(refund.order_id, (refund as any).or_orders?.bill_no || '–') }}
+                                className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
+                              >
+                                <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                                ดูสลิปโอน
+                              </button>
+                              {/* สลิปโอนคืน — เฉพาะรายการที่อนุมัติแล้ว */}
+                              {refund.status === 'approved' && (
+                                (refund.refund_slip_paths?.length || 0) > 0 ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); openRefundSlipViewer(refund) }}
+                                      title="ดูสลิปโอนคืน"
+                                      className="relative w-11 h-11 rounded-lg border border-emerald-300 overflow-hidden bg-gray-50 hover:ring-2 hover:ring-emerald-400 transition-all shrink-0"
+                                    >
+                                      {refundSlipThumbs[refund.id]?.[0] ? (
+                                        <img src={refundSlipThumbs[refund.id][0]} alt="สลิปโอนคืน" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                      ) : (
+                                        <span className="flex items-center justify-center w-full h-full text-emerald-500"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg></span>
+                                      )}
+                                      {(refund.refund_slip_paths?.length || 0) > 1 && (
+                                        <span className="absolute bottom-0 right-0 px-1 text-[10px] font-bold bg-emerald-600 text-white rounded-tl">{refund.refund_slip_paths!.length}</span>
+                                      )}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); triggerRefundSlipUpload(refund.id) }}
+                                      disabled={refundSlipUploadingId === refund.id}
+                                      className="text-xs text-emerald-700 hover:underline disabled:opacity-50"
+                                    >
+                                      {refundSlipUploadingId === refund.id ? 'กำลังอัป...' : '+ เพิ่มรูป'}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); triggerRefundSlipUpload(refund.id) }}
+                                    disabled={refundSlipUploadingId === refund.id}
+                                    className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors disabled:opacity-60"
+                                  >
+                                    {refundSlipUploadingId === refund.id ? (
+                                      <><span className="animate-spin rounded-full h-3.5 w-3.5 border-2 border-white border-t-transparent" />กำลังอัปโหลด...</>
+                                    ) : (
+                                      <><svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>อัปโหลดสลิปโอนคืน</>
+                                    )}
+                                  </button>
+                                )
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1625,7 +1741,10 @@ export default function Account() {
                       {formatDateTime(refund.created_at)}
                     </td>
                     <td className="px-4 py-3 text-gray-600 text-sm min-w-[20rem] max-w-[28rem] align-top whitespace-normal break-words" title={formatRefundReason(refund.reason)}>
-                      {formatRefundReason(refund.reason)}
+                      <div>{formatRefundReason(refund.reason)}</div>
+                      {refund.refund_recipient_reason?.trim() && (
+                        <div className="text-gray-800 mt-0.5">{refund.refund_recipient_reason.trim()}</div>
+                      )}
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex gap-2">
@@ -1744,7 +1863,7 @@ export default function Account() {
                             onClick={(e) => { e.stopPropagation(); confirmTaxInvoice(o) }}
                             className="px-2.5 py-1 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-xs font-medium transition-colors"
                           >
-                            ยืนยัน
+                            ตรวจสอบ
                           </button>
                         )}
                       </td>
@@ -1807,6 +1926,77 @@ export default function Account() {
                 </div>
               )}
             </div>
+        </Modal>
+      )}
+
+      {/* input อัปโหลดสลิปโอนคืน (ซ่อน) */}
+      <input
+        ref={refundSlipInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={onRefundSlipFilesSelected}
+      />
+
+      {/* Modal ดูสลิปโอนคืน */}
+      {refundSlipViewer && (
+        <Modal
+          open
+          onClose={() => setRefundSlipViewer(null)}
+          closeOnBackdropClick
+          contentClassName="max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col"
+        >
+          <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+            <h3 className="text-base font-semibold text-gray-800">สลิปโอนคืน — บิล {refundSlipViewer.billNo}</h3>
+            <button
+              type="button"
+              onClick={() => setRefundSlipViewer(null)}
+              className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="p-4 overflow-y-auto flex-1">
+            {refundSlipViewer.loading ? (
+              <div className="flex justify-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-emerald-500 border-t-transparent" />
+              </div>
+            ) : refundSlipViewer.urls.length === 0 ? (
+              <p className="text-center text-gray-500 py-6 text-sm">ไม่พบภาพสลิปโอนคืน</p>
+            ) : (
+              <div className="space-y-4">
+                {refundSlipViewer.urls.map((url, idx) => (
+                  <div key={idx} className="flex flex-col items-center gap-2">
+                    {refundSlipViewerFailed.has(idx) ? (
+                      <div className="flex flex-col items-center justify-center py-8 px-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 min-h-[120px]">
+                        <p className="font-medium text-sm">โหลดรูปไม่สำเร็จ</p>
+                        <a href={url} target="_blank" rel="noopener noreferrer" className="mt-2 text-xs text-sky-600 hover:underline">เปิดในแท็บใหม่</a>
+                      </div>
+                    ) : (
+                      <>
+                        <img
+                          src={url}
+                          alt={`สลิปโอนคืน ${idx + 1}`}
+                          className="max-w-full h-auto rounded-lg border border-gray-200 shadow-sm"
+                          referrerPolicy="no-referrer"
+                          onError={() => setRefundSlipViewerFailed(prev => new Set(prev).add(idx))}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void downloadFileFromUrl(url, `สลิปโอนคืน-${refundSlipViewer.billNo}-${idx + 1}.jpg`)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors"
+                        >
+                          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                          ดาวน์โหลดรูป
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </Modal>
       )}
 
@@ -1884,6 +2074,12 @@ export default function Account() {
                           <span className="font-medium text-gray-600">เหตุผลโอนเกิน:</span>{' '}
                           <span className="text-gray-800">{formatRefundReason(viewBillRefund.reason)}</span>
                         </p>
+                        {viewBillRefund.refund_recipient_reason?.trim() && (
+                          <p className="sm:col-span-2">
+                            <span className="font-medium text-gray-600">เหตุผลโอนคืน:</span>{' '}
+                            <span className="text-gray-800">{viewBillRefund.refund_recipient_reason.trim()}</span>
+                          </p>
+                        )}
                       </div>
                       <div>
                         <p className="font-medium text-gray-600 text-sm mb-2">รูปสลิปโอน</p>
@@ -1948,7 +2144,13 @@ export default function Account() {
                   <div className="flex justify-end">
                     <div className="w-64 space-y-1">
                       <div className="flex justify-between py-1 border-b border-gray-100">
-                        <span className="font-medium text-gray-600">ค่าจัดส่ง</span>
+                        <span className="font-medium text-gray-600">ส่วนลด</span>
+                        <span className={`tabular-nums ${Number((viewOrder as any).discount || 0) > 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                          {Number((viewOrder as any).discount || 0) > 0 ? '-' : ''}฿{Number((viewOrder as any).discount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="font-medium text-gray-600">ค่าขนส่ง</span>
                         <span className="tabular-nums text-gray-800">฿{Number((viewOrder as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                       </div>
                       <div className="flex justify-between py-2 px-3 rounded-lg bg-sky-50">

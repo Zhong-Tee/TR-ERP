@@ -10,6 +10,7 @@ export type OverpayRefundBankDetails = {
   refund_recipient_account_name: string
   refund_recipient_bank: string
   refund_recipient_account_number: string
+  refund_recipient_reason: string
 }
 
 export interface VerificationResultModalProps {
@@ -89,7 +90,7 @@ function BankSelect({
               className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center p-1"
               style={{ backgroundColor: selected.brandColor }}
             >
-              <img src={bankLogoUrl(selected.logo)} alt="" className="w-full h-full object-contain" />
+              <img src={selected.logoUrl || bankLogoUrl(selected.logo)} alt="" className="w-full h-full object-contain" />
             </span>
             <span className="flex-1 truncate text-gray-800">{selected.bank}</span>
           </>
@@ -130,7 +131,7 @@ function BankSelect({
                     className="w-6 h-6 rounded-full shrink-0 flex items-center justify-center p-1"
                     style={{ backgroundColor: b.brandColor }}
                   >
-                    <img src={bankLogoUrl(b.logo)} alt="" className="w-full h-full object-contain" />
+                    <img src={b.logoUrl || bankLogoUrl(b.logo)} alt="" className="w-full h-full object-contain" />
                   </span>
                   <span className="truncate text-gray-800">{b.bank}</span>
                 </button>
@@ -201,6 +202,7 @@ export default function VerificationResultModal({
   const [recipientName, setRecipientName] = useState('')
   const [recipientBank, setRecipientBank] = useState('')
   const [recipientAccountNo, setRecipientAccountNo] = useState('')
+  const [recipientReason, setRecipientReason] = useState('')
   const [formError, setFormError] = useState('')
 
   useEffect(() => {
@@ -209,6 +211,7 @@ export default function VerificationResultModal({
       setRecipientName('')
       setRecipientBank('')
       setRecipientAccountNo('')
+      setRecipientReason('')
       setFormError('')
     }
   }, [open])
@@ -238,6 +241,7 @@ export default function VerificationResultModal({
       refund_recipient_account_name: n,
       refund_recipient_bank: b,
       refund_recipient_account_number: a,
+      refund_recipient_reason: recipientReason.trim(),
     })
   }
 
@@ -301,6 +305,17 @@ export default function VerificationResultModal({
                 className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-amber-400 focus:border-amber-400 disabled:bg-gray-100"
                 inputMode="numeric"
                 autoComplete="off"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">เหตุผลโอนคืน</span>
+              <textarea
+                value={recipientReason}
+                onChange={(e) => setRecipientReason(e.target.value)}
+                disabled={confirmingOverpay}
+                rows={2}
+                placeholder="เช่น ลูกค้าโอนเกิน, โอนซ้ำ (ถ้ามี)"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 disabled:bg-gray-100 resize-none"
               />
             </label>
             {formError ? <p className="text-sm text-red-600 font-medium">{formError}</p> : null}

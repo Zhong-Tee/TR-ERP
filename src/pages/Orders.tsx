@@ -6,6 +6,7 @@ import OrderForm from '../components/order/OrderForm'
 import OrderConfirmBoard from '../components/order/OrderConfirmBoard'
 import IssueBoard from '../components/order/IssueBoard'
 import ClaimReqOrdersTab from '../components/order/ClaimReqOrdersTab'
+import RefundReturnList from '../components/order/RefundReturnList'
 import { Order, OrderStatus } from '../types'
 import { supabase } from '../lib/supabase'
 import {
@@ -25,13 +26,14 @@ type Tab =
   | 'waiting'
   | 'complete'
   | 'verified'
+  | 'refund-return'
   | 'confirm'
   | 'issue'
   | 'data-error'
   | 'shipped'
   | 'cancelled'
 
-const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'confirm', 'shipped', 'cancelled', 'issue']
+const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
 const SALES_TR_FILTER_TABS: Tab[] = ['all', 'waiting', 'data-error', 'complete', 'verified', 'shipped', 'issue', 'claim-req']
@@ -76,6 +78,7 @@ export default function Orders() {
   const [waitingCount, setWaitingCount] = useState(0)
   const [completeCount, setCompleteCount] = useState(0)
   const [verifiedCount, setVerifiedCount] = useState(0)
+  const [refundReturnCount, setRefundReturnCount] = useState(0)
   const [dataErrorCount, setDataErrorCount] = useState(0)
   const [cancelledCount, setCancelledCount] = useState(0)
   
@@ -301,9 +304,32 @@ export default function Orders() {
         issueCount = ic ?? 0
       }
 
+      // Load refund-return count (โอนคืนที่อนุมัติแล้ว + มีสลิป, scope เดียวกับแท็บโอนคืน)
+      let refundReturnCount = 0
+      try {
+        let rq = supabase
+          .from('ac_refunds')
+          .select('id, refund_slip_paths, or_orders!inner(admin_user)')
+          .eq('status', 'approved')
+        if (isSalesPumpOwnerScopedRole(user?.role)) {
+          const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
+          rq = name ? rq.eq('or_orders.admin_user', name) : rq.eq('or_orders.admin_user', '__no_owner__')
+        } else if (isSalesTrTeamRole(user?.role)) {
+          const vals = salesTrScope || []
+          rq = vals.length > 0 ? rq.in('or_orders.admin_user', vals) : rq.eq('or_orders.admin_user', '__no_sales_tr_team__')
+        }
+        const { data: rrData, error: rrErr } = await rq
+        if (!rrErr && rrData) {
+          refundReturnCount = (rrData as any[]).filter((r) => (r.refund_slip_paths?.length || 0) > 0).length
+        }
+      } catch (e) {
+        console.error('Error counting refund returns:', e)
+      }
+
       setWaitingCount(waitingCount || 0)
       setCompleteCount(completeCount || 0)
       setVerifiedCount(verifiedCount || 0)
+      setRefundReturnCount(refundReturnCount)
       setDataErrorCount(dataErrorCount || 0)
       setCancelledCount(cancelledCount || 0)
       setConfirmCount(confirmCountTotal ?? 0)
@@ -525,6 +551,7 @@ export default function Orders() {
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
               { id: 'verified', label: 'ตรวจสอบแล้ว', count: verifiedCount, countColor: 'text-green-600' },
+              { id: 'refund-return', label: 'โอนคืน', count: refundReturnCount, countColor: 'text-emerald-600' },
               { id: 'confirm', label: 'Confirm', count: confirmCount, countColor: 'text-blue-600' },
               { id: 'shipped', label: 'จัดส่งแล้ว' },
               { id: 'cancelled', label: `ยกเลิก (${cancelledCount})`, labelColor: 'text-orange-600' },
@@ -574,7 +601,7 @@ export default function Orders() {
         </div>
 
         {/* Search and Filter - แสดงเมื่อไม่ใช่แท็บสร้าง/แก้ไข */}
-        {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && (
+        {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
               <input
@@ -798,6 +825,8 @@ export default function Orders() {
             useDetailViewOnClick={true}
             {...salesTrOrderListProps}
           />
+        ) : activeTab === 'refund-return' ? (
+          <RefundReturnList />
         ) : activeTab === 'confirm' ? (
           <OrderConfirmBoard onCountChange={setConfirmCount} />
         ) : activeTab === 'issue' ? (

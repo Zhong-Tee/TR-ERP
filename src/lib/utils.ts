@@ -2,6 +2,26 @@ export function cn(...classes: (string | undefined | null | false)[]): string {
   return classes.filter(Boolean).join(' ')
 }
 
+/** ดาวน์โหลดรูป/ไฟล์จาก URL (รองรับ signed URL แบบ cross-origin ผ่าน blob) */
+export async function downloadFileFromUrl(url: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(objectUrl)
+  } catch (e) {
+    console.warn('downloadFileFromUrl failed, opening in new tab:', e)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 export function formatDate(date: string | Date): string {
   const d = typeof date === 'string' ? new Date(date) : date
   return d.toLocaleDateString('th-TH', {

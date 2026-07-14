@@ -802,6 +802,10 @@ export interface Refund {
   refund_recipient_account_name?: string | null
   refund_recipient_bank?: string | null
   refund_recipient_account_number?: string | null
+  /** เหตุผลโอนคืน (กรอกจากออเดอร์) — แสดงใต้บรรทัดยอดบิล/สลิป */
+  refund_recipient_reason?: string | null
+  /** path สลิปการโอนเงินคืนลูกค้า (หลายรูป) — บัญชีอัปโหลด, Sales เปิดดู */
+  refund_slip_paths?: string[] | null
 }
 
 // Verified Slip Types

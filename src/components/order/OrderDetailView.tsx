@@ -393,6 +393,22 @@ export default function OrderDetailView({
             <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
             <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
+            {order.channel_code === 'SHOPP' && (
+              <InfoRow
+                label="วันที่ เวลา นัดรับ"
+                value={(() => {
+                  if (!order.scheduled_pickup_at) return '–'
+                  const d = new Date(order.scheduled_pickup_at)
+                  if (isNaN(d.getTime())) return '–'
+                  const day = String(d.getDate()).padStart(2, '0')
+                  const month = String(d.getMonth() + 1).padStart(2, '0')
+                  const year = d.getFullYear() + 543
+                  const h = String(d.getHours()).padStart(2, '0')
+                  const m = String(d.getMinutes()).padStart(2, '0')
+                  return `${day}/${month}/${year} ${h}:${m} น.`
+                })()}
+              />
+            )}
             <div className="md:col-span-2">
               <InfoRow label="ที่อยู่" value={displayAddress} />
             </div>

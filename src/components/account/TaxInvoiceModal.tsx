@@ -16,6 +16,7 @@ interface TaxInvoiceOrder {
   customer_name: string
   total_amount: number
   shipping_cost?: number | null
+  discount?: number | null
   channel_code?: string | null
   channel_order_no?: string | null
   billing_details?: {
@@ -134,7 +135,7 @@ export default function TaxInvoiceModal({
     setCustomerName(bd.tax_customer_name || order.customer_name || '')
     setCustomerTaxId(bd.tax_id || '')
     setCustomerPhone(bd.tax_customer_phone || bd.mobile_phone || '')
-    setDiscount(0)
+    setDiscount(Number(order.discount) || 0)
 
     const now = new Date()
     const yy = now.getFullYear().toString().slice(-2)

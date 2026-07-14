@@ -246,8 +246,42 @@ export async function uploadMultipleToStorage(
       throw new Error(`ไม่สามารถอัปโหลดไฟล์ ${file.name}: ${friendlyMessage}`)
     }
   }
-  
+
   return paths
+}
+
+/**
+ * แปลง storage path (รูปแบบ "bucket/path/to/file") เป็น signed URL สำหรับแสดงรูป
+ * ใช้ร่วมกับสลิปที่เก็บเป็น path (เช่น สลิปโอนคืน refund_slip_paths)
+ * @param paths - อาเรย์ของ storage path
+ * @param expiresIn - อายุลิงก์ (วินาที) default 3600
+ */
+export async function getSignedUrlsFromStoragePaths(
+  paths: (string | null | undefined)[],
+  expiresIn: number = 3600
+): Promise<string[]> {
+  const urls: string[] = []
+  for (const raw of paths) {
+    if (!raw || String(raw).trim() === '') continue
+    const parts = String(raw).split('/')
+    const bucket = parts[0] || 'slip-images'
+    const filePath = parts.slice(1).join('/')
+    try {
+      const { data, error } = await supabase.storage.from(bucket).createSignedUrl(filePath, expiresIn)
+      if (!error && data?.signedUrl) {
+        urls.push(data.signedUrl)
+        continue
+      }
+      // fallback: ลองบัคเก็ต slip-images ตรง ๆ
+      const retry = await supabase.storage
+        .from('slip-images')
+        .createSignedUrl(parts.length > 1 ? filePath : String(raw), expiresIn)
+      if (!retry.error && retry.data?.signedUrl) urls.push(retry.data.signedUrl)
+    } catch (e) {
+      console.warn('getSignedUrlsFromStoragePaths failed:', raw, e)
+    }
+  }
+  return urls
 }
 
 /**

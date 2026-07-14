@@ -41,9 +41,30 @@ export type ThaiBank = {
   bank: string
   logo: string
   brandColor: string
+  /** URL โลโก้แบบกำหนดเอง (เช่น PromptPay) — ถ้ามีจะใช้แทน bankLogoUrl(logo) */
+  logoUrl?: string
 }
 
-/** รายชื่อธนาคาร (ไม่ซ้ำ) จากรายการแอปทั้งหมด — ใช้กับดรอปดาวน์เลือกธนาคาร */
+/** โลโก้ PromptPay (inline SVG) — กรอบขาว + มุมพับสีเขียว บนพื้นน้ำเงิน (brandColor) */
+export const PROMPTPAY_LOGO_URL =
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">' +
+      '<rect x="9" y="9" width="30" height="30" rx="7" fill="none" stroke="#ffffff" stroke-width="3.4"/>' +
+      '<path d="M24 16v16M16 24h16" stroke="#ffffff" stroke-width="3.4" stroke-linecap="round"/>' +
+      '<path d="M39 27V39H27Z" fill="#17a2a2"/>' +
+      '</svg>',
+  )
+
+/** ตัวเลือก PromptPay — แสดงเป็นตัวเลือกแรกในดรอปดาวน์ */
+export const PROMPTPAY_BANK: ThaiBank = {
+  bank: 'พร้อมเพย์ (PromptPay)',
+  logo: '',
+  logoUrl: PROMPTPAY_LOGO_URL,
+  brandColor: '#123a6b',
+}
+
+/** รายชื่อธนาคาร (ไม่ซ้ำ) จากรายการแอปทั้งหมด — ใช้กับดรอปดาวน์เลือกธนาคาร (PromptPay เป็นตัวแรก) */
 export const THAI_BANKS: ThaiBank[] = [...SLIP_BANK_APPS_30D, ...SLIP_BANK_APPS_7D].reduce<ThaiBank[]>(
   (list, app) => {
     if (!list.some((b) => b.bank === app.bank)) {
@@ -51,5 +72,5 @@ export const THAI_BANKS: ThaiBank[] = [...SLIP_BANK_APPS_30D, ...SLIP_BANK_APPS_
     }
     return list
   },
-  [],
+  [PROMPTPAY_BANK],
 )

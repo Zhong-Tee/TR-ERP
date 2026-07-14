@@ -9,6 +9,7 @@ import { useWmsModal } from '../components/wms/useWmsModal'
 import DataBackupClearPanel from '../components/settings/DataBackupClearPanel'
 import MfaEnrollPanel from '../components/settings/MfaEnrollPanel'
 import ClockLocationsPanel from '../components/settings/ClockLocationsPanel'
+import ChannelManagementPanel from '../components/settings/ChannelManagementPanel'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { useAuthContext } from '../contexts/AuthContext'
 import { getRoleLookupCandidates, normalizeRole } from '../config/accessPolicy'
@@ -102,6 +103,7 @@ export default function Settings() {
 
   // Bill header settings state
   const [bankSubTab, setBankSubTab] = useState<'bank-info' | 'bill-header'>('bank-info')
+  const [billChannelSubTab, setBillChannelSubTab] = useState<'channels' | 'prefix'>('channels') // sub-tab จัดการช่องทาง/ตั้งค่าเลขบิล
   const [billHeaders, setBillHeaders] = useState<BillHeaderSetting[]>([])
   const [billHeaderLoading, setBillHeaderLoading] = useState(false)
   const [showBillHeaderForm, setShowBillHeaderForm] = useState(false)
@@ -662,6 +664,7 @@ export default function Settings() {
     { key: 'orders-data-error', label: 'ลงข้อมูลผิด', group: 'orders' },
     { key: 'orders-complete', label: 'ตรวจสอบไม่ผ่าน', group: 'orders' },
     { key: 'orders-verified', label: 'ตรวจสอบแล้ว', group: 'orders' },
+    { key: 'orders-refund-return', label: 'โอนคืน', group: 'orders' },
     { key: 'orders-confirm', label: 'Confirm', group: 'orders' },
     { key: 'orders-shipped', label: 'จัดส่งแล้ว', group: 'orders' },
     { key: 'orders-cancelled', label: 'ยกเลิก', group: 'orders' },
@@ -3525,6 +3528,30 @@ export default function Settings() {
       {/* ตั้งค่าเลขบิล-ช่องทาง Tab */}
       {activeTab === 'bill-channel-map' && hasAccess('settings-bill-channel-map') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
+          {/* Sub-tabs: จัดการช่องทาง / ตั้งค่าเลขบิล */}
+          <div className="flex gap-4 border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setBillChannelSubTab('channels')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${billChannelSubTab === 'channels' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              จัดการช่องทาง
+            </button>
+            <button
+              type="button"
+              onClick={() => setBillChannelSubTab('prefix')}
+              className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${billChannelSubTab === 'prefix' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+            >
+              ตั้งค่าเลขบิล
+            </button>
+          </div>
+
+          {billChannelSubTab === 'channels' && (
+            <ChannelManagementPanel onChannelsChanged={loadChannels} />
+          )}
+
+          {billChannelSubTab === 'prefix' && (
+          <div className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1">
               <h2 className="text-xl font-bold">ตั้งค่าเลขบิล-ช่องทาง</h2>
@@ -3646,6 +3673,8 @@ export default function Settings() {
               </div>
             </div>
           </div>
+          </div>
+          )}
         </div>
       )}
 

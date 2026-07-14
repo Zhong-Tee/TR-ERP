@@ -30,7 +30,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
   const finished = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled'].includes(item.status)
   const isSpareLike =
     item.product_code === 'SPARE_PART' ||
-    item.location === 'อะไหล่' ||
+    String(item.location || '').includes('อะไหล่') ||
     String(item.product_name || '').includes('หน้ายาง+โฟม')
   const imgUrl =
     isSpareLike ? getProductImageUrl('spare_part') : getProductImageUrl(item.product_code)
@@ -132,7 +132,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
             if (!finished) onFinish()
           }}
           disabled={finished}
-          className={`flex-1 py-6 rounded-3xl text-2xl font-black shadow-lg ${
+          className={`flex-1 py-6 rounded-3xl text-xl font-black shadow-lg ${
             finished
               ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
               : isMovedFromPlan
