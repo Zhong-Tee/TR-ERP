@@ -196,6 +196,7 @@ export default function Settings() {
   const [issueTypeSaving, setIssueTypeSaving] = useState(false)
   const [issueTypeEditingId, setIssueTypeEditingId] = useState<string | null>(null)
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all')
+  const [hideInactiveUsers, setHideInactiveUsers] = useState(false)
   /** user id ที่กำลังเปิด popover สิทธิ์ Mobile อยู่ */
   const [mobileAccessUserId, setMobileAccessUserId] = useState<string | null>(null)
 
@@ -2432,9 +2433,10 @@ export default function Settings() {
 
       {/* Users Tab */}
       {activeTab === 'users' && hasAccess('settings-users') && (() => {
-        const filteredUsers = userRoleFilter === 'all'
+        const filteredUsers = (userRoleFilter === 'all'
           ? users
           : users.filter((u) => normalizeRole(u.role) === normalizeRole(userRoleFilter))
+        ).filter((u) => !hideInactiveUsers || u.is_active !== false)
         return (
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="flex items-center justify-between mb-4">
@@ -2449,6 +2451,24 @@ export default function Settings() {
                   + สร้าง User ใหม่
                 </button>
               )}
+              {(() => {
+                const inactiveCount = users.filter((u) => u.is_active === false).length
+                return (
+                  <button
+                    type="button"
+                    onClick={() => setHideInactiveUsers((v) => !v)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border transition ${
+                      hideInactiveUsers
+                        ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title={hideInactiveUsers ? 'คลิกเพื่อแสดง user ที่ปิดสถานะ' : 'คลิกเพื่อซ่อน user ที่ปิดสถานะ'}
+                  >
+                    {hideInactiveUsers ? 'แสดง user ที่ปิด' : 'ซ่อน user ที่ปิด'}
+                    {inactiveCount > 0 && <span className="text-xs opacity-80">({inactiveCount})</span>}
+                  </button>
+                )
+              })()}
               <label className="text-sm font-medium text-gray-600">กรอง Role:</label>
               <select
                 value={userRoleFilter}
