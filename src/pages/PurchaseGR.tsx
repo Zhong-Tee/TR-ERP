@@ -1218,7 +1218,7 @@ export default function PurchaseGR() {
       </div>
 
       {/* ── Receive GR Modal ── */}
-      <Modal open={receiveOpen} onClose={clearReceiveDraft} closeOnBackdropClick={false} contentClassName="max-w-6xl">
+      <Modal open={receiveOpen} onClose={clearReceiveDraft} closeOnBackdropClick={false} contentClassName="max-w-[1400px]">
         <div className="p-4 md:p-6 space-y-5 text-gray-900">
           <h2 className="text-lg md:text-xl font-bold text-gray-900">
             {isFollowUp ? 'รับสินค้าเพิ่ม (Follow-up GR)' : 'ตรวจรับสินค้า (GR)'}
@@ -1425,7 +1425,7 @@ export default function PurchaseGR() {
                 <tr className="bg-gray-50 border-b">
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
                   <th className="px-3 py-2.5 text-center font-semibold text-gray-600 w-14">ลำดับ</th>
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 min-w-[260px]">สินค้า</th>
                   {isFollowUp && (
                     <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">รับแล้ว</th>
                   )}
@@ -1446,13 +1446,19 @@ export default function PurchaseGR() {
                   return (
                     <tr key={`${item.product_id}-${index}`} className={shortage > 0 ? 'bg-red-50/50' : ''}>
                       <td className="px-3 py-2">
-                        <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => { if (imgUrl) openZoomGallery([imgUrl], 0) }}
+                          disabled={!imgUrl}
+                          title={imgUrl ? 'คลิกเพื่อดูรูปขยาย' : undefined}
+                          className="w-10 h-10 rounded bg-gray-200 overflow-hidden block hover:ring-2 hover:ring-blue-400 transition disabled:cursor-default"
+                        >
                           {imgUrl ? (
-                            <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                            <img src={imgUrl} alt="" className="w-full h-full object-cover cursor-zoom-in" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
                           )}
-                        </div>
+                        </button>
                       </td>
                       <td className="px-3 py-2 text-center text-gray-700 tabular-nums font-medium">{index + 1}</td>
                       <td className="px-3 py-2">
@@ -1460,12 +1466,12 @@ export default function PurchaseGR() {
                           <span className="text-gray-500">รหัสสินค้า </span>
                           <span className="font-medium text-gray-900">{item.product_code}</span>
                         </div>
-                        <div className="text-xs mt-0.5">
+                        <div className="text-xs mt-0.5 break-words">
                           <span className="text-gray-500">ชื่อสินค้า </span>
                           <span className="font-medium text-gray-900">{item.product_name}</span>
                         </div>
                         {item.item_note && (
-                          <div className="text-xs text-amber-600 mt-0.5">* {item.item_note}</div>
+                          <div className="text-xs text-amber-600 mt-0.5 break-words">* {item.item_note}</div>
                         )}
                       </td>
                       {isFollowUp && (
