@@ -281,6 +281,7 @@ export default function Packing() {
     message: string
     confirmText?: string
     cancelText?: string
+    spacebarConfirm?: boolean
   }>({ open: false, mode: 'alert', title: '', message: '' })
   const [shippedEdit, setShippedEdit] = useState<{
     open: boolean
@@ -501,15 +502,30 @@ export default function Packing() {
     setDialog({ open: true, mode: 'confirm', title, message, confirmText, cancelText })
   }
 
+  const openBillingConfirm = (billType: string, onConfirm: () => void) => {
+    confirmActionRef.current = onConfirm
+    setDialog({
+      open: true,
+      mode: 'confirm',
+      title: `‼️ กรุณาใส่${billType}`,
+      message: `ออร์เดอร์นี้ต้องใส่${billType}ลงในกล่อง เมื่อใส่เรียบร้อยแล้ว\nกด Spacebar เพื่อยืนยัน แล้วเริ่มสแกนสินค้าได้ทันที`,
+      confirmText: `ใส่${billType}แล้ว`,
+      cancelText: 'ยังไม่ใส่',
+      spacebarConfirm: true,
+    })
+  }
+
   const closeDialog = () => {
     setDialog((prev) => ({ ...prev, open: false }))
     confirmActionRef.current = null
   }
 
   useEffect(() => {
-    const isPackingScanConfirm =
-      dialog.open && dialog.mode === 'confirm' && dialog.title === 'ยืนยันการแพ็คสินค้า'
-    if (!isPackingScanConfirm) return
+    const isSpacebarConfirm =
+      dialog.open &&
+      dialog.mode === 'confirm' &&
+      (dialog.title === 'ยืนยันการแพ็คสินค้า' || dialog.spacebarConfirm === true)
+    if (!isSpacebarConfirm) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return
@@ -534,7 +550,7 @@ export default function Packing() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [dialog.open, dialog.mode, dialog.title])
+  }, [dialog.open, dialog.mode, dialog.title, dialog.spacebarConfirm])
 
   const saveShippedEdit = async () => {
     if (!shippedEdit) return
@@ -877,6 +893,12 @@ export default function Packing() {
       parcelScanRef.current?.focus()
     } else if (isFullyScanned) {
       setStatusMessage({ text: '🟢 แสกนครบแล้ว!', type: 'success' })
+    } else if (
+      (currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) &&
+      !billingCheckConfirmed
+    ) {
+      const billType = currentGroup[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+      setStatusMessage({ text: `⚠️ กรุณายืนยันว่าใส่${billType}ก่อนสแกนสินค้า`, type: 'error' })
     } else {
       setStatusMessage({ text: 'รอสแกนสินค้า...', type: '' })
       itemScanRef.current?.focus()
@@ -1337,6 +1359,15 @@ export default function Packing() {
           error: error?.message || 'เริ่มบันทึกไม่สำเร็จ'
         })
       })
+      const needsBilling = group[0].needsTaxInvoice || group[0].needsCashBill
+      if (needsBilling) {
+        const billType = group[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+        openBillingConfirm(billType, () => {
+          setBillingCheckConfirmed(true)
+          setStatusMessage({ text: 'รอสแกนสินค้า...', type: '' })
+          setTimeout(() => itemScanRef.current?.focus(), 50)
+        })
+      }
     } else {
       playErrorSound()
       setStatusMessage({ text: '❌ เลขพัสดุไม่ตรงกับที่เลือก', type: 'error' })
@@ -1351,6 +1382,13 @@ export default function Packing() {
     if (!isQcPassGroup(group)) {
       playErrorSound()
       setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
+      return
+    }
+    const needsBilling = group[0].needsTaxInvoice || group[0].needsCashBill
+    if (needsBilling && !billingCheckConfirmed) {
+      const billType = group[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
+      playErrorSound()
+      setStatusMessage({ text: `⚠️ กรุณายืนยันว่าใส่${billType}ในกล่องก่อนสแกนสินค้า`, type: 'error' })
       return
     }
     const itemToScan = group.find((item) => !item.scanned && item.unit_uid === scanValue)
@@ -1399,14 +1437,6 @@ export default function Packing() {
       )
       if (updatedGroup.every((item) => item.scanned)) {
         clearInactivityTimer()
-        const needsBilling = updatedGroup[0].needsTaxInvoice || updatedGroup[0].needsCashBill
-        if (needsBilling && !billingCheckConfirmed) {
-          const billType = updatedGroup[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
-          playErrorSound()
-          setStatusMessage({ text: `⚠️ ยังไม่ได้ยืนยันว่าใส่${billType}แล้ว`, type: 'error' })
-          openAlert(`สแกนครบแล้ว แต่ยังไม่ได้ติ๊กยืนยันว่าใส่${billType}ในกล่องแล้ว\nกรุณาติ๊กยืนยันก่อนจบการแพ็ค`, `⚠️ ลืมใส่${billType}`)
-          return
-        }
         setStatusMessage({ text: '✅ สแกนครบแล้ว!', type: 'success' })
         openConfirm(
           'สแกนสินค้าครบแล้ว แพ็คเสร็จเรียบร้อยใช่ไหม?',
@@ -2504,7 +2534,9 @@ export default function Packing() {
                             !isQcPassGroup(currentGroup) ||
                             !currentGroup[0].parcelScanned ||
                             currentGroup[0].isOrderComplete ||
-                            currentGroup.every((item) => item.scanned)
+                            currentGroup.every((item) => item.scanned) ||
+                            ((currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) &&
+                              !billingCheckConfirmed)
                           return (
                         <input
                           ref={itemScanRef}
@@ -2867,13 +2899,18 @@ export default function Packing() {
       >
         <div className="p-5 space-y-4">
           <h3 className="text-lg font-semibold">{dialog.title}</h3>
-          <p className="text-sm text-gray-700">{dialog.message}</p>
+          <p className="text-sm text-gray-700 whitespace-pre-line">{dialog.message}</p>
           {dialog.mode === 'confirm' && dialog.title === 'ยืนยันการแพ็คสินค้า' && (
             <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1">
               คีย์ลัด: กด <strong>Spacebar</strong> = ใช่, กด <strong>0</strong> = ไม่ใช่
             </p>
           )}
-          <div className="flex justify-end gap-2">
+          {dialog.mode === 'confirm' && dialog.spacebarConfirm && (
+            <p className="text-xs text-green-700 bg-green-50 border border-green-100 rounded px-2 py-1">
+              คีย์ลัด: กด <strong>Spacebar</strong> เพื่อยืนยัน แล้วเริ่มสแกนสินค้าได้ทันที
+            </p>
+          )}
+          <div className={`flex gap-2 ${dialog.spacebarConfirm ? 'justify-center' : 'justify-end'}`}>
             {dialog.mode === 'confirm' && (
               <button
                 className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
@@ -2901,6 +2938,11 @@ export default function Packing() {
                 <span className="flex flex-col leading-tight text-center">
                   <span className="font-semibold">ใช่</span>
                   <span className="text-[11px] text-blue-100">(Spacebar) หยุดบันทึก</span>
+                </span>
+              ) : dialog.spacebarConfirm ? (
+                <span className="flex flex-col leading-tight text-center">
+                  <span className="font-semibold">{dialog.confirmText || 'ยืนยัน'}</span>
+                  <span className="text-[11px] text-blue-100">(Spacebar) แล้วสแกนสินค้า</span>
                 </span>
               ) : (
                 dialog.confirmText || 'ตกลง'
