@@ -682,6 +682,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [claimDescription, setClaimDescription] = useState('')
   const [claimConfirmSubmitting, setClaimConfirmSubmitting] = useState(false)
   const [claimDraftItems, setClaimDraftItems] = useState<ClaimDraftRow[]>([])
+  /** ค่าขนส่งของบิลเคลม (ตั้งต้นจากบิลเก่า แก้ไขได้) */
+  const [claimShippingCost, setClaimShippingCost] = useState(0)
   const [claimDraftLoading, setClaimDraftLoading] = useState(false)
   /** บิลจัดส่ง: มีคำขอรออนุมัติ / บิล REQ ล่าสุดหลังอนุมัติ (แสดงแทนเลขบิลเดิม + เคลมซ้ำ) */
   const [claimRefMetaByOrderId, setClaimRefMetaByOrderId] = useState<
@@ -1186,6 +1188,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setClaimFilterSearch('')
     setClaimFilterChannel('')
     setClaimDraftItems([])
+    setClaimShippingCost(0)
     setClaimRefMetaByOrderId({})
     setClaimOrdersLoading(true)
     ;(async () => {
@@ -3608,6 +3611,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         file_attachment: item.file_attachment != null ? String(item.file_attachment) : null,
       }))
       setClaimDraftItems(rows)
+      setClaimShippingCost(Number(selectedClaimRefOrder.shipping_cost) || 0)
       setClaimStep(3)
     } catch (e: any) {
       console.error('Error loading claim items:', e)
@@ -3651,7 +3655,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
         0,
       )
-      const shipping = Number(ref.shipping_cost) || 0
+      const shipping = Number(claimShippingCost) || 0
       const discount = Number(ref.discount) || 0
       const totalAmount = itemsTotal + shipping - discount
       const order = {
@@ -6445,7 +6449,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     <Modal
       open={claimModalOpen}
       onClose={() => setClaimModalOpen(false)}
-      contentClassName="max-w-4xl max-h-[90vh] flex flex-col"
+      contentClassName="max-w-7xl w-full max-h-[90vh] flex flex-col"
       closeOnBackdropClick
     >
       <div className="p-5 flex flex-col flex-1 min-h-0">
@@ -6642,7 +6646,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         )}
         {claimStep === 3 && selectedClaimRefOrder && (
           <>
-            <p className="text-sm text-gray-600 mb-2">#3 รายการที่ต้องการเคลม (แก้จำนวน / ราคา / สินค้า)</p>
+            <p className="text-sm text-gray-600 mb-2">#3 รายการที่ต้องการเคลม (แก้จำนวน / ราคา / สินค้า / ข้อมูลผลิต) — ดึงข้อมูลจากบิลเก่ามาให้แล้ว แก้ไขได้ทุกช่อง</p>
             <p className="text-sm text-gray-700 mb-2">
               บิลอ้างอิง (จัดส่งแล้ว): <strong className="font-mono">{selectedClaimRefOrder.bill_no}</strong>
               {claimRefMetaByOrderId[selectedClaimRefOrder.id]?.latestReqBillNo && (
@@ -6673,9 +6677,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 <thead className="bg-gray-100 sticky top-0">
                   <tr>
                     <th className="text-left p-2 min-w-[140px]">สินค้า</th>
-                    <th className="text-right p-2 w-20">จำนวน</th>
-                    <th className="text-right p-2 w-24">ราคา/หน่วย</th>
-                    <th className="text-center p-2 w-16">แถม</th>
+                    <th className="text-left p-2 min-w-[90px]">สีหมึก</th>
+                    <th className="text-left p-2 min-w-[100px]">ลาย</th>
+                    <th className="text-left p-2 min-w-[100px]">เส้น</th>
+                    <th className="text-left p-2 min-w-[80px]">ฟอนต์</th>
+                    <th className="text-left p-2 min-w-[100px]">บรรทัด 1</th>
+                    <th className="text-left p-2 min-w-[100px]">บรรทัด 2</th>
+                    <th className="text-left p-2 min-w-[100px]">บรรทัด 3</th>
+                    <th className="text-right p-2 w-16">จำนวน</th>
+                    <th className="text-right p-2 w-20">ราคา/หน่วย</th>
                     <th className="w-10" />
                   </tr>
                 </thead>
@@ -6721,6 +6731,93 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       </td>
                       <td className="p-1">
                         <input
+                          list="claim-ink-datalist"
+                          value={row.ink_color ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, ink_color: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          list="claim-pattern-datalist"
+                          value={row.cartoon_pattern ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, cartoon_pattern: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          value={row.line_pattern ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, line_pattern: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          list="claim-font-datalist"
+                          value={row.font ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, font: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          value={row.line_1 ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, line_1: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          value={row.line_2 ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, line_2: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
+                          value={row.line_3 ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setClaimDraftItems((prev) =>
+                              prev.map((r, i) => (i === idx ? { ...r, line_3: v.trim() ? v : null } : r)),
+                            )
+                          }}
+                          className="w-full px-2 py-1 border rounded"
+                        />
+                      </td>
+                      <td className="p-1">
+                        <input
                           type="number"
                           min={1}
                           value={row.quantity}
@@ -6738,26 +6835,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           type="number"
                           min={0}
                           step="0.01"
-                          disabled={row.is_free}
                           value={row.unit_price}
                           onChange={(e) => {
                             const v = parseFloat(e.target.value)
                             setClaimDraftItems((prev) =>
-                              prev.map((r, i) => (i === idx ? { ...r, unit_price: Number.isFinite(v) ? v : 0 } : r)),
+                              prev.map((r, i) =>
+                                i === idx ? { ...r, unit_price: Number.isFinite(v) ? v : 0, is_free: false } : r,
+                              ),
                             )
                           }}
-                          className="w-full px-2 py-1 border rounded text-right disabled:bg-gray-100"
-                        />
-                      </td>
-                      <td className="p-1 text-center">
-                        <input
-                          type="checkbox"
-                          checked={row.is_free}
-                          onChange={(e) =>
-                            setClaimDraftItems((prev) =>
-                              prev.map((r, i) => (i === idx ? { ...r, is_free: e.target.checked } : r)),
-                            )
-                          }
+                          className="w-full px-2 py-1 border rounded text-right"
                         />
                       </td>
                       <td className="p-1">
@@ -6780,6 +6867,21 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 .map((pr) => (
                   <option key={pr.id} value={pr.product_name} />
                 ))}
+            </datalist>
+            <datalist id="claim-ink-datalist">
+              {inkTypes.map((ink) => (
+                <option key={ink.id} value={ink.ink_name} />
+              ))}
+            </datalist>
+            <datalist id="claim-pattern-datalist">
+              {cartoonPatterns.map((cp) => (
+                <option key={cp.id} value={cp.pattern_name} />
+              ))}
+            </datalist>
+            <datalist id="claim-font-datalist">
+              {fonts.map((f) => (
+                <option key={f.font_code} value={f.font_name} />
+              ))}
             </datalist>
             <button
               type="button"
@@ -6810,35 +6912,46 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             >
               + เพิ่มรายการ
             </button>
-            <div className="text-sm text-gray-700 mb-3 space-y-0.5">
-              <p>
-                ยอดรวมรายการ (ก่อนค่าขนส่ง/ส่วนลด):{' '}
-                <strong>
-                  {claimDraftItems
-                    .reduce((s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)), 0)
-                    .toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                </strong>
-              </p>
-              <p>
-                ยอดสุทธิเสนอ (ประมาณ):{' '}
-                <strong>
-                  {(
-                    claimDraftItems.reduce(
-                      (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
-                      0,
-                    ) +
-                    (Number(selectedClaimRefOrder.shipping_cost) || 0) -
-                    (Number(selectedClaimRefOrder.discount) || 0)
-                  ).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                </strong>
-                <span className="text-gray-500">
-                  {' '}
-                  (เทียบบิลเดิม {Number(selectedClaimRefOrder.total_amount || 0).toLocaleString('th-TH', {
-                    minimumFractionDigits: 2,
-                  })})
-                </span>
-              </p>
-            </div>
+            {(() => {
+              const claimItemsTotal = claimDraftItems.reduce(
+                (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
+                0,
+              )
+              const claimNet = claimItemsTotal + (Number(claimShippingCost) || 0) - (Number(selectedClaimRefOrder.discount) || 0)
+              const fmt = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2 })
+              return (
+                <div className="flex justify-end mb-3">
+                  <div className="w-full sm:w-80 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm space-y-1.5">
+                    <div className="flex items-center justify-between text-gray-500">
+                      <span>ยอดรวมบิลเก่า</span>
+                      <span className="tabular-nums">{fmt(Number(selectedClaimRefOrder.total_amount || 0))}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>ยอดรวมบิลเคลม</span>
+                      <strong className="tabular-nums">{fmt(claimItemsTotal)}</strong>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span>ค่าขนส่ง</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={claimShippingCost}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value)
+                          setClaimShippingCost(Number.isFinite(v) && v >= 0 ? v : 0)
+                        }}
+                        className="w-24 px-2 py-1 border rounded text-right tabular-nums"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between border-t border-gray-300 pt-1.5">
+                      <span className="font-semibold">ยอดสุทธิเสนอ</span>
+                      <strong className="text-base tabular-nums">{fmt(claimNet)}</strong>
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
             <div className="flex justify-end gap-2 flex-wrap">
               <button
                 type="button"

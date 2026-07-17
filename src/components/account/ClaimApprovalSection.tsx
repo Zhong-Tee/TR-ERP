@@ -4,8 +4,10 @@ import { fetchClaimTypeLabelMap, claimTypeLabel } from '../../lib/claimTypeLabel
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import ClaimRequestComparePanel from '../claim/ClaimRequestComparePanel'
+import ClaimEditModal from '../claim/ClaimEditModal'
+import DateTimeStacked from '../ui/DateTimeStacked'
 import type { ClaimCompareDetail, OrderItemRow, RefOrderDetail, RefOrderEmbed } from '../claim/claimCompareShared'
-import { externalUrlOrNull, fmtMoney, rowToRefEmbed, submitterDisplayClaim } from '../claim/claimCompareShared'
+import { externalUrlOrNull, fmtMoney, ORDER_ITEM_DETAIL_COLUMNS, rowToRefEmbed, submitterDisplayClaim } from '../claim/claimCompareShared'
 
 type ClaimRequestRow = ClaimCompareDetail & { ref_order?: RefOrderEmbed; packing_video_url?: string | null }
 
@@ -24,6 +26,8 @@ export default function ClaimApprovalSection() {
   const [refLoading, setRefLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState<'approve' | 'reject' | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  /** แก้ไขบิลเคลม (ราคา/ค่าขนส่ง/ข้อมูลผลิต) ก่อนอนุมัติ */
+  const [claimEditOpen, setClaimEditOpen] = useState(false)
   const [resultMsg, setResultMsg] = useState<{ open: boolean; title: string; message: string }>({
     open: false,
     title: '',
@@ -225,7 +229,7 @@ export default function ClaimApprovalSection() {
       let items: OrderItemRow[] = []
       const { data: itemRows, error: itemErr } = await supabase
         .from('or_order_items')
-        .select('product_name, quantity, unit_price, is_free')
+        .select(ORDER_ITEM_DETAIL_COLUMNS)
         .eq('order_id', r.ref_order_id)
         .order('created_at', { ascending: true })
       if (itemErr) {
@@ -323,7 +327,7 @@ export default function ClaimApprovalSection() {
           <div className="text-center py-12 text-gray-500">ไม่มีคำขอเคลมที่รออนุมัติ</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1340px]">
+            <table className="w-full text-sm min-w-[1600px]">
               <thead>
                 <tr className="border-b text-left text-gray-600">
                   <th className="py-2 pr-3">วันที่ส่ง</th>
@@ -334,14 +338,16 @@ export default function ClaimApprovalSection() {
                     บิลอ้างอิง
                   </th>
                   <th className="py-2 pr-3">วันที่สร้าง</th>
-                  <th className="py-2 pr-3">ผู้สร้าง</th>
+                  <th className="py-2 pr-3" title="ผู้สร้างบิลแรกที่เป็นบิลอ้างอิงของเคลมนี้">ผู้สร้างบิล</th>
+                  <th className="py-2 pr-3">ผู้สร้างบิลเคลม</th>
                   <th className="py-2 pr-3">ชื่อลูกค้า</th>
                   <th className="py-2 pr-3 max-w-[200px]">ที่อยู่จัดส่ง</th>
                   <th className="py-2 pr-3 whitespace-nowrap">เบอร์โทร</th>
-                  <th className="py-2 pr-3">ลิงก์หลักฐาน</th>
-                  <th className="py-2 pr-3">วิดีโอ (แพคสินค้า)</th>
                   <th className="py-2 pr-3">หัวข้อเคลม</th>
-                  <th className="py-2">ยอดเดิม</th>
+                  <th className="py-2 pr-3">ยอดเดิม</th>
+                  <th className="py-2 pr-3">ยอดบิลเคลม</th>
+                  <th className="py-2 pr-3">ค่าส่ง</th>
+                  <th className="py-2 text-center">จัดการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -354,7 +360,9 @@ export default function ClaimApprovalSection() {
                     className="border-b border-gray-50 hover:bg-gray-50/80 cursor-pointer"
                     onClick={() => void openDetail(r)}
                   >
-                    <td className="py-2 pr-3 whitespace-nowrap">{new Date(r.created_at).toLocaleString('th-TH')}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      <DateTimeStacked text={new Date(r.created_at).toLocaleString('th-TH')} />
+                    </td>
                     <td className="py-2 pr-3 align-top">
                       {reqLatest ? (
                         <div>
@@ -366,8 +374,9 @@ export default function ClaimApprovalSection() {
                       )}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">
-                      {r.ref_order?.bill_created_at_display?.trim() || '–'}
+                      <DateTimeStacked text={r.ref_order?.bill_created_at_display?.trim() || '–'} />
                     </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{r.ref_order?.admin_user?.trim() || '–'}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">{submitterDisplay(r)}</td>
                     <td className="py-2 pr-3 max-w-[160px] truncate" title={r.ref_order?.customer_name || ''}>
                       {r.ref_order?.customer_name?.trim() || '–'}
@@ -379,33 +388,44 @@ export default function ClaimApprovalSection() {
                       {r.ref_order?.customer_address?.trim() || '–'}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">{r.ref_order?.mobile_phone?.trim() || '–'}</td>
-                    <td className="py-2 pr-3" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        disabled={!externalUrlOrNull(r.supporting_url ?? undefined)}
-                        title={externalUrlOrNull(r.supporting_url ?? undefined) ? 'เปิดลิงก์หลักฐานในแท็บใหม่' : 'ไม่มีลิงก์'}
-                        onClick={() => {
-                          const u = externalUrlOrNull(r.supporting_url ?? undefined)
-                          if (u) window.open(u, '_blank', 'noopener,noreferrer')
-                        }}
-                        className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                      >
-                        ลิงก์
-                      </button>
-                    </td>
-                    <td className="py-2 pr-3" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        disabled={!r.packing_video_url}
-                        title={r.packing_video_url ? 'เปิดวิดีโอแพคในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
-                        onClick={() => r.packing_video_url && window.open(r.packing_video_url, '_blank', 'noopener,noreferrer')}
-                        className="px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                      >
-                        วิดีโอ (แพค)
-                      </button>
-                    </td>
                     <td className="py-2 pr-3">{claimTypeLabel(claimLabels, r.claim_type)}</td>
-                    <td className="py-2 whitespace-nowrap">{fmtMoney(Number(r.ref_snapshot?.total_amount) || 0)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{fmtMoney(Number(r.ref_snapshot?.total_amount) || 0)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap font-semibold">
+                      {fmtMoney(Number(r.proposed_snapshot?.order?.price) || 0)}
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {fmtMoney(Number(r.proposed_snapshot?.order?.shipping_cost) || 0)}
+                    </td>
+                    <td className="py-2 text-center" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-center gap-2">
+                        {externalUrlOrNull(r.supporting_url ?? undefined) ? (
+                          <a
+                            href={externalUrlOrNull(r.supporting_url ?? undefined) || undefined}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="เปิดลิงก์หลักฐานในแท็บใหม่"
+                            aria-label="เปิดลิงก์หลักฐาน"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1" /></svg>
+                          </a>
+                        ) : (
+                          <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-300" title="ไม่มีลิงก์หลักฐาน">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1" /></svg>
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          disabled={!r.packing_video_url}
+                          title={r.packing_video_url ? 'เปิดวิดีโอแพคในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+                          aria-label={r.packing_video_url ? 'เปิดวิดีโอแพคสินค้า' : 'ไม่มีวิดีโอแพคสินค้า'}
+                          onClick={() => r.packing_video_url && window.open(r.packing_video_url, '_blank', 'noopener,noreferrer')}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-300"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><rect x="3" y="5" width="14" height="14" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="m17 10 4-2v8l-4-2" /></svg>
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                   )
                 })}
@@ -447,6 +467,14 @@ export default function ClaimApprovalSection() {
                 <div className="flex gap-2 justify-end">
                   <button
                     type="button"
+                    disabled={actionBusy != null}
+                    onClick={() => setClaimEditOpen(true)}
+                    className="px-4 py-2 border border-amber-400 text-amber-700 rounded-lg hover:bg-amber-50 disabled:opacity-50"
+                  >
+                    ✏️ แก้ไขบิลเคลม
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setDetail(null)}
                     className="px-4 py-2 border rounded-lg hover:bg-gray-50"
                   >
@@ -477,6 +505,27 @@ export default function ClaimApprovalSection() {
           </div>
         )}
       </Modal>
+
+      <ClaimEditModal
+        open={claimEditOpen}
+        detail={detail}
+        refOrderTotal={refOrder?.total_amount ?? (Number(detail?.ref_snapshot?.total_amount) || 0)}
+        onClose={() => setClaimEditOpen(false)}
+        onSaved={async () => {
+          // รีเฟรช snapshot ใน modal เปรียบเทียบให้เห็นค่าที่แก้ทันที + โหลดรายการใหม่
+          if (detail) {
+            const { data } = await supabase
+              .from('or_claim_requests')
+              .select(
+                'id, ref_order_id, claim_type, proposed_snapshot, ref_snapshot, status, created_at, submitted_by, rejected_reason, supporting_url, claim_description',
+              )
+              .eq('id', detail.id)
+              .maybeSingle()
+            if (data) setDetail((prev) => (prev ? { ...prev, ...(data as Partial<ClaimRequestRow>) } : prev))
+          }
+          await load()
+        }}
+      />
 
       <Modal
         open={resultMsg.open}

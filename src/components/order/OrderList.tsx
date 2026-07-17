@@ -7,6 +7,7 @@ import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
+import FailedClaimEditModal from '../claim/FailedClaimEditModal'
 import {
   isSalesPumpOwnerScopedRole,
   isSalesTrTeamRole,
@@ -84,6 +85,7 @@ export default function OrderList({
   const [deleteConfirmOrder, setDeleteConfirmOrder] = useState<Order | null>(null)
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
+  const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
 
   // ส่งตรวจสลิป modal
   const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
@@ -809,7 +811,7 @@ export default function OrderList({
                   ((order as any).has_rejected_overpay_refund || (order as any).manual_slip_badge === 'rejected'))
               ) ? (
                 <div className="flex flex-col gap-1.5 items-end">
-                  {showMoveToWaitingButton && onMoveToWaiting && (
+                  {showMoveToWaitingButton && onMoveToWaiting && !String(order.bill_no || '').startsWith('REQ') && (
                     <button
                       type="button"
                       onClick={async (e) => {
@@ -830,10 +832,15 @@ export default function OrderList({
                   )}
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); onOrderClick(order) }}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (String(order.bill_no || '').startsWith('REQ')) setFailedClaimEditOrder(order)
+                      else onOrderClick(order)
+                    }}
                     className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
                   >
-                    <i className="fas fa-edit mr-1"></i>แก้ไขบิล
+                    <i className="fas fa-edit mr-1"></i>
+                    แก้ไขบิล{String(order.bill_no || '').startsWith('REQ') ? ' (เคลม)' : ''}
                   </button>
                   <button
                     type="button"
@@ -932,6 +939,14 @@ export default function OrderList({
       </Modal>
 
       {/* ส่งตรวจสลิป Modal */}
+      <FailedClaimEditModal
+        order={failedClaimEditOrder}
+        onClose={() => setFailedClaimEditOrder(null)}
+        onSaved={async () => {
+          await loadOrders()
+        }}
+      />
+
       <Modal open={!!slipCheckOrder} onClose={() => setSlipCheckOrder(null)} contentClassName="max-w-4xl w-full">
         {slipCheckOrder && (
           <div className="flex flex-col max-h-[90vh]">

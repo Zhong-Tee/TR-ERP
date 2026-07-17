@@ -331,6 +331,8 @@ export default function WorkOrderManageList({
   const { user } = useAuthContext()
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [channelByWo, setChannelByWo] = useState<Record<string, string>>({}) // key = work_order_id
+  /** ใบงานที่มีบิลเคลม (REQ) — ใช้ปุ่มชุดเดียวกับ FBTR (Export ใบปะหน้า + นำเข้าเลขพัสดุ) */
+  const [claimByWo, setClaimByWo] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
   /** ใบงานที่คลี่อยู่ — รองรับหลายใบ (เช่น หลังค้นหา) */
   const [expandedWoIds, setExpandedWoIds] = useState<Set<string>>(() => new Set())
@@ -476,21 +478,30 @@ export default function WorkOrderManageList({
         const workOrderIds = list.map((w) => w.id)
         const { data: orderChannels, error: channelErr } = await supabase
           .from('or_orders')
-          .select('work_order_id, channel_code')
+          .select('work_order_id, channel_code, bill_no, claim_type')
           .in('work_order_id', workOrderIds)
         if (!channelErr && orderChannels && orderChannels.length > 0) {
           const map: Record<string, string> = {}
-          orderChannels.forEach((r: { work_order_id: string; channel_code: string }) => {
-            if (r.work_order_id && !(r.work_order_id in map)) {
-              map[r.work_order_id] = r.channel_code ?? ''
-            }
-          })
+          const claimMap: Record<string, boolean> = {}
+          orderChannels.forEach(
+            (r: { work_order_id: string; channel_code: string; bill_no?: string | null; claim_type?: string | null }) => {
+              if (r.work_order_id && !(r.work_order_id in map)) {
+                map[r.work_order_id] = r.channel_code ?? ''
+              }
+              if (r.work_order_id && (r.claim_type != null || String(r.bill_no || '').startsWith('REQ'))) {
+                claimMap[r.work_order_id] = true
+              }
+            },
+          )
           setChannelByWo(map)
+          setClaimByWo(claimMap)
         } else {
           setChannelByWo({})
+          setClaimByWo({})
         }
       } else {
         setChannelByWo({})
+        setClaimByWo({})
       }
     } catch (error: any) {
       console.error('Error loading work orders:', error)
@@ -1571,7 +1582,14 @@ export default function WorkOrderManageList({
             const searchNeedle = searchTerm.trim().toLowerCase()
             const isCancelledWorkOrder = isWorkOrderCancelledRecord(wo)
             const channelCode = channelByWo[wo.id] ?? ''
-            const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode)
+            const isClaimWorkOrder = claimByWo[wo.id] || wo.work_order_name.trim().startsWith('(เคลม)')
+            // Older claim work orders were saved without the claim prefix. Keep
+            // their stored identifier intact, but present them consistently.
+            const displayWorkOrderName = isClaimWorkOrder && !wo.work_order_name.trim().startsWith('(เคลม)')
+              ? `(เคลม)${wo.work_order_name}`
+              : wo.work_order_name
+            // ใบงานเคลม (มีบิล REQ) ใช้ปุ่มชุดเดียวกับ FBTR เสมอ: Export (ใบปะหน้า) + นำเข้าเลขพัสดุ
+            const isWaybillSortChannel = WAYBILL_SORT_CHANNELS.includes(channelCode) && !claimByWo[wo.id]
             const canCancelWorkOrder = isRoleInAllowedList(user?.role, ['superadmin', 'sales-tr'])
 
             return (
@@ -1593,8 +1611,13 @@ export default function WorkOrderManageList({
                   <div className="flex flex-wrap items-center gap-2 min-w-0">
                     <span className="text-gray-400 select-none shrink-0">{isCancelledWorkOrder ? '•' : isExpanded ? '▼' : '▶'}</span>
                     <span className={`font-semibold truncate ${isCancelledWorkOrder ? 'text-red-950' : 'text-gray-900'}`}>
-                      {wo.work_order_name} ({billCountByWo[wo.id] ?? wo.order_count} บิล)
+                      {displayWorkOrderName} ({billCountByWo[wo.id] ?? wo.order_count} บิล)
                     </span>
+                    {isClaimWorkOrder && (
+                      <span className="shrink-0 rounded-md border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                        เคลม
+                      </span>
+                    )}
                     {isCancelledWorkOrder && (
                       <span
                         className="shrink-0 px-2.5 py-1 text-xs font-bold rounded-md bg-red-100 text-red-900 border border-red-300"

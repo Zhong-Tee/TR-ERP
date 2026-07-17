@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ClaimCompareDetail, OrderItemRow, RefOrderDetail } from '../components/claim/claimCompareShared'
-import { rowToRefEmbed } from '../components/claim/claimCompareShared'
+import { ORDER_ITEM_DETAIL_COLUMNS, rowToRefEmbed } from '../components/claim/claimCompareShared'
 
 export async function fetchLatestPriorReqBillNo(
   supabase: SupabaseClient,
@@ -84,7 +84,7 @@ export async function fetchRefOrderDetailWithItems(
   let items: OrderItemRow[] = []
   const { data: itemRows, error: itemErr } = await supabase
     .from('or_order_items')
-    .select('product_name, quantity, unit_price, is_free')
+    .select(ORDER_ITEM_DETAIL_COLUMNS)
     .eq('order_id', refOrderId)
     .order('created_at', { ascending: true })
   if (itemErr) {

@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { useAuthContext } from '../../contexts/AuthContext'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../../lib/claimTypeLabels'
 import { loadClaimCompareBundle } from '../../lib/claimRequestCompareLoad'
 import Modal from '../ui/Modal'
 import ClaimRequestComparePanel from '../claim/ClaimRequestComparePanel'
+import ClaimEditModal from '../claim/ClaimEditModal'
+import VerificationResultModal, { type AmountStatus } from './VerificationResultModal'
+import { verifyAndSaveClaimSlips, type ClaimSlipVerifyResult } from '../../lib/claimSlipVerification'
+import { parseAddressText } from '../../lib/thaiAddress'
 import type { ClaimCompareDetail, RefOrderDetail } from '../claim/claimCompareShared'
+import { fmtMoney, mobilePhoneFromBillingDetails } from '../claim/claimCompareShared'
 
 type ClaimRow = {
   id: string
@@ -21,16 +27,33 @@ type ClaimRow = {
   proposed_snapshot?: { order?: Record<string, unknown>; items?: unknown[] } | null
 }
 
+/** ข้อมูลบิลอ้างอิง + ผู้ส่งคำขอ ที่แสดงร่วมกันทุกแท็บ (รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ) */
+type ClaimRowCommonInfo = {
+  submitter: { username?: string | null } | null
+  /** วันที่สร้างบิลอ้างอิง (created_at หรือ entry_date) */
+  ref_bill_date_label: string
+  /** ผู้สร้างบิลแรกที่เป็นบิลอ้างอิง */
+  ref_admin_user: string | null
+  ref_customer_name: string | null
+  ref_customer_address: string | null
+  ref_mobile_phone: string | null
+  ref_channel_order_no: string | null
+  packing_video_url: string | null
+}
+
 /** แถวรออนุมัติ — ขยายข้อมูลสำหรับตาราง */
 type PendingClaimRow = ClaimRow & {
   ref_order_id: string
   submitted_by: string | null
   supporting_url?: string | null
   claim_description?: string | null
-  submitter: { username?: string | null } | null
-  /** วันที่สร้างบิลอ้างอิง (entry_date หรือ created_at) */
-  ref_bill_date_label: string
-}
+} & ClaimRowCommonInfo
+
+/** แถวอนุมัติแล้ว — ขยายข้อมูลสำหรับตาราง */
+type ApprovedClaimRow = ClaimRow & ClaimRowCommonInfo
+
+/** role ที่แก้ไขบิลเคลม (pending) ได้ — ชุดเดียวกับที่ส่งคำขอเคลมได้ */
+const CAN_EDIT_CLAIM_ROLES = ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account']
 
 /** แถวปฏิเสธโดยบัญชี — อ่านอย่างเดียว */
 type RejectedClaimRow = {
@@ -38,15 +61,14 @@ type RejectedClaimRow = {
   created_at: string
   reviewed_at: string | null
   claim_type: string
-  ref_snapshot: { bill_no?: string } | null
+  ref_snapshot: { bill_no?: string; total_amount?: number } | null
+  proposed_snapshot?: { order?: Record<string, unknown>; items?: unknown[] } | null
   ref_order_id: string
   submitted_by: string | null
   supporting_url?: string | null
   claim_description?: string | null
   rejected_reason?: string | null
-  submitter: { username?: string | null } | null
-  ref_bill_date_label: string
-}
+} & ClaimRowCommonInfo
 
 function externalUrlOrNull(raw: string | null | undefined): string | null {
   if (!raw?.trim()) return null
@@ -66,7 +88,11 @@ function supportingHref(raw: unknown): string | null {
 function EvidenceLinkCell({ supportingUrl }: { supportingUrl: unknown }) {
   const href = supportingHref(supportingUrl)
   if (!href) {
-    return <span className="text-gray-400 text-sm">–</span>
+    return (
+      <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-300" title="ไม่มีลิงก์หลักฐาน">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1" /></svg>
+      </span>
+    )
   }
   return (
     <a
@@ -74,10 +100,11 @@ function EvidenceLinkCell({ supportingUrl }: { supportingUrl: unknown }) {
       target="_blank"
       rel="noopener noreferrer"
       title="เปิดลิงก์หลักฐานในแท็บใหม่"
-      className="inline-flex items-center justify-center px-3 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 relative z-[1]"
+      aria-label="เปิดลิงก์หลักฐาน"
+      className="relative z-[1] inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1"
       onClick={(e) => e.stopPropagation()}
     >
-      ลิงก์
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1" /></svg>
     </a>
   )
 }
@@ -89,14 +116,116 @@ function submitterDisplay(submittedBy: string | null, submitter: { username?: st
   return '–'
 }
 
+/** แสดงวันที่บรรทัดแรก เวลาบรรทัดที่สอง — รับข้อความรูปแบบ "วันที่ เวลา" */
+function DateTimeCellText({ text }: { text: string }) {
+  const s = (text || '').trim()
+  const i = s.indexOf(' ')
+  const datePart = i === -1 ? s : s.slice(0, i)
+  const timePart = i === -1 ? '' : s.slice(i + 1)
+  if (!datePart) return <>–</>
+  return (
+    <div className="leading-tight">
+      <div>{datePart}</div>
+      {timePart && <div className="text-xs text-gray-500">{timePart}</div>}
+    </div>
+  )
+}
+
+/** ปุ่มวิดีโอแพคสินค้า (ของบิลอ้างอิง) */
+function VideoLinkCell({ url }: { url: string | null }) {
+  return (
+    <button
+      type="button"
+      disabled={!url}
+      aria-label={url ? 'เปิดวิดีโอแพคสินค้า' : 'ไม่มีวิดีโอแพคสินค้า'}
+      title={url ? 'เปิดวิดีโอแพคในแท็บใหม่' : 'ยังไม่พบวิดีโอของบิลนี้'}
+      onClick={() => url && window.open(url, '_blank', 'noopener,noreferrer')}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-300"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><rect x="3" y="5" width="14" height="14" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="m17 10 4-2v8l-4-2" /></svg>
+    </button>
+  )
+}
+
+/** หัวคอลัมน์ข้อมูลบิลอ้างอิง/ผู้สร้าง — ใช้ร่วมทุกแท็บ (เรียงเหมือนหน้าอนุมัติเคลมของบัญชี) */
+function ClaimInfoHeadCells() {
+  return (
+    <>
+      <th className="text-left p-3 whitespace-nowrap">วันที่สร้างบิล</th>
+      <th className="text-left p-3 whitespace-nowrap" title="ผู้สร้างบิลแรกที่เป็นบิลอ้างอิงของเคลมนี้">
+        ผู้สร้างบิล
+      </th>
+      <th className="text-left p-3 whitespace-nowrap">ผู้สร้างบิลเคลม</th>
+      <th className="text-left p-3 whitespace-nowrap">ชื่อลูกค้า</th>
+      <th className="text-left p-3 whitespace-nowrap">ที่อยู่จัดส่ง</th>
+      <th className="text-left p-3 whitespace-nowrap">เบอร์โทร</th>
+      <th className="text-left p-3 whitespace-nowrap">เลขคำสั่งซื้อ</th>
+    </>
+  )
+}
+
+function ClaimInfoCells({ row, submittedBy }: { row: ClaimRowCommonInfo; submittedBy: string | null }) {
+  return (
+    <>
+      <td className="p-3 whitespace-nowrap">
+        <DateTimeCellText text={row.ref_bill_date_label} />
+      </td>
+      <td className="p-3 whitespace-nowrap">{row.ref_admin_user?.trim() || '–'}</td>
+      <td className="p-3 whitespace-nowrap">{submitterDisplay(submittedBy, row.submitter)}</td>
+      <td className="p-3 max-w-[160px] truncate" title={row.ref_customer_name || ''}>
+        {row.ref_customer_name?.trim() || '–'}
+      </td>
+      <td className="p-3 max-w-[200px] truncate align-top" title={row.ref_customer_address || ''}>
+        {row.ref_customer_address?.trim() || '–'}
+      </td>
+      <td className="p-3 whitespace-nowrap">{row.ref_mobile_phone?.trim() || '–'}</td>
+      <td className="p-3 whitespace-nowrap font-mono text-xs">{row.ref_channel_order_no?.trim() || '–'}</td>
+    </>
+  )
+}
+
+/** หัวคอลัมน์ยอดเงิน — ยอดเดิม / ยอดบิลเคลม / ค่าส่ง */
+function ClaimMoneyHeadCells() {
+  return (
+    <>
+      <th className="text-right p-3 whitespace-nowrap">ยอดเดิม</th>
+      <th className="text-right p-3 whitespace-nowrap">ยอดบิลเคลม</th>
+      <th className="text-right p-3 whitespace-nowrap">ค่าส่ง</th>
+    </>
+  )
+}
+
+function ClaimMoneyCells({
+  refSnapshot,
+  proposedSnapshot,
+}: {
+  refSnapshot: { total_amount?: number } | null
+  proposedSnapshot?: { order?: Record<string, unknown>; items?: unknown[] } | null
+}) {
+  return (
+    <>
+      <td className="p-3 text-right whitespace-nowrap tabular-nums">
+        {fmtMoney(Number(refSnapshot?.total_amount) || 0)}
+      </td>
+      <td className="p-3 text-right whitespace-nowrap tabular-nums font-semibold">
+        {fmtMoney(Number(proposedSnapshot?.order?.price) || 0)}
+      </td>
+      <td className="p-3 text-right whitespace-nowrap tabular-nums">
+        {fmtMoney(Number(proposedSnapshot?.order?.shipping_cost) || 0)}
+      </td>
+    </>
+  )
+}
+
 function formatRefBillDate(entryDate: string | null | undefined, createdAt: string | null | undefined): string {
-  const raw = (entryDate && String(entryDate).trim()) || (createdAt && String(createdAt).trim()) || ''
+  // ใช้ created_at ก่อน (timestamp มีเวลาสร้างจริง — ตรงกับหน้ารายละเอียดบิล) แล้วค่อย fallback entry_date
+  const raw = (createdAt && String(createdAt).trim()) || (entryDate && String(entryDate).trim()) || ''
   if (!raw) return '–'
-  const d = new Date(raw)
-  if (!Number.isNaN(d.getTime())) {
-    return d.toLocaleString('th-TH')
-  }
-  return raw
+  // entry_date เป็นวันที่ล้วน (YYYY-MM-DD) — parse แบบ local และแสดงเฉพาะวันที่ กันเวลาปลอม 07:00 จาก UTC shift
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+  const d = isDateOnly ? new Date(raw + 'T00:00:00') : new Date(raw)
+  if (Number.isNaN(d.getTime())) return raw
+  return isDateOnly ? d.toLocaleDateString('th-TH') : d.toLocaleString('th-TH')
 }
 
 /** กรองตามวันที่ส่งคำขอ (or_claim_requests.created_at) */
@@ -133,6 +262,7 @@ type ReqOrderRow = {
   channel_code: string
   admin_user: string
   status: string
+  total_amount: number | null
 }
 
 const CAN_CONFIRM_ROLES = ['superadmin', 'admin', 'sales-tr', 'sales-pump'] as const
@@ -164,7 +294,7 @@ export default function ClaimReqOrdersTab({
   const [loading, setLoading] = useState(true)
   const [pendingClaims, setPendingClaims] = useState<PendingClaimRow[]>([])
   const [rejectedClaims, setRejectedClaims] = useState<RejectedClaimRow[]>([])
-  const [approvedClaims, setApprovedClaims] = useState<ClaimRow[]>([])
+  const [approvedClaims, setApprovedClaims] = useState<ApprovedClaimRow[]>([])
   const [claimLabels, setClaimLabels] = useState<Record<string, string>>({})
   const [orderById, setOrderById] = useState<Record<string, ReqOrderRow>>({})
   /** คำขอรออนุมัติที่เป็นเคลมซ้ำ: ref_order_id → เลขบิล REQ ล่าสุดที่อนุมัติแล้ว */
@@ -175,6 +305,23 @@ export default function ClaimReqOrdersTab({
   const [recipientName, setRecipientName] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [mobilePhone, setMobilePhone] = useState('')
+  const [autoFillAddressText, setAutoFillAddressText] = useState('')
+  const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
+  /** สลิปโอนที่แนบตอนยืนยันที่อยู่ — ตรวจผ่าน API แล้วปรับสถานะตามผล */
+  const [confirmSlipFiles, setConfirmSlipFiles] = useState<File[]>([])
+  const [confirmSlipPreviews, setConfirmSlipPreviews] = useState<{ url: string; name: string }[]>([])
+  const [expandedSlipPreview, setExpandedSlipPreview] = useState<{ url: string; name: string } | null>(null)
+  const [claimVerify, setClaimVerify] = useState<{
+    open: boolean
+    type: 'success' | 'failed'
+    accountMatch: boolean | null
+    bankCodeMatch: boolean | null
+    amountStatus: AmountStatus
+    orderAmount: number
+    totalAmount: number
+    errors: string[]
+    statusMessage: string
+  } | null>(null)
   const [saving, setSaving] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [reqSubTab, setReqSubTab] = useState<'pending' | 'approved' | 'rejected'>('pending')
@@ -189,8 +336,41 @@ export default function ClaimReqOrdersTab({
   const [compareRefOrder, setCompareRefOrder] = useState<RefOrderDetail | null>(null)
   const [compareLatestPrior, setCompareLatestPrior] = useState<string | null>(null)
   const [compareApprovedResult, setCompareApprovedResult] = useState<string | null>(null)
+  /** แก้ไขบิลเคลม (เฉพาะคำขอสถานะ pending) */
+  const [editOpen, setEditOpen] = useState(false)
 
   const canConfirm = CAN_CONFIRM_ROLES.includes(userRole as (typeof CAN_CONFIRM_ROLES)[number])
+  const canEditClaim = CAN_EDIT_CLAIM_ROLES.includes(userRole || '')
+
+  /** เปิดดูแล้ว (อนุมัติแล้ว/ปฏิเสธ) — จำต่อผู้ใช้ใน localStorage เพื่อให้ badge ลดลงเมื่อคลิกดู */
+  const { user } = useAuthContext()
+  const seenStorageKey = `claimReqSeenV1:${user?.id || 'anon'}`
+  const [seenKeys, setSeenKeys] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(seenStorageKey)
+      setSeenKeys(new Set(raw ? (JSON.parse(raw) as string[]) : []))
+    } catch {
+      setSeenKeys(new Set())
+    }
+  }, [seenStorageKey])
+  const markSeen = useCallback(
+    (id: string, status: 'approved' | 'rejected') => {
+      const key = `${id}|${status}`
+      setSeenKeys((prev) => {
+        if (prev.has(key)) return prev
+        const next = new Set(prev)
+        next.add(key)
+        try {
+          localStorage.setItem(seenStorageKey, JSON.stringify([...next].slice(-800)))
+        } catch {
+          /* ignore */
+        }
+        return next
+      })
+    },
+    [seenStorageKey],
+  )
 
   const onCountsChangeRef = useRef(onCountsChange)
   onCountsChangeRef.current = onCountsChange
@@ -279,7 +459,8 @@ export default function ClaimReqOrdersTab({
         created_at: string
         reviewed_at: string | null
         claim_type: string
-        ref_snapshot: { bill_no?: string } | null
+        ref_snapshot: { bill_no?: string; total_amount?: number } | null
+        proposed_snapshot?: { order?: Record<string, unknown>; items?: unknown[] } | null
         ref_order_id: string
         submitted_by: string | null
         supporting_url?: string | null
@@ -289,29 +470,80 @@ export default function ClaimReqOrdersTab({
 
       const pendingRefIds = [...new Set(pBase.map((r) => r.ref_order_id))]
       const rejectedRefIds = [...new Set(rejBase.map((r) => r.ref_order_id))]
-      const allRefIds = [...new Set([...pendingRefIds, ...rejectedRefIds])]
+      const approvedRefIds = [...new Set(aList.map((r) => String(r.ref_order_id || '')).filter(Boolean))]
+      const allRefIds = [...new Set([...pendingRefIds, ...rejectedRefIds, ...approvedRefIds])]
 
       const pendingSubmitterIds = pBase.map((r) => r.submitted_by).filter((id): id is string => Boolean(id))
       const rejectedSubmitterIds = rejBase.map((r) => r.submitted_by).filter((id): id is string => Boolean(id))
-      const allSubmitterIds = [...new Set([...pendingSubmitterIds, ...rejectedSubmitterIds])]
+      const approvedSubmitterIds = aList.map((r) => r.submitted_by ?? null).filter((id): id is string => Boolean(id))
+      const allSubmitterIds = [...new Set([...pendingSubmitterIds, ...rejectedSubmitterIds, ...approvedSubmitterIds])]
 
       const refOrderMetaById: Record<
         string,
-        { entry_date?: string | null; created_at?: string | null; admin_user?: string | null }
+        {
+          entry_date?: string | null
+          created_at?: string | null
+          admin_user?: string | null
+          customer_name?: string | null
+          customer_address?: string | null
+          mobile_phone?: string | null
+          channel_order_no?: string | null
+          tracking_number?: string | null
+        }
       > = {}
       if (allRefIds.length > 0) {
         const { data: refRows, error: refErr } = await supabase
           .from('or_orders')
-          .select('id, entry_date, created_at, admin_user')
+          .select('id, entry_date, created_at, admin_user, customer_name, customer_address, billing_details, channel_order_no, tracking_number')
           .in('id', allRefIds)
         if (refErr) console.warn('ClaimReqOrdersTab: ref orders meta', refErr)
         for (const row of refRows || []) {
-          const id = String((row as { id: string }).id)
-          refOrderMetaById[id] = {
-            entry_date: (row as { entry_date?: string | null }).entry_date ?? null,
-            created_at: (row as { created_at?: string | null }).created_at ?? null,
-            admin_user: (row as { admin_user?: string | null }).admin_user ?? null,
+          const r = row as {
+            id: string
+            entry_date?: string | null
+            created_at?: string | null
+            admin_user?: string | null
+            customer_name?: string | null
+            customer_address?: string | null
+            billing_details?: unknown
+            channel_order_no?: string | null
+            tracking_number?: string | null
           }
+          refOrderMetaById[String(r.id)] = {
+            entry_date: r.entry_date ?? null,
+            created_at: r.created_at ?? null,
+            admin_user: r.admin_user ?? null,
+            customer_name: r.customer_name ?? null,
+            customer_address: r.customer_address ?? null,
+            mobile_phone: mobilePhoneFromBillingDetails(r.billing_details),
+            channel_order_no: r.channel_order_no ?? null,
+            tracking_number: r.tracking_number ?? null,
+          }
+        }
+      }
+
+      // วิดีโอแพคสินค้าของบิลอ้างอิง (ตาม order_id ก่อน แล้ว fallback เลขพัสดุ)
+      const videoByOrder = new Map<string, string>()
+      const videoByTracking = new Map<string, string>()
+      if (allRefIds.length > 0) {
+        try {
+          const { data: vrows, error: vErr } = await supabase
+            .from('pk_packing_videos')
+            .select('order_id, tracking_number, gdrive_url, created_at')
+            .in('order_id', allRefIds)
+            .not('gdrive_url', 'is', null)
+            .order('created_at', { ascending: false })
+          if (vErr) throw vErr
+          for (const vr of vrows || []) {
+            const url = vr.gdrive_url ? String(vr.gdrive_url) : ''
+            if (!url) continue
+            const oid = vr.order_id ? String(vr.order_id) : ''
+            const tn = vr.tracking_number ? String(vr.tracking_number).trim() : ''
+            if (oid && !videoByOrder.has(oid)) videoByOrder.set(oid, url)
+            if (tn && !videoByTracking.has(tn)) videoByTracking.set(tn, url)
+          }
+        } catch {
+          /* ignore video lookup */
         }
       }
 
@@ -326,6 +558,22 @@ export default function ClaimReqOrdersTab({
           submitterById[String((u as { id: string }).id)] = {
             username: (u as { username?: string | null }).username ?? null,
           }
+        }
+      }
+
+      /** ประกอบข้อมูลร่วม (บิลอ้างอิง/ผู้ส่ง/วิดีโอแพค) ให้แถวทุกแท็บ */
+      const makeCommon = (refOrderId: string, submittedBy: string | null): ClaimRowCommonInfo => {
+        const meta = refOrderMetaById[refOrderId]
+        const tn = (meta?.tracking_number || '').trim()
+        return {
+          submitter: submittedBy ? submitterById[submittedBy] ?? null : null,
+          ref_bill_date_label: formatRefBillDate(meta?.entry_date, meta?.created_at),
+          ref_admin_user: meta?.admin_user ?? null,
+          ref_customer_name: meta?.customer_name ?? null,
+          ref_customer_address: meta?.customer_address ?? null,
+          ref_mobile_phone: meta?.mobile_phone ?? null,
+          ref_channel_order_no: meta?.channel_order_no ?? null,
+          packing_video_url: videoByOrder.get(refOrderId) || (tn ? videoByTracking.get(tn) : undefined) || null,
         }
       }
 
@@ -383,33 +631,21 @@ export default function ClaimReqOrdersTab({
       }
       setLatestReqBillByRefOrderId(latestReqByRef)
 
-      const pList: PendingClaimRow[] = pBase.map((r) => {
-        const meta = refOrderMetaById[r.ref_order_id]
-        return {
-          ...r,
-          submitter: r.submitted_by ? submitterById[r.submitted_by] ?? null : null,
-          ref_bill_date_label: formatRefBillDate(meta?.entry_date, meta?.created_at),
-        }
-      })
+      const pList: PendingClaimRow[] = pBase.map((r) => ({
+        ...r,
+        ...makeCommon(r.ref_order_id, r.submitted_by),
+      }))
       setPendingClaims(pList)
 
-      let rejList: RejectedClaimRow[] = rejBase.map((r) => {
-        const meta = refOrderMetaById[r.ref_order_id]
-        return {
-          id: r.id,
-          created_at: r.created_at,
-          reviewed_at: r.reviewed_at,
-          claim_type: r.claim_type,
-          ref_snapshot: r.ref_snapshot,
-          ref_order_id: r.ref_order_id,
-          submitted_by: r.submitted_by,
-          supporting_url: r.supporting_url,
-          claim_description: r.claim_description,
-          rejected_reason: r.rejected_reason,
-          submitter: r.submitted_by ? submitterById[r.submitted_by] ?? null : null,
-          ref_bill_date_label: formatRefBillDate(meta?.entry_date, meta?.created_at),
-        }
-      })
+      const aEnriched: ApprovedClaimRow[] = aList.map((r) => ({
+        ...r,
+        ...makeCommon(String(r.ref_order_id || ''), r.submitted_by ?? null),
+      }))
+
+      let rejList: RejectedClaimRow[] = rejBase.map((r) => ({
+        ...r,
+        ...makeCommon(r.ref_order_id, r.submitted_by),
+      }))
       if (narrowAdminUser?.trim()) {
         const nu = narrowAdminUser.trim()
         rejList = rejList.filter(
@@ -426,7 +662,7 @@ export default function ClaimReqOrdersTab({
         let oq = supabase
           .from('or_orders')
           .select(
-            'id, bill_no, recipient_name, customer_address, billing_details, claim_shipping_confirmed_at, channel_code, admin_user, status',
+            'id, bill_no, recipient_name, customer_address, billing_details, claim_shipping_confirmed_at, channel_code, admin_user, status, total_amount',
           )
           .in('id', orderIds)
         if (narrowAdminUser?.trim()) {
@@ -441,14 +677,10 @@ export default function ClaimReqOrdersTab({
       setOrderById(ordersMap)
 
       const visibleApproved = narrowAdminUser?.trim()
-        ? aList.filter((c) => ordersMap[c.created_claim_order_id!])
-        : aList
+        ? aEnriched.filter((c) => ordersMap[c.created_claim_order_id!])
+        : aEnriched
       setApprovedClaims(visibleApproved)
 
-      const needShipping = visibleApproved.filter(
-        (c) => c.created_claim_order_id && !ordersMap[c.created_claim_order_id]?.claim_shipping_confirmed_at,
-      ).length
-      onCountsChangeRef.current?.(pList.length, needShipping, rejList.length)
     } catch (e: unknown) {
       console.error('ClaimReqOrdersTab load:', e)
       alert('โหลดรายการบิลเคลมไม่สำเร็จ: ' + ((e as Error)?.message || String(e)))
@@ -461,6 +693,29 @@ export default function ClaimReqOrdersTab({
     load()
   }, [load, refreshTrigger])
 
+  useEffect(() => {
+    const previews = confirmSlipFiles.map((file) => ({ url: URL.createObjectURL(file), name: file.name }))
+    setConfirmSlipPreviews(previews)
+    setExpandedSlipPreview(null)
+    return () => previews.forEach((preview) => URL.revokeObjectURL(preview.url))
+  }, [confirmSlipFiles])
+
+  /** เรียลไทม์: โหลดรายการและตัวเลขใหม่เมื่อคำขอหรือสถานะยืนยันที่อยู่เปลี่ยน */
+  useEffect(() => {
+    const channel = supabase
+      .channel('claim-req-orders-tab')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => {
+        void load()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
+        void load()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [load])
+
   function openConfirm(c: ClaimRow) {
     const oid = c.created_claim_order_id
     if (!oid) return
@@ -472,23 +727,105 @@ export default function ClaimReqOrdersTab({
     setCustomerAddress((o.customer_address || '').trim())
     const mp = (o.billing_details as { mobile_phone?: string } | null)?.mobile_phone
     setMobilePhone((mp || '').trim())
+    setAutoFillAddressText('')
+    setConfirmSlipFiles([])
     setErrorMsg('')
     setModalOpen(true)
   }
 
+  async function handleAutoFillShipping(addressText?: string) {
+    const source = addressText ?? autoFillAddressText
+    if (!source.trim()) return
+    setAutoFillAddressLoading(true)
+    setErrorMsg('')
+    try {
+      const parsed = await parseAddressText(source, supabase)
+      const composedAddress = [
+        parsed.addressLine,
+        parsed.subDistrict,
+        parsed.district,
+        parsed.province,
+        parsed.postalCode,
+      ].filter(Boolean).join(' ').trim()
+      setCustomerAddress(composedAddress || source.trim())
+      if (parsed.recipientName?.trim()) setRecipientName(parsed.recipientName.trim())
+      if (parsed.mobilePhone?.trim()) setMobilePhone(parsed.mobilePhone.trim())
+    } catch (error) {
+      console.error('Claim shipping address auto fill:', error)
+      setErrorMsg('ไม่สามารถแยกข้อมูลที่อยู่ได้ กรุณาตรวจสอบข้อมูลแล้วลองอีกครั้ง')
+    } finally {
+      setAutoFillAddressLoading(false)
+    }
+  }
+
   async function handleSaveConfirm() {
     if (!modalOrder) return
+    const missingFields = [
+      !recipientName.trim() && 'ชื่อผู้รับ',
+      !customerAddress.trim() && 'ที่อยู่จัดส่ง',
+      !mobilePhone.trim() && 'เบอร์โทร',
+    ].filter(Boolean)
+    if (missingFields.length > 0) {
+      setErrorMsg(`กรุณากรอกข้อมูลให้ครบ: ${missingFields.join(', ')}`)
+      return
+    }
+    if (confirmSlipFiles.length === 0) {
+      setErrorMsg('กรุณาแนบสลิปโอนเพื่อให้ระบบตรวจสอบก่อนยืนยันที่อยู่')
+      return
+    }
     setSaving(true)
     setErrorMsg('')
     try {
-      const { error } = await supabase.rpc('rpc_confirm_claim_req_shipping', {
-        p_order_id: modalOrder.id,
-        p_recipient_name: recipientName.trim(),
-        p_customer_address: customerAddress.trim(),
-        p_mobile_phone: mobilePhone.trim(),
+      // EasySlip must pass before shipping is confirmed.
+      const orderAmount = Number(modalOrder.total_amount) || 0
+      let outcome: ClaimSlipVerifyResult | null = null
+      let verifyError: string | null = null
+      try {
+        outcome = await verifyAndSaveClaimSlips({
+          orderId: modalOrder.id,
+          billNo: modalOrder.bill_no,
+          channelCode: modalOrder.channel_code || null,
+          expectedAmount: orderAmount,
+          files: confirmSlipFiles,
+          verifiedBy: user?.id ?? null,
+        })
+      } catch (ve: unknown) {
+        verifyError = (ve as Error)?.message || String(ve)
+      }
+      const passed = !!outcome?.passed
+
+      if (passed) {
+        const { error } = await supabase.rpc('rpc_confirm_claim_req_shipping', {
+          p_order_id: modalOrder.id,
+          p_recipient_name: recipientName.trim(),
+          p_customer_address: customerAddress.trim(),
+          p_mobile_phone: mobilePhone.trim(),
+        })
+        if (error) throw error
+      }
+
+      const { error: stErr } = await supabase
+        .from('or_orders')
+        .update({ status: passed ? 'ตรวจสอบแล้ว' : 'ตรวจสอบไม่ผ่าน' })
+        .eq('id', modalOrder.id)
+      if (stErr) console.warn('ClaimReqOrdersTab: update status after slip verify', stErr)
+
+      setClaimVerify({
+        open: true,
+        type: passed ? 'success' : 'failed',
+        accountMatch: outcome?.accountMatch ?? null,
+        bankCodeMatch: outcome?.bankCodeMatch ?? null,
+        amountStatus: outcome?.amountStatus ?? 'mismatch',
+        orderAmount,
+        totalAmount: outcome?.totalFromSlips ?? 0,
+        errors: verifyError ? [verifyError] : outcome?.errors ?? [],
+        statusMessage: passed
+          ? 'ตรวจสลิปผ่าน — ยืนยันที่อยู่และย้ายบิลไป "ตรวจสอบแล้ว" เรียบร้อย'
+          : 'ตรวจสลิปไม่ผ่าน — ยังไม่ยืนยันที่อยู่ และบิลถูกย้ายไปเมนู "ตรวจสอบไม่ผ่าน"',
       })
-      if (error) throw error
+
       setModalOpen(false)
+      setConfirmSlipFiles([])
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
       await load()
     } catch (e: unknown) {
@@ -506,6 +843,9 @@ export default function ClaimReqOrdersTab({
         c.ref_snapshot?.bill_no,
         latestReqBillByRefOrderId[c.ref_order_id],
         submitterDisplay(c.submitted_by, c.submitter),
+        c.ref_admin_user,
+        c.ref_customer_name,
+        c.ref_channel_order_no,
         claimTypeLabel(claimLabels, c.claim_type),
         c.claim_description,
         c.id,
@@ -527,6 +867,10 @@ export default function ClaimReqOrdersTab({
       return matchesReqSearch(reqFilterSearch, [
         c.ref_snapshot?.bill_no,
         o?.bill_no,
+        submitterDisplay(c.submitted_by ?? null, c.submitter),
+        c.ref_admin_user,
+        c.ref_customer_name,
+        c.ref_channel_order_no,
         claimTypeLabel(claimLabels, c.claim_type),
         c.claim_description,
         c.id,
@@ -540,6 +884,9 @@ export default function ClaimReqOrdersTab({
       return matchesReqSearch(reqFilterSearch, [
         c.ref_snapshot?.bill_no,
         submitterDisplay(c.submitted_by, c.submitter),
+        c.ref_admin_user,
+        c.ref_customer_name,
+        c.ref_channel_order_no,
         claimTypeLabel(claimLabels, c.claim_type),
         c.claim_description,
         c.rejected_reason,
@@ -547,6 +894,23 @@ export default function ClaimReqOrdersTab({
       ])
     })
   }, [rejectedClaims, reqFilterDateFrom, reqFilterDateTo, reqFilterSearch, claimLabels])
+
+  /** จำนวนบิลอนุมัติแล้วที่ยังไม่ได้บันทึกและยืนยันที่อยู่ */
+  const needShippingCount = useMemo(
+    () => approvedClaims.filter(
+      (c) => c.created_claim_order_id && !orderById[c.created_claim_order_id]?.claim_shipping_confirmed_at,
+    ).length,
+    [approvedClaims, orderById],
+  )
+  const unseenRejectedCount = useMemo(
+    () => rejectedClaims.filter((c) => !seenKeys.has(`${c.id}|rejected`)).length,
+    [rejectedClaims, seenKeys],
+  )
+
+  /** ส่ง counts ให้แท็บแม่ — ปฏิเสธใช้จำนวนที่ยังไม่ได้เปิดดู (ลดลงทันทีเมื่อคลิกดู) */
+  useEffect(() => {
+    onCountsChangeRef.current?.(pendingClaims.length, needShippingCount, unseenRejectedCount)
+  }, [pendingClaims.length, needShippingCount, unseenRejectedCount])
 
   const filterActive =
     !!reqFilterSearch.trim() ||
@@ -563,18 +927,12 @@ export default function ClaimReqOrdersTab({
 
   return (
     <div className="space-y-6 px-2">
-      <p className="text-sm text-gray-600 max-w-none md:max-w-5xl leading-relaxed">
-        บิลเคลม (REQ) หลังฝ่ายบัญชีอนุมัติแล้ว ต้องกรอกและยืนยัน{' '}
-        <strong>ชื่อผู้รับ</strong> / <strong>ที่อยู่จัดส่ง</strong> / <strong>เบอร์โทร</strong>{' '}
-        ที่นี่ก่อนจึงจะปรับสถานะ<span className="whitespace-nowrap">เข้าคิวใบสั่งงาน (Plan) ได้</span>
-      </p>
-
       <div className="flex flex-wrap gap-2 border-b border-surface-200 pb-2">
         {(
           [
             { id: 'pending' as const, label: 'รออนุมัติ', count: pendingClaims.length },
-            { id: 'approved' as const, label: 'อนุมัติแล้ว', count: approvedClaims.length },
-            { id: 'rejected' as const, label: 'ปฏิเสธ', count: rejectedClaims.length },
+            { id: 'approved' as const, label: 'อนุมัติแล้ว', count: needShippingCount },
+            { id: 'rejected' as const, label: 'ปฏิเสธ', count: unseenRejectedCount },
           ] as const
         ).map((t) => (
           <button
@@ -651,18 +1009,18 @@ export default function ClaimReqOrdersTab({
               <table className="min-w-full text-sm bg-white">
                 <thead className="bg-surface-100">
                   <tr>
-                    <th className="text-left p-3">วันที่ส่งคำขอ</th>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่ส่งคำขอ</th>
                     <th
-                      className="text-left p-3"
+                      className="text-left p-3 whitespace-nowrap"
                       title="เคลมซ้ำ: แสดงเลข REQ ล่าสุด — บรรทัดรองเป็นเลขบิลจัดส่งต้น"
                     >
                       บิลอ้างอิง
                     </th>
-                    <th className="text-left p-3">ผู้สร้าง</th>
-                    <th className="text-left p-3">วันที่สร้างบิล</th>
-                    <th className="text-left p-3">หัวข้อเคลม</th>
-                    <th className="text-left p-3 min-w-[180px]">คำอธิบายเคลม</th>
-                    <th className="text-left p-3">ลิงก์หลักฐาน</th>
+                    <ClaimInfoHeadCells />
+                    <th className="text-left p-3 whitespace-nowrap">หัวข้อเคลม</th>
+                    <th className="text-left p-3 min-w-[180px] whitespace-nowrap">คำอธิบายเคลม</th>
+                    <ClaimMoneyHeadCells />
+                    <th className="text-center p-3 whitespace-nowrap">จัดการ</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white">
@@ -676,7 +1034,7 @@ export default function ClaimReqOrdersTab({
                         onClick={() => void openClaimCompare(c.id)}
                       >
                         <td className="p-3 whitespace-nowrap">
-                          {new Date(c.created_at).toLocaleString('th-TH')}
+                          <DateTimeCellText text={new Date(c.created_at).toLocaleString('th-TH')} />
                         </td>
                         <td className="p-3 align-top">
                           {reqLatest ? (
@@ -688,18 +1046,19 @@ export default function ClaimReqOrdersTab({
                             <span className="font-mono">{baseBill}</span>
                           )}
                         </td>
-                        <td className="p-3 whitespace-nowrap">
-                          {submitterDisplay(c.submitted_by, c.submitter)}
-                        </td>
-                        <td className="p-3 whitespace-nowrap">{c.ref_bill_date_label}</td>
+                        <ClaimInfoCells row={c} submittedBy={c.submitted_by} />
                         <td className="p-3">{claimTypeLabel(claimLabels, c.claim_type)}</td>
                         <td className="p-3 text-gray-700 align-top max-w-md min-w-[200px]">
                           <span className="whitespace-pre-wrap break-words text-sm">
                             {(c.claim_description ?? '').trim() || '–'}
                           </span>
                         </td>
+                        <ClaimMoneyCells refSnapshot={c.ref_snapshot} proposedSnapshot={c.proposed_snapshot} />
                         <td className="p-3 align-middle" onClick={(e) => e.stopPropagation()}>
-                          <EvidenceLinkCell supportingUrl={c.supporting_url} />
+                          <div className="flex items-center justify-center gap-2">
+                            <EvidenceLinkCell supportingUrl={c.supporting_url} />
+                            <VideoLinkCell url={c.packing_video_url} />
+                          </div>
                         </td>
                       </tr>
                     )
@@ -722,11 +1081,12 @@ export default function ClaimReqOrdersTab({
               <table className="min-w-full text-sm bg-white">
                 <thead className="bg-surface-100">
                   <tr>
-                    <th className="text-left p-3">วันที่ส่งคำขอ</th>
-                    <th className="text-left p-3">บิล REQ</th>
-                    <th className="text-left p-3">บิลอ้างอิง</th>
-                    <th className="text-left p-3">สถานะที่อยู่</th>
-                    <th className="text-left p-3">ช่องทาง</th>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่ส่งคำขอ</th>
+                    <th className="text-left p-3 whitespace-nowrap">บิล REQ</th>
+                    <th className="text-left p-3 whitespace-nowrap">บิลอ้างอิง</th>
+                    <th className="text-left p-3 whitespace-nowrap">ช่องทาง</th>
+                    <ClaimMoneyHeadCells />
+                    <th className="text-left p-3 whitespace-nowrap">สถานะที่อยู่</th>
                     <th className="text-left p-3"> </th>
                   </tr>
                 </thead>
@@ -739,35 +1099,44 @@ export default function ClaimReqOrdersTab({
                       <tr
                         key={c.id}
                         className="border-t border-surface-200 bg-white cursor-pointer hover:bg-slate-50/90 transition-colors"
-                        onClick={() => void openClaimCompare(c.id)}
+                        onClick={() => {
+                          markSeen(c.id, 'approved')
+                          void openClaimCompare(c.id)
+                        }}
                       >
                         <td className="p-3 whitespace-nowrap">
-                          {new Date(c.created_at).toLocaleString('th-TH')}
+                          <DateTimeCellText text={new Date(c.created_at).toLocaleString('th-TH')} />
                         </td>
                         <td className="p-3 font-mono font-semibold">{o.bill_no}</td>
                         <td className="p-3 font-mono">{c.ref_snapshot?.bill_no || '–'}</td>
-                        <td className="p-3">
+                        <td className="p-3">{o.channel_code}</td>
+                        <ClaimMoneyCells refSnapshot={c.ref_snapshot} proposedSnapshot={c.proposed_snapshot} />
+                        <td className="p-3 whitespace-nowrap">
                           {done ? (
-                            <span className="text-green-700 font-medium">ยืนยันแล้ว</span>
+                            <div className="leading-tight">
+                              <div className="text-green-700 font-medium">ยืนยันแล้ว</div>
+                              {o.claim_shipping_confirmed_at && (
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  {new Date(o.claim_shipping_confirmed_at).toLocaleString('th-TH')}
+                                </div>
+                              )}
+                            </div>
                           ) : (
                             <span className="text-amber-700 font-medium">รอกรอก / ยืนยัน</span>
                           )}
                         </td>
-                        <td className="p-3">{o.channel_code}</td>
                         <td className="p-3" onClick={(e) => e.stopPropagation()}>
                           {!done && canConfirm && (
                             <button
                               type="button"
-                              onClick={() => openConfirm(c)}
+                              onClick={() => {
+                                markSeen(c.id, 'approved')
+                                openConfirm(c)
+                              }}
                               className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
                             >
                               กรอกที่อยู่จัดส่ง
                             </button>
-                          )}
-                          {done && (
-                            <span className="text-gray-400 text-xs">
-                              {new Date(o.claim_shipping_confirmed_at!).toLocaleString('th-TH')}
-                            </span>
                           )}
                         </td>
                       </tr>
@@ -795,15 +1164,15 @@ export default function ClaimReqOrdersTab({
               <table className="min-w-full text-sm">
                 <thead className="bg-rose-100/90">
                   <tr>
-                    <th className="text-left p-3">วันที่ส่งคำขอ</th>
-                    <th className="text-left p-3">บิลอ้างอิง</th>
-                    <th className="text-left p-3">ผู้สร้าง</th>
-                    <th className="text-left p-3">วันที่สร้างบิล</th>
-                    <th className="text-left p-3">หัวข้อเคลม</th>
-                    <th className="text-left p-3 min-w-[160px]">คำอธิบายเคลม</th>
-                    <th className="text-left p-3 min-w-[160px]">เหตุผลปฏิเสธ</th>
-                    <th className="text-left p-3">วันที่ปฏิเสธ</th>
-                    <th className="text-left p-3">ลิงก์หลักฐาน</th>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่ส่งคำขอ</th>
+                    <th className="text-left p-3 whitespace-nowrap">บิลอ้างอิง</th>
+                    <th className="text-left p-3 whitespace-nowrap">ผู้สร้างบิลเคลม</th>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่สร้างบิล</th>
+                    <th className="text-left p-3 whitespace-nowrap">หัวข้อเคลม</th>
+                    <th className="text-left p-3 min-w-[160px] whitespace-nowrap">คำอธิบายเคลม</th>
+                    <th className="text-left p-3 min-w-[160px] whitespace-nowrap">เหตุผลปฏิเสธ</th>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่ปฏิเสธ</th>
+                    <th className="text-center p-3 whitespace-nowrap">จัดการ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -812,16 +1181,21 @@ export default function ClaimReqOrdersTab({
                       <tr
                         key={c.id}
                         className="border-t border-rose-100 cursor-pointer hover:bg-rose-50/60 transition-colors"
-                        onClick={() => void openClaimCompare(c.id)}
+                        onClick={() => {
+                          markSeen(c.id, 'rejected')
+                          void openClaimCompare(c.id)
+                        }}
                       >
                         <td className="p-3 whitespace-nowrap">
-                          {new Date(c.created_at).toLocaleString('th-TH')}
+                          <DateTimeCellText text={new Date(c.created_at).toLocaleString('th-TH')} />
                         </td>
                         <td className="p-3 font-mono">{c.ref_snapshot?.bill_no || '–'}</td>
                         <td className="p-3 whitespace-nowrap">
                           {submitterDisplay(c.submitted_by, c.submitter)}
                         </td>
-                        <td className="p-3 whitespace-nowrap">{c.ref_bill_date_label}</td>
+                        <td className="p-3 whitespace-nowrap">
+                          <DateTimeCellText text={c.ref_bill_date_label} />
+                        </td>
                         <td className="p-3">{claimTypeLabel(claimLabels, c.claim_type)}</td>
                         <td className="p-3 text-gray-700 align-top max-w-md min-w-[180px]">
                           <span className="whitespace-pre-wrap break-words text-sm">
@@ -834,12 +1208,17 @@ export default function ClaimReqOrdersTab({
                           </span>
                         </td>
                         <td className="p-3 whitespace-nowrap text-gray-700">
-                          {c.reviewed_at
-                            ? new Date(c.reviewed_at).toLocaleString('th-TH')
-                            : '–'}
+                          {c.reviewed_at ? (
+                            <DateTimeCellText text={new Date(c.reviewed_at).toLocaleString('th-TH')} />
+                          ) : (
+                            '–'
+                          )}
                         </td>
                         <td className="p-3 align-middle" onClick={(e) => e.stopPropagation()}>
-                          <EvidenceLinkCell supportingUrl={c.supporting_url} />
+                          <div className="flex items-center justify-center gap-2">
+                            <EvidenceLinkCell supportingUrl={c.supporting_url} />
+                            <VideoLinkCell url={c.packing_video_url} />
+                          </div>
                         </td>
                       </tr>
                     )
@@ -874,7 +1253,19 @@ export default function ClaimReqOrdersTab({
                 latestPriorReqBillNo={compareLatestPrior}
                 approvedResultBillNo={compareApprovedResult}
               />
-              <div className="mt-4 flex justify-end border-t border-gray-100 pt-4 shrink-0">
+              <div className="mt-4 flex items-center justify-between gap-2 border-t border-gray-100 pt-4 shrink-0">
+                <div>
+                  {compareDetail.status === 'pending' && canEditClaim && (
+                    <button
+                      type="button"
+                      disabled={compareLoading}
+                      onClick={() => setEditOpen(true)}
+                      className="px-5 py-2.5 rounded-xl bg-amber-500 text-white font-medium hover:bg-amber-600 disabled:opacity-50"
+                    >
+                      ✏️ แก้ไขบิลเคลม
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   disabled={compareLoading}
@@ -889,6 +1280,17 @@ export default function ClaimReqOrdersTab({
         </div>
       </Modal>
 
+      <ClaimEditModal
+        open={editOpen}
+        detail={compareDetail}
+        refOrderTotal={compareRefOrder?.total_amount ?? (Number(compareDetail?.ref_snapshot?.total_amount) || 0)}
+        onClose={() => setEditOpen(false)}
+        onSaved={async () => {
+          await load()
+          if (compareDetail) await openClaimCompare(compareDetail.id)
+        }}
+      />
+
       <Modal
         open={modalOpen}
         onClose={() => !saving && setModalOpen(false)}
@@ -902,24 +1304,125 @@ export default function ClaimReqOrdersTab({
             อ้างอิงบิลจัดส่งต้น:{' '}
             <span className="font-mono text-gray-700">{modalClaim?.ref_snapshot?.bill_no || '–'}</span>
           </p>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">ชื่อผู้รับ</label>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              void handleSaveConfirm()
+            }}
+          >
+          <div className="mb-4">
+            <div className="mb-1.5 flex items-center gap-2">
+              <label className="block text-sm font-medium text-gray-700">ที่อยู่ลูกค้า</label>
+              <button
+                type="button"
+                onClick={() => void handleAutoFillShipping()}
+                disabled={autoFillAddressLoading || !autoFillAddressText.trim()}
+                className="rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {autoFillAddressLoading ? 'กำลังแยก...' : 'Auto fill'}
+              </button>
+            </div>
+            <textarea
+              value={autoFillAddressText}
+              onChange={(e) => setAutoFillAddressText(e.target.value)}
+              onPaste={(e) => {
+                const pasted = e.clipboardData.getData('text')
+                if (!pasted.trim()) return
+                const el = e.currentTarget
+                const next = el.value.slice(0, el.selectionStart ?? el.value.length)
+                  + pasted
+                  + el.value.slice(el.selectionEnd ?? el.value.length)
+                void handleAutoFillShipping(next)
+              }}
+              placeholder="วางชื่อ ที่อยู่ และเบอร์โทร ระบบจะแยกข้อมูลให้อัตโนมัติ"
+              rows={3}
+              className="w-full resize-y rounded-xl border border-blue-200 bg-blue-50/40 px-3 py-2.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
+            />
+          </div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">ชื่อผู้รับ <span className="text-red-500">*</span></label>
           <input
+            name="name"
+            autoComplete="name"
             className="w-full border border-surface-300 rounded-xl px-3 py-2.5 mb-4 text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
             value={recipientName}
             onChange={(e) => setRecipientName(e.target.value)}
+            required
           />
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">ที่อยู่จัดส่ง</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">ที่อยู่จัดส่ง <span className="text-red-500">*</span></label>
           <textarea
+            name="street-address"
+            autoComplete="street-address"
             className="w-full border border-surface-300 rounded-xl px-3 py-2.5 mb-4 min-h-[96px] text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none resize-y"
             value={customerAddress}
             onChange={(e) => setCustomerAddress(e.target.value)}
+            required
           />
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">เบอร์โทร</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">เบอร์โทร <span className="text-red-500">*</span></label>
           <input
+            name="tel"
+            autoComplete="tel"
             className="w-full border border-surface-300 rounded-xl px-3 py-2.5 mb-4 text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none"
             value={mobilePhone}
             onChange={(e) => setMobilePhone(e.target.value)}
+            required
           />
+          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800">สลิปโอน <span className="text-red-500">*</span></p>
+                <p className="text-xs text-gray-500">ต้องผ่านการตรวจสอบ EasySlip ก่อนยืนยัน</p>
+              </div>
+              <label className="inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm font-medium text-emerald-700 shadow-sm ring-1 ring-inset ring-emerald-200 transition hover:bg-emerald-100">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4m0 0L7 9m5-5 5 5M5 14v5h14v-5" />
+                </svg>
+                เลือกสลิป
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => setConfirmSlipFiles(Array.from(e.target.files || []))}
+                  className="sr-only"
+                />
+              </label>
+            </div>
+            {confirmSlipFiles.length > 0 && (
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {confirmSlipFiles.map((f, i) => {
+                  const preview = confirmSlipPreviews[i]
+                  return (
+                    <div key={`${f.name}-${i}`} className="overflow-hidden rounded-lg border border-emerald-200 bg-white">
+                      {preview && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedSlipPreview(preview)}
+                          className="block w-full bg-slate-100 p-2 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-400"
+                          title="คลิกเพื่อดูภาพขนาดใหญ่"
+                        >
+                          <img
+                            src={preview.url}
+                            alt={`สลิป ${f.name}`}
+                            className="mx-auto h-48 w-full object-contain"
+                          />
+                        </button>
+                      )}
+                      <div className="flex items-center justify-between gap-2 px-2.5 py-2 text-xs text-gray-700">
+                        <span className="truncate" title={f.name}>{f.name}</span>
+                        <button
+                          type="button"
+                          className="shrink-0 font-medium text-red-600 hover:underline"
+                          onClick={() => setConfirmSlipFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                        >
+                          ลบ
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          </form>
           {errorMsg && <p className="text-sm text-red-600 mb-3">{errorMsg}</p>}
           <div className="flex gap-3 justify-end pt-2">
             <button
@@ -933,14 +1436,61 @@ export default function ClaimReqOrdersTab({
             <button
               type="button"
               className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50 shadow-sm"
-              disabled={saving}
+              disabled={
+                saving
+                || !recipientName.trim()
+                || !customerAddress.trim()
+                || !mobilePhone.trim()
+                || confirmSlipFiles.length === 0
+              }
               onClick={handleSaveConfirm}
             >
-              {saving ? 'กำลังบันทึก...' : 'บันทึกและยืนยันที่อยู่'}
+              {saving ? 'กำลังตรวจสลิป...' : 'บันทึกและยืนยันที่อยู่'}
             </button>
           </div>
         </div>
       </Modal>
+
+      {expandedSlipPreview && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4 sm:p-8"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`ดูสลิป ${expandedSlipPreview.name}`}
+          onClick={() => setExpandedSlipPreview(null)}
+        >
+          <div className="relative flex max-h-full max-w-5xl items-center justify-center" onClick={(e) => e.stopPropagation()}>
+            <img
+              src={expandedSlipPreview.url}
+              alt={`สลิป ${expandedSlipPreview.name}`}
+              className="max-h-[90vh] max-w-[92vw] rounded-lg bg-white object-contain shadow-2xl"
+            />
+            <button
+              type="button"
+              onClick={() => setExpandedSlipPreview(null)}
+              className="absolute right-2 top-2 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-2xl leading-none text-white shadow-lg transition hover:bg-black"
+              aria-label="ปิดรูปสลิป"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {claimVerify && (
+        <VerificationResultModal
+          open={claimVerify.open}
+          onClose={() => setClaimVerify(null)}
+          type={claimVerify.type}
+          accountMatch={claimVerify.accountMatch}
+          bankCodeMatch={claimVerify.bankCodeMatch}
+          amountStatus={claimVerify.amountStatus}
+          orderAmount={claimVerify.orderAmount}
+          totalAmount={claimVerify.totalAmount}
+          errors={claimVerify.errors}
+          statusMessage={claimVerify.statusMessage}
+        />
+      )}
     </div>
   )
 }

@@ -39,7 +39,18 @@ export type OrderItemRow = {
   quantity?: number | null
   unit_price?: number | null
   is_free?: boolean | null
+  ink_color?: string | null
+  cartoon_pattern?: string | null
+  line_pattern?: string | null
+  font?: string | null
+  line_1?: string | null
+  line_2?: string | null
+  line_3?: string | null
 }
+
+/** คอลัมน์รายการสินค้าที่ต้องโหลดเพื่อแสดงข้อมูลผลิตครบ */
+export const ORDER_ITEM_DETAIL_COLUMNS =
+  'product_name, quantity, unit_price, is_free, ink_color, cartoon_pattern, line_pattern, font, line_1, line_2, line_3'
 
 export type RefOrderDetail = {
   bill_no: string
@@ -87,13 +98,14 @@ export function externalUrlOrNull(raw: string | null | undefined): string | null
 }
 
 export function formatRefBillCreatedAt(entryDate: string | null | undefined, createdAt: string | null | undefined): string {
-  const raw = (entryDate && String(entryDate).trim()) || (createdAt && String(createdAt).trim()) || ''
+  // ใช้ created_at ก่อน (timestamp มีเวลาสร้างจริง — ตรงกับหน้ารายละเอียดบิล) แล้วค่อย fallback entry_date
+  const raw = (createdAt && String(createdAt).trim()) || (entryDate && String(entryDate).trim()) || ''
   if (!raw) return '–'
-  const d = new Date(raw)
-  if (!Number.isNaN(d.getTime())) {
-    return d.toLocaleString('th-TH')
-  }
-  return raw
+  // entry_date เป็นวันที่ล้วน (YYYY-MM-DD) — parse แบบ local และแสดงเฉพาะวันที่ กันเวลาปลอม 07:00 จาก UTC shift
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+  const d = isDateOnly ? new Date(raw + 'T00:00:00') : new Date(raw)
+  if (Number.isNaN(d.getTime())) return raw
+  return isDateOnly ? d.toLocaleDateString('th-TH') : d.toLocaleString('th-TH')
 }
 
 export function mobilePhoneFromBillingDetails(bd: unknown): string | null {

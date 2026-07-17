@@ -81,13 +81,18 @@ export default function WorkOrderSelectionList({
     }
   }
 
-  const channelCounts = orders.reduce<Record<string, number>>((acc, o) => {
+  /** ป้ายช่องทางสำหรับกรอง — บิลเคลม (REQ) แยกเป็น "(เคลม)ช่องทาง" เช่น (เคลม)SPTR */
+  const pillChannelKeyOf = (o: Order) => {
     const ch = o.channel_code || 'N/A'
-    acc[ch] = (acc[ch] || 0) + 1
+    return String(o.bill_no || '').startsWith('REQ') ? `(เคลม)${ch}` : ch
+  }
+  const channelCounts = orders.reduce<Record<string, number>>((acc, o) => {
+    const key = pillChannelKeyOf(o)
+    acc[key] = (acc[key] || 0) + 1
     return acc
   }, {})
   const channelList = Object.entries(channelCounts).sort(([a], [b]) => a.localeCompare(b))
-  const filteredOrders = pillChannel ? orders.filter((o) => o.channel_code === pillChannel) : orders
+  const filteredOrders = pillChannel ? orders.filter((o) => pillChannelKeyOf(o) === pillChannel) : orders
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -114,7 +119,7 @@ export default function WorkOrderSelectionList({
       setSelectedIds(new Set())
       return
     }
-    const topN = orders.slice(0, n).map((o) => o.id)
+    const topN = filteredOrders.slice(0, n).map((o) => o.id)
     setSelectedIds(new Set(topN))
   }
 
@@ -123,7 +128,9 @@ export default function WorkOrderSelectionList({
       setSelectedIds(new Set())
       return
     }
-    const list = pillChannel ? orders.filter((o) => o.channel_code === pillChannel) : orders
+    // Use the same channel key as the visible table so claim bills such as
+    // "(เคลม)SPTR" are not mixed into the regular "SPTR" selection.
+    const list = pillChannel ? orders.filter((o) => pillChannelKeyOf(o) === pillChannel) : orders
     if (list.length === 0) return
     const n = parseInt(selectQty, 10)
     if (isNaN(n) || n < 1) {
@@ -187,7 +194,9 @@ export default function WorkOrderSelectionList({
     setCreating(true)
     try {
       const byChannel = selectedOrders.reduce<Record<string, Order[]>>((acc, o) => {
-        const ch = o.channel_code || 'N/A'
+        // Keep claim bills in their own work order and make the claim origin
+        // visible in the generated name, e.g. "(เคลม)SPTR-170769-R1".
+        const ch = pillChannelKeyOf(o)
         if (!acc[ch]) acc[ch] = []
         acc[ch].push(o)
         return acc
@@ -205,7 +214,10 @@ export default function WorkOrderSelectionList({
       let nextOrderIndex = (maxOrder?.[0]?.order_index ?? -1) + 1
 
       for (const [channelCode, channelOrders] of Object.entries(byChannel)) {
-        const prefix = woPrefix(channelCode)
+        const claimPrefix = '(เคลม)'
+        const prefix = channelCode.startsWith(claimPrefix)
+          ? `${claimPrefix}${woPrefix(channelCode.slice(claimPrefix.length))}`
+          : woPrefix(channelCode)
         const { data: nextName, error: nameErr } = await supabase.rpc('rpc_next_work_order_name', {
           p_prefix: prefix,
           p_date_part: datePart,

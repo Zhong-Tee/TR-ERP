@@ -86,11 +86,66 @@ export default function Orders() {
   const [shippedFilteredCount, setShippedFilteredCount] = useState(0)
   const [issueCount, setIssueCount] = useState(0)
   const [claimReqNeedShippingCount, setClaimReqNeedShippingCount] = useState(0)
-  const [claimRejectedCount, setClaimRejectedCount] = useState(0)
   const [allCount, setAllCount] = useState(0)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [adminUsers, setAdminUsers] = useState<string[]>([])
   const [listRefreshKey, setListRefreshKey] = useState(0)
+
+  /** นับบิล REQ ที่รอกรอกที่อยู่ ตั้งแต่เข้าหน้าออเดอร์ (ไม่ต้องเปิดแท็บบิลเคลมก่อน) + อัปเดตเรียลไทม์ */
+  useEffect(() => {
+    let cancelled = false
+    const loadClaimReqBadge = async () => {
+      try {
+        const { data: approved, error } = await supabase
+          .from('or_claim_requests')
+          .select('created_claim_order_id')
+          .eq('status', 'approved')
+          .not('created_claim_order_id', 'is', null)
+          .order('reviewed_at', { ascending: false })
+          .limit(200)
+        if (error) throw error
+        const ids = [
+          ...new Set((approved || []).map((r) => String(r.created_claim_order_id || '')).filter(Boolean)),
+        ]
+        if (ids.length === 0) {
+          if (!cancelled) setClaimReqNeedShippingCount(0)
+          return
+        }
+        const narrow =
+          user?.role === 'sales-tr'
+            ? narrowSalesTrAdminUserForTab()
+            : isSalesPumpOwnerScopedRole(user?.role)
+              ? resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email) || undefined
+              : undefined
+        let q = supabase
+          .from('or_orders')
+          .select('id')
+          .in('id', ids)
+          .is('claim_shipping_confirmed_at', null)
+        if (narrow?.trim()) q = q.eq('admin_user', narrow.trim())
+        const { data: rows, error: e2 } = await q
+        if (e2) throw e2
+        if (!cancelled) setClaimReqNeedShippingCount((rows || []).length)
+      } catch (e) {
+        console.warn('Orders: claim REQ badge', e)
+      }
+    }
+    void loadClaimReqBadge()
+    const channel = supabase
+      .channel('orders-claim-req-badge')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_claim_requests' }, () => {
+        void loadClaimReqBadge()
+      })
+      .subscribe()
+    const onRefresh = () => void loadClaimReqBadge()
+    window.addEventListener('sidebar-refresh-counts', onRefresh)
+    return () => {
+      cancelled = true
+      supabase.removeChannel(channel)
+      window.removeEventListener('sidebar-refresh-counts', onRefresh)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role, user?.username, user?.email, listRefreshKey])
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -546,7 +601,7 @@ export default function Orders() {
             {[
               { id: 'all', label: 'ทั้งหมด' },
               { id: 'create', label: 'สร้าง/แก้ไข' },
-              { id: 'claim-req', label: 'บิลเคลม (REQ)' },
+              { id: 'claim-req', label: 'บิลเคลม' },
               { id: 'waiting', label: `รอลงข้อมูล (${waitingCount})` },
               { id: 'data-error', label: `ลงข้อมูลผิด (${dataErrorCount})` },
               { id: 'complete', label: 'ตรวจสอบไม่ผ่าน', count: completeCount, countColor: 'text-red-600' },
@@ -576,15 +631,6 @@ export default function Orders() {
                     {tab.label}
                     {claimReqNeedShippingCount > 0 && (
                       <span className="font-semibold text-amber-600"> ({claimReqNeedShippingCount})</span>
-                    )}
-                    {claimRejectedCount > 0 && (
-                      <span
-                        className="font-semibold text-rose-700"
-                        title="จำนวนคำขอเคลมที่บัญชีปฏิเสธ (ในขอบเขตของคุณ)"
-                      >
-                        {' '}
-                        ปฏิเสธ ({claimRejectedCount})
-                      </span>
                     )}
                   </>
                 ) : 'count' in tab && tab.count !== undefined && tab.count > 0 && 'countColor' in tab ? (
@@ -848,9 +894,8 @@ export default function Orders() {
                   : undefined
             }
             refreshTrigger={listRefreshKey}
-            onCountsChange={(_pendingApproval, needShipping, rejected) => {
+            onCountsChange={(_pendingApproval, needShipping) => {
               setClaimReqNeedShippingCount(needShipping)
-              setClaimRejectedCount(rejected ?? 0)
             }}
           />
         ) : activeTab === 'data-error' ? (

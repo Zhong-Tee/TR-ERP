@@ -27,8 +27,10 @@ type ManageSubView = 'new' | 'all'
 
 interface ProcessStep {
   name: string
-  type: 'per_piece' | 'fixed'
+  type: 'per_piece' | 'fixed' | 'per_category'
   value: number
+  /** เวลาต่อชิ้น (วินาที) แยกตามหมวดหมู่สินค้า — ใช้เมื่อ type = 'per_category' */
+  categoryValues?: Record<string, number>
 }
 
 interface PlanSettingsData {
@@ -59,8 +61,12 @@ interface PlanJob {
   created_at?: string
   /** ใบงานถูกยกเลิกการผลิต (บิลถูกย้ายหมดแต่มี timestamp ในแผนแล้ว) */
   is_production_voided?: boolean
+  /** โน้ตติดตามของหัวหน้างานต่อแผนก: ใกล้เสร็จ (almost) / อาจจะช้า (slow) */
+  follow_notes?: Record<string, 'almost' | 'slow'>
 }
 type DeptQtyByWorkOrderId = Record<string, Record<string, number>>
+/** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
+type CatQtyByWorkOrderId = Record<string, Record<string, number>>
 
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
 const AUTO_TRACK_DEPTS: Record<string, string> = {
@@ -251,14 +257,25 @@ function calcPlanFor(
   dept: string,
   job: PlanJob,
   settings: PlanSettingsData,
-  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId,
+  catQtyByWorkOrderId?: CatQtyByWorkOrderId
 ): number {
   const q = getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId)
   if (!q) return 0
+  const workOrderId = job.work_order_id != null ? String(job.work_order_id) : ''
+  const catQty = workOrderId ? catQtyByWorkOrderId?.[workOrderId] || {} : {}
+  const deptCategories = new Set(settings.departmentProductCategories?.[dept] || [])
   let processTotalSec = 0
   ;(settings.processes[dept] || []).forEach((p) => {
     if (p.type === 'per_piece') processTotalSec += (p.value || 0) * q
     else if (p.type === 'fixed') processTotalSec += p.value || 0
+    else if (p.type === 'per_category') {
+      // ตามหมวดหมู่สินค้า: Σ (จำนวนของหมวด × วินาที/ชิ้นของหมวด) เฉพาะหมวดที่ผูกกับแผนกนี้
+      Object.entries(p.categoryValues || {}).forEach(([cat, secPerPiece]) => {
+        if (!deptCategories.has(cat)) return
+        processTotalSec += (catQty[cat] || 0) * (Number(secPerPiece) || 0)
+      })
+    }
   })
   const minSec = (settings.prepPerJob?.[dept] || 0) * 60
   return Math.max(minSec, processTotalSec)
@@ -353,9 +370,14 @@ function computePlanTimeline(
   settings: PlanSettingsData,
   jobs: PlanJob[],
   _anchor: string = 'cut',
-  opts: { precomputed?: Record<string, TimelineItem[]>; deptQtyByWorkOrderId?: DeptQtyByWorkOrderId } = {}
+  opts: {
+    precomputed?: Record<string, TimelineItem[]>
+    deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+    catQtyByWorkOrderId?: CatQtyByWorkOrderId
+  } = {}
 ): TimelineItem[] {
   const deptQtyByWorkOrderId = opts.deptQtyByWorkOrderId
+  const catQtyByWorkOrderId = opts.catQtyByWorkOrderId
   const lines = Math.max(1, settings.linesPerDept?.[dept] || 1)
   const dayStartSec = parseTimeToMin(settings.dayStart) * 60
   const breakPeriodsSec = (settings.deptBreaks[dept] || [])
@@ -395,7 +417,7 @@ function computePlanTimeline(
       prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
     }
 
-    let stdDuration = calcPlanFor(dept, j, settings, deptQtyByWorkOrderId)
+    let stdDuration = calcPlanFor(dept, j, settings, deptQtyByWorkOrderId, catQtyByWorkOrderId)
     const cutSec = j.cut ? parseTimeToMin(j.cut) * 60 : -Infinity
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
@@ -482,6 +504,58 @@ function getOverallJobStatus(
   if (statuses.every((s) => s === 'done')) return { key: 'done' }
   if (statuses.some((s) => s === 'progress')) return { key: 'progress' }
   return { key: 'pending' }
+}
+
+/** ใบงานเริ่มกระบวนการใดๆ ไปแล้วหรือยัง (นับทุกแผนก รวมแผนกบันทึกอัตโนมัติ เบิก/QC/PACK) */
+function hasStartedAnyProcess(job: PlanJob): boolean {
+  return Object.values(job.tracks || {}).some((deptTracks) =>
+    Object.entries(deptTracks || {}).some(([key, t]) => key !== 'เตรียมไฟล์' && !!t?.start)
+  )
+}
+
+/** สีประจำแผนกสำหรับมุมมองการ์ด (Dashboard) — ชิปเป็นพื้นผิวสีในตัว อ่านง่ายทั้งโหมดสว่าง/มืด */
+const PLAN_DEPT_CARD_COLORS: Record<string, { chip: string; name: string; badge: string }> = {
+  'เบิก': { chip: 'bg-slate-50 border-slate-300', name: 'text-slate-700', badge: 'bg-slate-700' },
+  STAMP: { chip: 'bg-purple-50 border-purple-300', name: 'text-purple-800', badge: 'bg-purple-700' },
+  STK: { chip: 'bg-sky-50 border-sky-300', name: 'text-sky-800', badge: 'bg-sky-700' },
+  CTT: { chip: 'bg-orange-50 border-orange-300', name: 'text-orange-800', badge: 'bg-orange-700' },
+  LASER: { chip: 'bg-amber-50 border-amber-300', name: 'text-amber-800', badge: 'bg-amber-700' },
+  TUBE: { chip: 'bg-teal-50 border-teal-300', name: 'text-teal-800', badge: 'bg-teal-700' },
+  QC: { chip: 'bg-pink-50 border-pink-300', name: 'text-pink-800', badge: 'bg-pink-700' },
+  PACK: { chip: 'bg-green-50 border-green-300', name: 'text-green-800', badge: 'bg-green-700' },
+}
+const PLAN_DEPT_CARD_FALLBACK = { chip: 'bg-gray-50 border-gray-300', name: 'text-gray-700', badge: 'bg-gray-600' }
+const deptCardColor = (dept: string) => PLAN_DEPT_CARD_COLORS[dept] || PLAN_DEPT_CARD_FALLBACK
+
+/** ไอคอนสถานะแผนกในการ์ด Dashboard: รอเริ่ม / กำลังทำ / เสร็จ / เลยกำหนด */
+function DeptStatusIcon({ phase, className = '' }: { phase: 'pending' | 'progress' | 'done' | 'late'; className?: string }) {
+  const cls = `w-4 h-4 shrink-0 ${className}`
+  if (phase === 'late') {
+    return (
+      <svg className={`${cls} text-red-500`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+      </svg>
+    )
+  }
+  if (phase === 'done') {
+    return (
+      <svg className={`${cls} text-gray-400`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path fillRule="evenodd" d="M16.704 5.29a1 1 0 010 1.42l-7.5 7.5a1 1 0 01-1.42 0l-3.5-3.5a1 1 0 111.42-1.42l2.79 2.79 6.79-6.79a1 1 0 011.42 0z" clipRule="evenodd" />
+      </svg>
+    )
+  }
+  if (phase === 'progress') {
+    return (
+      <svg className={`${cls} text-blue-500`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M6.3 2.84A1 1 0 004.8 3.7v12.6a1 1 0 001.5.86l10-6.3a1 1 0 000-1.72l-10-6.3z" />
+      </svg>
+    )
+  }
+  return (
+    <svg className={`${cls} text-gray-400`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM10.75 6a.75.75 0 00-1.5 0v4c0 .27.144.52.378.658l2.5 1.5a.75.75 0 10.744-1.302l-2.122-1.273V6z" clipRule="evenodd" />
+    </svg>
+  )
 }
 
 const PLAN_MENU_KEY_MAP: Record<string, string> = {
@@ -615,17 +689,50 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [woStatusById, setWoStatusById] = useState<Record<string, string>>({})
   const [hideCompleted, setHideCompleted] = useState(true)
   const [hideVoided, setHideVoided] = useState(true)
+  const [dashViewMode, setDashViewMode] = useState<'table' | 'card'>(() => {
+    if (typeof window === 'undefined') return 'table'
+    return localStorage.getItem('planDashViewMode') === 'card' ? 'card' : 'table'
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('planDashViewMode', dashViewMode)
+    } catch {
+      /* ignore */
+    }
+  }, [dashViewMode])
+  /** กรองแสดงเฉพาะใบงานที่เลยกำหนด (มุมมองการ์ด) */
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false)
+  /** เมนูโน้ตติดตามที่กำลังเปิดอยู่ (มุมมองการ์ด) */
+  const [noteMenu, setNoteMenu] = useState<{ jobId: string; dept: string } | null>(null)
+  useEffect(() => {
+    if (!noteMenu) return
+    const close = () => setNoteMenu(null)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [noteMenu])
+  /** นาฬิกาเดินทุก 30 วิ เพื่อให้สถานะ "เลยกำหนด" ในการ์ดขยับตามเวลาจริง */
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!(currentView === 'dash' && dashViewMode === 'card')) return
+    setNowTick(Date.now())
+    const id = window.setInterval(() => setNowTick(Date.now()), 30000)
+    return () => window.clearInterval(id)
+  }, [currentView, dashViewMode])
   const [selectedDeptForSettings, setSelectedDeptForSettings] = useState<string>('')
   /** หมวดสินค้าจาก pr_products — ใช้ใน modal ตั้งค่า Plan */
   const [planProductCategories, setPlanProductCategories] = useState<string[]>([])
   /** จำนวนที่คำนวณจากหมวดสินค้า ต่อ work_order_id และแผนก */
   const [deptQtyByWorkOrderId, setDeptQtyByWorkOrderId] = useState<DeptQtyByWorkOrderId>({})
+  /** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
+  const [catQtyByWorkOrderId, setCatQtyByWorkOrderId] = useState<CatQtyByWorkOrderId>({})
   /** จำนวนบิลต่อใบงานใน Dashboard - นับจาก or_orders เพื่อไม่พึ่ง order_count ที่อาจค้าง */
   const [dashBillCountByWorkOrderId, setDashBillCountByWorkOrderId] = useState<Record<string, number>>({})
   const [categoryModalDept, setCategoryModalDept] = useState<string | null>(null)
   const [categoryModalDraft, setCategoryModalDraft] = useState<string[]>([])
   const [dashDraggedId, setDashDraggedId] = useState<string | null>(null)
   const [dashDropTarget, setDashDropTarget] = useState<{ id: string; above: boolean } | null>(null)
+  /** รายชื่อใบงานที่เริ่มผลิตแล้ว ซึ่งขวางการลัดคิว (null = ปิด modal) */
+  const [queueJumpBlocked, setQueueJumpBlocked] = useState<string[] | null>(null)
   const [tvLinkCopyHint, setTvLinkCopyHint] = useState(false)
   const [expandedDeptJob, setExpandedDeptJob] = useState<string | null>(null) // 'dept_jobId' for ประวัติ
   /** Modal ล้าง: ยืนยันล้างเท่านั้น (รหัสปลดล็อคใส่ด้านบน) */
@@ -744,6 +851,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     )
     if (selectedByDept.length === 0) {
       setDeptQtyByWorkOrderId({})
+      setCatQtyByWorkOrderId({})
       return
     }
     const workOrderIds = Array.from(
@@ -755,6 +863,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     )
     if (workOrderIds.length === 0) {
       setDeptQtyByWorkOrderId({})
+      setCatQtyByWorkOrderId({})
       return
     }
     ;(async () => {
@@ -807,10 +916,16 @@ export default function Plan({ tvMode = false }: PlanProps) {
             next[workOrderId][dept] = total
           })
         })
-        if (!cancelled) setDeptQtyByWorkOrderId(next)
+        if (!cancelled) {
+          setDeptQtyByWorkOrderId(next)
+          setCatQtyByWorkOrderId(categoryQtyByWorkOrder)
+        }
       } catch (error) {
         console.error('Plan: load department qty by categories', error)
-        if (!cancelled) setDeptQtyByWorkOrderId({})
+        if (!cancelled) {
+          setDeptQtyByWorkOrderId({})
+          setCatQtyByWorkOrderId({})
+        }
       }
     })()
     return () => {
@@ -1466,6 +1581,17 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [])
 
+  const setDeptFollowNote = useCallback(
+    (job: PlanJob, dept: string, value: 'almost' | 'slow' | null) => {
+      const next = { ...(job.follow_notes || {}) }
+      if (value) next[dept] = value
+      else delete next[dept]
+      setNoteMenu(null)
+      updateJobField(job.id, { follow_notes: next })
+    },
+    [updateJobField]
+  )
+
   const startDashEdit = useCallback(
     (jobId: string, dept: string, field: 'planStart' | 'actualStart' | 'actualEnd', value: string) => {
       if (!unlocked) return
@@ -1681,6 +1807,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
         timelines[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', {
           precomputed: timelines,
           deptQtyByWorkOrderId,
+          catQtyByWorkOrderId,
         })
       }
     })
@@ -1704,6 +1831,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
         tl[d] = computePlanTimeline(d, dDate, settings, scopedJobs, 'cut', {
           precomputed: tl,
           deptQtyByWorkOrderId,
+          catQtyByWorkOrderId,
         })
       }
     })
@@ -2368,7 +2496,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
               const jobsOnDate = jobs
                 .filter((j) => sameDay(j.date, depDate) && getEffectiveQty(j, dept, settings, deptQtyByWorkOrderId) > 0)
                 .sort((a, b) => a.order_index - b.order_index)
-              const timeline = computePlanTimeline(dept, depDate, settings, jobs, 'cut', { deptQtyByWorkOrderId })
+              const timeline = computePlanTimeline(dept, depDate, settings, jobs, 'cut', { deptQtyByWorkOrderId, catQtyByWorkOrderId })
               const linesCount = Math.max(1, settings.linesPerDept?.[dept] ?? 1)
               const processNames = (settings.processes[dept] || []).map((p) => p.name)
               const workflowLabel = processNames.length ? processNames.join(' → ') : '-'
@@ -2609,6 +2737,27 @@ export default function Plan({ tvMode = false }: PlanProps) {
           if (!hideCompleted) return true
           return getOverallJobStatus(j, settings, deptQtyByWorkOrderId).key !== 'done'
         })
+        const dashTodayISO = localISODate()
+        const dashNowDate = new Date(nowTick)
+        const dashNowSec =
+          dDate < dashTodayISO
+            ? 24 * 3600
+            : dDate > dashTodayISO
+              ? 0
+              : dashNowDate.getHours() * 3600 + dashNowDate.getMinutes() * 60
+        const isJobLate = (j: PlanJob) => {
+          if (getOverallJobStatus(j, settings, deptQtyByWorkOrderId).key === 'done') return false
+          return settings.departments.some((d) => {
+            if (getEffectiveQty(j, d, settings, deptQtyByWorkOrderId) <= 0) return false
+            const st = getJobStatusForDept(j, d, settings, deptQtyByWorkOrderId)
+            if (st.key === 'done') return false
+            const me = dashTimelines[d]?.find((x) => x.id === j.id)
+            const plannedEnd = me?.end ?? 0
+            return plannedEnd > 0 && dashNowSec > plannedEnd
+          })
+        }
+        const dashIsToday = dDate === dashTodayISO
+        const overdueCount = visibleDayJobs.filter(isJobLate).length
         return (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
             <h2 className="border-b border-gray-200 px-4 py-3 text-lg font-semibold">Dashboard & Master Plan</h2>
@@ -2645,6 +2794,46 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     />
                     <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
                   </label>
+                  <div className="mt-6 inline-flex overflow-hidden rounded-full border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => setDashViewMode('table')}
+                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${dashViewMode === 'table' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      ตาราง
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDashViewMode('card')}
+                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${dashViewMode === 'card' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      การ์ด
+                    </button>
+                  </div>
+                  {dashViewMode === 'card' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowOverdueOnly((v) => !v)}
+                        className={`mt-6 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                          showOverdueOnly
+                            ? 'border-red-500 bg-red-600 text-white'
+                            : overdueCount > 0
+                              ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100'
+                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        ‼️ เฉพาะเลยกำหนด
+                        <span className={`rounded-full px-1.5 text-xs font-bold ${showOverdueOnly ? 'bg-white text-red-600' : 'bg-red-600 text-white'}`}>
+                          {overdueCount}
+                        </span>
+                      </button>
+                      <span className="mt-6 inline-flex items-center gap-1.5 text-xs text-gray-400">
+                        <span className="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                        อัปเดตสด {pad(dashNowDate.getHours())}:{pad(dashNowDate.getMinutes())}
+                      </span>
+                    </>
+                  )}
                 </div>
                 {unlocked && (
                   <button
@@ -2686,14 +2875,18 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   </button>
                 )}
               </div>
-              <p className="text-xs text-gray-500">
-                * เวลาแผนจะอัปเดตตาม "เวลาเสร็จจริง" ของงานก่อนหน้า และข้าม "เวลาพัก" ของแต่ละแผนกโดยอัตโนมัติ
-              </p>
-              <p className="text-xs text-gray-500">
-                * <span className="text-teal-600 font-semibold">เวลาสีเขียว⚡</span> = บันทึกอัตโนมัติ (เบิก→WMS, QC→หน้าตรวจ, PACK→หน้าแพ็ค) &nbsp;|&nbsp;
-                <span className="text-blue-600 font-semibold">เวลาสีน้ำเงิน</span> = บันทึกจากหน้าแผนก &nbsp;|&nbsp;
-                <span className="text-red-600 font-semibold">เวลาสีแดง</span> = ช้ากว่าแผน
-              </p>
+              {dashViewMode === 'table' && (
+                <>
+                  <p className="text-xs text-gray-500">
+                    * เวลาแผนจะอัปเดตตาม "เวลาเสร็จจริง" ของงานก่อนหน้า และข้าม "เวลาพัก" ของแต่ละแผนกโดยอัตโนมัติ
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    * <span className="text-teal-600 font-semibold">เวลาสีเขียว⚡</span> = บันทึกอัตโนมัติ (เบิก→WMS, QC→หน้าตรวจ, PACK→หน้าแพ็ค) &nbsp;|&nbsp;
+                    <span className="text-blue-600 font-semibold">เวลาสีน้ำเงิน</span> = บันทึกจากหน้าแผนก &nbsp;|&nbsp;
+                    <span className="text-red-600 font-semibold">เวลาสีแดง</span> = ช้ากว่าแผน
+                  </p>
+                </>
+              )}
               {/* KPI Bar - สรุปไลน์ต่อแผนก (จาก plan.html) */}
               <div className="flex flex-wrap gap-3">
                 {settings.departments.map((d) => {
@@ -2735,6 +2928,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   )
                 })}
               </div>
+              {dashViewMode === 'table' && (
               <div
                 className={`overflow-x-auto rounded-xl border border-gray-200 ${tvMode ? 'max-h-[calc(100vh-14rem)]' : 'max-h-[60vh]'}`}
               >
@@ -2793,6 +2987,20 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             if (fromIdx === -1 || toIdx === -1) return
                             const newIds = ids.filter((id) => id !== dashDraggedId)
                             const insertIdx = dashDropTarget.above ? toIdx : toIdx + 1
+                            // กันลัดคิว: ห้ามเลื่อนใบงานขึ้นไปแซงใบงานที่เริ่มกระบวนการใดๆ แล้ว (ทุกแผนก รวม เบิก/QC/PACK)
+                            if (insertIdx < fromIdx) {
+                              const blockedNames = ids
+                                .slice(insertIdx, fromIdx)
+                                .map((id) => visibleDayJobs.find((x) => x.id === id))
+                                .filter((jb): jb is PlanJob => !!jb && hasStartedAnyProcess(jb))
+                                .map((jb) => jb.name)
+                              if (blockedNames.length > 0) {
+                                setQueueJumpBlocked(blockedNames)
+                                setDashDraggedId(null)
+                                setDashDropTarget(null)
+                                return
+                              }
+                            }
                             newIds.splice(insertIdx > fromIdx ? insertIdx - 1 : insertIdx, 0, dashDraggedId)
                             const allDay = dayJobs.map((x) => x.id)
                             const hiddenIds = allDay.filter((id) => !ids.includes(id))
@@ -3052,6 +3260,188 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   </tbody>
                 </table>
               </div>
+              )}
+              {dashViewMode === 'card' && (() => {
+                const cards = visibleDayJobs.map((j) => {
+                  const depts = settings.departments.filter(
+                    (d) => getEffectiveQty(j, d, settings, deptQtyByWorkOrderId) > 0
+                  )
+                  const steps = depts.map((d) => {
+                    const st = getJobStatusForDept(j, d, settings, deptQtyByWorkOrderId)
+                    const me = dashTimelines[d]?.find((x) => x.id === j.id)
+                    const plannedStart = me?.start ?? 0
+                    const plannedEnd = me?.end ?? 0
+                    const actEndSec = getLatestActualEndSecForDept(j, d)
+                    const acts = getActualTimesForDept(j, d, settings)
+                    const displayEnd = st.key === 'done' && actEndSec > 0 ? actEndSec : plannedEnd
+                    const late = st.key !== 'done' && plannedEnd > 0 && dashNowSec > plannedEnd
+                    return { d, line: (j.line_assignments?.[d] ?? 0) + 1, key: st.key, stepText: st.text, plannedStart, plannedEnd, displayEnd, actualStart: acts.actualStart, late }
+                  })
+                  const overall = getOverallJobStatus(j, settings, deptQtyByWorkOrderId).key
+                  const finalFinish = steps.reduce((m, s) => Math.max(m, s.displayEnd), 0)
+                  const jobLate = isJobLate(j)
+                  const doneN = steps.filter((s) => s.key === 'done').length
+                  const workOrderId = String(j.work_order_id || '')
+                  const billCount = workOrderId ? dashBillCountByWorkOrderId[workOrderId] ?? 0 : 0
+                  return { j, steps, overall, finalFinish, jobLate, doneN, billCount }
+                })
+                const rank = (c: (typeof cards)[number]) => (c.overall === 'done' ? 3 : c.jobLate ? 0 : 1)
+                cards.sort((a, b) => rank(a) - rank(b) || a.finalFinish - b.finalFinish)
+                const shown = showOverdueOnly ? cards.filter((c) => c.jobLate) : cards
+                if (shown.length === 0) {
+                  return (
+                    <div className="rounded-xl border border-gray-200 bg-white py-10 text-center text-gray-500">
+                      {showOverdueOnly ? '✅ ไม่มีใบงานที่เลยกำหนด' : 'ไม่มีใบงานในวันนี้'}
+                    </div>
+                  )
+                }
+                return (
+                  <div className={`grid gap-3 ${tvMode ? 'xl:grid-cols-3 2xl:grid-cols-4' : 'sm:grid-cols-2 xl:grid-cols-3'}`}>
+                    {shown.map((c) => {
+                      const pill =
+                        c.overall === 'done'
+                          ? { cls: 'bg-green-100 text-green-800 border-green-300', text: 'เสร็จแล้ว' }
+                          : c.jobLate
+                            ? { cls: 'bg-red-100 text-red-700 border-red-300', text: 'เลยกำหนด' }
+                            : c.overall === 'progress'
+                              ? { cls: 'bg-blue-100 text-blue-800 border-blue-300', text: 'กำลังผลิต' }
+                              : { cls: 'bg-gray-100 text-gray-700 border-gray-300', text: 'รอเริ่ม' }
+                      const finishColor = c.jobLate ? 'text-red-600' : c.overall === 'done' ? 'text-green-600' : 'text-slate-800'
+                      const overElapsedSec =
+                        c.overall !== 'done' && dashIsToday && c.finalFinish > 0 && dashNowSec > c.finalFinish
+                          ? dashNowSec - c.finalFinish
+                          : 0
+                      return (
+                        <div
+                          key={c.j.id}
+                          className={`rounded-xl bg-white p-4 shadow-sm ${c.jobLate ? 'border-2 border-red-400' : 'border border-gray-200'}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className={`font-bold leading-tight break-all ${tvMode ? 'text-2xl' : 'text-lg'}`}>{c.j.name}</div>
+                              <div className={`mt-1 text-gray-600 ${tvMode ? 'text-base' : 'text-sm'}`}>
+                                {c.billCount} บิล · ตัด {fmtCutTime(c.j.cut)} · เสร็จ {c.doneN}/{c.steps.length} แผนก
+                              </div>
+                            </div>
+                            <span className={`shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-bold ${pill.cls}`}>{pill.text}</span>
+                          </div>
+                          <div className="mt-2 flex items-baseline justify-end gap-2">
+                            <span className="text-xs text-gray-500">แพ็คเสร็จ</span>
+                            <span className={`font-bold tabular-nums ${finishColor} ${tvMode ? 'text-3xl' : 'text-2xl'}`}>
+                              {c.finalFinish > 0 ? secToHHMM(c.finalFinish) : '--:--'}
+                            </span>
+                          </div>
+                          {overElapsedSec > 0 && (
+                            <div className={`mt-0.5 flex items-center justify-end gap-1 font-semibold text-red-600 tabular-nums ${tvMode ? 'text-base' : 'text-xs'}`}>
+                              ⏱ เลยมาแล้ว {pad(Math.floor(overElapsedSec / 3600))}:{pad(Math.floor((overElapsedSec % 3600) / 60))} ชม.
+                            </div>
+                          )}
+                          {c.jobLate && (
+                            <div className="mt-2 flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700">
+                              ‼️ มีแผนกทำช้ากว่ากำหนด ต้องเร่งติดตาม
+                            </div>
+                          )}
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            {c.steps.length === 0 ? (
+                              <div className="col-span-2 text-center text-sm text-gray-400 py-2">ยังไม่มีแผนกที่ต้องผลิต</div>
+                            ) : (
+                              c.steps.map((s) => {
+                                const col = deptCardColor(s.d)
+                                const isDone = s.key === 'done'
+                                const phase: 'pending' | 'progress' | 'done' | 'late' = isDone
+                                  ? 'done'
+                                  : s.late
+                                    ? 'late'
+                                    : s.key === 'progress'
+                                      ? 'progress'
+                                      : 'pending'
+                                const follow =
+                                  !isDone &&
+                                  !s.late &&
+                                  dashIsToday &&
+                                  s.plannedEnd > 0 &&
+                                  s.plannedEnd - dashNowSec <= 15 * 60 &&
+                                  s.plannedEnd - dashNowSec >= 0
+                                const timeText = isDone
+                                  ? `เสร็จ ${secToHHMM(s.displayEnd)}`
+                                  : s.key === 'progress'
+                                    ? `${s.stepText} · ${s.actualStart !== '-' ? s.actualStart : secToHHMM(s.plannedStart)}`
+                                    : `รอเริ่ม ${secToHHMM(s.plannedStart)}`
+                                const chipCls = isDone ? 'bg-gray-50 border-gray-200' : col.chip
+                                const nameCls = isDone ? 'text-gray-400' : col.name
+                                const badgeCls = isDone ? 'bg-gray-400' : col.badge
+                                const timeCls = isDone ? 'text-gray-400' : s.late ? 'text-red-600 font-semibold' : 'text-gray-600'
+                                const note = c.j.follow_notes?.[s.d]
+                                const canNote = !tvMode
+                                const menuOpen = noteMenu?.jobId === c.j.id && noteMenu?.dept === s.d
+                                return (
+                                  <div
+                                    key={s.d}
+                                    className={`relative rounded-lg border p-2 ${chipCls} ${canNote ? 'cursor-pointer' : ''} ${menuOpen ? 'ring-2 ring-blue-400' : ''}`}
+                                    onClick={(e) => {
+                                      if (!canNote) return
+                                      e.stopPropagation()
+                                      setNoteMenu((cur) => (cur && cur.jobId === c.j.id && cur.dept === s.d ? null : { jobId: c.j.id, dept: s.d }))
+                                    }}
+                                  >
+                                    <div className="flex items-center justify-between gap-1">
+                                      <div className="flex min-w-0 items-center gap-1">
+                                        <span className={`font-bold ${tvMode ? 'text-base' : 'text-sm'} ${nameCls}`}>{s.d}</span>
+                                        {note === 'almost' && <span className="shrink-0 rounded border border-green-300 bg-green-100 px-1.5 py-0.5 text-[10px] font-bold text-green-700">ใกล้เสร็จ</span>}
+                                        {note === 'slow' && <span className="shrink-0 rounded border border-amber-300 bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">อาจจะช้า</span>}
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1.5">
+                                        <DeptStatusIcon phase={phase} />
+                                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold text-white ${badgeCls}`}>L{s.line}</span>
+                                      </div>
+                                    </div>
+                                    <div className={`mt-1 flex flex-wrap items-center gap-1.5 text-xs ${timeCls}`}>
+                                      <span className="truncate">{timeText}</span>
+                                      {s.late && <span className="shrink-0 rounded bg-red-100 px-1 text-[10px] font-semibold text-red-700">เลย</span>}
+                                      {follow && <span className="shrink-0 rounded bg-amber-100 px-1 text-[10px] font-semibold text-amber-800">⏰ ติดตาม</span>}
+                                    </div>
+                                    {menuOpen && (
+                                      <div
+                                        className="absolute left-2 right-2 top-full z-20 mt-1 rounded-lg border border-gray-200 bg-white p-1 shadow-lg"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <div className="px-2 py-1 text-[10px] font-semibold text-gray-400">โน้ตติดตาม</div>
+                                        <button
+                                          type="button"
+                                          onClick={() => setDeptFollowNote(c.j, s.d, 'almost')}
+                                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-green-50"
+                                        >
+                                          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-green-500" /> ใกล้เสร็จ
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setDeptFollowNote(c.j, s.d, 'slow')}
+                                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-amber-50"
+                                        >
+                                          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-amber-500" /> อาจจะช้า
+                                        </button>
+                                        {note && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setDeptFollowNote(c.j, s.d, null)}
+                                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-gray-500 hover:bg-gray-50"
+                                          >
+                                            <span className="shrink-0 text-gray-400">✕</span> ล้างโน้ต
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
               {dayJobs.length === 0 && (
                 <p className="text-center text-gray-500 py-8">ไม่มีใบงานในวันนี้</p>
               )}
@@ -3266,7 +3656,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 <h4 className="font-medium">ขั้นตอนของแผนก</h4>
                 <div className="space-y-2">
                   {procList.map((p, i) => (
-                    <div key={i} className="grid grid-cols-1 sm:grid-cols-[1fr_140px_140px_auto] gap-2 items-center">
+                    <Fragment key={i}>
+                    <div className="grid grid-cols-1 sm:grid-cols-[1fr_200px_140px_auto] gap-2 items-center">
                       <input
                         type="text"
                         value={p.name}
@@ -3288,11 +3679,21 @@ export default function Plan({ tvMode = false }: PlanProps) {
                         value={p.type}
                         disabled={!unlocked}
                         onChange={(e) => {
-                          const typ = e.target.value as 'per_piece' | 'fixed'
+                          const typ = e.target.value as ProcessStep['type']
                           const next = { ...settings, processes: { ...settings.processes } }
                           const arr = [...(next.processes[currentDept] || [])]
                           if (arr[i]) {
-                            arr[i] = { ...arr[i], type: typ, value: typ === 'fixed' ? 0 : arr[i].value }
+                            if (typ === 'per_category') {
+                              // เตรียมช่องเวลาให้ครบทุกหมวดที่ผูกกับแผนกนี้ (คงค่าเดิมถ้ามี)
+                              const cats = settings.departmentProductCategories?.[currentDept] || []
+                              const cv: Record<string, number> = {}
+                              cats.forEach((c) => {
+                                cv[c] = arr[i].categoryValues?.[c] ?? 0
+                              })
+                              arr[i] = { ...arr[i], type: typ, value: 0, categoryValues: cv }
+                            } else {
+                              arr[i] = { ...arr[i], type: typ, value: typ === 'fixed' ? 0 : arr[i].value }
+                            }
                             next.processes[currentDept] = arr
                             setSettings(next)
                             saveSettings(next)
@@ -3302,28 +3703,35 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       >
                         <option value="per_piece">ต่อชิ้น</option>
                         <option value="fixed">คงที่</option>
+                        <option value="per_category">ตามหมวดหมู่สินค้า</option>
                       </select>
                       <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={p.type === 'fixed' ? Math.round(p.value / 60) : p.value}
-                          disabled={!unlocked}
-                          onChange={(e) => {
-                            const num = p.type === 'fixed' ? (parseFloat(e.target.value) || 0) * 60 : (parseInt(e.target.value, 10) || 0)
-                            const next = { ...settings, processes: { ...settings.processes } }
-                            const arr = [...(next.processes[currentDept] || [])]
-                            if (arr[i]) {
-                              arr[i] = { ...arr[i], value: num }
-                              next.processes[currentDept] = arr
-                              setSettings(next)
-                              saveSettings(next)
-                            }
-                          }}
-                          className="w-16 rounded border border-gray-300 px-2 py-1 text-sm"
-                        />
-                        <span className="text-xs text-gray-500">{p.type === 'fixed' ? 'นาที (คงที่)' : 'วินาที/ชิ้น'}</span>
+                        {p.type === 'per_category' ? (
+                          <span className="text-xs text-indigo-600 font-medium">ตั้งเวลารายหมวดด้านล่าง ↓</span>
+                        ) : (
+                          <>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1}
+                              value={p.type === 'fixed' ? Math.round(p.value / 60) : p.value}
+                              disabled={!unlocked}
+                              onChange={(e) => {
+                                const num = p.type === 'fixed' ? (parseFloat(e.target.value) || 0) * 60 : (parseInt(e.target.value, 10) || 0)
+                                const next = { ...settings, processes: { ...settings.processes } }
+                                const arr = [...(next.processes[currentDept] || [])]
+                                if (arr[i]) {
+                                  arr[i] = { ...arr[i], value: num }
+                                  next.processes[currentDept] = arr
+                                  setSettings(next)
+                                  saveSettings(next)
+                                }
+                              }}
+                              className="w-16 rounded border border-gray-300 px-2 py-1 text-sm"
+                            />
+                            <span className="text-xs text-gray-500">{p.type === 'fixed' ? 'นาที (คงที่)' : 'วินาที/ชิ้น'}</span>
+                          </>
+                        )}
                       </div>
                       <div className="flex gap-1">
                         <button
@@ -3369,6 +3777,49 @@ export default function Plan({ tvMode = false }: PlanProps) {
                         >ลบ</button>
                       </div>
                     </div>
+                    {p.type === 'per_category' && (
+                      <div className="ml-2 rounded-lg border border-dashed border-indigo-300 bg-indigo-50/50 p-3">
+                        <div className="mb-2 text-xs font-semibold text-indigo-800">
+                          เวลาต่อชิ้นตามหมวดหมู่สินค้า — ขั้นตอน "{p.name}"
+                        </div>
+                        {(settings.departmentProductCategories?.[currentDept] || []).length === 0 ? (
+                          <p className="text-xs text-gray-500">
+                            ยังไม่ได้ผูกหมวดหมู่สินค้ากับแผนกนี้ — กดปุ่ม "หมวดหมู่" ที่รายชื่อแผนกด้านบนก่อน
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                            {(settings.departmentProductCategories?.[currentDept] || []).map((cat) => (
+                              <div key={cat} className="flex items-center justify-between gap-2 rounded border border-gray-200 bg-white px-2 py-1">
+                                <span className="min-w-0 truncate text-sm" title={cat}>{cat}</span>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={p.categoryValues?.[cat] ?? 0}
+                                    disabled={!unlocked}
+                                    onChange={(e) => {
+                                      const num = parseInt(e.target.value, 10) || 0
+                                      const next = { ...settings, processes: { ...settings.processes } }
+                                      const arr = [...(next.processes[currentDept] || [])]
+                                      if (arr[i]) {
+                                        arr[i] = { ...arr[i], categoryValues: { ...(arr[i].categoryValues || {}), [cat]: num } }
+                                        next.processes[currentDept] = arr
+                                        setSettings(next)
+                                        saveSettings(next)
+                                      }
+                                    }}
+                                    className="w-16 rounded border border-gray-300 px-2 py-1 text-sm"
+                                  />
+                                  <span className="text-xs text-gray-500">วินาที/ชิ้น</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    </Fragment>
                   ))}
                 </div>
                 <button
@@ -3617,6 +4068,36 @@ export default function Plan({ tvMode = false }: PlanProps) {
         )
       })()}
 
+      <Modal
+        open={!!queueJumpBlocked}
+        onClose={() => setQueueJumpBlocked(null)}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 text-xl">⚠️</span>
+            <h3 className="text-lg font-semibold text-red-700">ไม่สามารถลัดคิวได้</h3>
+          </div>
+          <p className="text-sm text-gray-700">ใบงานต่อไปนี้เริ่มกระบวนการผลิตไปแล้ว จึงไม่อนุญาตให้เลื่อนใบงานขึ้นไปแซง:</p>
+          <ul className="space-y-1 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+            {(queueJumpBlocked || []).map((name) => (
+              <li key={name} className="text-sm font-semibold text-red-800">
+                • {name}
+              </li>
+            ))}
+          </ul>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              onClick={() => setQueueJumpBlocked(null)}
+            >
+              รับทราบ
+            </button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={!!categoryModalDept}
         onClose={() => setCategoryModalDept(null)}

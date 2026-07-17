@@ -6,8 +6,10 @@
 // --- Types ---
 export interface ProcessStep {
   name: string
-  type: 'per_piece' | 'fixed'
+  type: 'per_piece' | 'fixed' | 'per_category'
   value: number
+  /** เวลาต่อชิ้น (วินาที) แยกตามหมวดหมู่สินค้า — ใช้เมื่อ type = 'per_category' (คำนวณเฉพาะหน้า Plan เดสก์ท็อปที่มีข้อมูลจำนวนต่อหมวด) */
+  categoryValues?: Record<string, number>
 }
 
 export interface PlanSettingsData {

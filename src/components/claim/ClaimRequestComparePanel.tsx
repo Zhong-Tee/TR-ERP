@@ -9,6 +9,50 @@ import {
   submitterDisplayClaim,
 } from './claimCompareShared'
 
+const cellOrDash = (v: string | null | undefined) => (v && String(v).trim() ? String(v).trim() : '–')
+
+/** ตารางรายการสินค้าพร้อมข้อมูลผลิตครบ — ใช้ทั้งบิลเก่าและบิลเคลมใหม่ */
+function FullItemsTable({ items }: { items: OrderItemRow[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs min-w-[1020px]">
+        <thead>
+          <tr className="text-left text-gray-600 border-b bg-gray-50">
+            <th className="py-1.5 px-2 min-w-[140px]">สินค้า</th>
+            <th className="py-1.5 px-2">สีหมึก</th>
+            <th className="py-1.5 px-2">ลาย</th>
+            <th className="py-1.5 px-2">เส้น</th>
+            <th className="py-1.5 px-2">ฟอนต์</th>
+            <th className="py-1.5 px-2">บรรทัด 1</th>
+            <th className="py-1.5 px-2">บรรทัด 2</th>
+            <th className="py-1.5 px-2">บรรทัด 3</th>
+            <th className="py-1.5 px-2 text-right">จำนวน</th>
+            <th className="py-1.5 px-2 text-right">ราคา/หน่วย</th>
+            <th className="py-1.5 px-2 text-right">รวม</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, i) => (
+            <tr key={i} className="border-b border-gray-50">
+              <td className="py-1.5 px-2">{cellOrDash(it.product_name)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.ink_color)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.cartoon_pattern)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.line_pattern)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.font)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.line_1)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.line_2)}</td>
+              <td className="py-1.5 px-2">{cellOrDash(it.line_3)}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{it.quantity ?? '–'}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(Number(it.unit_price) || 0)}</td>
+              <td className="py-1.5 px-2 text-right tabular-nums">{fmtMoney(lineTotal(it))}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 type Props = {
   detail: ClaimCompareDetail
   refOrder: RefOrderDetail | null
@@ -33,6 +77,8 @@ export default function ClaimRequestComparePanel({
   const proposedItems = (detail.proposed_snapshot?.items || []) as OrderItemRow[]
   const proposedOrder = detail.proposed_snapshot?.order || {}
   const propPrice = Number(proposedOrder.price) || 0
+  const propShipping = Number(proposedOrder.shipping_cost) || 0
+  const propDiscount = Number(proposedOrder.discount) || 0
   const propTotal = Number(proposedOrder.total_amount) || 0
   const proposedClaimDetailsLegacy =
     typeof proposedOrder.claim_details === 'string' ? proposedOrder.claim_details.trim() : ''
@@ -61,7 +107,7 @@ export default function ClaimRequestComparePanel({
       : proposedCustomerFallback
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="flex flex-col flex-1 min-h-0 overflow-y-auto pr-1">
       <h3 className="text-lg font-bold text-gray-900 mb-1">เปรียบเทียบบิลเคลม</h3>
       <p className="text-sm text-gray-600 mb-1 flex flex-wrap gap-x-1 gap-y-0.5 items-baseline">
         <span>
@@ -164,88 +210,68 @@ export default function ClaimRequestComparePanel({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 min-h-0">
-        <div className="border rounded-lg overflow-hidden flex flex-col min-h-0">
-          <div className="bg-slate-100 px-3 py-2 font-semibold text-slate-800 text-sm">บิลเก่า (จัดส่งแล้ว)</div>
-          <div className="p-3 overflow-auto flex-1 max-h-[52vh] text-sm">
-            {refLoading ? (
-              <p className="text-gray-500">กำลังโหลด...</p>
-            ) : refOrder ? (
-              <>
-                <p className="mb-2 space-x-2">
-                  <span>ยอดรายการ: {fmtMoney(refOrder.price)}</span>
+      <div className="border rounded-lg overflow-hidden shrink-0">
+        <div className="bg-slate-100 px-3 py-2 font-semibold text-slate-800 text-sm">บิลเก่า (จัดส่งแล้ว)</div>
+        {refLoading ? (
+          <p className="p-3 text-sm text-gray-500">กำลังโหลด...</p>
+        ) : refOrder ? (
+          <>
+            <p className="px-3 py-2 text-sm space-x-2 border-b border-gray-100">
+              <span>ยอดรายการ: {fmtMoney(refOrder.price)}</span>
+              <span className="text-gray-500">|</span>
+              <span>ค่าขนส่ง: {fmtMoney(refOrder.shipping_cost)}</span>
+              {refOrder.discount > 0 && (
+                <>
                   <span className="text-gray-500">|</span>
-                  <span>สุทธิ: {fmtMoney(refOrder.total_amount)}</span>
-                </p>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-left text-gray-600 border-b">
-                      <th className="py-1">สินค้า</th>
-                      <th className="py-1 text-right">จำนวน</th>
-                      <th className="py-1 text-right">รวม</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(refOrder.order_items || []).map((it, i) => (
-                      <tr key={i} className="border-b border-gray-50">
-                        <td className="py-1 pr-1">{it.product_name || '–'}</td>
-                        <td className="py-1 text-right">{it.quantity ?? '–'}</td>
-                        <td className="py-1 text-right">{fmtMoney(lineTotal(it))}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            ) : (
-              <p className="text-gray-500">ไม่พบข้อมูลบิลอ้างอิง</p>
-            )}
-          </div>
-        </div>
-
-        <div className="border rounded-lg overflow-hidden flex flex-col min-h-0 border-amber-200">
-          <div className="bg-amber-50 px-3 py-2 font-semibold text-amber-900 text-sm">บิลใหม่ (เสนอเคลม)</div>
-          <div className="p-3 overflow-auto flex-1 max-h-[52vh] text-sm">
-            <p className="mb-2 space-x-2">
-              <span>ยอดรายการ: {fmtMoney(propPrice)}</span>
+                  <span>ส่วนลด: {fmtMoney(refOrder.discount)}</span>
+                </>
+              )}
               <span className="text-gray-500">|</span>
               <span>
-                สุทธิเสนอ: <strong>{fmtMoney(propTotal)}</strong>
+                ยอดรวม: <strong>{fmtMoney(refOrder.total_amount)}</strong>
               </span>
-              {refOrder && (
-                <span
-                  className={
-                    propTotal - refOrder.total_amount > 0.005
-                      ? 'text-red-600'
-                      : propTotal - refOrder.total_amount < -0.005
-                        ? 'text-emerald-700'
-                        : 'text-gray-600'
-                  }
-                >
-                  {' '}
-                  (Δ {fmtMoney(propTotal - refOrder.total_amount)})
-                </span>
-              )}
             </p>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-gray-600 border-b">
-                  <th className="py-1">สินค้า</th>
-                  <th className="py-1 text-right">จำนวน</th>
-                  <th className="py-1 text-right">รวม</th>
-                </tr>
-              </thead>
-              <tbody>
-                {proposedItems.map((it, i) => (
-                  <tr key={i} className="border-b border-gray-50">
-                    <td className="py-1 pr-1">{it.product_name || '–'}</td>
-                    <td className="py-1 text-right">{it.quantity ?? '–'}</td>
-                    <td className="py-1 text-right">{fmtMoney(lineTotal(it))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            <FullItemsTable items={refOrder.order_items || []} />
+          </>
+        ) : (
+          <p className="p-3 text-sm text-gray-500">ไม่พบข้อมูลบิลอ้างอิง</p>
+        )}
+      </div>
+
+      <div className="mt-4 border border-amber-200 rounded-lg overflow-hidden shrink-0">
+        <div className="bg-amber-50 px-3 py-2 font-semibold text-amber-900 text-sm">
+          รายละเอียดบิลเคลมใหม่ (เสนอเคลม)
         </div>
+        <p className="px-3 py-2 text-sm space-x-2 border-b border-amber-100">
+          <span>ยอดรายการ: {fmtMoney(propPrice)}</span>
+          <span className="text-gray-500">|</span>
+          <span>ค่าขนส่ง: {fmtMoney(propShipping)}</span>
+          {propDiscount > 0 && (
+            <>
+              <span className="text-gray-500">|</span>
+              <span>ส่วนลด: {fmtMoney(propDiscount)}</span>
+            </>
+          )}
+          <span className="text-gray-500">|</span>
+          <span>
+            ยอดรวมเสนอ: <strong>{fmtMoney(propTotal)}</strong>
+          </span>
+          {refOrder && (
+            <span
+              className={
+                propTotal - refOrder.total_amount > 0.005
+                  ? 'text-red-600'
+                  : propTotal - refOrder.total_amount < -0.005
+                    ? 'text-emerald-700'
+                    : 'text-gray-600'
+              }
+            >
+              {' '}
+              (ส่วนต่าง {fmtMoney(propTotal - refOrder.total_amount)})
+            </span>
+          )}
+        </p>
+        <FullItemsTable items={proposedItems} />
       </div>
     </div>
   )

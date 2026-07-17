@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { Refund, Order } from '../types'
 import { formatDateTime, downloadFileFromUrl } from '../lib/utils'
+import DateTimeStacked from '../components/ui/DateTimeStacked'
 import { splitAddressParts } from '../lib/thaiAddress'
 import { fetchClaimTypeLabelMap, claimTypeLabel } from '../lib/claimTypeLabels'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -179,20 +180,18 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   section: AccountSection
   label: string
   dashboardTab?: AccountTab
-  count?: 'manualSlip' | 'amendment' | 'refunds' | 'taxInvoice' | 'claimPending'
+  count?: 'manualSlip' | 'amendment' | 'refunds' | 'taxInvoice' | 'claimPending' | 'dashboard'
   accessKey?: string
 }> = [
-  { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', accessKey: 'account-dashboard' },
+  // ตัวเลข Dashboard = ผลรวมงานใหม่ (โอนคืน + อนุมัติเคลม + ขอใบกำกับภาษี) — เมนูย่อยพวกนี้อยู่ใน Dashboard แล้ว
+  { id: 'nav-dashboard', section: 'dashboard', label: 'Dashboard', count: 'dashboard', accessKey: 'account-dashboard' },
   { id: 'nav-slip-verification', section: 'slip-verification', label: 'รายการการตรวจสลิป' },
   { id: 'nav-manual-slip', section: 'manual-slip-check', label: 'ตรวจสลิปมือ', count: 'manualSlip' },
   { id: 'nav-bill-edit', section: 'bill-edit', label: 'แก้ไขบิล' },
   { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
-  { id: 'nav-claim-approval', section: 'claim-approval', label: 'อนุมัติเคลม', count: 'claimPending', accessKey: 'account-claim-approval' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
   { id: 'nav-ecommerce', section: 'ecommerce', label: 'Ecommerce', accessKey: 'account-ecommerce' },
   { id: 'nav-trial', section: 'trial-balance', label: 'งบต้นทุนขาย' },
-  { id: 'nav-refunds', section: 'dashboard', label: 'รายการโอนคืน', dashboardTab: 'refunds', count: 'refunds', accessKey: 'account-refunds' },
-  { id: 'nav-tax-inv', section: 'dashboard', label: 'ขอใบกำกับภาษี', dashboardTab: 'tax-invoice', count: 'taxInvoice', accessKey: 'account-tax-invoice' },
 ]
 
 export default function Account() {
@@ -200,8 +199,6 @@ export default function Account() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const [accountSection, setAccountSection] = useState<AccountSection>('dashboard')
   const [activeTab, setActiveTab] = useState<AccountTab>('refunds')
-  /** แยกไฮไลต์แท็บ Dashboard กับแท็บย่อย "รายการโอนคืน" ในแถบบน (ทั้งคู่เปิด dashboard+refunds ได้) */
-  const [dashboardFromOverview, setDashboardFromOverview] = useState(true)
 
   useEffect(() => {
     if (menuAccessLoading) return
@@ -923,14 +920,8 @@ export default function Account() {
 
   function accountTopNavActive(item: (typeof ACCOUNT_TOP_NAV_ITEMS)[number]): boolean {
     if (accountSection !== item.section) return false
-    if (item.section !== 'dashboard') return true
-    if (item.id === 'nav-dashboard') {
-      return activeTab === 'approvals' || (activeTab === 'refunds' && dashboardFromOverview)
-    }
-    if (item.dashboardTab === 'refunds') return activeTab === 'refunds' && !dashboardFromOverview
-    if (item.dashboardTab === 'claim-approval') return activeTab === 'claim-approval' && !dashboardFromOverview
-    if (item.dashboardTab === 'tax-invoice') return activeTab === 'tax-invoice'
-    return false
+    // ไม่มีแท็บย่อยบนแถบบนแล้ว — Dashboard ไฮไลต์เสมอเมื่ออยู่ section dashboard (ทุก sub-tab ด้านใน)
+    return true
   }
 
   function accountTopNavCountPill(item: (typeof ACCOUNT_TOP_NAV_ITEMS)[number]): { text: string; pillClass: string } | null {
@@ -965,6 +956,17 @@ export default function Account() {
         pillClass: 'bg-amber-100 text-amber-800',
       }
     }
+    if (item.count === 'dashboard') {
+      // ผลรวมงานใหม่ใน Dashboard: โอนคืนรออนุมัติ + คำขอเคลมรออนุมัติ + คำขอใบกำกับภาษี (นับเฉพาะที่มีสิทธิ์เห็น)
+      const sum =
+        (hasAccess('account-refunds') ? pendingRefunds.length : 0) +
+        (hasAccess('account-claim-approval') ? claimPendingCount : 0) +
+        (hasAccess('account-tax-invoice') ? taxInvoiceOrders.length : 0)
+      return {
+        text: loading || billingLoading || queueCountsLoading ? '–' : String(sum),
+        pillClass: 'bg-amber-100 text-amber-800',
+      }
+    }
     return null
   }
 
@@ -982,10 +984,8 @@ export default function Account() {
                   setAccountSection(item.section)
                   if (item.id === 'nav-dashboard') {
                     setActiveTab('refunds')
-                    setDashboardFromOverview(true)
                   } else if (item.dashboardTab != null) {
                     setActiveTab(item.dashboardTab)
-                    setDashboardFromOverview(false)
                   }
                 }}
                 className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors inline-flex items-center gap-2 ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
@@ -1301,7 +1301,7 @@ export default function Account() {
 
         <button
           type="button"
-          onClick={() => { setActiveTab('refunds'); setDashboardFromOverview(false) }}
+          onClick={() => { setActiveTab('refunds') }}
           className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-amber-200 transition-all focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-offset-1 flex flex-col"
         >
           <div className="h-1 w-full bg-amber-500 shrink-0" />
@@ -1314,7 +1314,7 @@ export default function Account() {
 
         <button
           type="button"
-          onClick={() => { setActiveTab('tax-invoice'); setDashboardFromOverview(false) }}
+          onClick={() => { setActiveTab('tax-invoice') }}
           className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden text-left hover:shadow-md hover:border-sky-200 transition-all focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1 flex flex-col"
         >
           <div className="h-1 w-full bg-sky-500 shrink-0" />
@@ -1334,7 +1334,7 @@ export default function Account() {
         {hasAccess('account-refunds') && (
         <button
           type="button"
-          onClick={() => { setActiveTab('refunds'); setDashboardFromOverview(false) }}
+          onClick={() => { setActiveTab('refunds') }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'refunds' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการโอนคืน
@@ -1346,7 +1346,7 @@ export default function Account() {
         {hasAccess('account-claim-approval') && (
         <button
           type="button"
-          onClick={() => { setActiveTab('claim-approval'); setDashboardFromOverview(false) }}
+          onClick={() => { setActiveTab('claim-approval') }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'claim-approval' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           อนุมัติเคลม
@@ -1358,7 +1358,7 @@ export default function Account() {
         {hasAccess('account-tax-invoice') && (
         <button
           type="button"
-          onClick={() => { setActiveTab('tax-invoice'); setDashboardFromOverview(false) }}
+          onClick={() => { setActiveTab('tax-invoice') }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors flex items-center gap-2 ${activeTab === 'tax-invoice' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           ขอใบกำกับภาษี
@@ -1370,7 +1370,7 @@ export default function Account() {
         {hasAccess('account-approvals') && (
         <button
           type="button"
-          onClick={() => { setActiveTab('approvals'); setDashboardFromOverview(true) }}
+          onClick={() => { setActiveTab('approvals') }}
           className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors ${activeTab === 'approvals' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
         >
           รายการอนุมัติ
@@ -1424,8 +1424,7 @@ export default function Account() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบิล</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อลูกค้า</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ชื่อบัญชีรับคืน</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ธนาคาร</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">เลขบัญชี</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ธนาคาร / เลขบัญชี</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">ที่อยู่</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">จำนวนเงิน</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-700 text-sm whitespace-nowrap">สถานะ</th>
@@ -1449,8 +1448,19 @@ export default function Account() {
                         </td>
                           <td className="px-4 py-3 text-gray-700">{(refund as any).or_orders?.customer_name || '–'}</td>
                           <td className="px-4 py-3 text-gray-700 text-sm max-w-[120px] truncate" title={refund.refund_recipient_account_name || ''}>{refund.refund_recipient_account_name?.trim() || '–'}</td>
-                          <td className="px-4 py-3 text-gray-700 text-sm max-w-[100px] truncate" title={refund.refund_recipient_bank || ''}>{refund.refund_recipient_bank?.trim() || '–'}</td>
-                          <td className="px-4 py-3 text-gray-700 text-sm font-mono tabular-nums max-w-[120px] truncate" title={refund.refund_recipient_account_number || ''}>{refund.refund_recipient_account_number?.trim() || '–'}</td>
+                          <td className="px-4 py-3 text-gray-700 text-sm">
+                            <div className="max-w-[140px] leading-tight">
+                              <div className="truncate" title={refund.refund_recipient_bank || ''}>
+                                {refund.refund_recipient_bank?.trim() || '–'}
+                              </div>
+                              <div
+                                className="font-mono tabular-nums text-base text-gray-800 truncate mt-0.5"
+                                title={refund.refund_recipient_account_number || ''}
+                              >
+                                {refund.refund_recipient_account_number?.trim() || '–'}
+                              </div>
+                            </div>
+                          </td>
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
                           <td className="px-4 py-3">
@@ -1583,7 +1593,13 @@ export default function Account() {
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{(() => { const t = Number(o.total_amount || 0); const b = t ? t / 1.07 : 0; return (t - b).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); })()}</td>
                             <td className="px-4 py-3 text-gray-700 tabular-nums text-right whitespace-nowrap">฿{Number((o as any).shipping_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums text-right whitespace-nowrap">฿{Number(o.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{bd.account_confirmed_tax_at ? formatDateTime(bd.account_confirmed_tax_at) : '–'}</td>
+                            <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                              {bd.account_confirmed_tax_at ? (
+                                <DateTimeStacked text={formatDateTime(bd.account_confirmed_tax_at)} />
+                              ) : (
+                                '–'
+                              )}
+                            </td>
                             <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                               <div className="flex flex-col gap-1.5 w-40">
                                 {/* คำขอที่ถูกปิดเพราะยกเลิกบิล — บล็อคการออกใบกำกับภาษี */}
@@ -1664,8 +1680,8 @@ export default function Account() {
                               {row.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-gray-500 text-sm">
-                            {row.reviewed_at ? formatDateTime(row.reviewed_at) : '–'}
+                          <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap">
+                            {row.reviewed_at ? <DateTimeStacked text={formatDateTime(row.reviewed_at)} /> : '–'}
                           </td>
                           <td className="px-4 py-3 text-gray-600 text-sm whitespace-pre-wrap break-words">
                             {row.status === 'rejected' && row.rejected_reason ? row.rejected_reason : '–'}
