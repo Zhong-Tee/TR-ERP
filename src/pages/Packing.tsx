@@ -19,6 +19,7 @@ import {
 } from '../lib/packingQueue'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
+import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -211,6 +212,7 @@ export default function Packing() {
   const { hasAccess } = useMenuAccess()
   const isViewOnly = isAdminOrSuperadmin(user?.role)
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
+  const [claimTypeLabels, setClaimTypeLabels] = useState<Record<string, string>>({})
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(true)
@@ -226,6 +228,10 @@ export default function Packing() {
     packingTag: number | null
   } | null>(null)
   const [tagSearchRows, setTagSearchRows] = useState<PackingItem[] | null>(null)
+
+  useEffect(() => {
+    void fetchClaimTypeLabelMap().then(setClaimTypeLabels)
+  }, [])
 
   useEffect(() => {
     if (menuAccessLoading) return
@@ -2650,7 +2656,7 @@ export default function Packing() {
                       <div className="space-y-2">
                         {currentGroup[0].claim_type && (
                           <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded p-3 text-sm">
-                            ⚠️ ออร์เดอร์เคลม: {currentGroup[0].claim_type} {currentGroup[0].claim_details || ''}
+                            ⚠️ ออร์เดอร์เคลม: {claimTypeLabel(claimTypeLabels, currentGroup[0].claim_type)} {currentGroup[0].claim_details || ''}
                           </div>
                         )}
                         {currentGroup[0].needsTaxInvoice && (
