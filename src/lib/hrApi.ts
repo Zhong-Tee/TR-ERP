@@ -8,7 +8,7 @@ import type {
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
   HRSalaryHistory,
   HRNotification, HRNotificationSettings,
-  HRWarning, HRCertificate, HRAsset,
+  HRWarning, HRCertificate, HRAsset, HRAssetLog,
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule,
 } from '../types'
 
@@ -964,7 +964,7 @@ export async function fetchAssets(filters?: {
   if (filters?.assignedEmployeeId) q = q.eq('assigned_employee_id', filters.assignedEmployeeId)
   if (filters?.search?.trim()) {
     const term = filters.search.trim()
-    q = q.or(buildIlikeOr(term, ['name', 'asset_code', 'category', 'location']))
+    q = q.or(buildIlikeOr(term, ['name', 'asset_code', 'category', 'sub_type', 'serial_number', 'vendor_name', 'location']))
   }
   const { data, error } = await q
   if (error) pgError(error)
@@ -975,6 +975,13 @@ export async function fetchAsset(id: string) {
   const { data, error } = await supabase.from('hr_assets').select(ASSET_SELECT).eq('id', id).single()
   if (error) pgError(error)
   return data as HRAsset
+}
+
+/** รหัสทรัพย์สินถัดไปของปีปัจจุบัน (AST-2026-0001) — อ่านอย่างเดียว ใช้แสดงในฟอร์ม */
+export async function peekNextAssetCode() {
+  const { data, error } = await supabase.rpc('hr_asset_peek_next_code')
+  if (error) pgError(error)
+  return data as string
 }
 
 export async function upsertAsset(asset: Partial<HRAsset>) {
@@ -994,6 +1001,31 @@ export async function upsertAsset(asset: Partial<HRAsset>) {
 export async function deleteAsset(id: string) {
   const { error } = await supabase.from('hr_assets').delete().eq('id', id)
   if (error) pgError(error)
+}
+
+/** ประวัติการเปลี่ยนแปลงทรัพย์สิน — เรียงใหม่สุดก่อน */
+export async function fetchAssetLogs(filters?: {
+  assetId?: string
+  field?: string
+  search?: string
+  limit?: number
+}) {
+  let q = supabase
+    .from('hr_asset_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(filters?.limit ?? 500)
+  if (filters?.assetId) q = q.eq('asset_id', filters.assetId)
+  if (filters?.field) {
+    if (filters.field === 'created') q = q.eq('action', 'created')
+    else q = q.eq('field', filters.field)
+  }
+  if (filters?.search?.trim()) {
+    q = q.or(buildIlikeOr(filters.search.trim(), ['asset_code', 'asset_name', 'changed_by_name', 'old_value', 'new_value']))
+  }
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRAssetLog[]
 }
 
 // =============================================================================

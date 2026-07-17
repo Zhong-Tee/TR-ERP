@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import type { User, BankSetting, BillHeaderSetting, OrderChatLog, IssueType } from '../types'
 import { formatDateTime } from '../lib/utils'
@@ -165,6 +166,8 @@ export default function Settings() {
   const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
   const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, boolean | null>>>({})
   const [savingProductOverrides, setSavingProductOverrides] = useState(false)
+  const [importingOverrides, setImportingOverrides] = useState(false)
+  const overrideFileInputRef = useRef<HTMLInputElement>(null)
   const [overrideSearchInput, setOverrideSearchInput] = useState('')
   const [overrideSearchTerm, setOverrideSearchTerm] = useState('')
   const [overrideCategoryFilter, setOverrideCategoryFilter] = useState<string>('')
@@ -1677,6 +1680,158 @@ export default function Settings() {
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาดในการบันทึก: ' + error.message })
     } finally {
       setSavingProductOverrides(false)
+    }
+  }
+
+  // --- Export / Import override เป็นไฟล์ Excel (จับคู่ด้วย product_code) ---
+  const OVERRIDE_SHEET_NAME = 'Override'
+  const OVERRIDE_ID_HEADERS = ['product_code', 'product_name', 'product_category'] as const
+  const overrideExportHeaders = [...OVERRIDE_ID_HEADERS, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
+
+  /** boolean|null → ค่าที่เขียนลงเซลล์ (ว่าง = ตามหมวดหมู่) */
+  function overrideValueToCell(value: boolean | null): string {
+    if (value === true) return '1'
+    if (value === false) return '0'
+    return ''
+  }
+
+  /** ค่าในเซลล์ → boolean|null (รองรับ 1/0, เปิด/ปิด, true/false, y/n) */
+  function overrideCellToValue(raw: unknown): boolean | null {
+    const s = String(raw ?? '').trim().toLowerCase()
+    if (s === '') return null
+    if (['1', 'true', 'y', 'yes', 'on', 'เปิด'].includes(s)) return true
+    if (['0', 'false', 'n', 'no', 'off', 'ปิด'].includes(s)) return false
+    return null
+  }
+
+  /** แถวตัวอย่างในชีตวิธีกรอก — สร้างจาก PRODUCT_FIELD_KEYS เพื่อให้คอลัมน์ตรงกับหัวตารางเสมอ */
+  function overrideExampleRow(
+    code: string,
+    name: string,
+    category: string,
+    values: Partial<Record<ProductFieldKey, string>>
+  ): string[] {
+    return [code, name, category, ...PRODUCT_FIELD_KEYS.map(({ key }) => values[key] ?? '')]
+  }
+
+  function exportProductOverrides() {
+    try {
+      const rows = allProducts.map((p) => {
+        const fields = getProductOverrideFields(p.id)
+        return [
+          p.product_code || '',
+          p.product_name || '',
+          p.product_category || '',
+          ...PRODUCT_FIELD_KEYS.map(({ key }) => overrideValueToCell(fields[key])),
+        ]
+      })
+
+      const ws = XLSX.utils.aoa_to_sheet([overrideExportHeaders, ...rows])
+      ws['!cols'] = [
+        { wch: 14 },
+        { wch: 34 },
+        { wch: 14 },
+        ...PRODUCT_FIELD_KEYS.map(() => ({ wch: 10 })),
+      ]
+
+      const guide = XLSX.utils.aoa_to_sheet([
+        ['วิธีกรอกไฟล์ Override ฟิลด์ระดับสินค้า'],
+        [],
+        ['1) ระบบจับคู่สินค้าด้วยคอลัมน์ product_code เท่านั้น'],
+        ['', 'product_name และ product_category มีไว้ให้อ่านเฉยๆ — แก้แล้วไม่มีผลตอน Import'],
+        [],
+        ['2) ค่าที่กรอกได้ในคอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ)'],
+        ['', 'เว้นว่าง', 'ตามหมวดหมู่ (ค่าเริ่มต้น) — ใช้ค่าจากตารางตั้งค่าหมวดหมู่'],
+        ['', '1', 'Override เปิด — บังคับให้กรอกฟิลด์นี้ แม้หมวดหมู่จะปิด'],
+        ['', '0', 'Override ปิด — ซ่อนฟิลด์นี้ แม้หมวดหมู่จะเปิด'],
+        ['', 'พิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้เช่นกัน'],
+        [],
+        ['3) แถวที่ product_code ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
+        ['4) สินค้าที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
+        ['5) หลัง Import ต้องกดปุ่ม "บันทึก Override" เพื่อบันทึกลงฐานข้อมูล'],
+        [],
+        ['ตัวอย่างการกรอก (คัดลอกรูปแบบนี้ไปใส่ในชีต Override)'],
+        overrideExportHeaders,
+        overrideExampleRow('110000002', 'CA01 ภารกิจเด็กดี 1ชุด', 'CALENDAR', {
+          ink_color: '1',
+          line_1: '0',
+          line_2: '0',
+          line_3: '0',
+        }),
+        overrideExampleRow('110000353', 'COLLEEN สีไม้ 12สี', 'FIBERLASER', { attachment: '1' }),
+        overrideExampleRow('110000006', 'Color Pencil#12', 'ETC', {}),
+        [],
+        ['แถวที่ 1: บังคับเปิด "สีหมึก" และบังคับปิด "บรรทัด 1-3" ที่เหลือตามหมวดหมู่'],
+        ['แถวที่ 2: บังคับเปิด "ไฟล์แนบ" อย่างเดียว'],
+        ['แถวที่ 3: เว้นว่างทุกช่อง = ไม่มี override (ล้าง override เดิมของสินค้านี้ทิ้ง)'],
+      ])
+      guide['!cols'] = [{ wch: 4 }, { wch: 30 }, { wch: 60 }]
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, OVERRIDE_SHEET_NAME)
+      XLSX.utils.book_append_sheet(wb, guide, 'วิธีกรอก')
+      XLSX.writeFile(wb, 'Override_ฟิลด์สินค้า.xlsx')
+    } catch (error: any) {
+      console.error('Error exporting product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Export ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    }
+  }
+
+  async function importProductOverrides(file: File) {
+    setImportingOverrides(true)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const sheetName = wb.SheetNames.includes(OVERRIDE_SHEET_NAME) ? OVERRIDE_SHEET_NAME : wb.SheetNames[0]
+      if (!sheetName) throw new Error('ไม่มีชีตในไฟล์')
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: '' })
+      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+      if (!('product_code' in rows[0])) throw new Error('ไม่พบคอลัมน์ product_code — ใช้ไฟล์ที่ได้จากปุ่ม Export เป็นต้นแบบ')
+
+      const productByCode: Record<string, { id: string }> = {}
+      for (const p of allProducts) {
+        const code = String(p.product_code || '').trim()
+        if (code) productByCode[code] = p
+      }
+
+      const next = { ...productOverrides }
+      let applied = 0
+      const unknownCodes: string[] = []
+
+      for (const row of rows) {
+        const code = String(row['product_code'] ?? '').trim()
+        if (!code) continue
+        const product = productByCode[code]
+        if (!product) {
+          unknownCodes.push(code)
+          continue
+        }
+        const entry: Record<string, boolean | null> = {}
+        for (const { key, label } of PRODUCT_FIELD_KEYS) {
+          entry[key] = overrideCellToValue(row[label])
+        }
+        next[product.id] = entry as Record<ProductFieldKey, boolean | null>
+        applied++
+      }
+
+      setProductOverrides(next)
+      setOverridePage(1)
+
+      const lines = [`นำเข้าค่า override ของสินค้า ${applied} รายการ`]
+      if (unknownCodes.length > 0) {
+        const preview = unknownCodes.slice(0, 5).join(', ')
+        lines.push(
+          `ข้าม ${unknownCodes.length} รายการ (ไม่พบ product_code ในระบบ): ${preview}${unknownCodes.length > 5 ? ' ...' : ''}`
+        )
+      }
+      lines.push('')
+      lines.push('ยังไม่ได้บันทึกลงฐานข้อมูล — ตรวจค่าในตารางแล้วกด "บันทึก Override"')
+      showMessage({ title: 'นำเข้าสำเร็จ', message: lines.join('\n') })
+    } catch (error: any) {
+      console.error('Error importing product overrides:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Import ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setImportingOverrides(false)
     }
   }
 
@@ -3290,35 +3445,29 @@ export default function Settings() {
               ไม่พบหมวดหมู่สินค้า (ตรวจสอบว่ามีสินค้าใน pr_products และมี product_category)
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="bg-slate-600 text-white">
-                    <th className="p-3 text-left font-semibold whitespace-nowrap rounded-tl-xl">ชื่อหมวดหมู่สินค้า</th>
-                    <th className="p-3 text-center font-semibold whitespace-nowrap rounded-tr-xl min-w-[140px]">
-                      ใช้ในการขาย / เปิดบิล
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {productCategories.map((category, idx) => (
-                    <tr key={category} className={`border-b border-gray-200 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
-                      <td className="p-3 border-r border-gray-200 font-medium whitespace-nowrap">{category}</td>
-                      <td className="p-3 text-center border-r border-gray-200">
-                        <label className="inline-flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={getCategorySalesActive(category)}
-                            onChange={(e) => setCategorySalesActiveFlag(category, e.target.checked)}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                          />
-                          <span className="text-gray-700">{getCategorySalesActive(category) ? 'เปิด' : 'ปิด'}</span>
-                        </label>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-1.5">
+              {productCategories.map((category) => {
+                const active = getCategorySalesActive(category);
+                return (
+                  <label
+                    key={category}
+                    title={category}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-md border text-sm cursor-pointer transition-colors ${
+                      active
+                        ? 'border-blue-200 bg-blue-50 text-gray-800'
+                        : 'border-gray-200 bg-gray-50 text-gray-400'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onChange={(e) => setCategorySalesActiveFlag(category, e.target.checked)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0"
+                    />
+                    <span className="truncate">{category}</span>
+                  </label>
+                );
+              })}
             </div>
           )}
         </div>
@@ -3387,13 +3536,44 @@ export default function Settings() {
               <h2 className="text-xl font-bold">ตั้งค่าฟิลด์ระดับสินค้า (Override)</h2>
               <p className="text-sm text-gray-500 mt-1">ตั้งค่าเฉพาะสินค้าที่ต้องการแตกต่างจากหมวดหมู่ — คลิกเพื่อสลับ 3 สถานะ</p>
             </div>
-            <button
-              onClick={saveProductOverrides}
-              disabled={savingProductOverrides || overrideEligibleProducts.length === 0}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {savingProductOverrides ? 'กำลังบันทึก...' : 'บันทึก Override'}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={overrideFileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) importProductOverrides(file)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={exportProductOverrides}
+                disabled={allProducts.length === 0}
+                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="ดาวน์โหลดค่า override ปัจจุบันทั้งหมดเป็นไฟล์ Excel (มีชีตวิธีกรอก)"
+              >
+                Export Override
+              </button>
+              <button
+                type="button"
+                onClick={() => overrideFileInputRef.current?.click()}
+                disabled={importingOverrides || allProducts.length === 0}
+                className="px-3 py-2 bg-amber-600 text-white rounded-lg text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="นำเข้าไฟล์ Excel — จับคู่สินค้าด้วย product_code แล้วต้องกดบันทึกอีกครั้ง"
+              >
+                {importingOverrides ? 'กำลังนำเข้า...' : 'Import Override'}
+              </button>
+              <button
+                onClick={saveProductOverrides}
+                disabled={savingProductOverrides || overrideEligibleProducts.length === 0}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingProductOverrides ? 'กำลังบันทึก...' : 'บันทึก Override'}
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-6 mb-3 text-xs text-gray-600">
             <span className="flex items-center gap-1.5">

@@ -3656,7 +3656,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         0,
       )
       const shipping = Number(claimShippingCost) || 0
-      const discount = Number(ref.discount) || 0
+      // บิลเคลมใหม่ไม่สืบทอดส่วนลดจากบิลเก่า — คิดยอดจากรายการ + ค่าส่งเท่านั้น
+      const discount = 0
       const totalAmount = itemsTotal + shipping - discount
       const order = {
         channel_code: ref.channel_code,

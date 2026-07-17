@@ -723,14 +723,24 @@ export default function ClaimReqOrdersTab({
     if (!o) return
     setModalClaim(c)
     setModalOrder(o)
-    setRecipientName((o.recipient_name || '').trim())
-    setCustomerAddress((o.customer_address || '').trim())
+    const refName = (o.recipient_name || '').trim()
+    const refAddress = (o.customer_address || '').trim()
     const mp = (o.billing_details as { mobile_phone?: string } | null)?.mobile_phone
-    setMobilePhone((mp || '').trim())
+    const refPhone = (mp || '').trim()
+    setRecipientName(refName)
+    setCustomerAddress(refAddress)
+    setMobilePhone(refPhone)
     setAutoFillAddressText('')
     setConfirmSlipFiles([])
     setErrorMsg('')
     setModalOpen(true)
+    // ถ้ามีที่อยู่เดิมจากบิลเก่า แยกข้อมูลอัตโนมัติทันที (เลี่ยงซ้ำถ้าที่อยู่มีชื่อ/เบอร์อยู่แล้ว)
+    const autoFillParts: string[] = []
+    if (refName && !refAddress.includes(refName)) autoFillParts.push(refName)
+    if (refAddress) autoFillParts.push(refAddress)
+    if (refPhone && !refAddress.includes(refPhone)) autoFillParts.push(refPhone)
+    const composed = autoFillParts.join('\n').trim()
+    if (composed) void handleAutoFillShipping(composed)
   }
 
   async function handleAutoFillShipping(addressText?: string) {
@@ -750,6 +760,8 @@ export default function ClaimReqOrdersTab({
       setCustomerAddress(composedAddress || source.trim())
       if (parsed.recipientName?.trim()) setRecipientName(parsed.recipientName.trim())
       if (parsed.mobilePhone?.trim()) setMobilePhone(parsed.mobilePhone.trim())
+      // แยกสำเร็จแล้ว เคลียร์กล่อง Auto fill ให้ว่าง
+      setAutoFillAddressText('')
     } catch (error) {
       console.error('Claim shipping address auto fill:', error)
       setErrorMsg('ไม่สามารถแยกข้อมูลที่อยู่ได้ กรุณาตรวจสอบข้อมูลแล้วลองอีกครั้ง')

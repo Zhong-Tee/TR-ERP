@@ -103,7 +103,7 @@ export async function loadPRDetail(prId: string) {
       *,
       inv_pr_items(
         *,
-        pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category, product_type, unit_cost, storage_location)
+        pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category, product_type, unit_cost, storage_location, order_point)
       )
     `)
     .eq('id', prId)

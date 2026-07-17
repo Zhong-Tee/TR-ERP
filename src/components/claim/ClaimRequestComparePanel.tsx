@@ -78,8 +78,9 @@ export default function ClaimRequestComparePanel({
   const proposedOrder = detail.proposed_snapshot?.order || {}
   const propPrice = Number(proposedOrder.price) || 0
   const propShipping = Number(proposedOrder.shipping_cost) || 0
-  const propDiscount = Number(proposedOrder.discount) || 0
-  const propTotal = Number(proposedOrder.total_amount) || 0
+  // บิลเคลมใหม่ไม่คิดส่วนลดจากบิลเก่า — คำนวณยอดจากรายการ + ค่าส่งเท่านั้น
+  // (คำนวณสดที่นี่เผื่อ snapshot เก่าที่ยังเก็บส่วนลดไว้)
+  const propTotal = propPrice + propShipping
   const proposedClaimDetailsLegacy =
     typeof proposedOrder.claim_details === 'string' ? proposedOrder.claim_details.trim() : ''
   const displayClaimDescription =
@@ -246,12 +247,6 @@ export default function ClaimRequestComparePanel({
           <span>ยอดรายการ: {fmtMoney(propPrice)}</span>
           <span className="text-gray-500">|</span>
           <span>ค่าขนส่ง: {fmtMoney(propShipping)}</span>
-          {propDiscount > 0 && (
-            <>
-              <span className="text-gray-500">|</span>
-              <span>ส่วนลด: {fmtMoney(propDiscount)}</span>
-            </>
-          )}
           <span className="text-gray-500">|</span>
           <span>
             ยอดรวมเสนอ: <strong>{fmtMoney(propTotal)}</strong>

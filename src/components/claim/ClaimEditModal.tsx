@@ -72,13 +72,14 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
         0,
       )
       const ship = Number(shipping) || 0
-      const discount = Number(prevOrder.discount) || 0
+      // บิลเคลมใหม่ไม่คิดส่วนลดจากบิลเก่า — ล้างส่วนลดและคิดยอดจากรายการ + ค่าส่ง
       const nextSnapshot = {
         order: {
           ...prevOrder,
           price: itemsTotal,
           shipping_cost: ship,
-          total_amount: itemsTotal + ship - discount,
+          discount: 0,
+          total_amount: itemsTotal + ship,
         },
         items: rows,
       }
@@ -105,7 +106,6 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
     (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
     0,
   )
-  const discount = Number((detail?.proposed_snapshot?.order as Record<string, unknown> | undefined)?.discount) || 0
   const fmt = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2 })
 
   return (
@@ -222,7 +222,7 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
             </div>
             <div className="flex items-center justify-between border-t border-gray-300 pt-1.5">
               <span className="font-semibold">ยอดสุทธิเสนอ</span>
-              <strong className="text-base tabular-nums">{fmt(itemsTotal + (Number(shipping) || 0) - discount)}</strong>
+              <strong className="text-base tabular-nums">{fmt(itemsTotal + (Number(shipping) || 0))}</strong>
             </div>
           </div>
         </div>

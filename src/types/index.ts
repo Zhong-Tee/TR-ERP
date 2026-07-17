@@ -1477,13 +1477,31 @@ export interface HRAsset {
   asset_code?: string
   name: string
   category?: string
+  /** ประเภทย่อย เช่น Notebook, Printer, Monitor */
+  sub_type?: string
+  serial_number?: string
+  vendor_name?: string
   description?: string
   department_id?: string
   location?: string
   purchase_date?: string
+  /** วันที่รับเข้า */
+  received_date?: string
+  /** มีการรับประกันหรือไม่ — false = วันหมดประกันเท่ากับวันที่ซื้อ */
+  has_warranty?: boolean
+  /** ระยะเวลารับประกัน (จำนวน) ใช้คู่กับ warranty_unit */
+  warranty_period?: number | null
+  warranty_unit?: 'day' | 'year' | null
+  /** วันหมดประกัน — คำนวณจากวันที่ซื้อ + ระยะประกัน */
+  warranty_expire_date?: string
   purchase_cost?: number
+  /** อายุการใช้งาน (ปี) — ใช้คำนวณค่าเสื่อม/ปี */
+  useful_life_years?: number
+  /** ค่าเสื่อมราคาต่อปี = มูลค่าตอนซื้อ ÷ อายุการใช้งาน */
+  depreciation_per_year?: number
+  /** มูลค่าปัจจุบัน = มูลค่าตอนซื้อ − (ค่าเสื่อม/ปี × ปีที่ใช้งานไปแล้ว) ไม่ต่ำกว่า 0 */
   current_value?: number
-  status: 'active' | 'maintenance' | 'retired' | 'lost'
+  status: 'active' | 'borrowed' | 'maintenance' | 'retired' | 'disposed' | 'lost'
   assigned_employee_id?: string
   images: string[]
   notes?: string
@@ -1491,4 +1509,22 @@ export interface HRAsset {
   updated_at: string
   department?: HRDepartment
   assigned_employee?: HREmployee
+}
+
+/** ประวัติการเปลี่ยนแปลงทรัพย์สิน (บันทึกอัตโนมัติผ่าน trigger) */
+export interface HRAssetLog {
+  id: string
+  asset_id: string | null
+  asset_code: string | null
+  asset_name: string | null
+  /** 'created' = สร้างใหม่, 'updated' = แก้ไขฟิลด์ */
+  action: 'created' | 'updated'
+  /** ชื่อคอลัมน์ที่เปลี่ยน (null เมื่อ action = created) */
+  field: string | null
+  field_label: string | null
+  old_value: string | null
+  new_value: string | null
+  changed_by: string | null
+  changed_by_name: string | null
+  created_at: string
 }

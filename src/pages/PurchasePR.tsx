@@ -1221,6 +1221,9 @@ export default function PurchasePR() {
                     {viewItems.map((item: any) => {
                       const prod = item.pr_products
                       const imgUrl = prod ? getPublicUrl('product-images', prod.product_code) : ''
+                      const op = parseOrderPoint(prod?.order_point)
+                      const onHand = item.product_id ? (stockBalances[item.product_id] ?? 0) : 0
+                      const isBelowOP = op != null && onHand < op
                       return (
                         <tr key={item.id} className="hover:bg-gray-50/50">
                           <td className="px-3 py-2">
@@ -1234,9 +1237,14 @@ export default function PurchasePR() {
                           </td>
                           <td className="px-3 py-2">
                             <div className="font-medium text-gray-900">{prod?.product_code} - {prod?.product_name}</div>
-                            <div className="text-xs text-gray-500 flex gap-3 mt-0.5">
+                            <div className="text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
                               {prod?.product_name_cn && <span>{prod.product_name_cn}</span>}
                               {prod?.seller_name && <span>ผู้จัดจำหน่าย: {prod.seller_name}</span>}
+                              {prod?.product_category && <span>หมวด: {prod.product_category}</span>}
+                              <span className="text-orange-600 font-medium">คงเหลือ: {onHand.toLocaleString()}</span>
+                              <span className={`${isBelowOP ? 'text-red-600' : 'text-gray-500'} font-medium`}>
+                                จุดสั่งซื้อ: {op != null ? op.toLocaleString() : '-'}
+                              </span>
                             </div>
                           </td>
                           <td className="px-3 py-2 text-right font-medium">

@@ -61,7 +61,7 @@ const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
 const HRSalaryPath = lazy(() => import('./components/hr/SalaryPath'))
 const HRWarningLetters = lazy(() => import('./components/hr/WarningLetters'))
 const HRTrainingCertificates = lazy(() => import('./components/hr/TrainingCertificates'))
-const HRAssetRegistry = lazy(() => import('./components/hr/AssetRegistry'))
+const HRAssetRegistry = lazy(() => import('./components/hr/AssetRegistryPage'))
 const HRSettings = lazy(() => import('./components/hr/HRSettings'))
 
 const HRLoading = () => (
