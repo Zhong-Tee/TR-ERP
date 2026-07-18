@@ -8,7 +8,7 @@ import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
-import { resolveOwnerScopeAdminName } from '../../config/accessPolicy'
+import { isAdminOrSuperadmin, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 import { ISSUE_ON_COUNT_EVENT } from '../../lib/issueOnCountBroadcast'
 import {
   FiPackage,
@@ -22,6 +22,7 @@ import {
   FiShoppingBag,
   FiImage,
   FiHome,
+  FiGlobe,
   FiShoppingCart,
   FiBarChart2,
   FiSettings,
@@ -45,6 +46,13 @@ const menuItems: MenuItem[] = [
     icon: <FiHome className="w-6 h-6" />,
     path: '/dashboard',
     roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'],
+  },
+  {
+    key: 'marketplace',
+    label: 'Marketplace',
+    icon: <FiGlobe className="w-6 h-6" />,
+    path: '/marketplace',
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
   },
   {
     key: 'orders',
@@ -174,6 +182,7 @@ interface SidebarProps {
 
 /** เมนูที่แสดงตัวเลขจำนวนแบบเรียลไทม์ */
 const MENU_KEYS_WITH_COUNT = [
+  'marketplace',
   'orders',
   'admin-qc',
   'plan',
@@ -191,6 +200,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   const location = useLocation()
   const { user } = useAuthContext()
   const [menuCounts, setMenuCounts] = useState<Record<string, number>>({
+    marketplace: 0,
     orders: 0,
     'admin-qc': 0,
     plan: 0,
@@ -221,7 +231,11 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       // ── RPC: ดึง counts พื้นฐานทั้งหมดใน 1 query (แทน 8 queries เดิม) ──
       // ส่ง username + role ของกลุ่ม sales owner-scope เพื่อเห็นเฉพาะ orders ของตัวเอง
       const adminName = resolveOwnerScopeAdminName(user?.role, user?.username, user?.email)
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes] =
+      // Marketplace: admin เห็นจำนวน "งานรอมอบหมาย", sales เห็น "งานของตัวเองที่ยังไม่เสร็จ" (RLS จำกัดให้อยู่แล้ว)
+      const mpCountQuery = isAdminOrSuperadmin(user?.role)
+        ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
+        : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, mpCountRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
@@ -239,6 +253,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           .eq('current_status', 'working'),
         supabase.from('hr_leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        mpCountQuery,
       ])
 
       const c = rpcRes.data || {}
@@ -253,6 +268,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
 
       setMenuCounts({
+        marketplace: mpCountRes.count || 0,
         orders: (c.orders || 0) + (c.orders_req_claim_shipping || 0),
         'admin-qc': c.admin_qc || 0,
         plan: planWorkQueueRes.count || 0,
@@ -292,6 +308,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     loadCounts()
     const channel = supabase
       .channel('sidebar-menu-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mp_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_refunds' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ac_manual_slip_checks' }, () => debouncedLoadCounts())
@@ -426,7 +443,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         isOpen ? 'w-64' : 'w-20'
       }`}
     >
-      <div className="relative flex h-[4.5rem] items-center justify-center border-b border-slate-200 px-3">
+      <div className="relative flex h-16 items-center justify-center border-b border-slate-200 px-3">
         <div className="flex items-center gap-3">
           <img
             src="/icon.png?v=2"

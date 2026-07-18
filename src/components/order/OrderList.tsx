@@ -6,6 +6,7 @@ import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import UrgencyBadge from '../common/UrgencyBadge'
 import OrderDetailView from './OrderDetailView'
 import FailedClaimEditModal from '../claim/FailedClaimEditModal'
 import {
@@ -553,6 +554,7 @@ export default function OrderList({
                 <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-700 text-xl font-bold hover:text-blue-900 hover:underline transition-colors">
                   {order.bill_no}
                 </button>
+                <UrgencyBadge order={order} />
                 {order.work_order_name && (
                   <span className="text-xl font-bold text-emerald-700 select-all">
                     {order.work_order_name}

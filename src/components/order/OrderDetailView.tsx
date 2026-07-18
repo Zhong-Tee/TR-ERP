@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx'
 import { buildProductionLikeExport } from '../../lib/orderProductionExcel'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
+import UrgencyBadge from '../common/UrgencyBadge'
 import Modal from '../ui/Modal'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
@@ -342,7 +343,10 @@ export default function OrderDetailView({
       <div className="p-4 border-b bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between shrink-0">
         <div>
           <h3 className="text-lg font-bold">รายละเอียดบิล</h3>
-          <p className="text-sm text-blue-200 select-all">{order.bill_no}</p>
+          <p className="text-sm text-blue-200 select-all">
+            {order.bill_no}
+            <UrgencyBadge order={order} className="ml-2" />
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {canOpenTicket && (

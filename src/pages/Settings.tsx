@@ -659,6 +659,15 @@ export default function Settings() {
   const MENU_ROLE_OPTIONS = [
     // ── Dashboard ──
     { key: 'dashboard', label: 'Dashboard', group: '' },
+    // ── Marketplace ──
+    { key: 'marketplace', label: 'Marketplace', group: '' },
+    { key: 'marketplace-dashboard', label: 'Dashboard', group: 'marketplace' },
+    { key: 'marketplace-new', label: 'งานใหม่ (อัปโหลด/Assign)', group: 'marketplace' },
+    { key: 'marketplace-assign', label: 'Assign', group: 'marketplace' },
+    { key: 'marketplace-follow-up', label: 'รอติดตาม', group: 'marketplace' },
+    { key: 'marketplace-done', label: 'เสร็จสิ้น', group: 'marketplace' },
+    { key: 'marketplace-cancelled', label: 'ยกเลิก', group: 'marketplace' },
+    { key: 'marketplace-settings', label: 'ตั้งค่า', group: 'marketplace' },
     // ── ออเดอร์ ──
     { key: 'orders', label: 'ออเดอร์', group: '' },
     { key: 'orders-all', label: 'ทั้งหมด', group: 'orders' },

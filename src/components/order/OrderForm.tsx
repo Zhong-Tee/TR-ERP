@@ -15,6 +15,7 @@ import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
 import { countThaiBillChars } from '../../lib/thaiBillCharCount'
 import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
+import { generateBillNo } from '../../lib/billNo'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -2856,28 +2857,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       console.error('[Verify Slips] Error:', error)
       throw error
     }
-  }
-
-  async function generateBillNo(channelCode: string): Promise<string> {
-    const today = new Date()
-    const year = today.getFullYear().toString().slice(-2)
-    const month = (today.getMonth() + 1).toString().padStart(2, '0')
-
-    const { data } = await supabase
-      .from('or_orders')
-      .select('bill_no')
-      .like('bill_no', `${channelCode}${year}${month}%`)
-      .order('bill_no', { ascending: false })
-      .limit(1)
-
-    let sequence = 1
-    if (data && data.length > 0) {
-      const lastBillNo = data[0].bill_no
-      const lastSeq = parseInt(lastBillNo.slice(-4)) || 0
-      sequence = lastSeq + 1
-    }
-
-    return `${channelCode}${year}${month}${sequence.toString().padStart(4, '0')}`
   }
 
   const parseNumber = (value: unknown) => {

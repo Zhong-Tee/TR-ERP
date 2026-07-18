@@ -5,6 +5,7 @@ import { localISODate } from '../../lib/localDate'
 import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
+import UrgencyBadge from '../common/UrgencyBadge'
 import OrderDetailView from './OrderDetailView'
 
 const WO_PREFIX_MAP: Record<string, string> = { OFFICE: 'OF' }
@@ -45,7 +46,7 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at')
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
@@ -438,6 +439,7 @@ export default function WorkOrderSelectionList({
                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                         {order.bill_no}
                       </button>
+                      <UrgencyBadge order={order} className="ml-1.5" />
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.recipient_name ?? ''}>
                       {order.recipient_name ?? '-'}

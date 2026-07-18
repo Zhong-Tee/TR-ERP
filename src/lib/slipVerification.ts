@@ -68,9 +68,6 @@ export async function getEasySlipQuota(): Promise<{
     }
 
     if (!data || !data.data) {
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/2fe77463-fda7-4f3b-a785-814209082e75',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'slipVerification.ts:70',message:'No data in response',data:{hasData:!!data,hasDataData:!!data?.data,dataStructure:data?JSON.stringify(data).substring(0,200):'null'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
       console.error('[getEasySlipQuota] No data in response:', data)
       return {
         success: false,
@@ -78,9 +75,6 @@ export async function getEasySlipQuota(): Promise<{
       }
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/2fe77463-fda7-4f3b-a785-814209082e75',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'slipVerification.ts:78',message:'Success - returning quota data',data:{hasDataData:!!data.data,dataDataKeys:data.data?Object.keys(data.data):[]},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-    // #endregion
     console.log('[getEasySlipQuota] Success, quota data:', data.data)
     return {
       success: true,

@@ -44,6 +44,7 @@ export function isRoleInAllowedList(role: MaybeRole, allowedRoles?: string[]): b
 
 export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRole[] }[] = [
   { key: 'dashboard', path: '/dashboard', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
+  { key: 'marketplace', path: '/marketplace', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'] },
   { key: 'orders', path: '/orders', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
   { key: 'admin-qc', path: '/admin-qc', roles: ['superadmin', 'admin', 'sales-tr', 'qc_order'] },
   { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production'] },
@@ -185,6 +186,13 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'orders-work-orders': 'orders',
   'orders-work-orders-manage': 'orders',
   'orders-claim-req': 'orders',
+  'marketplace-dashboard': 'marketplace',
+  'marketplace-new': 'marketplace',
+  'marketplace-assign': 'marketplace',
+  'marketplace-follow-up': 'marketplace',
+  'marketplace-done': 'marketplace',
+  'marketplace-cancelled': 'marketplace',
+  'marketplace-settings': 'marketplace',
   'plan-dash': 'plan',
   'plan-dept': 'plan',
   'plan-jobs': 'plan',
@@ -209,6 +217,7 @@ export function resolveMenuKeyFromPath(pathname: string): string | null {
   const matchedPrefix = PATH_MENU_PREFIX_MAP.find((item) => pathname.startsWith(item.prefix))
   if (matchedPrefix) return matchedPrefix.key
   if (pathname.startsWith('/dashboard')) return 'dashboard'
+  if (pathname.startsWith('/marketplace')) return 'marketplace'
   if (pathname.startsWith('/orders')) return 'orders'
   if (pathname.startsWith('/admin-qc')) return 'admin-qc'
   if (pathname.startsWith('/account')) return 'account'
@@ -270,6 +279,14 @@ export function isAdminOrSuperadmin(role: MaybeRole): boolean {
 
 export function isSalesOwnerScopedRole(role: MaybeRole): boolean {
   return isRoleInAllowedList(role, [...SALES_PUMP_ROLE_ALIASES, ...SALES_TR_ROLE_ALIASES])
+}
+
+/**
+ * Role ที่รับมอบหมายงานเมนู Marketplace ได้ = role ขึ้นต้นด้วย 'sales-'
+ * (convention เดียวกับ RLS `role LIKE 'sales-%'` — เพิ่ม role sales ใหม่ได้โดยไม่ต้องแก้โค้ด)
+ */
+export function isSalesAssignableRole(role: MaybeRole): boolean {
+  return normalizeRole(role).startsWith('sales-')
 }
 
 export function isSalesTrTeamRole(role: MaybeRole): boolean {

@@ -5,6 +5,7 @@ import { Order } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import UrgencyBadge from '../common/UrgencyBadge'
 import { canSeeOfficeChannel } from '../../config/accessPolicy'
 
 const PRODUCT_IMAGES_BUCKET = 'product-images'
@@ -737,6 +738,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-semibold text-gray-900 flex items-center gap-2">
                       {order.bill_no}
+                      <UrgencyBadge order={order} />
                       {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                         <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
                           เคลม

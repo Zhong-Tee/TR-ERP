@@ -37,6 +37,7 @@ import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
 import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
+import Marketplace from './pages/Marketplace'
 import Machinery from './pages/Machinery'
 import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
@@ -237,6 +238,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account']}>
             <Layout>
               <DashboardPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketplace"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <Marketplace />
             </Layout>
           </ProtectedRoute>
         }

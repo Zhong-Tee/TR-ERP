@@ -120,6 +120,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const menuTitle = (() => {
     const path = location.pathname
     if (path.startsWith('/dashboard')) return 'Dashboard'
+    if (path.startsWith('/marketplace')) return 'Marketplace'
     if (path.startsWith('/orders')) return 'ออเดอร์'
     if (path.startsWith('/admin-qc')) return 'รอตรวจคำสั่งซื้อ'
     if (path.startsWith('/account')) return 'บัญชี'

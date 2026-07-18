@@ -13,6 +13,7 @@ import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
 import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
 import OrderDetailView from './OrderDetailView'
+import UrgencyBadge from '../common/UrgencyBadge'
 
 /** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
 function salesPumpAdminMatchesUser(
@@ -1280,6 +1281,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           >
                             {order.bill_no}
                           </button>
+                          <UrgencyBadge order={order} className="ml-1.5" />
                         </td>
                         <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                           {order.customer_name}
@@ -1513,6 +1515,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           </td>
                           <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
                             {order.bill_no}
+                            <UrgencyBadge order={order} className="ml-1.5" />
                           </td>
                           <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                             {order.customer_name}
@@ -1629,7 +1632,10 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                       {/* Order Info */}
                       <div className="flex items-start justify-between gap-2 mb-1">
                         <div className="min-w-0">
-                          <div className="font-semibold text-blue-600 text-base truncate">{order.bill_no}</div>
+                          <div className="font-semibold text-blue-600 text-base truncate">
+                            {order.bill_no}
+                            <UrgencyBadge order={order} className="ml-1.5" />
+                          </div>
                           <div className="text-sm text-gray-500 truncate">{order.customer_name}</div>
                         </div>
                         <div className="text-right shrink-0">

@@ -85,6 +85,10 @@ export interface Order {
   plan_released_at?: string | null
   shipped_by: string | null
   shipped_time: string | null
+  /** กำหนดส่ง (จากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า; NULL = ไม่มีป้าย */
+  ship_due_at?: string | null
+  /** เวลาที่นับเป็น "ล่าช้า" (เวลาชำระเงิน + ชั่วโมงตามตั้งค่า) */
+  overdue_at?: string | null
   tracking_number: string | null
   claim_type: string | null
   claim_details: string | null
