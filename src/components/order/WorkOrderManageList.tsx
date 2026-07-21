@@ -674,6 +674,21 @@ export default function WorkOrderManageList({
     const value = editingTrackingValue.trim()
     setUpdating(true)
     try {
+      // ถ้ามีเลขพัสดุ เช็คซ้ำกับออร์เดอร์อื่นในระบบ (ยกเว้นตัวเอง)
+      if (value) {
+        const { data: dup, error: dupError } = await supabase
+          .from('or_orders')
+          .select('id')
+          .eq('tracking_number', value)
+          .neq('id', orderId)
+          .limit(1)
+        if (dupError) throw dupError
+        if (dup && dup.length > 0) {
+          setMessageModal({ open: true, message: 'เลขพัสดุซ้ำกับรายการในระบบ' })
+          setUpdating(false)
+          return
+        }
+      }
       const { error } = await supabase
         .from('or_orders')
         .update({ tracking_number: value || null })
@@ -1539,17 +1554,38 @@ export default function WorkOrderManageList({
       const updates = await parseTrackingFile(file)
       if (updates.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
       let updated = 0
+      const duplicateBills: string[] = []
+      const seenInFile = new Set<string>()
       for (const u of updates) {
         const { data: ord } = await supabase.from('or_orders').select('id').eq('bill_no', u.bill_no).maybeSingle()
-        if (ord) {
-          await supabase.from('or_orders').update({ tracking_number: u.tracking_number }).eq('id', ord.id)
-          updated += 1
+        if (!ord) continue
+        // ข้ามถ้าเลขพัสดุซ้ำภายในไฟล์เดียวกัน
+        if (seenInFile.has(u.tracking_number)) {
+          duplicateBills.push(u.bill_no)
+          continue
         }
+        // ข้ามถ้าเลขพัสดุซ้ำกับออร์เดอร์อื่นในระบบ (ยกเว้นตัวเอง)
+        const { data: dup } = await supabase
+          .from('or_orders')
+          .select('id')
+          .eq('tracking_number', u.tracking_number)
+          .neq('id', ord.id)
+          .limit(1)
+        if (dup && dup.length > 0) {
+          duplicateBills.push(u.bill_no)
+          continue
+        }
+        await supabase.from('or_orders').update({ tracking_number: u.tracking_number }).eq('id', ord.id)
+        seenInFile.add(u.tracking_number)
+        updated += 1
       }
       const woRecord = workOrders.find((w) => w.work_order_name === workOrderName)
       if (woRecord) await loadOrdersForWo(woRecord.id)
       onRefresh?.()
-      setMessageModal({ open: true, message: `นำเข้าเลขพัสดุสำเร็จ ${updated} / ${updates.length} รายการ` })
+      const dupNote = duplicateBills.length > 0
+        ? `\nข้ามเลขพัสดุซ้ำ ${duplicateBills.length} รายการ: ${duplicateBills.join(', ')}`
+        : ''
+      setMessageModal({ open: true, message: `นำเข้าเลขพัสดุสำเร็จ ${updated} / ${updates.length} รายการ${dupNote}` })
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
     } finally {
