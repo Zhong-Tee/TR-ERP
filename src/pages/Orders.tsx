@@ -256,9 +256,9 @@ export default function Orders() {
     }
 
     try {
-      // Load waiting count
+      // Load waiting count (ไม่รวมบิลเคลม/REQ — บิลเคลมจัดการที่แท็บบิลเคลม)
       const { count: waitingCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล')
+        supabase.from('or_orders').select('id', { count: 'exact', head: true }).eq('status', 'รอลงข้อมูล').is('claim_type', null)
       )
       
       // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
@@ -549,6 +549,21 @@ export default function Orders() {
     return () => window.removeEventListener('navigate-to-issue', onNavigateToIssue)
   }, [])
 
+  // จากแท็บบันทึกร่าง(เคลม) → ไปหน้า สร้าง/แก้ไข แล้วเปิด modal เคลมพร้อมข้อมูลร่าง
+  useEffect(() => {
+    const onOpenClaimDraft = (e: Event) => {
+      const draft = (e as CustomEvent<{ draft?: unknown }>).detail?.draft
+      if (!draft) return
+      setSelectedOrder(null)
+      setActiveTab('create')
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('load-claim-draft', { detail: { draft } }))
+      }, 200)
+    }
+    window.addEventListener('open-claim-draft', onOpenClaimDraft)
+    return () => window.removeEventListener('open-claim-draft', onOpenClaimDraft)
+  }, [])
+
   // จาก IssueBoard (ข้อความยังไม่อ่าน) → ไป Confirm แล้วเปิดแชทบิล
   useEffect(() => {
     const onNavigateToOrderChat = (e: Event) => {
@@ -837,6 +852,7 @@ export default function Orders() {
             onCountChange={suppressSalesTrListCountSync ? undefined : setWaitingCount}
             showDeleteButton={true}
             onDelete={handleDeleteOrder}
+            excludeClaimBills={true}
             refreshTrigger={listRefreshKey}
             {...salesTrOrderListProps}
           />

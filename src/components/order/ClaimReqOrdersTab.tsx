@@ -252,6 +252,18 @@ function matchesReqSearch(q: string, parts: (string | null | undefined)[]): bool
   return parts.some((p) => String(p ?? '').toLowerCase().includes(qq))
 }
 
+/** ร่างเคลม (status draft) ของผู้ใช้เอง — แก้ต่อ/ส่งอนุมัติ/ลบได้ */
+type DraftClaimRow = {
+  id: string
+  created_at: string
+  claim_type: string
+  ref_order_id: string
+  ref_snapshot: { bill_no?: string; total_amount?: number } | null
+  proposed_snapshot: { order?: Record<string, unknown>; items?: unknown[] } | null
+  supporting_url: string | null
+  claim_description: string | null
+}
+
 type ReqOrderRow = {
   id: string
   bill_no: string
@@ -295,6 +307,8 @@ export default function ClaimReqOrdersTab({
   const [pendingClaims, setPendingClaims] = useState<PendingClaimRow[]>([])
   const [rejectedClaims, setRejectedClaims] = useState<RejectedClaimRow[]>([])
   const [approvedClaims, setApprovedClaims] = useState<ApprovedClaimRow[]>([])
+  const [draftClaims, setDraftClaims] = useState<DraftClaimRow[]>([])
+  const [draftBusyId, setDraftBusyId] = useState<string | null>(null)
   const [claimLabels, setClaimLabels] = useState<Record<string, string>>({})
   const [orderById, setOrderById] = useState<Record<string, ReqOrderRow>>({})
   /** คำขอรออนุมัติที่เป็นเคลมซ้ำ: ref_order_id → เลขบิล REQ ล่าสุดที่อนุมัติแล้ว */
@@ -324,7 +338,7 @@ export default function ClaimReqOrdersTab({
   } | null>(null)
   const [saving, setSaving] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
-  const [reqSubTab, setReqSubTab] = useState<'pending' | 'approved' | 'rejected'>('pending')
+  const [reqSubTab, setReqSubTab] = useState<'pending' | 'approved' | 'rejected' | 'draft'>('pending')
   /** กรองตามวันที่ส่งคำขอ (created_at ของคำขอ) — ค่าเริ่มต้น วันที่ 1 ของเดือน ถึง วันนี้ */
   const [reqFilterDateFrom, setReqFilterDateFrom] = useState(defaultReqFilterDateFrom)
   const [reqFilterDateTo, setReqFilterDateTo] = useState(defaultReqFilterDateTo)
@@ -443,6 +457,21 @@ export default function ClaimReqOrdersTab({
         .order('reviewed_at', { ascending: false })
         .limit(200)
       if (eRej) throw eRej
+
+      // ร่างเคลม — เฉพาะของผู้ใช้เอง (submitted_by = ตัวเอง)
+      if (user?.id) {
+        const { data: drafts, error: eDraft } = await supabase
+          .from('or_claim_requests')
+          .select('id, created_at, claim_type, ref_order_id, ref_snapshot, proposed_snapshot, supporting_url, claim_description')
+          .eq('status', 'draft')
+          .eq('submitted_by', user.id)
+          .order('created_at', { ascending: false })
+          .limit(200)
+        if (eDraft) console.warn('ClaimReqOrdersTab: load drafts', eDraft)
+        setDraftClaims((drafts || []) as DraftClaimRow[])
+      } else {
+        setDraftClaims([])
+      }
 
       const pBase = (pending || []) as Array<
         ClaimRow & {
@@ -687,7 +716,7 @@ export default function ClaimReqOrdersTab({
     } finally {
       setLoading(false)
     }
-  }, [narrowAdminUser])
+  }, [narrowAdminUser, user?.id])
 
   useEffect(() => {
     load()
@@ -848,6 +877,86 @@ export default function ClaimReqOrdersTab({
     }
   }
 
+  /** เปิดร่างเข้า modal เคลม (หน้าสร้าง/แก้ไข) เพื่อแก้ต่อ */
+  function openDraftForEdit(d: DraftClaimRow) {
+    window.dispatchEvent(
+      new CustomEvent('open-claim-draft', {
+        detail: {
+          draft: {
+            id: d.id,
+            ref_order_id: d.ref_order_id,
+            claim_type: d.claim_type,
+            supporting_url: d.supporting_url,
+            claim_description: d.claim_description,
+            proposed_snapshot: d.proposed_snapshot,
+          },
+        },
+      }),
+    )
+  }
+
+  /** ส่งอนุมัติจากร่างโดยตรง (draft -> pending) */
+  async function submitDraft(d: DraftClaimRow) {
+    const items = (d.proposed_snapshot?.items || []) as unknown[]
+    if (items.length === 0) {
+      alert('ร่างนี้ยังไม่มีรายการสินค้า กรุณากด "แก้ไข" เพื่อเพิ่มรายการก่อนส่งอนุมัติ')
+      return
+    }
+    setDraftBusyId(d.id)
+    try {
+      const { data, error } = await supabase
+        .from('or_claim_requests')
+        .update({ status: 'pending' })
+        .eq('id', d.id)
+        .eq('status', 'draft')
+        .select('id')
+      if (error) {
+        if ((error as { code?: string }).code === '23505') {
+          alert('บิลนี้มีคำขอเคลมที่รออนุมัติอยู่แล้ว')
+          return
+        }
+        throw error
+      }
+      if (!data || data.length === 0) {
+        alert('ไม่พบร่างนี้ (อาจถูกลบหรือส่งไปแล้ว)')
+        return
+      }
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      await load()
+    } catch (e: unknown) {
+      alert('ส่งอนุมัติไม่สำเร็จ: ' + ((e as Error)?.message || String(e)))
+    } finally {
+      setDraftBusyId(null)
+    }
+  }
+
+  /** ลบร่าง */
+  async function deleteDraft(d: DraftClaimRow) {
+    if (!window.confirm('ลบร่างเคลมนี้? การลบไม่สามารถกู้คืนได้')) return
+    setDraftBusyId(d.id)
+    try {
+      const { error } = await supabase.from('or_claim_requests').delete().eq('id', d.id).eq('status', 'draft')
+      if (error) throw error
+      await load()
+    } catch (e: unknown) {
+      alert('ลบไม่สำเร็จ: ' + ((e as Error)?.message || String(e)))
+    } finally {
+      setDraftBusyId(null)
+    }
+  }
+
+  const filteredDraftClaims = useMemo(() => {
+    return draftClaims.filter((d) => {
+      if (!claimCreatedAtInRange(d.created_at, reqFilterDateFrom, reqFilterDateTo)) return false
+      return matchesReqSearch(reqFilterSearch, [
+        d.ref_snapshot?.bill_no,
+        claimTypeLabel(claimLabels, d.claim_type),
+        d.claim_description,
+        d.id,
+      ])
+    })
+  }, [draftClaims, reqFilterDateFrom, reqFilterDateTo, reqFilterSearch, claimLabels])
+
   const filteredPendingClaims = useMemo(() => {
     return pendingClaims.filter((c) => {
       if (!claimCreatedAtInRange(c.created_at, reqFilterDateFrom, reqFilterDateTo)) return false
@@ -945,6 +1054,7 @@ export default function ClaimReqOrdersTab({
             { id: 'pending' as const, label: 'รออนุมัติ', count: pendingClaims.length },
             { id: 'approved' as const, label: 'อนุมัติแล้ว', count: needShippingCount },
             { id: 'rejected' as const, label: 'ปฏิเสธ', count: unseenRejectedCount },
+            { id: 'draft' as const, label: 'บันทึกร่าง(เคลม)', count: draftClaims.length },
           ] as const
         ).map((t) => (
           <button
@@ -1230,6 +1340,88 @@ export default function ClaimReqOrdersTab({
                           <div className="flex items-center justify-center gap-2">
                             <EvidenceLinkCell supportingUrl={c.supporting_url} />
                             <VideoLinkCell url={c.packing_video_url} />
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {reqSubTab === 'draft' && (
+        <section className="rounded-xl border border-indigo-200/80 bg-indigo-50/30 p-4">
+          <h3 className="text-lg font-bold text-indigo-900 mb-1">บันทึกร่าง(เคลม)</h3>
+          <p className="text-xs text-indigo-800/80 mb-3">
+            ร่างเคลมที่คุณบันทึกไว้ (เห็นเฉพาะร่างของคุณ) — กด "แก้ไข" เพื่อทำต่อในหน้าเคลม, "ส่งอนุมัติ" เพื่อส่งให้บัญชี หรือ "ลบ"
+          </p>
+          {draftClaims.length === 0 ? (
+            <p className="text-gray-600 text-sm">ยังไม่มีร่างเคลม — สร้างได้ที่ สร้าง/แก้ไข → เคลม แล้วกด "บันทึกร่าง(เคลม)"</p>
+          ) : filteredDraftClaims.length === 0 ? (
+            <p className="text-gray-600 text-sm">ไม่มีรายการตามช่วงวันที่หรือคำค้นหา</p>
+          ) : (
+            <div className="overflow-x-auto border border-indigo-200 rounded-xl bg-white">
+              <table className="min-w-full text-sm bg-white">
+                <thead className="bg-indigo-100/80">
+                  <tr>
+                    <th className="text-left p-3 whitespace-nowrap">วันที่บันทึกร่าง</th>
+                    <th className="text-left p-3 whitespace-nowrap">บิลอ้างอิง</th>
+                    <th className="text-left p-3 whitespace-nowrap">หัวข้อเคลม</th>
+                    <th className="text-left p-3 min-w-[180px] whitespace-nowrap">คำอธิบายเคลม</th>
+                    <th className="text-right p-3 whitespace-nowrap">จำนวนรายการ</th>
+                    <th className="text-right p-3 whitespace-nowrap">ยอดบิลเคลม</th>
+                    <th className="text-center p-3 whitespace-nowrap">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white">
+                  {filteredDraftClaims.map((d) => {
+                    const itemCount = ((d.proposed_snapshot?.items || []) as unknown[]).length
+                    const busy = draftBusyId === d.id
+                    return (
+                      <tr key={d.id} className="border-t border-indigo-100">
+                        <td className="p-3 whitespace-nowrap">
+                          <DateTimeCellText text={new Date(d.created_at).toLocaleString('th-TH')} />
+                        </td>
+                        <td className="p-3 font-mono">{d.ref_snapshot?.bill_no || '–'}</td>
+                        <td className="p-3">{claimTypeLabel(claimLabels, d.claim_type)}</td>
+                        <td className="p-3 text-gray-700 align-top max-w-md min-w-[180px]">
+                          <span className="whitespace-pre-wrap break-words text-sm">
+                            {(d.claim_description ?? '').trim() || '–'}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right tabular-nums">{itemCount}</td>
+                        <td className="p-3 text-right tabular-nums font-semibold">
+                          {fmtMoney(Number(d.proposed_snapshot?.order?.price) || 0)}
+                        </td>
+                        <td className="p-3 align-middle">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => openDraftForEdit(d)}
+                              className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                              แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void submitDraft(d)}
+                              className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50"
+                            >
+                              {busy ? '...' : 'ส่งอนุมัติ'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void deleteDraft(d)}
+                              className="px-3 py-1.5 rounded-lg border border-red-300 text-red-600 text-sm font-medium hover:bg-red-50 disabled:opacity-50"
+                            >
+                              ลบ
+                            </button>
                           </div>
                         </td>
                       </tr>

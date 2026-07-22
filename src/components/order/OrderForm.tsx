@@ -563,6 +563,39 @@ type ClaimDraftRow = {
   file_attachment: string | null
 }
 
+/** ร่างเคลม (or_claim_requests สถานะ draft) ที่ส่งมาเปิดใน modal เพื่อแก้ต่อ */
+type ClaimDraftRecord = {
+  id: string
+  ref_order_id: string
+  claim_type: string
+  supporting_url: string | null
+  claim_description: string | null
+  proposed_snapshot: { order?: Record<string, unknown>; items?: Record<string, unknown>[] } | null
+}
+
+/** map รายการจาก proposed_snapshot.items กลับเป็น ClaimDraftRow (เติม key ที่ไม่ได้เก็บใน DB) */
+function snapshotItemToClaimDraftRow(item: Record<string, unknown>, idx: number): ClaimDraftRow {
+  return {
+    key: `cd-draft-${idx}`,
+    product_id: item.product_id ? String(item.product_id) : null,
+    product_name: String(item.product_name ?? ''),
+    quantity: Number(item.quantity) || 1,
+    unit_price: Number(item.unit_price) || 0,
+    ink_color: item.ink_color != null ? String(item.ink_color) : null,
+    product_type: item.product_type != null ? String(item.product_type) : 'ชั้น1',
+    cartoon_pattern: item.cartoon_pattern != null ? String(item.cartoon_pattern) : null,
+    line_pattern: item.line_pattern != null ? String(item.line_pattern) : null,
+    font: item.font != null ? String(item.font) : null,
+    line_1: item.line_1 != null ? String(item.line_1) : null,
+    line_2: item.line_2 != null ? String(item.line_2) : null,
+    line_3: item.line_3 != null ? String(item.line_3) : null,
+    no_name_line: !!(item as { no_name_line?: boolean }).no_name_line,
+    is_free: !!(item as { is_free?: boolean }).is_free,
+    notes: item.notes != null ? String(item.notes) : null,
+    file_attachment: item.file_attachment != null ? String(item.file_attachment) : null,
+  }
+}
+
 type ProductStockSnapshot = {
   on_hand: number
   reserved: number
@@ -683,6 +716,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [claimDescription, setClaimDescription] = useState('')
   const [claimConfirmSubmitting, setClaimConfirmSubmitting] = useState(false)
   const [claimDraftItems, setClaimDraftItems] = useState<ClaimDraftRow[]>([])
+  /** id ของร่างเคลมที่กำลังแก้ไข (null = สร้างใหม่) — ใช้ update ทับตอนบันทึกร่าง/ส่งอนุมัติ */
+  const [editingClaimDraftId, setEditingClaimDraftId] = useState<string | null>(null)
+  const [claimDraftSaving, setClaimDraftSaving] = useState(false)
+  /** ร่างที่รอโหลดเข้า modal (ตั้งก่อนเปิด modal แล้วให้ effect เปิด modal นำมา apply) */
+  const pendingClaimDraftRef = useRef<ClaimDraftRecord | null>(null)
   /** ค่าขนส่งของบิลเคลม (ตั้งต้นจากบิลเก่า แก้ไขได้) */
   const [claimShippingCost, setClaimShippingCost] = useState(0)
   const [claimDraftLoading, setClaimDraftLoading] = useState(false)
@@ -1190,6 +1228,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setClaimFilterChannel('')
     setClaimDraftItems([])
     setClaimShippingCost(0)
+    setEditingClaimDraftId(null)
     setClaimRefMetaByOrderId({})
     setClaimOrdersLoading(true)
     ;(async () => {
@@ -1258,6 +1297,36 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           if (bn && meta[refId]) meta[refId].latestReqBillNo = bn
         }
         setClaimRefMetaByOrderId(meta)
+
+        // ถ้ามีร่างรอโหลด → เติมข้อมูลร่างและกระโดดไปขั้นแก้รายการ (step 3)
+        const pd = pendingClaimDraftRef.current
+        if (pd) {
+          pendingClaimDraftRef.current = null
+          let ref = orders.find((o) => o.id === pd.ref_order_id) || null
+          if (!ref) {
+            const { data: refData } = await supabase
+              .from('or_orders')
+              .select('*')
+              .eq('id', pd.ref_order_id)
+              .maybeSingle()
+            ref = (refData as Order) || null
+          }
+          if (ref) {
+            const snapItems = (pd.proposed_snapshot?.items || []) as Record<string, unknown>[]
+            setSelectedClaimRefOrder(ref)
+            setSelectedClaimType(pd.claim_type || '')
+            setClaimDescription(
+              (pd.claim_description || String(pd.proposed_snapshot?.order?.claim_details ?? '') || '').trim(),
+            )
+            setClaimSupportingUrl(pd.supporting_url || '')
+            setClaimDraftItems(snapItems.map((it, idx) => snapshotItemToClaimDraftRow(it, idx)))
+            setClaimShippingCost(Number(pd.proposed_snapshot?.order?.shipping_cost) || 0)
+            setEditingClaimDraftId(pd.id)
+            setClaimStep(3)
+          } else {
+            setMessageModal({ open: true, title: 'เปิดร่างไม่สำเร็จ', message: 'ไม่พบบิลอ้างอิงของร่างนี้ (อาจถูกลบหรือเปลี่ยนสถานะ)' })
+          }
+        }
       } catch (e) {
         console.error('Error loading claim data:', e)
       } finally {
@@ -1265,6 +1334,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
     })()
   }, [claimModalOpen])
+
+  /** เปิดร่างเคลมเข้า modal เพื่อแก้ต่อ (จากแท็บบันทึกร่างในบิลเคลม) */
+  useEffect(() => {
+    const onLoadDraft = (e: Event) => {
+      const draft = (e as CustomEvent<{ draft?: ClaimDraftRecord }>).detail?.draft
+      if (!draft?.id) return
+      pendingClaimDraftRef.current = draft
+      setClaimModalOpen(true)
+    }
+    window.addEventListener('load-claim-draft', onLoadDraft)
+    return () => window.removeEventListener('load-claim-draft', onLoadDraft)
+  }, [])
 
   /** หมวดที่ปิดการขาย — ไม่แสดงใน datalist เลือกสินค้า (รายการเดิมในออเดอร์ยังใช้ `products` เต็มรายการได้) */
   function isProductCategoryActiveForOrder(p: { product_category?: string | null }): boolean {
@@ -3685,31 +3766,61 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         file_attachment: r.file_attachment,
       }))
 
-      const { error } = await supabase.from('or_claim_requests').insert({
-        ref_order_id: ref.id,
-        claim_type: selectedClaimType.trim(),
-        supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
-        claim_description: claimDescription.trim(),
-        proposed_snapshot: { order, items },
-        ref_snapshot: {
-          bill_no: ref.bill_no,
-          price: ref.price,
-          total_amount: ref.total_amount,
-          shipping_cost: ref.shipping_cost,
-          discount: ref.discount,
-        },
-        submitted_by: user?.id ?? null,
-      })
-      if (error) {
-        if ((error as { code?: string }).code === '23505') {
-          setMessageModal({
-            open: true,
-            title: 'มีคำขอค้างอยู่',
-            message: 'บิลนี้มีคำขอเคลมที่รออนุมัติอยู่แล้ว',
+      const refSnapshot = {
+        bill_no: ref.bill_no,
+        price: ref.price,
+        total_amount: ref.total_amount,
+        shipping_cost: ref.shipping_cost,
+        discount: ref.discount,
+      }
+
+      if (editingClaimDraftId) {
+        // ส่งอนุมัติจากร่าง: อัปเดตร่าง draft -> pending
+        const { data, error } = await supabase
+          .from('or_claim_requests')
+          .update({
+            claim_type: selectedClaimType.trim(),
+            supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
+            claim_description: claimDescription.trim(),
+            proposed_snapshot: { order, items },
+            ref_snapshot: refSnapshot,
+            status: 'pending',
           })
+          .eq('id', editingClaimDraftId)
+          .eq('status', 'draft')
+          .select('id')
+        if (error) {
+          if ((error as { code?: string }).code === '23505') {
+            setMessageModal({ open: true, title: 'มีคำขอค้างอยู่', message: 'บิลนี้มีคำขอเคลมที่รออนุมัติอยู่แล้ว' })
+            return
+          }
+          throw error
+        }
+        if (!data || data.length === 0) {
+          setMessageModal({ open: true, title: 'ส่งไม่สำเร็จ', message: 'ไม่พบร่างนี้ (อาจถูกลบหรือส่งไปแล้ว)' })
           return
         }
-        throw error
+      } else {
+        const { error } = await supabase.from('or_claim_requests').insert({
+          ref_order_id: ref.id,
+          claim_type: selectedClaimType.trim(),
+          supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
+          claim_description: claimDescription.trim(),
+          proposed_snapshot: { order, items },
+          ref_snapshot: refSnapshot,
+          submitted_by: user?.id ?? null,
+        })
+        if (error) {
+          if ((error as { code?: string }).code === '23505') {
+            setMessageModal({
+              open: true,
+              title: 'มีคำขอค้างอยู่',
+              message: 'บิลนี้มีคำขอเคลมที่รออนุมัติอยู่แล้ว',
+            })
+            return
+          }
+          throw error
+        }
       }
       setClaimModalOpen(false)
       setMessageModal({
@@ -3723,6 +3834,130 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'ส่งคำขอเคลมไม่สำเร็จ' })
     } finally {
       setClaimConfirmSubmitting(false)
+    }
+  }
+
+  /** บันทึกร่างเคลม (status draft) — บันทึกความคืบหน้าไว้ ไม่ต้องกรอกครบ ค่อยกลับมาส่งอนุมัติทีหลัง */
+  async function handleClaimSaveDraft() {
+    if (!selectedClaimRefOrder?.bill_no || !selectedClaimRefOrder?.id) {
+      setMessageModal({ open: true, title: 'บันทึกร่างไม่ได้', message: 'กรุณาเลือกบิลอ้างอิงก่อน' })
+      return
+    }
+    if (!selectedClaimType.trim()) {
+      setMessageModal({ open: true, title: 'บันทึกร่างไม่ได้', message: 'กรุณาเลือกหัวข้อการเคลมก่อน' })
+      return
+    }
+    setClaimDraftSaving(true)
+    try {
+      const ref = selectedClaimRefOrder
+      const adminUser = user?.username ?? user?.email ?? ''
+      const itemsTotal = claimDraftItems.reduce(
+        (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
+        0,
+      )
+      const shipping = Number(claimShippingCost) || 0
+      const order = {
+        channel_code: ref.channel_code,
+        customer_name: ref.customer_name || '',
+        customer_address: ref.customer_address || '',
+        channel_order_no: ref.channel_order_no ?? null,
+        recipient_name: ref.recipient_name ?? null,
+        scheduled_pickup_at: ref.scheduled_pickup_at ?? null,
+        price: itemsTotal,
+        shipping_cost: shipping,
+        discount: 0,
+        total_amount: itemsTotal + shipping,
+        payment_method: ref.payment_method ?? null,
+        promotion: ref.promotion ?? null,
+        payment_date: ref.payment_date ?? null,
+        payment_time: ref.payment_time ?? null,
+        status: 'รอลงข้อมูล' as const,
+        admin_user: adminUser,
+        entry_date: new Date().toISOString().slice(0, 10),
+        claim_type: selectedClaimType.trim(),
+        claim_details: claimDescription.trim() || null,
+        billing_details: ref.billing_details ?? null,
+        packing_meta: null,
+        work_order_name: null,
+        shipped_by: null,
+        shipped_time: null,
+        tracking_number: ref.tracking_number ?? null,
+        requires_confirm_design: ref.requires_confirm_design !== false,
+      }
+      const items = claimDraftItems.map((r) => ({
+        product_id: r.product_id,
+        product_name: r.product_name,
+        quantity: r.quantity,
+        unit_price: r.unit_price,
+        ink_color: r.ink_color,
+        product_type: r.product_type,
+        cartoon_pattern: r.cartoon_pattern,
+        line_pattern: r.line_pattern,
+        font: r.font,
+        line_1: r.line_1,
+        line_2: r.line_2,
+        line_3: r.line_3,
+        no_name_line: r.no_name_line,
+        is_free: r.is_free,
+        notes: r.notes,
+        file_attachment: r.file_attachment,
+      }))
+      const refSnapshot = {
+        bill_no: ref.bill_no,
+        price: ref.price,
+        total_amount: ref.total_amount,
+        shipping_cost: ref.shipping_cost,
+        discount: ref.discount,
+      }
+
+      if (editingClaimDraftId) {
+        const { data, error } = await supabase
+          .from('or_claim_requests')
+          .update({
+            claim_type: selectedClaimType.trim(),
+            supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
+            claim_description: claimDescription.trim() || null,
+            proposed_snapshot: { order, items },
+            ref_snapshot: refSnapshot,
+          })
+          .eq('id', editingClaimDraftId)
+          .eq('status', 'draft')
+          .select('id')
+        if (error) throw error
+        if (!data || data.length === 0) {
+          setMessageModal({ open: true, title: 'บันทึกไม่สำเร็จ', message: 'ไม่พบร่างนี้ (อาจถูกลบหรือส่งไปแล้ว)' })
+          return
+        }
+      } else {
+        const { data, error } = await supabase
+          .from('or_claim_requests')
+          .insert({
+            ref_order_id: ref.id,
+            claim_type: selectedClaimType.trim(),
+            supporting_url: normalizeClaimSupportingUrl(claimSupportingUrl),
+            claim_description: claimDescription.trim() || null,
+            proposed_snapshot: { order, items },
+            ref_snapshot: refSnapshot,
+            submitted_by: user?.id ?? null,
+            status: 'draft',
+          })
+          .select('id')
+          .single()
+        if (error) throw error
+        if (data?.id) setEditingClaimDraftId(data.id as string)
+      }
+      setClaimModalOpen(false)
+      setMessageModal({
+        open: true,
+        title: 'บันทึกร่างแล้ว',
+        message: 'ดูและแก้ไขต่อได้ที่ บิลเคลม → บันทึกร่าง(เคลม)',
+      })
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (e: any) {
+      console.error('Error saving claim draft:', e)
+      setMessageModal({ open: true, title: 'เกิดข้อผิดพลาด', message: e?.message || 'บันทึกร่างไม่สำเร็จ' })
+    } finally {
+      setClaimDraftSaving(false)
     }
   }
 
@@ -6945,12 +7180,22 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               </button>
               <button
                 type="button"
+                onClick={() => void handleClaimSaveDraft()}
+                disabled={!selectedClaimType.trim() || claimDraftSaving || claimConfirmSubmitting}
+                title="บันทึกความคืบหน้าไว้เป็นร่าง (ยังไม่ส่งอนุมัติ) — กลับมาแก้ต่อได้ที่แท็บบันทึกร่าง(เคลม)"
+                className="px-4 py-2 border border-indigo-300 text-indigo-700 rounded-lg hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {claimDraftSaving ? 'กำลังบันทึก...' : 'บันทึกร่าง(เคลม)'}
+              </button>
+              <button
+                type="button"
                 onClick={() => void handleClaimSubmitForApproval()}
                 disabled={
                   !claimDraftIsValid(claimDraftItems) ||
                   !selectedClaimType.trim() ||
                   !claimDescription.trim() ||
-                  claimConfirmSubmitting
+                  claimConfirmSubmitting ||
+                  claimDraftSaving
                 }
                 className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >

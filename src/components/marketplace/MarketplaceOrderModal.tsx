@@ -55,6 +55,13 @@ export default function MarketplaceOrderModal({
   const [copied, setCopied] = useState(false)
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [taxInvoiceData, setTaxInvoiceData] = useState({ company_name: '', address: '', tax_id: '' })
+  // id ของ item ที่มีอยู่จริงใน DB — ใช้ diff ตอนบันทึก (update เดิม / insert ใหม่ / delete ที่หายไป)
+  const [persistedIds, setPersistedIds] = useState<Set<string>>(new Set())
+  // แผงแยกรายการ: id ของ item ที่กำลังแยก + จำนวนต่อรายการที่จะแยก
+  const [splitFor, setSplitFor] = useState<string | null>(null)
+  const [splitQtys, setSplitQtys] = useState<number[]>([])
+  // map: itemId → groupId ของรายการที่ผู้ใช้กด "แยก" ในเซสชันนี้ (ไม่บันทึกลง DB — ใช้คุมปุ่ม "รวมกลับ")
+  const [splitGroups, setSplitGroups] = useState<Record<string, string>>({})
 
   const productById = useMemo(() => {
     const m = new Map<string, ProductOption>()
@@ -82,6 +89,7 @@ export default function MarketplaceOrderModal({
         if (cancelled) return
         const loadedItems = (itemsRes.data || []) as MpOrderItem[]
         setItems(loadedItems)
+        setPersistedIds(new Set(loadedItems.map((it) => it.id)))
         setProducts((productsRes.data || []) as ProductOption[])
         setFieldRules(rules)
         setInkTypes((inkRes.data || []) as InkOption[])
@@ -110,6 +118,91 @@ export default function MarketplaceOrderModal({
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
   }
 
+  // แจกจำนวน total ออกเป็น n รายการให้เท่ากันมากที่สุด (เศษกระจายให้รายการแรก ๆ)
+  function distributeQty(total: number, n: number): number[] {
+    const t = Math.max(0, Math.floor(total))
+    const count = Math.max(1, Math.floor(n))
+    const base = Math.floor(t / count)
+    const remainder = t - base * count
+    return Array.from({ length: count }, (_, i) => base + (i < remainder ? 1 : 0))
+  }
+
+  // item นี้เป็นสมาชิกของกลุ่มที่ "ผู้ใช้กดแยกในเซสชันนี้" และยังมีสมาชิกในกลุ่ม ≥ 2 แถวหรือไม่
+  // (ใช้แสดงปุ่ม "รวมกลับ" — โผล่เฉพาะรายการที่ผู้ใช้แยกเอง ไม่ใช่รายการที่มาแยกจากไฟล์)
+  function isSplitMember(it: MpOrderItem): boolean {
+    const g = splitGroups[it.id]
+    if (!g) return false
+    return items.filter((x) => splitGroups[x.id] === g).length >= 2
+  }
+
+  function openSplit(it: MpOrderItem) {
+    setSplitFor(it.id)
+    setSplitQtys(distributeQty(Number(it.qty || 0), 2))
+  }
+
+  function closeSplit() {
+    setSplitFor(null)
+    setSplitQtys([])
+  }
+
+  // เปลี่ยนจำนวนรายการที่จะแยก → กระจายจำนวนใหม่ให้เท่ากัน
+  function changeSplitCount(total: number, n: number) {
+    const count = Math.min(Math.max(1, Math.floor(n || 0)), Math.max(1, Math.floor(total)))
+    setSplitQtys(distributeQty(total, count))
+  }
+
+  // ยืนยันแยก: แทนแถวเดิมด้วย N แถวที่ copy ทุกช่อง ต่างกันแค่จำนวน (ล้าง line_total ให้คิดเงินจาก qty × ราคา/หน่วย)
+  // ทุกแถวในการแยกครั้งนี้ถูก mark ด้วย group id เดียวกัน เพื่อให้ปุ่ม "รวมกลับ" โผล่เฉพาะกลุ่มนี้
+  function applySplit(itemId: string, qtys: number[]) {
+    const orig = items.find((it) => it.id === itemId)
+    if (!orig) return
+    const groupId = crypto.randomUUID()
+    const rows: MpOrderItem[] = qtys.map((q, i) => ({
+      ...orig,
+      id: i === 0 ? orig.id : crypto.randomUUID(),
+      qty: q,
+      line_total: null,
+    }))
+    setItems((prev) => {
+      const idx = prev.findIndex((it) => it.id === itemId)
+      if (idx < 0) return prev
+      const next = [...prev]
+      next.splice(idx, 1, ...rows)
+      return next
+    })
+    setSplitGroups((prev) => {
+      const next = { ...prev }
+      rows.forEach((r) => {
+        next[r.id] = groupId
+      })
+      return next
+    })
+    closeSplit()
+  }
+
+  // รวมกลับ: ยุบทุกแถวในกลุ่มที่แยกมาด้วยกัน (รวม qty) เหลือแถวเดียว แล้วล้าง mark ของกลุ่ม
+  function mergeRun(itemId: string) {
+    const groupId = splitGroups[itemId]
+    if (!groupId) return
+    setItems((prev) => {
+      const firstIdx = prev.findIndex((it) => splitGroups[it.id] === groupId)
+      const members = prev.filter((it) => splitGroups[it.id] === groupId)
+      if (firstIdx < 0 || members.length < 2) return prev
+      const sum = members.reduce((s, it) => s + Number(it.qty || 0), 0)
+      const merged: MpOrderItem = { ...prev[firstIdx], qty: sum, line_total: null }
+      const next = prev.filter((it) => splitGroups[it.id] !== groupId)
+      next.splice(firstIdx, 0, merged)
+      return next
+    })
+    setSplitGroups((prev) => {
+      const next = { ...prev }
+      Object.keys(next).forEach((k) => {
+        if (next[k] === groupId) delete next[k]
+      })
+      return next
+    })
+  }
+
   function fieldEnabled(item: MpOrderItem, fieldKey: string): boolean {
     const product = item.product_id ? productById.get(item.product_id) : null
     return resolveFieldEnabled(product, fieldKey, fieldRules)
@@ -126,34 +219,73 @@ export default function MarketplaceOrderModal({
 
   async function saveDrafts(): Promise<boolean> {
     try {
-      for (const it of items) {
-        const { error } = await supabase
-          .from('mp_order_items')
-          .update({
-            product_id: it.product_id,
-            product_type: it.product_type,
-            ink_color: it.ink_color,
-            cartoon_pattern: it.cartoon_pattern,
-            line_pattern: it.line_pattern,
-            font: it.font,
-            line_1: it.line_1,
-            line_2: it.line_2,
-            line_3: it.line_3,
-            no_name_line: it.no_name_line,
-            is_free: it.is_free,
-            notes: it.notes,
-            qty: it.qty,
-            unit_price: it.unit_price,
-          })
-          .eq('id', it.id)
+      // 1) ลบแถวที่หายไป (เช่น ถูกรวมกลับ) ที่เคยมีอยู่ใน DB
+      const currentIds = new Set(items.map((it) => it.id))
+      const toDelete = [...persistedIds].filter((id) => !currentIds.has(id))
+      if (toDelete.length > 0) {
+        const { error } = await supabase.from('mp_order_items').delete().in('id', toDelete)
         if (error) throw error
       }
+
+      // 2) ย้าย line_index ของแถวเดิมไปช่วงชั่วคราว กัน UNIQUE(mp_order_id, line_index) ชนตอน renumber
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        if (persistedIds.has(it.id)) {
+          const { error } = await supabase
+            .from('mp_order_items')
+            .update({ line_index: 100000 + i })
+            .eq('id', it.id)
+          if (error) throw error
+        }
+      }
+
+      // 3) update แถวเดิม / insert แถวที่แยกใหม่ ด้วย line_index สุดท้ายตามลำดับในตาราง
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        const draft = {
+          line_index: i,
+          product_id: it.product_id,
+          product_type: it.product_type,
+          ink_color: it.ink_color,
+          cartoon_pattern: it.cartoon_pattern,
+          line_pattern: it.line_pattern,
+          font: it.font,
+          line_1: it.line_1,
+          line_2: it.line_2,
+          line_3: it.line_3,
+          no_name_line: it.no_name_line,
+          is_free: it.is_free,
+          notes: it.notes,
+          qty: it.qty,
+          unit_price: it.unit_price,
+          line_total: it.line_total,
+        }
+        if (persistedIds.has(it.id)) {
+          const { error } = await supabase.from('mp_order_items').update(draft).eq('id', it.id)
+          if (error) throw error
+        } else {
+          const { error } = await supabase.from('mp_order_items').insert({
+            id: it.id,
+            mp_order_id: mpOrder.id,
+            product_name_raw: it.product_name_raw,
+            sku_ref: it.sku_ref,
+            variation: it.variation,
+            raw_snapshot: it.raw_snapshot,
+            ...draft,
+          })
+          if (error) throw error
+        }
+      }
+
       // เก็บเลขพัสดุที่กรอกไว้กับงาน (คงอยู่เมื่อเปิด popup ใหม่ / รอติดตาม)
       const { error: trackErr } = await supabase
         .from('mp_orders')
         .update({ tracking_no: trackingNo.trim() || null })
         .eq('id', mpOrder.id)
       if (trackErr) throw trackErr
+
+      // แถวที่ insert ไปแล้วถือเป็นแถวใน DB — กัน re-save แล้ว insert ซ้ำ
+      setPersistedIds(new Set(items.map((it) => it.id)))
       return true
     } catch (err) {
       showMessage({ title: 'บันทึกร่างไม่สำเร็จ', message: (err as Error).message })
@@ -627,8 +759,10 @@ export default function MarketplaceOrderModal({
                               className={cls(dis('line_3') || it.no_name_line)}
                             />
                           </td>
-                          <td className="border p-1.5 text-center text-gray-600">{it.qty ?? '-'}</td>
-                          <td className="border p-1.5 text-right text-gray-600">
+                          <td className="border p-1.5 text-center align-middle text-gray-700 font-medium">
+                            {it.qty ?? '-'}
+                          </td>
+                          <td className="border p-1.5 text-right align-middle text-gray-600">
                             {it.unit_price != null ? Number(it.unit_price).toLocaleString('th-TH') : '-'}
                           </td>
                           <td className="border p-1.5">
@@ -642,6 +776,35 @@ export default function MarketplaceOrderModal({
                             />
                           </td>
                         </tr>
+                        {/* ปุ่มแยก/รวม — คลุมสองคอลัมน์ จำนวน + ราคา/หน่วย */}
+                        {!readOnly && ((Number(it.qty) > 1 && splitFor !== it.id) || isSplitMember(it)) && (
+                          <tr>
+                            <td colSpan={10} className="border p-0" />
+                            <td colSpan={2} className="border px-1 py-1 text-center">
+                              {Number(it.qty) > 1 && splitFor !== it.id && (
+                                <button
+                                  type="button"
+                                  onClick={() => openSplit(it)}
+                                  title="แยกรายการนี้ออกเป็นหลายรายการตามจำนวนที่ต้องการ"
+                                  className="w-full px-1 py-1 rounded text-[11px] font-medium border border-indigo-300 text-indigo-600 hover:bg-indigo-50"
+                                >
+                                  แยกรายการ
+                                </button>
+                              )}
+                              {isSplitMember(it) && (
+                                <button
+                                  type="button"
+                                  onClick={() => mergeRun(it.id)}
+                                  title="รวมรายการที่แยกจากตัวเดียวกันกลับเป็นแถวเดียว"
+                                  className="w-full mt-1 px-1 py-1 rounded text-[11px] font-medium border border-amber-300 text-amber-700 hover:bg-amber-50"
+                                >
+                                  รวมกลับ
+                                </button>
+                              )}
+                            </td>
+                            <td className="border p-0" />
+                          </tr>
+                        )}
                         {it.variation && (
                           <tr className="bg-blue-50/40">
                             <td className="border p-1.5" />
@@ -652,6 +815,77 @@ export default function MarketplaceOrderModal({
                             <td colSpan={7} className="border p-1.5" />
                           </tr>
                         )}
+                        {splitFor === it.id && (() => {
+                          const total = Number(it.qty || 0)
+                          const sum = splitQtys.reduce((s, q) => s + (Number(q) || 0), 0)
+                          const hasZero = splitQtys.some((q) => !(Number(q) > 0))
+                          const valid = splitQtys.length >= 2 && sum === total && !hasZero
+                          return (
+                            <tr className="bg-indigo-50/60">
+                              <td className="border p-1.5" />
+                              <td colSpan={12} className="border px-3 py-2.5">
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                                  <span className="font-semibold text-indigo-800">แยกรายการ</span>
+                                  <span className="text-gray-500">
+                                    จำนวนเดิม <span className="font-semibold text-slate-700">{total}</span>
+                                  </span>
+                                  <label className="flex items-center gap-1.5">
+                                    <span className="text-gray-600">แยกเป็นกี่รายการ</span>
+                                    <input
+                                      type="number"
+                                      min={2}
+                                      max={total}
+                                      value={splitQtys.length}
+                                      onChange={(e) => changeSplitCount(total, Number(e.target.value))}
+                                      className="w-16 border rounded px-1.5 py-1 text-center"
+                                    />
+                                  </label>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    {splitQtys.map((q, i) => (
+                                      <label key={i} className="flex items-center gap-1">
+                                        <span className="text-gray-500">#{i + 1}</span>
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          value={q}
+                                          onChange={(e) =>
+                                            setSplitQtys((prev) =>
+                                              prev.map((v, j) => (j === i ? Math.max(0, Math.floor(Number(e.target.value) || 0)) : v)),
+                                            )
+                                          }
+                                          className={`w-16 border rounded px-1.5 py-1 text-center ${
+                                            hasZero || sum !== total ? 'border-red-300 bg-red-50/40' : 'border-gray-300'
+                                          }`}
+                                        />
+                                      </label>
+                                    ))}
+                                  </div>
+                                  <span className={`font-medium ${sum === total ? 'text-green-600' : 'text-red-600'}`}>
+                                    รวม {sum} / {total}
+                                    {sum !== total && ' (ต้องเท่ากับจำนวนเดิม)'}
+                                  </span>
+                                  <div className="flex items-center gap-2 ml-auto">
+                                    <button
+                                      type="button"
+                                      disabled={!valid}
+                                      onClick={() => applySplit(it.id, splitQtys)}
+                                      className="px-3 py-1 rounded bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      ยืนยันแยก
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={closeSplit}
+                                      className="px-3 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                                    >
+                                      ยกเลิก
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })()}
                         </Fragment>
                       )
                     })}

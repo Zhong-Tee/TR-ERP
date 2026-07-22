@@ -837,25 +837,42 @@ export default function Products() {
 
   async function downloadProductsExcel() {
     try {
-      const { data, error } = await supabase
-        .from('pr_products')
-        .select(
-          'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, unit_cost, unit_name, unit_multiplier'
-        )
-        .eq('is_active', true)
-        .order('product_code', { ascending: true })
-      if (error) throw error
-      const productIds = (data || []).map((p: { id: string }) => p.id)
+      // ดึงสินค้าทั้งหมดแบบแบ่งหน้า — กัน PostgREST จำกัด 1000 แถวต่อ query
+      const PAGE = 1000
+      const data: Array<Record<string, unknown> & { id: string }> = []
+      for (let from = 0; ; from += PAGE) {
+        const { data: part, error } = await supabase
+          .from('pr_products')
+          .select(
+            'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, unit_cost, unit_name, unit_multiplier'
+          )
+          .eq('is_active', true)
+          .order('product_code', { ascending: true })
+          .range(from, from + PAGE - 1)
+        if (error) throw error
+        data.push(...((part || []) as Array<Record<string, unknown> & { id: string }>))
+        if (!part || part.length < PAGE) break
+      }
+      const productIds = data.map((p) => p.id)
       const channelPriceHeaders = getChannelPriceHeaders(channels)
       const headers = [...PRODUCT_TEMPLATE_HEADERS, ...channelPriceHeaders]
       const priceMapByProductId: Record<string, Record<string, number>> = {}
       if (productIds.length > 0) {
-        const { data: priceRows, error: priceErr } = await supabase
-          .from('pr_product_channel_prices')
-          .select('product_id, channel_code, sale_price')
-          .in('product_id', productIds)
-        if (priceErr) throw priceErr
-        ;(priceRows || []).forEach((row: { product_id: string; channel_code: string; sale_price: number }) => {
+        // ดึงราคาช่องทางทั้งหมดแบบแบ่งหน้า + เรียงลำดับ — กันแถวที่เพิ่งแก้ (insert ใหม่) หลุดเกิน 1000 แถวแรก
+        const priceRows: { product_id: string; channel_code: string; sale_price: number }[] = []
+        for (let from = 0; ; from += PAGE) {
+          const { data: part, error: priceErr } = await supabase
+            .from('pr_product_channel_prices')
+            .select('product_id, channel_code, sale_price')
+            .in('product_id', productIds)
+            .order('product_id', { ascending: true })
+            .order('channel_code', { ascending: true })
+            .range(from, from + PAGE - 1)
+          if (priceErr) throw priceErr
+          priceRows.push(...((part || []) as { product_id: string; channel_code: string; sale_price: number }[]))
+          if (!part || part.length < PAGE) break
+        }
+        priceRows.forEach((row) => {
           if (!priceMapByProductId[row.product_id]) priceMapByProductId[row.product_id] = {}
           priceMapByProductId[row.product_id][`price_${row.channel_code}`] = row.sale_price
         })

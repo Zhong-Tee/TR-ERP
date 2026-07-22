@@ -52,6 +52,8 @@ interface OrderListProps {
   hideActionButtons?: boolean
   /** เปิดรายละเอียดแบบดูอย่างเดียว (ปิด action แก้ลิงก์ใน detail) */
   detailReadOnly?: boolean
+  /** ซ่อนบิลเคลม/REQ (claim_type ไม่ว่าง) ออกจากรายการ — ใช้กับแท็บรอลงข้อมูล เพราะบิลเคลมทำงานที่แท็บบิลเคลม */
+  excludeClaimBills?: boolean
 }
 
 export default function OrderList({
@@ -78,6 +80,7 @@ export default function OrderList({
   narrowSalesTrAdminUser,
   hideActionButtons = false,
   detailReadOnly = false,
+  excludeClaimBills = false,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -172,6 +175,7 @@ export default function OrderList({
     refreshTrigger,
     filterByRejectedOverpayRefund,
     includeRejectedOverpayRefundOrders,
+    excludeClaimBills,
     dateFrom,
     dateTo,
     salesTrTeamAdminValues,
@@ -258,6 +262,11 @@ export default function OrderList({
           } else {
             query = query.eq('status', status)
           }
+        }
+
+        // ซ่อนบิลเคลม/REQ ออกจากรายการ (เช่น แท็บรอลงข้อมูล) — บิลเคลมจัดการที่แท็บบิลเคลม
+        if (excludeClaimBills) {
+          query = query.is('claim_type', null)
         }
 
         if (searchTerm) {
