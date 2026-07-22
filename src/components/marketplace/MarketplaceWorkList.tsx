@@ -32,6 +32,7 @@ export default function MarketplaceWorkList({
   const [orders, setOrders] = useState<MpOrder[]>([])
   const [loading, setLoading] = useState(false)
   const [filterUser, setFilterUser] = useState('')
+  const [search, setSearch] = useState('')
   const [openOrder, setOpenOrder] = useState<MpOrder | null>(null)
 
   const userById = useMemo(() => {
@@ -66,12 +67,42 @@ export default function MarketplaceWorkList({
     loadOrders()
   }, [loadOrders, refreshKey])
 
+  const filteredOrders = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return orders
+    return orders.filter((o) => {
+      const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
+      return [
+        o.marketplace_order_no,
+        o.buyer_username,
+        o.channel_code,
+        o.recipient_name,
+        o.phone,
+        o.tracking_no,
+        o.follow_up_note,
+        o.cancel_note,
+        o.billed_bill_no,
+        assignee?.username,
+        assignee?.email,
+      ]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    })
+  }, [orders, search, userById])
+
   const readOnly = status === 'done' || status === 'cancelled'
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xl font-bold text-slate-800 mr-auto">{STATUS_TITLES[status]}</h2>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ค้นหา"
+          className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-80"
+        />
         {isAdmin && (
           <select
             value={filterUser}
@@ -112,13 +143,15 @@ export default function MarketplaceWorkList({
                   <td colSpan={9} className="px-4 py-8 text-center text-gray-400">กำลังโหลด...</td>
                 </tr>
               )}
-              {!loading && orders.length === 0 && (
+              {!loading && filteredOrders.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">ไม่มีรายการ</td>
+                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                    {search.trim() ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการ'}
+                  </td>
                 </tr>
               )}
               {!loading &&
-                orders.map((o) => {
+                filteredOrders.map((o) => {
                   const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
                   return (
                     <tr
@@ -181,6 +214,8 @@ export default function MarketplaceWorkList({
           mpOrder={openOrder}
           readOnly={readOnly}
           user={user}
+          isAdmin={isAdmin}
+          salesUsers={salesUsers}
           onClose={() => setOpenOrder(null)}
           onChanged={() => {
             onChanged()

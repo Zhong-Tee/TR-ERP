@@ -7,7 +7,7 @@ import { openBillFromMpOrder, validateStockForItems } from '../../lib/marketplac
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
-import type { MpOrder, MpOrderItem } from '../../types/marketplace'
+import type { MpOrder, MpOrderItem, MpSalesUser } from '../../types/marketplace'
 
 interface ProductOption {
   id: string
@@ -26,12 +26,16 @@ export default function MarketplaceOrderModal({
   mpOrder,
   readOnly,
   user,
+  isAdmin = false,
+  salesUsers = [],
   onClose,
   onChanged,
 }: {
   mpOrder: MpOrder
   readOnly: boolean
   user: User
+  isAdmin?: boolean
+  salesUsers?: MpSalesUser[]
   onClose: () => void
   onChanged: () => void
 }) {
@@ -52,6 +56,8 @@ export default function MarketplaceOrderModal({
   const [cancelMode, setCancelMode] = useState(false)
   const [cancelNote, setCancelNote] = useState('')
   const [trackingNo, setTrackingNo] = useState(mpOrder.tracking_no || '')
+  const [assignedTo, setAssignedTo] = useState(mpOrder.assigned_to || '')
+  const [savingAssignee, setSavingAssignee] = useState(false)
   const [copied, setCopied] = useState(false)
   const [showTaxInvoice, setShowTaxInvoice] = useState(false)
   const [taxInvoiceData, setTaxInvoiceData] = useState({ company_name: '', address: '', tax_id: '' })
@@ -455,6 +461,33 @@ export default function MarketplaceOrderModal({
     }
   }
 
+  const assigneeName = useMemo(() => {
+    if (!assignedTo) return 'ยังไม่มอบหมาย'
+    const u = salesUsers.find((s) => s.id === assignedTo)
+    return u ? u.username || u.email : 'ผู้ใช้ที่ถูกลบ'
+  }, [assignedTo, salesUsers])
+
+  // เปลี่ยนผู้รับผิดชอบ (admin/superadmin เท่านั้น) — บันทึกทันที
+  async function handleChangeAssignee(newId: string) {
+    const prev = assignedTo
+    if (newId === prev) return
+    setAssignedTo(newId)
+    setSavingAssignee(true)
+    try {
+      const { error } = await supabase
+        .from('mp_orders')
+        .update({ assigned_to: newId || null, assigned_by: user.id })
+        .eq('id', mpOrder.id)
+      if (error) throw error
+      onChanged()
+    } catch (err) {
+      setAssignedTo(prev)
+      showMessage({ title: 'เปลี่ยนผู้รับผิดชอบไม่สำเร็จ', message: (err as Error).message })
+    } finally {
+      setSavingAssignee(false)
+    }
+  }
+
   async function handleCopyOrderNo() {
     try {
       await navigator.clipboard.writeText(mpOrder.marketplace_order_no)
@@ -474,7 +507,11 @@ export default function MarketplaceOrderModal({
   return (
     <>
       <Modal open onClose={onClose} contentClassName="max-w-none w-full">
-        <div className="p-6 max-h-[90vh] overflow-y-auto space-y-5">
+        <div
+          className="flex flex-col"
+          style={{ maxHeight: 'calc(100vh - 6rem - var(--subnav-height, 0rem))' }}
+        >
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* Header */}
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -514,6 +551,29 @@ export default function MarketplaceOrderModal({
             <span className="flex gap-1.5">
               <span className="text-gray-500">ผู้ซื้อ</span>
               <span className="text-slate-800 font-medium">{mpOrder.buyer_username || '-'}</span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-gray-500">ผู้รับผิดชอบ</span>
+              {isAdmin ? (
+                <>
+                  <select
+                    value={assignedTo}
+                    disabled={savingAssignee}
+                    onChange={(e) => handleChangeAssignee(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm font-medium text-slate-800 disabled:opacity-60"
+                  >
+                    <option value="">— ยังไม่มอบหมาย —</option>
+                    {salesUsers.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.username || u.email}
+                      </option>
+                    ))}
+                  </select>
+                  {savingAssignee && <span className="text-xs text-gray-400">กำลังบันทึก...</span>}
+                </>
+              ) : (
+                <span className="text-slate-800 font-medium">{assigneeName}</span>
+              )}
             </span>
             <span className="flex gap-1.5">
               <span className="text-gray-500">เวลาชำระเงิน</span>
@@ -929,10 +989,11 @@ export default function MarketplaceOrderModal({
               </div>
             </div>
           )}
+        </div>
 
-          {/* ปุ่มการทำงาน */}
+          {/* ปุ่มการทำงาน — ตรึงล่าง (แยกจากพื้นที่ scroll) */}
           {!readOnly && (
-            <div className="sticky bottom-0 bg-white border-t border-surface-200 pt-4 -mx-6 px-6 pb-1 space-y-3">
+            <div className="shrink-0 border-t border-surface-200 bg-white px-6 py-4 space-y-3">
               {followUpMode && (
                 <div className="flex gap-2 items-start">
                   <textarea

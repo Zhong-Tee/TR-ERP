@@ -38,6 +38,7 @@ export default function MarketplaceNewTab({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [assignTo, setAssignTo] = useState('')
   const [assigning, setAssigning] = useState(false)
+  const [search, setSearch] = useState('')
 
   const activeConfigs = useMemo(() => configs.filter((c) => c.is_active), [configs])
 
@@ -80,6 +81,24 @@ export default function MarketplaceNewTab({
   useEffect(() => {
     loadOrders()
   }, [loadOrders, refreshKey])
+
+  const filteredOrders = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return orders
+    return orders.filter((o) =>
+      [
+        o.marketplace_order_no,
+        o.buyer_username,
+        o.channel_code,
+        o.recipient_name,
+        o.phone,
+        o.tracking_no,
+        o.platform_status,
+      ]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q)),
+    )
+  }, [orders, search])
 
   // ---------- Import ----------
   async function handleFileSelected(file: File) {
@@ -252,10 +271,10 @@ export default function MarketplaceNewTab({
     })
   }
 
-  const allSelected = orders.length > 0 && orders.every((o) => selected.has(o.id))
+  const allSelected = filteredOrders.length > 0 && filteredOrders.every((o) => selected.has(o.id))
 
   function toggleSelectAll() {
-    setSelected(allSelected ? new Set() : new Set(orders.map((o) => o.id)))
+    setSelected(allSelected ? new Set() : new Set(filteredOrders.map((o) => o.id)))
   }
 
   /** พิมพ์จำนวน → เลือก N รายการแรกทันที (ช่องเลขแสดงจำนวนที่เลือกจริงเสมอ) */
@@ -264,8 +283,8 @@ export default function MarketplaceNewTab({
       setSelected(new Set())
       return
     }
-    const n = Math.max(0, Math.min(orders.length, Math.floor(Number(raw) || 0)))
-    setSelected(new Set(orders.slice(0, n).map((o) => o.id)))
+    const n = Math.max(0, Math.min(filteredOrders.length, Math.floor(Number(raw) || 0)))
+    setSelected(new Set(filteredOrders.slice(0, n).map((o) => o.id)))
   }
 
   async function handleAssign() {
@@ -364,14 +383,21 @@ export default function MarketplaceNewTab({
       {/* เครื่องมือมอบหมาย */}
       <div className="bg-white rounded-xl border border-surface-200 shadow-soft p-4 flex flex-wrap items-center gap-3">
         <span className="font-semibold text-slate-700">
-          เลือกแล้ว {selected.size} / {orders.length} ออเดอร์
+          เลือกแล้ว {selected.size} / {filteredOrders.length} ออเดอร์
         </span>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="ค้นหา"
+          className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-80"
+        />
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">จำนวนที่เลือก</label>
           <input
             type="number"
             min={0}
-            max={orders.length}
+            max={filteredOrders.length}
             value={selected.size}
             onChange={(e) => handleCountInput(e.target.value)}
             onFocus={(e) => e.target.select()}
@@ -434,15 +460,17 @@ export default function MarketplaceNewTab({
                   <td colSpan={8} className="px-4 py-8 text-center text-gray-400">กำลังโหลด...</td>
                 </tr>
               )}
-              {!loading && orders.length === 0 && (
+              {!loading && filteredOrders.length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
-                    ไม่มีงานรอมอบหมาย — อัปโหลดไฟล์ Order เพื่อเริ่มต้น
+                    {search.trim()
+                      ? 'ไม่พบรายการที่ค้นหา'
+                      : 'ไม่มีงานรอมอบหมาย — อัปโหลดไฟล์ Order เพื่อเริ่มต้น'}
                   </td>
                 </tr>
               )}
               {!loading &&
-                orders.map((o) => (
+                filteredOrders.map((o) => (
                   <tr
                     key={o.id}
                     className={`border-t border-surface-100 cursor-pointer hover:bg-blue-50/40 ${

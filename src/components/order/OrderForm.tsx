@@ -724,9 +724,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** ค่าขนส่งของบิลเคลม (ตั้งต้นจากบิลเก่า แก้ไขได้) */
   const [claimShippingCost, setClaimShippingCost] = useState(0)
   const [claimDraftLoading, setClaimDraftLoading] = useState(false)
-  /** บิลจัดส่ง: มีคำขอรออนุมัติ / บิล REQ ล่าสุดหลังอนุมัติ (แสดงแทนเลขบิลเดิม + เคลมซ้ำ) */
+  /** บิลจัดส่ง: มีคำขอรออนุมัติ / มีร่างเคลม / บิล REQ ล่าสุดหลังอนุมัติ (แสดงแทนเลขบิลเดิม + เคลมซ้ำ) */
   const [claimRefMetaByOrderId, setClaimRefMetaByOrderId] = useState<
-    Record<string, { hasPending: boolean; latestReqBillNo: string | null }>
+    Record<string, { hasPending: boolean; hasDraft: boolean; latestReqBillNo: string | null }>
   >({})
   /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ระดับบิลที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
@@ -1241,9 +1241,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (ordersRes.data) setClaimOrders(orders)
         if (typesRes.data) setClaimTypes(typesRes.data as { code: string; name: string }[])
 
-        const meta: Record<string, { hasPending: boolean; latestReqBillNo: string | null }> = {}
+        const meta: Record<string, { hasPending: boolean; hasDraft: boolean; latestReqBillNo: string | null }> = {}
         for (const o of orders) {
-          meta[o.id] = { hasPending: false, latestReqBillNo: null }
+          meta[o.id] = { hasPending: false, hasDraft: false, latestReqBillNo: null }
         }
         const ids = orders.map((o) => o.id)
         const CHUNK = 100
@@ -1261,13 +1261,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             .from('or_claim_requests')
             .select('ref_order_id, status, created_claim_order_id, reviewed_at')
             .in('ref_order_id', chunk)
-            .in('status', ['pending', 'approved'])
+            .in('status', ['pending', 'approved', 'draft'])
           if (part) reqRows.push(...(part as ReqRow[]))
         }
         for (const r of reqRows) {
-          if (r.status === 'pending' && meta[r.ref_order_id]) {
-            meta[r.ref_order_id].hasPending = true
-          }
+          if (!meta[r.ref_order_id]) continue
+          if (r.status === 'pending') meta[r.ref_order_id].hasPending = true
+          else if (r.status === 'draft') meta[r.ref_order_id].hasDraft = true
         }
         const bestApproved = new Map<string, { reviewed_at: string; created_claim_order_id: string }>()
         for (const r of reqRows) {
@@ -6700,6 +6700,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     <tr>
                       <th className="text-left p-2 w-10"></th>
                       <th className="text-left p-2">เลขบิล / REQ</th>
+                      <th className="text-left p-2">เลขคำสั่งซื้อ</th>
                       <th className="text-left p-2">ชื่อลูกค้า</th>
                       <th className="text-left p-2">ช่องทาง</th>
                       <th className="text-left p-2">สถานะ</th>
@@ -6725,7 +6726,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       })
                       .map((o) => {
                         const crm = claimRefMetaByOrderId[o.id]
-                        const blocked = !!crm?.hasPending
+                        const hasDraft = !!crm?.hasDraft
+                        const blocked = !!crm?.hasPending || hasDraft
                         const reqBill = crm?.latestReqBillNo || null
                         const displayBill = reqBill || o.bill_no || '–'
                         return (
@@ -6749,17 +6751,25 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                               />
                             </td>
                             <td className="p-2">
-                              <div className="font-mono font-medium text-gray-900">{displayBill}</div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono font-medium text-gray-900">{displayBill}</span>
+                                {hasDraft && (
+                                  <span className="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300">
+                                    ร่าง
+                                  </span>
+                                )}
+                              </div>
                               {reqBill && (
                                 <div className="text-xs text-gray-500 mt-0.5">อ้างอิงบิลจัดส่ง {o.bill_no}</div>
                               )}
-                              {blocked && (
-                                <div className="text-xs text-amber-800 mt-0.5">รออนุมัติ — ไม่สามารถส่งคำขอซ้ำจนกว่าบัญชีจะอนุมัติหรือปฏิเสธ</div>
+                              {crm?.hasPending && (
+                                <div className="text-xs text-amber-800 mt-0.5">รออนุมัติ</div>
                               )}
                               {reqBill && !blocked && (
-                                <div className="text-xs text-blue-800 mt-0.5">เคลมซ้ำ — เมื่ออนุมัติจะได้เลข REQ ชุดใหม่ (เช่น …-2)</div>
+                                <div className="text-xs text-blue-800 mt-0.5">เคลมซ้ำ</div>
                               )}
                             </td>
+                            <td className="p-2 font-mono text-gray-700">{o.channel_order_no || '-'}</td>
                             <td className="p-2">{o.customer_name || '-'}</td>
                             <td className="p-2">{channels.find((c) => c.channel_code === o.channel_code)?.channel_name ?? o.channel_code}</td>
                             <td className="p-2">{o.status}</td>

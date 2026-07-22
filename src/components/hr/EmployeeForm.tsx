@@ -118,14 +118,13 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
   const loadOptions = useCallback(async () => {
     try {
-      const [deptRes, posRes, clockLocRes, schedRes] = await Promise.all([
+      // หมายเหตุ: ตำแหน่งโหลดแยกตามแผนกที่เลือกใน effect ด้านล่าง (ไม่โหลดทั้งหมดที่นี่ กัน race ทับรายการที่กรองแล้ว)
+      const [deptRes, clockLocRes, schedRes] = await Promise.all([
         fetchDepartments(),
-        fetchPositions(),
         fetchClockLocations(true).catch(() => [] as HRClockLocation[]),
         fetchWorkSchedules(true).catch(() => [] as HRWorkSchedule[]),
       ])
       setDepartments(deptRes)
-      setPositions(posRes)
       setClockLocations(clockLocRes)
       setWorkSchedules(schedRes)
     } catch (e) {
@@ -235,7 +234,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
     if (department_id) {
       fetchPositions(department_id).then(setPositions).catch(() => setPositions([]))
     } else {
-      fetchPositions().then(setPositions).catch(() => setPositions([]))
+      // ยังไม่เลือกแผนก → ไม่มีตัวเลือกตำแหน่ง
+      setPositions([])
     }
   }, [department_id])
 
@@ -712,7 +712,11 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 <span className="block text-sm font-medium text-gray-700 mb-1">แผนก</span>
                 <select
                   value={department_id}
-                  onChange={(e) => setDepartmentId(e.target.value)}
+                  onChange={(e) => {
+                    // เปลี่ยนแผนก → ล้างตำแหน่งเดิม (คนละแผนกกัน) ให้เลือกใหม่จากรายการของแผนกที่เลือก
+                    setDepartmentId(e.target.value)
+                    setPositionId('')
+                  }}
                   className={fieldClass}
                 >
                   <option value="">-- เลือกแผนก --</option>
@@ -728,9 +732,12 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 <select
                   value={position_id}
                   onChange={(e) => setPositionId(e.target.value)}
-                  className={fieldClass}
+                  disabled={!department_id}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
                 >
-                  <option value="">-- เลือกตำแหน่ง --</option>
+                  <option value="">
+                    {department_id ? '-- เลือกตำแหน่ง --' : '-- เลือกแผนกก่อน --'}
+                  </option>
                   {positions.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
