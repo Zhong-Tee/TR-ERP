@@ -47,6 +47,7 @@ export interface MpOrder {
   assigned_by: string | null
   follow_up_note: string | null
   follow_up_at: string | null
+  draft_saved_at: string | null
   billed_order_id: string | null
   billed_bill_no: string | null
   billed_at: string | null

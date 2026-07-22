@@ -302,6 +302,19 @@ export default function MarketplaceOrderModal({
   async function handleSaveDraft() {
     setSaving(true)
     const ok = await saveDrafts()
+    if (ok) {
+      // ทำเครื่องหมายว่างานนี้มีการบันทึกร่างแล้ว → แสดงป้าย "บันทึกร่าง" ในลิสต์
+      const { error } = await supabase
+        .from('mp_orders')
+        .update({ draft_saved_at: new Date().toISOString() })
+        .eq('id', mpOrder.id)
+      if (error) {
+        setSaving(false)
+        showMessage({ title: 'บันทึกร่างไม่สำเร็จ', message: error.message })
+        return
+      }
+      onChanged()
+    }
     setSaving(false)
     if (ok) showMessage({ title: 'บันทึกแล้ว', message: 'บันทึกร่างข้อมูลเรียบร้อย' })
   }

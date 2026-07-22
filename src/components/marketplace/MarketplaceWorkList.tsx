@@ -33,6 +33,7 @@ export default function MarketplaceWorkList({
   const [loading, setLoading] = useState(false)
   const [filterUser, setFilterUser] = useState('')
   const [search, setSearch] = useState('')
+  const [draftOnly, setDraftOnly] = useState(false)
   const [openOrder, setOpenOrder] = useState<MpOrder | null>(null)
 
   const userById = useMemo(() => {
@@ -69,8 +70,9 @@ export default function MarketplaceWorkList({
 
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return orders
     return orders.filter((o) => {
+      if (draftOnly && !o.draft_saved_at) return false
+      if (!q) return true
       const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
       return [
         o.marketplace_order_no,
@@ -88,7 +90,7 @@ export default function MarketplaceWorkList({
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q))
     })
-  }, [orders, search, userById])
+  }, [orders, search, draftOnly, userById])
 
   const readOnly = status === 'done' || status === 'cancelled'
 
@@ -96,6 +98,18 @@ export default function MarketplaceWorkList({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xl font-bold text-slate-800 mr-auto">{STATUS_TITLES[status]}</h2>
+        <button
+          type="button"
+          onClick={() => setDraftOnly((v) => !v)}
+          title="กรองเฉพาะงานที่บันทึกร่างแล้ว"
+          className={`px-3 py-2 rounded-lg border font-medium whitespace-nowrap transition-colors ${
+            draftOnly
+              ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+              : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50'
+          }`}
+        >
+          บันทึกร่าง
+        </button>
         <input
           type="text"
           value={search}
@@ -177,6 +191,11 @@ export default function MarketplaceWorkList({
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         {o.assigned_at ? formatDateTime(o.assigned_at) : '-'}
+                        {o.draft_saved_at && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 text-blue-700 border border-blue-300">
+                            บันทึกร่าง
+                          </span>
+                        )}
                       </td>
                       {status === 'follow_up' && (
                         <td className="px-4 py-3 max-w-[240px] truncate text-purple-700">
