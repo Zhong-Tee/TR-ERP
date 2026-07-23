@@ -26,7 +26,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   cancelled: { label: 'ยกเลิก', color: 'bg-gray-200 text-gray-600' },
 }
 
-const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'store', 'account']
+const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'account']
 const APPROVE_ROLES = PR_ALLOWED_ROLES
 const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
 
@@ -134,8 +134,8 @@ export default function PurchasePR() {
     setLoading(true)
     try {
       const [prData, prodData, stockData, sellerData] = await Promise.all([
-        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: typeFilter !== 'all' ? typeFilter : undefined }),
-        products.length ? Promise.resolve(products) : loadProductsWithLastPrice(),
+        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: typeFilter !== 'all' ? typeFilter : undefined }, canSeePrice),
+        products.length ? Promise.resolve(products) : loadProductsWithLastPrice(canSeePrice),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
@@ -532,7 +532,7 @@ export default function PurchasePR() {
     setViewing(pr)
     setDetailLoading(true)
     try {
-      const detail = await loadPRDetail(pr.id)
+      const detail = await loadPRDetail(pr.id, canSeePrice)
       setViewing(detail)
       setViewItems(detail.inv_pr_items || [])
     } catch (e) {

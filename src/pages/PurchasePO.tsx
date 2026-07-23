@@ -12,6 +12,7 @@ import {
   convertPRtoPO,
   markPOOrdered,
   updatePO,
+  updatePONonFinancial,
   updatePOShipping,
   loadSellers,
   loadUserDisplayNames,
@@ -171,8 +172,8 @@ export default function PurchasePO() {
     setLoading(true)
     try {
       const [poData, partialPoData, prData, sellerData] = await Promise.all([
-        loadPOList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
-        loadPOList({ status: 'partial', search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
+        loadPOList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }, canSeeFinancial),
+        loadPOList({ status: 'partial', search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }, canSeeFinancial),
         loadApprovedPRsWithoutPO(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
       ])
@@ -288,7 +289,7 @@ export default function PurchasePO() {
     setGrHistory([])
     try {
       const [detail, grs] = await Promise.all([
-        loadPODetail(po.id),
+        loadPODetail(po.id, canSeeFinancial),
         loadGRsForPO(po.id),
       ])
       setViewing(detail)
@@ -334,7 +335,7 @@ export default function PurchasePO() {
       await recalcPOLandedCost(shippingPO.id)
       setShippingOpen(false)
       if (viewing && viewing.id === shippingPO.id) {
-        const detail = await loadPODetail(shippingPO.id)
+        const detail = await loadPODetail(shippingPO.id, canSeeFinancial)
         setViewing(detail)
       }
       await loadAll()
@@ -394,21 +395,26 @@ export default function PurchasePO() {
     if (!ok) return
     setEditSaving(true)
     try {
-      await updatePO({
+      const common = {
         poId: editPO.id,
         note: editNote.trim() || undefined,
         expectedArrivalDate: editArrival || null,
-        items: editItems.map((i) => ({
-          item_id: i.item_id,
-          unit_price: i.unit_price,
-          qty: i.qty,
-          note: i.note || undefined,
-        })),
-      })
+      }
+      if (canSeeFinancial) {
+        await updatePO({
+          ...common,
+          items: editItems.map((i) => ({ item_id: i.item_id, unit_price: i.unit_price, qty: i.qty, note: i.note || undefined })),
+        })
+      } else {
+        await updatePONonFinancial({
+          ...common,
+          items: editItems.map((i) => ({ item_id: i.item_id, qty: i.qty, note: i.note || undefined })),
+        })
+      }
       setEditOpen(false)
       setEditPO(null)
       if (viewing && viewing.id === editPO.id) {
-        const detail = await loadPODetail(editPO.id)
+        const detail = await loadPODetail(editPO.id, canSeeFinancial)
         setViewing(detail)
       }
       await loadAll()
@@ -442,7 +448,7 @@ export default function PurchasePO() {
       setResolvePO(null)
       if (viewing && viewing.id === resolvePO.id) {
         const [detail, grs] = await Promise.all([
-          loadPODetail(resolvePO.id),
+          loadPODetail(resolvePO.id, canSeeFinancial),
           loadGRsForPO(resolvePO.id),
         ])
         setViewing(detail)
@@ -707,7 +713,7 @@ export default function PurchasePO() {
                           {po.status === 'open' && (
                             <>
                               <button
-                                onClick={async () => { const d = await loadPODetail(po.id); openEditPO(d) }}
+                                onClick={async () => { const d = await loadPODetail(po.id, canSeeFinancial); openEditPO(d) }}
                                 className="px-4 py-2 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 text-sm font-semibold transition-colors"
                               >
                                 แก้ไข

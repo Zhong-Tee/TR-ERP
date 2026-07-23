@@ -52,6 +52,7 @@ async function generateCode(prefix: string) {
 
 export default function WarehouseAdjust() {
   const { user } = useAuthContext()
+  const canSeeCost = ['superadmin', 'account'].includes(user?.role || '')
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
@@ -89,7 +90,7 @@ export default function WarehouseAdjust() {
     try {
       const [adjustRes, productRes, balanceRes, usersRes, itemCountRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
-        supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_cost, landed_cost').eq('is_active', true).order('product_code', { ascending: true }),
+        supabase.from('pr_products').select('id, product_code, product_name, order_point').eq('is_active', true).order('product_code', { ascending: true }),
         supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
         supabase.from('us_users').select('id, username'),
         supabase.from('inv_adjustment_items').select('adjustment_id'),
@@ -293,7 +294,6 @@ export default function WarehouseAdjust() {
         const nextOnHand = adjustmentType === 'safety_reclass'
           ? currentOnHand - (targetSafety - currentSafety)
           : currentOnHand + qtyDelta
-        const unitCost = Number(productIdMap[item.product_id]?.landed_cost ?? productIdMap[item.product_id]?.unit_cost ?? 0)
         return {
           adjustment_id: adjustData.id,
           product_id: item.product_id,
@@ -306,8 +306,6 @@ export default function WarehouseAdjust() {
           after_safety_stock: targetSafety,
           before_total_qty: currentOnHand + currentSafety,
           after_total_qty: nextOnHand + targetSafety,
-          estimated_unit_cost: unitCost,
-          estimated_total_cost_impact: qtyDelta * unitCost,
         }
       })
       const { error: itemError } = await supabase.from('inv_adjustment_items').insert(itemsPayload)
@@ -389,34 +387,6 @@ export default function WarehouseAdjust() {
         )
       }
 
-      // บันทึกต้นทุนที่เกิดขึ้นจริงจาก movement ของใบปรับนี้
-      const { data: costRows } = await supabase
-        .from('inv_stock_movements')
-        .select('product_id, qty, total_cost')
-        .eq('ref_type', 'inv_adjustments')
-        .eq('ref_id', adjustment.id)
-
-      const costMap = new Map<string, { qty: number; total: number }>()
-      ;(costRows || []).forEach((row: any) => {
-        const cur = costMap.get(row.product_id) || { qty: 0, total: 0 }
-        cur.qty += Number(row.qty || 0)
-        cur.total += Number(row.total_cost || 0)
-        costMap.set(row.product_id, cur)
-      })
-
-      const updates = (items || []).map((item: any) => {
-        const cost = costMap.get(item.product_id) || { qty: 0, total: 0 }
-        const approvedUnitCost = Number(item.qty_delta) !== 0 ? Math.abs(cost.total / Number(item.qty_delta)) : 0
-        return supabase
-          .from('inv_adjustment_items')
-          .update({
-            approved_unit_cost: approvedUnitCost,
-            approved_total_cost_impact: cost.total,
-          })
-          .eq('id', item.id)
-      })
-      if (updates.length) await Promise.all(updates)
-
       await loadAll()
       // แจ้ง Sidebar ให้อัปเดตจำนวนสินค้าต่ำกว่าจุดสั่งซื้อ
       window.dispatchEvent(new Event('sidebar-refresh-counts'))
@@ -433,7 +403,7 @@ export default function WarehouseAdjust() {
     setViewing(adjustment)
     const { data, error } = await supabase
       .from('inv_adjustment_items')
-      .select('id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock, estimated_total_cost_impact, approved_total_cost_impact, pr_products(product_code, product_name)')
+      .select(`id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock${canSeeCost ? ', estimated_total_cost_impact, approved_total_cost_impact' : ''}, pr_products(product_code, product_name)`)
       .eq('adjustment_id', adjustment.id)
     if (!error) {
       const rows = (data || []) as unknown as InventoryAdjustmentItem[]
@@ -701,7 +671,7 @@ export default function WarehouseAdjust() {
                   <th className="p-2 text-center">สต๊อคเคลื่อนไหว (เดิม -&gt; ใหม่)</th>
                   <th className="p-2 text-right">Safety Stock (เดิม -&gt; ใหม่)</th>
                   <th className="p-2 text-right">จำนวนที่ปรับ</th>
-                  <th className="p-2 text-right">ผลกระทบมูลค่า</th>
+                  {canSeeCost && <th className="p-2 text-right">ผลกระทบมูลค่า</th>}
                 </tr>
               </thead>
               <tbody>
@@ -748,14 +718,14 @@ export default function WarehouseAdjust() {
                     <td className={`p-2 text-right font-medium ${Number(item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                       {Number(item.qty_delta) > 0 ? '+' : ''}{Number(item.qty_delta).toLocaleString()}
                     </td>
-                    <td className="p-2 text-right font-medium text-gray-700">
+                    {canSeeCost && <td className="p-2 text-right font-medium text-gray-700">
                       {Number(item.approved_total_cost_impact ?? item.estimated_total_cost_impact ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </td>
+                    </td>}
                   </tr>
                 ))}
                 {!viewItems.length && (
                   <tr>
-                    <td className="p-2 text-center text-gray-500" colSpan={5}>
+                    <td className="p-2 text-center text-gray-500" colSpan={canSeeCost ? 5 : 4}>
                       ไม่มีรายการ
                     </td>
                   </tr>

@@ -9,6 +9,7 @@ import { Product, ProductType } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 
 const COST_VISIBLE_ROLES = ['superadmin', 'account']
+const PRODUCT_SAFE_COLUMNS = 'id, product_code, product_name, seller_name, product_name_cn, order_point, order_point_days, product_category, product_type, rubber_code, storage_location, safety_stock, unit_name, unit_multiplier, is_hold, hold_reason, hold_at, hold_by, is_active, created_at, updated_at'
 
 const SEARCH_DEBOUNCE_MS = 400
 const PAGE_SIZE = 50
@@ -376,8 +377,7 @@ function productToFormState(product: Product) {
 
 export default function Products() {
   const { user } = useAuthContext()
-  /* reserved for future cost visibility check */
-  void COST_VISIBLE_ROLES
+  const canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [searchInput, setSearchInput] = useState('')
@@ -538,7 +538,7 @@ export default function Products() {
 
       let query = supabase
         .from('pr_products')
-        .select('*', { count: 'exact' })
+        .select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*', { count: 'exact' })
         .order('product_code', { ascending: true })
         .range(from, to)
       const hiddenCountQuery = supabase
@@ -620,7 +620,7 @@ export default function Products() {
     void loadProductChannelPrices(product.id)
 
     try {
-      const { data, error } = await supabase.from('pr_products').select('*').eq('id', product.id).single()
+      const { data, error } = await supabase.from('pr_products').select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*').eq('id', product.id).single()
       if (error) throw error
       if (data) {
         const row = data as Product
@@ -1471,21 +1471,21 @@ export default function Products() {
   return (
     <div className="space-y-6 mt-4">
       <div className="flex flex-wrap items-center justify-end gap-2">
-          <button
+          {canSeeCost && <button
             type="button"
             onClick={downloadProductsExcel}
             className="px-3 py-2 rounded-xl bg-green-600 text-white hover:bg-green-700 text-sm font-semibold"
           >
             ดาวน์โหลด (Excel)
-          </button>
-          <button
+          </button>}
+          {canSeeCost && <button
             type="button"
             onClick={downloadTemplate}
             className="px-3 py-2 rounded-xl bg-gray-500 text-white hover:bg-gray-600 text-sm font-semibold"
           >
             Download Template
-          </button>
-          <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+          </button>}
+          {canSeeCost && <label className={`px-3 py-2 rounded-xl bg-yellow-500 text-white hover:bg-yellow-600 text-sm font-semibold inline-block ${isImportBusy ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
             {importing ? 'กำลังนำเข้า...' : 'Import สินค้า'}
             <input
               ref={importInputRef}
@@ -1499,7 +1499,7 @@ export default function Products() {
                 if (file) handleImport(file)
               }}
             />
-          </label>
+          </label>}
           {isSuperAdmin && (
             <>
               <button

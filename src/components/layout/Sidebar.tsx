@@ -164,7 +164,7 @@ const menuItems: MenuItem[] = [
     label: 'HR',
     icon: <FiUsers className="w-6 h-6" />,
     path: '/hr',
-    roles: ['superadmin', 'admin', 'sales-tr', 'hr'],
+    roles: ['superadmin', 'admin', 'hr', 'account'],
   },
   {
     key: 'settings',
@@ -464,7 +464,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       <nav className="p-4 flex-1 overflow-y-auto scrollbar-none" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         <ul className="space-y-2">
           {filteredMenuItems.map((item) => {
-            const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/')
+            const itemPath = item.key === 'purchase' && user?.role === 'store' ? '/purchase/gr' : item.path
+            const isActive = item.key === 'purchase'
+              ? location.pathname.startsWith('/purchase')
+              : location.pathname === item.path || location.pathname.startsWith(item.path + '/')
             const baseCount = menuCounts[item.key] ?? 0
             /** คลัง: แสดงเฉพาะจำนวน "ถึงจุดสั่งซื้อ" (ไม่บวกคืนของค้าง — แยก badge ที่แท็บคืนของ) */
             const displayCount = baseCount
@@ -475,7 +478,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
             return (
               <li key={item.key}>
                 <Link
-                  to={item.path}
+                  to={itemPath}
                   className={`relative flex items-center gap-3 rounded-xl transition-colors font-medium ${
                     isOpen ? 'px-4 py-3' : 'px-3 py-3 justify-center'
                   } ${

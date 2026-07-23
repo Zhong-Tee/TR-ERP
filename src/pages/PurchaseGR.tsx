@@ -237,7 +237,7 @@ export default function PurchaseGR() {
     setLoading(true)
     try {
       const [grData, poData] = await Promise.all([
-        loadGRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }),
+        loadGRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined }, canSeeFinancial),
         (!forceRefreshPOs && posCacheRef.current) ? Promise.resolve(posCacheRef.current) : loadPOsForGR(),
       ])
       const filtered = typeFilter !== 'all'
@@ -533,7 +533,7 @@ export default function PurchaseGR() {
     setViewing(gr)
     setDetailLoading(true)
     try {
-      const detail = await loadGRDetail(gr.id)
+      const detail = await loadGRDetail(gr.id, canSeeFinancial)
       setViewing(detail)
     } catch (e) {
       console.error(e)
