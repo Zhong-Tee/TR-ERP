@@ -157,12 +157,14 @@ export default function HRSettings() {
     bot_token: string
     hr_group_chat_id: string
     manager_group_chat_id: string
+    ticket_group_chat_id: string
     leave_notify_before_days: string
     leave_notify_morning_time: string
   }>({
     bot_token: '',
     hr_group_chat_id: '',
     manager_group_chat_id: '',
+    ticket_group_chat_id: '',
     leave_notify_before_days: '1',
     leave_notify_morning_time: '07:00',
   })
@@ -190,6 +192,7 @@ export default function HRSettings() {
         bot_token: notif?.bot_token ?? '',
         hr_group_chat_id: notif?.hr_group_chat_id ?? '',
         manager_group_chat_id: notif?.manager_group_chat_id ?? '',
+        ticket_group_chat_id: notif?.ticket_group_chat_id ?? '',
         leave_notify_before_days: String(notif?.leave_notify_before_days ?? 1),
         leave_notify_morning_time: notif?.leave_notify_morning_time ?? '07:00',
       })
@@ -467,6 +470,7 @@ export default function HRSettings() {
         bot_token: notifForm.bot_token.trim(),
         hr_group_chat_id: notifForm.hr_group_chat_id.trim() || undefined,
         manager_group_chat_id: notifForm.manager_group_chat_id.trim() || undefined,
+        ticket_group_chat_id: notifForm.ticket_group_chat_id.trim() || undefined,
         leave_notify_before_days: Number(notifForm.leave_notify_before_days) || 1,
         leave_notify_morning_time: notifForm.leave_notify_morning_time || '07:00',
       })
@@ -476,6 +480,7 @@ export default function HRSettings() {
         bot_token: saved.bot_token,
         hr_group_chat_id: saved.hr_group_chat_id ?? '',
         manager_group_chat_id: saved.manager_group_chat_id ?? '',
+        ticket_group_chat_id: saved.ticket_group_chat_id ?? '',
         leave_notify_before_days: String(saved.leave_notify_before_days),
         leave_notify_morning_time: saved.leave_notify_morning_time,
       })
@@ -1136,6 +1141,16 @@ export default function HRSettings() {
               type="text"
               value={notifForm.manager_group_chat_id}
               onChange={(e) => setNotifForm((p) => ({ ...p, manager_group_chat_id: e.target.value }))}
+              className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="text-gray-600">Ticket Group Chat ID</span>
+            <input
+              type="text"
+              value={notifForm.ticket_group_chat_id}
+              onChange={(e) => setNotifForm((p) => ({ ...p, ticket_group_chat_id: e.target.value }))}
+              placeholder="เช่น -5379272031"
               className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
             />
           </label>

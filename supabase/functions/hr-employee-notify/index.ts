@@ -20,9 +20,12 @@ interface EmployeeRow {
   position: { name: string } | null
 }
 
-function displayName(e: EmployeeRow): string {
-  const name = [e.prefix, e.first_name, e.last_name].filter(Boolean).join(' ')
-  return e.nickname ? `${name} (${e.nickname})` : name
+function fullName(e: EmployeeRow): string {
+  return [e.prefix, e.first_name, e.last_name].filter(Boolean).join(' ')
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '-').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
 function hireDateText(d: string | null): string {
@@ -77,11 +80,15 @@ Deno.serve(async (req) => {
     if (rows.length === 1) {
       // คนเดียว: ส่งพร้อมรูปโปรไฟล์ (bucket hr-photos เป็น public)
       const e = rows[0]
-      const caption =
-        `🎉 <b>พนักงานเข้าใหม่</b>\n` +
-        `👤 ${e.employee_code} — ${displayName(e)}\n` +
-        `🏢 ${e.department?.name ?? '-'} • ${e.position?.name ?? '-'}\n` +
-        `📅 เริ่มงาน ${hireDateText(e.hire_date)}`
+      const caption = [
+        `🎉 <b>พนักงานเข้าใหม่</b>`,
+        `🆔 <b>รหัส:</b> ${escapeHtml(e.employee_code)}`,
+        `👤 <b>ชื่อ:</b> ${escapeHtml(fullName(e))}`,
+        `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(e.nickname ?? '-')}`,
+        `🏢 <b>แผนก:</b> ${escapeHtml(e.department?.name ?? '-')}`,
+        `💼 <b>ตำแหน่ง:</b> ${escapeHtml(e.position?.name ?? '-')}`,
+        `📅 <b>วันที่เริ่มงาน:</b> ${escapeHtml(hireDateText(e.hire_date))}`,
+      ].join('\n')
 
       const photoUrl = e.photo_url
         ? e.photo_url.startsWith('http')
@@ -104,17 +111,44 @@ Deno.serve(async (req) => {
       detail = ok ? caption : await res.text()
     } else {
       // หลายคน (จาก Import): สรุปเป็นข้อความเดียว
-      const lines = rows.map(
-        (e) => `- ${e.employee_code} ${displayName(e)} — ${e.department?.name ?? '-'}`,
-      )
-      const text = `🎉 <b>พนักงานเข้าใหม่ ${rows.length} คน</b>\n\n${lines.join('\n')}`
-      const res = await fetch(`${botBase}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-      })
-      ok = res.ok
-      detail = ok ? text : await res.text()
+      const blocks = rows.map((e, index) => [
+        `👤 <b>คนที่ ${index + 1}</b>`,
+        `🆔 <b>รหัส:</b> ${escapeHtml(e.employee_code)}`,
+        `📛 <b>ชื่อ:</b> ${escapeHtml(fullName(e))}`,
+        `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(e.nickname ?? '-')}`,
+        `🏢 <b>แผนก:</b> ${escapeHtml(e.department?.name ?? '-')}`,
+        `💼 <b>ตำแหน่ง:</b> ${escapeHtml(e.position?.name ?? '-')}`,
+        `📅 <b>วันที่เริ่มงาน:</b> ${escapeHtml(hireDateText(e.hire_date))}`,
+      ].join('\n'))
+      const header = `🎉 <b>พนักงานเข้าใหม่ ${rows.length} คน</b>`
+      const messages: string[] = []
+      let current = header
+      for (const block of blocks) {
+        const next = `${current}\n\n${block}`
+        if (next.length > 3800 && current !== header) {
+          messages.push(current)
+          current = `${header}\n\n${block}`
+        } else {
+          current = next
+        }
+      }
+      messages.push(current)
+      ok = true
+      const sentTexts: string[] = []
+      for (const text of messages) {
+        const res = await fetch(`${botBase}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+        })
+        if (!res.ok) {
+          ok = false
+          sentTexts.push(await res.text())
+        } else {
+          sentTexts.push(text)
+        }
+      }
+      detail = sentTexts.join('\n\n')
     }
 
     await supabase.from('hr_notification_logs').insert({

@@ -9,7 +9,8 @@ import type {
   HRSalaryHistory,
   HRNotification, HRNotificationSettings,
   HRWarning, HRCertificate, HRAsset, HRAssetLog,
-  HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule,
+  HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule, HRWFHRequest,
+  HREmployeeWorkCalendar, HRCompanyHoliday,
 } from '../types'
 
 function pgError(e: unknown): never {
@@ -171,7 +172,7 @@ export async function upsertLeaveType(lt: Partial<HRLeaveType>) {
 
 export async function fetchLeaveRequests(filters?: { status?: string; employee_id?: string }) {
   let q = supabase.from('hr_leave_requests')
-    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name), position:hr_positions!position_id(name)), leave_type:hr_leave_types!leave_type_id(name)')
+    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name), position:hr_positions!position_id(name)), leave_type:hr_leave_types!leave_type_id(name), approver:hr_employees!approved_by(first_name, last_name, nickname)')
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
@@ -192,6 +193,24 @@ export async function updateLeaveRequest(id: string, updates: Partial<HRLeaveReq
     .from('hr_leave_requests').update(updates).eq('id', id).select().single()
   if (error) pgError(error)
   return data as HRLeaveRequest
+}
+
+/** เพิ่มใบลาทีละหลายรายการ (นำเข้าย้อนหลัง) — insert ก้อนละ 500 */
+export async function bulkInsertLeaveRequests(reqs: Partial<HRLeaveRequest>[]): Promise<number> {
+  const clean = reqs.map((r) => {
+    const p = { ...r }
+    delete p.employee
+    delete p.leave_type
+    return p
+  })
+  let inserted = 0
+  for (let i = 0; i < clean.length; i += 500) {
+    const chunk = clean.slice(i, i + 500)
+    const { error } = await supabase.from('hr_leave_requests').insert(chunk)
+    if (error) pgError(error)
+    inserted += chunk.length
+  }
+  return inserted
 }
 
 export async function getEmployeeLeaveSummary(employeeId: string, year: number) {
@@ -639,6 +658,17 @@ export async function fetchNotifications(employeeId: string, unreadOnly = false)
     .order('created_at', { ascending: false }).limit(50)
   if (unreadOnly) q = q.eq('is_read', false)
   const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRNotification[]
+}
+
+/** ผลอนุมัติลา/OT ของพนักงานทุกคน สำหรับ superadmin / admin / hr */
+export async function fetchAllApprovalResultNotifications(limit = 300) {
+  const { data, error } = await supabase.from('hr_notifications')
+    .select('*')
+    .in('type', ['leave_result', 'ot_result', 'wfh_result'])
+    .order('created_at', { ascending: false })
+    .limit(limit)
   if (error) pgError(error)
   return data as HRNotification[]
 }
@@ -1133,6 +1163,113 @@ export async function createTimeEntry(entry: Partial<HRTimeEntry>) {
   return data as HRTimeEntry
 }
 
+/** เพิ่มบันทึกเวลาทีละหลายรายการ (นำเข้าจากไฟล์) — insert เป็นก้อนละ 500 กันคำขอใหญ่เกิน */
+export async function bulkInsertTimeEntries(entries: Partial<HRTimeEntry>[]): Promise<number> {
+  const clean = entries.map((e) => {
+    const p = { ...e }
+    delete p.employee
+    return p
+  })
+  let inserted = 0
+  for (let i = 0; i < clean.length; i += 500) {
+    const chunk = clean.slice(i, i + 500)
+    const { error } = await supabase.from('hr_time_entries').insert(chunk)
+    if (error) pgError(error)
+    inserted += chunk.length
+  }
+  return inserted
+}
+
+// ─── Work calendar (daily overrides + company holidays) ─────────────────────
+
+export async function fetchWorkCalendar(dateFrom: string, dateTo: string, employeeIds?: string[]) {
+  let q = supabase.from('hr_employee_work_calendar').select('*')
+    .gte('work_date', dateFrom).lte('work_date', dateTo).order('work_date')
+  if (employeeIds?.length) q = q.in('employee_id', employeeIds)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HREmployeeWorkCalendar[]
+}
+
+export async function upsertWorkCalendarDays(rows: Array<Partial<HREmployeeWorkCalendar>>) {
+  if (!rows.length) return []
+  const clean = rows.map(({ id: _id, created_at: _created, updated_at: _updated, ...row }) => row)
+  const { data, error } = await supabase.from('hr_employee_work_calendar')
+    .upsert(clean, { onConflict: 'employee_id,work_date' }).select()
+  if (error) pgError(error)
+  return data as HREmployeeWorkCalendar[]
+}
+
+export async function deleteWorkCalendarDays(employeeIds: string[], dateFrom: string, dateTo: string) {
+  if (!employeeIds.length) return
+  const { error } = await supabase.from('hr_employee_work_calendar').delete()
+    .in('employee_id', employeeIds).gte('work_date', dateFrom).lte('work_date', dateTo)
+  if (error) pgError(error)
+}
+
+export async function fetchCompanyHolidays(dateFrom: string, dateTo: string) {
+  const { data, error } = await supabase.from('hr_company_holidays').select('*')
+    .gte('holiday_date', dateFrom).lte('holiday_date', dateTo).order('holiday_date')
+  if (error) pgError(error)
+  return data as HRCompanyHoliday[]
+}
+
+export async function upsertCompanyHoliday(row: Partial<HRCompanyHoliday>) {
+  const { data, error } = await supabase.from('hr_company_holidays')
+    .upsert(row, { onConflict: 'holiday_date' }).select().single()
+  if (error) pgError(error)
+  return data as HRCompanyHoliday
+}
+
+export async function deleteCompanyHoliday(id: string) {
+  const { error } = await supabase.from('hr_company_holidays').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export function resolveEmployeeDayType(
+  date: string,
+  schedule: HRWorkSchedule,
+  override?: HREmployeeWorkCalendar,
+  holiday?: HRCompanyHoliday,
+): 'work' | 'weekly_off' | 'company_holiday' {
+  if (override) return override.day_type
+  if (holiday) return 'company_holiday'
+  const isoDay = ((new Date(`${date}T12:00:00`).getDay() + 6) % 7) + 1
+  return schedule.work_days.split(',').map(Number).includes(isoDay) ? 'work' : 'weekly_off'
+}
+
+// ─── WFH Requests ────────────────────────────────────────────────────────────
+
+const WFH_REQUEST_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, work_mode), approver:hr_employees!approved_by(first_name, last_name, nickname)'
+
+export async function fetchWFHRequests(filters?: { employee_id?: string; status?: string; date?: string }) {
+  let q = supabase.from('hr_wfh_requests').select(WFH_REQUEST_SELECT).order('created_at', { ascending: false })
+  if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.date) q = q.lte('start_date', filters.date).gte('end_date', filters.date)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRWFHRequest[]
+}
+
+export async function createWFHRequest(request: Partial<HRWFHRequest>) {
+  const payload = { ...request }
+  delete payload.employee
+  delete payload.approver
+  const { data, error } = await supabase.from('hr_wfh_requests').insert(payload).select().single()
+  if (error) pgError(error)
+  return data as HRWFHRequest
+}
+
+export async function updateWFHRequest(id: string, updates: Partial<HRWFHRequest>) {
+  const payload = { ...updates }
+  delete payload.employee
+  delete payload.approver
+  const { data, error } = await supabase.from('hr_wfh_requests').update(payload).eq('id', id).select().single()
+  if (error) pgError(error)
+  return data as HRWFHRequest
+}
+
 /** อัปโหลดรูปถ่ายตอนบันทึกเวลา (บังคับถ่ายจากกล้อง) → คืน path ใน bucket */
 export async function uploadTimeClockPhoto(employeeId: string, blob: Blob) {
   const path = `${employeeId}/${Date.now()}.jpg`
@@ -1166,9 +1303,11 @@ export async function getTimeClockPhotoUrls(paths: string[], expiresInSec = 3600
 
 // ─── OT Requests (คำขอ OT) ──────────────────────────────────────────────────
 
+const OT_REQUEST_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name)), approver:hr_employees!approved_by(first_name, last_name, nickname)'
+
 export async function fetchOTRequests(filters?: { status?: string; employee_id?: string; date_from?: string; date_to?: string }) {
   let q = supabase.from('hr_ot_requests')
-    .select(TIME_ENTRY_SELECT)
+    .select(OT_REQUEST_SELECT)
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)

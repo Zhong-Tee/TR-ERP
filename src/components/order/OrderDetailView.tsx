@@ -275,15 +275,16 @@ export default function OrderDetailView({
     }
     setTicketCreating(true)
     try {
-      const { error } = await supabase.from('or_issues').insert({
+      const { data: created, error } = await supabase.from('or_issues').insert({
         order_id: order.id,
         work_order_name: ticketWorkOrderName,
         type_id: ticketTypeId || null,
         title: ticketTitle.trim(),
         status: 'On',
         created_by: user.id,
-      })
+      }).select('id').single()
       if (error) throw error
+      supabase.functions.invoke('issue-notify', { body: { issue_id: created.id } }).catch(() => {})
       setTicketOpen(false)
       setTicketTitle('')
       setTicketTypeId('')

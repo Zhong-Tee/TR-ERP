@@ -7,6 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '-').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -40,7 +44,8 @@ Deno.serve(async (req) => {
     if (error || !ot) throw new Error('OT request not found: ' + error?.message)
 
     const emp = ot.employee
-    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() + (emp?.nickname ? ` (${emp.nickname})` : '')
+    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
+    const nickname = emp?.nickname ?? '-'
     const dept = emp?.department?.name ?? '-'
     const dateText = new Date(ot.request_date + 'T00:00:00').toLocaleDateString('th-TH', {
       day: 'numeric',
@@ -55,19 +60,20 @@ Deno.serve(async (req) => {
           ? '❌ <b>ไม่อนุมัติ OT</b>'
           : '🕐 <b>คำขอ OT ใหม่ — รออนุมัติ</b>'
 
-    const footer =
-      event === 'created'
-        ? `\n👉 อนุมัติได้ที่เมนู ระบบลางาน/OT › คำขอ OT`
-        : event === 'rejected' && ot.reject_reason
-          ? `\n📝 เหตุผล: ${ot.reject_reason}`
-          : ''
-
-    const text =
-      `${header}\n` +
-      `👤 ${name} • ${dept}\n` +
-      `📅 ${dateText} เวลา ${String(ot.ot_start).slice(0, 5)}–${String(ot.ot_end).slice(0, 5)} น. (${ot.hours ?? '-'} ชม.)\n` +
-      (event === 'created' && ot.reason ? `📝 ${ot.reason}\n` : '') +
-      footer
+    const textLines = [
+      header,
+      `👤 <b>ชื่อ:</b> ${escapeHtml(name)}`,
+      `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(nickname)}`,
+      `🏢 <b>แผนก:</b> ${escapeHtml(dept)}`,
+      `📅 <b>วันที่:</b> ${escapeHtml(dateText)}`,
+      `🕐 <b>ช่วงเวลา:</b> ${escapeHtml(String(ot.ot_start).slice(0, 5))}–${escapeHtml(String(ot.ot_end).slice(0, 5))} น.`,
+      `⏱️ <b>จำนวน:</b> ${escapeHtml(ot.hours ?? '-')} ชม.`,
+    ]
+    if (ot.reason) textLines.push(`📝 <b>เหตุผล:</b> ${escapeHtml(ot.reason)}`)
+    if (event === 'rejected' && ot.reject_reason) {
+      textLines.push(`❗ <b>เหตุผลที่ไม่อนุมัติ:</b> ${escapeHtml(ot.reject_reason)}`)
+    }
+    const text = textLines.join('\n')
 
     // รูปโปรไฟล์พนักงาน (bucket hr-photos เป็น public)
     const photoUrl = emp?.photo_url
@@ -106,12 +112,12 @@ Deno.serve(async (req) => {
         event === 'approved'
           ? '✅ <b>คำขอ OT ของคุณได้รับการอนุมัติ</b>'
           : '❌ <b>คำขอ OT ของคุณถูกปฏิเสธ</b>',
-        '',
-        `📅 วันที่: ${dateText}`,
-        `🕐 เวลา: ${String(ot.ot_start).slice(0, 5)}–${String(ot.ot_end).slice(0, 5)} น. (${ot.hours ?? '-'} ชม.)`,
+        `📅 <b>วันที่:</b> ${escapeHtml(dateText)}`,
+        `🕐 <b>ช่วงเวลา:</b> ${escapeHtml(String(ot.ot_start).slice(0, 5))}–${escapeHtml(String(ot.ot_end).slice(0, 5))} น.`,
+        `⏱️ <b>จำนวน:</b> ${escapeHtml(ot.hours ?? '-')} ชม.`,
       ]
       if (event === 'rejected' && ot.reject_reason) {
-        pLines.push('', `📝 เหตุผล: ${ot.reject_reason}`)
+        pLines.push(`❗ <b>เหตุผล:</b> ${escapeHtml(ot.reject_reason)}`)
       }
       const personalText = pLines.join('\n')
       try {

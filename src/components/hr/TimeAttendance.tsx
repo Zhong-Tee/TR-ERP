@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { FiRefreshCw, FiMapPin, FiCamera, FiX, FiSearch, FiDownload } from 'react-icons/fi'
+import { FiRefreshCw, FiMapPin, FiCamera, FiX, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
+import TimeEntryImport from './TimeEntryImport'
 import {
   fetchTimeEntries,
   fetchEmployees,
   fetchWorkSchedules,
   fetchLeaveRequests,
+  fetchWorkCalendar,
+  fetchCompanyHolidays,
   getTimeClockPhotoUrl,
   getTimeClockPhotoUrls,
 } from '../../lib/hrApi'
@@ -26,6 +29,14 @@ const ENTRY_BADGE: Record<HRTimeEntryType, string> = {
   ot_in: 'bg-indigo-100 text-indigo-800',
   ot_out: 'bg-violet-100 text-violet-800',
 }
+
+/** ป้ายบอกแหล่งที่มาของบันทึก (ค่าเดิมที่ไม่มี source = มือถือ) */
+const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
+  mobile: { label: '📱 มือถือ', cls: 'bg-sky-50 text-sky-600' },
+  device: { label: '🔒 สแกนนิ้ว', cls: 'bg-amber-50 text-amber-700' },
+  manual: { label: '✍️ กรอกเอง', cls: 'bg-gray-100 text-gray-500' },
+}
+const sourceBadge = (s?: string) => SOURCE_BADGE[s ?? 'mobile'] ?? SOURCE_BADGE.mobile
 
 const Loading = () => (
   <div className="flex items-center justify-center py-20">
@@ -60,11 +71,11 @@ function parseTimeToMinutes(t: string): number {
   return h * 60 + (m || 0)
 }
 
-/** นาที → hh:mm น. เช่น 44 → 00:44 น., 644 → 10:44 น. */
+/** ระยะเวลาเป็นนาที → hh:mm ชม. เช่น 44 → 00:44 ชม., 644 → 10:44 ชม. */
 function minutesToHHMM(min: number): string {
   const h = Math.floor(min / 60)
   const m = Math.round(min % 60)
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} น.`
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ชม.`
 }
 
 /** ชั่วโมง (ทศนิยม) → hh:mm น. เช่น 0.06 → 00:04 น., 3.5 → 03:30 น. */
@@ -152,6 +163,7 @@ export default function TimeAttendance() {
   const [entriesView, setEntriesView] = useState<'table' | 'dashboard'>('table')
   const [photoView, setPhotoView] = useState<{ url: string; caption: string } | null>(null)
   const [photoLoading, setPhotoLoading] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   /** signed URL รูปย่อในตาราง (path → url) */
   const [photoThumbs, setPhotoThumbs] = useState<Record<string, string>>({})
 
@@ -178,6 +190,16 @@ export default function TimeAttendance() {
     const sched = assigned ?? defaultSchedule ?? FALLBACK_SCHEDULE
     const startMin = parseTimeToMinutes(sched.work_start.slice(0, 5)) + (sched.late_grace_min ?? 0)
     return Math.max(0, localMinutes(entry.entry_time) - startMin)
+  }
+
+  /** นาทีที่ออกก่อนเวลาเลิกงาน ของบันทึกออกงาน (clock_out) ตามมาตรฐานเวลาของพนักงาน */
+  const entryEarlyLeaveMinutes = (entry: HRTimeEntry): number => {
+    if (entry.entry_type !== 'clock_out') return 0
+    const empSchedId = (entry.employee as (HREmployee & { work_schedule_id?: string }))?.work_schedule_id
+    const assigned = empSchedId ? schedules.find((s) => s.id === empSchedId && s.is_active) : undefined
+    const sched = assigned ?? defaultSchedule ?? FALLBACK_SCHEDULE
+    const endMin = parseTimeToMinutes(sched.work_end.slice(0, 5))
+    return Math.max(0, endMin - localMinutes(entry.entry_time))
   }
 
   const loadEntries = useCallback(async () => {
@@ -304,11 +326,13 @@ export default function TimeAttendance() {
       const lastDay = new Date(y, m, 0).getDate()
       const monthEnd = `${summaryMonth}-${String(lastDay).padStart(2, '0')}`
 
-      const [monthEntries, employees, leaves, scheds] = await Promise.all([
+      const [monthEntries, employees, leaves, scheds, calendarDays, companyHolidays] = await Promise.all([
         fetchTimeEntries({ date_from: monthStart, date_to: monthEnd, limit: 20000 }),
         fetchEmployees(),
         fetchLeaveRequests({ status: 'approved' }),
         fetchWorkSchedules(),
+        fetchWorkCalendar(monthStart, monthEnd),
+        fetchCompanyHolidays(monthStart, monthEnd),
       ])
 
       const schedById = new Map(scheds.map((s) => [s.id, s]))
@@ -318,6 +342,7 @@ export default function TimeAttendance() {
       // จำนวนวันทำการที่ผ่านมาแล้วในเดือน (นับถึงวันนี้ ถ้าเป็นเดือนปัจจุบัน) — cache ต่อชุดวันทำงาน
       const today = todayStr()
       const countUntil = monthEnd <= today ? lastDay : monthStart.slice(0, 7) === today.slice(0, 7) ? parseInt(today.slice(8, 10), 10) : 0
+      const countUntilDate = countUntil > 0 ? `${summaryMonth}-${String(countUntil).padStart(2, '0')}` : ''
       const workdayCache = new Map<string, { elapsed: number; dates: Set<string> }>()
       const getWorkdayInfo = (workDaysStr: string) => {
         const key = workDaysStr || '1,2,3,4,5,6'
@@ -342,6 +367,13 @@ export default function TimeAttendance() {
       const activeEmployees = employees.filter((e) =>
         ['active', 'probation'].includes(e.employment_status),
       )
+      const calendarByEmployee = new Map<string, Map<string, (typeof calendarDays)[number]>>()
+      calendarDays.forEach((day) => {
+        const byDate = calendarByEmployee.get(day.employee_id) ?? new Map()
+        byDate.set(day.work_date, day)
+        calendarByEmployee.set(day.employee_id, byDate)
+      })
+      const companyHolidayDates = new Set(companyHolidays.map((h) => h.holiday_date))
 
       const byEmp = new Map<string, HRTimeEntry[]>()
       monthEntries.forEach((e) => {
@@ -356,7 +388,15 @@ export default function TimeAttendance() {
         const sched = assigned && (!('is_active' in assigned) || assigned.is_active) ? assigned : fallbackSched
         const workStartMin = parseTimeToMinutes(sched.work_start.slice(0, 5))
         const grace = sched.late_grace_min
-        const { elapsed: workdaysElapsed, dates: workdayDates } = getWorkdayInfo(sched.work_days)
+        const baseWorkdays = getWorkdayInfo(sched.work_days)
+        const workdayDates = new Set(baseWorkdays.dates)
+        companyHolidayDates.forEach((date) => { if (countUntilDate && date <= countUntilDate) workdayDates.delete(date) })
+        calendarByEmployee.get(emp.id)?.forEach((override, date) => {
+          if (!countUntilDate || date > countUntilDate) return
+          if (override.day_type === 'work') workdayDates.add(date)
+          else workdayDates.delete(date)
+        })
+        const workdaysElapsed = workdayDates.size
 
         const empEntries = (byEmp.get(emp.id) ?? []).sort((a, b) => a.entry_time.localeCompare(b.entry_time))
 
@@ -546,6 +586,7 @@ export default function TimeAttendance() {
     // ── ชีต 3: บันทึกดิบ (log ทุกครั้ง) เผื่อต้องการตรวจย้อน ──
     const rawRows = filteredEntries.map((e) => {
       const lm = entryLateMinutes(e)
+      const earlyMin = entryEarlyLeaveMinutes(e)
       return {
         'รหัส': e.employee?.employee_code ?? '',
         'พนักงาน': empName(e.employee),
@@ -553,7 +594,11 @@ export default function TimeAttendance() {
         'ประเภท': ENTRY_LABELS[e.entry_type],
         'วันที่': new Date(e.work_date + 'T00:00:00').toLocaleDateString('th-TH'),
         'เวลา': new Date(e.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        'สาย': e.entry_type === 'clock_in' ? (lm > 0 ? minutesToHHMM(lm) : 'ตรงเวลา') : '-',
+        'สาย / ออกก่อน': e.entry_type === 'clock_in'
+          ? (lm > 0 ? `สาย ${minutesToHHMM(lm)}` : 'ตรงเวลา')
+          : e.entry_type === 'clock_out'
+            ? (earlyMin > 0 ? `ออกก่อน ${minutesToHHMM(earlyMin)}` : 'ครบเวลา')
+            : '-',
         'จุดบันทึก': e.location_name ?? '-',
         'ระยะ (ม.)': e.distance_m != null ? Math.round(e.distance_m) : '',
       }
@@ -703,6 +748,13 @@ export default function TimeAttendance() {
             >
               <FiDownload /> Export Excel
             </button>
+            <button
+              type="button"
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 px-3 py-2 border border-amber-500 text-amber-700 text-sm font-medium rounded-lg hover:bg-amber-50"
+            >
+              <FiUpload /> นำเข้า
+            </button>
             <div className="ml-auto flex items-center gap-3">
               <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
                 <button
@@ -744,7 +796,7 @@ export default function TimeAttendance() {
                     <th className="p-3 text-center font-semibold">ประเภท</th>
                     <th className="p-3 text-center font-semibold">วันที่</th>
                     <th className="p-3 text-center font-semibold">เวลา</th>
-                    <th className="p-3 text-center font-semibold">สาย</th>
+                    <th className="p-3 text-center font-semibold">สาย / ออกก่อน</th>
                     <th className="p-3 text-left font-semibold">จุดบันทึก</th>
                     <th className="p-3 text-center font-semibold">ระยะ (ม.)</th>
                     <th className="p-3 text-center font-semibold rounded-tr-xl">รูป</th>
@@ -772,13 +824,34 @@ export default function TimeAttendance() {
                       <td className="p-3 text-center tabular-nums">
                         {e.entry_type === 'clock_in'
                           ? entryLateMinutes(e) > 0
-                            ? <span className="text-red-600 font-semibold">{minutesToHHMM(entryLateMinutes(e))}</span>
+                            ? <span className="text-red-600 font-semibold">สาย {minutesToHHMM(entryLateMinutes(e))}</span>
                             : <span className="text-emerald-600 text-xs">ตรงเวลา</span>
-                          : <span className="text-gray-300">-</span>}
+                          : e.entry_type === 'clock_out'
+                            ? entryEarlyLeaveMinutes(e) > 0
+                              ? <span className="text-amber-600 font-semibold">ออกก่อน {minutesToHHMM(entryEarlyLeaveMinutes(e))}</span>
+                              : <span className="text-emerald-600 text-xs">ครบเวลา</span>
+                            : <span className="text-gray-300">-</span>}
                       </td>
                       <td className="p-3 text-gray-600">
                         <span className="flex items-center gap-1">
-                          <FiMapPin className="text-emerald-500 flex-shrink-0" /> {e.location_name ?? '-'}
+                          {e.lat != null && e.lng != null ? (
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${e.lat},${e.lng}`)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-shrink-0 rounded p-0.5 text-emerald-500 transition-colors hover:bg-emerald-50 hover:text-emerald-700"
+                              title="เปิดพิกัดใน Google Maps"
+                              aria-label={`เปิดพิกัดของ ${e.location_name ?? 'จุดบันทึก'} ใน Google Maps`}
+                            >
+                              <FiMapPin className="h-4 w-4" />
+                            </a>
+                          ) : (
+                            <FiMapPin className="h-4 w-4 flex-shrink-0 text-gray-300" aria-label="ไม่มีข้อมูลพิกัด" />
+                          )}
+                          {e.location_name ?? '-'}
+                        </span>
+                        <span className={`mt-1 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${sourceBadge(e.source).cls}`}>
+                          {sourceBadge(e.source).label}
                         </span>
                       </td>
                       <td className="p-3 text-center text-gray-600">{e.distance_m != null ? Math.round(e.distance_m) : '-'}</td>
@@ -902,6 +975,9 @@ export default function TimeAttendance() {
           )}
         </div>
       )}
+
+      {/* Modal นำเข้าข้อมูลจากเครื่องสแกนนิ้ว */}
+      <TimeEntryImport open={showImport} onClose={() => setShowImport(false)} onImported={loadEntries} />
 
       {/* Modal ดูรูป — ใช้ Modal กลางที่เว้นระยะใต้ header/แถบเมนูให้อัตโนมัติ */}
       <Modal

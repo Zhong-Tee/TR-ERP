@@ -478,6 +478,11 @@ export default function IssueBoard({
       }
       const { error } = await supabase.from('or_issues').update(updates).eq('id', issue.id)
       if (error) throw error
+      if (status === 'Close') {
+        supabase.functions.invoke('issue-notify', {
+          body: { issue_id: issue.id, event: 'closed', actor_id: user?.id },
+        }).catch(() => {})
+      }
       setDetailIssue(null)
       await loadIssues()
     } catch (error: any) {
@@ -550,8 +555,9 @@ export default function IssueBoard({
         status: 'On',
         created_by: user.id,
       }
-      const { error } = await supabase.from('or_issues').insert(payload)
+      const { data: created, error } = await supabase.from('or_issues').insert(payload).select('id').single()
       if (error) throw error
+      supabase.functions.invoke('issue-notify', { body: { issue_id: created.id } }).catch(() => {})
       setCreateOpen(false)
       setCreateOrderId('')
       setCreateWorkOrder('')

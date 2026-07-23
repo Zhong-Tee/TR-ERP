@@ -56,6 +56,7 @@ const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry')
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
 const HRInterviewSchedule = lazy(() => import('./components/hr/InterviewSchedule'))
 const HRTimeAttendance = lazy(() => import('./components/hr/TimeAttendance'))
+const HRWorkCalendar = lazy(() => import('./components/hr/WorkCalendar'))
 const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates'))
 const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
 const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
@@ -585,7 +586,7 @@ function AppRoutes() {
       <Route
         path="/hr/leave"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'hr']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr']}>
             <Layout><Suspense fallback={<HRLoading />}><HRLeaveManagement /></Suspense></Layout>
           </ProtectedRoute>
         }
@@ -603,6 +604,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'hr']}>
             <Layout><Suspense fallback={<HRLoading />}><HRTimeAttendance /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/work-calendar"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'hr']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRWorkCalendar /></Suspense></Layout>
           </ProtectedRoute>
         }
       />

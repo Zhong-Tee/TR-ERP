@@ -78,6 +78,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/hr/leave', key: 'hr-leave' },
   { prefix: '/hr/interview', key: 'hr-interview' },
   { prefix: '/hr/attendance', key: 'hr-attendance' },
+  { prefix: '/hr/work-calendar', key: 'hr-work-calendar' },
   { prefix: '/hr/contracts', key: 'hr-contracts' },
   { prefix: '/hr/documents', key: 'hr-documents' },
   { prefix: '/hr/onboarding', key: 'hr-onboarding' },
@@ -102,15 +103,16 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
   '/hr': [
     { path: '/hr', key: 'hr' },
     { path: '/hr/leave', key: 'hr-leave' },
-    { path: '/hr/interview', key: 'hr-interview' },
     { path: '/hr/attendance', key: 'hr-attendance' },
-    { path: '/hr/contracts', key: 'hr-contracts' },
-    { path: '/hr/documents', key: 'hr-documents' },
-    { path: '/hr/onboarding', key: 'hr-onboarding' },
-    { path: '/hr/salary', key: 'hr-salary' },
+    { path: '/hr/work-calendar', key: 'hr-work-calendar' },
     { path: '/hr/warnings', key: 'hr-warnings' },
     { path: '/hr/certificates', key: 'hr-certificates' },
+    { path: '/hr/interview', key: 'hr-interview' },
+    { path: '/hr/onboarding', key: 'hr-onboarding' },
     { path: '/hr/assets', key: 'hr-assets' },
+    { path: '/hr/contracts', key: 'hr-contracts' },
+    { path: '/hr/documents', key: 'hr-documents' },
+    { path: '/hr/salary', key: 'hr-salary' },
     { path: '/hr/settings', key: 'hr-settings' },
   ],
   '/purchase': [
@@ -152,6 +154,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'hr-leave': 'hr',
   'hr-interview': 'hr',
   'hr-attendance': 'hr',
+  'hr-work-calendar': 'hr',
   'hr-contracts': 'hr',
   'hr-documents': 'hr',
   'hr-onboarding': 'hr',
@@ -336,4 +339,3 @@ export function getIssueVisibilityScope(
   if (role === 'production') return 'creatorOrOwner'
   return 'none'
 }
-

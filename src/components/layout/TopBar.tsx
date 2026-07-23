@@ -352,11 +352,18 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     return menuKey ? hasAccess(menuKey) : false
   })
 
+  const hrTabOrder = [
+    '/hr', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
+    '/hr/warnings', '/hr/certificates',
+    '/hr/interview', '/hr/onboarding', '/hr/assets',
+    '/hr/contracts', '/hr/documents', '/hr/salary', '/hr/settings',
+  ]
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
     { path: '/hr/leave', label: 'ระบบลางาน/OT' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },
+    { path: '/hr/work-calendar', label: 'ตารางวันทำงาน/วันหยุด' },
     { path: '/hr/contracts', label: 'สัญญาจ้าง' },
     { path: '/hr/documents', label: 'กฏระเบียบ/SOP' },
     { path: '/hr/onboarding', label: 'รับพนักงานใหม่' },
@@ -365,7 +372,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/certificates', label: 'ใบรับรอง' },
     { path: '/hr/assets', label: 'ทะเบียนทรัพย์สิน' },
     { path: '/hr/settings', label: 'ตั้งค่า' },
-  ].filter((tab) => {
+  ].sort((a, b) => hrTabOrder.indexOf(a.path) - hrTabOrder.indexOf(b.path)).filter((tab) => {
     const menuKey = resolveMenuKeyFromPath(tab.path)
     return menuKey ? hasAccess(menuKey) : false
   })

@@ -3,11 +3,14 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { fetchEmployeeByUserId, fetchNotifications } from '../lib/hrApi'
-import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin } from 'react-icons/fi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi } from 'react-icons/fi'
+import type { HREmployee } from '../types'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
 const EmployeeTimeClock = lazy(() => import('../components/hr/employee/EmployeeTimeClock'))
 const EmployeeLeave = lazy(() => import('../components/hr/employee/EmployeeLeave'))
+const EmployeeWorkCalendar = lazy(() => import('../components/hr/employee/EmployeeWorkCalendar'))
+const EmployeeWFH = lazy(() => import('../components/hr/employee/EmployeeWFH'))
 const EmployeeSalaryPath = lazy(() => import('../components/hr/employee/EmployeeSalaryPath'))
 const EmployeeOnboarding = lazy(() => import('../components/hr/employee/EmployeeOnboarding'))
 const EmployeeDocuments = lazy(() => import('../components/hr/employee/EmployeeDocuments'))
@@ -67,6 +70,8 @@ const TABS = [
   { id: 'dashboard', label: 'หน้าหลัก', icon: FiHome, Component: EmployeeDashboard },
   { id: 'timeclock', label: 'ลงเวลา', icon: FiClock, Component: EmployeeTimeClock },
   { id: 'leave', label: 'ขอลา', icon: FiCalendar, Component: EmployeeLeave },
+  { id: 'calendar', label: 'ตารางงาน', icon: FiCalendar, Component: EmployeeWorkCalendar },
+  { id: 'wfh', label: 'ขอ WFH', icon: FiWifi, Component: EmployeeWFH },
   { id: 'warnings-certs', label: 'เตือน/รับรอง', icon: FiAward, Component: EmployeeWarningsCerts },
   { id: 'assets', label: 'ทรัพย์สิน', icon: FiBox, Component: EmployeeAssets },
   { id: 'documents', label: 'เอกสาร', icon: FiFileText, Component: EmployeeDocuments },
@@ -93,7 +98,9 @@ export default function EmployeePortal() {
     (tabFromUrl && TAB_IDS.includes(tabFromUrl as (typeof TAB_IDS)[number])) ? (tabFromUrl as TabId) : 'dashboard'
   )
   const { user, signOut } = useAuthContext()
-  const visibleTabs: readonly TabDef[] = user?.role === 'superadmin' ? ALL_TABS : TABS
+  const [portalEmployee, setPortalEmployee] = useState<HREmployee | null>(null)
+  const employeeTabs = TABS.filter((tab) => tab.id !== 'wfh' || portalEmployee?.work_mode === 'hybrid')
+  const visibleTabs: readonly TabDef[] = user?.role === 'superadmin' ? [...employeeTabs, ...ADMIN_TABS] : employeeTabs
   /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
   const [resultUnread, setResultUnread] = useState(0)
 
@@ -101,6 +108,11 @@ export default function EmployeePortal() {
     const t = searchParams.get('tab')
     if (t && TAB_IDS.includes(t as (typeof TAB_IDS)[number])) setActiveTab(t as TabId)
   }, [searchParams])
+
+  useEffect(() => {
+    if (!user?.id) return
+    fetchEmployeeByUserId(user.id).then(setPortalEmployee).catch(() => setPortalEmployee(null))
+  }, [user?.id])
 
   // นับแจ้งเตือนผลอนุมัติที่ยังไม่อ่าน (เรียลไทม์)
   useEffect(() => {

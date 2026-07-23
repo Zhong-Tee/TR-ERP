@@ -9,11 +9,12 @@ import {
   fetchOTRequests,
   createOTRequest,
   fetchWorkSchedules,
+  fetchWFHRequests,
   haversineMeters,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
-import type { HREmployee, HRClockLocation, HRTimeEntry, HRTimeEntryType, HROTRequest, HRWorkSchedule } from '../../../types'
+import type { HREmployee, HRClockLocation, HRTimeEntry, HRTimeEntryType, HROTRequest, HRWorkSchedule, HRWFHRequest } from '../../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -32,11 +33,11 @@ function timeStr(iso: string): string {
   return new Date(iso).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
 }
 
-/** นาที → hh:mm น. เช่น 44 → 00:44 น., 90 → 01:30 น. */
+/** นาที → hh:mm ชม. เช่น 44 → 00:44 ชม., 90 → 01:30 ชม. */
 function minutesToHHMM(min: number): string {
   const h = Math.floor(min / 60)
   const m = min % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} น.`
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ชม.`
 }
 
 function otStatusBadge(status: string) {
@@ -68,6 +69,7 @@ export default function EmployeeTimeClock() {
   const [todayEntries, setTodayEntries] = useState<HRTimeEntry[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
   const [schedule, setSchedule] = useState<HRWorkSchedule | null>(null)
+  const [approvedWFHToday, setApprovedWFHToday] = useState<HRWFHRequest | null>(null)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -87,15 +89,19 @@ export default function EmployeeTimeClock() {
       setEmployee(emp)
       if (!emp) return
       const today = todayStr()
-      const [locs, entries, ots, scheds] = await Promise.all([
+      const [locs, entries, ots, scheds, wfhRequests] = await Promise.all([
         fetchClockLocations(true),
         fetchTimeEntries({ employee_id: emp.id, date_from: today, date_to: today }),
         fetchOTRequests({ employee_id: emp.id }),
         fetchWorkSchedules(true).catch(() => [] as HRWorkSchedule[]),
+        emp.work_mode === 'hybrid'
+          ? fetchWFHRequests({ employee_id: emp.id, status: 'approved', date: today }).catch(() => [] as HRWFHRequest[])
+          : Promise.resolve([] as HRWFHRequest[]),
       ])
       setLocations(locs)
       setTodayEntries(entries)
       setOtRequests(ots.slice(0, 10))
+      setApprovedWFHToday(wfhRequests[0] ?? null)
       // มาตรฐานเวลาของพนักงาน: ชุดประจำตัว ถ้าไม่ได้กำหนด → ชุดค่าเริ่มต้น
       const mySched =
         (emp.work_schedule_id ? scheds.find((s) => s.id === emp.work_schedule_id) : undefined) ??
@@ -130,6 +136,7 @@ export default function EmployeeTimeClock() {
 
   const hasEntry = (type: HRTimeEntryType) => todayEntries.some((e) => e.entry_type === type)
   const approvedOtToday = otRequests.some((r) => r.status === 'approved' && r.request_date === todayStr())
+  const isRemoteWorkToday = employee?.work_mode === 'wfh' || (employee?.work_mode === 'hybrid' && !!approvedWFHToday)
 
   /** นาทีที่สายเกินผ่อนผัน (เฉพาะเข้างานปกติ) — 0 = ไม่สาย */
   const lateMinutes = (entry: HRTimeEntry): number => {
@@ -140,11 +147,20 @@ export default function EmployeeTimeClock() {
     return Math.max(0, d.getHours() * 60 + d.getMinutes() - startMin)
   }
 
+  /** นาทีที่ออกก่อนเวลาเลิกงานตามตาราง — 0 = ครบเวลา */
+  const earlyLeaveMinutes = (entry: HRTimeEntry): number => {
+    if (entry.entry_type !== 'clock_out' || !schedule) return 0
+    const [h, m] = schedule.work_end.slice(0, 5).split(':').map(Number)
+    const endMin = h * 60 + (m || 0)
+    const d = new Date(entry.entry_time)
+    return Math.max(0, endMin - (d.getHours() * 60 + d.getMinutes()))
+  }
+
   // ─── ขั้นตอนบันทึกเวลา: GPS → ตรวจระยะ → กล้อง → ยืนยัน ─────────────────────
 
   function startCapture(type: HRTimeEntryType) {
     if (!employee) return
-    if (locations.length === 0) {
+    if (!isRemoteWorkToday && locations.length === 0) {
       setMessage({ type: 'error', text: 'ยังไม่มีการตั้งค่าจุดพิกัดบริษัท กรุณาติดต่อผู้ดูแลระบบ' })
       return
     }
@@ -159,6 +175,11 @@ export default function EmployeeTimeClock() {
     }
 
     const handleSuccess = (pos: GeolocationPosition) => {
+      if (isRemoteWorkToday) {
+        setCapture({ type, phase: 'camera', position: pos, distance: 0 })
+        startCamera()
+        return
+      }
       // จุดที่ใช้ตรวจ: จุดประจำตัวพนักงาน ถ้าไม่ได้กำหนด → จุด active ที่ใกล้ที่สุด
       const assigned = employee?.clock_location_id
         ? locations.find((l) => l.id === employee.clock_location_id)
@@ -283,7 +304,7 @@ export default function EmployeeTimeClock() {
   }
 
   async function submitEntry() {
-    if (!capture || !employee || !capture.photoBlob || !capture.position || !capture.target) return
+    if (!capture || !employee || !capture.photoBlob || !capture.position || (!isRemoteWorkToday && !capture.target)) return
     setCapture((c) => (c ? { ...c, phase: 'submitting' } : c))
     try {
       const photoPath = await uploadTimeClockPhoto(employee.id, capture.photoBlob)
@@ -294,13 +315,18 @@ export default function EmployeeTimeClock() {
         lng: capture.position.coords.longitude,
         accuracy_m: Math.round(capture.position.coords.accuracy * 10) / 10,
         distance_m: Math.round((capture.distance ?? 0) * 10) / 10,
-        location_id: capture.target.id,
-        location_name: capture.target.name,
+        location_id: capture.target?.id,
+        location_name: isRemoteWorkToday
+          ? employee.work_mode === 'wfh' ? 'WFH (ประจำ)' : 'WFH (อนุมัติ)'
+          : capture.target?.name,
         photo_url: photoPath,
       })
       // แจ้งเตือน Telegram เข้ากลุ่ม Manager — ไม่ block การบันทึก ถ้าส่งไม่สำเร็จก็ไม่กระทบพนักงาน
       supabase.functions.invoke('hr-clock-notify', { body: { entry_id: created.id } }).catch(() => {})
-      setMessage({ type: 'success', text: `บันทึก${ENTRY_LABELS[capture.type]}สำเร็จ (${capture.target.name})` })
+      const locationLabel = isRemoteWorkToday
+        ? employee.work_mode === 'wfh' ? 'WFH ประจำ' : 'WFH ที่ได้รับอนุมัติ'
+        : capture.target?.name ?? 'สำนักงาน'
+      setMessage({ type: 'success', text: `บันทึก${ENTRY_LABELS[capture.type]}สำเร็จ (${locationLabel})` })
       closeCapture()
       load()
     } catch (e: any) {
@@ -493,12 +519,13 @@ export default function EmployeeTimeClock() {
             <div className="flex items-center text-[11px] text-gray-400 font-medium px-0.5 pb-1.5 border-b border-gray-100">
               <span className="w-20">ประเภท</span>
               <span className="flex-1">จุดบันทึก</span>
-              <span className="w-[72px] text-center">สาย</span>
+              <span className="w-[92px] text-center">สาย/ออกก่อน</span>
               <span className="w-12 text-right">เวลา</span>
             </div>
             <div className="space-y-2 mt-2">
               {[...todayEntries].reverse().map((e) => {
                 const lm = lateMinutes(e)
+                const earlyMin = earlyLeaveMinutes(e)
                 return (
                   <div key={e.id} className="flex items-center text-sm">
                     <span className="w-20 font-medium text-gray-700">{ENTRY_LABELS[e.entry_type]}</span>
@@ -506,12 +533,16 @@ export default function EmployeeTimeClock() {
                       <FiMapPin className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">{e.location_name ?? '-'}</span>
                     </span>
-                    <span className="w-[72px] text-center">
+                    <span className="w-[92px] text-center text-[11px]">
                       {e.entry_type === 'clock_in'
                         ? lm > 0
-                          ? <span className="text-red-600 font-semibold">{minutesToHHMM(lm)}</span>
+                          ? <span className="text-red-600 font-semibold">สาย {minutesToHHMM(lm)}</span>
                           : <span className="text-emerald-600 text-xs">ตรงเวลา</span>
-                        : <span className="text-gray-300">-</span>}
+                        : e.entry_type === 'clock_out'
+                          ? earlyMin > 0
+                            ? <span className="text-red-600 font-semibold">ออกก่อน {minutesToHHMM(earlyMin)}</span>
+                            : <span className="text-emerald-600 text-xs">ครบเวลา</span>
+                          : <span className="text-gray-300">-</span>}
                     </span>
                     <span className="w-12 text-right font-semibold text-gray-800">{timeStr(e.entry_time)}</span>
                   </div>
@@ -577,11 +608,13 @@ export default function EmployeeTimeClock() {
                 </div>
               )}
 
-              {(capture.phase === 'camera' || capture.phase === 'preview' || capture.phase === 'submitting') && capture.target && (
+              {(capture.phase === 'camera' || capture.phase === 'preview' || capture.phase === 'submitting') && (
                 <>
                   <div className="flex items-center justify-center gap-1.5 text-sm text-emerald-700 bg-emerald-50 rounded-lg py-2">
                     <FiMapPin />
-                    {capture.target.name} — ห่าง {Math.round(capture.distance ?? 0)} ม.
+                    {isRemoteWorkToday
+                      ? employee?.work_mode === 'wfh' ? 'WFH (ประจำ)' : 'WFH (ได้รับอนุมัติ)'
+                      : `${capture.target?.name ?? 'สำนักงาน'} — ห่าง ${Math.round(capture.distance ?? 0)} ม.`}
                   </div>
 
                   {capture.phase === 'camera' && (

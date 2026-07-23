@@ -1020,6 +1020,8 @@ export interface HREmployee {
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
   /** ประเภทสัญญาจ้าง: permanent=ประจำ, daily=รายวัน */
   contract_type?: 'permanent' | 'daily'
+  /** รูปแบบการทำงาน: office=ออฟฟิศ, hybrid=ออฟฟิศ+WFH (ต้องขอ), wfh=WFH ประจำ */
+  work_mode?: 'office' | 'hybrid' | 'wfh'
   /** จุดบันทึกเวลา (hr_clock_locations) ที่พนักงานคนนี้ใช้ */
   clock_location_id?: string
   /** มาตรฐานเวลาทำงาน (hr_work_schedules) ของพนักงานคนนี้ — ว่าง = ใช้ชุดค่าเริ่มต้น */
@@ -1070,6 +1072,8 @@ export interface HRLeaveRequest {
   updated_at: string
   employee?: HREmployee
   leave_type?: HRLeaveType
+  /** ผู้อนุมัติ (join จาก approved_by) */
+  approver?: { first_name?: string; last_name?: string; nickname?: string } | null
 }
 
 export interface HRLeaveBalance {
@@ -1172,8 +1176,28 @@ export interface HRTimeEntry {
   location_name?: string
   photo_url?: string
   note?: string
+  /** แหล่งที่มา: mobile=แอปมือถือ, device=เครื่องสแกนนิ้ว (นำเข้า), manual=HR กรอกเอง */
+  source?: 'mobile' | 'device' | 'manual'
+  work_location_type?: 'office' | 'wfh_approved' | 'wfh_permanent'
+  wfh_request_id?: string
   created_at: string
   employee?: HREmployee
+}
+
+export interface HRWFHRequest {
+  id: string
+  employee_id: string
+  start_date: string
+  end_date: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  approved_by?: string
+  approved_at?: string
+  reject_reason?: string
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  approver?: { first_name?: string; last_name?: string; nickname?: string } | null
 }
 
 export interface HROTRequest {
@@ -1191,6 +1215,8 @@ export interface HROTRequest {
   created_at: string
   updated_at: string
   employee?: HREmployee
+  /** ผู้อนุมัติ (join จาก approved_by) */
+  approver?: { first_name?: string; last_name?: string; nickname?: string } | null
 }
 
 /** มาตรฐานเวลาทำงาน (หลายชุด ตั้งชื่อได้ กำหนดต่อพนักงานผ่าน hr_employees.work_schedule_id) */
@@ -1205,6 +1231,36 @@ export interface HRWorkSchedule {
   /** ชุดค่าเริ่มต้นสำหรับพนักงานที่ยังไม่ได้กำหนด (มีได้ชุดเดียว) */
   is_default: boolean
   is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type HRWorkCalendarDayType = 'work' | 'weekly_off'
+export type HRWorkCalendarSource = 'manual' | 'pattern' | 'swap' | 'import'
+
+export interface HREmployeeWorkCalendar {
+  id: string
+  employee_id: string
+  work_date: string
+  day_type: HRWorkCalendarDayType
+  work_schedule_id?: string
+  work_start?: string
+  work_end?: string
+  source: HRWorkCalendarSource
+  note?: string
+  created_by?: string
+  updated_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface HRCompanyHoliday {
+  id: string
+  holiday_date: string
+  name: string
+  is_paid: boolean
+  note?: string
+  created_by?: string
   created_at: string
   updated_at: string
 }
@@ -1423,6 +1479,7 @@ export interface HRNotificationSettings {
   bot_token: string
   hr_group_chat_id?: string
   manager_group_chat_id?: string
+  ticket_group_chat_id?: string
   leave_notify_before_days: number
   leave_notify_morning_time: string
   created_at: string

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiSearch, FiCalendar, FiUser, FiFileText, FiExternalLink, FiClock } from 'react-icons/fi'
+import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload } from 'react-icons/fi'
+import LeaveImport from './LeaveImport'
 import {
   fetchLeaveRequests,
   updateLeaveRequest,
@@ -7,6 +8,7 @@ import {
   fetchOTRequests,
   updateOTRequest,
   getMedicalCertUrl,
+  fetchEmployeeByUserId,
 } from '../../lib/hrApi'
 import type { HRLeaveRequest, HROTRequest } from '../../types'
 import Modal from '../ui/Modal'
@@ -14,6 +16,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
 
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected'
+const WORK_MINUTES_PER_DAY = 8 * 60
 const WEEKDAY_LABELS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์'] as const
 
 function asDateOnly(value: string): Date {
@@ -74,6 +77,34 @@ function employeePositionName(req: HRLeaveRequest): string {
   return emp?.position?.name ?? '-'
 }
 
+function approverDisplayName(req: HRLeaveRequest): string {
+  const approver = req.approver
+  if (!approver) return '-'
+  const name = [approver.first_name, approver.last_name].filter(Boolean).join(' ')
+  return approver.nickname ? `${name} (${approver.nickname})` : name || '-'
+}
+
+/** ระยะเวลาลา → dd:hh:mm โดย 1 วันทำงาน = 8 ชั่วโมง */
+function leaveDurationDDHHMM(req: HRLeaveRequest): string {
+  const totalMinutes = req.leave_mode === 'hourly' && req.total_hours != null
+    ? Math.round(Number(req.total_hours) * 60)
+    : Math.round(Number(req.total_days ?? 0) * WORK_MINUTES_PER_DAY)
+  const days = Math.floor(totalMinutes / WORK_MINUTES_PER_DAY)
+  const remainingMinutes = totalMinutes % WORK_MINUTES_PER_DAY
+  const hours = Math.floor(remainingMinutes / 60)
+  const minutes = remainingMinutes % 60
+  return `${String(days).padStart(2, '0')}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+/** ชั่วโมงทศนิยม → hh:mm */
+function hoursToHHMM(hours?: number | null): string {
+  if (hours == null || !Number.isFinite(Number(hours))) return '-'
+  const totalMinutes = Math.round(Number(hours) * 60)
+  const wholeHours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return `${String(wholeHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
 /** เปิดเอกสารแนบใบลาผ่าน signed URL (bucket private) — เปิดแท็บก่อนกัน popup blocker */
 async function openMedicalCert(path?: string) {
   if (!path) return
@@ -97,6 +128,8 @@ function otEmployeeName(req: HROTRequest): string {
 
 export default function LeaveManagement() {
   const { user } = useAuthContext()
+  /** สิทธิ์เข้าหน้า + อนุมัติลา: เฉพาะ superadmin / admin / hr */
+  const canManageLeave = ['superadmin', 'admin', 'hr'].includes(user?.role ?? '')
   const canApproveOT = user?.role === 'superadmin' || user?.role === 'admin'
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
@@ -113,14 +146,23 @@ export default function LeaveManagement() {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date())
   const [detailRequest, setDetailRequest] = useState<HRLeaveRequest | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [actionLoading, setActionLoading] = useState(false)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [showImport, setShowImport] = useState(false)
 
-  /** Optional: pass current employee id for approved_by when approving (e.g. from auth context). */
-  const currentEmployeeId: string | undefined = undefined
+  /** hr_employees.id ของผู้ใช้ปัจจุบัน — บันทึกเป็นผู้อนุมัติ/ผู้ปฏิเสธ */
+  const [currentEmployeeId, setCurrentEmployeeId] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (!user?.id) return
+    fetchEmployeeByUserId(user.id)
+      .then((emp) => setCurrentEmployeeId(emp?.id))
+      .catch(() => {})
+  }, [user?.id])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -200,6 +242,8 @@ export default function LeaveManagement() {
 
   const today = new Date()
   const todayKey = toDateKey(today)
+  const selectedDateKey = toDateKey(selectedCalendarDate)
+  const isSelectedToday = selectedDateKey === todayKey
   const monthYearLabel = calendarMonth.toLocaleDateString('th-TH', {
     month: 'long',
     year: 'numeric',
@@ -234,7 +278,7 @@ export default function LeaveManagement() {
     }
   })
 
-  const todayLeaves = leavesByDate[todayKey] ?? []
+  const selectedDateLeaves = leavesByDate[selectedDateKey] ?? []
 
   const approvedUsedByEmpYearType = requests.reduce<Record<string, number>>((acc, req) => {
     if (req.status !== 'approved') return acc
@@ -287,6 +331,7 @@ export default function LeaveManagement() {
       await updateLeaveRequest(rejectingId, {
         status: 'rejected',
         reject_reason: reason,
+        approved_by: currentEmployeeId ?? undefined,
       })
       supabase.functions.invoke('hr-leave-request-notify', { body: { leave_id: rejectingId, event: 'rejected' } }).catch(() => {})
       setSuccessMessage('ไม่อนุมัติการลาแล้ว')
@@ -318,6 +363,7 @@ export default function LeaveManagement() {
       await updateOTRequest(id, {
         status: 'approved',
         approved_at: new Date().toISOString(),
+        approved_by: currentEmployeeId ?? undefined,
       })
       supabase.functions.invoke('hr-ot-notify', { body: { ot_id: id, event: 'approved' } }).catch(() => {})
       setSuccessMessage('อนุมัติคำขอ OT สำเร็จ')
@@ -342,6 +388,7 @@ export default function LeaveManagement() {
       await updateOTRequest(otRejectingId, {
         status: 'rejected',
         reject_reason: reason,
+        approved_by: currentEmployeeId ?? undefined,
       })
       supabase.functions.invoke('hr-ot-notify', { body: { ot_id: otRejectingId, event: 'rejected' } }).catch(() => {})
       setSuccessMessage('ไม่อนุมัติคำขอ OT แล้ว')
@@ -360,6 +407,16 @@ export default function LeaveManagement() {
     const t = setTimeout(() => setSuccessMessage(null), 3000)
     return () => clearTimeout(t)
   }, [successMessage])
+
+  if (!canManageLeave) {
+    return (
+      <div className="mt-8 rounded-xl bg-white shadow-soft border border-surface-200 p-10 text-center">
+        <div className="text-4xl mb-3">🔒</div>
+        <p className="text-lg font-semibold text-surface-700">ไม่มีสิทธิ์เข้าถึงหน้านี้</p>
+        <p className="text-sm text-surface-500 mt-1">เฉพาะผู้ดูแลระบบ / แอดมิน / ฝ่ายบุคคล เท่านั้น</p>
+      </div>
+    )
+  }
 
   return (
     <div className="mt-4 space-y-6">
@@ -449,6 +506,13 @@ export default function LeaveManagement() {
           )}
           {activeTab === 'list' && (
             <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-amber-500 text-amber-700 px-3 py-2 text-sm font-medium hover:bg-amber-50"
+              >
+                <FiUpload className="w-4 h-4" /> นำเข้าใบลาย้อนหลัง
+              </button>
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
@@ -504,6 +568,17 @@ export default function LeaveManagement() {
                 </span>
                 <button
                   type="button"
+                  onClick={() => {
+                    const now = new Date()
+                    setSelectedCalendarDate(now)
+                    setCalendarMonth(new Date(now.getFullYear(), now.getMonth(), 1))
+                  }}
+                  className="px-2.5 py-1 rounded-lg border border-emerald-300 bg-emerald-50 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                >
+                  วันนี้
+                </button>
+                <button
+                  type="button"
                   onClick={() =>
                     setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
                   }
@@ -538,15 +613,26 @@ export default function LeaveManagement() {
                   {calendarCells.map((cell) => {
                     const hasPending = cell.leaves.some((r) => r.status === 'pending')
                     return (
-                    <div
+                    <button
+                      type="button"
                       key={cell.key}
-                      className={`min-h-[96px] rounded-lg border p-1.5 ${
+                      onClick={() => {
+                        setSelectedCalendarDate(new Date(cell.date))
+                        if (!cell.inMonth) {
+                          setCalendarMonth(new Date(cell.date.getFullYear(), cell.date.getMonth(), 1))
+                        }
+                      }}
+                      aria-label={`ดูรายการลา ${cell.date.toLocaleDateString('th-TH')}`}
+                      aria-pressed={cell.key === selectedDateKey}
+                      className={`min-h-[96px] rounded-lg border p-1.5 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/60 ${
                         cell.inMonth
                           ? hasPending
                             ? 'bg-yellow-50 border-yellow-300'
                             : 'bg-white border-surface-200'
                           : 'bg-surface-50 border-surface-100 text-surface-400'
-                      } ${cell.isToday ? 'ring-2 ring-emerald-500 border-emerald-300' : ''}`}
+                      } ${cell.key === selectedDateKey ? 'ring-2 ring-emerald-500 border-emerald-400' : ''} ${
+                        cell.isToday && cell.key !== selectedDateKey ? 'ring-1 ring-emerald-300' : ''
+                      }`}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
@@ -576,28 +662,37 @@ export default function LeaveManagement() {
                           <div className="text-[10px] text-surface-500">+ อีก {cell.leaves.length - 3}</div>
                         )}
                       </div>
-                    </div>
+                    </button>
                     )
                   })}
                 </div>
               </div>
 
-              {/* รายการลาวันนี้ (ขวา) */}
+              {/* รายการลาของวันที่เลือก (ขวา) */}
               <div className="lg:w-72 flex-shrink-0">
                 <div className="rounded-lg border border-surface-200 bg-white p-3">
                   <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm font-semibold text-surface-800">รายการลาวันนี้</h4>
+                    <div>
+                      <h4 className="text-sm font-semibold text-surface-800">
+                        {isSelectedToday ? 'รายการลาวันนี้' : 'รายการลาวันที่เลือก'}
+                      </h4>
+                      <p className="text-[11px] text-surface-500">
+                        {thaiWeekdayName(selectedCalendarDate)} {selectedCalendarDate.toLocaleDateString('th-TH')}
+                      </p>
+                    </div>
                     <span className="text-xs rounded-full px-2.5 py-0.5 bg-emerald-100 text-emerald-700 font-semibold">
-                      {todayLeaves.length} คนลา
+                      {selectedDateLeaves.length} คนลา
                     </span>
                   </div>
-                  {todayLeaves.length === 0 ? (
-                    <p className="text-sm text-surface-500 py-6 text-center">ไม่มีผู้ลาวันนี้</p>
+                  {selectedDateLeaves.length === 0 ? (
+                    <p className="text-sm text-surface-500 py-6 text-center">
+                      {isSelectedToday ? 'ไม่มีผู้ลาวันนี้' : 'ไม่มีผู้ลาในวันที่เลือก'}
+                    </p>
                   ) : (
                     <ul className="space-y-2">
-                      {todayLeaves.map((r) => (
+                      {selectedDateLeaves.map((r) => (
                         <li
-                          key={`today-${r.id}`}
+                          key={`${selectedDateKey}-${r.id}`}
                           className={`rounded-lg px-3 py-2 border ${
                             r.status === 'approved'
                               ? 'bg-emerald-50 border-emerald-100'
@@ -628,7 +723,7 @@ export default function LeaveManagement() {
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่ทำ OT</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชั่วโมง</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชั่วโมง (hh:mm)</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
                   {canApproveOT && (
@@ -653,7 +748,7 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700">
                         {req.ot_start.slice(0, 5)} – {req.ot_end.slice(0, 5)} น.
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700">{req.hours ?? '-'}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700 font-mono">{hoursToHHMM(req.hours)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[240px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                         {req.reject_reason && (
@@ -711,17 +806,18 @@ export default function LeaveManagement() {
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม-สิ้นสุด</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน (dd:hh:mm)</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันลาคงเหลือ</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredRequests.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-surface-500 text-sm">
+                    <td colSpan={9} className="px-6 py-12 text-center text-surface-500 text-sm">
                       ไม่มีรายการ
                     </td>
                   </tr>
@@ -739,7 +835,7 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700">
                         {req.start_date} – {req.end_date}
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700">{req.total_days}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700 font-mono whitespace-nowrap">{leaveDurationDDHHMM(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
@@ -775,6 +871,9 @@ export default function LeaveManagement() {
                           {statusLabel(req.status)}
                         </span>
                       </td>
+                      <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
+                        {approverDisplayName(req)}
+                      </td>
                       <td className="px-6 py-3">
                         {req.medical_cert_url ? (
                           <button
@@ -798,30 +897,57 @@ export default function LeaveManagement() {
             </table>
           </div>
         ) : (
-          <div className="p-6">
-            {filteredRequests.length === 0 ? (
-              <p className="text-center text-surface-500 py-12">ไม่มีคำขอที่รอดำเนินการ</p>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {filteredRequests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="rounded-xl border border-surface-200 bg-white p-4 shadow-soft hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700">
-                        <FiUser className="w-6 h-6" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-surface-800">{employeeDisplayName(req)}</p>
-                        <p className="text-sm text-surface-600 mt-0.5">
-                          {(req.leave_type as { name?: string })?.name ?? '-'} · {req.total_days} วัน
-                        </p>
-                        <p className="text-sm text-surface-600">
-                          {req.start_date} – {req.end_date}
-                        </p>
-                        <p className="text-sm text-surface-700 mt-2 line-clamp-2">{req.reason ?? '-'}</p>
-                        <div className="flex items-center gap-2 mt-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม-สิ้นสุด</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน (dd:hh:mm)</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-12 text-center text-surface-500 text-sm">
+                      ไม่มีคำขอที่รอดำเนินการ
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRequests.map((req) => (
+                    <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
+                      <td className="px-6 py-3 text-sm font-medium text-surface-800 whitespace-nowrap">
+                        {employeeDisplayName(req)}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
+                        {(req.leave_type as { name?: string })?.name ?? '-'}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
+                        {req.start_date} – {req.end_date}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-surface-700 font-mono whitespace-nowrap">{leaveDurationDDHHMM(req)}</td>
+                      <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px] truncate" title={req.reason ?? ''}>
+                        {req.reason ?? '-'}
+                      </td>
+                      <td className="px-6 py-3">
+                        {req.medical_cert_url ? (
+                          <button
+                            type="button"
+                            onClick={() => openMedicalCert(req.medical_cert_url)}
+                            className="inline-flex items-center gap-1 text-emerald-600 hover:underline text-sm whitespace-nowrap"
+                          >
+                            <FiExternalLink className="w-4 h-4" /> ดูไฟล์
+                          </button>
+                        ) : (
+                          <span className="text-surface-400 text-sm">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-3">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
                           <button
                             type="button"
                             onClick={() => handleApprove(req.id)}
@@ -839,15 +965,18 @@ export default function LeaveManagement() {
                             ไม่อนุมัติ
                           </button>
                         </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
+
+      {/* นำเข้าใบลาย้อนหลัง */}
+      <LeaveImport open={showImport} onClose={() => setShowImport(false)} onImported={loadData} />
 
       {/* Detail modal */}
       <Modal
@@ -862,7 +991,8 @@ export default function LeaveManagement() {
             <div className="space-y-3 text-sm">
               <p><span className="text-surface-500">พนักงาน:</span> {employeeDisplayName(detailRequest)}</p>
               <p><span className="text-surface-500">ประเภทลา:</span> {(detailRequest.leave_type as { name?: string })?.name ?? '-'}</p>
-              <p><span className="text-surface-500">วันที่:</span> {detailRequest.start_date} – {detailRequest.end_date} ({detailRequest.total_days} วัน)</p>
+              <p><span className="text-surface-500">วันที่:</span> {detailRequest.start_date} – {detailRequest.end_date}</p>
+              <p><span className="text-surface-500">จำนวนวัน (dd:hh:mm):</span> <span className="font-mono">{leaveDurationDDHHMM(detailRequest)}</span></p>
               <p><span className="text-surface-500">เหตุผล:</span> {detailRequest.reason ?? '-'}</p>
               <p>
                 <span className="text-surface-500">สถานะ:</span>{' '}

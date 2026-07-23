@@ -1,18 +1,47 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle } from 'react-icons/fi'
+import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX } from 'react-icons/fi'
 import type { IconType } from 'react-icons'
 import {
   fetchEmployeeByUserId,
   getEmployeeLeaveSummary,
   fetchNotifications,
+  fetchAllApprovalResultNotifications,
   markNotificationRead,
   fetchLeaveRequests,
   fetchOTRequests,
+  updateLeaveRequest,
+  updateOTRequest,
+  fetchWFHRequests,
+  updateWFHRequest,
+  getHRFileUrl,
 } from '../../../lib/hrApi'
+import { supabase } from '../../../lib/supabase'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import Modal from '../../ui/Modal'
-import type { HREmployee, HRNotification } from '../../../types'
+import type { HREmployee, HRNotification, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../../types'
+
+/** รายการรออนุมัติที่จับคู่กับแจ้งเตือนได้ (ลา หรือ OT) */
+type ApprovalTarget =
+  | { kind: 'leave'; req: HRLeaveRequest }
+  | { kind: 'ot'; req: HROTRequest }
+  | { kind: 'wfh'; req: HRWFHRequest }
+
+/** ชื่อแสดงผลของพนักงานเจ้าของคำขอ */
+function reqEmpName(e?: HREmployee | { first_name?: string; last_name?: string; nickname?: string } | null): string {
+  if (!e) return '-'
+  const full = [e.first_name, e.last_name].filter(Boolean).join(' ')
+  return e.nickname ? `${full} (${e.nickname})` : full || '-'
+}
+
+const BUCKET_PHOTOS = 'hr-photos'
+
+/** photo_url อาจเป็น URL เต็ม หรือเป็น path ใน storage — คืน URL ที่แสดงได้ */
+function photoDisplayUrl(photoUrl: string | undefined): string | null {
+  if (!photoUrl) return null
+  if (photoUrl.startsWith('http')) return photoUrl
+  return getHRFileUrl(BUCKET_PHOTOS, photoUrl)
+}
 
 /** ประเภทลาหลักที่โชว์ในการ์ดหน้าหลัก (ที่เหลือดูใน popup) */
 const MAIN_LEAVE_KEYWORDS = ['กิจ', 'ป่วย', 'พักร้อน'] as const
@@ -51,6 +80,13 @@ function formatTimeAgo(dateStr: string): string {
   return d.toLocaleDateString('th-TH')
 }
 
+function toLocalDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
 export default function EmployeeDashboard() {
   const { user } = useAuthContext()
   const [employee, setEmployee] = useState<HREmployee | null>(null)
@@ -60,10 +96,31 @@ export default function EmployeeDashboard() {
   } | null>(null)
   const [notifications, setNotifications] = useState<HRNotification[]>([])
   const [showAllBalance, setShowAllBalance] = useState(false)
+  const [photoError, setPhotoError] = useState(false)
+  const [showPhoto, setShowPhoto] = useState(false)
   const [notifTab, setNotifTab] = useState<'pending' | 'result'>('result')
+  const [resultStartDate, setResultStartDate] = useState(() => {
+    const date = new Date()
+    date.setDate(date.getDate() - 29)
+    return toLocalDateInput(date)
+  })
+  const [resultEndDate, setResultEndDate] = useState(() => toLocalDateInput(new Date()))
+  const [resultTypeFilter, setResultTypeFilter] = useState<'all' | 'leave' | 'ot' | 'wfh'>('all')
+  const [resultStatusFilter, setResultStatusFilter] = useState<'all' | 'approved' | 'rejected'>('all')
+  const [resultVisibleCount, setResultVisibleCount] = useState(30)
   const [searchParams] = useSearchParams()
   /** id คำขอลา/OT ที่ยังรออนุมัติจริง — ใช้ซ่อนแจ้งเตือน "รออนุมัติ" ที่ถูกอนุมัติ/ปฏิเสธไปแล้ว */
   const [pendingRequestIds, setPendingRequestIds] = useState<Set<string>>(new Set())
+  /** related_id → คำขอที่ยังรออนุมัติ (สำหรับโชว์ชื่อผู้ขอ + อนุมัติจากมือถือ) */
+  const [pendingById, setPendingById] = useState<Map<string, ApprovalTarget>>(new Map())
+  /** related_id → คำขอที่ใช้แสดงชื่อผู้ขอ/ผู้อนุมัติในแท็บผลอนุมัติ */
+  const [resultById, setResultById] = useState<Map<string, ApprovalTarget>>(new Map())
+  /** สิทธิ์อนุมัติจากมือถือ: เฉพาะ superadmin / admin / hr */
+  const canApprove = ['superadmin', 'admin', 'hr'].includes(user?.role ?? '')
+  const [approvalTarget, setApprovalTarget] = useState<ApprovalTarget | null>(null)
+  const [rejectMode, setRejectMode] = useState(false)
+  const [rejectReason, setRejectReason] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
 
   const load = useCallback(async () => {
     if (!user?.id) return
@@ -75,25 +132,52 @@ export default function EmployeeDashboard() {
         setLoading(false)
         return
       }
-      const [summary, notifs, leavePending, otPending] = await Promise.all([
+      const [summary, ownNotifs, allResultNotifs, leavePending, otPending, wfhPending, resultLeave, resultOt, resultWFH] = await Promise.all([
         getEmployeeLeaveSummary(emp.id, new Date().getFullYear()),
-        fetchNotifications(emp.id).then((n) => n.slice(0, 30)),
-        fetchLeaveRequests({ status: 'pending' }).catch(() => []),
-        fetchOTRequests({ status: 'pending' }).catch(() => []),
+        fetchNotifications(emp.id),
+        canApprove ? fetchAllApprovalResultNotifications() : Promise.resolve([]),
+        // คำขอที่รออนุมัติ (ทั้งหมด) — โชว์เฉพาะเมื่อมีสิทธิ์อนุมัติ
+        canApprove ? fetchLeaveRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
+        canApprove ? fetchOTRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
+        canApprove ? fetchWFHRequests({ status: 'pending' }).catch(() => []) : Promise.resolve([]),
+        // ผู้มีสิทธิ์เห็นผลของทุกคน ส่วนพนักงานทั่วไปเห็นเฉพาะของตัวเอง
+        fetchLeaveRequests(canApprove ? undefined : { employee_id: emp.id }).catch(() => []),
+        fetchOTRequests(canApprove ? undefined : { employee_id: emp.id }).catch(() => []),
+        fetchWFHRequests(canApprove ? undefined : { employee_id: emp.id }).catch(() => []),
       ])
       setLeaveSummary(summary)
-      setNotifications(notifs)
-      setPendingRequestIds(new Set([...leavePending.map((r) => r.id), ...otPending.map((r) => r.id)]))
+      const mergedNotifications = new Map<string, HRNotification>()
+      ;[...ownNotifs, ...allResultNotifs].forEach((n) => mergedNotifications.set(n.id, n))
+      setNotifications(
+        [...mergedNotifications.values()]
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 300),
+      )
+      setPendingRequestIds(new Set([...leavePending.map((r) => r.id), ...otPending.map((r) => r.id), ...wfhPending.map((r) => r.id)]))
+      const pMap = new Map<string, ApprovalTarget>()
+      leavePending.forEach((r) => pMap.set(r.id, { kind: 'leave', req: r }))
+      otPending.forEach((r) => pMap.set(r.id, { kind: 'ot', req: r }))
+      wfhPending.forEach((r) => pMap.set(r.id, { kind: 'wfh', req: r }))
+      setPendingById(pMap)
+      const resultMap = new Map<string, ApprovalTarget>()
+      resultLeave.forEach((r) => resultMap.set(r.id, { kind: 'leave', req: r }))
+      resultOt.forEach((r) => resultMap.set(r.id, { kind: 'ot', req: r }))
+      resultWFH.forEach((r) => resultMap.set(r.id, { kind: 'wfh', req: r }))
+      setResultById(resultMap)
     } catch (e) {
       console.error(e)
     } finally {
       setLoading(false)
     }
-  }, [user?.id])
+  }, [user?.id, canApprove])
 
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    setResultVisibleCount(30)
+  }, [resultStartDate, resultEndDate, resultTypeFilter, resultStatusFilter])
 
   // กดกระดิ่งจาก header → เปิดแท็บผลอนุมัติ
   useEffect(() => {
@@ -106,6 +190,75 @@ export default function EmployeeDashboard() {
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)))
     } catch (e) {
       console.error(e)
+    }
+  }
+
+  /** กดรายการแจ้งเตือน: ถ้าเป็น "รออนุมัติ" และมีสิทธิ์ → เปิดหน้าอนุมัติ, ไม่งั้นแค่ mark read */
+  const handleNotifClick = (n: HRNotification) => {
+    const target = n.related_id ? pendingById.get(n.related_id) : undefined
+    if (canApprove && isPendingNotif(n.type) && target) {
+      setRejectMode(false)
+      setRejectReason('')
+      setApprovalTarget(target)
+    } else if (!n.is_read && n.employee_id === employee?.id) {
+      handleMarkRead(n.id)
+    }
+  }
+
+  const closeApproval = () => {
+    setApprovalTarget(null)
+    setRejectMode(false)
+    setRejectReason('')
+  }
+
+  const submitDecision = async (decision: 'approved' | 'rejected') => {
+    if (!approvalTarget || !employee) return
+    if (decision === 'rejected' && !rejectReason.trim()) return
+    const requestLabel = approvalTarget.kind === 'leave' ? 'คำขอลา' : approvalTarget.kind === 'ot' ? 'คำขอ OT' : 'คำขอ WFH'
+    const requester = reqEmpName(approvalTarget.req.employee)
+    const confirmed = window.confirm(
+      decision === 'approved'
+        ? `ยืนยันอนุมัติ${requestLabel}ของ ${requester} ใช่หรือไม่?`
+        : `ยืนยันไม่อนุมัติ${requestLabel}ของ ${requester} ใช่หรือไม่?`,
+    )
+    if (!confirmed) return
+    setActionBusy(true)
+    try {
+      const now = new Date().toISOString()
+      if (approvalTarget.kind === 'leave') {
+        await updateLeaveRequest(approvalTarget.req.id, {
+          status: decision,
+          approved_by: employee.id,
+          ...(decision === 'approved' ? { approved_at: now } : { reject_reason: rejectReason.trim() }),
+        })
+        supabase.functions
+          .invoke('hr-leave-request-notify', { body: { leave_id: approvalTarget.req.id, event: decision } })
+          .catch(() => {})
+      } else if (approvalTarget.kind === 'ot') {
+        await updateOTRequest(approvalTarget.req.id, {
+          status: decision,
+          approved_by: employee.id,
+          ...(decision === 'approved' ? { approved_at: now } : { reject_reason: rejectReason.trim() }),
+        })
+        supabase.functions
+          .invoke('hr-ot-notify', { body: { ot_id: approvalTarget.req.id, event: decision } })
+          .catch(() => {})
+      } else {
+        await updateWFHRequest(approvalTarget.req.id, {
+          status: decision,
+          approved_by: employee.id,
+          ...(decision === 'approved'
+            ? { approved_at: now, reject_reason: undefined }
+            : { reject_reason: rejectReason.trim() }),
+        })
+      }
+      closeApproval()
+      await load()
+    } catch (e) {
+      console.error(e)
+      alert('ดำเนินการไม่สำเร็จ — อาจไม่มีสิทธิ์ หรือคำขอถูกดำเนินการไปแล้ว')
+    } finally {
+      setActionBusy(false)
     }
   }
 
@@ -126,12 +279,35 @@ export default function EmployeeDashboard() {
   }
 
   const displayName = employee.nickname || employee.first_name || 'คุณ'
+  const photoUrl = photoDisplayUrl(employee.photo_url)
 
   return (
     <div className="space-y-6">
-      <section>
-        <h2 className="text-xl font-semibold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
-        <p className="text-gray-500 text-sm">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
+      <section className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-xl font-semibold text-gray-900 mb-1">สวัสดี คุณ{displayName}</h2>
+          <p className="text-gray-500 text-sm">ยินดีต้อนรับเข้าทีม ขอให้วันนี้เป็นวันที่ดี</p>
+        </div>
+        <div className="shrink-0">
+          {photoUrl && !photoError ? (
+            <button
+              type="button"
+              onClick={() => setShowPhoto(true)}
+              className="block rounded-full ring-2 ring-emerald-100 shadow-sm overflow-hidden"
+            >
+              <img
+                src={photoUrl}
+                alt={displayName}
+                onError={() => setPhotoError(true)}
+                className="w-14 h-14 rounded-full object-cover"
+              />
+            </button>
+          ) : (
+            <span className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center ring-2 ring-emerald-100 shadow-sm">
+              <FiUser className="w-7 h-7" />
+            </span>
+          )}
+        </div>
       </section>
 
       <section className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
@@ -174,10 +350,20 @@ export default function EmployeeDashboard() {
 
         {/* แถบ รออนุมัติ / ผลอนุมัติ — แท็บรออนุมัติซ่อนรายการที่อนุมัติ/ปฏิเสธไปแล้ว */}
         {(() => {
-          const inTab = (n: HRNotification, tab: 'pending' | 'result') =>
-            tab === 'pending'
-              ? isPendingNotif(n.type) && (!n.related_id || pendingRequestIds.has(n.related_id))
-              : !isPendingNotif(n.type)
+          const isResultNotification = (n: HRNotification) => n.type.includes('result')
+          const matchesResultFilters = (n: HRNotification) => {
+            if (!isResultNotification(n)) return false
+            const date = toLocalDateInput(new Date(n.created_at))
+            if (resultStartDate && date < resultStartDate) return false
+            if (resultEndDate && date > resultEndDate) return false
+            if (resultTypeFilter !== 'all' && !n.type.includes(resultTypeFilter)) return false
+            if (resultStatusFilter !== 'all' && resultStatus(n.title) !== resultStatusFilter) return false
+            return true
+          }
+          const pendingList = notifications.filter(
+            (n) => isPendingNotif(n.type) && (!n.related_id || pendingRequestIds.has(n.related_id)),
+          )
+          const filteredResultList = notifications.filter(matchesResultFilters)
           return (
         <>
         <div className="flex gap-2 mb-3">
@@ -185,7 +371,7 @@ export default function EmployeeDashboard() {
             ['pending', 'รออนุมัติ'],
             ['result', 'ผลอนุมัติ'],
           ] as [typeof notifTab, string][]).map(([key, label]) => {
-            const count = notifications.filter((n) => inTab(n, key)).length
+            const count = key === 'pending' ? pendingList.length : filteredResultList.length
             return (
               <button
                 key={key}
@@ -203,21 +389,86 @@ export default function EmployeeDashboard() {
           })}
         </div>
 
+        {notifTab === 'result' && (
+          <div className="mb-3 rounded-2xl border border-gray-200 bg-white p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-500">
+                ตั้งแต่วันที่
+                <input
+                  type="date"
+                  value={resultStartDate}
+                  max={resultEndDate || undefined}
+                  onChange={(e) => setResultStartDate(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-2 text-xs text-gray-700"
+                />
+              </label>
+              <label className="text-xs text-gray-500">
+                ถึงวันที่
+                <input
+                  type="date"
+                  value={resultEndDate}
+                  min={resultStartDate || undefined}
+                  onChange={(e) => setResultEndDate(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-2 text-xs text-gray-700"
+                />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={resultTypeFilter}
+                onChange={(e) => setResultTypeFilter(e.target.value as typeof resultTypeFilter)}
+                className="rounded-lg border border-gray-200 px-2 py-2 text-xs text-gray-700"
+                aria-label="กรองประเภทคำขอ"
+              >
+                <option value="all">ทุกประเภท</option>
+                <option value="leave">การลา</option>
+                <option value="ot">OT</option>
+                <option value="wfh">WFH</option>
+              </select>
+              <select
+                value={resultStatusFilter}
+                onChange={(e) => setResultStatusFilter(e.target.value as typeof resultStatusFilter)}
+                className="rounded-lg border border-gray-200 px-2 py-2 text-xs text-gray-700"
+                aria-label="กรองสถานะผลอนุมัติ"
+              >
+                <option value="all">ทุกสถานะ</option>
+                <option value="approved">อนุมัติ</option>
+                <option value="rejected">ปฏิเสธ</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-2xl bg-white border border-gray-200 shadow-sm overflow-hidden">
           {(() => {
-            const list = notifications.filter((n) => inTab(n, notifTab))
+            const completeList = notifTab === 'pending' ? pendingList : filteredResultList
+            const list = notifTab === 'result' ? completeList.slice(0, resultVisibleCount) : completeList
             if (list.length === 0) {
               return <p className="p-4 text-center text-gray-500 text-sm">ไม่มีรายการ</p>
             }
             return (
+              <>
               <ul className="divide-y divide-gray-100">
                 {list.map((n) => {
                   const { Icon, color, bg } = notifIcon(n.type)
+                  const pendingT = n.related_id ? pendingById.get(n.related_id) : undefined
+                  const resultT = n.related_id ? resultById.get(n.related_id) : undefined
+                  const actionable = canApprove && isPendingNotif(n.type) && !!pendingT
+                  // ชื่อผู้ขอ: แท็บรออนุมัติดึงจากคำขอที่รออยู่, แท็บผลอนุมัติดึงจากคำขอของตัวเอง
+                  const requesterName = pendingT
+                    ? reqEmpName(pendingT.req.employee)
+                    : resultT
+                      ? reqEmpName(resultT.req.employee)
+                      : null
+                  // ชื่อผู้ดำเนินการ (แท็บผลอนุมัติ)
+                  const actorName =
+                    !isPendingNotif(n.type) && resultT?.req.approver ? reqEmpName(resultT.req.approver) : null
+                  const actorLabel = resultStatus(n.title) === 'rejected' ? 'ผู้ปฏิเสธ' : 'ผู้อนุมัติ'
                   return (
                     <li key={n.id}>
                       <button
                         type="button"
-                        onClick={() => handleMarkRead(n.id)}
+                        onClick={() => handleNotifClick(n)}
                         className={`w-full text-left p-4 active:bg-gray-50 ${!n.is_read ? 'bg-emerald-50/50' : ''}`}
                       >
                         <div className="flex items-start gap-3">
@@ -229,10 +480,25 @@ export default function EmployeeDashboard() {
                               {!n.is_read && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />}
                               <p className="font-medium text-gray-900 text-sm">{n.title}</p>
                             </div>
+                            {requesterName && (
+                              <p className="text-gray-700 text-xs mt-0.5">
+                                ผู้ขอ: <span className="font-medium">{requesterName}</span>
+                              </p>
+                            )}
                             {n.message && <p className="text-gray-600 text-xs mt-0.5 line-clamp-2">{n.message}</p>}
+                            {actorName && (
+                              <p className="text-gray-500 text-xs mt-0.5">{actorLabel}: {actorName}</p>
+                            )}
                             <p className="text-gray-400 text-xs mt-1">{formatTimeAgo(n.created_at)}</p>
                           </div>
                           {(() => {
+                            if (actionable) {
+                              return (
+                                <span className="shrink-0 self-start inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-600 text-white">
+                                  อนุมัติ ›
+                                </span>
+                              )
+                            }
                             const st = resultStatus(n.title)
                             if (!st) return null
                             return (
@@ -255,6 +521,18 @@ export default function EmployeeDashboard() {
                   )
                 })}
               </ul>
+              {notifTab === 'result' && resultVisibleCount < completeList.length && (
+                <div className="border-t border-gray-100 p-3 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setResultVisibleCount((count) => count + 30)}
+                    className="rounded-xl border border-emerald-200 px-5 py-2 text-sm font-medium text-emerald-700 active:bg-emerald-50"
+                  >
+                    ดูเพิ่มเติม ({completeList.length - resultVisibleCount} รายการ)
+                  </button>
+                </div>
+              )}
+              </>
             )
           })()}
         </div>
@@ -282,6 +560,121 @@ export default function EmployeeDashboard() {
           </Link>
         </div>
       </section>
+
+      {/* อนุมัติ/ปฏิเสธ จากมือถือ (เฉพาะ superadmin/admin/hr) */}
+      <Modal open={!!approvalTarget} onClose={closeApproval} closeOnBackdropClick contentClassName="max-w-sm">
+        {approvalTarget && (
+          <div className="relative p-5">
+            <button
+              type="button"
+              onClick={closeApproval}
+              aria-label="ปิดหน้าต่างอนุมัติ"
+              className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-400 active:bg-gray-100 active:text-gray-700"
+            >
+              <FiX className="h-5 w-5" />
+            </button>
+            <h3 className="mb-3 pr-10 text-lg font-semibold text-gray-800">
+              {approvalTarget.kind === 'leave' ? 'อนุมัติการลา' : approvalTarget.kind === 'ot' ? 'อนุมัติคำขอ OT' : 'อนุมัติคำขอ WFH'}
+            </h3>
+            <div className="space-y-1.5 text-sm text-gray-700">
+              <p>ผู้ขอ: <span className="font-medium">{reqEmpName(approvalTarget.req.employee)}</span></p>
+              {approvalTarget.kind === 'leave' ? (
+                <>
+                  <p>ประเภท: {(approvalTarget.req.leave_type as { name?: string })?.name ?? '-'}</p>
+                  <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date} ({approvalTarget.req.total_days} วัน)</p>
+                  {approvalTarget.req.reason && <p>เหตุผล: {approvalTarget.req.reason}</p>}
+                </>
+              ) : approvalTarget.kind === 'ot' ? (
+                <>
+                  <p>วันที่: {approvalTarget.req.request_date}</p>
+                  <p>ช่วงเวลา: {approvalTarget.req.ot_start?.slice(0, 5)} – {approvalTarget.req.ot_end?.slice(0, 5)} น.{approvalTarget.req.hours ? ` (${approvalTarget.req.hours} ชม.)` : ''}</p>
+                  {approvalTarget.req.reason && <p>เหตุผล: {approvalTarget.req.reason}</p>}
+                </>
+              ) : (
+                <>
+                  <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date}</p>
+                  <p>เหตุผล: {approvalTarget.req.reason}</p>
+                </>
+              )}
+            </div>
+
+            {rejectMode ? (
+              <div className="mt-4">
+                <label className="block text-sm text-gray-600 mb-1">เหตุผลที่ไม่อนุมัติ (จำเป็น)</label>
+                <textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  placeholder="ระบุเหตุผล…"
+                />
+                <div className="flex gap-2 mt-3">
+                  <button
+                    type="button"
+                    onClick={() => { setRejectMode(false); setRejectReason('') }}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-300 text-gray-600 text-sm font-medium"
+                  >
+                    ย้อนกลับ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => submitDecision('rejected')}
+                    disabled={actionBusy || !rejectReason.trim()}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 text-white text-sm font-medium disabled:opacity-40"
+                  >
+                    ยืนยันไม่อนุมัติ
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex gap-2 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setRejectMode(true)}
+                  disabled={actionBusy}
+                  className="flex-1 py-2.5 rounded-xl bg-red-100 text-red-700 text-sm font-medium active:bg-red-200 disabled:opacity-40"
+                >
+                  ไม่อนุมัติ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => submitDecision('approved')}
+                  disabled={actionBusy}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium active:bg-emerald-700 disabled:opacity-40"
+                >
+                  {actionBusy ? 'กำลังบันทึก…' : 'อนุมัติ'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* รูปพนักงานแบบเต็ม */}
+      <Modal
+        open={showPhoto}
+        onClose={() => setShowPhoto(false)}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        <div className="relative p-2">
+          <button
+            type="button"
+            onClick={() => setShowPhoto(false)}
+            aria-label="ปิด"
+            className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center active:bg-black/70"
+          >
+            <FiX className="w-5 h-5" />
+          </button>
+          <button type="button" onClick={() => setShowPhoto(false)} className="block w-full">
+            <img
+              src={photoUrl ?? undefined}
+              alt={displayName}
+              className="w-full max-h-[75vh] object-contain rounded-xl"
+            />
+          </button>
+        </div>
+      </Modal>
 
       {/* วันลาคงเหลือทั้งหมด */}
       <Modal

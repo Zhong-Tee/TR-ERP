@@ -15,6 +15,10 @@ function thaiDate(d: string): string {
   })
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '-').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -48,18 +52,19 @@ Deno.serve(async (req) => {
     if (error || !leave) throw new Error('leave request not found: ' + error?.message)
 
     const emp = leave.employee
-    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() + (emp?.nickname ? ` (${emp.nickname})` : '')
+    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
+    const nickname = emp?.nickname ?? '-'
     const dept = emp?.department?.name ?? '-'
     const leaveType = leave.leave_type?.name ?? '-'
-    // ลาแบบชั่วโมง: แสดงวัน + ช่วงเวลา + จำนวนชั่วโมง / เต็มวัน: แสดงช่วงวัน + จำนวนวัน
-    const durationText =
-      leave.leave_mode === 'hourly'
-        ? `${thaiDate(leave.start_date)} เวลา ${String(leave.start_time ?? '').slice(0, 5)}–${String(leave.end_time ?? '').slice(0, 5)} น. (${leave.total_hours ?? 0} ชม.)`
-        : `${
-            leave.start_date === leave.end_date
-              ? thaiDate(leave.start_date)
-              : `${thaiDate(leave.start_date)} – ${thaiDate(leave.end_date)}`
-          } (${leave.total_days} วัน)`
+    const leaveDateText = leave.start_date === leave.end_date
+      ? thaiDate(leave.start_date)
+      : `${thaiDate(leave.start_date)} – ${thaiDate(leave.end_date)}`
+    const leaveTimeText = leave.leave_mode === 'hourly'
+      ? `${String(leave.start_time ?? '').slice(0, 5)}–${String(leave.end_time ?? '').slice(0, 5)} น.`
+      : null
+    const leaveAmountText = leave.leave_mode === 'hourly'
+      ? `${leave.total_hours ?? 0} ชม.`
+      : `${leave.total_days} วัน`
 
     const header =
       event === 'approved'
@@ -68,19 +73,21 @@ Deno.serve(async (req) => {
           ? '❌ <b>ไม่อนุมัติใบลา</b>'
           : '📋 <b>ใบลาใหม่ — รออนุมัติ</b>'
 
-    const footer =
-      event === 'created'
-        ? `\n👉 อนุมัติได้ที่เมนู ระบบลางาน/OT › อนุมัติการลา`
-        : event === 'rejected' && leave.reject_reason
-          ? `\n📝 เหตุผล: ${leave.reject_reason}`
-          : ''
-
-    const text =
-      `${header}\n` +
-      `👤 ${name} • ${dept}\n` +
-      `🗓 ${leaveType} ${durationText}\n` +
-      (event === 'created' && leave.reason ? `📝 ${leave.reason}\n` : '') +
-      footer
+    const textLines = [
+      header,
+      `👤 <b>ชื่อ:</b> ${escapeHtml(name)}`,
+      `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(nickname)}`,
+      `🏢 <b>แผนก:</b> ${escapeHtml(dept)}`,
+      `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
+      `📅 <b>วันที่:</b> ${escapeHtml(leaveDateText)}`,
+    ]
+    if (leaveTimeText) textLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
+    textLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)
+    if (leave.reason) textLines.push(`📝 <b>เหตุผล:</b> ${escapeHtml(leave.reason)}`)
+    if (event === 'rejected' && leave.reject_reason) {
+      textLines.push(`❗ <b>เหตุผลที่ไม่อนุมัติ:</b> ${escapeHtml(leave.reject_reason)}`)
+    }
+    const text = textLines.join('\n')
 
     // รูปโปรไฟล์พนักงาน (bucket hr-photos เป็น public)
     const photoUrl = emp?.photo_url
@@ -119,12 +126,13 @@ Deno.serve(async (req) => {
         event === 'approved'
           ? '✅ <b>ใบลาของคุณได้รับการอนุมัติ</b>'
           : '❌ <b>ใบลาของคุณถูกปฏิเสธ</b>',
-        '',
-        `📋 ประเภท: ${leaveType}`,
-        `🗓 ${durationText}`,
+        `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
+        `📅 <b>วันที่:</b> ${escapeHtml(leaveDateText)}`,
       ]
+      if (leaveTimeText) pLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
+      pLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)
       if (event === 'rejected' && leave.reject_reason) {
-        pLines.push('', `📝 เหตุผล: ${leave.reject_reason}`)
+        pLines.push(`❗ <b>เหตุผล:</b> ${escapeHtml(leave.reject_reason)}`)
       }
       const personalText = pLines.join('\n')
       try {

@@ -105,6 +105,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [position_allowance, setPositionAllowance] = useState<number | ''>('')
   const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
   const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
+  const [work_mode, setWorkMode] = useState<NonNullable<HREmployee['work_mode']>>('office')
   const [clock_location_id, setClockLocationId] = useState('')
   const [work_schedule_id, setWorkScheduleId] = useState('')
   const [user_id, setUserId] = useState('')
@@ -208,6 +209,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       setPositionAllowance(employee.position_allowance ?? '')
       setEmploymentStatus(employee.employment_status)
       setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
+      setWorkMode(employee.work_mode ?? 'office')
       setClockLocationId(employee.clock_location_id ?? '')
       setWorkScheduleId(employee.work_schedule_id ?? '')
       setUserId(employee.user_id ?? '')
@@ -353,6 +355,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         position_allowance: typeof position_allowance === 'number' ? position_allowance : undefined,
         employment_status,
         contract_type,
+        work_mode,
         clock_location_id: clock_location_id || undefined,
         work_schedule_id: work_schedule_id || undefined,
         user_id: user_id || undefined,
@@ -820,13 +823,26 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 </select>
               </label>
               <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">รูปแบบการทำงาน</span>
+                <select
+                  value={work_mode}
+                  onChange={(e) => setWorkMode(e.target.value as NonNullable<HREmployee['work_mode']>)}
+                  className={fieldClass}
+                >
+                  <option value="office">เข้าออฟฟิศ</option>
+                  <option value="hybrid">เข้าออฟฟิศ + WFH (ต้องขออนุมัติ)</option>
+                  <option value="wfh">WFH 100% (ไม่ต้องขออนุมัติ)</option>
+                </select>
+              </label>
+              <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">จุดบันทึกเวลา (GPS)</span>
                 <select
                   value={clock_location_id}
                   onChange={(e) => setClockLocationId(e.target.value)}
+                  disabled={work_mode === 'wfh'}
                   className={fieldClass}
                 >
-                  <option value="">— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —</option>
+                  <option value="">{work_mode === 'wfh' ? '— ไม่ตรวจพิกัดสำนักงาน —' : '— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —'}</option>
                   {clockLocations.map((loc) => (
                     <option key={loc.id} value={loc.id}>
                       {loc.name} (รัศมี {loc.radius_m} ม.)

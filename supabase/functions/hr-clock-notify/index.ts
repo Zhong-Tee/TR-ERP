@@ -8,10 +8,17 @@ const corsHeaders = {
 }
 
 const ENTRY_LABELS: Record<string, { emoji: string; label: string }> = {
-  clock_in: { emoji: '🟢', label: 'เข้างาน' },
-  clock_out: { emoji: '🔴', label: 'ออกงาน' },
-  ot_in: { emoji: '🟣', label: 'เข้า OT' },
-  ot_out: { emoji: '🟣', label: 'ออก OT' },
+  clock_in: { emoji: '📥', label: 'เข้างาน' },
+  clock_out: { emoji: '📤', label: 'ออกงาน' },
+  ot_in: { emoji: '⏱️', label: 'เข้า OT' },
+  ot_out: { emoji: '⏱️', label: 'ออก OT' },
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '-')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }
 
 function toMinutes(t: string): number {
@@ -19,11 +26,11 @@ function toMinutes(t: string): number {
   return h * 60 + (m || 0)
 }
 
-/** นาที → hh:mm น. เช่น 44 → 00:44 น., 815 → 13:35 น. */
+/** ระยะเวลาเป็นนาที → hh:mm ชม. */
 function minutesToHHMM(min: number): string {
   const h = Math.floor(min / 60)
   const m = min % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} น.`
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ชม.`
 }
 
 /** HH:MM (นาที) ของ timestamp ตามเวลาไทย */
@@ -77,24 +84,26 @@ Deno.serve(async (req) => {
 
     const { data: entry, error: entryError } = await supabase
       .from('hr_time_entries')
-      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, work_schedule_id, department:hr_departments!department_id(name))')
+      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, work_schedule_id, position:hr_positions!position_id(name))')
       .eq('id', entry_id)
       .single()
     if (entryError || !entry) throw new Error('entry not found: ' + entryError?.message)
 
     const emp = entry.employee
-    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() + (emp?.nickname ? ` (${emp.nickname})` : '')
-    const dept = emp?.department?.name ?? '-'
+    const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
+    const nickname = emp?.nickname ?? '-'
+    const position = emp?.position?.name ?? '-'
     const typeInfo = ENTRY_LABELS[entry.entry_type] ?? { emoji: '🕐', label: entry.entry_type }
 
-    // คำนวณสายเกินผ่อนผัน (เฉพาะเข้างานปกติ) ตามมาตรฐานเวลาของพนักงาน
-    let lateText = ''
-    if (entry.entry_type === 'clock_in') {
-      let sched: { work_start: string; late_grace_min: number } | null = null
+    // คำนวณมาสาย/ออกก่อน ตามมาตรฐานเวลาของพนักงาน
+    let timingAlertText = ''
+    let graceText = ''
+    if (entry.entry_type === 'clock_in' || entry.entry_type === 'clock_out') {
+      let sched: { work_start: string; work_end: string; late_grace_min: number } | null = null
       if (emp?.work_schedule_id) {
         const { data } = await supabase
           .from('hr_work_schedules')
-          .select('work_start, late_grace_min, is_active')
+          .select('work_start, work_end, late_grace_min, is_active')
           .eq('id', emp.work_schedule_id)
           .single()
         if (data?.is_active) sched = data
@@ -102,7 +111,7 @@ Deno.serve(async (req) => {
       if (!sched) {
         const { data } = await supabase
           .from('hr_work_schedules')
-          .select('work_start, late_grace_min')
+          .select('work_start, work_end, late_grace_min')
           .eq('is_default', true)
           .eq('is_active', true)
           .limit(1)
@@ -110,20 +119,34 @@ Deno.serve(async (req) => {
         sched = data
       }
       if (sched) {
-        const grace = sched.late_grace_min ?? 0
-        const lateBeyond = bangkokMinutes(entry.entry_time) - (toMinutes(sched.work_start) + grace)
-        if (lateBeyond > 0) {
-          lateText = `\n⚠️ <b>มาสาย ${minutesToHHMM(lateBeyond)}</b>` + (grace > 0 ? ` (เกินผ่อนผัน ${grace} นาที)` : '')
+        if (entry.entry_type === 'clock_in') {
+          const grace = sched.late_grace_min ?? 0
+          const lateBeyond = bangkokMinutes(entry.entry_time) - (toMinutes(sched.work_start) + grace)
+          if (lateBeyond > 0) {
+            timingAlertText = `⚠️ <b>มาสาย:</b> ${minutesToHHMM(lateBeyond)}`
+            if (grace > 0) graceText = `ℹ️ (เกินผ่อนผัน ${grace} นาที)`
+          }
+        } else {
+          const earlyBy = toMinutes(sched.work_end) - bangkokMinutes(entry.entry_time)
+          if (earlyBy > 0) {
+            timingAlertText = `⚠️ <b>ออกก่อน:</b> ${minutesToHHMM(earlyBy)}`
+          }
         }
       }
     }
 
     const distance = entry.distance_m != null ? ` (ห่าง ${Math.round(entry.distance_m)} ม.)` : ''
-    const caption =
-      `${typeInfo.emoji} <b>${typeInfo.label}</b> — ${name}\n` +
-      `🏢 ${dept}\n` +
-      `🕐 ${bangkokTimeText(entry.entry_time)} น. • ${entry.location_name ?? '-'}${distance}` +
-      lateText
+    const captionLines = [
+      `${typeInfo.emoji} <b>${typeInfo.label}</b>`,
+      `👤 <b>ชื่อ:</b> ${escapeHtml(name)}`,
+      `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(nickname)}`,
+      `💼 <b>ตำแหน่ง:</b> ${escapeHtml(position)}`,
+      `🕐 <b>เวลา:</b> ${escapeHtml(bangkokTimeText(entry.entry_time))} น.`,
+      `📍 <b>สถานที่:</b> ${escapeHtml(entry.location_name ?? '-')}${escapeHtml(distance)}`,
+    ]
+    if (timingAlertText) captionLines.push(timingAlertText)
+    if (graceText) captionLines.push(graceText)
+    const caption = captionLines.join('\n')
 
     // รูปถ่ายอยู่ใน bucket private → สร้าง signed URL ให้ Telegram ดึง
     let photoUrl: string | null = null

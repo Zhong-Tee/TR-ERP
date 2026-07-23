@@ -43,12 +43,23 @@ function thaiDate(iso: string): string {
   return `${d} ${THAI_MONTHS[m - 1]} ${y + 543}`
 }
 
-function empLine(l: LeaveRequest, withDays: boolean): string {
+function escapeHtml(value: unknown): string {
+  return String(value ?? '-').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+function empBlock(l: LeaveRequest): string {
   const emp = l.employee
-  const name = emp?.nickname ? `${emp.first_name} ${emp.last_name} (${emp.nickname})` : `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim()
+  const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
+  const nickname = emp?.nickname || '-'
   const dept = emp?.department?.name || '-'
   const leaveType = l.leave_type?.name || '-'
-  return `• ${name} — ${dept}\n   ${leaveType}${withDays ? ` ${l.total_days} วัน` : ''}`
+  return [
+    `👤 <b>ชื่อ:</b> ${escapeHtml(name)}`,
+    `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(nickname)}`,
+    `🏢 <b>แผนก:</b> ${escapeHtml(dept)}`,
+    `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
+    `⏱️ <b>จำนวน:</b> ${escapeHtml(l.total_days)} วัน`,
+  ].join('\n')
 }
 
 async function sendTelegramMessage(botToken: string, chatId: string, text: string) {
@@ -95,12 +106,26 @@ Deno.serve(async (req) => {
     const SELECT = '*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, department:hr_departments!department_id(name))'
     const logs: { type: string; status: string; message: string }[] = []
     const broadcast = async (type: string, text: string) => {
+      const chunks: string[] = []
+      let current = ''
+      for (const block of text.split('\n\n')) {
+        const next = current ? `${current}\n\n${block}` : block
+        if (next.length > 3800 && current) {
+          chunks.push(current)
+          current = block
+        } else {
+          current = next
+        }
+      }
+      if (current) chunks.push(current)
       for (const chatId of chatIds) {
-        try {
-          await sendTelegramMessage(config.bot_token, chatId, text)
-          logs.push({ type, status: 'sent', message: `Sent to ${chatId}` })
-        } catch (e) {
-          logs.push({ type, status: 'failed', message: String(e) })
+        for (const chunk of chunks) {
+          try {
+            await sendTelegramMessage(config.bot_token, chatId, chunk)
+            logs.push({ type, status: 'sent', message: `Sent to ${chatId}` })
+          } catch (e) {
+            logs.push({ type, status: 'failed', message: String(e) })
+          }
         }
       }
     }
@@ -122,10 +147,13 @@ Deno.serve(async (req) => {
       // ไม่มีคนลา → ไม่แจ้ง
       if (list.length > 0) {
         const dayWord = notifyBeforeDays === 1 ? 'พรุ่งนี้' : `อีก ${notifyBeforeDays} วัน`
-        const text =
-          `📋 <b>แจ้งเตือนล่วงหน้า — มีคนลา${dayWord}</b>\n` +
-          `🗓 ${thaiDate(futureStr)} • จำนวน ${list.length} คน\n\n` +
-          list.map((l) => empLine(l, true)).join('\n')
+        const text = [
+          `📋 <b>แจ้งเตือนล่วงหน้า — มีคนลา${dayWord}</b>`,
+          `📅 <b>วันที่:</b> ${thaiDate(futureStr)}`,
+          `👥 <b>จำนวน:</b> ${list.length} คน`,
+          '',
+          list.map(empBlock).join('\n\n'),
+        ].join('\n')
         await broadcast('leave_reminder', text)
         for (const l of list) {
           await supabase.from('hr_leave_requests').update({ notified_before: true }).eq('id', l.id)
@@ -143,10 +171,13 @@ Deno.serve(async (req) => {
       morningCount = list.length
       // ไม่มีคนลาวันนี้ → ไม่แจ้ง
       if (list.length > 0) {
-        const text =
-          `🌅 <b>สรุปพนักงานลาวันนี้</b>\n` +
-          `🗓 ${thaiDate(todayStr)} • จำนวน ${list.length} คน\n\n` +
-          list.map((l) => empLine(l, false)).join('\n')
+        const text = [
+          `🌅 <b>สรุปพนักงานลาวันนี้</b>`,
+          `📅 <b>วันที่:</b> ${thaiDate(todayStr)}`,
+          `👥 <b>จำนวน:</b> ${list.length} คน`,
+          '',
+          list.map(empBlock).join('\n\n'),
+        ].join('\n')
         await broadcast('leave_morning', text)
       }
     }
