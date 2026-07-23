@@ -77,20 +77,20 @@ function monitorStatusBarClass(status: PrMachineryStatus, mobile?: boolean): str
 function monitorPickerButtonClass(status: PrMachineryStatus, selected: boolean): string {
   const byStatus: Record<PrMachineryStatus, string> = {
     working:
-      'border-emerald-500/70 bg-gradient-to-br from-emerald-950/95 via-emerald-900/50 to-slate-950 hover:from-emerald-900/90',
+      'border-emerald-300 bg-gradient-to-br from-emerald-50 to-green-100 hover:from-emerald-100',
     broken:
-      'border-red-500/70 bg-gradient-to-br from-red-950/95 via-red-900/40 to-slate-950 hover:from-red-900/85',
+      'border-red-300 bg-gradient-to-br from-red-50 to-rose-100 hover:from-red-100',
     repairing:
-      'border-amber-500/70 bg-gradient-to-br from-amber-950/95 via-yellow-900/35 to-slate-950 hover:from-amber-900/60',
+      'border-amber-300 bg-gradient-to-br from-amber-50 to-yellow-100 hover:from-amber-100',
     idle:
-      'border-sky-500/70 bg-gradient-to-br from-sky-950/95 via-sky-900/40 to-slate-950 hover:from-sky-900/70',
+      'border-sky-300 bg-gradient-to-br from-sky-50 to-blue-100 hover:from-sky-100',
     decommissioned:
-      'border-zinc-500/70 bg-gradient-to-br from-zinc-900/95 via-zinc-950/80 to-slate-950 hover:from-zinc-800/80',
+      'border-zinc-300 bg-gradient-to-br from-zinc-50 to-slate-100 hover:from-zinc-100',
     power_off:
-      'border-slate-400/45 bg-gradient-to-br from-slate-600/75 via-slate-800/90 to-slate-950 hover:from-slate-500/70',
+      'border-slate-300 bg-gradient-to-br from-white to-slate-100 hover:from-slate-50',
   }
   const ring = selected
-    ? 'ring-2 ring-emerald-400/85 shadow-md shadow-emerald-950/45'
+    ? 'ring-2 ring-emerald-400 shadow-md shadow-emerald-100'
     : ''
   return `rounded-xl border px-3 py-2.5 text-left transition-all active:scale-[0.98] ${byStatus[status]} ${ring}`
 }
@@ -644,23 +644,23 @@ export default function Machinery() {
           <div
             className={`rounded-xl border px-4 py-4 sm:px-5 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${
               isMobileRole
-                ? 'border-emerald-700/40 bg-emerald-950/40 text-emerald-100'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
                 : 'border-emerald-200 bg-emerald-50 text-emerald-900'
             }`}
           >
             <div>
               <span className="font-semibold text-sm sm:text-base">ผลิตวันนี้: </span>
               <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalEffectiveToday)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>หน่วย</span>
+              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-700' : ''}`}>หน่วย</span>
             </div>
             <div
               className={`sm:text-right sm:pl-4 sm:border-l ${
-                isMobileRole ? 'sm:border-emerald-700/40' : 'sm:border-emerald-300/80'
+                isMobileRole ? 'sm:border-emerald-300/80' : 'sm:border-emerald-300/80'
               }`}
             >
               <span className="font-semibold text-sm sm:text-base">กำลังผลิตสูงสุด: </span>
               <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalMaxProductionPerDay)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-200/90' : ''}`}>หน่วย</span>
+              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-700' : ''}`}>หน่วย</span>
             </div>
           </div>
 
@@ -668,11 +668,11 @@ export default function Machinery() {
             <div
               className={`rounded-xl border p-4 text-center shadow-sm ${
                 isMobileRole
-                  ? 'border-emerald-600/60 bg-emerald-950/30 ring-1 ring-emerald-700/50 shadow-black/25'
+                  ? 'border-emerald-300 bg-emerald-50 ring-1 ring-emerald-200 shadow-emerald-100'
                   : 'border-emerald-300 bg-emerald-50/80 shadow-sm ring-1 ring-emerald-200/60'
               }`}
             >
-              <div className={`text-xs font-medium ${isMobileRole ? 'text-emerald-300/90' : 'text-emerald-800'}`}>
+              <div className={`text-xs font-medium ${isMobileRole ? 'text-emerald-700' : 'text-emerald-800'}`}>
                 จำนวนรวม / ปิดเครื่อง
               </div>
               <div
@@ -688,7 +688,7 @@ export default function Machinery() {
                 key={s}
                 className={`rounded-xl border p-4 text-center shadow-sm ${
                   isMobileRole
-                    ? 'border-slate-600 bg-slate-800/90 shadow-black/25'
+                    ? 'border-slate-200 bg-white shadow-slate-100'
                     : 'border-gray-200 bg-white shadow-sm'
                 }`}
               >
@@ -707,7 +707,7 @@ export default function Machinery() {
               {machines.length === 0 ? (
                 <div
                   className={`rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
-                    isMobileRole ? 'border-slate-600 bg-slate-800/60 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-500'
+                    isMobileRole ? 'border-slate-200 bg-white text-gray-500' : 'border-gray-200 bg-gray-50 text-gray-500'
                   }`}
                 >
                   ยังไม่มีเครื่อง — ไปแท็บตั้งค่าเพื่อเพิ่ม
@@ -748,13 +748,13 @@ export default function Machinery() {
                                 aria-hidden
                               />
                               <span className="min-w-0 flex-1">
-                                <span className="block text-sm font-bold text-white leading-snug line-clamp-2">
+                                <span className="block text-sm font-bold text-slate-800 leading-snug line-clamp-2">
                                   {m.name}
                                 </span>
-                                <span className="mt-0.5 block text-xs sm:text-sm font-semibold text-gray-300 truncate">
+                                <span className="mt-0.5 block text-xs sm:text-sm font-semibold text-slate-500 truncate">
                                   {MACHINERY_STATUS_LABELS[st]}
                                 </span>
-                                <span className="mt-1 block text-[11px] sm:text-xs tabular-nums font-medium text-emerald-300/95">
+                                <span className="mt-1 block text-[11px] sm:text-xs tabular-nums font-medium text-emerald-700">
                                   ผลิตวันนี้ {fmtInt(unitsToday)} หน่วย
                                 </span>
                               </span>
@@ -1031,7 +1031,7 @@ export default function Machinery() {
               <input
                 type="date"
                 className={`border rounded-lg px-3 py-2 ${
-                  isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
+                  isMobileRole ? 'border-slate-300 bg-white text-slate-800' : ''
                 }`}
                 value={histFrom}
                 onChange={(e) => setHistFrom(e.target.value)}
@@ -1042,7 +1042,7 @@ export default function Machinery() {
               <input
                 type="date"
                 className={`border rounded-lg px-3 py-2 ${
-                  isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
+                  isMobileRole ? 'border-slate-300 bg-white text-slate-800' : ''
                 }`}
                 value={histTo}
                 onChange={(e) => setHistTo(e.target.value)}
@@ -1052,7 +1052,7 @@ export default function Machinery() {
               <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>เครื่อง</span>
               <select
                 className={`border rounded-lg px-3 py-2 min-w-[10rem] ${
-                  isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
+                  isMobileRole ? 'border-slate-300 bg-white text-slate-800' : ''
                 }`}
                 value={histMachineId}
                 onChange={(e) => setHistMachineId(e.target.value)}
@@ -1069,7 +1069,7 @@ export default function Machinery() {
               <span className={`block text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>สถานะ</span>
               <select
                 className={`border rounded-lg px-3 py-2 min-w-[10rem] ${
-                  isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
+                  isMobileRole ? 'border-slate-300 bg-white text-slate-800' : ''
                 }`}
                 value={histStatus}
                 onChange={(e) => setHistStatus((e.target.value || '') as '' | PrMachineryStatus)}
@@ -1088,7 +1088,7 @@ export default function Machinery() {
             <p className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>กำลังโหลดประวัติ…</p>
           )}
 
-          <h3 className={`font-bold text-base ${isMobileRole ? 'text-gray-200' : 'text-gray-800'}`}>
+          <h3 className={`font-bold text-base ${isMobileRole ? 'text-gray-800' : 'text-gray-800'}`}>
             สรุปผลการผลิตรายวัน (วันต่อวัน)
           </h3>
           <p className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-600'}`}>
@@ -1097,7 +1097,7 @@ export default function Machinery() {
           <div
             className={`rounded-xl border shadow-sm ${
               isMobileRole
-                ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                ? 'overflow-x-auto border-slate-200 bg-white shadow-slate-100'
                 : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
@@ -1111,7 +1111,7 @@ export default function Machinery() {
               <thead
                 className={`text-left ${
                   isMobileRole
-                    ? 'bg-slate-800/90 text-gray-300'
+                    ? 'bg-slate-50 text-gray-700'
                     : 'border-b-2 border-emerald-200/80 bg-gradient-to-r from-gray-50 to-slate-50 text-gray-700'
                 }`}
               >
@@ -1150,17 +1150,17 @@ export default function Machinery() {
                     key={`${r.machine_id}-${r.date}-${i}`}
                     className={
                       isMobileRole
-                        ? `border-t border-slate-700`
+                        ? `border-t border-slate-200 even:bg-slate-50/70`
                         : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-emerald-50/50 last:border-b-0'
                     }
                   >
                     <td
-                      className={`font-mono whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-200' : 'px-4 py-3 text-gray-700'}`}
+                      className={`font-mono whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-gray-700' : 'px-4 py-3 text-gray-700'}`}
                     >
                       {r.date}
                     </td>
                     <td
-                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-100' : 'px-4 py-3 text-gray-900'}`}
+                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-900' : 'px-4 py-3 text-gray-900'}`}
                     >
                       {r.machine_name}
                     </td>
@@ -1190,7 +1190,7 @@ export default function Machinery() {
             </table>
           </div>
 
-          <h3 className={`font-bold text-base pt-4 ${isMobileRole ? 'text-gray-200' : 'text-gray-800'}`}>
+          <h3 className={`font-bold text-base pt-4 ${isMobileRole ? 'text-gray-800' : 'text-gray-800'}`}>
             รอบเครื่องเสีย → กลับมาทำงาน
           </h3>
           <p className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-600'}`}>
@@ -1199,7 +1199,7 @@ export default function Machinery() {
           <div
             className={`rounded-xl border shadow-sm ${
               isMobileRole
-                ? 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                ? 'overflow-x-auto border-slate-200 bg-white shadow-slate-100'
                 : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
@@ -1213,7 +1213,7 @@ export default function Machinery() {
               <thead
                 className={`text-left ${
                   isMobileRole
-                    ? 'bg-slate-800/90 text-gray-300'
+                    ? 'bg-amber-50 text-gray-700'
                     : 'border-b-2 border-amber-200/80 bg-gradient-to-r from-gray-50 to-amber-50/40 text-gray-700'
                 }`}
               >
@@ -1250,12 +1250,12 @@ export default function Machinery() {
                     key={`repair-${idx}-${r.machine_id}-${r.broken_at}`}
                     className={
                       isMobileRole
-                        ? `border-t border-slate-700`
+                        ? `border-t border-slate-200 even:bg-amber-50/40`
                         : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-amber-50/40 last:border-b-0'
                     }
                   >
                     <td
-                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-100' : 'px-4 py-3 text-gray-900'}`}
+                      className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-2 text-slate-900' : 'px-4 py-3 text-gray-900'}`}
                     >
                       {r.machine_name}
                     </td>
@@ -1280,7 +1280,7 @@ export default function Machinery() {
             </table>
           </div>
 
-          <h3 className={`font-bold text-base pt-4 ${isMobileRole ? 'text-gray-200' : 'text-gray-800'}`}>
+          <h3 className={`font-bold text-base pt-4 ${isMobileRole ? 'text-gray-800' : 'text-gray-800'}`}>
             ช่วงสถานะทุกประเภท (ระยะเวลา)
           </h3>
           <p className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-600'}`}>
@@ -1290,8 +1290,8 @@ export default function Machinery() {
             className={`rounded-xl border shadow-sm max-h-[28rem] overflow-y-auto ${
               isMobileRole
                 ? isTechnicianMobileMachinery
-                  ? 'overflow-x-auto border-slate-600 bg-slate-800 shadow-black/30'
-                  : 'overflow-x-auto border-slate-600 bg-slate-800/90 shadow-black/30'
+                  ? 'overflow-x-auto border-slate-200 bg-white shadow-slate-100'
+                  : 'overflow-x-auto border-slate-200 bg-white shadow-slate-100'
                 : 'w-full overflow-x-auto border-gray-200 bg-white shadow-md'
             }`}
           >
@@ -1306,8 +1306,8 @@ export default function Machinery() {
                 className={`text-left sticky top-0 ${
                   isMobileRole
                     ? isTechnicianMobileMachinery
-                      ? 'z-20 border-b border-slate-600 bg-slate-800 text-gray-300 shadow-sm [&_th]:bg-slate-800'
-                      : 'z-10 bg-slate-800/95 text-gray-300 shadow-sm'
+                      ? 'z-20 border-b border-slate-200 bg-sky-50 text-gray-700 shadow-sm [&_th]:bg-sky-50'
+                      : 'z-10 bg-sky-50 text-gray-700 shadow-sm'
                     : 'z-10 border-b border-gray-200 bg-white text-gray-800 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]'
                 }`}
               >
@@ -1339,16 +1339,16 @@ export default function Machinery() {
                       key={ev.id}
                       className={
                         isMobileRole
-                          ? `border-t border-slate-700`
+                          ? `border-t border-slate-200 even:bg-slate-50/70`
                           : 'border-b border-gray-100 transition-colors even:bg-slate-50/70 hover:bg-sky-50/45 last:border-b-0'
                       }
                     >
                       <td
-                        className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-1.5 text-slate-100' : 'px-4 py-2.5 text-gray-900'}`}
+                        className={`whitespace-nowrap font-medium ${isMobileRole ? 'px-3 py-1.5 text-slate-900' : 'px-4 py-2.5 text-gray-900'}`}
                       >
                         {name}
                       </td>
-                      <td className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-1.5 text-gray-200' : 'px-4 py-2.5 text-gray-800'}`}>
+                      <td className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-1.5 text-gray-800' : 'px-4 py-2.5 text-gray-800'}`}>
                         {MACHINERY_STATUS_LABELS[ev.status]}
                       </td>
                       <td

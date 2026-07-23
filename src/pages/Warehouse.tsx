@@ -401,7 +401,7 @@ export default function Warehouse() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="bg-blue-600 text-white">
+                <tr className="bg-blue-600 text-white text-xs leading-tight [&>th]:whitespace-normal [&>th]:break-words">
                   <th className="p-3 text-left font-semibold rounded-tl-xl">รูป</th>
                   <th className="p-3 text-left font-semibold">รหัสสินค้า</th>
                   <th className="p-3 text-center font-semibold">ประเภท</th>

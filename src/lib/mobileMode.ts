@@ -27,6 +27,15 @@ export function getMobileAccess(user: User | null | undefined): MobileMode[] {
   return MOBILE_MODE_ROLES.filter((m) => raw.includes(m))
 }
 
+/** โหมดที่ผู้ใช้เลือกใช้งานได้ รวม role มือถือหลักของบัญชีด้วย */
+export function getSelectableMobileModes(user: User | null | undefined): MobileMode[] {
+  const modes = new Set<MobileMode>(getMobileAccess(user))
+  if (user && MOBILE_MODE_ROLES.includes(user.role as MobileMode)) {
+    modes.add(user.role as MobileMode)
+  }
+  return MOBILE_MODE_ROLES.filter((mode) => modes.has(mode))
+}
+
 /** โหมดที่กำลังสวมอยู่ — คืน null ถ้าไม่ได้เลือกหรือสิทธิ์ถูกถอนไปแล้ว */
 export function getActiveMobileMode(user: User | null | undefined): MobileMode | null {
   try {

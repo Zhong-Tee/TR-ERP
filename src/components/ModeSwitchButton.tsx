@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
-import { getMobileAccess } from '../lib/mobileMode'
+import { getSelectableMobileModes } from '../lib/mobileMode'
 
 /**
  * ปุ่ม "เปลี่ยนโหมด" (icon อย่างเดียว) — กลับหน้าเลือกโหมด (/mode)
@@ -12,7 +12,8 @@ export default function ModeSwitchButton({ className }: { className?: string }) 
   const { user } = useAuthContext()
   const navigate = useNavigate()
 
-  if (getMobileAccess(user).length === 0) return null
+  const choiceCount = getSelectableMobileModes(user).length + (user?.employee_access === true ? 1 : 0)
+  if (choiceCount < 2) return null
 
   return (
     <button

@@ -50,7 +50,7 @@ import {
   TECHNICIAN_ROLE,
   WMS_MOBILE_SPECIAL_ROLES,
 } from './config/accessPolicy'
-import { getActiveMobileMode, getMobileAccess, hasDesktopOverride, modeAllowsPath } from './lib/mobileMode'
+import { getActiveMobileMode, getMobileAccess, getSelectableMobileModes, hasDesktopOverride, modeAllowsPath } from './lib/mobileMode'
 
 const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry'))
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
@@ -82,6 +82,10 @@ function SmartRedirect() {
 
   // เข้าจากมือถือ + มีสิทธิ์โหมดมือถือ → พาไปหน้าเลือกโหมด (เว้นแต่กด "โหมด PC Desktop" ไว้)
   if (window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) {
+    const mobileChoiceCount = getSelectableMobileModes(user).length + (user.employee_access === true ? 1 : 0)
+    if (mobileChoiceCount > 1) {
+      return <Navigate to="/mode" replace />
+    }
     if (getMobileAccess(user).length > 0) {
       return <Navigate to="/mode" replace />
     }
@@ -188,7 +192,9 @@ function AppRoutes() {
   // role มือถือที่ได้รับสิทธิ์หลายโหมด (mobile_access) → เข้า /mode และ path ของโหมดที่สวมอยู่ได้
   // โดยไม่โดน redirect ประจำ role ของตัวเอง
   const mobileModeExempt =
-    (location.pathname === '/mode' && getMobileAccess(user).length > 0) ||
+    (location.pathname === '/mode' && (
+      getSelectableMobileModes(user).length + (user?.employee_access === true ? 1 : 0) > 1
+    )) ||
     (activeMobileMode != null && modeAllowsPath(activeMobileMode, location.pathname))
 
   if (
