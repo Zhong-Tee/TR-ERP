@@ -21,6 +21,7 @@ import {
   recalcPOLandedCost,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
+import { localISODate } from '../lib/localDate'
 import ZoomImage from '../components/ui/ZoomImage'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
@@ -57,8 +58,8 @@ export default function PurchasePO() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => localISODate())
+  const [dateTo, setDateTo] = useState(() => localISODate())
 
   // create from PR
   const [availablePRs, setAvailablePRs] = useState<InventoryPR[]>([])
@@ -518,8 +519,11 @@ export default function PurchasePO() {
       {/* ── Approved PRs waiting for PO (by seller type) ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-blue-800 mb-3">
-            PR ประเทศไทย รอสร้าง PO ({thailandPRs.length})
+          <h3 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
+            PR ประเทศไทย รอสร้าง PO
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-600 text-white text-xs font-bold">
+              {thailandPRs.length}
+            </span>
           </h3>
           {thailandPRs.length > 0 ? (
             <div className="flex flex-wrap gap-2">
@@ -538,8 +542,11 @@ export default function PurchasePO() {
           )}
         </div>
         <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-orange-800 mb-3">
-            PR ต่างประเทศ รอสร้าง PO ({foreignPRs.length})
+          <h3 className="text-sm font-semibold text-orange-800 mb-3 flex items-center gap-2">
+            PR ต่างประเทศ รอสร้าง PO
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-600 text-white text-xs font-bold">
+              {foreignPRs.length}
+            </span>
           </h3>
           {foreignPRs.length > 0 ? (
             <div className="flex flex-wrap gap-2">

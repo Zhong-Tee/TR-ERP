@@ -58,8 +58,9 @@ export default function PurchasePR() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(() => new Date().toISOString().split('T')[0])
-  const [dateTo, setDateTo] = useState(() => new Date().toISOString().split('T')[0])
+  // Keep the initial list unfiltered so it matches the PR notification count.
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
 
   // sellers list
   const [sellers, setSellers] = useState<{ id: string; name: string; name_cn?: string | null; seller_type?: string | null }[]>([])
