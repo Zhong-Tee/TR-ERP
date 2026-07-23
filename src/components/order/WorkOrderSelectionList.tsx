@@ -158,7 +158,7 @@ export default function WorkOrderSelectionList({
 
     const { data: items, error: itemsErr } = await supabase
       .from('or_order_items')
-      .select('product_id')
+      .select('product_id, product_type, is_detail_row')
       .in('order_id', orderIds)
     if (itemsErr || !items?.length) return qty
 
@@ -174,8 +174,10 @@ export default function WorkOrderSelectionList({
       categoryByProductId[p.id] = (p.product_category || '').toUpperCase()
     })
 
-    ;(items as { product_id: string }[]).forEach((row) => {
+    ;(items as { product_id: string; product_type?: string | null; is_detail_row?: boolean | null }[]).forEach((row) => {
       const category = categoryByProductId[row.product_id] || ''
+      const isCondoDetailRow = row.is_detail_row === true || (/^CONDO STAMP (2|3|5)FL$/.test(category) && row.product_type !== 'ชั้น1')
+      if (isCondoDetailRow) return
       if (category.includes('STAMP')) qty.STAMP += 1
       if (category.includes('STK')) qty.STK += 1
       if (category.includes('UV') || category.includes('SUBLIMATION')) qty.CTT += 1

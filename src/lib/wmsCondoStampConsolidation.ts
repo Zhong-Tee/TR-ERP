@@ -1,7 +1,5 @@
 /** รายการสินค้าที่ให้แสดงรวมเป็นแถวเดียวใน WMS (รายการใบงาน / ตรวจสินค้า / Picker) */
-export const CONDO_STAMP_CONSOLIDATE_PRODUCT_NAMES = new Set([
-  'ตรายางคอนโด TWP ชมพู',
-  'ตรายางคอนโด TWB ฟ้า',
+export const CONDO_STAMP_CONSOLIDATE_PRODUCT_NAMES = new Set<string>([
 ])
 
 export function normalizeWmsProductNameLabel(name: string | null | undefined): string {

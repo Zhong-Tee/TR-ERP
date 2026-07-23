@@ -1883,7 +1883,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         tax_customer_address: showTaxInvoice ? taxInvoiceData.address : null,
         tax_id: showTaxInvoice ? taxInvoiceData.tax_id : null,
         tax_items: showTaxInvoice ? itemsToSave
-          .filter(item => item.product_id && !(item as { is_free?: boolean }).is_free)
+          .filter(item => item.product_id && !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free)
           .map(item => ({
             product_name: item.product_name || '',
             quantity: item.quantity || 1,
@@ -2024,11 +2024,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             const itemUid = currentBillNo ? `${currentBillNo}-${index + 1}` : `${formData.channel_code}-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`
             
             return {
+              id: item.id || crypto.randomUUID(),
               order_id: orderId,
               item_uid: itemUid,
               product_id: item.product_id!,
               product_name: item.product_name || '',
               quantity: item.quantity || 1,
+              is_detail_row: isCondoSubRow(item),
+              parent_item_id: isCondoSubRow(item) ? (item.parent_item_id || null) : null,
               unit_price: item.unit_price || 0,
               ink_color: item.ink_color || null,
               product_type: item.product_type || 'ชั้น1',
@@ -3979,16 +3982,24 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setProductSearchTerm({ ...productSearchTerm, [items.length]: lastItem?.product_name ?? '' })
   }
 
-  const CONDO_PRODUCTS = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
+  function getCondoLayerCount(name?: string | null): number {
+    if (!name) return 0
+    const normalizedName = name.trim()
+    const matched = products.find((p) => normalizeProductName(p.product_name) === normalizeProductName(normalizedName))
+    const category = (matched?.product_category || '').trim().toUpperCase()
+    if (category === 'CONDO STAMP 2FL') return 2
+    if (category === 'CONDO STAMP 3FL') return 3
+    if (category === 'CONDO STAMP 5FL') return 5
+    return 0
+  }
 
   function isCondoProduct(name?: string | null) {
-    if (!name) return false
-    return CONDO_PRODUCTS.includes(name.trim())
+    return getCondoLayerCount(name) > 0
   }
 
   /** ตรวจว่าแถวนี้เป็นแถวย่อยของสินค้าคอนโด (ชั้น2-5) ที่ต้องล็อคราคา/หน่วย */
   function isCondoSubRow(item: Partial<OrderItem>) {
-    return isCondoProduct(item.product_name) && item.product_type !== 'ชั้น1'
+    return item.is_detail_row === true || (isCondoProduct(item.product_name) && item.product_type !== 'ชั้น1')
   }
 
   function normalizeProductName(value?: string | null) {
@@ -4024,6 +4035,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
     itemsToValidate.forEach((item) => {
       if (!item.product_id) return
+      if (isCondoSubRow(item)) return
       const qty = Number(item.quantity || 0)
       if (!Number.isFinite(qty) || qty <= 0) return
       const key = String(item.product_id)
@@ -4059,18 +4071,24 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   }
 
   function ensureCondoRows(index: number, product: Product) {
-    const layers = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
+    const layerCount = getCondoLayerCount(product.product_name)
+    const layers = Array.from({ length: layerCount }, (_, i) => `ชั้น${i + 1}`)
+    if (layers.length === 0) return
 
     // คำนวณ items ใหม่จาก items ปัจจุบันโดยตรง (ไม่ใช้ functional updater)
     // เพื่อให้ได้ผลลัพธ์ทันทีสำหรับ rebuild productSearchTerm
     const next = [...items]
     const oldItem = next[index]
+    const parentId = oldItem.id || crypto.randomUUID()
 
     next[index] = {
       ...next[index],
+      id: parentId,
       product_id: product.id,
       product_name: product.product_name,
       product_type: layers[0],
+      is_detail_row: false,
+      parent_item_id: null,
     }
 
     // ตรวจว่าแถวถัดไปเป็นแถวย่อยของคอนโดตัวใหม่ครบ 4 แถวแล้วหรือไม่
@@ -4084,6 +4102,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     })
 
     if (already) {
+      layers.slice(1).forEach((_, offset) => {
+        const rowIndex = index + 1 + offset
+        next[rowIndex] = {
+          ...next[rowIndex],
+          id: next[rowIndex].id || crypto.randomUUID(),
+          is_detail_row: true,
+          parent_item_id: parentId,
+        }
+      })
       setItems(next)
       rebuildSearchTerms(next)
       return
@@ -4112,10 +4139,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
     // แทรกแถวย่อย ชั้น2-5 ใหม่
     const newRows = layers.slice(1).map((layer) => ({
+      id: crypto.randomUUID(),
       product_id: product.id,
       product_name: product.product_name,
       product_type: layer,
       quantity: 1,
+      is_detail_row: true,
+      parent_item_id: parentId,
     }))
     next.splice(index + 1, 0, ...newRows)
 
@@ -4129,6 +4159,71 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     const terms: { [key: number]: string } = {}
     newItems.forEach((it, i) => { terms[i] = it.product_name || '' })
     setProductSearchTerm(terms)
+  }
+
+  /** ลบเฉพาะแถวรายละเอียดของสินค้าหลัก โดยคงแถวหลักไว้ */
+  function withoutDetailRowsForParent(source: Partial<OrderItem>[], parentIndex: number) {
+    const parent = source[parentIndex]
+    if (!parent) return source
+    const parentId = parent.id
+    return source.filter((row, index) => {
+      if (index === parentIndex) return true
+      if (parentId && row.parent_item_id === parentId) return false
+      // fallback สำหรับข้อมูลเก่าก่อนมี parent_item_id: ลบแถวชั้นที่ต่อจากแถวหลักในชุดเดียวกัน
+      if (index > parentIndex && index <= parentIndex + 5 && isCondoSubRow(row)) {
+        return !(
+          String(row.product_id || '') === String(parent.product_id || '') ||
+          row.product_name === parent.product_name
+        )
+      }
+      return true
+    })
+  }
+
+  function isNewCondoCategoryItem(item: Partial<OrderItem>): boolean {
+    const product = products.find((p) =>
+      String(p.id) === String(item.product_id || '') ||
+      normalizeProductName(p.product_name) === normalizeProductName(item.product_name),
+    )
+    const category = (product?.product_category || '').trim().toUpperCase()
+    return category === 'CONDO STAMP 2FL' || category === 'CONDO STAMP 3FL' || category === 'CONDO STAMP 5FL'
+  }
+
+  function itemGroupNumber(targetIndex: number): number {
+    let group = 0
+    for (let i = 0; i <= targetIndex; i++) {
+      const row = items[i]
+      if (!isNewCondoCategoryItem(row) || !isCondoSubRow(row)) group += 1
+    }
+    return group
+  }
+
+  /** เลขลำดับแบบชุด-ชั้น เช่น 1-1, 1-2 และสินค้าปกติเป็น 2 */
+  function itemDisplayNumber(targetIndex: number): string {
+    const currentGroup = itemGroupNumber(targetIndex)
+    const target = items[targetIndex]
+    if (!isNewCondoCategoryItem(target)) return String(currentGroup)
+    const isDetail = isCondoSubRow(target)
+    const hasDetails = !isDetail && items.some((row) => row.parent_item_id === target.id)
+    if (!isDetail && !hasDetails) return String(currentGroup)
+    const layer = Number(String(target.product_type || 'ชั้น1').replace(/\D/g, '')) || 1
+    return `${currentGroup}-${layer}`
+  }
+
+  function itemGroupRowClass(index: number): string {
+    const row = items[index]
+    const isCondoGroup = isNewCondoCategoryItem(row)
+    if (!isCondoGroup) return ''
+    const palettes = [
+      'bg-sky-50/80',
+      'bg-violet-50/80',
+      'bg-amber-50/80',
+      'bg-emerald-50/80',
+    ]
+    const group = itemGroupNumber(index)
+    const previousSameGroup = index > 0 && itemGroupNumber(index - 1) === group
+    const nextSameGroup = index < items.length - 1 && itemGroupNumber(index + 1) === group
+    return `${palettes[(group - 1) % palettes.length]} ${previousSameGroup ? '' : 'border-t-2 border-t-slate-400'} ${nextSameGroup ? '' : 'border-b-2 border-b-slate-400'}`
   }
 
   function removeItem(index: number) {
@@ -4874,7 +4969,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 const sellableQty = Number(stock.available_to_sell || 0)
                 const isOutOfStock = Boolean(item.product_id) && sellableQty <= 0
                 return (
-                <tr key={index} className={(item as { is_free?: boolean }).is_free ? 'bg-green-50' : ''}>
+                <tr key={index} className={`${itemGroupRowClass(index)} ${(item as { is_free?: boolean }).is_free ? 'bg-green-50' : ''}`}>
                   <td className="border p-1 align-middle">
                     <div className="flex items-center justify-center min-h-[28px]">
                       <input
@@ -4889,7 +4984,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   </td>
                   <td className="border p-1 text-center align-middle">
                     <span className="inline-flex items-center justify-center min-h-[28px] text-xs font-semibold text-gray-600">
-                      {index + 1}
+                      {itemDisplayNumber(index)}
                     </span>
                   </td>
                   <td className="border p-1.5">
@@ -4898,7 +4993,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         type="text"
                         list={`product-list-${index}`}
                         value={productSearchTerm[index] !== undefined ? productSearchTerm[index] : (item.product_name || '')}
-                        disabled={formDisabled}
+                        disabled={formDisabled || isCondoSubRow(item)}
                         onChange={(e) => {
                           const searchTerm = e.target.value
                           setProductSearchTerm({ ...productSearchTerm, [index]: searchTerm })
@@ -4912,13 +5007,23 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                               ensureCondoRows(index, matchedProduct)
                               if (!isManualPriceChannel) updateItem(index, 'unit_price', autoPrice)
                             } else {
-                              updateItemFields(index, {
+                              const nextItems = withoutDetailRowsForParent(items, index)
+                              nextItems[index] = { ...nextItems[index],
                                 product_id: matchedProduct.id,
                                 product_name: matchedProduct.product_name,
                                 unit_price: autoPrice,
-                              })
-                              setProductSearchTerm({ ...productSearchTerm, [index]: matchedProduct.product_name })
+                                is_detail_row: false,
+                                parent_item_id: null,
+                              }
+                              setItems(nextItems)
+                              rebuildSearchTerms(nextItems)
                             }
+                          } else if (isCondoProduct(item.product_name) && item.product_type === 'ชั้น1' && searchTerm !== item.product_name) {
+                            const nextItems = withoutDetailRowsForParent(items, index)
+                            nextItems[index] = { ...nextItems[index], product_id: undefined, product_name: undefined, is_detail_row: false, parent_item_id: null }
+                            setItems(nextItems)
+                            rebuildSearchTerms(nextItems)
+                            setProductSearchTerm(prev => ({ ...prev, [index]: searchTerm }))
                           } else if (searchTerm === '') {
                             // ถ้าล้างค่า ให้ล้าง product_id ด้วย
                             updateItem(index, 'product_id', undefined)
@@ -4962,7 +5067,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                           }
                         }}
                         placeholder="ค้นหาหรือเลือกสินค้า..."
-                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                        className={`w-full px-1.5 py-1 border rounded min-w-[160px] max-w-full ${(formDisabled || isCondoSubRow(item)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['product_name'] ?? reviewErrorFields?.product_name) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                         autoComplete="off"
                       />
                       <datalist id={`product-list-${index}`}>
@@ -5362,17 +5467,19 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   <td className="border p-1.5">
                     <input
                       type="number"
-                      value={item.quantity === 0 ? '' : (item.quantity || 1)}
+                      value={isCondoSubRow(item) ? '' : (item.quantity === 0 ? '' : (item.quantity || 1))}
+                      placeholder={isCondoSubRow(item) ? '-' : undefined}
                       onChange={(e) => {
                         const v = e.target.value
                         updateItem(index, 'quantity', v === '' ? 0 : (parseInt(v) || 0))
                       }}
                       onBlur={() => {
-                        if (!item.quantity) updateItem(index, 'quantity', 1)
+                        if (!isCondoSubRow(item) && !item.quantity) updateItem(index, 'quantity', 1)
                       }}
                       onWheel={(e) => (e.target as HTMLInputElement).blur()}
                       min="1"
-                      disabled={formDisabled || !isFieldEnabled(index, 'quantity')}
+                      disabled={formDisabled || isCondoSubRow(item) || !isFieldEnabled(index, 'quantity')}
+                      title={isCondoSubRow(item) ? 'แถวรายละเอียดชั้น ไม่นับจำนวนสินค้าเพิ่ม' : undefined}
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 ${(formDisabled || !isFieldEnabled(index, 'quantity')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${(reviewErrorFieldsByItem?.[index]?.['quantity'] ?? reviewErrorFields?.quantity) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                     />
                   </td>
@@ -5786,7 +5893,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <div>
                 <label className="block text-sm font-medium mb-1">รายการสินค้าในใบกำกับ</label>
                 <div className="border rounded-lg p-3 bg-gray-50">
-                  {items.filter(item => item.product_id || item.product_name).length > 0 ? (
+                  {items.filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item)).length > 0 ? (
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b">
@@ -5799,7 +5906,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       </thead>
                       <tbody>
                         {items
-                          .filter(item => item.product_id || item.product_name)
+                          .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
                           .map((item, idx) => {
                             const quantity = item.quantity || 1
                             const unitPrice = item.unit_price || 0
@@ -5818,7 +5925,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       <tfoot>
                         {(() => {
                           const itemsSubtotal = items
-                            .filter(item => item.product_id || item.product_name)
+                            .filter(item => (item.product_id || item.product_name) && !isCondoSubRow(item))
                             .reduce((sum, item) => {
                               const quantity = item.quantity || 1
                               const unitPrice = item.unit_price || 0
@@ -6100,7 +6207,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 if (isFieldEnabled(itemIndex, 'font') && !item.font?.trim()) {
                   missing.push('ฟอนต์ (หากไม่ต้องการเลือกฟอนต์ กรุณาใส่เลข 0)')
                 }
-                if (isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
+                if (!isCondoSubRow(item) && isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
                   missing.push('จำนวน')
                 }
                 if (missing.length > 0) {

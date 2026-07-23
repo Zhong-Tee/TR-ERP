@@ -118,6 +118,10 @@ export interface OrderItem {
   product_id: string
   product_name: string
   quantity: number
+  /** แถวรายละเอียด เช่น ชั้น 2–5 ของ CONDO STAMP; ไม่นับราคา สต๊อก หรือจำนวนผลิต */
+  is_detail_row?: boolean
+  /** แถวสินค้าหลักที่รายละเอียดนี้สังกัด */
+  parent_item_id?: string | null
   unit_price?: number
   ink_color: string | null
   product_type: string | null
