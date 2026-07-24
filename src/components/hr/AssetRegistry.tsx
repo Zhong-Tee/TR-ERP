@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { FiChevronLeft, FiChevronRight, FiEdit2, FiPlus, FiSearch, FiTrash2, FiUpload, FiX } from 'react-icons/fi'
+import { FiChevronLeft, FiChevronRight, FiDownload, FiEdit2, FiPlus, FiSearch, FiTrash2, FiUpload, FiX } from 'react-icons/fi'
+import * as XLSX from 'xlsx'
 import {
   deleteAsset,
   fetchAssets,
@@ -176,6 +178,239 @@ function employeeLabel(emp: HREmployee): string {
   return `${emp.employee_code ?? '-'} ${name}`.trim()
 }
 
+// ─── Template / Import ทะเบียนทรัพย์สิน ──────────────────────────────────────
+
+type AssetTemplateRow = Record<string, unknown>
+
+const ASSET_TEMPLATE_HEADERS = [
+  'รหัสทรัพย์สิน',
+  'ชื่อทรัพย์สิน *',
+  'หมวดหมู่ *',
+  'ประเภทย่อย *',
+  'S/N *',
+  'ชื่อผู้ขาย *',
+  'แผนก *',
+  'สถานที่ใช้งาน *',
+  'สถานะ *',
+  'ผู้รับผิดชอบ (รหัสพนักงาน) *',
+  'วันที่ซื้อ *',
+  'วันที่รับเข้า *',
+  'มูลค่าตอนซื้อ *',
+  'อายุการใช้งาน (ปี) *',
+  'มีการรับประกัน',
+  'ระยะเวลารับประกัน',
+  'หน่วยรับประกัน',
+  'รายละเอียด *',
+  'หมายเหตุเพิ่มเติม *',
+] as const
+
+const ASSET_TEMPLATE_SAMPLE_ROW = [
+  'AST-2026-0001',
+  'Notebook Lenovo ThinkPad',
+  'IT',
+  'Notebook',
+  'SN-ABC123456',
+  'บริษัท ไอที ซัพพลาย จำกัด',
+  'Management',
+  'Office · ตึกใหม่ ชั้น 2',
+  'ใช้งาน',
+  'EMP00003',
+  '2026-01-15',
+  '2026-01-20',
+  35000,
+  5,
+  'มี',
+  3,
+  'ปี',
+  'โน้ตบุ๊กสำหรับงานออกแบบ',
+  'รับประกันศูนย์ 3 ปี',
+] as const
+
+const ASSET_STATUS_LABEL_TO_ENUM: Record<string, HRAsset['status']> = Object.fromEntries(
+  (Object.entries(STATUS_META) as [HRAsset['status'], { label: string }][]).map(([key, meta]) => [meta.label, key])
+) as Record<string, HRAsset['status']>
+
+function normalizeText(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function normalizeLookup(value: unknown): string {
+  return normalizeText(value).toLowerCase()
+}
+
+function optionalText(value: unknown): string | undefined {
+  const text = normalizeText(value)
+  return text || undefined
+}
+
+/** แปลงค่าในเซลล์เป็นวันที่ ISO (YYYY-MM-DD) โดยไม่ผ่าน Date object เพื่อเลี่ยง timezone shift */
+function parseTemplateDate(value: unknown): string | undefined {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10)
+  }
+  if (typeof value === 'number') {
+    const parsed = XLSX.SSF.parse_date_code(value)
+    if (parsed) {
+      const month = String(parsed.m).padStart(2, '0')
+      const day = String(parsed.d).padStart(2, '0')
+      return `${parsed.y}-${month}-${day}`
+    }
+  }
+  const text = normalizeText(value)
+  if (!text) return undefined
+  const match = text.replace(/\//g, '-').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  if (match) {
+    const [, y, m, d] = match
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
+  }
+  return text
+}
+
+function assetStatusFromLabel(value: unknown): HRAsset['status'] {
+  const text = normalizeText(value)
+  return ASSET_STATUS_LABEL_TO_ENUM[text] ?? 'active'
+}
+
+/** แปลงข้อมูลทรัพย์สิน 1 รายการ → แถวตามลำดับหัวคอลัมน์ template (ค่าที่ import กลับได้) */
+function assetToTemplateRow(asset: HRAsset): (string | number)[] {
+  const values: Record<string, string | number> = {
+    'รหัสทรัพย์สิน': asset.asset_code ?? '',
+    'ชื่อทรัพย์สิน *': asset.name ?? '',
+    'หมวดหมู่ *': asset.category ?? '',
+    'ประเภทย่อย *': asset.sub_type ?? '',
+    'S/N *': asset.serial_number ?? '',
+    'ชื่อผู้ขาย *': asset.vendor_name ?? '',
+    'แผนก *': asset.department?.name ?? '',
+    'สถานที่ใช้งาน *': asset.location ?? '',
+    'สถานะ *': STATUS_META[asset.status]?.label ?? '',
+    'ผู้รับผิดชอบ (รหัสพนักงาน) *': asset.assigned_employee?.employee_code ?? '',
+    'วันที่ซื้อ *': asset.purchase_date ?? '',
+    'วันที่รับเข้า *': asset.received_date ?? '',
+    'มูลค่าตอนซื้อ *': asset.purchase_cost ?? '',
+    'อายุการใช้งาน (ปี) *': asset.useful_life_years ?? '',
+    'มีการรับประกัน': asset.has_warranty ? 'มี' : 'ไม่มี',
+    'ระยะเวลารับประกัน': asset.has_warranty && asset.warranty_period != null ? asset.warranty_period : '',
+    'หน่วยรับประกัน': asset.has_warranty ? (asset.warranty_unit === 'day' ? 'วัน' : 'ปี') : '',
+    'รายละเอียด *': asset.description ?? '',
+    'หมายเหตุเพิ่มเติม *': asset.notes ?? '',
+  }
+  return ASSET_TEMPLATE_HEADERS.map((header) => values[header] ?? '')
+}
+
+/** สร้าง payload สำหรับ upsert จากแถว template + คำนวณค่าอัตโนมัติ (ค่าเสื่อม/มูลค่าปัจจุบัน/วันหมดประกัน) */
+function buildAssetPayloadFromRow(
+  row: AssetTemplateRow,
+  departments: HRDepartment[],
+  employees: HREmployee[],
+  existing?: HRAsset
+): Partial<HRAsset> {
+  const departmentName = normalizeLookup(row['แผนก *'])
+  const departmentId = departmentName
+    ? departments.find((d) => normalizeLookup(d.name) === departmentName)?.id
+    : undefined
+
+  const empCode = normalizeLookup(row['ผู้รับผิดชอบ (รหัสพนักงาน) *'])
+  const assignedEmployeeId = empCode
+    ? employees.find((e) => normalizeLookup(e.employee_code) === empCode)?.id
+    : undefined
+
+  const purchaseDate = parseTemplateDate(row['วันที่ซื้อ *'])
+  const receivedDate = parseTemplateDate(row['วันที่รับเข้า *'])
+
+  const costText = normalizeText(row['มูลค่าตอนซื้อ *']).replace(/,/g, '')
+  const purchaseCost = costText ? Number(costText) : undefined
+  const lifeText = normalizeText(row['อายุการใช้งาน (ปี) *']).replace(/,/g, '')
+  const usefulLifeYears = lifeText ? Number(lifeText) : undefined
+
+  const hasWarranty = normalizeText(row['มีการรับประกัน']) === 'มี'
+  const periodText = normalizeText(row['ระยะเวลารับประกัน']).replace(/,/g, '')
+  const warrantyPeriod = hasWarranty && periodText ? Number(periodText) : null
+  const warrantyUnit: 'day' | 'year' | null = hasWarranty
+    ? (normalizeText(row['หน่วยรับประกัน']) === 'วัน' ? 'day' : 'year')
+    : null
+
+  // ค่าที่คำนวณอัตโนมัติ — ตรงกับสูตรในฟอร์ม
+  let depreciationPerYear: number | undefined
+  let currentValue: number | undefined
+  if (purchaseCost != null && usefulLifeYears != null && usefulLifeYears > 0) {
+    const dep = purchaseCost / usefulLifeYears
+    depreciationPerYear = Number(round2(dep))
+    currentValue = Number(round2(Math.max(0, purchaseCost - dep * yearsInUse(purchaseDate ?? ''))))
+  }
+  const warrantyExpire = computeWarrantyExpire({
+    purchase_date: purchaseDate ?? '',
+    has_warranty: hasWarranty,
+    warranty_period: warrantyPeriod == null ? '' : String(warrantyPeriod),
+    warranty_unit: warrantyUnit ?? 'year',
+  } as AssetFormState)
+
+  return {
+    id: existing?.id,
+    asset_code: optionalText(row['รหัสทรัพย์สิน']),
+    name: normalizeText(row['ชื่อทรัพย์สิน *']),
+    category: optionalText(row['หมวดหมู่ *']),
+    sub_type: optionalText(row['ประเภทย่อย *']),
+    serial_number: optionalText(row['S/N *']),
+    vendor_name: optionalText(row['ชื่อผู้ขาย *']),
+    department_id: departmentId,
+    location: optionalText(row['สถานที่ใช้งาน *']),
+    status: assetStatusFromLabel(row['สถานะ *']),
+    assigned_employee_id: assignedEmployeeId,
+    purchase_date: purchaseDate,
+    received_date: receivedDate,
+    purchase_cost: Number.isFinite(purchaseCost) ? purchaseCost : undefined,
+    useful_life_years: Number.isFinite(usefulLifeYears) ? usefulLifeYears : undefined,
+    depreciation_per_year: depreciationPerYear,
+    current_value: currentValue,
+    has_warranty: hasWarranty,
+    warranty_period: warrantyPeriod,
+    warranty_unit: warrantyUnit,
+    warranty_expire_date: warrantyExpire || undefined,
+    description: optionalText(row['รายละเอียด *']),
+    notes: optionalText(row['หมายเหตุเพิ่มเติม *']),
+  }
+}
+
+function downloadAssetTemplate(assets: HRAsset[] = []) {
+  const workbook = XLSX.utils.book_new()
+
+  const rows: (string | number)[][] = [
+    Array.from(ASSET_TEMPLATE_HEADERS),
+    ...assets.map(assetToTemplateRow),
+  ]
+  const sheet = XLSX.utils.aoa_to_sheet(rows)
+  sheet['!cols'] = ASSET_TEMPLATE_HEADERS.map((header) => ({ wch: Math.max(String(header).length + 4, 16) }))
+  XLSX.utils.book_append_sheet(workbook, sheet, 'ทะเบียนทรัพย์สิน')
+
+  const sampleSheet = XLSX.utils.aoa_to_sheet([
+    Array.from(ASSET_TEMPLATE_HEADERS),
+    Array.from(ASSET_TEMPLATE_SAMPLE_ROW),
+  ])
+  sampleSheet['!cols'] = ASSET_TEMPLATE_HEADERS.map((header) => ({ wch: Math.max(String(header).length + 4, 16) }))
+  XLSX.utils.book_append_sheet(workbook, sampleSheet, 'ตัวอย่าง')
+
+  const statusList = STATUS_ORDER.map((s) => STATUS_META[s].label).join(' / ')
+  const instructionRows = [
+    ['หัวข้อ', 'รายละเอียด'],
+    ['ช่องที่มี *', 'ต้องกรอกข้อมูลก่อน import'],
+    ['รหัสทรัพย์สิน', 'เว้นว่างเมื่อเพิ่มใหม่ (ระบบออกรหัสให้อัตโนมัติ) — หากตรงกับรหัสเดิม ระบบจะอัปเดตข้อมูลรายการนั้น'],
+    ['แผนก', 'กรอกชื่อแผนกให้ตรงกับที่มีในระบบ เช่น Management, Production'],
+    ['ผู้รับผิดชอบ', 'กรอกเป็น "รหัสพนักงาน" เช่น EMP00003 (ดูได้จากเมนูทะเบียนพนักงาน)'],
+    ['สถานะ', `กรอกเป็นภาษาไทยอย่างใดอย่างหนึ่ง: ${statusList}`],
+    ['วันที่ (ซื้อ/รับเข้า)', 'รูปแบบ YYYY-MM-DD เช่น 2026-01-15'],
+    ['มูลค่าตอนซื้อ / อายุการใช้งาน', 'กรอกเป็นตัวเลข — ระบบจะคำนวณค่าเสื่อม/ปี และมูลค่าปัจจุบันให้อัตโนมัติ'],
+    ['มีการรับประกัน', 'กรอก "มี" หรือ "ไม่มี" — ถ้า "มี" ต้องกรอกระยะเวลารับประกัน'],
+    ['หน่วยรับประกัน', 'กรอก "ปี" หรือ "วัน" — ระบบจะคำนวณวันหมดประกันให้อัตโนมัติ'],
+    ['ค่าที่ระบบคำนวณให้', 'ค่าเสื่อม/ปี, มูลค่าปัจจุบัน, วันหมดประกัน — ไม่ต้องกรอก ระบบคำนวณจากข้อมูลข้างต้น'],
+    ['รูปภาพทรัพย์สิน', 'ไม่รองรับผ่าน import — เพิ่มรูปได้ที่หน้าจอแก้ไขทรัพย์สินโดยตรง'],
+  ]
+  const instructionSheet = XLSX.utils.aoa_to_sheet(instructionRows)
+  instructionSheet['!cols'] = [{ wch: 28 }, { wch: 80 }]
+  XLSX.utils.book_append_sheet(workbook, instructionSheet, 'คู่มือการกรอก')
+
+  XLSX.writeFile(workbook, 'template-ทะเบียนทรัพย์สิน.xlsx')
+}
+
 export default function AssetRegistry() {
   const [assets, setAssets] = useState<HRAsset[]>([])
   const [departments, setDepartments] = useState<HRDepartment[]>([])
@@ -192,6 +427,9 @@ export default function AssetRegistry() {
   const [newImageFiles, setNewImageFiles] = useState<File[]>([])
   // รูปที่กำลังเปิดดูแบบขยาย (lightbox) — null = ไม่เปิด, ค่าอื่นคือ index ในแกลเลอรีรวม
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
 
   // พรีวิวไฟล์ที่เพิ่งเลือกแต่ยังไม่อัปโหลด (object URL) + คืนหน่วยความจำเมื่อเลิกใช้
   const pendingPreviews = useMemo(() => newImageFiles.map((file) => URL.createObjectURL(file)), [newImageFiles])
@@ -405,6 +643,118 @@ export default function AssetRegistry() {
     }
   }
 
+  const handleDownloadTemplate = async () => {
+    setDownloading(true)
+    setError(null)
+    try {
+      // ดึงทรัพย์สินทั้งหมด (ไม่ผูกกับ filter หน้าจอ) เพื่อให้ได้ข้อมูลปัจจุบันครบทุกรายการ
+      const allAssets = await fetchAssets()
+      downloadAssetTemplate(allAssets)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ดาวน์โหลด Template ไม่สำเร็จ')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const handleImportClick = () => importInputRef.current?.click()
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    setImporting(true)
+    setError(null)
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+      const worksheet = workbook.Sheets['ทะเบียนทรัพย์สิน'] ?? workbook.Sheets[workbook.SheetNames[0]]
+      if (!worksheet) throw new Error('ไม่พบ sheet สำหรับนำเข้าข้อมูล')
+
+      const rows = XLSX.utils.sheet_to_json<AssetTemplateRow>(worksheet, { defval: '' })
+        .filter((row) => ASSET_TEMPLATE_HEADERS.some((header) => normalizeText(row[header])))
+      if (rows.length === 0) {
+        setError('ไม่พบข้อมูลทรัพย์สินในไฟล์ import')
+        return
+      }
+
+      // ดึงข้อมูลอ้างอิงแบบครบ (พนักงานทุกสถานะ) เพื่อ map แผนก/ผู้รับผิดชอบ
+      const [allAssets, allDepartments, allEmployees] = await Promise.all([
+        fetchAssets(),
+        fetchDepartments(),
+        fetchEmployees(),
+      ])
+      const existingByCode = new Map(
+        allAssets
+          .filter((a) => a.asset_code)
+          .map((a) => [normalizeLookup(a.asset_code), a])
+      )
+      const departmentNames = new Set(allDepartments.map((d) => normalizeLookup(d.name)))
+      const employeeCodes = new Set(allEmployees.map((e) => normalizeLookup(e.employee_code)))
+
+      const errors: string[] = []
+      rows.forEach((row, index) => {
+        const rowNumber = index + 2
+        const req: [string, string][] = [
+          ['ชื่อทรัพย์สิน', normalizeText(row['ชื่อทรัพย์สิน *'])],
+          ['หมวดหมู่', normalizeText(row['หมวดหมู่ *'])],
+          ['ประเภทย่อย', normalizeText(row['ประเภทย่อย *'])],
+          ['S/N', normalizeText(row['S/N *'])],
+          ['ชื่อผู้ขาย', normalizeText(row['ชื่อผู้ขาย *'])],
+          ['สถานที่ใช้งาน', normalizeText(row['สถานที่ใช้งาน *'])],
+          ['วันที่ซื้อ', normalizeText(row['วันที่ซื้อ *'])],
+          ['วันที่รับเข้า', normalizeText(row['วันที่รับเข้า *'])],
+          ['มูลค่าตอนซื้อ', normalizeText(row['มูลค่าตอนซื้อ *'])],
+          ['อายุการใช้งาน (ปี)', normalizeText(row['อายุการใช้งาน (ปี) *'])],
+          ['รายละเอียด', normalizeText(row['รายละเอียด *'])],
+          ['หมายเหตุเพิ่มเติม', normalizeText(row['หมายเหตุเพิ่มเติม *'])],
+        ]
+        for (const [label, value] of req) {
+          if (!value) errors.push(`แถว ${rowNumber}: กรุณากรอก${label}`)
+        }
+
+        const dept = normalizeLookup(row['แผนก *'])
+        if (!dept) errors.push(`แถว ${rowNumber}: กรุณากรอกแผนก`)
+        else if (!departmentNames.has(dept)) errors.push(`แถว ${rowNumber}: ไม่พบแผนก "${normalizeText(row['แผนก *'])}"`)
+
+        const emp = normalizeLookup(row['ผู้รับผิดชอบ (รหัสพนักงาน) *'])
+        if (!emp) errors.push(`แถว ${rowNumber}: กรุณากรอกผู้รับผิดชอบ (รหัสพนักงาน)`)
+        else if (!employeeCodes.has(emp)) errors.push(`แถว ${rowNumber}: ไม่พบรหัสพนักงาน "${normalizeText(row['ผู้รับผิดชอบ (รหัสพนักงาน) *'])}"`)
+
+        if (normalizeText(row['มีการรับประกัน']) === 'มี' && !normalizeText(row['ระยะเวลารับประกัน'])) {
+          errors.push(`แถว ${rowNumber}: เลือก "มี" ประกันแล้วต้องกรอกระยะเวลารับประกัน`)
+        }
+      })
+
+      if (errors.length > 0) {
+        const more = errors.length > 8 ? `\n...และอีก ${errors.length - 8} รายการ` : ''
+        setError(`นำเข้าไม่สำเร็จ:\n${errors.slice(0, 8).join('\n')}${more}`)
+        return
+      }
+
+      if (!window.confirm(`ต้องการนำเข้าข้อมูลทะเบียนทรัพย์สิน ${rows.length} รายการใช่หรือไม่?\nหากรหัสทรัพย์สินซ้ำ ระบบจะอัปเดตข้อมูลเดิม`)) {
+        return
+      }
+
+      let created = 0
+      let updated = 0
+      for (const row of rows) {
+        const code = normalizeLookup(row['รหัสทรัพย์สิน'])
+        const existing = code ? existingByCode.get(code) : undefined
+        await upsertAsset(buildAssetPayloadFromRow(row, allDepartments, allEmployees, existing))
+        if (existing) updated += 1
+        else created += 1
+      }
+
+      await loadAll()
+      window.alert(`นำเข้าสำเร็จ\nเพิ่มใหม่ ${created} รายการ\nอัปเดต ${updated} รายการ`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'เกิดข้อผิดพลาดระหว่างนำเข้า')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="mt-4 flex justify-center py-20">
@@ -466,7 +816,30 @@ export default function AssetRegistry() {
             <option value="">ผู้รับผิดชอบทั้งหมด</option>
             {employees.map((emp) => <option key={emp.id} value={emp.id}>{employeeLabel(emp)}</option>)}
           </select>
-          <button onClick={openCreate} className="ml-auto inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
+          <button
+            type="button"
+            onClick={handleDownloadTemplate}
+            disabled={downloading}
+            className="ml-auto inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-white px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <FiDownload /> {downloading ? 'กำลังสร้างไฟล์...' : 'Template ทรัพย์สิน'}
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <button
+            type="button"
+            onClick={handleImportClick}
+            disabled={importing}
+            className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-white px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <FiUpload /> {importing ? 'กำลัง Import...' : 'Import'}
+          </button>
+          <button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
             <FiPlus /> เพิ่มทรัพย์สิน
           </button>
         </div>
