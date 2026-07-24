@@ -1569,6 +1569,8 @@ export interface HRAsset {
   status: 'active' | 'borrowed' | 'maintenance' | 'retired' | 'disposed' | 'lost'
   assigned_employee_id?: string
   images: string[]
+  /** ไฟล์เอกสารแนบ (PDF) — path อยู่ใน bucket hr-assets */
+  documents?: { name: string; path: string; uploaded_at?: string }[]
   notes?: string
   created_at: string
   updated_at: string

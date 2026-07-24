@@ -42,8 +42,11 @@ type AssetFormState = {
   status: HRAsset['status']
   assigned_employee_id: string
   images: string[]
+  documents: AssetDoc[]
   notes: string
 }
+
+type AssetDoc = { name: string; path: string; uploaded_at?: string }
 
 const EMPTY_FORM: AssetFormState = {
   asset_code: '',
@@ -68,6 +71,7 @@ const EMPTY_FORM: AssetFormState = {
   status: 'active',
   assigned_employee_id: '',
   images: [],
+  documents: [],
   notes: '',
 }
 
@@ -402,7 +406,7 @@ function downloadAssetTemplate(assets: HRAsset[] = []) {
     ['มีการรับประกัน', 'กรอก "มี" หรือ "ไม่มี" — ถ้า "มี" ต้องกรอกระยะเวลารับประกัน'],
     ['หน่วยรับประกัน', 'กรอก "ปี" หรือ "วัน" — ระบบจะคำนวณวันหมดประกันให้อัตโนมัติ'],
     ['ค่าที่ระบบคำนวณให้', 'ค่าเสื่อม/ปี, มูลค่าปัจจุบัน, วันหมดประกัน — ไม่ต้องกรอก ระบบคำนวณจากข้อมูลข้างต้น'],
-    ['รูปภาพทรัพย์สิน', 'ไม่รองรับผ่าน import — เพิ่มรูปได้ที่หน้าจอแก้ไขทรัพย์สินโดยตรง'],
+    ['รูปภาพ / เอกสาร PDF', 'ไม่รองรับผ่าน import — เพิ่มรูปและไฟล์เอกสาร PDF ได้ที่หน้าจอแก้ไขทรัพย์สินโดยตรง'],
   ]
   const instructionSheet = XLSX.utils.aoa_to_sheet(instructionRows)
   instructionSheet['!cols'] = [{ wch: 28 }, { wch: 80 }]
@@ -425,6 +429,7 @@ export default function AssetRegistry() {
   const [formOpen, setFormOpen] = useState(false)
   const [form, setForm] = useState<AssetFormState>(EMPTY_FORM)
   const [newImageFiles, setNewImageFiles] = useState<File[]>([])
+  const [newDocFiles, setNewDocFiles] = useState<File[]>([])
   // รูปที่กำลังเปิดดูแบบขยาย (lightbox) — null = ไม่เปิด, ค่าอื่นคือ index ในแกลเลอรีรวม
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [importing, setImporting] = useState(false)
@@ -520,6 +525,7 @@ export default function AssetRegistry() {
   const openCreate = async () => {
     setForm(EMPTY_FORM)
     setNewImageFiles([])
+    setNewDocFiles([])
     setError(null)
     setFormOpen(true)
     try {
@@ -556,9 +562,11 @@ export default function AssetRegistry() {
       status: asset.status ?? 'active',
       assigned_employee_id: asset.assigned_employee_id ?? '',
       images: Array.isArray(asset.images) ? [...asset.images] : [],
+      documents: Array.isArray(asset.documents) ? [...asset.documents] : [],
       notes: asset.notes ?? '',
     }))
     setNewImageFiles([])
+    setNewDocFiles([])
     setError(null)
     setFormOpen(true)
   }
@@ -579,6 +587,24 @@ export default function AssetRegistry() {
     setNewImageFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const handleAddDocFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const picked = Array.from(files)
+    const pdfs = picked.filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+    if (pdfs.length < picked.length) {
+      setError('รองรับเฉพาะไฟล์ PDF เท่านั้น')
+    }
+    if (pdfs.length > 0) setNewDocFiles((prev) => [...prev, ...pdfs])
+  }
+
+  const removeExistingDoc = (index: number) => {
+    setForm((prev) => ({ ...prev, documents: prev.documents.filter((_, i) => i !== index) }))
+  }
+
+  const removePendingDoc = (index: number) => {
+    setNewDocFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
   const handleSave = async () => {
     const missing = missingRequiredLabels(form)
     if (missing.length > 0) {
@@ -593,6 +619,12 @@ export default function AssetRegistry() {
         const path = `assets/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
         await uploadHRFile(BUCKET, path, file)
         uploadedPaths.push(path)
+      }
+      const uploadedDocs: AssetDoc[] = []
+      for (const file of newDocFiles) {
+        const path = `documents/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
+        await uploadHRFile(BUCKET, path, file)
+        uploadedDocs.push({ name: file.name, path, uploaded_at: new Date().toISOString() })
       }
       await upsertAsset({
         id: form.id,
@@ -619,11 +651,13 @@ export default function AssetRegistry() {
         status: form.status,
         assigned_employee_id: form.assigned_employee_id || undefined,
         images: [...form.images, ...uploadedPaths],
+        documents: [...form.documents, ...uploadedDocs],
         notes: form.notes.trim() || undefined,
       })
       setFormOpen(false)
       setForm(EMPTY_FORM)
       setNewImageFiles([])
+      setNewDocFiles([])
       await loadAll()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกทรัพย์สินไม่สำเร็จ')
@@ -1086,6 +1120,52 @@ export default function AssetRegistry() {
                 )
               })}
             </div>
+          </div>
+
+          <div className="mt-5 rounded-xl border border-surface-200 bg-surface-50 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-medium text-gray-700">เอกสารแนบ (PDF)</p>
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700">
+                <FiUpload /> เพิ่มเอกสาร
+                <input type="file" accept="application/pdf,.pdf" multiple className="hidden" onChange={(e) => handleAddDocFiles(e.target.files)} />
+              </label>
+            </div>
+
+            {form.documents.length === 0 && newDocFiles.length === 0 ? (
+              <p className="py-4 text-center text-sm text-gray-500">ยังไม่มีเอกสารแนบ</p>
+            ) : (
+              <ul className="divide-y divide-surface-200 overflow-hidden rounded-lg border border-surface-200 bg-white">
+                {form.documents.map((doc, idx) => (
+                  <li key={`${doc.path}_${idx}`} className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-surface-50">
+                    <a
+                      href={getHRFileUrl(BUCKET, doc.path)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex min-w-0 items-center gap-2 text-sm font-medium text-emerald-700 hover:underline"
+                      title="เปิด/ดาวน์โหลดเอกสาร"
+                    >
+                      <FiDownload className="shrink-0" />
+                      <span className="truncate">{doc.name}</span>
+                    </a>
+                    <button type="button" onClick={() => removeExistingDoc(idx)} title="ลบเอกสาร" className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600">
+                      <FiTrash2 />
+                    </button>
+                  </li>
+                ))}
+                {newDocFiles.map((file, idx) => (
+                  <li key={`${file.name}_${idx}`} className="flex items-center justify-between gap-2 px-4 py-3">
+                    <div className="flex min-w-0 items-center gap-2 text-sm text-gray-600">
+                      <FiUpload className="shrink-0" />
+                      <span className="truncate">{file.name}</span>
+                      <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700">รออัปโหลด</span>
+                    </div>
+                    <button type="button" onClick={() => removePendingDoc(idx)} title="เอาออก" className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600">
+                      <FiX />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           <div className="mt-6 flex justify-end gap-2">

@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FiBox, FiMapPin, FiCalendar } from 'react-icons/fi'
-import { fetchEmployeeByUserId, fetchAssets } from '../../../lib/hrApi'
+import { fetchEmployeeByUserId, fetchAssets, getHRFileUrl } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import type { HRAsset } from '../../../types'
+
+const BUCKET = 'hr-assets'
 
 const STATUS: Record<string, [string, string]> = {
   active: ['bg-emerald-100 text-emerald-800', 'ใช้งาน'],
@@ -72,25 +74,37 @@ export default function EmployeeAssets() {
         <div className="space-y-3">
           {assets.map((a) => (
             <div key={a.id} className="rounded-2xl bg-white border border-gray-200 p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="font-semibold text-gray-900">{a.name}</p>
-                  <p className="text-xs text-gray-400">
-                    {a.asset_code || '-'}{a.category ? ` • ${a.category}` : ''}
-                  </p>
-                </div>
-                {statusBadge(a.status)}
-              </div>
-              <div className="mt-2 space-y-1 text-sm text-gray-600">
-                {a.location && (
-                  <p className="flex items-center gap-1.5">
-                    <FiMapPin className="w-3.5 h-3.5 text-gray-400" /> {a.location}
-                  </p>
+              <div className="flex gap-3">
+                {/* แสดงเฉพาะรูปหลัก (รูปแรก) เท่านั้น — ไม่แสดงรูปอื่นและไฟล์เอกสาร */}
+                {a.images?.[0] && (
+                  <img
+                    src={getHRFileUrl(BUCKET, a.images[0])}
+                    alt={a.name}
+                    className="h-20 w-20 shrink-0 rounded-lg border border-gray-100 object-cover"
+                  />
                 )}
-                <p className="flex items-center gap-1.5">
-                  <FiCalendar className="w-3.5 h-3.5 text-gray-400" /> รับเมื่อ {thaiDate(a.purchase_date)}
-                </p>
-                {a.notes && <p className="text-xs text-gray-500 mt-1">{a.notes}</p>}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900">{a.name}</p>
+                      <p className="text-xs text-gray-400">
+                        {a.asset_code || '-'}{a.category ? ` • ${a.category}` : ''}
+                      </p>
+                    </div>
+                    {statusBadge(a.status)}
+                  </div>
+                  <div className="mt-2 space-y-1 text-sm text-gray-600">
+                    {a.location && (
+                      <p className="flex items-center gap-1.5">
+                        <FiMapPin className="w-3.5 h-3.5 text-gray-400" /> {a.location}
+                      </p>
+                    )}
+                    <p className="flex items-center gap-1.5">
+                      <FiCalendar className="w-3.5 h-3.5 text-gray-400" /> รับเมื่อ {thaiDate(a.purchase_date)}
+                    </p>
+                    {a.notes && <p className="text-xs text-gray-500 mt-1">{a.notes}</p>}
+                  </div>
+                </div>
               </div>
             </div>
           ))}
