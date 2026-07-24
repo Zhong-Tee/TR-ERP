@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiBox, FiMapPin, FiCalendar } from 'react-icons/fi'
+import { FiBox, FiMapPin, FiCalendar, FiDollarSign } from 'react-icons/fi'
 import { fetchEmployeeByUserId, fetchAssets, getHRFileUrl } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import type { HRAsset } from '../../../types'
@@ -17,7 +17,7 @@ const STATUS: Record<string, [string, string]> = {
 
 function statusBadge(status: string) {
   const [cls, label] = STATUS[status] ?? ['bg-gray-100 text-gray-600', status]
-  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
+  return <span className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
 }
 
 function thaiDate(d?: string): string {
@@ -86,7 +86,7 @@ export default function EmployeeAssets() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="font-semibold text-gray-900">{a.name}</p>
+                      <p className="font-semibold text-gray-900 break-words">{a.name}</p>
                       <p className="text-xs text-gray-400">
                         {a.asset_code || '-'}{a.category ? ` • ${a.category}` : ''}
                       </p>
@@ -102,6 +102,11 @@ export default function EmployeeAssets() {
                     <p className="flex items-center gap-1.5">
                       <FiCalendar className="w-3.5 h-3.5 text-gray-400" /> รับเมื่อ {thaiDate(a.purchase_date)}
                     </p>
+                    {a.purchase_cost != null && (
+                      <p className="flex items-center gap-1.5">
+                        <FiDollarSign className="w-3.5 h-3.5 text-gray-400" /> มูลค่าตอนซื้อ {Number(a.purchase_cost).toLocaleString('th-TH')} บาท
+                      </p>
+                    )}
                     {a.notes && <p className="text-xs text-gray-500 mt-1">{a.notes}</p>}
                   </div>
                 </div>
