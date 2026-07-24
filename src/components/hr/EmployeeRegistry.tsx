@@ -214,9 +214,11 @@ function formatExcelDate(value: unknown): string | undefined {
   const text = normalizeText(value)
   if (!text) return undefined
   const normalized = text.replace(/\//g, '-')
-  const date = new Date(`${normalized}T00:00:00`)
-  if (!Number.isNaN(date.getTime()) && /^\d{4}-\d{1,2}-\d{1,2}$/.test(normalized)) {
-    return date.toISOString().slice(0, 10)
+  // แปลงตรงจากสตริง ISO โดยไม่ผ่าน Date object เพื่อเลี่ยง timezone shift (-1 วันในโซน UTC+7)
+  const match = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+  if (match) {
+    const [, y, m, d] = match
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`
   }
   return text
 }
@@ -343,10 +345,52 @@ function buildEmployeePayload(
   }
 }
 
-function downloadEmployeeRegistryTemplate() {
+/** แปลงข้อมูลพนักงาน 1 คน → แถวตามลำดับหัวคอลัมน์ template (ค่าที่ import กลับได้) */
+function employeeToTemplateRow(emp: HREmployee): (string | number)[] {
+  const values: Record<string, string | number> = {
+    'รหัสพนักงาน': emp.employee_code ?? '',
+    'คำนำหน้า': emp.prefix ?? '',
+    'ชื่อ *': emp.first_name ?? '',
+    'นามสกุล *': emp.last_name ?? '',
+    'ชื่อ (อังกฤษ)': emp.first_name_en ?? '',
+    'นามสกุล (อังกฤษ)': emp.last_name_en ?? '',
+    'ชื่อเล่น': emp.nickname ?? '',
+    'เลขบัตรประชาชน': emp.citizen_id ?? '',
+    'วันเกิด': emp.birth_date ?? '',
+    'เพศ': emp.gender ?? '',
+    'ศาสนา': emp.religion ?? '',
+    'สัญชาติ': emp.nationality ?? '',
+    'โทรศัพท์': emp.phone ?? '',
+    'แผนก': emp.department?.name ?? '',
+    'ตำแหน่ง': emp.position?.name ?? '',
+    'วันที่เข้างาน': emp.hire_date ?? '',
+    'วันสิ้นสุดทดลองงาน': emp.probation_end_date ?? '',
+    'ฐานเงินเดือน': emp.salary ?? '',
+    'เงินพิเศษ/ประจำตำแหน่ง': emp.position_allowance ?? '',
+    'สถานะการจ้าง': getStatusLabel(emp.employment_status),
+    'ประเภทสัญญาจ้าง': getContractTypeLabel(emp.contract_type),
+    'Telegram Chat ID': emp.telegram_chat_id ?? '',
+    'ชื่อผู้ติดต่อฉุกเฉิน': emp.emergency_contact?.name ?? '',
+    'โทรศัพท์ผู้ติดต่อฉุกเฉิน': emp.emergency_contact?.phone ?? '',
+    'ความสัมพันธ์ผู้ติดต่อฉุกเฉิน': emp.emergency_contact?.relationship ?? '',
+    'ชื่อผู้ติดต่อฉุกเฉิน 2': emp.emergency_contact_2?.name ?? '',
+    'โทรศัพท์ผู้ติดต่อฉุกเฉิน 2': emp.emergency_contact_2?.phone ?? '',
+    'ความสัมพันธ์ผู้ติดต่อฉุกเฉิน 2': emp.emergency_contact_2?.relationship ?? '',
+  }
+  for (const key of ADDRESS_FIELD_KEYS) {
+    values[`${ADDRESS_FIELD_LABELS[key]} (ตามบัตร)`] = emp.address?.[key] ?? ''
+    values[`${ADDRESS_FIELD_LABELS[key]} (ปัจจุบัน)`] = emp.current_address?.[key] ?? ''
+  }
+  return EMPLOYEE_TEMPLATE_HEADERS.map((header) => values[header] ?? '')
+}
+
+function downloadEmployeeRegistryTemplate(employees: HREmployee[] = []) {
   const workbook = XLSX.utils.book_new()
 
-  const employeeRows = [Array.from(EMPLOYEE_TEMPLATE_HEADERS)]
+  const employeeRows: (string | number)[][] = [
+    Array.from(EMPLOYEE_TEMPLATE_HEADERS),
+    ...employees.map(employeeToTemplateRow),
+  ]
 
   const employeeSheet = XLSX.utils.aoa_to_sheet(employeeRows)
   employeeSheet['!cols'] = employeeRows[0].map((header) => ({
@@ -396,6 +440,7 @@ export default function EmployeeRegistry() {
   const [deleteConfirm, setDeleteConfirm] = useState<HREmployee | null>(null)
   const [salaryHistoryEmp, setSalaryHistoryEmp] = useState<HREmployee | null>(null)
   const [importing, setImporting] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
 
@@ -472,6 +517,22 @@ export default function EmployeeRegistry() {
       loadData()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ')
+    }
+  }
+
+  const handleDownloadTemplate = async () => {
+    setDownloading(true)
+    try {
+      // ดึงพนักงานทั้งหมด (ไม่ผูกกับ filter หน้าจอ) เพื่อให้ได้ข้อมูลปัจจุบันครบทุกคน
+      const allEmployees = await fetchEmployees()
+      downloadEmployeeRegistryTemplate(allEmployees)
+    } catch (e) {
+      showMessage({
+        title: 'ดาวน์โหลดไม่สำเร็จ',
+        message: e instanceof Error ? e.message : 'เกิดข้อผิดพลาดระหว่างสร้างไฟล์',
+      })
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -646,11 +707,12 @@ export default function EmployeeRegistry() {
           </select>
           <button
             type="button"
-            onClick={downloadEmployeeRegistryTemplate}
-            className="inline-flex items-center gap-2 px-4 py-2 border border-emerald-200 bg-white text-emerald-700 rounded-lg font-medium hover:bg-emerald-50 transition"
+            onClick={handleDownloadTemplate}
+            disabled={downloading}
+            className="inline-flex items-center gap-2 px-4 py-2 border border-emerald-200 bg-white text-emerald-700 rounded-lg font-medium hover:bg-emerald-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <FiDownload />
-            Template ทะเบียนพนักงาน
+            {downloading ? 'กำลังสร้างไฟล์...' : 'Template ทะเบียนพนักงาน'}
           </button>
           <input
             ref={importInputRef}
