@@ -14,6 +14,7 @@ import {
   uploadHRFile,
   upsertAsset,
 } from '../../lib/hrApi'
+import { createStoragePath } from '../../lib/storagePath'
 import type { HRAsset, HRDepartment, HREmployee } from '../../types'
 import Modal from '../ui/Modal'
 
@@ -645,12 +646,12 @@ export default function AssetRegistry() {
       const documents = [...form.documents]
       if (newImageFiles.length > 0 || newDocFiles.length > 0) {
         for (const file of newImageFiles) {
-          const path = `assets/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
+          const path = createStoragePath('assets', file.name)
           await uploadHRFile(BUCKET, path, file)
           images.push(path)
         }
         for (const file of newDocFiles) {
-          const path = `documents/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
+          const path = createStoragePath('documents', file.name)
           await uploadHRFile(BUCKET, path, file)
           documents.push({ name: file.name, path, uploaded_at: new Date().toISOString() })
         }
