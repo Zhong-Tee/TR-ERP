@@ -745,6 +745,14 @@ export function getHRFileUrl(bucket: string, path: string) {
   return data.publicUrl
 }
 
+/** ลบไฟล์ใน storage หลายรายการ (ข้าม path ว่าง) — โยน error หากลบไม่สำเร็จ */
+export async function removeHRFiles(bucket: string, paths: string[]) {
+  const clean = paths.filter((p) => p && p.trim() !== '')
+  if (clean.length === 0) return
+  const { error } = await supabase.storage.from(bucket).remove(clean)
+  if (error) pgError(error)
+}
+
 /** signed URL ของเอกสารแนบใบลา (bucket hr-medical-certs เป็น private) */
 export async function getMedicalCertUrl(path: string, expiresInSec = 3600) {
   if (path.startsWith('http')) return path

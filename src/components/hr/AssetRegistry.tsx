@@ -10,6 +10,7 @@ import {
   fetchEmployees,
   getHRFileUrl,
   peekNextAssetCode,
+  removeHRFiles,
   uploadHRFile,
   upsertAsset,
 } from '../../lib/hrApi'
@@ -95,6 +96,14 @@ const SUB_TYPE_OPTIONS = ['Notebook', 'Printer', 'Monitor', 'Machine', 'Table', 
 
 function round2(n: number): string {
   return String(Math.round(n * 100) / 100)
+}
+
+/** แปลงวันที่ ISO เป็นรูปแบบไทยอ่านง่าย เช่น 15 ม.ค. 2569 */
+function thaiDate(d?: string): string {
+  if (!d) return '-'
+  const date = new Date(`${d}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return d
+  return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 /** ค่าเสื่อมราคาต่อปี = มูลค่าตอนซื้อ ÷ อายุการใช้งาน (ปี) — null เมื่อคำนวณไม่ได้ */
@@ -430,6 +439,8 @@ export default function AssetRegistry() {
   const [form, setForm] = useState<AssetFormState>(EMPTY_FORM)
   const [newImageFiles, setNewImageFiles] = useState<File[]>([])
   const [newDocFiles, setNewDocFiles] = useState<File[]>([])
+  // เก็บทรัพย์สินเดิมตอนเปิดแก้ไข เพื่อรู้ว่าไฟล์ใดถูกเอาออก จะได้ลบใน storage ตอนบันทึก
+  const [editingAsset, setEditingAsset] = useState<HRAsset | null>(null)
   // รูปที่กำลังเปิดดูแบบขยาย (lightbox) — null = ไม่เปิด, ค่าอื่นคือ index ในแกลเลอรีรวม
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [importing, setImporting] = useState(false)
@@ -526,6 +537,7 @@ export default function AssetRegistry() {
     setForm(EMPTY_FORM)
     setNewImageFiles([])
     setNewDocFiles([])
+    setEditingAsset(null)
     setError(null)
     setFormOpen(true)
     try {
@@ -567,13 +579,19 @@ export default function AssetRegistry() {
     }))
     setNewImageFiles([])
     setNewDocFiles([])
+    setEditingAsset(asset)
     setError(null)
     setFormOpen(true)
   }
 
   const handleAddImageFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return
-    setNewImageFiles((prev) => [...prev, ...Array.from(files)])
+    setNewImageFiles((prev) => {
+      // กันเลือกไฟล์เดิมซ้ำ (ชื่อ + ขนาดเดียวกัน) เพื่อไม่ให้อัปโหลดรูปซ้ำ
+      const seen = new Set(prev.map((f) => `${f.name}_${f.size}`))
+      const add = Array.from(files).filter((f) => !seen.has(`${f.name}_${f.size}`))
+      return [...prev, ...add]
+    })
   }
 
   const removeExistingImage = (index: number) => {
@@ -594,7 +612,14 @@ export default function AssetRegistry() {
     if (pdfs.length < picked.length) {
       setError('รองรับเฉพาะไฟล์ PDF เท่านั้น')
     }
-    if (pdfs.length > 0) setNewDocFiles((prev) => [...prev, ...pdfs])
+    if (pdfs.length > 0) {
+      setNewDocFiles((prev) => {
+        // กันเลือกไฟล์เดิมซ้ำ (ชื่อ + ขนาดเดียวกัน)
+        const seen = new Set(prev.map((f) => `${f.name}_${f.size}`))
+        const add = pdfs.filter((f) => !seen.has(`${f.name}_${f.size}`))
+        return [...prev, ...add]
+      })
+    }
   }
 
   const removeExistingDoc = (index: number) => {
@@ -614,17 +639,24 @@ export default function AssetRegistry() {
     setSaving(true)
     setError(null)
     try {
-      const uploadedPaths: string[] = []
-      for (const file of newImageFiles) {
-        const path = `assets/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
-        await uploadHRFile(BUCKET, path, file)
-        uploadedPaths.push(path)
-      }
-      const uploadedDocs: AssetDoc[] = []
-      for (const file of newDocFiles) {
-        const path = `documents/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
-        await uploadHRFile(BUCKET, path, file)
-        uploadedDocs.push({ name: file.name, path, uploaded_at: new Date().toISOString() })
+      // อัปโหลดไฟล์ที่รออยู่ แล้ว "ย้าย" เข้า form + เคลียร์ pending ทันที
+      // เพื่อว่าหาก upsert ด้านล่างล้มเหลวแล้วผู้ใช้กดบันทึกใหม่ จะไม่อัปโหลดรูปซ้ำ
+      const images = [...form.images]
+      const documents = [...form.documents]
+      if (newImageFiles.length > 0 || newDocFiles.length > 0) {
+        for (const file of newImageFiles) {
+          const path = `assets/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
+          await uploadHRFile(BUCKET, path, file)
+          images.push(path)
+        }
+        for (const file of newDocFiles) {
+          const path = `documents/${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.name}`
+          await uploadHRFile(BUCKET, path, file)
+          documents.push({ name: file.name, path, uploaded_at: new Date().toISOString() })
+        }
+        setForm((p) => ({ ...p, images, documents }))
+        setNewImageFiles([])
+        setNewDocFiles([])
       }
       await upsertAsset({
         id: form.id,
@@ -650,14 +682,29 @@ export default function AssetRegistry() {
         current_value: form.current_value.trim() === '' ? undefined : Number(form.current_value),
         status: form.status,
         assigned_employee_id: form.assigned_employee_id || undefined,
-        images: [...form.images, ...uploadedPaths],
-        documents: [...form.documents, ...uploadedDocs],
+        images,
+        documents,
         notes: form.notes.trim() || undefined,
       })
+
+      // ลบไฟล์เดิมที่ถูกเอาออกตอนแก้ไข (orphan) — best-effort ไม่ให้กระทบผลบันทึก
+      if (editingAsset) {
+        const keptImages = new Set(images)
+        const keptDocs = new Set(documents.map((d) => d.path))
+        const removed = [
+          ...(editingAsset.images ?? []).filter((p) => !keptImages.has(p)),
+          ...(editingAsset.documents ?? []).map((d) => d.path).filter((p) => !keptDocs.has(p)),
+        ]
+        if (removed.length > 0) {
+          try { await removeHRFiles(BUCKET, removed) } catch { /* ยอมให้ orphan ตกค้างได้ ไม่ถือว่าบันทึกล้มเหลว */ }
+        }
+      }
+
       setFormOpen(false)
       setForm(EMPTY_FORM)
       setNewImageFiles([])
       setNewDocFiles([])
+      setEditingAsset(null)
       await loadAll()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกทรัพย์สินไม่สำเร็จ')
@@ -671,6 +718,14 @@ export default function AssetRegistry() {
     if (!yes) return
     try {
       await deleteAsset(asset.id)
+      // ลบไฟล์รูป + เอกสารทั้งหมดของทรัพย์สินนี้ใน storage — best-effort
+      const paths = [
+        ...(asset.images ?? []),
+        ...(asset.documents ?? []).map((d) => d.path),
+      ]
+      if (paths.length > 0) {
+        try { await removeHRFiles(BUCKET, paths) } catch { /* ยอมให้ orphan ตกค้างได้ ลบ row สำเร็จแล้ว */ }
+      }
       await loadAll()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'ลบทรัพย์สินไม่สำเร็จ')
@@ -886,7 +941,10 @@ export default function AssetRegistry() {
                 <th className="px-4 py-3 font-semibold text-gray-700">รายการทรัพย์สิน</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">แผนก</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">ผู้รับผิดชอบ</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">มูลค่าตอนซื้อ</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">มูลค่าปัจจุบัน</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">วันที่ซื้อ</th>
+                <th className="px-4 py-3 font-semibold text-gray-700">วันหมดประกัน</th>
                 <th className="px-4 py-3 font-semibold text-gray-700">สถานะ</th>
                 <th className="px-4 py-3 text-right font-semibold text-gray-700">จัดการ</th>
               </tr>
@@ -894,13 +952,13 @@ export default function AssetRegistry() {
             <tbody>
               {filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-gray-500">ยังไม่มีข้อมูลทรัพย์สิน</td>
+                  <td colSpan={10} className="px-4 py-12 text-center text-gray-500">ยังไม่มีข้อมูลทรัพย์สิน</td>
                 </tr>
               ) : filteredAssets.map((asset) => (
                 <tr key={asset.id} className="border-b border-surface-100 hover:bg-surface-50">
-                  <td className="px-4 py-3 font-mono text-xs">{asset.asset_code ?? '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3">{asset.asset_code ?? '-'}</td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{asset.name}</div>
+                    <div className="max-w-[240px] break-words font-medium text-gray-900">{asset.name}</div>
                     <div className="text-xs text-gray-500">{asset.category ?? '-'} · {asset.location ?? '-'}</div>
                   </td>
                   <td className="px-4 py-3">{asset.department?.name ?? '-'}</td>
@@ -909,7 +967,10 @@ export default function AssetRegistry() {
                       ? [asset.assigned_employee.first_name, asset.assigned_employee.last_name].filter(Boolean).join(' ')
                       : '-'}
                   </td>
+                  <td className="px-4 py-3">{asset.purchase_cost != null ? `${Number(asset.purchase_cost).toLocaleString()} บาท` : '-'}</td>
                   <td className="px-4 py-3">{asset.current_value != null ? `${Number(asset.current_value).toLocaleString()} บาท` : '-'}</td>
+                  <td className="whitespace-nowrap px-4 py-3">{thaiDate(asset.purchase_date)}</td>
+                  <td className="whitespace-nowrap px-4 py-3">{asset.has_warranty && asset.warranty_expire_date ? thaiDate(asset.warranty_expire_date) : '-'}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_META[asset.status].chip}`}>
                       {STATUS_META[asset.status].label}
