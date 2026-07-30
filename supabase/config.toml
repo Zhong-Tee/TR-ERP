@@ -43,9 +43,9 @@ enabled = true
 site_url = "http://localhost:5173"
 additional_redirect_urls = ["https://localhost:5173"]
 jwt_expiry = 3600
-enable_signup = true
+enable_signup = false
 
 [auth.email]
-enable_signup = true
+enable_signup = false
 double_confirm_changes = true
 enable_confirmations = false

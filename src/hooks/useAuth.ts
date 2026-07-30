@@ -85,34 +85,7 @@ export function useAuth() {
 
         if (error.code === 'PGRST116') {
           console.warn('User not found in us_users table. User ID:', userId)
-
-          try {
-            const { data: authUser } = await supabase.auth.getUser()
-
-            if (authUser?.user) {
-              const { data: newUser, error: insertError } = await supabase
-                .from('us_users')
-                .insert({
-                  id: userId,
-                  username: authUser.user.email?.split('@')[0] || 'user',
-                  role: 'store',
-                })
-                .select()
-                .single()
-
-              if (insertError) {
-                console.error('Cannot auto-create user (RLS may be blocking):', insertError)
-                alert('ไม่พบข้อมูลผู้ใช้ในระบบ กรุณาติดต่อผู้ดูแลระบบเพื่อเพิ่มข้อมูลผู้ใช้')
-              } else {
-                console.log('Auto-created user:', newUser)
-                setUser(newUser as User)
-                setLoading(false)
-                return
-              }
-            }
-          } catch (createError) {
-            console.error('Error creating user:', createError)
-          }
+          alert('ไม่พบข้อมูลผู้ใช้ในระบบ กรุณาติดต่อผู้ดูแลระบบเพื่อเพิ่มข้อมูลผู้ใช้')
         }
 
         setUser(null)

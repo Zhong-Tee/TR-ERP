@@ -3,7 +3,7 @@
 
 // 1. ตั้งค่า anon key (รันบรรทัดนี้ก่อน 1 ครั้ง)
 if (!window.__SUPABASE_ANON_KEY__) {
-  window.__SUPABASE_ANON_KEY__ = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprempiaHZzbHRid2J0dGVpaGl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg5Njc5MDQsImV4cCI6MjA4NDU0MzkwNH0.Z3sTjdW1gtqtfVfybHm02wqOUGllhmMLu1rNVwD4jtU';
+  window.__SUPABASE_ANON_KEY__ = 'PASTE_ANON_KEY_HERE';
   console.log('✅ Anon key set!');
 }
 

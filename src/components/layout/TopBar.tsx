@@ -353,13 +353,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   })
 
   const hrTabOrder = [
-    '/hr', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
+    '/hr', '/hr/tasks', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
     '/hr/warnings', '/hr/certificates',
     '/hr/interview', '/hr/onboarding', '/hr/assets',
     '/hr/contracts', '/hr/documents', '/hr/salary', '/hr/settings',
   ]
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
+    { path: '/hr/tasks', label: 'งาน' },
     { path: '/hr/leave', label: 'ระบบลางาน/OT' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },

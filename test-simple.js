@@ -1,7 +1,7 @@
 // วิธีทดสอบแบบง่าย - พิมพ์ทีละส่วนใน Console
 
 // ส่วนที่ 1: ตั้งค่า anon key
-window.__SUPABASE_ANON_KEY__ = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprempiaHZzbHRid2J0dGVpaGl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg5Njc5MDQsImV4cCI6MjA4NDU0MzkwNH0.Z3sTjdW1gtqtfVfybHm02wqOUGllhmMLu1rNVwD4jtU';
+window.__SUPABASE_ANON_KEY__ = window.__SUPABASE_ANON_KEY__ || 'PASTE_ANON_KEY_HERE';
 
 // ส่วนที่ 2: ตั้งค่า URL
 const slipUrl = 'https://zkzjbhvsltbwbtteihiy.supabase.co/storage/v1/object/public/slip-images/slipFBTR26010007/slipFBTR26010007-01.jpg';

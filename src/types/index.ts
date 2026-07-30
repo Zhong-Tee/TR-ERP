@@ -1490,6 +1490,79 @@ export interface HRNotificationSettings {
   updated_at: string
 }
 
+export type HRTaskStatus = 'draft' | 'new' | 'acknowledged' | 'in_progress' | 'review' | 'revision' | 'completed' | 'paused' | 'cancelled'
+export type HRTaskParticipantRole = 'assignee' | 'supervisor' | 'coordinator' | 'advisor'
+
+export interface HRTaskCategory {
+  id: string
+  name: string
+  color: string
+  description?: string
+  default_due_days?: number
+  is_active: boolean
+}
+
+export interface HRTaskParticipant {
+  id: string
+  task_id: string
+  employee_id: string
+  role: HRTaskParticipantRole
+  is_primary: boolean
+  employee?: HREmployee
+}
+
+export interface HRTaskChecklistItem {
+  id: string
+  task_id: string
+  title: string
+  description?: string
+  assignee_id?: string
+  due_at?: string
+  is_completed: boolean
+  completed_at?: string
+  sort_order: number
+}
+
+export interface HRTask {
+  id: string
+  task_no: string
+  title: string
+  description?: string
+  category_id?: string
+  team_id?: string
+  priority: 'normal' | 'high' | 'urgent'
+  status: HRTaskStatus
+  progress: number
+  start_date?: string
+  acknowledged_at?: string
+  started_at?: string
+  due_at?: string
+  submitted_at?: string
+  completed_at?: string
+  completion_note?: string
+  completion_link?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  category?: HRTaskCategory
+  creator?: HREmployee
+  participants?: HRTaskParticipant[]
+  checklist?: HRTaskChecklistItem[]
+}
+
+export interface HRTaskEvaluation {
+  id: string
+  task_id: string
+  employee_id: string
+  evaluator_id: string
+  speed: number
+  responsibility: number
+  quality: number
+  communication: number
+  comment?: string
+  visibility: 'manager_only' | 'employee_visible'
+}
+
 export interface HRWarning {
   id: string
   warning_number: string

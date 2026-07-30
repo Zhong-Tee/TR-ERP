@@ -765,6 +765,7 @@ export default function Settings() {
     // ── HR ──
     { key: 'hr', label: 'HR', group: '' },
     { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
+    { key: 'hr-tasks', label: 'งาน', group: 'hr' },
     { key: 'hr-leave', label: 'ระบบลางาน/OT', group: 'hr' },
     { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },
     { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },

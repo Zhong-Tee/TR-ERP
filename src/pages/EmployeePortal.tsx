@@ -3,10 +3,11 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { fetchEmployeeByUserId, fetchNotifications } from '../lib/hrApi'
-import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi } from 'react-icons/fi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase } from 'react-icons/fi'
 import type { HREmployee } from '../types'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
+const EmployeeTasks = lazy(() => import('../components/hr/employee/EmployeeTasks'))
 const EmployeeTimeClock = lazy(() => import('../components/hr/employee/EmployeeTimeClock'))
 const EmployeeLeave = lazy(() => import('../components/hr/employee/EmployeeLeave'))
 const EmployeeWorkCalendar = lazy(() => import('../components/hr/employee/EmployeeWorkCalendar'))
@@ -68,6 +69,7 @@ function DesktopBlockScreen() {
 
 const TABS = [
   { id: 'dashboard', label: 'หน้าหลัก', icon: FiHome, Component: EmployeeDashboard },
+  { id: 'tasks', label: 'งาน', icon: FiBriefcase, Component: EmployeeTasks },
   { id: 'timeclock', label: 'ลงเวลา', icon: FiClock, Component: EmployeeTimeClock },
   { id: 'leave', label: 'ขอลา', icon: FiCalendar, Component: EmployeeLeave },
   { id: 'calendar', label: 'ตารางงาน', icon: FiCalendar, Component: EmployeeWorkCalendar },

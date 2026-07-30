@@ -11,7 +11,141 @@ import type {
   HRWarning, HRCertificate, HRAsset, HRAssetLog,
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule, HRWFHRequest,
   HREmployeeWorkCalendar, HRCompanyHoliday,
+  HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
 } from '../types'
+
+export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*)`
+
+export async function fetchTaskCategories(activeOnly = true) {
+  let q = supabase.from('hr_task_categories').select('*').order('name')
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as HRTaskCategory[]
+}
+
+export async function saveTaskCategory(category: Partial<HRTaskCategory>) {
+  const payload = { ...category } as Record<string, unknown>
+  delete payload.id
+  const query = category.id
+    ? supabase.from('hr_task_categories').update(payload).eq('id', category.id)
+    : supabase.from('hr_task_categories').insert(payload)
+  const { data, error } = await query.select().single()
+  if (error) pgError(error)
+  return data as HRTaskCategory
+}
+
+export async function fetchTaskTeams() {
+  const { data, error } = await supabase.from('hr_task_teams').select('*, members:hr_task_team_members(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,position:hr_positions!position_id(name)))').order('name')
+  if (error) pgError(error)
+  return data ?? []
+}
+
+export async function createTaskTeam(name: string, managerId: string, memberIds: string[], createdBy: string) {
+  const { data, error } = await supabase.from('hr_task_teams').insert({ name, created_by: createdBy }).select().single()
+  if (error) pgError(error)
+  const uniqueMembers = [...new Set(memberIds.filter((id) => id !== managerId))]
+  const rows = [{ team_id: data.id, employee_id: managerId, role: 'manager', can_assign: true }, ...uniqueMembers.map((employee_id) => ({ team_id: data.id, employee_id, role: 'member', can_assign: false }))]
+  const { error: memberError } = await supabase.from('hr_task_team_members').insert(rows)
+  if (memberError) pgError(memberError)
+  return data
+}
+
+export async function updateTaskTeam(teamId: string, name: string, managerId: string, memberIds: string[]) {
+  const { error: teamError } = await supabase.from('hr_task_teams').update({ name, updated_at: new Date().toISOString() }).eq('id', teamId)
+  if (teamError) pgError(teamError)
+  const { error: deleteError } = await supabase.from('hr_task_team_members').delete().eq('team_id', teamId)
+  if (deleteError) pgError(deleteError)
+  const uniqueMembers = [...new Set(memberIds.filter((id) => id !== managerId))]
+  const rows = [{ team_id: teamId, employee_id: managerId, role: 'manager', can_assign: true }, ...uniqueMembers.map((employee_id) => ({ team_id: teamId, employee_id, role: 'member', can_assign: false }))]
+  const { error: memberError } = await supabase.from('hr_task_team_members').insert(rows)
+  if (memberError) pgError(memberError)
+}
+
+export async function fetchTasks(filters?: { employeeId?: string; status?: HRTaskStatus; search?: string }) {
+  let q = supabase.from('hr_tasks').select(HR_TASK_SELECT).order('created_at', { ascending: false })
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.search?.trim()) q = q.or(buildIlikeOr(filters.search.trim(), ['task_no', 'title', 'description']))
+  if (filters?.employeeId) q = q.eq('hr_task_participants.employee_id', filters.employeeId)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as unknown as HRTask[]
+}
+
+export interface CreateHRTaskInput {
+  title: string
+  description?: string
+  category_id?: string
+  priority: 'normal' | 'high' | 'urgent'
+  start_date?: string
+  due_at?: string
+  created_by: string
+  participants: { employee_id: string; role: 'assignee' | 'supervisor' | 'coordinator' | 'advisor'; is_primary?: boolean }[]
+  checklist: { title: string; description?: string; assignee_id?: string; due_at?: string; sort_order: number }[]
+}
+
+export async function createHRTask(input: CreateHRTaskInput) {
+  const { participants, checklist, ...task } = input
+  const { data, error } = await supabase.from('hr_tasks').insert({ ...task, status: 'new' }).select().single()
+  if (error) pgError(error)
+  if (participants.length) {
+    const participantRows = participants.map((p) => ({
+      task_id: data.id,
+      employee_id: p.employee_id,
+      role: p.role,
+      is_primary: p.is_primary ?? false,
+    }))
+    const { error: pError } = await supabase.from('hr_task_participants').insert(participantRows)
+    if (pError) {
+      await supabase.from('hr_tasks').delete().eq('id', data.id)
+      pgError(pError)
+    }
+  }
+  if (checklist.length) {
+    const { error: cError } = await supabase.from('hr_task_checklist_items').insert(checklist.map((c) => ({ ...c, task_id: data.id })))
+    if (cError) {
+      await supabase.from('hr_tasks').delete().eq('id', data.id)
+      pgError(cError)
+    }
+  }
+  return fetchTask(data.id)
+}
+
+export async function fetchTask(id: string) {
+  const { data, error } = await supabase.from('hr_tasks').select(HR_TASK_SELECT).eq('id', id).single()
+  if (error) pgError(error)
+  return data as unknown as HRTask
+}
+
+export async function updateTaskStatus(id: string, status: HRTaskStatus, note?: string, completionLink?: string) {
+  const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString() }
+  if (status === 'acknowledged') patch.acknowledged_at = new Date().toISOString()
+  if (status === 'in_progress') patch.started_at = new Date().toISOString()
+  if (status === 'review') { patch.submitted_at = new Date().toISOString(); patch.completion_note = note ?? null; patch.completion_link = completionLink ?? null }
+  if (status === 'completed') { patch.completed_at = new Date().toISOString(); patch.progress = 100 }
+  let result = await supabase.from('hr_tasks').update(patch).eq('id', id).select(HR_TASK_SELECT).single()
+  // Graceful rollout: status changes must still work while migration 316 has not
+  // reached an environment yet. Timing/link fields become available after it does.
+  if (result.error && /acknowledged_at|started_at|completion_link|schema cache/i.test(result.error.message)) {
+    delete patch.acknowledged_at
+    delete patch.started_at
+    delete patch.completion_link
+    result = await supabase.from('hr_tasks').update(patch).eq('id', id).select(HR_TASK_SELECT).single()
+  }
+  if (result.error) pgError(result.error)
+  return result.data as unknown as HRTask
+}
+
+export async function toggleTaskChecklist(id: string, completed: boolean) {
+  const { error } = await supabase.from('hr_task_checklist_items').update({ is_completed: completed, completed_at: completed ? new Date().toISOString() : null }).eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function saveTaskEvaluation(evaluation: Omit<HRTaskEvaluation, 'id'>) {
+  const { data, error } = await supabase.from('hr_task_evaluations').upsert(evaluation, { onConflict: 'task_id,employee_id,evaluator_id' }).select().single()
+  if (error) pgError(error)
+  return data as HRTaskEvaluation
+}
 
 function pgError(e: unknown): never {
   if (e instanceof Error) throw e
