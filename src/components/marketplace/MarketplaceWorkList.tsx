@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
+import { parseBangkokDateTime } from '../../lib/marketplaceImport'
+import { computeDueTimestamps } from '../../lib/shipDueBadge'
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import MarketplaceOrderModal from './MarketplaceOrderModal'
@@ -17,6 +19,7 @@ export default function MarketplaceWorkList({
   status,
   user,
   isAdmin,
+  configs,
   salesUsers,
   refreshKey,
   onChanged,
@@ -35,6 +38,8 @@ export default function MarketplaceWorkList({
   const [search, setSearch] = useState('')
   const [draftOnly, setDraftOnly] = useState(false)
   const [openOrder, setOpenOrder] = useState<MpOrder | null>(null)
+  const [repairingPaymentTimes, setRepairingPaymentTimes] = useState(false)
+  const [repairingOrderTotals, setRepairingOrderTotals] = useState(false)
 
   const userById = useMemo(() => {
     const m = new Map<string, MpSalesUser>()
@@ -94,10 +99,97 @@ export default function MarketplaceWorkList({
 
   const readOnly = status === 'done' || status === 'cancelled'
 
+  const repairablePaymentTimes = useMemo(() => {
+    return orders.flatMap((order) => {
+      if (order.payment_time || !order.raw_snapshot) return []
+      const rawValue = order.raw_snapshot['Paid Time'] ?? order.raw_snapshot['เวลาการชำระสินค้า']
+      const paymentTime = parseBangkokDateTime(rawValue)
+      return paymentTime ? [{ order, paymentTime }] : []
+    })
+  }, [orders])
+
+  const repairableOrderTotals = useMemo(() => {
+    return orders.flatMap((order) => {
+      if (order.order_total != null || !order.raw_snapshot) return []
+      const rawValue = order.raw_snapshot['Order Amount']
+      if (rawValue == null || rawValue === '') return []
+      const orderTotal = Number(String(rawValue).replace(/,/g, '').trim())
+      return Number.isFinite(orderTotal) ? [{ order, orderTotal }] : []
+    })
+  }, [orders])
+
+  async function repairPaymentTimes() {
+    if (!isAdmin || repairablePaymentTimes.length === 0) return
+    setRepairingPaymentTimes(true)
+    try {
+      for (const { order, paymentTime } of repairablePaymentTimes) {
+        const rule = configs.find((config) => config.id === order.config_id)?.due_rule
+        const due = computeDueTimestamps(paymentTime, rule)
+        const { error } = await supabase
+          .from('mp_orders')
+          .update({ payment_time: paymentTime, ...due })
+          .eq('id', order.id)
+          .is('payment_time', null)
+        if (error) throw error
+      }
+      await loadOrders()
+      onChanged()
+    } catch (err) {
+      console.error('Error repairing marketplace payment times:', err)
+    } finally {
+      setRepairingPaymentTimes(false)
+    }
+  }
+
+  async function repairOrderTotals() {
+    if (!isAdmin || repairableOrderTotals.length === 0) return
+    setRepairingOrderTotals(true)
+    try {
+      for (const { order, orderTotal } of repairableOrderTotals) {
+        const { error } = await supabase
+          .from('mp_orders')
+          .update({ order_total: orderTotal })
+          .eq('id', order.id)
+          .is('order_total', null)
+        if (error) throw error
+      }
+      await loadOrders()
+      onChanged()
+    } catch (err) {
+      console.error('Error repairing marketplace order totals:', err)
+    } finally {
+      setRepairingOrderTotals(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="text-xl font-bold text-slate-800 mr-auto">{STATUS_TITLES[status]}</h2>
+        {isAdmin && repairablePaymentTimes.length > 0 && (
+          <button
+            type="button"
+            disabled={repairingPaymentTimes}
+            onClick={repairPaymentTimes}
+            className="px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-700 font-medium hover:bg-amber-100 disabled:opacity-50"
+          >
+            {repairingPaymentTimes
+              ? 'กำลังซ่อมเวลา...'
+              : `ซ่อมเวลาชำระเงิน (${repairablePaymentTimes.length})`}
+          </button>
+        )}
+        {isAdmin && repairableOrderTotals.length > 0 && (
+          <button
+            type="button"
+            disabled={repairingOrderTotals}
+            onClick={repairOrderTotals}
+            className="px-3 py-2 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 font-medium hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {repairingOrderTotals
+              ? 'กำลังซ่อมยอดรวม...'
+              : `ซ่อมยอดรวมออเดอร์ (${repairableOrderTotals.length})`}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setDraftOnly((v) => !v)}

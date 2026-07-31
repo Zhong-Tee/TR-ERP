@@ -72,6 +72,18 @@ export const MP_FIELD_LABELS: Record<MpFieldKey, string> = {
   tracking_no: 'เลขพัสดุ',
 }
 
+/** ฟิลด์จากไฟล์ที่นำไปแสดงโดยตรงในหน้ากรอกข้อมูลบิลของเมนู Assign */
+export const MP_ASSIGN_FORM_FIELDS = new Set<MpFieldKey>([
+  'buyer_username',
+  'payment_time',
+  'buyer_note',
+  'order_total',
+  'product_name',
+  'variation',
+  'qty',
+  'unit_price',
+])
+
 /**
  * จัดกลุ่มฟิลด์ให้เข้าใจง่ายในหน้าตั้งค่า — สื่อว่าจับคู่คอลัมน์ในไฟล์
  * เพื่อดึงข้อมูลมาเปิดบิล (รายการสินค้า + หัวบิล) และข้อมูลจัดส่ง
@@ -157,7 +169,7 @@ export function buildMpColIndex(maps: MpMapRow[], headerRow: unknown[] | null): 
 
 /**
  * แปลงค่าวันเวลาในไฟล์ (เวลาไทย) → ISO UTC
- * รองรับ "2026-07-16 21:36", "2026-07-16 21:36:05" และ Excel serial number
+ * รองรับ "2026-07-16 21:36", "31/07/2026 19:24:46" และ Excel serial number
  * ห้ามใช้ new Date(string) ตรง ๆ เพราะจะตีความตาม timezone ของเครื่อง
  */
 export function parseBangkokDateTime(val: unknown): string | null {
@@ -180,6 +192,15 @@ export function parseBangkokDateTime(val: unknown): string | null {
   if (m) {
     const [, y, mo, day, h, mi, sec] = m
     const d = new Date(`${y}-${mo}-${day}T${h.padStart(2, '0')}:${mi}:${sec || '00'}+07:00`)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  // TikTok export: วัน/เดือน/ปี เวลา เช่น "31/07/2026 19:24:46"
+  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+  if (dmy) {
+    const [, day, mo, y, h, mi, sec] = dmy
+    const d = new Date(
+      `${y}-${mo.padStart(2, '0')}-${day.padStart(2, '0')}T${h.padStart(2, '0')}:${mi}:${sec || '00'}+07:00`,
+    )
     return Number.isNaN(d.getTime()) ? null : d.toISOString()
   }
   // รูปแบบวันที่อย่างเดียว

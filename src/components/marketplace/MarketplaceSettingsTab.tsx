@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { FiMenu } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import {
   MP_FIELD_GROUPS,
   MP_FIELD_LABELS,
+  MP_ASSIGN_FORM_FIELDS,
   SHOPEE_DEFAULT_MAP,
   buildMpColIndex,
   parseMarketplaceWorkbook,
@@ -64,6 +66,7 @@ export default function MarketplaceSettingsTab({
   const [sampleFile, setSampleFile] = useState<File | null>(null)
   const [sampleSheets, setSampleSheets] = useState<Record<string, unknown[][]>>({})
   const [testResult, setTestResult] = useState<MpParseResult | null>(null)
+  const [draggedMapIndex, setDraggedMapIndex] = useState<number | null>(null)
 
   /** หัวตารางจาก sheet + แถวหัวตารางที่เลือกอยู่ในฟอร์ม */
   const sampleHeaders = useMemo(() => {
@@ -246,6 +249,14 @@ export default function MarketplaceSettingsTab({
   function updateMapRow(idx: number, patch: Partial<MpMapRow>) {
     if (!editor) return
     const next = editor.column_map.map((r, i) => (i === idx ? { ...r, ...patch } : r))
+    setEditor({ ...editor, column_map: next })
+  }
+
+  function moveMapRow(from: number, to: number) {
+    if (!editor || from === to) return
+    const next = [...editor.column_map]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
     setEditor({ ...editor, column_map: next })
   }
 
@@ -484,6 +495,9 @@ export default function MarketplaceSettingsTab({
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="font-bold text-slate-800 mr-auto">จับคู่คอลัมน์ Excel</h4>
+              <span className="text-xs font-semibold text-red-600">
+                ตัวหนังสือสีแดง = แสดงโดยตรงในหน้ากรอกข้อมูลบิล Assign
+              </span>
               <input
                 ref={sampleInputRef}
                 type="file"
@@ -526,6 +540,7 @@ export default function MarketplaceSettingsTab({
               <table className="w-full text-sm min-w-[640px]">
                 <thead className="bg-gray-50 text-gray-600">
                   <tr>
+                    <th className="w-10 px-2 py-2" aria-label="จัดลำดับ" />
                     <th className="text-left px-3 py-2">ข้อมูลในระบบ</th>
                     <th className="text-left px-3 py-2">วิธีจับคู่</th>
                     <th className="text-left px-3 py-2">ค่าที่ใช้จับคู่ (หัวคอลัมน์ / ตัวอักษร)</th>
@@ -537,17 +552,53 @@ export default function MarketplaceSettingsTab({
                   {editor.column_map.map((row, idx) => {
                     const matched = mapRowMatched(row)
                     return (
-                    <tr key={idx} className="border-t border-surface-100">
+                    <tr
+                      key={idx}
+                      onDragOver={(e) => {
+                        if (draggedMapIndex != null) e.preventDefault()
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        if (draggedMapIndex != null) moveMapRow(draggedMapIndex, idx)
+                        setDraggedMapIndex(null)
+                      }}
+                      className={`border-t border-surface-100 transition-colors ${
+                        draggedMapIndex === idx ? 'bg-blue-50 opacity-60' : 'hover:bg-slate-50/60'
+                      }`}
+                    >
+                      <td className="px-2 py-2 text-center">
+                        <button
+                          type="button"
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggedMapIndex(idx)
+                            e.dataTransfer.effectAllowed = 'move'
+                            e.dataTransfer.setData('text/plain', String(idx))
+                          }}
+                          onDragEnd={() => setDraggedMapIndex(null)}
+                          title="ลากเพื่อจัดลำดับ"
+                          aria-label={`ลากแถวที่ ${idx + 1} เพื่อจัดลำดับ`}
+                          className="inline-flex p-1.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 cursor-grab active:cursor-grabbing"
+                        >
+                          <FiMenu className="w-5 h-5" />
+                        </button>
+                      </td>
                       <td className="px-3 py-2">
                         <select
                           value={row.field_key}
                           onChange={(e) => updateMapRow(idx, { field_key: e.target.value as MpFieldKey })}
-                          className="w-full border border-gray-300 rounded-lg px-2 py-1.5"
+                          className={`w-full border border-gray-300 rounded-lg px-2 py-1.5 ${
+                            MP_ASSIGN_FORM_FIELDS.has(row.field_key) ? 'text-red-600 font-semibold' : ''
+                          }`}
                         >
                           {MP_FIELD_GROUPS.map((group) => (
                             <optgroup key={group.label} label={group.label}>
                               {group.keys.map((k) => (
-                                <option key={k} value={k}>
+                                <option
+                                  key={k}
+                                  value={k}
+                                  className={MP_ASSIGN_FORM_FIELDS.has(k) ? 'text-red-600 font-semibold' : 'text-slate-800'}
+                                >
                                   {MP_FIELD_LABELS[k]}
                                 </option>
                               ))}

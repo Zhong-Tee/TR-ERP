@@ -93,7 +93,14 @@ export default function MarketplaceOrderModal({
           supabase.from('cp_cartoon_patterns').select('id, pattern_name').eq('is_active', true),
         ])
         if (cancelled) return
-        const loadedItems = (itemsRes.data || []) as MpOrderItem[]
+        const loadedItems = ((itemsRes.data || []) as MpOrderItem[]).map((it) => ({
+          ...it,
+          // รองรับรายการเก่าที่เคยคัดลอกตัวเลือกจากไฟล์มาใส่ช่องลายอัตโนมัติ
+          cartoon_pattern:
+            it.variation?.trim() && it.cartoon_pattern?.trim() === it.variation.trim()
+              ? null
+              : it.cartoon_pattern,
+        }))
         setItems(loadedItems)
         setPersistedIds(new Set(loadedItems.map((it) => it.id)))
         setProducts((productsRes.data || []) as ProductOption[])
@@ -594,14 +601,18 @@ export default function MarketplaceOrderModal({
                 {mpOrder.payment_time ? formatDateTime(mpOrder.payment_time) : '-'}
               </span>
             </span>
-            {mpOrder.buyer_note && (
-              <span className="flex gap-1.5">
-                <span className="text-gray-500">หมายเหตุผู้ซื้อ</span>
-                <span className="text-orange-700 font-semibold break-all bg-orange-50 px-2 rounded">
-                  {mpOrder.buyer_note}
-                </span>
+            <span className="flex gap-1.5">
+              <span className="text-gray-500">หมายเหตุผู้ซื้อ :</span>
+              <span
+                className={
+                  mpOrder.buyer_note
+                    ? 'text-orange-700 font-semibold break-all bg-orange-50 px-2 rounded'
+                    : 'text-slate-500 font-medium'
+                }
+              >
+                {mpOrder.buyer_note || 'ไม่มี'}
               </span>
-            )}
+            </span>
             <span className="flex gap-1.5">
               <span className="text-gray-500">ยอดรวมออเดอร์</span>
               <span className="text-slate-800 font-medium">

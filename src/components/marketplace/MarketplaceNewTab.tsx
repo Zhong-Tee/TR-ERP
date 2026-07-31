@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FiArrowDown, FiArrowUp } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import { parseMarketplaceWorkbook, type MpParsedOrder } from '../../lib/marketplaceImport'
@@ -38,7 +39,10 @@ export default function MarketplaceNewTab({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [assignTo, setAssignTo] = useState('')
   const [assigning, setAssigning] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [search, setSearch] = useState('')
+  const [channelFilter, setChannelFilter] = useState('')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
 
   const activeConfigs = useMemo(() => configs.filter((c) => c.is_active), [configs])
 
@@ -84,21 +88,33 @@ export default function MarketplaceNewTab({
 
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return orders
-    return orders.filter((o) =>
-      [
-        o.marketplace_order_no,
-        o.buyer_username,
-        o.channel_code,
-        o.recipient_name,
-        o.phone,
-        o.tracking_no,
-        o.platform_status,
-      ]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(q)),
-    )
-  }, [orders, search])
+    return orders
+      .filter((o) => {
+        if (channelFilter && o.channel_code !== channelFilter) return false
+        if (!q) return true
+        return [
+          o.marketplace_order_no,
+          o.buyer_username,
+          o.channel_code,
+          o.recipient_name,
+          o.phone,
+          o.tracking_no,
+          o.platform_status,
+        ]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q))
+      })
+      .sort((a, b) => {
+        const aTime = new Date(a.payment_time || a.created_at).getTime()
+        const bTime = new Date(b.payment_time || b.created_at).getTime()
+        return sortDirection === 'asc' ? aTime - bTime : bTime - aTime
+      })
+  }, [channelFilter, orders, search, sortDirection])
+
+  const channelOptions = useMemo(() => {
+    const codes = new Set(orders.map((o) => o.channel_code).filter(Boolean))
+    return [...codes].sort((a, b) => a.localeCompare(b))
+  }, [orders])
 
   // ---------- Import ----------
   async function handleFileSelected(file: File) {
@@ -226,8 +242,8 @@ export default function MarketplaceNewTab({
               product_name_raw: it.product_name_raw,
               sku_ref: it.sku_ref,
               variation: it.variation,
-              // ชื่อตัวเลือกจากไฟล์ = "ลาย" → เติมช่องลาย (cartoon_pattern) ให้อัตโนมัติ (sales แก้ได้)
-              cartoon_pattern: it.variation,
+              // เก็บชื่อตัวเลือกจากไฟล์ไว้เป็นข้อมูลอ้างอิง แต่ให้ sales เลือก/กรอกลายเอง
+              cartoon_pattern: null,
               qty: 1,
               unit_price: it.unit_price,
               line_total: perLineTotal,
@@ -335,6 +351,42 @@ export default function MarketplaceNewTab({
     }
   }
 
+  async function handleDelete() {
+    if (!['superadmin', 'admin'].includes(user.role) || selected.size === 0) return
+    const ok = await showConfirm({
+      title: 'ยืนยันการลบออเดอร์',
+      message: `ต้องการลบออเดอร์ที่เลือก ${selected.size} รายการใช่หรือไม่?\nข้อมูลรายการสินค้าของออเดอร์เหล่านี้จะถูกลบด้วย`,
+    })
+    if (!ok) return
+
+    setDeleting(true)
+    try {
+      let affected = 0
+      for (const ids of chunked([...selected], CHUNK)) {
+        const { data, error } = await supabase
+          .from('mp_orders')
+          .delete()
+          .in('id', ids)
+          .eq('status', 'new')
+          .select('id')
+        if (error) throw error
+        affected += (data || []).length
+      }
+      showMessage({
+        title: 'ลบออเดอร์แล้ว',
+        message: `ลบออเดอร์สำเร็จ ${affected} รายการ`,
+      })
+      setSelected(new Set())
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      onChanged()
+      loadOrders()
+    } catch (err) {
+      showMessage({ title: 'ลบออเดอร์ไม่สำเร็จ', message: (err as Error).message || String(err) })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* อัปโหลดไฟล์ */}
@@ -392,6 +444,22 @@ export default function MarketplaceNewTab({
           placeholder="ค้นหา"
           className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-80"
         />
+        <select
+          value={channelFilter}
+          onChange={(e) => setChannelFilter(e.target.value)}
+          aria-label="กรองช่องทาง"
+          className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-auto sm:min-w-[180px]"
+        >
+          <option value="">— ทุกช่องทาง —</option>
+          {channelOptions.map((code) => {
+            const configName = configs.find((c) => c.channel_code === code)?.name
+            return (
+              <option key={code} value={code}>
+                {configName ? `${configName} (${code})` : code}
+              </option>
+            )
+          })}
+        </select>
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">จำนวนที่เลือก</label>
           <input
@@ -412,6 +480,16 @@ export default function MarketplaceNewTab({
         >
           ล้างการเลือก
         </button>
+        {['superadmin', 'admin'].includes(user.role) && (
+          <button
+            type="button"
+            disabled={deleting || selected.size === 0}
+            onClick={handleDelete}
+            className="px-3 py-2 rounded-lg border border-red-300 bg-white text-red-600 font-medium hover:bg-red-50 disabled:opacity-50"
+          >
+            {deleting ? 'กำลังลบ...' : 'ลบ'}
+          </button>
+        )}
         <div className="flex items-center gap-2 ml-auto">
           <select
             value={assignTo}
@@ -445,7 +523,21 @@ export default function MarketplaceNewTab({
                 <th className="px-4 py-3 w-10">
                   <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="w-4 h-4" />
                 </th>
-                <th className="text-left px-4 py-3">เลขคำสั่งซื้อ</th>
+                <th className="text-left px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => setSortDirection((value) => (value === 'asc' ? 'desc' : 'asc'))}
+                    title={sortDirection === 'asc' ? 'เรียงจากเก่าไปใหม่' : 'เรียงจากใหม่ไปเก่า'}
+                    aria-label={sortDirection === 'asc' ? 'เรียงจากเก่าไปใหม่' : 'เรียงจากใหม่ไปเก่า'}
+                    className="inline-flex items-center gap-2 hover:text-blue-600"
+                  >
+                    เลขคำสั่งซื้อ
+                    {sortDirection === 'asc' ? <FiArrowUp className="w-4 h-4" /> : <FiArrowDown className="w-4 h-4" />}
+                    <span className="text-xs font-normal whitespace-nowrap">
+                      {sortDirection === 'asc' ? 'เก่าไปใหม่' : 'ใหม่ไปเก่า'}
+                    </span>
+                  </button>
+                </th>
                 <th className="text-left px-4 py-3">ช่องทาง</th>
                 <th className="text-left px-4 py-3">ผู้ซื้อ</th>
                 <th className="text-left px-4 py-3">เวลาชำระเงิน</th>
@@ -463,8 +555,8 @@ export default function MarketplaceNewTab({
               {!loading && filteredOrders.length === 0 && (
                 <tr>
                   <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
-                    {search.trim()
-                      ? 'ไม่พบรายการที่ค้นหา'
+                    {search.trim() || channelFilter
+                      ? 'ไม่พบรายการที่ตรงกับตัวกรอง'
                       : 'ไม่มีงานรอมอบหมาย — อัปโหลดไฟล์ Order เพื่อเริ่มต้น'}
                   </td>
                 </tr>
