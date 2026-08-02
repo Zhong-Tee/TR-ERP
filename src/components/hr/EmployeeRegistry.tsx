@@ -14,6 +14,7 @@ import { supabase } from '../../lib/supabase'
 import type { HREmployee, HRDepartment, HRPosition } from '../../types'
 import Modal from '../ui/Modal'
 import EmployeeForm from './EmployeeForm'
+import PhotoLightbox from './PhotoLightbox'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
 import { useWmsModal } from '../wms/useWmsModal'
 
@@ -439,6 +440,7 @@ export default function EmployeeRegistry() {
   const [editingEmployee, setEditingEmployee] = useState<HREmployee | undefined>(undefined)
   const [deleteConfirm, setDeleteConfirm] = useState<HREmployee | null>(null)
   const [salaryHistoryEmp, setSalaryHistoryEmp] = useState<HREmployee | null>(null)
+  const [photoView, setPhotoView] = useState<{ url: string; name: string } | null>(null)
   const [importing, setImporting] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
@@ -787,11 +789,21 @@ export default function EmployeeRegistry() {
                       <td className="py-3 px-3">
                         <div className="flex items-center gap-2">
                           {photoDisplayUrl(emp.photo_url) ? (
-                            <img
-                              src={photoDisplayUrl(emp.photo_url)!}
-                              alt=""
-                              className="w-8 h-8 rounded-full object-cover border border-gray-200"
-                            />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setPhotoView({ url: photoDisplayUrl(emp.photo_url)!, name: `${emp.prefix ?? ''} ${emp.first_name} ${emp.last_name}`.trim() })
+                              }}
+                              aria-label={`ดูรูป ${emp.first_name} ขนาดใหญ่`}
+                              className="shrink-0 rounded-full hover:ring-2 hover:ring-emerald-400 transition-shadow"
+                            >
+                              <img
+                                src={photoDisplayUrl(emp.photo_url)!}
+                                alt=""
+                                className="w-8 h-8 rounded-full object-cover border border-gray-200"
+                              />
+                            </button>
                           ) : (
                             <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-xs">
                               {(emp.first_name?.[0] ?? '?')}
@@ -986,6 +998,7 @@ export default function EmployeeRegistry() {
       </Modal>
       {ConfirmModal}
       {MessageModal}
+      {photoView && <PhotoLightbox url={photoView.url} alt={photoView.name} onClose={() => setPhotoView(null)} />}
     </div>
   )
 }

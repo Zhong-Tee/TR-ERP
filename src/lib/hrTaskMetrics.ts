@@ -1,4 +1,4 @@
-import type { HREmployee, HRTask, HRTaskEvaluation, HRTaskStatus } from '../types'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HRTask, HRTaskEvaluation, HRTaskStatus, HRWorkSchedule } from '../types'
 
 export const TASK_ACTIVE_STATUSES: HRTaskStatus[] = ['new', 'acknowledged', 'in_progress', 'review', 'revision']
 export const DIMENSIONS = [['speed', 'ความเร็ว'], ['quality', 'คุณภาพ'], ['responsibility', 'ความรับผิดชอบ'], ['communication', 'การสื่อสาร'], ['problem_solving', 'การแก้ปัญหา'], ['teamwork', 'ทำงานเป็นทีม']] as const
@@ -13,6 +13,74 @@ export const evalScore = (ev: HRTaskEvaluation) => {
 export const isTaskOverdue = (t: HRTask) => !!t.due_at && TASK_ACTIVE_STATUSES.includes(t.status) && new Date(t.due_at) < new Date()
 
 const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length
+
+/** วันที่แบบ YYYY-MM-DD ตามเวลาท้องถิ่น */
+export const localDateKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+const timeToMin = (t?: string | null): number | null => {
+  if (!t) return null
+  const [h, m] = t.split(':').map(Number)
+  return Number.isFinite(h) ? h * 60 + (Number.isFinite(m) ? m : 0) : null
+}
+
+export interface WorkingTimeData {
+  schedules: HRWorkSchedule[]
+  /** ตารางวันทำงาน/วันหยุดรายวันของผู้รับผิดชอบ (override) */
+  calendar: HREmployeeWorkCalendar[]
+  holidays: HRCompanyHoliday[]
+  /** วันลาที่อนุมัติแล้วของผู้รับผิดชอบ */
+  leaves: HRLeaveRequest[]
+}
+
+/**
+ * บวกชั่วโมงทำงานจริงจากเวลาเริ่ม โดยนับเฉพาะช่วงเวลางานของพนักงานคนนั้น
+ * ข้าม: นอกเวลางาน · วันที่ไม่ใช่วันทำงานตามตาราง · วันหยุดบริษัทฯ · วันลาที่อนุมัติแล้ว
+ * ลำดับความสำคัญรายวัน: override ในปฏิทินรายคน > วันหยุดบริษัทฯ > วันทำงานประจำสัปดาห์ของตารางเวลา
+ * ไม่มีตารางเวลาเลย หรือหาเวลาว่างไม่ได้ภายใน 1 ปี → ถอยกลับเป็นบวกชั่วโมงตรง ๆ
+ */
+export function addWorkingHours(from: Date, hours: number, employee: HREmployee | undefined, data: WorkingTimeData): Date {
+  const baseSchedule = (employee?.work_schedule_id && data.schedules.find((s) => s.id === employee.work_schedule_id))
+    || data.schedules.find((s) => s.is_default) || data.schedules[0]
+  if (!baseSchedule || !(hours > 0)) return new Date(from.getTime() + hours * 3600000)
+  const overrideByDate = new Map(data.calendar.map((c) => [c.work_date, c]))
+  const holidaySet = new Set(data.holidays.map((h) => h.holiday_date))
+  const workDaySet = new Set(baseSchedule.work_days.split(',').map(Number))
+  let remaining = Math.round(hours * 60)
+  const cursor = new Date(from)
+  for (let i = 0; i < 370; i++) {
+    const key = localDateKey(cursor)
+    const override = overrideByDate.get(key)
+    const isoDay = cursor.getDay() === 0 ? 7 : cursor.getDay()
+    const dayLeaves = data.leaves.filter((l) => l.status === 'approved' && l.start_date <= key && key <= l.end_date)
+    let working = override ? override.day_type === 'work' : !holidaySet.has(key) && workDaySet.has(isoDay)
+    if (dayLeaves.some((l) => (l.leave_mode ?? 'full_day') === 'full_day')) working = false
+    if (working) {
+      const daySchedule = (override?.work_schedule_id && data.schedules.find((s) => s.id === override.work_schedule_id)) || baseSchedule
+      const startMin = timeToMin(override?.work_start) ?? timeToMin(daySchedule.work_start) ?? 0
+      let endMin = timeToMin(override?.work_end) ?? timeToMin(daySchedule.work_end) ?? 24 * 60
+      if (endMin <= startMin) endMin = 24 * 60
+      let intervals: Array<[number, number]> = [[startMin, endMin]]
+      for (const l of dayLeaves) {
+        if ((l.leave_mode ?? 'full_day') !== 'hourly') continue
+        const blockStart = timeToMin(l.start_time), blockEnd = timeToMin(l.end_time)
+        if (blockStart === null || blockEnd === null) continue
+        intervals = intervals.flatMap(([a, b]) => ([[a, Math.min(b, blockStart)], [Math.max(a, blockEnd), b]] as Array<[number, number]>).filter(([x, y]) => y > x))
+      }
+      const dayStartMs = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate()).getTime()
+      const cursorMin = i === 0 ? from.getHours() * 60 + from.getMinutes() : 0
+      for (const [a, b] of intervals) {
+        const begin = Math.max(a, cursorMin)
+        if (begin >= b) continue
+        const available = b - begin
+        if (available >= remaining) return new Date(dayStartMs + (begin + remaining) * 60000)
+        remaining -= available
+      }
+    }
+    cursor.setHours(0, 0, 0, 0)
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  return new Date(from.getTime() + hours * 3600000)
+}
 
 export interface AssigneeReason { text: string; tone: 'good' | 'warn' | 'bad' | 'muted' }
 export interface AssigneeSuggestion {

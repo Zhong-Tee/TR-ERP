@@ -3,14 +3,19 @@ import { createPortal } from 'react-dom'
 import { FiAlertTriangle, FiBarChart2, FiCheckCircle, FiClock, FiExternalLink, FiList, FiMenu, FiPlus, FiSearch, FiX } from 'react-icons/fi'
 import { useAuthContext } from '../../contexts/AuthContext'
 import TaskDashboard, { Avatar } from './TaskDashboard'
-import { createHRTask, createTaskTeam, fetchEmployeeByUserId, fetchEmployees, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
-import { recommendAssignees } from '../../lib/hrTaskMetrics'
+import { createHRTask, createTaskTeam, fetchCompanyHolidays, fetchEmployeeByUserId, fetchEmployees, fetchLeaveRequests, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, fetchWorkCalendar, fetchWorkSchedules, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
+import { addWorkingHours, localDateKey, recommendAssignees, type WorkingTimeData } from '../../lib/hrTaskMetrics'
 import type { HREmployee, HRTask, HRTaskCategory, HRTaskEvaluation, HRTaskStatus } from '../../types'
 
 const STATUS: Record<HRTaskStatus, string> = { draft: 'แบบร่าง', new: 'งานใหม่', acknowledged: 'รับทราบแล้ว', in_progress: 'กำลังทำ', review: 'รอตรวจ', revision: 'ขอแก้ไข', completed: 'เสร็จแล้ว', paused: 'พักงาน', cancelled: 'ยกเลิก' }
 const ACTIVE = ['new', 'acknowledged', 'in_progress', 'review', 'revision'] as HRTaskStatus[]
 const nameOf = (e?: HREmployee) => e ? `${e.first_name} ${e.last_name}${e.nickname ? ` (${e.nickname})` : ''}` : '-'
 const overdue = (t: HRTask) => !!t.due_at && ACTIVE.includes(t.status) && new Date(t.due_at) < new Date()
+/** แปลง Date เป็นค่า input แบบ datetime-local (เวลาท้องถิ่น) */
+const toLocalInput = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
 const workLink = (value?: string) => {
   const link = value?.trim()
   if (!link) return ''
@@ -116,13 +121,39 @@ export default function TaskManagement() {
 
 const REASON_TONE = { good: 'bg-emerald-100 text-emerald-700', warn: 'bg-amber-100 text-amber-700', bad: 'bg-red-100 text-red-700', muted: 'bg-gray-100 text-gray-600' } as const
 function CreateTaskModal({ me, employees, categories, tasks, onClose, onSaved }: { me:HREmployee; employees:HREmployee[]; categories:HRTaskCategory[]; tasks:HRTask[]; onClose:()=>void; onSaved:()=>void }) {
-  const [form,setForm]=useState({title:'',description:'',category_id:'',priority:'normal' as 'normal'|'high'|'urgent',start_date:new Date().toISOString().slice(0,10),due_at:'',assignee:'',coordinator:'',advisor:''})
+  const [form,setForm]=useState({title:'',description:'',category_id:'',priority:'normal' as 'normal'|'high'|'urgent',start_date:new Date().toISOString().slice(0,10),due_at:'',duration_hours:'',assignee:'',coordinator:'',advisor:''})
   const [items,setItems]=useState(['']); const [saving,setSaving]=useState(false); const [error,setError]=useState('')
   const [evaluations,setEvaluations]=useState<HRTaskEvaluation[]>([])
   useEffect(()=>{fetchTaskEvaluations().then(setEvaluations).catch(()=>{})},[])
-  const suggestions=useMemo(()=>recommendAssignees({employees,tasks,evaluations,categoryId:form.category_id||undefined,dueAt:form.due_at||undefined}).slice(0,5),[employees,tasks,evaluations,form.category_id,form.due_at])
+  const suggestions=useMemo(()=>recommendAssignees({employees,tasks,evaluations,categoryId:form.category_id||undefined,dueAt:form.due_at||undefined}).slice(0,10),[employees,tasks,evaluations,form.category_id,form.due_at])
+  // ข้อมูลสำหรับคำนวณ "ให้เวลาทำ (ชม.)" แบบข้ามนอกเวลางาน/วันหยุด/วันลา — โหลดพลาดก็แค่คำนวณแบบบวกตรง ๆ
+  const [workData,setWorkData]=useState<WorkingTimeData>({schedules:[],calendar:[],holidays:[],leaves:[]})
+  useEffect(()=>{
+    const to=new Date();to.setDate(to.getDate()+180)
+    Promise.all([fetchWorkSchedules(true),fetchCompanyHolidays(localDateKey(new Date()),localDateKey(to))])
+      .then(([schedules,holidays])=>setWorkData(w=>({...w,schedules,holidays}))).catch(()=>{})
+  },[])
+  useEffect(()=>{
+    if(!form.assignee){setWorkData(w=>({...w,calendar:[],leaves:[]}));return}
+    const to=new Date();to.setDate(to.getDate()+180)
+    Promise.all([fetchWorkCalendar(localDateKey(new Date()),localDateKey(to),[form.assignee]),fetchLeaveRequests({status:'approved',employee_id:form.assignee})])
+      .then(([calendar,leaves])=>setWorkData(w=>({...w,calendar,leaves}))).catch(()=>{})
+  },[form.assignee])
+  useEffect(()=>{
+    const h=parseFloat(form.duration_hours)
+    if(!(h>0))return
+    const base=form.start_date>localDateKey(new Date())?new Date(`${form.start_date}T00:00:00`):new Date()
+    const due=toLocalInput(addWorkingHours(base,h,employees.find(e=>e.id===form.assignee),workData))
+    setForm(prev=>prev.due_at===due?prev:{...prev,due_at:due})
+  },[form.duration_hours,form.assignee,form.start_date,workData,employees])
   const save=async()=>{ if(!form.title.trim()||!form.assignee||!form.due_at){setError('กรุณากรอกชื่องาน ผู้รับผิดชอบ และกำหนดส่ง');return} setSaving(true); try { await createHRTask({title:form.title.trim(),description:form.description.trim()||undefined,category_id:form.category_id||undefined,priority:form.priority,start_date:form.start_date,due_at:new Date(form.due_at).toISOString(),created_by:me.id,participants:[{employee_id:form.assignee,role:'assignee',is_primary:true},{employee_id:me.id,role:'supervisor',is_primary:true},...(form.coordinator?[{employee_id:form.coordinator,role:'coordinator' as const}]:[]),...(form.advisor?[{employee_id:form.advisor,role:'advisor' as const}]:[])],checklist:items.filter(x=>x.trim()).map((title,i)=>({title:title.trim(),assignee_id:form.assignee,sort_order:i}))}); await onSaved() } catch(e){setError(e instanceof Error?e.message:'บันทึกไม่สำเร็จ')} finally{setSaving(false)} }
-  return <Modal title="มอบหมายงาน" onClose={onClose}><div className="space-y-4"><Field label="ชื่องาน *"><input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="รายละเอียด"><textarea rows={3} className="input" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="grid md:grid-cols-2 gap-3"><Field label="ประเภทงาน"><select className="input" value={form.category_id} onChange={e=>setForm({...form,category_id:e.target.value})}><option value="">ไม่ระบุ</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="ความสำคัญ"><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as typeof form.priority})}><option value="normal">ปกติ</option><option value="high">สำคัญ</option><option value="urgent">เร่งด่วน</option></select></Field><Field label="ผู้รับผิดชอบ *"><EmployeeSelect value={form.assignee} employees={employees} onChange={v=>setForm({...form,assignee:v})}/></Field><Field label="หัวหน้างาน"><input className="input bg-gray-50" disabled value={nameOf(me)}/></Field><Field label="ผู้ประสานงาน"><EmployeeSelect value={form.coordinator} employees={employees} onChange={v=>setForm({...form,coordinator:v})}/></Field><Field label="ที่ปรึกษางาน"><EmployeeSelect value={form.advisor} employees={employees} onChange={v=>setForm({...form,advisor:v})}/></Field><Field label="วันเริ่ม"><input type="date" className="input" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></Field><Field label="วันและเวลาส่ง *"><input type="datetime-local" className="input" value={form.due_at} onChange={e=>setForm({...form,due_at:e.target.value})}/></Field></div>
+  return <Modal title="มอบหมายงาน" onClose={onClose}><div className="space-y-4"><Field label="ชื่องาน *"><input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="รายละเอียด"><textarea rows={3} className="input" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="grid md:grid-cols-2 gap-3"><Field label="ประเภทงาน"><select className="input" value={form.category_id} onChange={e=>setForm({...form,category_id:e.target.value})}><option value="">ไม่ระบุ</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="ความสำคัญ"><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as typeof form.priority})}><option value="normal">ปกติ</option><option value="high">สำคัญ</option><option value="urgent">เร่งด่วน</option></select></Field><Field label="ผู้รับผิดชอบ *"><EmployeeSelect value={form.assignee} employees={employees} onChange={v=>setForm({...form,assignee:v})}/></Field><Field label="หัวหน้างาน"><input className="input bg-gray-50" disabled value={nameOf(me)}/></Field><Field label="ผู้ประสานงาน"><EmployeeSelect value={form.coordinator} employees={employees} onChange={v=>setForm({...form,coordinator:v})}/></Field><Field label="ที่ปรึกษางาน"><EmployeeSelect value={form.advisor} employees={employees} onChange={v=>setForm({...form,advisor:v})}/></Field></div>
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <Field label="วันเริ่ม"><input type="date" className="input" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></Field>
+    <Field label="ให้เวลาทำ (ชม.)"><input type="number" min="0.5" step="0.5" className="input" placeholder="เช่น 4" value={form.duration_hours} onChange={e=>setForm({...form,duration_hours:e.target.value})}/></Field>
+    <Field label="วันและเวลาส่ง *"><input type="datetime-local" className="input" value={form.due_at} onChange={e=>setForm({...form,due_at:e.target.value,duration_hours:''})}/></Field>
+  </div>
+  <p className="text-xs text-gray-500 -mt-2">กรอกจำนวนชั่วโมงเพื่อคำนวณ “วันและเวลาส่ง” อัตโนมัติ โดยนับเฉพาะเวลางานของผู้รับผิดชอบ — ข้ามนอกเวลางาน วันหยุดประจำสัปดาห์ วันหยุดบริษัทฯ และวันลาที่อนุมัติแล้ว (เลือกผู้รับผิดชอบก่อนเพื่อใช้ตารางเวลาของคนนั้น)</p>
   <div className="border border-emerald-100 bg-emerald-50/50 rounded-xl p-3">
     <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
       <span className="text-sm font-semibold text-emerald-800">✦ แนะนำผู้รับผิดชอบสำหรับงานนี้</span>

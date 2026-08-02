@@ -12,6 +12,7 @@ import {
 } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
+import PhotoLightbox from './PhotoLightbox'
 import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule } from '../../types'
 
 const BUCKET_PHOTOS = 'hr-photos'
@@ -95,6 +96,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [current_address, setCurrentAddress] = useState<Record<string, string>>(emptyAddress())
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [showPhotoLarge, setShowPhotoLarge] = useState(false)
 
   const [employee_code, setEmployeeCode] = useState('')
   const [department_id, setDepartmentId] = useState('')
@@ -658,17 +660,24 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
             <div className="border-t border-gray-200 pt-4">
               <h4 className="text-sm font-semibold text-gray-800 mb-2">รูปถ่าย</h4>
               <div className="flex items-center gap-4">
-                <div className="w-24 h-24 rounded-xl border-2 border-gray-200 overflow-hidden bg-gray-100 flex items-center justify-center">
-                  {photoPreview ? (
+                {photoPreview ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowPhotoLarge(true)}
+                    aria-label="ดูรูปขนาดใหญ่"
+                    className="w-24 h-24 rounded-xl border-2 border-gray-200 overflow-hidden bg-gray-100 hover:ring-2 hover:ring-emerald-400 transition-shadow"
+                  >
                     <img
                       src={photoPreview}
                       alt=""
                       className="w-full h-full object-cover"
                     />
-                  ) : (
+                  </button>
+                ) : (
+                  <div className="w-24 h-24 rounded-xl border-2 border-gray-200 bg-gray-100 flex items-center justify-center">
                     <span className="text-gray-400 text-sm">ไม่มีรูป</span>
-                  )}
-                </div>
+                  </div>
+                )}
                 <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer">
                   <FiUpload />
                   อัปโหลดรูป
@@ -680,6 +689,9 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   />
                 </label>
               </div>
+              {showPhotoLarge && photoPreview && (
+                <PhotoLightbox url={photoPreview} alt="รูปถ่ายพนักงาน" onClose={() => setShowPhotoLarge(false)} />
+              )}
             </div>
           </div>
         )}
