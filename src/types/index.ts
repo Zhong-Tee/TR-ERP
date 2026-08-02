@@ -1499,6 +1499,8 @@ export interface HRTaskCategory {
   color: string
   description?: string
   default_due_days?: number
+  /** ลำดับการแสดงผล — ข้อมูลก่อน migration 318 อาจไม่มีค่านี้ */
+  sort_order?: number
   is_active: boolean
 }
 
@@ -1559,6 +1561,10 @@ export interface HRTaskEvaluation {
   responsibility: number
   quality: number
   communication: number
+  /** การแก้ปัญหา/ความคิดริเริ่ม — ผลประเมินเก่าอาจไม่มีค่านี้ */
+  problem_solving?: number
+  /** การทำงานเป็นทีม — ผลประเมินเก่าอาจไม่มีค่านี้ */
+  teamwork?: number
   comment?: string
   visibility: 'manager_only' | 'employee_visible'
 }

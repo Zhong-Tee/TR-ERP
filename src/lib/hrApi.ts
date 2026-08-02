@@ -21,7 +21,16 @@ export async function fetchTaskCategories(activeOnly = true) {
   if (activeOnly) q = q.eq('is_active', true)
   const { data, error } = await q
   if (error) pgError(error)
-  return data as HRTaskCategory[]
+  // เรียงด้วย sort_order ฝั่ง client เพื่อให้ยังทำงานได้ก่อนรัน migration 318 (คอลัมน์ยังไม่มี = ทุกตัวเท่ากัน เรียงตามชื่อเหมือนเดิม)
+  return (data as HRTaskCategory[]).sort((a, b) => ((a.sort_order ?? 0) - (b.sort_order ?? 0)) || a.name.localeCompare(b.name, 'th'))
+}
+
+/** บันทึกลำดับประเภทงานตามที่ลากจัดเรียง (index แรก = ลำดับ 1) */
+export async function saveTaskCategoryOrder(orderedIds: string[]) {
+  const results = await Promise.all(orderedIds.map((id, i) =>
+    supabase.from('hr_task_categories').update({ sort_order: i + 1, updated_at: new Date().toISOString() }).eq('id', id)))
+  const failed = results.find((r) => r.error)
+  if (failed?.error) pgError(failed.error)
 }
 
 export async function saveTaskCategory(category: Partial<HRTaskCategory>) {
@@ -139,6 +148,13 @@ export async function updateTaskStatus(id: string, status: HRTaskStatus, note?: 
 export async function toggleTaskChecklist(id: string, completed: boolean) {
   const { error } = await supabase.from('hr_task_checklist_items').update({ is_completed: completed, completed_at: completed ? new Date().toISOString() : null }).eq('id', id)
   if (error) pgError(error)
+}
+
+/** ดึงผลประเมินงานทั้งหมดที่ผู้ใช้มีสิทธิ์เห็น (RLS จำกัดให้เอง) สำหรับ Dashboard ทีม */
+export async function fetchTaskEvaluations() {
+  const { data, error } = await supabase.from('hr_task_evaluations').select('*')
+  if (error) pgError(error)
+  return (data ?? []) as HRTaskEvaluation[]
 }
 
 export async function saveTaskEvaluation(evaluation: Omit<HRTaskEvaluation, 'id'>) {
