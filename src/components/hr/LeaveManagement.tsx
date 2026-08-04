@@ -128,8 +128,8 @@ function otEmployeeName(req: HROTRequest): string {
 
 export default function LeaveManagement() {
   const { user } = useAuthContext()
-  /** สิทธิ์เข้าหน้า + อนุมัติลา: เฉพาะ superadmin / admin / hr */
-  const canManageLeave = ['superadmin', 'admin', 'hr'].includes(user?.role ?? '')
+  /** สิทธิ์เข้าหน้า + อนุมัติลา: เฉพาะ superadmin / admin / hr / account */
+  const canManageLeave = ['superadmin', 'admin', 'hr', 'account'].includes(user?.role ?? '')
   const canApproveOT = user?.role === 'superadmin' || user?.role === 'admin'
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
@@ -413,7 +413,7 @@ export default function LeaveManagement() {
       <div className="mt-8 rounded-xl bg-white shadow-soft border border-surface-200 p-10 text-center">
         <div className="text-4xl mb-3">🔒</div>
         <p className="text-lg font-semibold text-surface-700">ไม่มีสิทธิ์เข้าถึงหน้านี้</p>
-        <p className="text-sm text-surface-500 mt-1">เฉพาะผู้ดูแลระบบ / แอดมิน / ฝ่ายบุคคล เท่านั้น</p>
+        <p className="text-sm text-surface-500 mt-1">เฉพาะผู้ดูแลระบบ / แอดมิน / ฝ่ายบุคคล / บัญชี เท่านั้น</p>
       </div>
     )
   }
