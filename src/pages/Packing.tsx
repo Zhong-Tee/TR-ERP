@@ -20,6 +20,7 @@ import {
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
+import UrgencyBadge, { WoUrgencyChips, type DueBillInfo } from '../components/common/UrgencyBadge'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -54,6 +55,9 @@ type PackingItem = {
   qc_status: 'pass' | 'fail' | 'skip' | null
   /** หมายเลข Tag ประจำวัน (เซ็ตเมื่อสแกนพัสดุสำเร็จ) */
   packingTag: number | null
+  /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  ship_due_at: string | null
+  overdue_at: string | null
 }
 
 type WorkOrderStatus = {
@@ -66,6 +70,8 @@ type WorkOrderStatus = {
   packedItems: number
   totalBills: number
   packedBills: number
+  /** กำหนดส่งของบิลในใบงาน (เฉพาะบิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  dueBills: DueBillInfo[]
 }
 
 function buildPackingItemsFromOrder(
@@ -118,6 +124,8 @@ function buildPackingItemsFromOrder(
         notes: item.notes,
         qc_status: qcStatus,
         packingTag,
+        ship_due_at: order.ship_due_at ?? null,
+        overdue_at: order.overdue_at ?? null,
       })
     }
   })
@@ -967,7 +975,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, or_order_items(id, item_uid, quantity)')
+            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, or_order_items(id, item_uid, quantity)')
             .in('work_order_name', names)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
@@ -1085,6 +1093,9 @@ export default function Packing() {
             packedItems,
             totalBills: billsWithTracking.length,
             packedBills,
+            dueBills: ordersInWo
+              .filter((o: any) => o.ship_due_at)
+              .map((o: any) => ({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null })),
           }
         })
         setWorkOrderStatus(statusMap)
@@ -1910,6 +1921,7 @@ export default function Packing() {
                                 ⚠ รอเลขพัสดุ
                               </span>
                             )}
+                            <WoUrgencyChips bills={status?.dueBills} />
                           </div>
                           <div className="text-sm text-gray-500 mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
                             <span>{wo.order_count} บิล{(status?.packedBills ?? 0) > 0 && <span className="text-emerald-600 font-medium"> (แพ็คแล้ว {status.packedBills}/{status.totalBills})</span>}</span>
@@ -2471,6 +2483,7 @@ export default function Packing() {
                         <div className="min-w-0">
                           <div className="text-lg font-bold break-all leading-snug">
                             {icon} {trackingDisp}
+                            {!isDone && <UrgencyBadge order={group[0]} className="ml-1.5" />}
                           </div>
                           <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
                           <div className="mt-1 flex items-center gap-2 flex-wrap">
@@ -2649,7 +2662,10 @@ export default function Packing() {
                           </div>
                         </div>
                       </div>
-                      <div className="text-sm text-gray-600">ลูกค้า: {currentGroup[0].customer_name}</div>
+                      <div className="text-sm text-gray-600">
+                        ลูกค้า: {currentGroup[0].customer_name}
+                        {!currentGroup[0].isOrderComplete && <UrgencyBadge order={currentGroup[0]} className="ml-1.5" />}
+                      </div>
                     </div>
 
                     {(currentGroup[0].claim_type || currentGroup[0].needsTaxInvoice || currentGroup[0].needsCashBill) && (

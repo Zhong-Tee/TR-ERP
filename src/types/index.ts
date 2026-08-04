@@ -712,6 +712,9 @@ export interface QCRecord {
   remark: string | null
   reject_duration?: number | null
   created_at: string
+  /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล (or_orders) — enrich ตอน fetchRejectItems ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  ship_due_at?: string | null
+  overdue_at?: string | null
 }
 
 /** QC session item (in-memory during QC Operation) */
@@ -736,6 +739,9 @@ export interface QCItem {
   status: 'pass' | 'fail' | 'pending'
   fail_reason?: string | null
   check_time?: Date | null
+  /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล (or_orders) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  ship_due_at?: string | null
+  overdue_at?: string | null
 }
 
 export interface SettingsReason {

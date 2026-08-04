@@ -45,6 +45,8 @@ export interface WorkOrderWithProgress extends WorkOrder {
   pass_bills: number
   fail_bills: number
   remaining_bills: number
+  /** กำหนดส่งของบิลในใบงาน (เฉพาะบิลที่มี ship_due_at จากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  due_bills: { ship_due_at: string | null; overdue_at: string | null }[]
 }
 
 /** Load work orders with QC progress. When excludeCompleted is true, hides WOs only if nothing left to check AND no open QC session (still waiting for Finish). */
@@ -70,10 +72,17 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const { data: orders, error: ordErr } = await supabase
     .from('or_orders')
-    .select('id, work_order_name, bill_no')
+    .select('id, work_order_name, bill_no, ship_due_at, overdue_at')
     .in('work_order_name', woNames)
     .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
   if (ordErr) throw ordErr
+  const dueBillsByWo: Record<string, { ship_due_at: string | null; overdue_at: string | null }[]> = {}
+  woNames.forEach((n) => (dueBillsByWo[n] = []))
+  ;(orders || []).forEach((o: { work_order_name: string; ship_due_at?: string | null; overdue_at?: string | null }) => {
+    if (o.ship_due_at && dueBillsByWo[o.work_order_name]) {
+      dueBillsByWo[o.work_order_name].push({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null })
+    }
+  })
   const orderIdsByWo: Record<string, string[]> = {}
   woNames.forEach((n) => (orderIdsByWo[n] = []))
   ;(orders || []).forEach((o) => {
@@ -94,6 +103,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
       pass_bills: 0,
       fail_bills: 0,
       remaining_bills: 0,
+      due_bills: [],
     }))
     if (excludeCompleted) return []
     return emptyProgress
@@ -253,7 +263,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     })
     const remaining_bills = total_bills - pass_bills - fail_bills
 
-    return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, reject_items, total_bills, pass_bills, fail_bills, remaining_bills }
+    return { ...wo, total_items, qc_done, remaining, pass_items, fail_items, reject_items, total_bills, pass_bills, fail_bills, remaining_bills, due_bills: dueBillsByWo[woName] || [] }
   })
 
   // ล่าสุดต่อชื่อใบงาน (วันที่ใหม่สุดก่อน) — ใช้เทียบว่า Plan ปิดขั้น QC แล้วหรือยัง
@@ -297,7 +307,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCItem[]> {
   const { data: orders, error: ordersErr } = await supabase
     .from('or_orders')
-    .select('id, bill_no')
+    .select('id, bill_no, ship_due_at, overdue_at')
     .eq('work_order_name', workOrderName)
     .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
     .order('bill_no', { ascending: true })
@@ -307,8 +317,10 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
 
   const orderIds = orders.map((o) => o.id)
   const billByOrderId: Record<string, string> = {}
+  const dueByOrderId: Record<string, { ship_due_at: string | null; overdue_at: string | null }> = {}
   orders.forEach((o) => {
     billByOrderId[o.id] = o.bill_no || ''
+    dueByOrderId[o.id] = { ship_due_at: o.ship_due_at ?? null, overdue_at: o.overdue_at ?? null }
   })
 
   const { data: items, error: itemsErr } = await supabase
@@ -374,6 +386,8 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
           remark: row.notes ?? '',
           file_attachment: row.file_attachment ?? null,
           status: 'pending',
+          ship_due_at: dueByOrderId[o.id]?.ship_due_at ?? null,
+          overdue_at: dueByOrderId[o.id]?.overdue_at ?? null,
         })
       }
     }
@@ -556,7 +570,7 @@ export async function fetchRejectItems() {
 
   const { data: activeOrders, error: ordErr } = await supabase
     .from('or_orders')
-    .select('id')
+    .select('id, bill_no, ship_due_at, overdue_at')
     .in('id', orderIds)
     .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
   if (ordErr) throw ordErr
@@ -567,7 +581,20 @@ export async function fetchRejectItems() {
       .filter((r) => activeOrderIdSet.has(r.order_id))
       .map((r) => r.item_uid)
   )
-  return rejectedRecords.filter((r) => activeItemUidSet.has(r.item_uid))
+  // ป้าย ส่งด่วน/ล่าช้า: map กำหนดส่งตามเลขบิล (บิลจากเมนู Marketplace เท่านั้นที่มีค่า)
+  const dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null }> = {}
+  ;(activeOrders || []).forEach((o: { bill_no?: string | null; ship_due_at?: string | null; overdue_at?: string | null }) => {
+    if (o.bill_no && o.ship_due_at) {
+      dueByBillNo[o.bill_no] = { ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null }
+    }
+  })
+  return rejectedRecords
+    .filter((r) => activeItemUidSet.has(r.item_uid))
+    .map((r) => ({
+      ...r,
+      ship_due_at: dueByBillNo[r.bill_no]?.ship_due_at ?? null,
+      overdue_at: dueByBillNo[r.bill_no]?.overdue_at ?? null,
+    }))
 }
 
 /** Load qc_sessions for Reports (filter by date and optional user). */

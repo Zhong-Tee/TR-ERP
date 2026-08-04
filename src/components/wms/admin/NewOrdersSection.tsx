@@ -4,6 +4,7 @@ import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
 import { fetchWorkOrderNamesWithWmsAssigned } from '../wmsUtils'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
+import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
 
 function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]): T[] {
   const seen = new Set<string>()
@@ -39,6 +40,8 @@ export default function NewOrdersSection() {
   const [assigning, setAssigning] = useState(false)
   /** จำนวนบิลที่ยังไม่ยกเลิก/จัดส่งแล้ว — สอดคล้องกับ Plan จัดการใบงาน */
   const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
+  /** กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
+  const [dueBillsByWo, setDueBillsByWo] = useState<Record<string, DueBillInfo[]>>({})
   const { showMessage, MessageModal } = useWmsModal()
 
   const ensurePlanDeptStart = async (workOrderId: string) => {
@@ -160,19 +163,26 @@ export default function NewOrdersSection() {
       }
 
       const counts: Record<string, number> = {}
+      const dueMap: Record<string, DueBillInfo[]> = {}
       if (finalList.length > 0) {
         const { data: cntRows } = await supabase
           .from('or_orders')
-          .select('work_order_id')
+          .select('work_order_id, ship_due_at, overdue_at')
           .in('work_order_id', finalList.map((w) => w.id))
           .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
           .neq('status', 'จัดส่งแล้ว')
         for (const r of cntRows || []) {
-          const wid = String((r as { work_order_id: string }).work_order_id)
+          const row = r as { work_order_id: string; ship_due_at?: string | null; overdue_at?: string | null }
+          const wid = String(row.work_order_id)
           counts[wid] = (counts[wid] || 0) + 1
+          if (row.ship_due_at) {
+            if (!dueMap[wid]) dueMap[wid] = []
+            dueMap[wid].push({ ship_due_at: row.ship_due_at, overdue_at: row.overdue_at ?? null })
+          }
         }
       }
       setActiveBillCountByWo(counts)
+      setDueBillsByWo(dueMap)
       setWorkOrders(finalList)
     } finally {
       setLoading(false)
@@ -276,6 +286,7 @@ export default function NewOrdersSection() {
                         ถูกแก้ไข
                       </span>
                     )}
+                    <WoUrgencyChips bills={dueBillsByWo[wo.id]} />
                   </div>
                   <div className="text-sm text-gray-600">{activeBillCountByWo[wo.id] ?? wo.order_count} บิล</div>
                 </div>

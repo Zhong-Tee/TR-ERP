@@ -14,6 +14,12 @@
       "port": 5199
     },
     {
+      "name": "vite-dev-alt2",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5299"],
+      "port": 5299
+    },
+    {
       "name": "vite-dev-mobile",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:mobile"],

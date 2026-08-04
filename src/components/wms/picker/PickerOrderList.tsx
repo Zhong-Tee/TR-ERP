@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
+import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
 
 interface PickerOrderListProps {
   onSelectOrder: (orderId: string) => void
@@ -44,9 +46,24 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
 
     const woIds = [...new Set((data as any[]).map((r) => r.work_order_id).filter(Boolean))]
     let woNameById: Record<string, string> = {}
+    const dueByScopeId: Record<string, DueBillInfo[]> = {}
     if (woIds.length > 0) {
       const { data: woRows } = await supabase.from('or_work_orders').select('id, work_order_name').in('id', woIds)
       woNameById = Object.fromEntries((woRows || []).map((w: any) => [w.id, w.work_order_name]))
+
+      // ป้าย ส่งด่วน/ล่าช้า: กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace)
+      const { data: dueRows } = await supabase
+        .from('or_orders')
+        .select('work_order_id, ship_due_at, overdue_at')
+        .in('work_order_id', woIds)
+        .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+        .neq('status', 'จัดส่งแล้ว')
+        .not('ship_due_at', 'is', null)
+      ;(dueRows || []).forEach((r: any) => {
+        const scopeId = `wo:${r.work_order_id}`
+        if (!dueByScopeId[scopeId]) dueByScopeId[scopeId] = []
+        dueByScopeId[scopeId].push({ ship_due_at: r.ship_due_at, overdue_at: r.overdue_at ?? null })
+      })
     }
 
     const grouped = (data as any[]).reduce(
@@ -58,7 +75,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
         if (!scopeId) return acc
         const displayName = workOrderId ? woNameById[workOrderId] || workOrderId : orderId
         if (!acc[scopeId]) {
-          acc[scopeId] = { id: scopeId, name: displayName, items: [] as any[], date: obj.created_at }
+          acc[scopeId] = { id: scopeId, name: displayName, items: [] as any[], date: obj.created_at, dueBills: dueByScopeId[scopeId] || [] }
         }
         acc[scopeId].items.push(obj)
         if (new Date(obj.created_at) < new Date(acc[scopeId].date)) {
@@ -99,7 +116,10 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
           >
             <div>
               <div className="text-[18px] text-gray-400 font-black uppercase">เลขใบงาน</div>
-              <div className="text-2xl font-black">{o.name || o.id}</div>
+              <div className="text-2xl font-black flex flex-wrap items-center gap-1.5">
+                <span>{o.name || o.id}</span>
+                <WoUrgencyChips bills={o.dueBills} />
+              </div>
             </div>
             <div className="bg-blue-600 text-white px-4 py-2 rounded-2xl font-black">{o.count}</div>
           </div>

@@ -46,6 +46,7 @@ import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import Papa from 'papaparse'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import UrgencyBadge, { WoUrgencyChips } from '../components/common/UrgencyBadge'
 
 type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
 type QCStep = 'select' | 'working'
@@ -1417,6 +1418,7 @@ export default function QC() {
                                   Reject {wo.reject_items}
                                 </span>
                               )}
+                              <WoUrgencyChips bills={wo.due_bills} />
                             </div>
                             <div className="text-sm text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                               <span className="text-blue-600 font-medium">คงเหลือ {wo.remaining}</span>
@@ -1582,6 +1584,7 @@ export default function QC() {
                             <div className="leading-snug">
                               <span className="text-gray-500 font-bold text-base">{index + 1}. </span>
                               <span className="font-bold uppercase text-base text-gray-900">{item.uid}</span>
+                              <UrgencyBadge order={item} className="ml-1.5" />
                             </div>
                             <div className="text-sm text-gray-600 mt-1 line-clamp-2 leading-snug">{item.product_name}</div>
                           </div>
@@ -1643,7 +1646,7 @@ export default function QC() {
                           <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentItem.product_name}</h2>
-                            <p className="text-xs text-gray-500">เลขบิล: {currentItem.bill_no}</p>
+                            <p className="text-xs text-gray-500">เลขบิล: {currentItem.bill_no} <UrgencyBadge order={currentItem} className="ml-1" /></p>
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
@@ -1956,7 +1959,7 @@ export default function QC() {
                         <td className="px-3 py-3 font-bold text-blue-600">{item.qc_by}</td>
                         <td className="px-3 py-3">
                           <div className="font-bold">{item.product_name || '-'}</div>
-                          <div className="text-gray-500 text-xs">Bill: {item.bill_no || '-'}</div>
+                          <div className="text-gray-500 text-xs">Bill: {item.bill_no || '-'} <UrgencyBadge order={item} className="ml-1" /></div>
                           <div className="text-blue-600 font-mono text-xs">{item.item_uid}</div>
                         </td>
                         <td className="px-3 py-3 text-xs">
@@ -2052,7 +2055,7 @@ export default function QC() {
                         <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentRejectItem.product_name}</h2>
-                            <p className="text-xs text-gray-500">Bill: {currentRejectItem.bill_no}</p>
+                            <p className="text-xs text-gray-500">Bill: {currentRejectItem.bill_no} <UrgencyBadge order={currentRejectItem} className="ml-1" /></p>
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>

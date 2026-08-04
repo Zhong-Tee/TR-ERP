@@ -153,10 +153,41 @@ export default function MarketplaceNewTab({
         return
       }
 
+      // ป้องกันนำเข้าออเดอร์ที่มีเลขพัสดุปนมา (มักเป็นงานที่จัดส่งไปแล้ว) — "-" ถือว่าไม่มีเลขพัสดุ
+      const hasTrackingNo = (o: MpParsedOrder) => {
+        const t = (o.tracking_no || '').trim()
+        return t !== '' && t !== '-'
+      }
+      const withTracking = freshOrders.filter(hasTrackingNo)
+      let importOrders = freshOrders
+      let trackingSkipped = 0
+      if (withTracking.length > 0) {
+        const proceed = await showConfirm({
+          title: 'พบรายการที่มีเลขพัสดุ',
+          message:
+            `ไฟล์นี้มีออเดอร์ที่มีเลขพัสดุแล้ว ${withTracking.length} รายการ ` +
+            `(จากรายการใหม่ทั้งหมด ${freshOrders.length} รายการ)\n\n` +
+            `กด "นำเข้า" ระบบจะนำเข้าเฉพาะรายการที่ไม่มีเลขพัสดุ ${freshOrders.length - withTracking.length} รายการ\n` +
+            `กด "ยกเลิก" เพื่อยกเลิกการนำเข้าทั้งหมด`,
+          confirmText: 'นำเข้า',
+          cancelText: 'ยกเลิก',
+        })
+        if (!proceed) return
+        importOrders = freshOrders.filter((o) => !hasTrackingNo(o))
+        trackingSkipped = withTracking.length
+        if (importOrders.length === 0) {
+          showMessage({
+            title: 'ไม่มีรายการนำเข้า',
+            message: 'ออเดอร์ใหม่ทั้งหมดในไฟล์มีเลขพัสดุแล้ว — ไม่มีรายการให้นำเข้า',
+          })
+          return
+        }
+      }
+
       // auto-match SKU → pr_products.product_code
       const skus = Array.from(
         new Set(
-          freshOrders.flatMap((o) => o.items.map((it) => (it.sku_ref || '').trim()).filter(Boolean)),
+          importOrders.flatMap((o) => o.items.map((it) => (it.sku_ref || '').trim()).filter(Boolean)),
         ),
       )
       const skuToProductId = new Map<string, string>()
@@ -178,7 +209,7 @@ export default function MarketplaceNewTab({
           config_id: config.id,
           file_name: file.name,
           row_count: result.rowCount,
-          order_count: freshOrders.length,
+          order_count: importOrders.length,
           duplicate_count: duplicateCount,
           uploaded_by: user.id,
         })
@@ -189,7 +220,7 @@ export default function MarketplaceNewTab({
       // insert orders + items (chunked)
       let insertedOrders = 0
       let unmatchedSku = 0
-      for (const chunk of chunked(freshOrders, 50)) {
+      for (const chunk of chunked(importOrders, 50)) {
         const payload = chunk.map((o: MpParsedOrder) => ({
           batch_id: batch.id,
           config_id: config.id,
@@ -262,9 +293,10 @@ export default function MarketplaceNewTab({
         ? `\n\nคำเตือน:\n${result.warnings.slice(0, 8).join('\n')}${result.warnings.length > 8 ? '\n...' : ''}`
         : ''
       const skuText = unmatchedSku > 0 ? `\nรายการที่จับคู่ SKU ไม่ได้ (ให้ sales เลือกเอง): ${unmatchedSku}` : ''
+      const trackingText = trackingSkipped > 0 ? `\nข้ามรายการที่มีเลขพัสดุ ${trackingSkipped} ออเดอร์` : ''
       showMessage({
         title: 'นำเข้าสำเร็จ',
-        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำ ${duplicateCount} ออเดอร์${skuText}${warningText}`,
+        message: `นำเข้า ${insertedOrders} ออเดอร์ (${result.rowCount} แถว)\nข้ามรายการซ้ำ ${duplicateCount} ออเดอร์${trackingText}${skuText}${warningText}`,
       })
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
       onChanged()
