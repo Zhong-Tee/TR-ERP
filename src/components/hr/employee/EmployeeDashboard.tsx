@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX } from 'react-icons/fi'
+import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX, FiChevronRight } from 'react-icons/fi'
 import type { IconType } from 'react-icons'
 import {
   fetchEmployeeByUserId,
@@ -80,6 +80,66 @@ function formatTimeAgo(dateStr: string): string {
   return d.toLocaleDateString('th-TH')
 }
 
+/** วัน–เวลาแบบเต็ม (ใช้ในหน้าต่างรายละเอียด) */
+function formatDateTimeFull(dateStr: string): string {
+  return new Date(dateStr).toLocaleString('th-TH', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** ป้ายชื่อประเภทคำขอ */
+const KIND_LABEL: Record<ApprovalTarget['kind'], string> = {
+  leave: 'การลา',
+  ot: 'OT',
+  wfh: 'WFH',
+}
+
+/** รายละเอียดคำขอ (ลา/OT/WFH) เป็นคู่ ป้าย–ค่า สำหรับหน้าต่างรายละเอียด */
+function requestDetailRows(target: ApprovalTarget): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = [
+    { label: 'ประเภทคำขอ', value: KIND_LABEL[target.kind] },
+    { label: 'ผู้ขอ', value: reqEmpName(target.req.employee) },
+  ]
+  if (target.kind === 'leave') {
+    const req = target.req
+    rows.push({ label: 'ประเภทลา', value: (req.leave_type as { name?: string })?.name ?? '-' })
+    rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
+    rows.push({
+      label: 'จำนวน',
+      value: req.leave_mode === 'hourly' && req.total_hours ? `${req.total_hours} ชม.` : `${req.total_days} วัน`,
+    })
+    if (req.leave_mode === 'hourly' && req.start_time && req.end_time) {
+      rows.push({ label: 'ช่วงเวลา', value: `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` })
+    }
+  } else if (target.kind === 'ot') {
+    const req = target.req
+    rows.push({ label: 'วันที่', value: req.request_date })
+    rows.push({
+      label: 'ช่วงเวลา',
+      value: `${req.ot_start?.slice(0, 5)} – ${req.ot_end?.slice(0, 5)} น.${req.hours ? ` (${req.hours} ชม.)` : ''}`,
+    })
+  } else {
+    const req = target.req
+    rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
+  }
+  if (target.req.reason) rows.push({ label: 'เหตุผล', value: target.req.reason })
+  if (target.req.approver) {
+    rows.push({
+      label: target.req.status === 'rejected' ? 'ผู้ปฏิเสธ' : 'ผู้อนุมัติ',
+      value: reqEmpName(target.req.approver),
+    })
+  }
+  if (target.req.approved_at && target.req.status === 'approved') {
+    rows.push({ label: 'อนุมัติเมื่อ', value: formatDateTimeFull(target.req.approved_at) })
+  }
+  if (target.req.reject_reason) rows.push({ label: 'เหตุผลที่ไม่อนุมัติ', value: target.req.reject_reason })
+  return rows
+}
+
 function toLocalDateInput(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -118,6 +178,8 @@ export default function EmployeeDashboard() {
   /** สิทธิ์อนุมัติจากมือถือ: เฉพาะ superadmin / admin / hr */
   const canApprove = ['superadmin', 'admin', 'hr'].includes(user?.role ?? '')
   const [approvalTarget, setApprovalTarget] = useState<ApprovalTarget | null>(null)
+  /** แจ้งเตือนที่กดดูรายละเอียด (พร้อมคำขอที่ผูกอยู่ ถ้าหาเจอ) */
+  const [detailNotif, setDetailNotif] = useState<{ notif: HRNotification; target: ApprovalTarget | null } | null>(null)
   const [rejectMode, setRejectMode] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
@@ -193,15 +255,16 @@ export default function EmployeeDashboard() {
     }
   }
 
-  /** กดรายการแจ้งเตือน: ถ้าเป็น "รออนุมัติ" และมีสิทธิ์ → เปิดหน้าอนุมัติ, ไม่งั้นแค่ mark read */
+  /** กดรายการแจ้งเตือน: ถ้าเป็น "รออนุมัติ" และมีสิทธิ์ → เปิดหน้าอนุมัติ, ไม่งั้นเปิดรายละเอียด */
   const handleNotifClick = (n: HRNotification) => {
     const target = n.related_id ? pendingById.get(n.related_id) : undefined
+    if (!n.is_read && n.employee_id === employee?.id) handleMarkRead(n.id)
     if (canApprove && isPendingNotif(n.type) && target) {
       setRejectMode(false)
       setRejectReason('')
       setApprovalTarget(target)
-    } else if (!n.is_read && n.employee_id === employee?.id) {
-      handleMarkRead(n.id)
+    } else {
+      setDetailNotif({ notif: n, target: (n.related_id ? resultById.get(n.related_id) ?? target : undefined) ?? null })
     }
   }
 
@@ -464,12 +527,15 @@ export default function EmployeeDashboard() {
                   const actorName =
                     !isPendingNotif(n.type) && resultT?.req.approver ? reqEmpName(resultT.req.approver) : null
                   const actorLabel = resultStatus(n.title) === 'rejected' ? 'ผู้ปฏิเสธ' : 'ผู้อนุมัติ'
+                  // จุดเขียว = แจ้งเตือน "ของฉัน" ที่ยังไม่อ่าน — ตรงกับตัวเลขบนกระดิ่ง
+                  // (รายการผลอนุมัติของพนักงานคนอื่นที่ผู้มีสิทธิ์อนุมัติเห็น ไม่นับเป็นของฉัน)
+                  const isOwnUnread = !n.is_read && n.employee_id === employee.id
                   return (
                     <li key={n.id}>
                       <button
                         type="button"
                         onClick={() => handleNotifClick(n)}
-                        className={`w-full text-left p-4 active:bg-gray-50 ${!n.is_read ? 'bg-emerald-50/50' : ''}`}
+                        className={`w-full text-left p-4 active:bg-gray-50 ${isOwnUnread ? 'bg-emerald-50/50' : ''}`}
                       >
                         <div className="flex items-start gap-3">
                           <span className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${bg}`}>
@@ -477,7 +543,7 @@ export default function EmployeeDashboard() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              {!n.is_read && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />}
+                              {isOwnUnread && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />}
                               <p className="font-medium text-gray-900 text-sm">{n.title}</p>
                             </div>
                             {requesterName && (
@@ -491,30 +557,33 @@ export default function EmployeeDashboard() {
                             )}
                             <p className="text-gray-400 text-xs mt-1">{formatTimeAgo(n.created_at)}</p>
                           </div>
-                          {(() => {
-                            if (actionable) {
+                          <div className="shrink-0 self-start flex items-center gap-1">
+                            {(() => {
+                              if (actionable) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-600 text-white">
+                                    อนุมัติ
+                                  </span>
+                                )
+                              }
+                              const st = resultStatus(n.title)
+                              if (!st) return null
                               return (
-                                <span className="shrink-0 self-start inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-emerald-600 text-white">
-                                  อนุมัติ ›
+                                <span
+                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                                    st === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                                  }`}
+                                >
+                                  {st === 'approved' ? (
+                                    <><FiCheckCircle className="w-3.5 h-3.5" /> อนุมัติ</>
+                                  ) : (
+                                    <><FiXCircle className="w-3.5 h-3.5" /> ปฏิเสธ</>
+                                  )}
                                 </span>
                               )
-                            }
-                            const st = resultStatus(n.title)
-                            if (!st) return null
-                            return (
-                              <span
-                                className={`shrink-0 self-start inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
-                                  st === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-                                }`}
-                              >
-                                {st === 'approved' ? (
-                                  <><FiCheckCircle className="w-3.5 h-3.5" /> อนุมัติ</>
-                                ) : (
-                                  <><FiXCircle className="w-3.5 h-3.5" /> ปฏิเสธ</>
-                                )}
-                              </span>
-                            )
-                          })()}
+                            })()}
+                            <FiChevronRight className="w-4 h-4 text-gray-300" aria-hidden />
+                          </div>
                         </div>
                       </button>
                     </li>
@@ -560,6 +629,77 @@ export default function EmployeeDashboard() {
           </Link>
         </div>
       </section>
+
+      {/* รายละเอียดแจ้งเตือน — กดรายการใดก็ได้เพื่อดู */}
+      <Modal open={!!detailNotif} onClose={() => setDetailNotif(null)} closeOnBackdropClick contentClassName="max-w-sm">
+        {detailNotif && (() => {
+          const { notif: n, target } = detailNotif
+          const st = resultStatus(n.title)
+          const { Icon, color, bg } = notifIcon(n.type)
+          return (
+            <div className="relative p-5">
+              <button
+                type="button"
+                onClick={() => setDetailNotif(null)}
+                aria-label="ปิดรายละเอียด"
+                className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-400 active:bg-gray-100 active:text-gray-700"
+              >
+                <FiX className="h-5 w-5" />
+              </button>
+              <div className="flex items-start gap-3 pr-10">
+                <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${bg}`}>
+                  <Icon className={`w-5 h-5 ${color}`} />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold text-gray-800">{n.title}</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">{formatDateTimeFull(n.created_at)}</p>
+                </div>
+              </div>
+
+              {st && (
+                <span
+                  className={`mt-3 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
+                    st === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+                  }`}
+                >
+                  {st === 'approved' ? (
+                    <><FiCheckCircle className="w-3.5 h-3.5" /> อนุมัติ</>
+                  ) : (
+                    <><FiXCircle className="w-3.5 h-3.5" /> ปฏิเสธ</>
+                  )}
+                </span>
+              )}
+
+              {n.message && (
+                <p className="mt-3 rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-700 whitespace-pre-wrap">
+                  {n.message}
+                </p>
+              )}
+
+              {target ? (
+                <dl className="mt-3 space-y-1.5 text-sm">
+                  {requestDetailRows(target).map((row) => (
+                    <div key={row.label} className="flex gap-2">
+                      <dt className="w-28 shrink-0 text-gray-500">{row.label}</dt>
+                      <dd className="min-w-0 flex-1 text-gray-800 whitespace-pre-wrap">{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <p className="mt-3 text-xs text-gray-400">ไม่พบข้อมูลคำขอที่เชื่อมกับแจ้งเตือนนี้</p>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setDetailNotif(null)}
+                className="mt-5 w-full py-2.5 rounded-xl bg-emerald-600 text-white font-medium active:bg-emerald-700"
+              >
+                ปิด
+              </button>
+            </div>
+          )
+        })()}
+      </Modal>
 
       {/* อนุมัติ/ปฏิเสธ จากมือถือ (เฉพาะ superadmin/admin/hr) */}
       <Modal open={!!approvalTarget} onClose={closeApproval} closeOnBackdropClick contentClassName="max-w-sm">
