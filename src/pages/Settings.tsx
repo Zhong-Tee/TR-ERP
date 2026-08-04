@@ -162,6 +162,8 @@ export default function Settings() {
   /** เปิดใช้หมวดในการขาย/เปิดบิล — ไม่มี key = ถือว่าเปิด (ค่าเริ่มต้น) */
   const [categorySalesActive, setCategorySalesActive] = useState<Record<string, boolean>>({})
   const [savingProductSettings, setSavingProductSettings] = useState(false)
+  const [importingCategorySettings, setImportingCategorySettings] = useState(false)
+  const categoryFileInputRef = useRef<HTMLInputElement>(null)
   // Product-level field overrides (null = ใช้ค่าจากหมวดหมู่)
   const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
   const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, boolean | null>>>({})
@@ -1699,17 +1701,18 @@ export default function Settings() {
   const OVERRIDE_ID_HEADERS = ['product_code', 'product_name', 'product_category'] as const
   const overrideExportHeaders = [...OVERRIDE_ID_HEADERS, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
 
-  /** boolean|null → ค่าที่เขียนลงเซลล์ (ว่าง = ตามหมวดหมู่) */
-  function overrideValueToCell(value: boolean | null): string {
+  /** boolean|null → ค่าที่เขียนลงเซลล์ — override เป็น 1/0, ตามหมวดหมู่แสดงค่าหมวดในวงเล็บ (1)/(0) */
+  function overrideValueToCell(value: boolean | null, categoryValue: boolean): string {
     if (value === true) return '1'
     if (value === false) return '0'
-    return ''
+    return categoryValue ? '(1)' : '(0)'
   }
 
-  /** ค่าในเซลล์ → boolean|null (รองรับ 1/0, เปิด/ปิด, true/false, y/n) */
+  /** ค่าในเซลล์ → boolean|null (รองรับ 1/0, เปิด/ปิด, true/false, y/n — ค่าในวงเล็บ = ตามหมวดหมู่) */
   function overrideCellToValue(raw: unknown): boolean | null {
     const s = String(raw ?? '').trim().toLowerCase()
     if (s === '') return null
+    if (s.startsWith('(')) return null // ค่าจากหมวดหมู่ที่ export ไว้ให้ดู ไม่ใช่ override
     if (['1', 'true', 'y', 'yes', 'on', 'เปิด'].includes(s)) return true
     if (['0', 'false', 'n', 'no', 'off', 'ปิด'].includes(s)) return false
     return null
@@ -1729,11 +1732,13 @@ export default function Settings() {
     try {
       const rows = allProducts.map((p) => {
         const fields = getProductOverrideFields(p.id)
+        const catKey = (p.product_category || '').trim()
+        const catSettings = catKey ? getCategoryFields(catKey) : defaultCategoryFields
         return [
           p.product_code || '',
           p.product_name || '',
           p.product_category || '',
-          ...PRODUCT_FIELD_KEYS.map(({ key }) => overrideValueToCell(fields[key])),
+          ...PRODUCT_FIELD_KEYS.map(({ key }) => overrideValueToCell(fields[key], catSettings[key])),
         ]
       })
 
@@ -1752,10 +1757,12 @@ export default function Settings() {
         ['', 'product_name และ product_category มีไว้ให้อ่านเฉยๆ — แก้แล้วไม่มีผลตอน Import'],
         [],
         ['2) ค่าที่กรอกได้ในคอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ)'],
+        ['', '(1) หรือ (0)', 'ค่าที่ดึงมาจากหมวดหมู่ (มีวงเล็บ = แสดงให้ดูเฉยๆ) — Import แล้วนับเป็น "ตามหมวดหมู่"'],
         ['', 'เว้นว่าง', 'ตามหมวดหมู่ (ค่าเริ่มต้น) — ใช้ค่าจากตารางตั้งค่าหมวดหมู่'],
         ['', '1', 'Override เปิด — บังคับให้กรอกฟิลด์นี้ แม้หมวดหมู่จะปิด'],
         ['', '0', 'Override ปิด — ซ่อนฟิลด์นี้ แม้หมวดหมู่จะเปิด'],
         ['', 'พิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้เช่นกัน'],
+        ['', 'ต้องการ override ช่องไหน ให้พิมพ์ทับค่าในวงเล็บด้วย 1 หรือ 0 (ไม่มีวงเล็บ)'],
         [],
         ['3) แถวที่ product_code ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
         ['4) สินค้าที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
@@ -1775,6 +1782,7 @@ export default function Settings() {
         ['แถวที่ 1: บังคับเปิด "สีหมึก" และบังคับปิด "บรรทัด 1-3" ที่เหลือตามหมวดหมู่'],
         ['แถวที่ 2: บังคับเปิด "ไฟล์แนบ" อย่างเดียว'],
         ['แถวที่ 3: เว้นว่างทุกช่อง = ไม่มี override (ล้าง override เดิมของสินค้านี้ทิ้ง)'],
+        ['หมายเหตุ: ค่าในวงเล็บ เช่น (1) หรือ (0) นับเป็น "ตามหมวดหมู่" เหมือนเว้นว่าง'],
       ])
       guide['!cols'] = [{ wch: 4 }, { wch: 30 }, { wch: 60 }]
 
@@ -1843,6 +1851,105 @@ export default function Settings() {
       showMessage({ title: 'ผิดพลาด', message: 'Import ไม่สำเร็จ: ' + (error?.message || String(error)) })
     } finally {
       setImportingOverrides(false)
+    }
+  }
+
+  // --- Export / Import ตั้งค่าหมวดหมู่ (ฟิลด์ที่อนุญาต + เปิดการขาย) เป็นไฟล์ Excel ---
+  const CATEGORY_SHEET_NAME = 'CategorySettings'
+  const CATEGORY_SALES_HEADER = 'เปิดการขาย'
+  const categoryExportHeaders = ['product_category', CATEGORY_SALES_HEADER, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
+
+  function exportCategoryFieldSettings() {
+    try {
+      const rows = productCategories.map((category) => {
+        const fields = getCategoryFields(category)
+        return [
+          category,
+          getCategorySalesActive(category) ? '1' : '0',
+          ...PRODUCT_FIELD_KEYS.map(({ key }) => (fields[key] ? '1' : '0')),
+        ]
+      })
+
+      const ws = XLSX.utils.aoa_to_sheet([categoryExportHeaders, ...rows])
+      ws['!cols'] = [{ wch: 18 }, { wch: 10 }, ...PRODUCT_FIELD_KEYS.map(() => ({ wch: 10 }))]
+
+      const guide = XLSX.utils.aoa_to_sheet([
+        ['วิธีกรอกไฟล์ตั้งค่าหมวดหมู่สินค้า'],
+        [],
+        ['1) ระบบจับคู่ด้วยคอลัมน์ product_category — ชื่อหมวดหมู่ต้องตรงกับในระบบ'],
+        ['2) คอลัมน์ เปิดการขาย: 1 = เปิดหมวดนี้ในการขาย/เปิดบิล, 0 = ปิด'],
+        ['3) คอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ): 1 = อนุญาตให้กรอก, 0 = ไม่อนุญาต'],
+        ['', 'พิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้เช่นกัน'],
+        ['', 'เว้นว่าง = คงค่าปัจจุบันในระบบ (ไม่เปลี่ยนช่องนั้น)'],
+        ['4) แถวที่ชื่อหมวดหมู่ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
+        ['5) หมวดหมู่ที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
+        ['6) หลัง Import ต้องกดปุ่ม "บันทึก" ของตารางตั้งค่าหมวดหมู่ เพื่อบันทึกลงฐานข้อมูล'],
+      ])
+      guide['!cols'] = [{ wch: 4 }, { wch: 70 }]
+
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, CATEGORY_SHEET_NAME)
+      XLSX.utils.book_append_sheet(wb, guide, 'วิธีกรอก')
+      XLSX.writeFile(wb, 'ตั้งค่าหมวดหมู่สินค้า.xlsx')
+    } catch (error: any) {
+      console.error('Error exporting category settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Export ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    }
+  }
+
+  async function importCategoryFieldSettings(file: File) {
+    setImportingCategorySettings(true)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
+      const sheetName = wb.SheetNames.includes(CATEGORY_SHEET_NAME) ? CATEGORY_SHEET_NAME : wb.SheetNames[0]
+      if (!sheetName) throw new Error('ไม่มีชีตในไฟล์')
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[sheetName], { defval: '' })
+      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+      if (!('product_category' in rows[0])) throw new Error('ไม่พบคอลัมน์ product_category — ใช้ไฟล์ที่ได้จากปุ่ม Export เป็นต้นแบบ')
+
+      const known = new Set(productCategories)
+      const nextFields = { ...categoryFieldSettings }
+      const nextSales = { ...categorySalesActive }
+      let applied = 0
+      const unknownCategories: string[] = []
+
+      for (const row of rows) {
+        const category = String(row['product_category'] ?? '').trim()
+        if (!category) continue
+        if (!known.has(category)) {
+          unknownCategories.push(category)
+          continue
+        }
+        const current = nextFields[category] ? { ...nextFields[category] } : { ...defaultCategoryFields }
+        for (const { key, label } of PRODUCT_FIELD_KEYS) {
+          const v = overrideCellToValue(row[label])
+          if (v !== null) current[key] = v
+        }
+        nextFields[category] = current
+        const sales = overrideCellToValue(row[CATEGORY_SALES_HEADER])
+        if (sales !== null) nextSales[category] = sales
+        applied++
+      }
+
+      setCategoryFieldSettings(nextFields)
+      setCategorySalesActive(nextSales)
+
+      const lines = [`นำเข้าตั้งค่าหมวดหมู่ ${applied} รายการ`]
+      if (unknownCategories.length > 0) {
+        const preview = unknownCategories.slice(0, 5).join(', ')
+        lines.push(
+          `ข้าม ${unknownCategories.length} รายการ (ไม่พบหมวดหมู่ในระบบ): ${preview}${unknownCategories.length > 5 ? ' ...' : ''}`
+        )
+      }
+      lines.push('')
+      lines.push('ยังไม่ได้บันทึกลงฐานข้อมูล — ตรวจค่าในตารางแล้วกดปุ่ม "บันทึก"')
+      showMessage({ title: 'นำเข้าสำเร็จ', message: lines.join('\n') })
+    } catch (error: any) {
+      console.error('Error importing category settings:', error)
+      showMessage({ title: 'ผิดพลาด', message: 'Import ไม่สำเร็จ: ' + (error?.message || String(error)) })
+    } finally {
+      setImportingCategorySettings(false)
     }
   }
 
@@ -3489,13 +3596,44 @@ export default function Settings() {
               <h2 className="text-xl font-bold">ตั้งค่าสินค้า — ข้อมูลที่อนุญาตให้กรอกต่อหมวดหมู่</h2>
               <p className="text-sm text-gray-500 mt-1">เฉพาะหมวดที่เปิดใช้ในการขายด้านบน — บันทึกร่วมกับปุ่มในบล็อกด้านบน</p>
             </div>
-            <button
-              onClick={saveCategoryFieldSettings}
-              disabled={savingProductSettings || productCategories.length === 0}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                ref={categoryFileInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) importCategoryFieldSettings(file)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={exportCategoryFieldSettings}
+                disabled={productCategories.length === 0}
+                className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="ดาวน์โหลดตั้งค่าหมวดหมู่ทั้งหมด (ฟิลด์ที่อนุญาต + เปิดการขาย) เป็นไฟล์ Excel"
+              >
+                Export หมวดหมู่
+              </button>
+              <button
+                type="button"
+                onClick={() => categoryFileInputRef.current?.click()}
+                disabled={importingCategorySettings || productCategories.length === 0}
+                className="px-3 py-2 bg-amber-600 text-white rounded-lg text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="นำเข้าไฟล์ Excel — จับคู่ด้วยชื่อหมวดหมู่ แล้วต้องกดบันทึกอีกครั้ง"
+              >
+                {importingCategorySettings ? 'กำลังนำเข้า...' : 'Import หมวดหมู่'}
+              </button>
+              <button
+                onClick={saveCategoryFieldSettings}
+                disabled={savingProductSettings || productCategories.length === 0}
+                className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingProductSettings ? 'กำลังบันทึก...' : 'บันทึก'}
+              </button>
+            </div>
           </div>
           {productCategories.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
@@ -3545,7 +3683,7 @@ export default function Settings() {
           <div className="flex justify-between items-center mb-4">
             <div>
               <h2 className="text-xl font-bold">ตั้งค่าฟิลด์ระดับสินค้า (Override)</h2>
-              <p className="text-sm text-gray-500 mt-1">ตั้งค่าเฉพาะสินค้าที่ต้องการแตกต่างจากหมวดหมู่ — คลิกเพื่อสลับ 3 สถานะ</p>
+              <p className="text-sm text-gray-500 mt-1">ช่องเส้นประแสดงค่าที่หมวดหมู่อนุญาต — คลิกเพื่อสลับ 3 สถานะ (ตามหมวดหมู่ → Override เปิด → Override ปิด)</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <input
@@ -3588,10 +3726,16 @@ export default function Settings() {
           </div>
           <div className="flex items-center gap-6 mb-3 text-xs text-gray-600">
             <span className="flex items-center gap-1.5">
-              <span className="inline-block w-4 h-4 rounded border-2 border-gray-300 bg-gray-100 relative">
-                <span className="absolute inset-0 flex items-center justify-center text-gray-400 font-bold text-[10px]">—</span>
+              <span className="inline-block w-4 h-4 rounded border-2 border-dashed border-emerald-300 bg-emerald-50 relative">
+                <svg className="w-3 h-3 text-emerald-400 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
               </span>
-              ตามหมวดหมู่ (ค่าเริ่มต้น)
+              ตามหมวดหมู่: เปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 rounded border-2 border-dashed border-gray-300 bg-gray-50 relative">
+                <svg className="w-3 h-3 text-gray-300 absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </span>
+              ตามหมวดหมู่: ปิด
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block w-4 h-4 rounded border-2 border-amber-500 bg-amber-500 relative">
@@ -4604,14 +4748,27 @@ function TriStateOverrideCheckbox({
         : 'Override: ปิด — คลิกเพื่อกลับตามหมวดหมู่'
 
   if (value === null) {
+    // แสดงค่าที่สืบทอดจากหมวดหมู่แบบจาง (เส้นประ) เพื่อให้เห็นค่าจริงก่อนตัดสินใจ override
     return (
       <button
         type="button"
         onClick={handleClick}
         title={title}
-        className="w-5 h-5 rounded border-2 border-gray-300 bg-gray-100 flex items-center justify-center cursor-pointer hover:border-gray-400 transition-colors mx-auto"
+        className={`w-5 h-5 rounded border-2 border-dashed flex items-center justify-center cursor-pointer transition-colors mx-auto ${
+          categoryValue
+            ? 'border-emerald-300 bg-emerald-50 hover:border-emerald-400'
+            : 'border-gray-300 bg-gray-50 hover:border-gray-400'
+        }`}
       >
-        <span className="text-gray-400 font-bold text-[11px] leading-none">—</span>
+        {categoryValue ? (
+          <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ) : (
+          <svg className="w-3.5 h-3.5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        )}
       </button>
     )
   }
