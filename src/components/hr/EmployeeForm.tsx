@@ -8,6 +8,7 @@ import {
   fetchWorkSchedules,
   uploadHRFile,
   getHRFileUrl,
+  removeHRFiles,
   previewNextEmployeeCode,
 } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
@@ -17,6 +18,10 @@ import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSched
 
 const BUCKET_PHOTOS = 'hr-photos'
 const BUCKET_DOCUMENTS = 'hr-documents'
+
+// รูปโปรไฟล์ต้องส่งผ่าน Telegram sendPhoto ได้ (URL ต้องเป็น JPG/PNG และไม่เกิน 5MB)
+const PHOTO_ALLOWED_EXTS = ['jpg', 'jpeg', 'png']
+const PHOTO_MAX_MB = 5
 
 const DOC_TYPES = [
   'บัตรประชาชน',
@@ -96,6 +101,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [current_address, setCurrentAddress] = useState<Record<string, string>>(emptyAddress())
   const [photoFile, setPhotoFile] = useState<File | null>(null)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState<string | null>(null)
   const [showPhotoLarge, setShowPhotoLarge] = useState(false)
 
   const [employee_code, setEmployeeCode] = useState('')
@@ -245,11 +251,22 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      setPhotoFile(file)
-      const url = URL.createObjectURL(file)
-      setPhotoPreview(url)
+    e.target.value = '' // เคลียร์ค่าเพื่อให้เลือกไฟล์เดิมซ้ำได้
+    if (!file) return
+    const ext = (file.name.split('.').pop() ?? '').toLowerCase()
+    if (!PHOTO_ALLOWED_EXTS.includes(ext)) {
+      setPhotoError(`ไม่รองรับไฟล์ .${ext} — กรุณาใช้ไฟล์ JPG หรือ PNG (Telegram ไม่รองรับไฟล์ชนิดนี้)`)
+      return
     }
+    if (file.size > PHOTO_MAX_MB * 1024 * 1024) {
+      setPhotoError(
+        `ไฟล์ใหญ่เกินไป (${(file.size / 1024 / 1024).toFixed(1)} MB) — ต้องไม่เกิน ${PHOTO_MAX_MB} MB มิฉะนั้นแจ้งเตือน Telegram จะส่งไม่ได้`
+      )
+      return
+    }
+    setPhotoError(null)
+    setPhotoFile(file)
+    setPhotoPreview(URL.createObjectURL(file))
   }
 
   const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -305,8 +322,9 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
     try {
       let photoPath = employee?.photo_url
       if (photoFile && employee?.id) {
-        const ext = photoFile.name.split('.').pop() || 'jpg'
-        const path = `${employee.id}/photo.${ext}`
+        // ตั้งชื่อไฟล์ใหม่ทุกครั้ง (timestamp) — path เดิมโดน CDN cache ทำให้รูปใหม่ไม่แสดง
+        const ext = (photoFile.name.split('.').pop() || 'jpg').toLowerCase()
+        const path = `${employee.id}/photo_${Date.now()}.${ext}`
         await uploadHRFile(BUCKET_PHOTOS, path, photoFile)
         photoPath = path
       } else if (photoFile && !employee?.id) {
@@ -368,12 +386,18 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       const saved = await upsertEmployee(payload)
 
       if (photoFile && saved?.id && !photoPath) {
-        const ext = photoFile.name.split('.').pop() || 'jpg'
-        const path = `${saved.id}/photo.${ext}`
+        const ext = (photoFile.name.split('.').pop() || 'jpg').toLowerCase()
+        const path = `${saved.id}/photo_${Date.now()}.${ext}`
         await uploadHRFile(BUCKET_PHOTOS, path, photoFile)
         await upsertEmployee({ id: saved.id, photo_url: path })
       } else if (photoPath && saved?.id) {
         await upsertEmployee({ id: saved.id, photo_url: photoPath })
+      }
+
+      // อัปโหลดรูปใหม่สำเร็จ → ลบไฟล์รูปเก่าใน storage (fire-and-forget)
+      const oldPhoto = employee?.photo_url
+      if (photoFile && oldPhoto && oldPhoto !== photoPath && !oldPhoto.startsWith('http')) {
+        removeHRFiles(BUCKET_PHOTOS, [oldPhoto]).catch(() => {})
       }
 
       // พนักงานเข้าใหม่ → แจ้ง Telegram กลุ่ม HR (fire-and-forget ไม่ block การบันทึก)
@@ -678,16 +702,22 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                     <span className="text-gray-400 text-sm">ไม่มีรูป</span>
                   </div>
                 )}
-                <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer">
-                  <FiUpload />
-                  อัปโหลดรูป
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handlePhotoChange}
-                  />
-                </label>
+                <div>
+                  <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer">
+                    <FiUpload />
+                    อัปโหลดรูป
+                    <input
+                      type="file"
+                      accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                      className="hidden"
+                      onChange={handlePhotoChange}
+                    />
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    รองรับ JPG, PNG ขนาดไม่เกิน {PHOTO_MAX_MB} MB (ไฟล์ใหญ่กว่านี้จะส่งแจ้งเตือน Telegram ไม่ได้)
+                  </p>
+                  {photoError && <p className="text-sm text-red-600 mt-1">{photoError}</p>}
+                </div>
               </div>
               {showPhotoLarge && photoPreview && (
                 <PhotoLightbox url={photoPreview} alt="รูปถ่ายพนักงาน" onClose={() => setShowPhotoLarge(false)} />
