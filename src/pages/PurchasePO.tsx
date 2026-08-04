@@ -808,7 +808,8 @@ export default function PurchasePO() {
                   <thead>
                     <tr className="bg-gray-50 border-b">
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-14">รูป</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-32">รหัสสินค้า</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">ชื่อสินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600 w-24">จำนวน</th>
                       {canSeeFinancial && (
                         <>
@@ -835,7 +836,10 @@ export default function PurchasePO() {
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            <div className="font-medium">{prod?.product_code} - {prod?.product_name}</div>
+                            <div className="font-medium">{prod?.product_code || '-'}</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium">{prod?.product_name || '-'}</div>
                           </td>
                           <td className="px-3 py-2 text-right">{Number(item.qty).toLocaleString()} {item.unit || ''}</td>
                           {canSeeFinancial && (
@@ -863,7 +867,7 @@ export default function PurchasePO() {
                   {canSeeFinancial && (
                     <tfoot>
                       <tr className="bg-gray-50 border-t">
-                        <td colSpan={4} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
+                        <td colSpan={5} className="px-3 py-2.5 text-right font-semibold text-gray-700">ยอดรวม</td>
                         <td className="px-3 py-2.5 text-right font-bold text-emerald-700 text-base">
                           {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
                         </td>

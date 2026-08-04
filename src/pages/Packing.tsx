@@ -8,11 +8,14 @@ import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
+  clearFolderHandle,
   deleteQueueItem,
   getFolderHandle,
+  getFolderPathNote,
   listQueueItems,
   setAccessToken,
   setFolderHandle,
+  setFolderPathNote,
   setSupabaseConfig,
   updateQueueItem,
   type UploadQueueItem,
@@ -158,6 +161,8 @@ type RecordingState = {
 }
 
 const INACTIVITY_LIMIT = 60_000
+/** เก็บรายการคิวที่อัปโหลดเสร็จแล้วไว้กี่วันก่อนล้างอัตโนมัติ */
+const QUEUE_RETENTION_DAYS = 7
 const PACKING_DAILY_TAG_STORAGE_KEY = 'pk_daily_packing_tag_v1'
 
 /** แสดงเลขพัสดุแบบไม่มีช่องว่าง */
@@ -284,7 +289,13 @@ export default function Packing() {
   const [isLoadingOrders, setIsLoadingOrders] = useState(false)
   const [previewModal, setPreviewModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
   const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
+  const [folderPath, setFolderPath] = useState('')
+  const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null)
+  const [reconnectOpen, setReconnectOpen] = useState(false)
+  const [pathModal, setPathModal] = useState<{ open: boolean; value: string }>({ open: false, value: '' })
   const [queueItems, setQueueItems] = useState<UploadQueueItem[]>([])
+  const queueSignatureRef = useRef('')
+  const shouldPollQueueRef = useRef(true)
   const [queueLoading, setQueueLoading] = useState(false)
   const [packingVideoUrl, setPackingVideoUrl] = useState<string | null>(null)
   const [packingVideoLoading, setPackingVideoLoading] = useState(false)
@@ -445,6 +456,8 @@ export default function Packing() {
     loadFolderFromSettings().catch(() => null)
     refreshQueue(true).catch(() => null)
     const timer = window.setInterval(() => {
+      // poll เฉพาะตอนที่หน้าจอต้องใช้จริง ดูเงื่อนไขที่ effect ของ shouldPollQueueRef
+      if (!shouldPollQueueRef.current) return
       refreshQueue(false).catch(() => null)
     }, 5000)
     return () => {
@@ -453,18 +466,78 @@ export default function Packing() {
     }
   }, [])
 
+  // queryPermission ยังคืน granted จาก metadata ที่แคชไว้ แม้โฟลเดอร์จะถูกย้าย/ลบไปแล้ว
+  // จึงต้องแตะไดเรกทอรีจริงเพื่อยืนยันว่ายังใช้งานได้
+  async function isFolderHandleUsable(handle: FileSystemDirectoryHandle) {
+    try {
+      await (handle as any).values().next()
+      return true
+    } catch (_err) {
+      return false
+    }
+  }
+
+  function describeFolderError(error: any) {
+    const name = error?.name || ''
+    if (name === 'NotFoundError') {
+      return 'ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)'
+    }
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return 'เบราว์เซอร์ไม่อนุญาตให้เขียนไฟล์ลงโฟลเดอร์ที่เลือกไว้'
+    }
+    if (name === 'QuotaExceededError') {
+      return 'พื้นที่ดิสก์ไม่พอสำหรับบันทึกไฟล์'
+    }
+    return error?.message || 'บันทึกไฟล์ลงโฟลเดอร์ไม่สำเร็จ'
+  }
+
+  async function forgetFolder() {
+    await clearFolderHandle().catch(() => null)
+    setFolderHandleState(null)
+  }
+
   async function loadFolderFromSettings() {
+    setFolderPath(await getFolderPathNote().catch(() => ''))
     const handle = await getFolderHandle()
     if (!handle) return
     const perm = await (handle as any).queryPermission?.({ mode: 'readwrite' })
-    if (perm === 'granted') {
-      setFolderHandleState(handle)
+    if (perm !== 'granted') {
+      // ไม่เรียก requestPermission ตรงนี้ เพราะ Chrome จะเด้ง popup ขออนุญาตทันทีที่เปิดหน้า
+      // ให้ผู้ใช้กดยืนยันผ่าน modal ของเราก่อน popup จะได้มาแบบรู้ตัว
+      setPendingHandle(handle)
+      setReconnectOpen(true)
       return
     }
-    const req = await (handle as any).requestPermission?.({ mode: 'readwrite' })
-    if (req === 'granted') {
-      setFolderHandleState(handle)
+    if (!(await isFolderHandleUsable(handle))) {
+      await forgetFolder()
+      return
     }
+    setFolderHandleState(handle)
+  }
+
+  async function confirmReconnect() {
+    const handle = pendingHandle
+    setReconnectOpen(false)
+    setPendingHandle(null)
+    if (!handle) return
+    const req = await (handle as any).requestPermission?.({ mode: 'readwrite' })
+    if (req !== 'granted') {
+      openAlert('ยังไม่ได้รับสิทธิ์เข้าถึงโฟลเดอร์\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" เพื่อเลือกใหม่ ก่อนเริ่มแพ็คงาน')
+      return
+    }
+    if (!(await isFolderHandleUsable(handle))) {
+      await forgetFolder()
+      openAlert('ไม่พบโฟลเดอร์เดิมแล้ว (อาจถูกย้าย เปลี่ยนชื่อ หรือลบ)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" เพื่อเลือกใหม่')
+      return
+    }
+    setFolderHandleState(handle)
+  }
+
+  async function saveFolderPath(value: string) {
+    const next = value.trim()
+    await setFolderPathNote(next).catch(() => null)
+    setFolderPath(next)
+    setPathModal({ open: false, value: '' })
   }
 
   async function selectFolder() {
@@ -472,16 +545,65 @@ export default function Packing() {
       openAlert('เบราว์เซอร์นี้ไม่รองรับการเลือกโฟลเดอร์ (ต้องใช้ Chrome/Edge)')
       return
     }
-    const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
-    await setFolderHandle(handle)
-    setFolderHandleState(handle)
+    try {
+      const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+      await setFolderHandle(handle)
+      setFolderHandleState(handle)
+      setPathModal({ open: true, value: '' })
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return
+      openAlert('เลือกโฟลเดอร์ไม่สำเร็จ: ' + describeFolderError(error))
+    }
+  }
+
+  // poll ต่อเมื่อกำลังดูแท็บคิวอยู่ หรือยังมีงานที่สถานะเปลี่ยนเองได้ (service worker เป็นคนอัปเดต)
+  // รายการ failed ไม่นับ เพราะไม่ขยับเองจนกว่าจะสั่งอัปโหลดใหม่
+  useEffect(() => {
+    shouldPollQueueRef.current =
+      selectionTab === 'queue' ||
+      queueItems.some((i) => i.status === 'pending' || i.status === 'uploading')
+  }, [selectionTab, queueItems])
+
+  // ลายเซ็นของเฉพาะฟิลด์ที่หน้าจอใช้ ใช้เทียบว่าคิวเปลี่ยนจริงไหม
+  function queueSignature(items: UploadQueueItem[]) {
+    return items
+      .map((i) => `${i.id}:${i.status}:${i.updatedAt}:${i.localDeleted ? 1 : 0}:${i.lastError || ''}`)
+      .join('|')
+  }
+
+  // ล้างเฉพาะรายการที่อัปโหลดขึ้น Drive แล้ว ลบไฟล์ในเครื่องแล้ว และเก่าเกินกำหนด
+  // ข้อมูลตัวจริงอยู่ในตาราง pk_packing_videos บนเซิร์ฟเวอร์ คิวนี้เป็นแค่คิวงานชั่วคราว
+  async function purgeExpiredQueueItems(items: UploadQueueItem[]) {
+    const cutoff = Date.now() - QUEUE_RETENTION_DAYS * 24 * 60 * 60 * 1000
+    const expired = items.filter((i) => {
+      if (i.status !== 'success' || !i.localDeleted) return false
+      const created = new Date(i.createdAt || '').getTime()
+      // createdAt เพี้ยนหรืออ่านไม่ออก ไม่ต้องลบ ปลอดภัยไว้ก่อน
+      return Number.isFinite(created) && created < cutoff
+    })
+    if (!expired.length) return items
+    const expiredIds = new Set(expired.map((i) => i.id))
+    for (const item of expired) {
+      await deleteQueueItem(item.id).catch(() => null)
+    }
+    return items.filter((i) => !expiredIds.has(i.id))
   }
 
   async function refreshQueue(showLoading = false) {
     if (showLoading) setQueueLoading(true)
     const list = await listQueueItems()
-    const sorted = list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
-    setQueueItems(sorted)
+    const sorted = await purgeExpiredQueueItems(
+      list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+    )
+    // ตัด blob (ไฟล์วิดีโอ) ออกก่อนเก็บลง state เพราะหน้าจอใช้แค่ metadata
+    // ส่วน service worker อ่าน blob จาก IndexedDB โดยตรงอยู่แล้ว
+    const meta = sorted.map(({ blob: _blob, ...rest }) => rest as UploadQueueItem)
+    // ตัวจับเวลายิงทุก 5 วิ ถ้า set ทุกครั้งจะ re-render ทั้งหน้าแม้ข้อมูลไม่เปลี่ยน
+    const signature = queueSignature(meta)
+    if (signature !== queueSignatureRef.current) {
+      queueSignatureRef.current = signature
+      setQueueItems(meta)
+    }
     if (showLoading) setQueueLoading(false)
     if (folderHandle) {
       await cleanupLocalFiles(folderHandle, sorted)
@@ -1661,6 +1783,12 @@ export default function Packing() {
       openAlert('กรุณาเลือกโฟลเดอร์จัดเก็บก่อนเริ่มบันทึก')
       return
     }
+    // เตือนตั้งแต่ก่อนอัด ดีกว่าไปพังตอนเซฟหลังแพ็คเสร็จ
+    if (!(await isFolderHandleUsable(folderHandle))) {
+      await forgetFolder()
+      openAlert('ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ก่อนเริ่มบันทึก')
+      return
+    }
     try {
       const ok = await ensurePreview()
       if (!ok && !streamRef.current) {
@@ -1735,16 +1863,35 @@ export default function Packing() {
       return
     }
     setRecordingState({ status: 'uploading', tracking: trackingNumber })
+    let localSaveError: string | null = null
+    let folderLost = false
     try {
       await requestNotificationPermission()
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
       const filename = `${timestamp}.webm`
       const path = `work_orders/${currentWorkOrderName}/${trackingNumber}/${filename}`
 
-      const fileHandle = await folderHandle.getFileHandle(filename, { create: true })
-      const writable = await fileHandle.createWritable()
-      await writable.write(blob)
-      await writable.close()
+      // ไฟล์ในโฟลเดอร์เป็นเพียงสำเนาสำรอง การอัปโหลดใช้ blob ใน IndexedDB
+      // ถ้าเขียนไฟล์ไม่ได้ต้องเข้าคิวต่อ ไม่เช่นนั้นวิดีโอที่อัดไว้จะหายทั้งไฟล์
+      // ระบุขั้นตอนที่พังไว้ด้วย เพราะ NotFoundError เกิดได้ทั้งจาก "โฟลเดอร์หาย" (พังที่สร้างไฟล์)
+      // และจากไฟล์ชั่วคราว .crswap ของ Chrome โดนแทรกแซง (พังที่ปิดไฟล์) ซึ่งโฟลเดอร์ยังปกติดี
+      let step = 'สร้างไฟล์'
+      try {
+        const fileHandle = await folderHandle.getFileHandle(filename, { create: true })
+        step = 'เปิดเขียนไฟล์'
+        const writable = await fileHandle.createWritable()
+        step = 'เขียนข้อมูล'
+        await writable.write(blob)
+        step = 'ปิดไฟล์'
+        await writable.close()
+      } catch (err: any) {
+        folderLost = !(await isFolderHandleUsable(folderHandle))
+        localSaveError = `${describeFolderError(err)}\n(ขั้นตอน: ${step} • ${err?.name || 'Error'})`
+        // ให้เลือกโฟลเดอร์ใหม่เฉพาะตอนที่โฟลเดอร์ใช้ไม่ได้จริง ไม่ใช่ทุก error
+        if (folderLost) {
+          await forgetFolder()
+        }
+      }
 
       const recordedBy = user?.username || user?.email || 'unknown'
       const item: UploadQueueItem = {
@@ -1764,7 +1911,8 @@ export default function Packing() {
         fileSize: blob.size,
         recordedBy,
         recordedAt: new Date().toISOString(),
-        blob
+        blob,
+        localDeleted: localSaveError ? true : false
       }
       await addQueueItem(item)
       await refreshQueue()
@@ -1776,9 +1924,15 @@ export default function Packing() {
         }
         regAny.active?.postMessage({ type: 'sync-now' })
       }
+      if (localSaveError) {
+        const nextStep = folderLost
+          ? 'กรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ ก่อนแพ็คงานถัดไป'
+          : 'โฟลเดอร์ยังใช้งานได้ปกติ แพ็คงานถัดไปต่อได้เลย'
+        openAlert(`${localSaveError}\n\nวิดีโอถูกเก็บเข้าคิวอัปโหลดเรียบร้อยแล้ว ไม่สูญหาย\n${nextStep}`)
+      }
     } catch (error: any) {
       setRecordingState({ status: 'error', tracking: trackingNumber, error: error.message })
-      openAlert('บันทึกไฟล์ลงโฟลเดอร์ไม่สำเร็จ: ' + error.message)
+      openAlert('บันทึกวิดีโอเข้าคิวอัปโหลดไม่สำเร็จ: ' + error.message)
       return
     } finally {
       setRecordingState({ status: 'idle', tracking: null })
@@ -2246,17 +2400,46 @@ export default function Packing() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-                  onClick={selectFolder}
-                >
-                  เลือกโฟลเดอร์จัดเก็บ
-                </button>
-                <div className="text-sm text-gray-600">
-                  โฟลเดอร์ปัจจุบัน:{' '}
-                  <span className="font-semibold">{folderHandle?.name || 'ยังไม่ได้เลือก'}</span>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                    onClick={selectFolder}
+                  >
+                    เลือกโฟลเดอร์จัดเก็บ
+                  </button>
+                  <div className="text-sm text-gray-600">
+                    โฟลเดอร์ปัจจุบัน:{' '}
+                    <span className="font-semibold">{folderHandle?.name || 'ยังไม่ได้เลือก'}</span>
+                  </div>
+                  {folderHandle ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
+                      เชื่อมต่ออยู่
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                      ยังไม่เชื่อมต่อ
+                    </span>
+                  )}
                 </div>
+                {folderHandle && (
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                    <span>ตำแหน่ง:</span>
+                    {folderPath ? (
+                      <code className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded text-gray-800">
+                        {folderPath}
+                      </code>
+                    ) : (
+                      <span className="text-gray-400">ยังไม่ได้ระบุ</span>
+                    )}
+                    <button
+                      className="text-blue-600 underline text-xs"
+                      onClick={() => setPathModal({ open: true, value: folderPath })}
+                    >
+                      {folderPath ? 'แก้ไข' : 'ระบุตำแหน่ง'}
+                    </button>
+                  </div>
+                )}
               </div>
               {queueLoading ? (
                 <div className="text-center py-6 text-gray-500">กำลังโหลดคิว...</div>
@@ -2913,6 +3096,92 @@ export default function Packing() {
           </div>
         </div>
       </Modal>
+      <Modal
+        open={reconnectOpen}
+        onClose={() => {
+          setReconnectOpen(false)
+          setPendingHandle(null)
+        }}
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">เชื่อมต่อโฟลเดอร์จัดเก็บ</h3>
+          <p className="text-sm text-gray-700">
+            โฟลเดอร์{' '}
+            <span className="font-semibold">{pendingHandle?.name || '-'}</span>{' '}
+            เคยตั้งค่าไว้ แต่ต้องขอสิทธิ์เข้าถึงใหม่ทุกครั้งที่เปิดหน้านี้
+          </p>
+          {folderPath && (
+            <p className="text-sm text-gray-600">
+              ตำแหน่ง:{' '}
+              <code className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded">{folderPath}</code>
+            </p>
+          )}
+          <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+            เมื่อกดปุ่มด้านล่าง Chrome จะถามยืนยันสิทธิ์อีกหนึ่งครั้ง เป็นหน้าต่างของเบราว์เซอร์เอง
+            กรุณากด "อนุญาต"
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => {
+                setReconnectOpen(false)
+                setPendingHandle(null)
+              }}
+            >
+              ไว้ก่อน
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={confirmReconnect}
+            >
+              เชื่อมต่อโฟลเดอร์
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={pathModal.open}
+        onClose={() => setPathModal({ open: false, value: '' })}
+        contentClassName="max-w-md"
+      >
+        <div className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold">ระบุตำแหน่งโฟลเดอร์</h3>
+          <p className="text-sm text-gray-700">
+            เลือกโฟลเดอร์{' '}
+            <span className="font-semibold">{folderHandle?.name || '-'}</span> เรียบร้อยแล้ว
+          </p>
+          <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+            เบราว์เซอร์ไม่เปิดเผยตำแหน่งเต็มของโฟลเดอร์ให้เว็บไซต์ ด้วยเหตุผลด้านความปลอดภัย
+            หากต้องการให้แสดงไว้อ้างอิง กรุณาคัดลอกจากช่อง Address bar ของ File Explorer มาวาง
+          </p>
+          <input
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            placeholder="เช่น D:\VDO_Packing"
+            value={pathModal.value}
+            onChange={(e) => setPathModal({ open: true, value: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveFolderPath(pathModal.value)
+            }}
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+              onClick={() => setPathModal({ open: false, value: '' })}
+            >
+              ข้ามไปก่อน
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={() => saveFolderPath(pathModal.value)}
+            >
+              บันทึก
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal
         open={dialog.open}
         onClose={closeDialog}

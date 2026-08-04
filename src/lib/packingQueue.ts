@@ -79,6 +79,20 @@ export async function getFolderHandle(): Promise<FileSystemDirectoryHandle | nul
   return getSetting<FileSystemDirectoryHandle>('folderHandle')
 }
 
+export async function clearFolderHandle(): Promise<void> {
+  await withStore(STORE_SETTINGS, 'readwrite', (store) => store.delete('folderHandle'))
+}
+
+// เบราว์เซอร์ไม่เปิดเผย path เต็มของโฟลเดอร์ที่เลือก (มีแค่ handle.name)
+// จึงให้ผู้ใช้บันทึกตำแหน่งไว้เองเพื่ออ้างอิงตอนหาโฟลเดอร์ไม่เจอ
+export async function setFolderPathNote(note: string): Promise<void> {
+  await setSetting('folderPathNote', note)
+}
+
+export async function getFolderPathNote(): Promise<string> {
+  return (await getSetting<string>('folderPathNote')) || ''
+}
+
 export async function setSupabaseConfig(url: string, anonKey: string): Promise<void> {
   await setSetting('supabaseUrl', url)
   await setSetting('supabaseAnonKey', anonKey)
