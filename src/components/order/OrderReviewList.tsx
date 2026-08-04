@@ -786,6 +786,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                       )}
                     </div>
                   </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-24 text-gray-600 font-medium text-sm shrink-0">ผู้สร้างบิล</div>
+                    <div className="flex-1 text-sm">
+                      {selectedOrder.admin_user || '-'}
+                      {selectedOrder.last_edited_by && selectedOrder.last_edited_by !== selectedOrder.admin_user && (
+                        <span className="text-gray-500 ml-2">(แก้ไขล่าสุด: {selectedOrder.last_edited_by})</span>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex items-center gap-3">
                     <div className="w-24 text-gray-600 font-medium text-sm shrink-0">สถานะ</div>
                     <div>

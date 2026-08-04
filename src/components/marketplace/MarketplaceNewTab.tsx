@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FiArrowDown, FiArrowUp } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
-import { parseMarketplaceWorkbook, type MpParsedOrder } from '../../lib/marketplaceImport'
+import { buildMpItemRows, parseMarketplaceWorkbook, type MpParsedOrder } from '../../lib/marketplaceImport'
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
@@ -259,29 +259,9 @@ export default function MarketplaceNewTab({
         const itemsPayload = chunk.flatMap((o) => {
           const mpOrderId = idByOrderNo.get(o.marketplace_order_no)
           if (!mpOrderId) return []
-          // แตกรายการที่จำนวน > 1 ให้เป็นหลายแถว แถวละ 1 ชิ้น (ลงชื่อแยกกันได้)
-          let lineIndex = 0
-          return o.items.flatMap((it) => {
-            const productId = it.sku_ref ? skuToProductId.get(it.sku_ref.trim().toLowerCase()) || null : null
-            if (!productId) unmatchedSku++
-            const copies = Math.max(1, Math.round(Number(it.qty) || 1))
-            const perLineTotal =
-              it.line_total != null ? Math.round((Number(it.line_total) / copies) * 100) / 100 : it.unit_price
-            return Array.from({ length: copies }, () => ({
-              mp_order_id: mpOrderId,
-              line_index: lineIndex++,
-              product_name_raw: it.product_name_raw,
-              sku_ref: it.sku_ref,
-              variation: it.variation,
-              // เก็บชื่อตัวเลือกจากไฟล์ไว้เป็นข้อมูลอ้างอิง แต่ให้ sales เลือก/กรอกลายเอง
-              cartoon_pattern: null,
-              qty: 1,
-              unit_price: it.unit_price,
-              line_total: perLineTotal,
-              raw_snapshot: it.raw_snapshot,
-              product_id: productId,
-            }))
-          })
+          const built = buildMpItemRows(mpOrderId, o.items, skuToProductId)
+          unmatchedSku += built.unmatchedSku
+          return built.rows
         })
         for (const itemChunk of chunked(itemsPayload, CHUNK)) {
           const { error: itemError } = await supabase.from('mp_order_items').insert(itemChunk)

@@ -18,9 +18,54 @@ interface ProductOption {
 
 interface InkOption { id: string; ink_name: string }
 interface FontOption { font_code: string; font_name: string }
-interface PatternOption { id: string; pattern_name: string }
+interface PatternOption { id: string; pattern_name: string; product_categories: string[] | null }
 
 const LAYERS = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
+
+/**
+ * งานที่เปิดบิลแล้ว: อ่านรายการจากบิลจริง (or_order_items) แทนร่างใน mp_order_items
+ * เพื่อให้แถบ "เสร็จสิ้น" แสดงข้อมูลล่าสุดหลังบิลถูกแก้ในเมนูออเดอร์
+ * ข้อมูลต้นทางจากไฟล์ (ชื่อ/SKU/ตัวเลือก) ไม่มีในบิล จึงจับคู่จากร่างตามลำดับแถว
+ */
+async function loadBilledItems(billedOrderId: string, draftItems: MpOrderItem[]): Promise<MpOrderItem[]> {
+  const { data, error } = await supabase
+    .from('or_order_items')
+    .select('*')
+    .eq('order_id', billedOrderId)
+    .order('created_at', { ascending: true })
+  if (error || !data || data.length === 0) return draftItems
+
+  return (data as Record<string, unknown>[]).map((row, idx) => {
+    const draft = draftItems[idx]
+    const qty = Number(row.quantity ?? 0)
+    const unitPrice = row.unit_price != null ? Number(row.unit_price) : null
+    return {
+      id: String(row.id),
+      mp_order_id: draft?.mp_order_id ?? '',
+      line_index: idx,
+      product_name_raw: (row.product_name as string) ?? draft?.product_name_raw ?? null,
+      sku_ref: draft?.sku_ref ?? null,
+      variation: draft?.variation ?? null,
+      qty,
+      unit_price: unitPrice,
+      line_total: unitPrice != null ? Math.round(qty * unitPrice * 100) / 100 : null,
+      raw_snapshot: draft?.raw_snapshot ?? null,
+      product_id: (row.product_id as string) ?? null,
+      product_type: (row.product_type as string) ?? null,
+      ink_color: (row.ink_color as string) ?? null,
+      cartoon_pattern: (row.cartoon_pattern as string) ?? null,
+      line_pattern: (row.line_pattern as string) ?? null,
+      font: (row.font as string) ?? null,
+      line_1: (row.line_1 as string) ?? null,
+      line_2: (row.line_2 as string) ?? null,
+      line_3: (row.line_3 as string) ?? null,
+      no_name_line: !!row.no_name_line,
+      is_free: !!row.is_free,
+      notes: (row.notes as string) ?? null,
+      created_at: (row.created_at as string) ?? draft?.created_at ?? '',
+    }
+  })
+}
 
 export default function MarketplaceOrderModal({
   mpOrder,
@@ -90,10 +135,13 @@ export default function MarketplaceOrderModal({
           loadFieldRuleMaps(),
           supabase.from('ink_types').select('id, ink_name').order('ink_name'),
           supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
-          supabase.from('cp_cartoon_patterns').select('id, pattern_name').eq('is_active', true),
+          supabase
+            .from('cp_cartoon_patterns')
+            .select('id, pattern_name, product_categories')
+            .eq('is_active', true),
         ])
         if (cancelled) return
-        const loadedItems = ((itemsRes.data || []) as MpOrderItem[]).map((it) => ({
+        const draftItems = ((itemsRes.data || []) as MpOrderItem[]).map((it) => ({
           ...it,
           // รองรับรายการเก่าที่เคยคัดลอกตัวเลือกจากไฟล์มาใส่ช่องลายอัตโนมัติ
           cartoon_pattern:
@@ -101,6 +149,11 @@ export default function MarketplaceOrderModal({
               ? null
               : it.cartoon_pattern,
         }))
+        // เปิดบิลแล้ว: บิลจริงคือแหล่งข้อมูลล่าสุด (อาจถูกแก้ในเมนูออเดอร์หลังตีกลับ)
+        const loadedItems = mpOrder.billed_order_id
+          ? await loadBilledItems(mpOrder.billed_order_id, draftItems)
+          : draftItems
+        if (cancelled) return
         setItems(loadedItems)
         setPersistedIds(new Set(loadedItems.map((it) => it.id)))
         setProducts((productsRes.data || []) as ProductOption[])
@@ -141,7 +194,7 @@ export default function MarketplaceOrderModal({
   }
 
   // item นี้เป็นสมาชิกของกลุ่มที่ "ผู้ใช้กดแยกในเซสชันนี้" และยังมีสมาชิกในกลุ่ม ≥ 2 แถวหรือไม่
-  // (ใช้แสดงปุ่ม "รวมกลับ" — โผล่เฉพาะรายการที่ผู้ใช้แยกเอง ไม่ใช่รายการที่มาแยกจากไฟล์)
+  // (ใช้แสดงปุ่ม "รวมกลับ" — รวมได้เฉพาะแถวที่แยกออกมาจากรายการเดียวกัน ไม่ใช่คนละรายการในไฟล์)
   function isSplitMember(it: MpOrderItem): boolean {
     const g = splitGroups[it.id]
     if (!g) return false
@@ -219,6 +272,17 @@ export default function MarketplaceOrderModal({
   function fieldEnabled(item: MpOrderItem, fieldKey: string): boolean {
     const product = item.product_id ? productById.get(item.product_id) : null
     return resolveFieldEnabled(product, fieldKey, fieldRules)
+  }
+
+  /** ลายที่เลือกได้ตามหมวดหมู่ของสินค้าที่จับคู่ไว้ — ตรรกะเดียวกับฟอร์มเปิดบิล
+   * (ยังไม่ได้จับคู่สินค้า = ยังไม่รู้หมวด จึงแสดงทั้งหมด) */
+  function patternsForItem(item: MpOrderItem): PatternOption[] {
+    const product = item.product_id ? productById.get(item.product_id) : null
+    const category = product?.product_category?.trim() || null
+    const list = category
+      ? patterns.filter((p) => (p.product_categories || []).some((c) => (c || '').trim() === category))
+      : patterns
+    return list.slice().sort((a, b) => (a.pattern_name || '').localeCompare(b.pattern_name || ''))
   }
 
   function matchProduct(input: string): ProductOption | undefined {
@@ -785,7 +849,7 @@ export default function MarketplaceOrderModal({
                               autoComplete="off"
                             />
                             <datalist id={`mp-pattern-list-${it.id}`}>
-                              {patterns.map((p) => (
+                              {patternsForItem(it).map((p) => (
                                 <option key={p.id} value={p.pattern_name} />
                               ))}
                             </datalist>

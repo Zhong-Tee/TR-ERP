@@ -1398,7 +1398,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         supabase.from('ink_types').select('id, ink_name').order('ink_name'),
         supabase.from('fonts').select('font_code, font_name').eq('is_active', true),
         supabase.from('pr_category_field_settings').select('*'),
-        supabase.from('promotion').select('id, name').eq('is_active', true).order('name'),
+        supabase.from('promotion').select('*').eq('is_active', true),
         supabase.from('pr_product_field_overrides').select('*'),
         supabase.from('inv_stock_balances').select('product_id, on_hand, reserved, safety_stock'),
         supabase.from('or_channel_order_no_prefixes').select('channel_code, prefix, is_active').eq('is_active', true),
@@ -1424,7 +1424,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
       if (patternsRes.data) setCartoonPatterns(patternsRes.data)
       if (channelsRes.data) setChannels(channelsRes.data)
-      if (promotionsRes.data) setPromotions(promotionsRes.data)
+      if (promotionsRes.data) {
+        // ลำดับตามที่จัดไว้ในหน้าตั้งค่า (แถวที่ยังไม่มี sort_order ตกไปท้ายและเรียงตามชื่อ)
+        const rows = promotionsRes.data as { id: string; name: string; sort_order?: number | null }[]
+        setPromotions(
+          [...rows].sort(
+            (a, b) =>
+              (a.sort_order ?? Number.MAX_SAFE_INTEGER) - (b.sort_order ?? Number.MAX_SAFE_INTEGER) ||
+              a.name.localeCompare(b.name),
+          ),
+        )
+      }
       if (inkTypesRes.data) setInkTypes(inkTypesRes.data)
       if (fontsRes.data) setFonts(fontsRes.data)
 
@@ -1936,7 +1946,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
       const channelCodeForSave = formData.channel_code?.trim() || ''
       if (statusToSave === 'ตรวจสอบแล้ว') {
-        const ownerRole = await fetchOrderOwnerSalesRole(supabase, user.username || user.email)
+        // เส้นทางสถานะยึดตามเจ้าของบิล (admin_user) ไม่ใช่คนที่กดบันทึก —
+        // บิลที่ถูกตีกลับมาแก้ต้องวิ่งกลับเข้าคิวเดิม แม้ผู้แก้จะเป็นคนละคนกับผู้เปิดบิล
+        const ownerKey = order ? order.admin_user : user.username || user.email
+        const ownerRole = await fetchOrderOwnerSalesRole(supabase, ownerKey)
         if (channelCodeForSave === 'PUMP') {
           statusToSave = computePostSlipVerificationStatus(
             ownerRole,

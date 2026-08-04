@@ -10,4 +10,8 @@ export default defineConfig(({ mode }) => ({
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version),
   },
+  // รองรับ PORT จาก environment (เครื่องมือที่รันหลาย dev server พร้อมกัน) — ไม่ตั้งค่า = ใช้ 5173 ตามเดิม
+  server: {
+    ...(process.env.PORT ? { port: Number(process.env.PORT) } : {}),
+  },
 }))

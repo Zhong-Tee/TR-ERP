@@ -54,8 +54,8 @@ export const MP_FIELD_LABELS: Record<MpFieldKey, string> = {
   buyer_username: 'ชื่อผู้ใช้ (ผู้ซื้อ)',
   order_date: 'วันที่สั่งซื้อ',
   payment_time: 'เวลาชำระเงิน (ใช้คำนวณกำหนดส่ง)',
-  product_name: 'ชื่อสินค้า',
-  sku_ref: 'SKU อ้างอิง (จับคู่สินค้าในระบบ)',
+  product_name: 'ชื่อสินค้า (ถ้ามีในไฟล์)',
+  sku_ref: 'SKU สินค้า (จับคู่สินค้าในระบบ)',
   variation: 'ลาย (ชื่อตัวเลือกในไฟล์)',
   qty: 'จำนวน',
   unit_price: 'ราคาขาย/หน่วย',
@@ -72,13 +72,14 @@ export const MP_FIELD_LABELS: Record<MpFieldKey, string> = {
   tracking_no: 'เลขพัสดุ',
 }
 
-/** ฟิลด์จากไฟล์ที่นำไปแสดงโดยตรงในหน้ากรอกข้อมูลบิลของเมนู Assign */
+/** ฟิลด์จากไฟล์ที่นำไปแสดงโดยตรงในหน้ากรอกข้อมูลบิลของเมนู Assign
+ * (sku_ref ใช้จับคู่สินค้าในระบบ → เป็นตัวกำหนดชื่อสินค้าที่แสดงในหน้า Assign) */
 export const MP_ASSIGN_FORM_FIELDS = new Set<MpFieldKey>([
   'buyer_username',
   'payment_time',
   'buyer_note',
   'order_total',
-  'product_name',
+  'sku_ref',
   'variation',
   'qty',
   'unit_price',
@@ -238,6 +239,53 @@ export interface MpParsedItem {
   raw_snapshot: Record<string, string | number | null>
 }
 
+/** แถวสินค้าที่พร้อม insert ลง mp_order_items */
+export interface MpItemRow {
+  mp_order_id: string
+  line_index: number
+  product_name_raw: string | null
+  sku_ref: string | null
+  variation: string | null
+  cartoon_pattern: null
+  qty: number
+  unit_price: number | null
+  line_total: number | null
+  raw_snapshot: Record<string, string | number | null>
+  product_id: string | null
+}
+
+/**
+ * แปลงรายการสินค้าจากไฟล์เป็นแถวสำหรับ mp_order_items — 1 แถวต่อ 1 รายการในไฟล์
+ * คงจำนวนตามไฟล์ไว้ ถ้าต้องลงชื่อแยกกัน sales กดปุ่ม "แยกรายการ" ในหน้า Assign เอง
+ * คืน unmatchedSku = จำนวนแถวที่จับคู่สินค้าในระบบจาก SKU ไม่ได้
+ */
+export function buildMpItemRows(
+  mpOrderId: string,
+  items: MpParsedItem[],
+  skuToProductId: Map<string, string>,
+): { rows: MpItemRow[]; unmatchedSku: number } {
+  let unmatchedSku = 0
+  const rows = items.map((it, idx) => {
+    const productId = it.sku_ref ? skuToProductId.get(it.sku_ref.trim().toLowerCase()) || null : null
+    if (!productId) unmatchedSku++
+    return {
+      mp_order_id: mpOrderId,
+      line_index: idx,
+      product_name_raw: it.product_name_raw,
+      sku_ref: it.sku_ref,
+      variation: it.variation,
+      // เก็บชื่อตัวเลือกจากไฟล์ไว้เป็นข้อมูลอ้างอิง แต่ให้ sales เลือก/กรอกลายเอง
+      cartoon_pattern: null as null,
+      qty: Math.max(1, Math.round(Number(it.qty) || 1)),
+      unit_price: it.unit_price,
+      line_total: it.line_total,
+      raw_snapshot: it.raw_snapshot,
+      product_id: productId,
+    }
+  })
+  return { rows, unmatchedSku }
+}
+
 export interface MpParsedOrder {
   marketplace_order_no: string
   platform_status: string | null
@@ -292,7 +340,7 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
   if (colIndex.order_no == null) {
     throw new Error('จับคู่คอลัมน์ "เลขคำสั่งซื้อ" ไม่ได้ — ตรวจสอบการตั้งค่าจับคู่คอลัมน์กับหัวตารางของไฟล์')
   }
-  for (const key of ['payment_time', 'product_name', 'qty'] as MpFieldKey[]) {
+  for (const key of ['payment_time', 'sku_ref', 'qty'] as MpFieldKey[]) {
     if (colIndex[key] == null) warnings.push(`จับคู่คอลัมน์ "${MP_FIELD_LABELS[key]}" ไม่ได้`)
   }
 

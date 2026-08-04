@@ -35,6 +35,15 @@ const SETTINGS_TABS = [
 
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
 
+/** เรียงโปรโมชั่นตามลำดับที่จัดไว้ แล้วค่อยตามชื่อ — รองรับแถวที่ยังไม่มี sort_order */
+function sortPromotions<T extends { name: string; sort_order?: number | null }>(rows: T[]): T[] {
+  return [...rows].sort(
+    (a, b) =>
+      (a.sort_order ?? Number.MAX_SAFE_INTEGER) - (b.sort_order ?? Number.MAX_SAFE_INTEGER) ||
+      a.name.localeCompare(b.name),
+  )
+}
+
 export default function Settings() {
   const { user: currentUser } = useAuthContext()
   const { hasAccess, refreshMenuAccess } = useMenuAccess()
@@ -224,10 +233,12 @@ export default function Settings() {
   const [sellerVisibilityFilter, setSellerVisibilityFilter] = useState<'active' | 'hidden' | 'all'>('active')
   const [sellerTogglingId, setSellerTogglingId] = useState<string | null>(null)
   // โปรโมชั่น (Promotions)
-  const [promotionsList, setPromotionsList] = useState<{ id: string; name: string; is_active: boolean }[]>([])
+  const [promotionsList, setPromotionsList] = useState<{ id: string; name: string; is_active: boolean; sort_order?: number }[]>([])
   const [promotionName, setPromotionName] = useState('')
   const [promotionSaving, setPromotionSaving] = useState(false)
   const [promotionEditingId, setPromotionEditingId] = useState<string | null>(null)
+  /** index ของแถวโปรโมชั่นที่กำลังลากจัดลำดับ; null = ไม่ได้ลาก */
+  const [draggedPromotionIndex, setDraggedPromotionIndex] = useState<number | null>(null)
 
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
@@ -1233,9 +1244,8 @@ export default function Settings() {
         .from('promotion')
         .select('*')
         .eq('is_active', true)
-        .order('name')
       if (error) throw error
-      setPromotionsList(data || [])
+      setPromotionsList(sortPromotions(data || []))
     } catch (error: any) {
       console.error('Error loading promotions:', error)
     }
@@ -1256,9 +1266,11 @@ export default function Settings() {
           .eq('id', promotionEditingId)
         if (error) throw error
       } else {
+        // รายการใหม่ต่อท้ายลำดับปัจจุบันเสมอ
+        const withOrder = promotionsList.some((p) => p.sort_order != null)
         const { error } = await supabase
           .from('promotion')
-          .insert(payload)
+          .insert(withOrder ? { ...payload, sort_order: promotionsList.length + 1 } : payload)
         if (error) throw error
       }
       setPromotionName('')
@@ -1285,6 +1297,27 @@ export default function Settings() {
     } catch (error: any) {
       console.error('Error deleting promotion:', error)
       showMessage({ title: 'ผิดพลาด', message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  /** ลากจัดลำดับโปรโมชั่น — สลับตำแหน่งบนจอทันที แล้วบันทึกลำดับใหม่ทั้งชุด */
+  async function movePromotion(from: number, to: number) {
+    if (from === to) return
+    const previous = promotionsList
+    const next = [...promotionsList]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    setPromotionsList(next)
+    try {
+      const results = await Promise.all(
+        next.map((p, i) => supabase.from('promotion').update({ sort_order: i + 1 }).eq('id', p.id)),
+      )
+      const failed = results.find((r) => r.error)
+      if (failed?.error) throw failed.error
+    } catch (error: any) {
+      console.error('Error saving promotion order:', error)
+      setPromotionsList(previous)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกลำดับไม่สำเร็จ: ' + error.message })
     }
   }
 
@@ -1558,7 +1591,8 @@ export default function Settings() {
         .from('pr_products')
         .select('id, product_name, product_code, product_category')
         .eq('is_active', true)
-        .eq('product_type', 'FG')
+        // ชนิดสินค้าที่ขายได้ — ต้องตรงกับตัวกรองในฟอร์มเปิดบิล (OrderForm/MarketplaceOrderModal)
+        .in('product_type', ['FG', 'PP'])
         .order('product_name')
       if (error) throw error
       setAllProducts(data || [])
@@ -4275,7 +4309,10 @@ export default function Settings() {
       {activeTab === 'promotions' && hasAccess('settings-promotions') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">จัดการโปรโมชั่น</h2>
+            <div>
+              <h2 className="text-xl font-bold">จัดการโปรโมชั่น</h2>
+              <p className="text-sm text-gray-500 mt-1">ลากไอคอนซ้ายมือเพื่อจัดลำดับ — ลำดับนี้ใช้กับตัวเลือกโปรโมชั่นในฟอร์มเปิดบิล</p>
+            </div>
           </div>
           <div className="flex gap-2 items-end flex-wrap">
             <div className="flex-1 min-w-[220px]">
@@ -4311,14 +4348,45 @@ export default function Settings() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-blue-600 text-white">
-                  <th className="px-4 py-2.5 text-left font-semibold rounded-tl-xl w-12">#</th>
+                  <th className="px-2 py-2.5 rounded-tl-xl w-10" aria-label="จัดลำดับ" />
+                  <th className="px-4 py-2.5 text-left font-semibold w-12">#</th>
                   <th className="px-4 py-2.5 text-left font-semibold">ชื่อโปรโมชั่น</th>
                   <th className="px-4 py-2.5 text-right font-semibold rounded-tr-xl w-40">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>
                 {promotionsList.map((p, idx) => (
-                  <tr key={p.id} className={`border-t hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                  <tr
+                    key={p.id}
+                    onDragOver={(e) => { if (draggedPromotionIndex != null) e.preventDefault() }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (draggedPromotionIndex != null) movePromotion(draggedPromotionIndex, idx)
+                      setDraggedPromotionIndex(null)
+                    }}
+                    className={`border-t hover:bg-blue-50 transition-colors ${
+                      draggedPromotionIndex === idx ? 'bg-blue-50 opacity-60' : idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                    }`}
+                  >
+                    <td className="px-2 py-2.5 text-center">
+                      <button
+                        type="button"
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggedPromotionIndex(idx)
+                          e.dataTransfer.effectAllowed = 'move'
+                          e.dataTransfer.setData('text/plain', String(idx))
+                        }}
+                        onDragEnd={() => setDraggedPromotionIndex(null)}
+                        title="ลากเพื่อจัดลำดับ"
+                        aria-label={`ลากเพื่อจัดลำดับ ${p.name}`}
+                        className="inline-flex p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 cursor-grab active:cursor-grabbing"
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                      </button>
+                    </td>
                     <td className="px-4 py-2.5 text-gray-400">{idx + 1}</td>
                     <td className="px-4 py-2.5 font-semibold">{p.name}</td>
                     <td className="px-4 py-2.5 text-right">
