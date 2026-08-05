@@ -30,6 +30,7 @@ export default function RefundReturnList() {
   const [thumbs, setThumbs] = useState<Record<string, string[]>>({})
   const [viewer, setViewer] = useState<{ billNo: string; urls: string[]; loading: boolean } | null>(null)
   const [viewerFailed, setViewerFailed] = useState<Set<number>>(new Set())
+  const [copyResult, setCopyResult] = useState<{ index: number; message: string; error: boolean } | null>(null)
   const [slipSentModal, setSlipSentModal] = useState<{ refund: RefundRow; submitting: boolean; error: string } | null>(null)
 
   const load = useCallback(async () => {
@@ -92,12 +93,49 @@ export default function RefundReturnList() {
 
   async function openViewer(r: RefundRow) {
     setViewerFailed(new Set())
+    setCopyResult(null)
     setViewer({ billNo: r.or_orders?.bill_no || '–', urls: [], loading: true })
     try {
       const urls = await getSignedUrlsFromStoragePaths(r.refund_slip_paths || [])
       setViewer({ billNo: r.or_orders?.bill_no || '–', urls, loading: false })
     } catch {
       setViewer({ billNo: r.or_orders?.bill_no || '–', urls: [], loading: false })
+    }
+  }
+
+  async function copySlipImage(url: string, index: number) {
+    setCopyResult(null)
+    try {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        throw new Error('เบราว์เซอร์นี้ไม่รองรับการคัดลอกรูป')
+      }
+
+      const pngBlob = fetch(url).then(async (response) => {
+        if (!response.ok) throw new Error(`โหลดรูปไม่สำเร็จ (HTTP ${response.status})`)
+        const sourceBlob = await response.blob()
+        if (sourceBlob.type === 'image/png') return sourceBlob
+
+        const bitmap = await createImageBitmap(sourceBlob)
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = bitmap.width
+          canvas.height = bitmap.height
+          const context = canvas.getContext('2d')
+          if (!context) throw new Error('ไม่สามารถเตรียมรูปสำหรับคัดลอกได้')
+          context.drawImage(bitmap, 0, 0)
+          return await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('แปลงรูปไม่สำเร็จ')), 'image/png')
+          })
+        } finally {
+          bitmap.close()
+        }
+      })
+
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
+      setCopyResult({ index, message: 'คัดลอกรูปแล้ว', error: false })
+    } catch (error: any) {
+      console.error('Error copying refund slip image:', error)
+      setCopyResult({ index, message: error?.message || 'คัดลอกรูปไม่สำเร็จ', error: true })
     }
   }
 
@@ -289,14 +327,27 @@ export default function RefundReturnList() {
                     ) : (
                       <>
                         <img src={url} alt={`สลิปโอนคืน ${idx + 1}`} className="max-w-full h-auto rounded-lg border border-gray-200 shadow-sm" referrerPolicy="no-referrer" onError={() => setViewerFailed(prev => new Set(prev).add(idx))} />
-                        <button
-                          type="button"
-                          onClick={() => void downloadFileFromUrl(url, `สลิปโอนคืน-${viewer.billNo}-${idx + 1}.jpg`)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors"
-                        >
-                          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                          ดาวน์โหลดรูป
-                        </button>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void downloadFileFromUrl(url, `สลิปโอนคืน-${viewer.billNo}-${idx + 1}.jpg`)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 text-sm font-medium transition-colors"
+                          >
+                            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                            ดาวน์โหลดรูป
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void copySlipImage(url, idx)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
+                          >
+                            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                            คัดลอกรูป
+                          </button>
+                        </div>
+                        {copyResult?.index === idx && (
+                          <p className={`text-xs font-medium ${copyResult.error ? 'text-red-600' : 'text-emerald-600'}`}>{copyResult.message}</p>
+                        )}
                       </>
                     )}
                   </div>
