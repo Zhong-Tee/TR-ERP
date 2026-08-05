@@ -8,12 +8,13 @@ import {
   submitExamResult,
   fetchExams,
   fetchDocumentById,
-  getHRFileUrl,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import AttachmentViewer from './AttachmentViewer'
 import type { HROnboardingPlan, HROnboardingProgress, HRExam, HREmployee } from '../../../types'
 
-const BUCKET_DOCS = 'hr-docs'
+/** ต้องตรงกับ bucket ที่ฝั่งแอดมิน (CompanyDocuments) อัปโหลดไฟล์เข้าไป */
+const BUCKET_DOCS = 'hr-company-docs'
 
 type TemplatePhase = {
   name: string
@@ -79,6 +80,9 @@ export default function EmployeeOnboarding() {
   const [examAnswers, setExamAnswers] = useState<Record<number, number>>({})
   const [examSubmitting, setExamSubmitting] = useState(false)
   const [examResult, setExamResult] = useState<{ passed: boolean; score: number; max: number } | null>(null)
+  /** เอกสารประกอบที่กำลังเปิด — ไฟล์แนบเปิดเต็มจอ, เอกสารแบบข้อความเปิดเป็นหน้าอ่าน */
+  const [docViewer, setDocViewer] = useState<{ path: string; title: string } | null>(null)
+  const [docText, setDocText] = useState<{ content: string; title: string } | null>(null)
 
   const load = useCallback(async () => {
     if (!user?.id) return
@@ -135,7 +139,8 @@ export default function EmployeeOnboarding() {
     if (!employee) return
     try {
       const doc = await fetchDocumentById(docId)
-      if (doc.file_url) window.open(getHRFileUrl(BUCKET_DOCS, doc.file_url), '_blank')
+      if (doc.file_url) setDocViewer({ path: doc.file_url, title: doc.title })
+      else if (doc.content) setDocText({ content: doc.content, title: doc.title })
       await markDocumentRead(docId, employee.id)
       await load()
     } catch (e) {
@@ -311,6 +316,27 @@ export default function EmployeeOnboarding() {
           </section>
         )
       })}
+
+      {docViewer && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET_DOCS, path: docViewer.path, name: docViewer.title }]}
+          onClose={() => setDocViewer(null)}
+        />
+      )}
+
+      {docText && (
+        <div className="fixed inset-0 z-50 bg-white overflow-auto">
+          <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-emerald-600 text-white shadow">
+            <h3 className="font-semibold truncate">{docText.title}</h3>
+            <button type="button" onClick={() => setDocText(null)} className="p-2 rounded-lg hover:bg-white/20">
+              ปิด
+            </button>
+          </div>
+          <div className="p-4">
+            <div className="rounded-xl border border-gray-200 p-4 text-sm whitespace-pre-wrap">{docText.content}</div>
+          </div>
+        </div>
+      )}
 
       {/* Exam overlay: full-screen on mobile */}
       {examOverlay && (

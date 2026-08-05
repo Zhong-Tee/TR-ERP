@@ -96,6 +96,12 @@ function leaveDurationDDHHMM(req: HRLeaveRequest): string {
   return `${String(days).padStart(2, '0')}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
+/** ช่วงเวลาลาแบบรายชั่วโมง — คืน null เมื่อเป็นการลาเต็มวันหรือไม่ได้ระบุเวลา */
+function leaveTimeRange(req: HRLeaveRequest): string | null {
+  if (req.leave_mode !== 'hourly' || !req.start_time || !req.end_time) return null
+  return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
+}
+
 /** ชั่วโมงทศนิยม → hh:mm */
 function hoursToHHMM(hours?: number | null): string {
   if (hours == null || !Number.isFinite(Number(hours))) return '-'
@@ -992,6 +998,9 @@ export default function LeaveManagement() {
               <p><span className="text-surface-500">พนักงาน:</span> {employeeDisplayName(detailRequest)}</p>
               <p><span className="text-surface-500">ประเภทลา:</span> {(detailRequest.leave_type as { name?: string })?.name ?? '-'}</p>
               <p><span className="text-surface-500">วันที่:</span> {detailRequest.start_date} – {detailRequest.end_date}</p>
+              {leaveTimeRange(detailRequest) && (
+                <p><span className="text-surface-500">ช่วงเวลา:</span> <span className="font-mono">{leaveTimeRange(detailRequest)}</span></p>
+              )}
               <p><span className="text-surface-500">จำนวนวัน (dd:hh:mm):</span> <span className="font-mono">{leaveDurationDDHHMM(detailRequest)}</span></p>
               <p><span className="text-surface-500">เหตุผล:</span> {detailRequest.reason ?? '-'}</p>
               <p>

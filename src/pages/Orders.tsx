@@ -359,13 +359,14 @@ export default function Orders() {
         issueCount = ic ?? 0
       }
 
-      // Load refund-return count (โอนคืนที่อนุมัติแล้ว + มีสลิป, scope เดียวกับแท็บโอนคืน)
+      // Load refund-return count (โอนคืนที่อนุมัติแล้ว + มีสลิป แต่ยังไม่ส่งสลิป, scope เดียวกับแท็บโอนคืน)
       let refundReturnCount = 0
       try {
         let rq = supabase
           .from('ac_refunds')
           .select('id, refund_slip_paths, or_orders!inner(admin_user)')
           .eq('status', 'approved')
+          .is('refund_slip_sent_at', null)
         if (isSalesPumpOwnerScopedRole(user?.role)) {
           const name = resolveSalesPumpOwnerAdminName(user?.role, user?.username, user?.email)
           rq = name ? rq.eq('or_orders.admin_user', name) : rq.eq('or_orders.admin_user', '__no_owner__')

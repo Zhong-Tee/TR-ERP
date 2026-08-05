@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FiCalendar, FiPlus, FiCamera, FiUpload } from 'react-icons/fi'
+import { FiCalendar, FiPlus, FiCamera, FiUpload, FiPaperclip } from 'react-icons/fi'
 import {
   fetchEmployeeByUserId,
   getEmployeeLeaveSummary,
@@ -10,6 +10,7 @@ import {
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
+import AttachmentViewer from './AttachmentViewer'
 import type { HRLeaveType } from '../../../types'
 
 const BUCKET_MEDICAL = 'hr-medical-certs'
@@ -86,6 +87,8 @@ export default function EmployeeLeave() {
   const [docFile, setDocFile] = useState<File | null>(null)
   const [docError, setDocError] = useState<string | null>(null)
   const [showBalance, setShowBalance] = useState(false)
+  /** เอกสารแนบใบลาที่กำลังเปิดดูเต็มจอ */
+  const [certViewer, setCertViewer] = useState<{ path: string; name: string } | null>(null)
 
   const [form, setForm] = useState({
     leave_type_id: '',
@@ -528,12 +531,29 @@ export default function EmployeeLeave() {
                     </div>
                     {statusBadge(r.status)}
                   </div>
+                  {r.medical_cert_url && (
+                    <button
+                      type="button"
+                      onClick={() => setCertViewer({ path: r.medical_cert_url!, name: `ใบรับรองแพทย์ — ${r.leave_type_name}` })}
+                      className="mt-2 flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 active:bg-emerald-100"
+                    >
+                      <FiPaperclip className="w-3.5 h-3.5" />
+                      ดูเอกสารแนบ
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
           )}
         </div>
       </section>
+
+      {certViewer && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET_MEDICAL, path: certViewer.path, name: certViewer.name }]}
+          onClose={() => setCertViewer(null)}
+        />
+      )}
     </div>
   )
 }

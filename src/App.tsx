@@ -61,6 +61,7 @@ const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates
 const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
 const HROnboardingPlan = lazy(() => import('./components/hr/OnboardingPlan'))
 const HRSalaryPath = lazy(() => import('./components/hr/SalaryPath'))
+const HRAnnouncements = lazy(() => import('./components/hr/AnnouncementManagement'))
 const HRWarningLetters = lazy(() => import('./components/hr/WarningLetters'))
 const HRTrainingCertificates = lazy(() => import('./components/hr/TrainingCertificates'))
 const HRAssetRegistry = lazy(() => import('./components/hr/AssetRegistryPage'))
@@ -651,6 +652,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
             <Layout><Suspense fallback={<HRLoading />}><HRSalaryPath /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/announcements"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRAnnouncements /></Suspense></Layout>
           </ProtectedRoute>
         }
       />

@@ -354,7 +354,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const hrTabOrder = [
     '/hr', '/hr/tasks', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
-    '/hr/warnings', '/hr/certificates',
+    '/hr/announcements', '/hr/warnings', '/hr/certificates',
     '/hr/interview', '/hr/onboarding', '/hr/assets',
     '/hr/contracts', '/hr/documents', '/hr/salary', '/hr/settings',
   ]
@@ -369,6 +369,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr/documents', label: 'กฏระเบียบ/SOP' },
     { path: '/hr/onboarding', label: 'รับพนักงานใหม่' },
     { path: '/hr/salary', label: 'เส้นทางเงินเดือน' },
+    { path: '/hr/announcements', label: 'ประกาศ' },
     { path: '/hr/warnings', label: 'ใบเตือน' },
     { path: '/hr/certificates', label: 'ใบรับรอง' },
     { path: '/hr/assets', label: 'ทะเบียนทรัพย์สิน' },

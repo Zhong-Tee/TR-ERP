@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { FiBox, FiMapPin, FiCalendar, FiDollarSign } from 'react-icons/fi'
 import { fetchEmployeeByUserId, fetchAssets, getHRFileUrl } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import AttachmentViewer from './AttachmentViewer'
 import type { HRAsset } from '../../../types'
 
 const BUCKET = 'hr-assets'
@@ -29,6 +30,8 @@ export default function EmployeeAssets() {
   const { user } = useAuthContext()
   const [assets, setAssets] = useState<HRAsset[]>([])
   const [loading, setLoading] = useState(true)
+  /** รูปทรัพย์สินที่กำลังเปิดดูเต็มจอ */
+  const [imageViewer, setImageViewer] = useState<{ path: string; name: string } | null>(null)
 
   const load = useCallback(async () => {
     if (!user?.id) return
@@ -77,11 +80,18 @@ export default function EmployeeAssets() {
               <div className="flex gap-3">
                 {/* แสดงเฉพาะรูปหลัก (รูปแรก) เท่านั้น — ไม่แสดงรูปอื่นและไฟล์เอกสาร */}
                 {a.images?.[0] && (
-                  <img
-                    src={getHRFileUrl(BUCKET, a.images[0])}
-                    alt={a.name}
-                    className="h-20 w-20 shrink-0 rounded-lg border border-gray-100 object-cover"
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setImageViewer({ path: a.images[0], name: a.name })}
+                    className="h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-gray-100 active:opacity-70"
+                    aria-label={`ดูรูป ${a.name}`}
+                  >
+                    <img
+                      src={getHRFileUrl(BUCKET, a.images[0])}
+                      alt={a.name}
+                      className="h-full w-full object-cover"
+                    />
+                  </button>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
@@ -114,6 +124,13 @@ export default function EmployeeAssets() {
             </div>
           ))}
         </div>
+      )}
+
+      {imageViewer && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET, path: imageViewer.path, name: imageViewer.name }]}
+          onClose={() => setImageViewer(null)}
+        />
       )}
     </div>
   )

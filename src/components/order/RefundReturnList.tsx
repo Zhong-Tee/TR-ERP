@@ -25,7 +25,7 @@ type RefundRow = Refund & {
 export default function RefundReturnList() {
   const { user } = useAuthContext()
   const [rows, setRows] = useState<RefundRow[]>([])
-  const [subTab, setSubTab] = useState<'pending' | 'approved'>('pending')
+  const [subTab, setSubTab] = useState<'pending' | 'approved' | 'done'>('pending')
   const [loading, setLoading] = useState(false)
   const [thumbs, setThumbs] = useState<Record<string, string[]>>({})
   const [viewer, setViewer] = useState<{ billNo: string; urls: string[]; loading: boolean } | null>(null)
@@ -66,9 +66,12 @@ export default function RefundReturnList() {
   useEffect(() => { void load() }, [load])
 
   // รายการที่ "แนบสลิปแล้ว" = อนุมัติแล้ว; ที่ "ยังไม่แนบสลิป" = รอบัญชีแนบสลิป
-  const approvedRows = rows.filter((r) => (r.refund_slip_paths?.length || 0) > 0)
+  // เมื่อบัญชีกด "ส่งสลิปแล้ว" (refund_slip_sent_at) รายการจะย้ายไปแท็บ "เสร็จสิ้น"
+  const withSlipRows = rows.filter((r) => (r.refund_slip_paths?.length || 0) > 0)
+  const doneRows = withSlipRows.filter((r) => !!r.refund_slip_sent_at)
+  const approvedRows = withSlipRows.filter((r) => !r.refund_slip_sent_at)
   const pendingRows = rows.filter((r) => (r.refund_slip_paths?.length || 0) === 0)
-  const displayRows = subTab === 'approved' ? approvedRows : pendingRows
+  const displayRows = subTab === 'done' ? doneRows : subTab === 'approved' ? approvedRows : pendingRows
 
   // โหลด thumbnail (signed URL) เฉพาะรายการที่มีสลิป
   useEffect(() => {
@@ -110,7 +113,9 @@ export default function RefundReturnList() {
           <p className="text-sm text-gray-500 mt-0.5">
             {subTab === 'pending'
               ? 'รายการที่รอบัญชีอนุมัติ/แนบสลิปโอนคืน'
-              : 'รายการที่บัญชีอนุมัติและแนบสลิปแล้ว — คลิกดูสลิปเพื่อส่งให้ลูกค้า'}
+              : subTab === 'approved'
+                ? 'รายการที่บัญชีอนุมัติและแนบสลิปแล้ว — คลิกดูสลิปเพื่อส่งให้ลูกค้า'
+                : 'รายการที่บัญชียืนยันส่งสลิปให้ลูกค้าแล้ว — ปิดงานโอนคืนเรียบร้อย'}
           </p>
         </div>
         <button
@@ -139,13 +144,20 @@ export default function RefundReturnList() {
         >
           อนุมัติแล้ว{approvedRows.length > 0 && <span className="ml-1 text-emerald-600">({approvedRows.length})</span>}
         </button>
+        <button
+          type="button"
+          onClick={() => setSubTab('done')}
+          className={`px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors ${subTab === 'done' ? 'border-violet-500 text-violet-600' : 'border-transparent text-gray-500 hover:text-violet-600'}`}
+        >
+          เสร็จสิ้น{doneRows.length > 0 && <span className="ml-1 text-violet-600">({doneRows.length})</span>}
+        </button>
       </div>
 
       {loading ? (
         <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" /></div>
       ) : displayRows.length === 0 ? (
         <div className="text-center py-12 text-gray-500 text-base">
-          {subTab === 'pending' ? 'ไม่มีรายการที่รอบัญชีแนบสลิป' : 'ยังไม่มีรายการที่แนบสลิปแล้ว'}
+          {subTab === 'pending' ? 'ไม่มีรายการที่รอบัญชีแนบสลิป' : subTab === 'approved' ? 'ยังไม่มีรายการที่แนบสลิปแล้ว' : 'ยังไม่มีรายการโอนคืนที่เสร็จสิ้น'}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-100">
@@ -180,7 +192,8 @@ export default function RefundReturnList() {
                   <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums whitespace-nowrap">฿{Number(r.amount || 0).toLocaleString()}</td>
                   <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap">{r.approved_at ? formatDateTime(r.approved_at) : '–'}</td>
                   <td className="px-4 py-3">
-                    {subTab === 'approved' ? (
+                    {subTab !== 'pending' ? (
+                      <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => void openViewer(r)}
@@ -196,6 +209,10 @@ export default function RefundReturnList() {
                           <span className="absolute bottom-0 right-0 px-1 text-[10px] font-bold bg-emerald-600 text-white rounded-tl">{r.refund_slip_paths!.length}</span>
                         )}
                       </button>
+                      {subTab === 'done' && (
+                        <span className="inline-flex px-2.5 py-1 rounded-lg text-xs font-medium bg-violet-100 text-violet-700 whitespace-nowrap">โอนคืนเสร็จสิ้น</span>
+                      )}
+                      </div>
                     ) : r.status === 'approved' ? (
                       <span className="inline-flex px-2.5 py-1 rounded-lg text-xs font-medium bg-sky-100 text-sky-700 whitespace-nowrap">อนุมัติแล้ว · รอแนบสลิป</span>
                     ) : (

@@ -820,6 +820,10 @@ export interface Refund {
   refund_recipient_reason?: string | null
   /** path สลิปการโอนเงินคืนลูกค้า (หลายรูป) — บัญชีอัปโหลด, Sales เปิดดู */
   refund_slip_paths?: string[] | null
+  /** เวลาที่บัญชียืนยันว่าส่งสลิปโอนคืนให้ลูกค้าแล้ว (NULL = ยังไม่ส่ง) */
+  refund_slip_sent_at?: string | null
+  /** ผู้กดยืนยันว่าส่งสลิปโอนคืนแล้ว */
+  refund_slip_sent_by?: string | null
 }
 
 // Verified Slip Types
@@ -1311,6 +1315,71 @@ export interface HRDocumentCategory {
   parent_id?: string
   sort_order: number
   created_at: string
+}
+
+// ─── ประกาศ (Announcements) ─────────────────────────────────────────────────
+
+export interface HRAnnouncementCategory {
+  id: string
+  name: string
+  description?: string
+  sort_order: number
+  is_active: boolean
+  created_at: string
+}
+
+/** สถานะประกาศ: รออนุมัติ → เผยแพร่ (อนุมัติครบทุกคน) หรือ ไม่อนุมัติ */
+export type HRAnnouncementStatus = 'pending' | 'published' | 'rejected'
+
+export interface HRAnnouncementApproval {
+  id: string
+  announcement_id: string
+  employee_id: string
+  status: 'pending' | 'approved' | 'rejected'
+  note?: string | null
+  acted_at?: string | null
+  created_at: string
+  employee?: Pick<HREmployee, 'id' | 'first_name' | 'last_name' | 'nickname'>
+}
+
+export interface HRAnnouncement {
+  id: string
+  category_id?: string | null
+  title: string
+  content: string
+  attachment_urls: string[]
+  is_pinned: boolean
+  target_all_departments: boolean
+  status: HRAnnouncementStatus
+  created_by?: string | null
+  created_by_user?: string | null
+  published_at?: string | null
+  reject_reason?: string | null
+  created_at: string
+  updated_at: string
+  category?: Pick<HRAnnouncementCategory, 'name'> | null
+  creator?: Pick<HREmployee, 'first_name' | 'last_name' | 'nickname'> | null
+  approvals?: HRAnnouncementApproval[]
+  departments?: { department_id: string; department?: { name: string } }[]
+}
+
+export interface HRAnnouncementApprover {
+  id: string
+  employee_id: string
+  sort_order: number
+  is_active: boolean
+  created_at: string
+  employee?: Pick<HREmployee, 'id' | 'first_name' | 'last_name' | 'nickname'>
+}
+
+/** สถานะการรับทราบรายคน (RPC get_announcement_ack_status) */
+export interface HRAnnouncementAckStatus {
+  employee_id: string
+  employee_name: string
+  department_name: string | null
+  position_name: string | null
+  acknowledged: boolean
+  acknowledged_at: string | null
 }
 
 export interface HRDocument {

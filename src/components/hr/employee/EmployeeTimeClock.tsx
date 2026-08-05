@@ -620,8 +620,10 @@ export default function EmployeeTimeClock() {
                   {capture.phase === 'camera' && (
                     <>
                       <div className="rounded-xl overflow-hidden bg-black aspect-[3/4]">
-                        {/* วิดีโอสดจากกล้องเท่านั้น — ไม่มีตัวเลือกรูปจากเครื่อง */}
-                        <video ref={videoRef} playsInline muted autoPlay className="w-full h-full object-cover" />
+                        {/* วิดีโอสดจากกล้องเท่านั้น — ไม่มีตัวเลือกรูปจากเครื่อง
+                            -scale-x-100 = พรีวิวแบบกระจกเหมือนแอปกล้องเซลฟี่ (จัดท่าง่าย)
+                            รูปที่บันทึกจริงไม่กลับด้าน — takePhoto() วาดจากวิดีโอต้นฉบับ ไม่ใช่ภาพที่ CSS พลิกไว้ */}
+                        <video ref={videoRef} playsInline muted autoPlay className="w-full h-full object-cover -scale-x-100" />
                       </div>
                       <button
                         type="button"
@@ -638,6 +640,9 @@ export default function EmployeeTimeClock() {
                       <div className="rounded-xl overflow-hidden bg-black aspect-[3/4]">
                         <img src={capture.photoUrl} alt="รูปถ่ายยืนยัน" className="w-full h-full object-cover" />
                       </div>
+                      <p className="text-center text-xs text-gray-500">
+                        ภาพที่บันทึกเป็นภาพจริง (ไม่กลับด้านเหมือนกระจกตอนถ่าย)
+                      </p>
                       <div className="grid grid-cols-2 gap-3">
                         <button
                           type="button"

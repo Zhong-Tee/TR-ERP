@@ -17,6 +17,14 @@ import {
   upsertOnboardingTemplate,
   fetchNotificationSettings,
   upsertNotificationSettings,
+  fetchAnnouncementCategories,
+  upsertAnnouncementCategory,
+  deleteAnnouncementCategory,
+  fetchAnnouncementApprovers,
+  addAnnouncementApprover,
+  updateAnnouncementApprover,
+  deleteAnnouncementApprover,
+  fetchEmployees,
 } from '../../lib/hrApi'
 import type {
   HRDepartment,
@@ -26,9 +34,19 @@ import type {
   HRCareerLevel,
   HROnboardingTemplate,
   HRNotificationSettings,
+  HRAnnouncementCategory,
+  HRAnnouncementApprover,
+  HREmployee,
 } from '../../types'
+import { useAuthContext } from '../../contexts/AuthContext'
 
-const TABS = ['แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram'] as const
+const TABS = [
+  'แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram',
+  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ',
+] as const
+
+/** แท็บผู้อนุมัติประกาศ — ตั้งค่าได้เฉพาะ superadmin */
+const APPROVER_TAB_INDEX = 7
 
 type LevelForm = {
   id?: string
@@ -98,6 +116,8 @@ function parseRequirementsInput(raw: string): { item: string; description: strin
 }
 
 export default function HRSettings() {
+  const { user } = useAuthContext()
+  const isSuperadmin = user?.role === 'superadmin'
   const [activeTab, setActiveTab] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -114,6 +134,16 @@ export default function HRSettings() {
   const [salaryPositionFilter, setSalaryPositionFilter] = useState<string>('')
   const [templates, setTemplates] = useState<HROnboardingTemplate[]>([])
   const [notifSettings, setNotifSettings] = useState<HRNotificationSettings | null>(null)
+  const [annCategories, setAnnCategories] = useState<HRAnnouncementCategory[]>([])
+  const [annCatForm, setAnnCatForm] = useState<{ id?: string; name: string; description: string; sort_order: string; is_active: boolean }>({
+    name: '',
+    description: '',
+    sort_order: '',
+    is_active: true,
+  })
+  const [approvers, setApprovers] = useState<HRAnnouncementApprover[]>([])
+  const [employees, setEmployees] = useState<HREmployee[]>([])
+  const [newApproverId, setNewApproverId] = useState('')
 
   const [deptForm, setDeptForm] = useState<{ id?: string; name: string; description: string; telegram_group_id: string }>({
     name: '',
@@ -173,13 +203,16 @@ export default function HRSettings() {
     setLoading(true)
     setError(null)
     try {
-      const [depts, pos, lt, tr, tmpl, notif] = await Promise.all([
+      const [depts, pos, lt, tr, tmpl, notif, annCats, apprs, emps] = await Promise.all([
         fetchDepartments(),
         fetchPositions(),
         fetchLeaveTypes(),
         fetchCareerTracks(),
         fetchOnboardingTemplates(),
         fetchNotificationSettings().then((r) => r ?? null),
+        fetchAnnouncementCategories(),
+        fetchAnnouncementApprovers(),
+        fetchEmployees(),
       ])
       setDepartments(depts)
       setPositions(pos)
@@ -187,6 +220,9 @@ export default function HRSettings() {
       setTracks(tr)
       setTemplates(tmpl)
       setNotifSettings(notif)
+      setAnnCategories(annCats)
+      setApprovers(apprs)
+      setEmployees(emps)
       setNotifForm({
         id: notif?.id,
         bot_token: notif?.bot_token ?? '',
@@ -241,6 +277,88 @@ export default function HRSettings() {
       is_active: true,
       phases: '[]',
     })
+
+  const resetAnnCatForm = () => setAnnCatForm({ name: '', description: '', sort_order: '', is_active: true })
+
+  const saveAnnCategory = async () => {
+    if (!annCatForm.name.trim()) return
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      await upsertAnnouncementCategory({
+        id: annCatForm.id,
+        name: annCatForm.name.trim(),
+        description: annCatForm.description.trim() || undefined,
+        sort_order: Number(annCatForm.sort_order) || annCategories.length + 1,
+        is_active: annCatForm.is_active,
+      })
+      setMessage('บันทึกประเภทประกาศเรียบร้อย')
+      resetAnnCatForm()
+      setAnnCategories(await fetchAnnouncementCategories())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeAnnCategory = async (id: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteAnnouncementCategory(id)
+      setAnnCategories(await fetchAnnouncementCategories())
+      setMessage('ลบประเภทประกาศแล้ว')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ (อาจมีประกาศที่ใช้ประเภทนี้อยู่)')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addApprover = async () => {
+    if (!newApproverId) return
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      await addAnnouncementApprover(newApproverId, approvers.length + 1)
+      setNewApproverId('')
+      setApprovers(await fetchAnnouncementApprovers())
+      setMessage('เพิ่มผู้อนุมัติแล้ว — มีผลกับประกาศที่สร้างใหม่')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'เพิ่มผู้อนุมัติไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const toggleApprover = async (approver: HRAnnouncementApprover) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await updateAnnouncementApprover(approver.id, { is_active: !approver.is_active })
+      setApprovers(await fetchAnnouncementApprovers())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'อัปเดตไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeApprover = async (id: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteAnnouncementApprover(id)
+      setApprovers(await fetchAnnouncementApprovers())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const saveDepartment = async () => {
     if (!deptForm.name.trim()) return
@@ -525,7 +643,9 @@ export default function HRSettings() {
         <div className="rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 text-sm">{message}</div>
       )}
       <div className="flex gap-2 border-b border-surface-200 flex-wrap">
-        {TABS.map((label, i) => (
+        {TABS.map((label, i) => ({ label, i }))
+          .filter(({ i }) => i !== APPROVER_TAB_INDEX || isSuperadmin)
+          .map(({ label, i }) => (
           <button
             key={i}
             type="button"
@@ -1175,6 +1295,182 @@ export default function HRSettings() {
           </label>
           <div className="flex justify-end">
             <button type="button" onClick={saveNotificationSettings} disabled={saving} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">{saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า'}</button>
+          </div>
+        </div>
+      )}
+
+      {/* ประเภทประกาศ */}
+      {activeTab === 6 && (
+        <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+          <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
+            <table className="w-full text-sm">
+              <thead className="bg-surface-100 border-b border-surface-200">
+                <tr>
+                  <th className="text-left py-2 px-3">ลำดับ</th>
+                  <th className="text-left py-2 px-3">ชื่อประเภท</th>
+                  <th className="text-left py-2 px-3">คำอธิบาย</th>
+                  <th className="text-center py-2 px-3">ใช้งาน</th>
+                  <th className="text-right py-2 px-3">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {annCategories.map((c) => (
+                  <tr key={c.id} className="border-b border-surface-100">
+                    <td className="py-2 px-3 text-gray-500">{c.sort_order}</td>
+                    <td className="py-2 px-3 font-medium">{c.name}</td>
+                    <td className="py-2 px-3 text-gray-600">{c.description ?? '-'}</td>
+                    <td className="py-2 px-3 text-center">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${c.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'}`}>
+                        {c.is_active ? 'ใช้งาน' : 'ปิด'}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-right space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => setAnnCatForm({
+                          id: c.id,
+                          name: c.name,
+                          description: c.description ?? '',
+                          sort_order: String(c.sort_order),
+                          is_active: c.is_active,
+                        })}
+                        className="px-2 py-1 rounded-lg bg-surface-100 hover:bg-surface-200 text-xs"
+                      >
+                        แก้ไข
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeAnnCategory(c.id)}
+                        disabled={saving}
+                        className="px-2 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs"
+                      >
+                        ลบ
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {annCategories.length === 0 && (
+                  <tr><td colSpan={5} className="py-4 text-center text-gray-400">ยังไม่มีประเภทประกาศ</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+            <h3 className="font-medium text-gray-900">{annCatForm.id ? 'แก้ไขประเภทประกาศ' : 'เพิ่มประเภทประกาศ'}</h3>
+            <label className="block text-sm">
+              <span className="text-gray-600">ชื่อประเภท *</span>
+              <input
+                type="text"
+                value={annCatForm.name}
+                onChange={(e) => setAnnCatForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="เช่น นโยบายบริษัท"
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="text-gray-600">คำอธิบาย</span>
+              <input
+                type="text"
+                value={annCatForm.description}
+                onChange={(e) => setAnnCatForm((p) => ({ ...p, description: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="text-gray-600">ลำดับการแสดง</span>
+              <input
+                type="number"
+                min={0}
+                value={annCatForm.sort_order}
+                onChange={(e) => setAnnCatForm((p) => ({ ...p, sort_order: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={annCatForm.is_active}
+                onChange={(e) => setAnnCatForm((p) => ({ ...p, is_active: e.target.checked }))}
+                className="rounded"
+              />
+              <span className="text-gray-600">เปิดใช้งาน (เลือกได้ตอนสร้างประกาศ)</span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={resetAnnCatForm} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ล้างค่า</button>
+              <button type="button" onClick={saveAnnCategory} disabled={saving || !annCatForm.name.trim()} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ผู้อนุมัติประกาศ (เฉพาะ superadmin) */}
+      {activeTab === APPROVER_TAB_INDEX && isSuperadmin && (
+        <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+          <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
+            <p className="text-xs text-gray-500 mb-3">
+              ประกาศใหม่ทุกใบต้องได้รับอนุมัติจากผู้อนุมัติที่เปิดใช้งานทุกคน จึงจะเผยแพร่ให้พนักงานเห็น
+              (การเพิ่ม/ลบมีผลกับประกาศที่สร้างหลังจากนี้)
+            </p>
+            <table className="w-full text-sm">
+              <thead className="bg-surface-100 border-b border-surface-200">
+                <tr>
+                  <th className="text-left py-2 px-3">ลำดับ</th>
+                  <th className="text-left py-2 px-3">ผู้อนุมัติ</th>
+                  <th className="text-center py-2 px-3">สถานะ</th>
+                  <th className="text-right py-2 px-3">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {approvers.map((a, idx) => (
+                  <tr key={a.id} className="border-b border-surface-100">
+                    <td className="py-2 px-3 text-gray-500">{idx + 1}</td>
+                    <td className="py-2 px-3 font-medium">
+                      {[a.employee?.first_name, a.employee?.last_name].filter(Boolean).join(' ')}
+                      {a.employee?.nickname ? ` (${a.employee.nickname})` : ''}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${a.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'}`}>
+                        {a.is_active ? 'ใช้งาน' : 'พัก'}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-right space-x-2">
+                      <button type="button" onClick={() => toggleApprover(a)} disabled={saving} className="px-2 py-1 rounded-lg bg-surface-100 hover:bg-surface-200 text-xs">
+                        {a.is_active ? 'พักการใช้งาน' : 'เปิดใช้งาน'}
+                      </button>
+                      <button type="button" onClick={() => removeApprover(a.id)} disabled={saving} className="px-2 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs">ลบ</button>
+                    </td>
+                  </tr>
+                ))}
+                {approvers.length === 0 && (
+                  <tr><td colSpan={4} className="py-4 text-center text-gray-400">ยังไม่ได้กำหนดผู้อนุมัติ — ประกาศจะเผยแพร่ทันทีที่สร้าง</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+            <h3 className="font-medium text-gray-900">เพิ่มผู้อนุมัติ</h3>
+            <label className="block text-sm">
+              <span className="text-gray-600">เลือกพนักงาน</span>
+              <select
+                value={newApproverId}
+                onChange={(e) => setNewApproverId(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              >
+                <option value="">-- เลือกพนักงาน --</option>
+                {employees
+                  .filter((e) => ['active', 'probation'].includes(e.employment_status ?? '') && !approvers.some((a) => a.employee_id === e.id))
+                  .map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.first_name} {e.last_name}{e.nickname ? ` (${e.nickname})` : ''}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div className="flex justify-end">
+              <button type="button" onClick={addApprover} disabled={saving || !newApproverId} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
+                {saving ? 'กำลังบันทึก...' : 'เพิ่มผู้อนุมัติ'}
+              </button>
+            </div>
           </div>
         </div>
       )}

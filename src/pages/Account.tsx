@@ -258,6 +258,12 @@ export default function Account() {
   }>({ open: false, refund: null, action: null, submitting: false, rejectReason: '' })
   /** Modal แจ้งผลหลังอนุมัติ/ปฏิเสธโอนคืน (แทน alert) */
   const [refundResultModal, setRefundResultModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  /** Popup ยืนยัน "ส่งสลิปแล้ว" — ปิดงานโอนคืน (ฝั่งออเดอร์จะย้ายไปแท็บเสร็จสิ้น) */
+  const [slipSentModal, setSlipSentModal] = useState<{
+    open: boolean
+    refund: Refund | null
+    submitting: boolean
+  }>({ open: false, refund: null, submitting: false })
   /** Modal ยืนยัน ขอใบกำกับภาษี (แทน confirm) */
   const [billingConfirmModal, setBillingConfirmModal] = useState<{
     open: boolean
@@ -718,6 +724,32 @@ export default function Account() {
     } catch (error: any) {
       console.error('Error updating refund:', error)
       setRefundActionModal((prev) => ({ ...prev, submitting: false }))
+      setRefundResultModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
+    }
+  }
+
+  function closeSlipSentModal() {
+    if (!slipSentModal.submitting) setSlipSentModal({ open: false, refund: null, submitting: false })
+  }
+
+  /** ยืนยันว่าส่งสลิปโอนคืนให้ลูกค้าแล้ว — ไม่แตะ status (งบทดลองยังนับ approved เหมือนเดิม) */
+  async function submitSlipSent() {
+    const refund = slipSentModal.refund
+    if (!user || !refund) return
+    setSlipSentModal((prev) => ({ ...prev, submitting: true }))
+    try {
+      const { error } = await supabase
+        .from('ac_refunds')
+        .update({ refund_slip_sent_at: new Date().toISOString(), refund_slip_sent_by: user.id })
+        .eq('id', refund.id)
+      if (error) throw error
+      setSlipSentModal({ open: false, refund: null, submitting: false })
+      setRefundResultModal({ open: true, message: 'บันทึกสถานะ "โอนคืนเสร็จสิ้น" เรียบร้อย' })
+      loadHistory()
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error: any) {
+      console.error('Error marking refund slip as sent:', error)
+      setSlipSentModal((prev) => ({ ...prev, submitting: false }))
       setRefundResultModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
     }
   }
@@ -1464,8 +1496,14 @@ export default function Account() {
                           <td className="px-4 py-3 text-gray-600 max-w-[180px] text-sm whitespace-pre-wrap truncate" title={(refund as any).or_orders?.customer_address}>{(refund as any).or_orders?.customer_address || '–'}</td>
                           <td className="px-4 py-3 font-semibold text-emerald-600 tabular-nums">฿{refund.amount.toLocaleString()}</td>
                           <td className="px-4 py-3">
-                            <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${refund.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                              {refund.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธแล้ว'}
+                            <span className={`inline-flex px-2.5 py-1 rounded-lg text-sm font-medium ${
+                              refund.status !== 'approved'
+                                ? 'bg-red-100 text-red-700'
+                                : refund.refund_slip_sent_at
+                                  ? 'bg-violet-100 text-violet-700'
+                                  : 'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {refund.status !== 'approved' ? 'ปฏิเสธแล้ว' : refund.refund_slip_sent_at ? 'โอนคืนเสร็จสิ้น' : 'อนุมัติแล้ว'}
                             </span>
                             {refund.status === 'rejected' && refund.rejected_reason?.trim() && (
                               <div className="mt-1 text-xs text-red-600 max-w-[160px] whitespace-normal break-words" title={refund.rejected_reason}>
@@ -1482,14 +1520,26 @@ export default function Account() {
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex flex-col items-start gap-1.5">
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); openSlipPopup(refund.order_id, (refund as any).or_orders?.bill_no || '–') }}
-                                className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
-                              >
-                                <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                ดูสลิปโอน
-                              </button>
+                              {/* ยืนยันส่งสลิปให้ลูกค้าแล้ว — ปิดงานโอนคืน (ฝั่งออเดอร์ย้ายไปแท็บเสร็จสิ้น) */}
+                              {refund.status === 'approved' && (
+                                refund.refund_slip_sent_at ? (
+                                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg text-sm font-medium">
+                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                                    ส่งสลิปแล้ว
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); setSlipSentModal({ open: true, refund, submitting: false }) }}
+                                    disabled={(refund.refund_slip_paths?.length || 0) === 0}
+                                    title={(refund.refund_slip_paths?.length || 0) === 0 ? 'ต้องอัปโหลดสลิปโอนคืนก่อน' : 'ยืนยันว่าส่งสลิปให้ลูกค้าแล้ว'}
+                                    className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                  >
+                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                                    ส่งสลิปแล้ว
+                                  </button>
+                                )
+                              )}
                               {/* สลิปโอนคืน — เฉพาะรายการที่อนุมัติแล้ว */}
                               {refund.status === 'approved' && (
                                 (refund.refund_slip_paths?.length || 0) > 0 ? (
@@ -2404,6 +2454,46 @@ export default function Account() {
                   <>
                     <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
                     กำลังดำเนินการ...
+                  </>
+                ) : (
+                  'ยืนยัน'
+                )}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Popup ยืนยัน "ส่งสลิปแล้ว" */}
+      {slipSentModal.open && slipSentModal.refund && (
+        <Modal open onClose={closeSlipSentModal} contentClassName="max-w-md w-full">
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันส่งสลิปโอนคืนแล้ว</h3>
+            <p className="text-gray-700 mb-2">
+              บิล {(slipSentModal.refund as any).or_orders?.bill_no || '–'} — ยอดคืน ฿{slipSentModal.refund.amount.toLocaleString()}
+            </p>
+            <p className="text-sm text-gray-500 mb-6">
+              เมื่อยืนยันแล้ว สถานะจะเปลี่ยนเป็น "โอนคืนเสร็จสิ้น" และฝั่งเมนูออเดอร์จะย้ายรายการนี้ไปแท็บ "เสร็จสิ้น" อัตโนมัติ
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={closeSlipSentModal}
+                disabled={slipSentModal.submitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={submitSlipSent}
+                disabled={slipSentModal.submitting}
+                className="px-4 py-2 rounded-lg bg-violet-500 hover:bg-violet-600 text-white text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {slipSentModal.submitting ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                    กำลังบันทึก...
                   </>
                 ) : (
                   'ยืนยัน'

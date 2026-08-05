@@ -12,6 +12,7 @@ import type {
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule, HRWFHRequest,
   HREmployeeWorkCalendar, HRCompanyHoliday,
   HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
+  HRAnnouncement, HRAnnouncementCategory, HRAnnouncementApprover, HRAnnouncementAckStatus,
 } from '../types'
 
 export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*)`
@@ -376,6 +377,30 @@ export async function getEmployeeLeaveSummary(employeeId: string, year: number) 
   }
 }
 
+/** รายการลาสำหรับปฏิทิน (ทั้งบริษัท) — RPC จำกัดสิทธิ์ superadmin/admin/account */
+export type LeaveCalendarEntry = {
+  id: string
+  employee_id: string
+  employee_name: string
+  position_name: string | null
+  department_name: string | null
+  start_date: string
+  end_date: string
+  leave_mode: 'full_day' | 'hourly'
+  start_time: string | null
+  end_time: string | null
+  status: 'approved' | 'pending'
+}
+
+export async function fetchLeaveCalendar(startDate: string, endDate: string) {
+  const { data, error } = await supabase.rpc('get_leave_calendar', {
+    p_start: startDate,
+    p_end: endDate,
+  })
+  if (error) pgError(error)
+  return (data ?? []) as LeaveCalendarEntry[]
+}
+
 // ─── Candidates ─────────────────────────────────────────────────────────────
 
 export async function fetchCandidates(status?: string) {
@@ -592,6 +617,164 @@ export async function fetchDocumentReads(employeeId: string) {
     .select('document_id').eq('employee_id', employeeId)
   if (error) pgError(error)
   return (data ?? []) as { document_id: string }[]
+}
+
+// ─── Announcements (ประกาศ) ─────────────────────────────────────────────────
+
+/** bucket ไฟล์แนบประกาศ (private — เปิดผ่าน signed URL) */
+export const ANNOUNCEMENT_BUCKET = 'hr-announcements'
+
+const ANNOUNCEMENT_SELECT =
+  '*, category:hr_announcement_categories(name), creator:hr_employees!created_by(first_name, last_name, nickname), ' +
+  'approvals:hr_announcement_approvals(*, employee:hr_employees!employee_id(id, first_name, last_name, nickname)), ' +
+  'departments:hr_announcement_departments(department_id, department:hr_departments(name))'
+
+export async function fetchAnnouncementCategories(activeOnly = false) {
+  let q = supabase.from('hr_announcement_categories').select('*').order('sort_order').order('name')
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRAnnouncementCategory[]
+}
+
+export async function upsertAnnouncementCategory(c: Partial<HRAnnouncementCategory>) {
+  const payload = { ...c }
+  delete payload.id
+  const q = c.id
+    ? supabase.from('hr_announcement_categories').update(payload).eq('id', c.id)
+    : supabase.from('hr_announcement_categories').insert(payload)
+  const { data, error } = await q.select().single()
+  if (error) pgError(error)
+  return data as HRAnnouncementCategory
+}
+
+export async function deleteAnnouncementCategory(id: string) {
+  const { error } = await supabase.from('hr_announcement_categories').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+/** ประกาศที่มองเห็นได้ตามสิทธิ์ (RLS คัดให้แล้ว) */
+export async function fetchAnnouncements(filters?: { status?: string }) {
+  let q = supabase.from('hr_announcements').select(ANNOUNCEMENT_SELECT)
+    .order('is_pinned', { ascending: false })
+    .order('created_at', { ascending: false })
+  if (filters?.status) q = q.eq('status', filters.status)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as unknown as HRAnnouncement[]
+}
+
+/**
+ * สร้าง/แก้ไขประกาศ พร้อมแผนกเป้าหมาย
+ * แก้เนื้อหาประกาศที่รออนุมัติ → trigger ฝั่ง DB จะรีเซ็ตการอนุมัติให้กดใหม่ทั้งหมด
+ */
+export async function upsertAnnouncement(
+  a: Partial<HRAnnouncement>,
+  departmentIds?: string[]
+) {
+  const payload = { ...a } as Record<string, unknown>
+  delete payload.id
+  delete payload.category
+  delete payload.creator
+  delete payload.approvals
+  delete payload.departments
+  const q = a.id
+    ? supabase.from('hr_announcements').update(payload).eq('id', a.id)
+    : supabase.from('hr_announcements').insert(payload)
+  const { data, error } = await q.select().single()
+  if (error) pgError(error)
+  const saved = data as HRAnnouncement
+
+  if (departmentIds) {
+    const { error: delErr } = await supabase.from('hr_announcement_departments')
+      .delete().eq('announcement_id', saved.id)
+    if (delErr) pgError(delErr)
+    if (!saved.target_all_departments && departmentIds.length) {
+      const { error: insErr } = await supabase.from('hr_announcement_departments')
+        .insert(departmentIds.map((department_id) => ({ announcement_id: saved.id, department_id })))
+      if (insErr) pgError(insErr)
+    }
+  }
+  return saved
+}
+
+export async function deleteAnnouncement(id: string) {
+  const { error } = await supabase.from('hr_announcements').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+// ─── ผู้อนุมัติประกาศ (ตั้งค่าโดย superadmin) ────────────────────────────────
+
+export async function fetchAnnouncementApprovers() {
+  const { data, error } = await supabase.from('hr_announcement_approvers')
+    .select('*, employee:hr_employees!employee_id(id, first_name, last_name, nickname)')
+    .order('sort_order')
+  if (error) pgError(error)
+  return (data ?? []) as unknown as HRAnnouncementApprover[]
+}
+
+export async function addAnnouncementApprover(employeeId: string, sortOrder: number) {
+  const { data, error } = await supabase.from('hr_announcement_approvers')
+    .insert({ employee_id: employeeId, sort_order: sortOrder }).select().single()
+  if (error) pgError(error)
+  return data as HRAnnouncementApprover
+}
+
+export async function updateAnnouncementApprover(id: string, updates: Partial<HRAnnouncementApprover>) {
+  const { error } = await supabase.from('hr_announcement_approvers').update(updates).eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function deleteAnnouncementApprover(id: string) {
+  const { error } = await supabase.from('hr_announcement_approvers').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+/** ผู้อนุมัติกดอนุมัติ/ไม่อนุมัติรายการของตัวเอง (DB จะเผยแพร่ให้เองเมื่อครบทุกคน) */
+export async function setAnnouncementApproval(approvalId: string, status: 'approved' | 'rejected', note?: string) {
+  const { error } = await supabase.from('hr_announcement_approvals')
+    .update({ status, note: note ?? null, acted_at: new Date().toISOString() })
+    .eq('id', approvalId)
+  if (error) pgError(error)
+}
+
+// ─── การรับทราบประกาศ ───────────────────────────────────────────────────────
+
+export async function acknowledgeAnnouncement(announcementId: string, employeeId: string) {
+  const { error } = await supabase.from('hr_announcement_reads')
+    .upsert(
+      { announcement_id: announcementId, employee_id: employeeId, acknowledged_at: new Date().toISOString() },
+      { onConflict: 'announcement_id,employee_id' }
+    )
+  if (error) pgError(error)
+}
+
+export async function fetchMyAnnouncementReads(employeeId: string) {
+  const { data, error } = await supabase.from('hr_announcement_reads')
+    .select('announcement_id').eq('employee_id', employeeId)
+  if (error) pgError(error)
+  return (data ?? []).map((r) => (r as { announcement_id: string }).announcement_id)
+}
+
+/** ใครรับทราบแล้ว / ใครยังไม่รับทราบ (เฉพาะผู้มีสิทธิ์จัดการประกาศ) */
+export async function fetchAnnouncementAckStatus(announcementId: string) {
+  const { data, error } = await supabase.rpc('get_announcement_ack_status', {
+    p_announcement_id: announcementId,
+  })
+  if (error) pgError(error)
+  return (data ?? []) as HRAnnouncementAckStatus[]
+}
+
+/** จำนวนประกาศที่ยังไม่กดรับทราบ — ใช้แสดง badge บนเมนูเอกสาร */
+export async function fetchMyUnreadAnnouncementCount() {
+  const { data, error } = await supabase.rpc('get_my_unread_announcement_count')
+  if (error) pgError(error)
+  return Number(data ?? 0)
+}
+
+/** signed URL ของไฟล์แนบประกาศ */
+export async function getAnnouncementFileUrl(path: string, expiresInSec = 3600) {
+  return getHRSignedUrl(ANNOUNCEMENT_BUCKET, path, expiresInSec)
 }
 
 // ─── Onboarding Templates ───────────────────────────────────────────────────
@@ -903,12 +1086,17 @@ export async function removeHRFiles(bucket: string, paths: string[]) {
   if (error) pgError(error)
 }
 
-/** signed URL ของเอกสารแนบใบลา (bucket hr-medical-certs เป็น private) */
-export async function getMedicalCertUrl(path: string, expiresInSec = 3600) {
+/** signed URL ของไฟล์ใน bucket private — ถ้าเป็น URL เต็มอยู่แล้วคืนค่าเดิม */
+export async function getHRSignedUrl(bucket: string, path: string, expiresInSec = 3600) {
   if (path.startsWith('http')) return path
-  const { data, error } = await supabase.storage.from('hr-medical-certs').createSignedUrl(path, expiresInSec)
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, expiresInSec)
   if (error) pgError(error)
   return data.signedUrl
+}
+
+/** signed URL ของเอกสารแนบใบลา (bucket hr-medical-certs เป็น private) */
+export async function getMedicalCertUrl(path: string, expiresInSec = 3600) {
+  return getHRSignedUrl('hr-medical-certs', path, expiresInSec)
 }
 
 // =============================================================================

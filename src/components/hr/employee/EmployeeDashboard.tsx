@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX, FiChevronRight } from 'react-icons/fi'
+import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX, FiChevronRight, FiPaperclip } from 'react-icons/fi'
 import type { IconType } from 'react-icons'
 import {
   fetchEmployeeByUserId,
@@ -19,7 +19,10 @@ import {
 import { supabase } from '../../../lib/supabase'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import Modal from '../../ui/Modal'
+import AttachmentViewer from './AttachmentViewer'
 import type { HREmployee, HRNotification, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../../types'
+
+const BUCKET_MEDICAL = 'hr-medical-certs'
 
 /** รายการรออนุมัติที่จับคู่กับแจ้งเตือนได้ (ลา หรือ OT) */
 type ApprovalTarget =
@@ -138,6 +141,31 @@ function requestDetailRows(target: ApprovalTarget): { label: string; value: stri
   }
   if (target.req.reject_reason) rows.push({ label: 'เหตุผลที่ไม่อนุมัติ', value: target.req.reject_reason })
   return rows
+}
+
+/** ปุ่มเปิดเอกสารแนบของใบลา (ใบรับรองแพทย์) — ไม่มีไฟล์แนบ = ไม่แสดงอะไร */
+function LeaveAttachment({ target }: { target: ApprovalTarget }) {
+  const [open, setOpen] = useState(false)
+  const certPath = target.kind === 'leave' ? target.req.medical_cert_url : undefined
+  if (!certPath) return null
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 py-2.5 text-sm font-medium text-emerald-700 active:bg-emerald-100"
+      >
+        <FiPaperclip className="h-4 w-4" />
+        ดูเอกสารแนบ
+      </button>
+      {open && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET_MEDICAL, path: certPath, name: 'เอกสารแนบใบลา' }]}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  )
 }
 
 function toLocalDateInput(date: Date): string {
@@ -677,14 +705,17 @@ export default function EmployeeDashboard() {
               )}
 
               {target ? (
-                <dl className="mt-3 space-y-1.5 text-sm">
-                  {requestDetailRows(target).map((row) => (
-                    <div key={row.label} className="flex gap-2">
-                      <dt className="w-28 shrink-0 text-gray-500">{row.label}</dt>
-                      <dd className="min-w-0 flex-1 text-gray-800 whitespace-pre-wrap">{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
+                <>
+                  <dl className="mt-3 space-y-1.5 text-sm">
+                    {requestDetailRows(target).map((row) => (
+                      <div key={row.label} className="flex gap-2">
+                        <dt className="w-28 shrink-0 text-gray-500">{row.label}</dt>
+                        <dd className="min-w-0 flex-1 text-gray-800 whitespace-pre-wrap">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <LeaveAttachment target={target} />
+                </>
               ) : (
                 <p className="mt-3 text-xs text-gray-400">ไม่พบข้อมูลคำขอที่เชื่อมกับแจ้งเตือนนี้</p>
               )}
@@ -737,6 +768,8 @@ export default function EmployeeDashboard() {
                 </>
               )}
             </div>
+
+            <LeaveAttachment target={approvalTarget} />
 
             {rejectMode ? (
               <div className="mt-4">

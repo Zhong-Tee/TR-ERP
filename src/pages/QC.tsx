@@ -59,6 +59,18 @@ const MENUS: { id: QCView; label: string }[] = [
   { id: 'settings', label: 'Settings' },
 ]
 
+/**
+ * กรุ๊ปหมวดหมู่สินค้า — ใช้เฉพาะเมนู QC Operation เท่านั้น
+ * UV-CTTA ถึง UV-CTTL รวมเป็นหมวดเดียวชื่อ 'UV-CTTA-L'
+ * SUB-KTA ถึง SUB-KTC รวมเป็นหมวดเดียวชื่อ 'SUB-KTA-C' (คนละกรุ๊ปกับ UV-CTTA-L)
+ */
+function qcCategoryGroup(raw: string | null | undefined): string {
+  const c = (raw || '').trim()
+  if (/^UV-CTT[A-L]$/i.test(c)) return 'UV-CTTA-L'
+  if (/^SUB-KT[A-C]$/i.test(c)) return 'SUB-KTA-C'
+  return c
+}
+
 function formatDate(d: string | Date | null): string {
   if (!d) return '-'
   const date = new Date(d)
@@ -249,7 +261,7 @@ export default function QC() {
   const qcCategoryOptions = useMemo(() => {
     const set = new Set<string>()
     qcData.items.forEach((i) => {
-      const c = i.product_category?.trim() || ''
+      const c = qcCategoryGroup(i.product_category)
       if (c) set.add(c)
     })
     return Array.from(set).sort()
@@ -258,7 +270,7 @@ export default function QC() {
   const itemsToShow = useMemo(() => {
     let list = qcData.items
     if (qcCategoryFilter) {
-      list = list.filter((i) => (i.product_category?.trim() || '') === qcCategoryFilter)
+      list = list.filter((i) => qcCategoryGroup(i.product_category) === qcCategoryFilter)
     }
     if (showNotQcOnly) {
       list = list.filter((i) => i.status === 'pending')
@@ -284,7 +296,7 @@ export default function QC() {
     const map = new Map<string, number>()
     for (const i of qcData.items) {
       if (i.status !== 'pending') continue
-      const dept = i.product_category?.trim() || 'ไม่ระบุหมวด'
+      const dept = qcCategoryGroup(i.product_category) || 'ไม่ระบุหมวด'
       const q = i.qty || 1
       map.set(dept, (map.get(dept) || 0) + q)
     }

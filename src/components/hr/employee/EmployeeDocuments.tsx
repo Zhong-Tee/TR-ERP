@@ -1,17 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiFileText, FiExternalLink, FiCheck } from 'react-icons/fi'
+import { FiFileText, FiExternalLink, FiCheck, FiBell } from 'react-icons/fi'
+import EmployeeAnnouncements from './EmployeeAnnouncements'
 import {
   fetchEmployeeByUserId,
   fetchDocumentCategories,
   fetchDocuments,
   fetchDocumentReads,
   markDocumentRead,
-  getHRFileUrl,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import AttachmentViewer from './AttachmentViewer'
 import type { HRDocumentCategory, HRDocument } from '../../../types'
 
-const BUCKET = 'hr-docs'
+/** ต้องตรงกับ bucket ที่ฝั่งแอดมิน (CompanyDocuments) อัปโหลดไฟล์เข้าไป */
+const BUCKET = 'hr-company-docs'
 
 type DocWithCategory = HRDocument & { category?: { name: string } }
 
@@ -23,7 +25,11 @@ export default function EmployeeDocuments() {
   const [documents, setDocuments] = useState<DocWithCategory[]>([])
   const [readIds, setReadIds] = useState<Set<string>>(new Set())
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
+  /** แถบย่อยแรกสุด = ประกาศ (แยกจากหมวดหมู่เอกสาร) */
+  const [showAnnouncements, setShowAnnouncements] = useState(true)
   const [viewingDoc, setViewingDoc] = useState<DocWithCategory | null>(null)
+  /** เอกสารที่กำลังเปิดไฟล์แนบเต็มจอ — แยกจาก viewingDoc เพื่อให้แถบยืนยันการอ่านยังอยู่หลังปิดไฟล์ */
+  const [fileDoc, setFileDoc] = useState<DocWithCategory | null>(null)
   const [markingId, setMarkingId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -56,9 +62,12 @@ export default function EmployeeDocuments() {
   }, [load])
 
   const handleView = (doc: DocWithCategory) => {
-    setViewingDoc(doc)
-    if (doc.file_url) window.open(getHRFileUrl(BUCKET, doc.file_url), '_blank')
-    else if (!doc.content) setViewingDoc(null)
+    if (doc.file_url) {
+      setViewingDoc(doc)
+      setFileDoc(doc)
+    } else if (doc.content) {
+      setViewingDoc(doc)
+    }
   }
 
   const handleMarkRead = async (documentId: string) => {
@@ -68,6 +77,7 @@ export default function EmployeeDocuments() {
       await markDocumentRead(documentId, employee.id)
       setReadIds((prev) => new Set([...prev, documentId]))
       setViewingDoc(null)
+      setFileDoc(null)
     } catch (e) {
       console.error(e)
     } finally {
@@ -98,8 +108,16 @@ export default function EmployeeDocuments() {
         <div className="flex gap-2 overflow-x-auto pb-2 -mx-1">
           <button
             type="button"
-            onClick={() => setSelectedCategoryId(null)}
-            className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-medium ${selectedCategoryId === null ? 'bg-emerald-600 text-white' : 'bg-white border border-gray-200 text-gray-700'}`}
+            onClick={() => setShowAnnouncements(true)}
+            className={`shrink-0 flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium ${showAnnouncements ? 'bg-emerald-600 text-white' : 'bg-white border border-gray-200 text-gray-700'}`}
+          >
+            <FiBell className="w-4 h-4" />
+            ประกาศ
+          </button>
+          <button
+            type="button"
+            onClick={() => { setShowAnnouncements(false); setSelectedCategoryId(null) }}
+            className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-medium ${!showAnnouncements && selectedCategoryId === null ? 'bg-emerald-600 text-white' : 'bg-white border border-gray-200 text-gray-700'}`}
           >
             ทั้งหมด
           </button>
@@ -107,14 +125,23 @@ export default function EmployeeDocuments() {
             <button
               key={c.id}
               type="button"
-              onClick={() => setSelectedCategoryId(c.id)}
-              className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-medium ${selectedCategoryId === c.id ? 'bg-emerald-600 text-white' : 'bg-white border border-gray-200 text-gray-700'}`}
+              onClick={() => { setShowAnnouncements(false); setSelectedCategoryId(c.id) }}
+              className={`shrink-0 rounded-xl px-4 py-2.5 text-sm font-medium ${!showAnnouncements && selectedCategoryId === c.id ? 'bg-emerald-600 text-white' : 'bg-white border border-gray-200 text-gray-700'}`}
             >
               {c.name}
             </button>
           ))}
         </div>
       </section>
+
+      {showAnnouncements && (
+        <EmployeeAnnouncements
+          onUnreadChange={() => window.dispatchEvent(new Event('hr-announcements-changed'))}
+        />
+      )}
+
+      {!showAnnouncements && (
+      <>{/* รายการเอกสารบริษัท */}
 
       <section className="space-y-3">
         {documents.length === 0 ? (
@@ -171,6 +198,20 @@ export default function EmployeeDocuments() {
           })
         )}
       </section>
+
+      </>
+      )}
+
+      {fileDoc?.file_url && (
+        <AttachmentViewer
+          items={[{ bucket: BUCKET, path: fileDoc.file_url, name: fileDoc.title }]}
+          onClose={() => {
+            setFileDoc(null)
+            // ไม่ต้องยืนยันการอ่าน = ปิดแล้วจบ
+            if (!fileDoc.requires_acknowledgment || readIds.has(fileDoc.id)) setViewingDoc(null)
+          }}
+        />
+      )}
 
       {viewingDoc && !viewingDoc.file_url && viewingDoc.content && (
         <div className="fixed inset-0 z-50 bg-white overflow-auto">

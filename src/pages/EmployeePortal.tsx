@@ -2,7 +2,7 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { fetchEmployeeByUserId, fetchNotifications } from '../lib/hrApi'
+import { fetchEmployeeByUserId, fetchNotifications, fetchMyUnreadAnnouncementCount } from '../lib/hrApi'
 import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase } from 'react-icons/fi'
 import type { HREmployee } from '../types'
 
@@ -10,6 +10,7 @@ const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeD
 const EmployeeTasks = lazy(() => import('../components/hr/employee/EmployeeTasks'))
 const EmployeeTimeClock = lazy(() => import('../components/hr/employee/EmployeeTimeClock'))
 const EmployeeLeave = lazy(() => import('../components/hr/employee/EmployeeLeave'))
+const EmployeeLeaveCalendar = lazy(() => import('../components/hr/employee/EmployeeLeaveCalendar'))
 const EmployeeWorkCalendar = lazy(() => import('../components/hr/employee/EmployeeWorkCalendar'))
 const EmployeeWFH = lazy(() => import('../components/hr/employee/EmployeeWFH'))
 const EmployeeSalaryPath = lazy(() => import('../components/hr/employee/EmployeeSalaryPath'))
@@ -81,12 +82,18 @@ const TABS = [
   { id: 'onboarding', label: 'Onboarding', icon: FiBookOpen, Component: EmployeeOnboarding },
 ] as const
 
+/** ปฏิทินลาทั้งบริษัท — เห็นได้เฉพาะ superadmin / admin / account (ตรงกับสิทธิ์ RPC get_leave_calendar) */
+const LEAVE_CALENDAR_TABS = [
+  { id: 'leave-calendar', label: 'ปฏิทินลา', icon: FiCalendar, Component: EmployeeLeaveCalendar },
+] as const
+const LEAVE_CALENDAR_ROLES = ['superadmin', 'admin', 'account']
+
 /** แท็บพิเศษของ superadmin — ดึงพิกัด GPS จากมือถือไปตั้งเป็นจุดพิกัดออฟฟิศ */
 const ADMIN_TABS = [
   { id: 'admin-gps', label: 'พิกัด GPS', icon: FiMapPin, Component: AdminClockLocationsMobile },
 ] as const
 
-const ALL_TABS = [...TABS, ...ADMIN_TABS]
+const ALL_TABS = [...TABS, ...LEAVE_CALENDAR_TABS, ...ADMIN_TABS]
 type TabDef = (typeof ALL_TABS)[number]
 type TabId = TabDef['id']
 
@@ -101,10 +108,15 @@ export default function EmployeePortal() {
   )
   const { user, signOut } = useAuthContext()
   const [portalEmployee, setPortalEmployee] = useState<HREmployee | null>(null)
+  const canViewLeaveCalendar = LEAVE_CALENDAR_ROLES.includes(user?.role ?? '')
+  // แท็บ "ปฏิทินลา" แทรกต่อจาก "ขอลา" — เฉพาะ role ที่มีสิทธิ์ดูใบลาทั้งบริษัท
   const employeeTabs = TABS.filter((tab) => tab.id !== 'wfh' || portalEmployee?.work_mode === 'hybrid')
+    .flatMap<TabDef>((tab) => (tab.id === 'leave' && canViewLeaveCalendar ? [tab, ...LEAVE_CALENDAR_TABS] : [tab]))
   const visibleTabs: readonly TabDef[] = user?.role === 'superadmin' ? [...employeeTabs, ...ADMIN_TABS] : employeeTabs
   /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
   const [resultUnread, setResultUnread] = useState(0)
+  /** ประกาศที่ยังไม่กดรับทราบ — โชว์เป็นตัวเลขบนแท็บเอกสาร */
+  const [announcementUnread, setAnnouncementUnread] = useState(0)
 
   useEffect(() => {
     const t = searchParams.get('tab')
@@ -140,6 +152,23 @@ export default function EmployeePortal() {
     return () => {
       cancelled = true
       if (channel) supabase.removeChannel(channel)
+    }
+  }, [user?.id])
+
+  // นับประกาศที่ยังไม่กดรับทราบ (อัปเดตเมื่อมีประกาศใหม่เผยแพร่ หรือกดรับทราบ)
+  useEffect(() => {
+    if (!user?.id) return
+    const loadCount = () =>
+      fetchMyUnreadAnnouncementCount().then(setAnnouncementUnread).catch(() => {})
+    loadCount()
+    window.addEventListener('hr-announcements-changed', loadCount)
+    const channel = supabase
+      .channel('employee-portal-announcements')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcements' }, loadCount)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-announcements-changed', loadCount)
+      supabase.removeChannel(channel)
     }
   }, [user?.id])
 
@@ -210,11 +239,16 @@ export default function EmployeePortal() {
               key={tab.id}
               type="button"
               onClick={() => setActiveTabAndUrl(tab.id)}
-              className={`flex flex-col items-center justify-center gap-0.5 w-[19%] min-w-[19%] flex-shrink-0 py-2 px-1 rounded-lg transition-colors ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 w-[19%] min-w-[19%] flex-shrink-0 py-2 px-1 rounded-lg transition-colors ${
                 isActive ? 'text-emerald-600 bg-emerald-50' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
               <Icon className="w-6 h-6" />
+              {tab.id === 'documents' && announcementUnread > 0 && (
+                <span className="absolute top-1 right-[18%] min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
+                  {announcementUnread > 99 ? '99+' : announcementUnread}
+                </span>
+              )}
               <span className="text-[11px] font-medium whitespace-nowrap">{tab.label}</span>
             </button>
           )
