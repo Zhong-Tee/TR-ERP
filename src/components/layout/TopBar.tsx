@@ -26,7 +26,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
-  const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })
+  const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number; machinery_pending?: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0, machinery_pending: 0 })
   // Badge เมนู HR: จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
   const [hrLeavePending, setHrLeavePending] = useState(0)
   const [hrOtPending, setHrOtPending] = useState(0)
@@ -339,6 +339,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   })
 
   const purchaseTabs = [
+    { path: '/purchase/requests', label: 'คำขอซื้อ' },
     { path: '/purchase/pr', label: 'PR (ใบขอซื้อ)' },
     { path: '/purchase/po', label: 'PO (ใบสั่งซื้อ)' },
     { path: '/purchase/gr', label: 'GR (ใบรับสินค้า)' },
@@ -621,6 +622,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                     ? belowOrderPointCount
                     : tab.path === '/warehouse/returns' && warehousePendingReturnCount > 0
                       ? warehousePendingReturnCount
+                      : tab.path === '/purchase/requests' && (purchaseBadge.machinery_pending || 0) > 0
+                        ? purchaseBadge.machinery_pending || 0
                       : tab.path === '/purchase/pr' && purchaseBadge.pr_pending > 0
                         ? purchaseBadge.pr_pending
                         : tab.path === '/purchase/po' && purchaseBadge.pr_approved_no_po > 0

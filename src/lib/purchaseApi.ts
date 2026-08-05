@@ -69,6 +69,7 @@ export interface PRListFilters {
   dateFrom?: string
   dateTo?: string
   prType?: string
+  excludePrType?: string
 }
 
 export async function loadPRList(filters: PRListFilters = {}, includeCost = false): Promise<InventoryPR[]> {
@@ -91,6 +92,9 @@ export async function loadPRList(filters: PRListFilters = {}, includeCost = fals
   }
   if (filters.prType && filters.prType !== 'all') {
     q = q.eq('pr_type', filters.prType)
+  }
+  if (filters.excludePrType) {
+    q = q.neq('pr_type', filters.excludePrType)
   }
 
   const { data, error } = await q
@@ -625,10 +629,16 @@ export async function loadProductCategoryOptions(): Promise<string[]> {
 
 /* ──────────────── Purchase Badge Counts ──────────────── */
 
-export async function loadPurchaseBadgeCounts(): Promise<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }> {
-  const { data, error } = await supabase.rpc('get_purchase_badge_counts')
+export async function loadPurchaseBadgeCounts(): Promise<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number; machinery_pending: number }> {
+  const [{ data, error }, machineryRes] = await Promise.all([
+    supabase.rpc('get_purchase_badge_counts'),
+    supabase.from('inv_pr').select('*', { count: 'exact', head: true }).eq('status', 'pending').eq('pr_type', 'machinery'),
+  ])
   if (error) throw error
-  return data as { pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }
+  if (machineryRes.error) throw machineryRes.error
+  const base = data as { pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number }
+  const machineryPending = machineryRes.count || 0
+  return { ...base, pr_pending: Math.max(0, (base.pr_pending || 0) - machineryPending), machinery_pending: machineryPending }
 }
 
 /* ──────────────── Sellers ──────────────── */

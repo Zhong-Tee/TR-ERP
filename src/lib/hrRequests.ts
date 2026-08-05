@@ -24,7 +24,14 @@ export interface HRRequest {
   received_at: string | null
   created_at: string
   updated_at: string
-  employee?: { first_name: string; last_name: string; nickname: string | null; employee_code: string } | null
+  employee?: {
+    first_name: string
+    last_name: string
+    nickname: string | null
+    employee_code: string
+    department?: { name: string } | null
+    position?: { name: string } | null
+  } | null
 }
 
 export const HR_REQUEST_STATUS: Record<HRRequestStatus, { label: string; color: string }> = {
@@ -67,7 +74,7 @@ export async function fetchMyHRRequests(): Promise<HRRequest[]> {
 export async function fetchAllHRRequests(): Promise<HRRequest[]> {
   const { data, error } = await supabase
     .from('hr_requests')
-    .select('*, employee:hr_employees(first_name,last_name,nickname,employee_code)')
+    .select('*, employee:hr_employees!employee_id(first_name,last_name,nickname,employee_code,department:hr_departments!department_id(name),position:hr_positions!position_id(name))')
     .order('created_at', { ascending: false })
   if (error) throw error
   return (data || []) as HRRequest[]

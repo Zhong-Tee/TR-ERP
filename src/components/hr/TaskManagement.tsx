@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { FiAlertTriangle, FiBarChart2, FiCheckCircle, FiClock, FiExternalLink, FiList, FiMenu, FiPlus, FiSearch, FiX } from 'react-icons/fi'
+import { FiAlertTriangle, FiBarChart2, FiCheckCircle, FiClock, FiExternalLink, FiList, FiMenu, FiPlus, FiSearch, FiTrash2, FiX } from 'react-icons/fi'
 import { useAuthContext } from '../../contexts/AuthContext'
 import TaskDashboard, { Avatar } from './TaskDashboard'
-import { createHRTask, createTaskTeam, fetchCompanyHolidays, fetchEmployeeByUserId, fetchEmployees, fetchLeaveRequests, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, fetchWorkCalendar, fetchWorkSchedules, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
+import { createHRTask, createTaskTeam, deleteHRTask, fetchCompanyHolidays, fetchEmployeeByUserId, fetchEmployees, fetchLeaveRequests, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, fetchWorkCalendar, fetchWorkSchedules, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
 import { addWorkingHours, localDateKey, recommendAssignees, type WorkingTimeData } from '../../lib/hrTaskMetrics'
 import type { HREmployee, HRTask, HRTaskCategory, HRTaskEvaluation, HRTaskStatus } from '../../types'
 
@@ -42,9 +42,10 @@ export default function TaskManagement() {
   const [showCreate, setShowCreate] = useState(false)
   const [showCategory, setShowCategory] = useState(false)
   const [showTeam, setShowTeam] = useState(false)
-  const [busy] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [detailTask, setDetailTask] = useState<HRTask | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<HRTask | null>(null)
   const [evaluationTask, setEvaluationTask] = useState<HRTask | null>(null)
   const [submitTask, setSubmitTask] = useState<HRTask | null>(null)
   const [, setTimeTick] = useState(0)
@@ -58,6 +59,18 @@ export default function TaskManagement() {
 
   const isMine = (t: HRTask) => !!me && !!t.participants?.some((p) => p.role === 'assignee' && p.employee_id === me.id)
   const isManaged = (t: HRTask) => !!me && (t.created_by === me.id || !!t.participants?.some((p) => p.role === 'supervisor' && p.employee_id === me.id))
+  const canDelete = (t: HRTask) => ['superadmin', 'admin', 'hr', 'account'].includes(user?.role ?? '') || isManaged(t)
+  const removeTask = async (task: HRTask) => {
+    setBusy(true); setError('')
+    try {
+      await deleteHRTask(task.id)
+      if (detailTask?.id === task.id) setDetailTask(null)
+      setDeleteTarget(null)
+      await load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ลบงานไม่สำเร็จ')
+    } finally { setBusy(false) }
+  }
   const scopedTasks = useMemo(() => tasks.filter((t) => scope === 'all' || (scope === 'mine' ? isMine(t) : isManaged(t))), [tasks, scope, me?.id])
   const visible = useMemo(() => scopedTasks.filter((t) => {
     const q = search.trim().toLowerCase()
@@ -103,7 +116,7 @@ export default function TaskManagement() {
             <td className="p-3 min-w-36"><div className="h-2 bg-gray-100 rounded-full"><div className="h-full bg-emerald-500 rounded-full" style={{width:`${t.progress}%`}}/></div><span className="text-xs">{t.progress}%</span></td>
             <td className="p-3">{workLink(t.completion_link)?<a href={workLink(t.completion_link)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} className="inline-flex items-center gap-1.5 text-blue-600 hover:underline whitespace-nowrap"><FiExternalLink/> เปิดลิงก์</a>:<span className="text-gray-400">-</span>}</td>
             <td className="p-3"><span className={`px-2 py-1 rounded-full text-xs ${overdue(t) ? 'bg-red-100 text-red-700' : 'bg-gray-100'}`}>{overdue(t) ? 'เลยกำหนด' : STATUS[t.status]}</span></td>
-            <td className="p-3">{t.status === 'review' && isManaged(t) && <button disabled={busy} onClick={(e)=>{e.stopPropagation();setEvaluationTask(t)}} className="text-emerald-600 font-semibold whitespace-nowrap">ประเมิน</button>}</td>
+            <td className="p-3"><div className="flex items-center justify-end gap-3">{t.status === 'review' && isManaged(t) && <button disabled={busy} onClick={(e)=>{e.stopPropagation();setEvaluationTask(t)}} className="text-emerald-600 font-semibold whitespace-nowrap">ประเมิน</button>}{canDelete(t) && <button type="button" disabled={busy} onClick={(e)=>{e.stopPropagation();setDeleteTarget(t)}} className="inline-flex items-center gap-1 text-red-600 font-semibold whitespace-nowrap hover:text-red-700 disabled:opacity-40" title="ลบงาน"><FiTrash2 />ลบ</button>}</div></td>
           </tr>)}</tbody>
         </table>
         {!visible.length && <div className="text-center py-12 text-gray-400">ไม่พบงาน</div>}
@@ -116,6 +129,11 @@ export default function TaskManagement() {
     {detailTask && <TaskDetailModal task={detailTask} employee={me} onClose={()=>setDetailTask(null)} onEvaluate={()=>{setDetailTask(null);setEvaluationTask(detailTask)}} onStatus={async(status)=>{await updateTaskStatus(detailTask.id,status);setDetailTask(null);await load()}} onSubmit={()=>{setSubmitTask(detailTask);setDetailTask(null)}} />}
     {evaluationTask && me && <EvaluationModal task={evaluationTask} evaluator={me} onClose={()=>setEvaluationTask(null)} onSaved={async()=>{setEvaluationTask(null);await load()}} />}
     {submitTask && <SubmitWorkModal task={submitTask} onClose={()=>setSubmitTask(null)} onSaved={async()=>{setSubmitTask(null);await load()}} />}
+    {deleteTarget && <Modal title="ยืนยันลบงาน" onClose={()=>{if(!busy)setDeleteTarget(null)}}><div className="space-y-5">
+      <div className="flex items-start gap-3 rounded-xl bg-red-50 p-4"><div className="mt-0.5 rounded-full bg-red-100 p-2 text-red-600"><FiTrash2 className="h-5 w-5" /></div><div><p className="font-semibold text-red-900">ต้องการลบงานนี้หรือไม่?</p><p className="mt-1 text-sm text-red-800">“{deleteTarget.title}” <span className="text-red-600">({deleteTarget.task_no})</span></p></div></div>
+      <p className="text-sm leading-6 text-gray-600">ข้อมูลผู้รับผิดชอบ เช็กลิสต์ และผลประเมินที่เกี่ยวข้องกับงานนี้จะถูกลบออกจากฐานข้อมูล และไม่สามารถเรียกคืนได้</p>
+      <div className="grid grid-cols-2 gap-3"><button type="button" disabled={busy} onClick={()=>setDeleteTarget(null)} className="rounded-xl border border-gray-300 py-3 font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50">ยกเลิก</button><button type="button" disabled={busy} onClick={()=>void removeTask(deleteTarget)} className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 py-3 font-semibold text-white hover:bg-red-700 disabled:opacity-50"><FiTrash2 />{busy?'กำลังลบ...':'ลบงาน'}</button></div>
+    </div></Modal>}
   </div>
 }
 
@@ -146,8 +164,8 @@ function CreateTaskModal({ me, employees, categories, tasks, onClose, onSaved }:
     const due=toLocalInput(addWorkingHours(base,h,employees.find(e=>e.id===form.assignee),workData))
     setForm(prev=>prev.due_at===due?prev:{...prev,due_at:due})
   },[form.duration_hours,form.assignee,form.start_date,workData,employees])
-  const save=async()=>{ if(!form.title.trim()||!form.assignee||!form.due_at){setError('กรุณากรอกชื่องาน ผู้รับผิดชอบ และกำหนดส่ง');return} setSaving(true); try { await createHRTask({title:form.title.trim(),description:form.description.trim()||undefined,category_id:form.category_id||undefined,priority:form.priority,start_date:form.start_date,due_at:new Date(form.due_at).toISOString(),created_by:me.id,participants:[{employee_id:form.assignee,role:'assignee',is_primary:true},{employee_id:me.id,role:'supervisor',is_primary:true},...(form.coordinator?[{employee_id:form.coordinator,role:'coordinator' as const}]:[]),...(form.advisor?[{employee_id:form.advisor,role:'advisor' as const}]:[])],checklist:items.filter(x=>x.trim()).map((title,i)=>({title:title.trim(),assignee_id:form.assignee,sort_order:i}))}); await onSaved() } catch(e){setError(e instanceof Error?e.message:'บันทึกไม่สำเร็จ')} finally{setSaving(false)} }
-  return <Modal title="มอบหมายงาน" onClose={onClose}><div className="space-y-4"><Field label="ชื่องาน *"><input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="รายละเอียด"><textarea rows={3} className="input" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="grid md:grid-cols-2 gap-3"><Field label="ประเภทงาน"><select className="input" value={form.category_id} onChange={e=>setForm({...form,category_id:e.target.value})}><option value="">ไม่ระบุ</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="ความสำคัญ"><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as typeof form.priority})}><option value="normal">ปกติ</option><option value="high">สำคัญ</option><option value="urgent">เร่งด่วน</option></select></Field><Field label="ผู้รับผิดชอบ *"><EmployeeSelect value={form.assignee} employees={employees} onChange={v=>setForm({...form,assignee:v})}/></Field><Field label="หัวหน้างาน"><input className="input bg-gray-50" disabled value={nameOf(me)}/></Field><Field label="ผู้ประสานงาน"><EmployeeSelect value={form.coordinator} employees={employees} onChange={v=>setForm({...form,coordinator:v})}/></Field><Field label="ที่ปรึกษางาน"><EmployeeSelect value={form.advisor} employees={employees} onChange={v=>setForm({...form,advisor:v})}/></Field></div>
+  const save=async()=>{ if(!form.title.trim()||!form.category_id||!form.assignee||!form.due_at){setError('กรุณากรอกชื่องาน ประเภทงาน ผู้รับผิดชอบ และกำหนดส่ง');return} setSaving(true); try { await createHRTask({title:form.title.trim(),description:form.description.trim()||undefined,category_id:form.category_id,priority:form.priority,start_date:form.start_date,due_at:new Date(form.due_at).toISOString(),created_by:me.id,participants:[{employee_id:form.assignee,role:'assignee',is_primary:true},{employee_id:me.id,role:'supervisor',is_primary:true},...(form.coordinator?[{employee_id:form.coordinator,role:'coordinator' as const}]:[]),...(form.advisor?[{employee_id:form.advisor,role:'advisor' as const}]:[])],checklist:items.filter(x=>x.trim()).map((title,i)=>({title:title.trim(),assignee_id:form.assignee,sort_order:i}))}); await onSaved() } catch(e){setError(e instanceof Error?e.message:'บันทึกไม่สำเร็จ')} finally{setSaving(false)} }
+  return <Modal title="มอบหมายงาน" onClose={onClose}><div className="space-y-4"><Field label="ชื่องาน *"><input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="รายละเอียด"><textarea rows={3} className="input" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="grid md:grid-cols-2 gap-3"><Field label="ประเภทงาน *"><select required aria-required="true" className={`input ${!form.category_id?'border-red-300 bg-red-50/40':''}`} value={form.category_id} onChange={e=>{setForm({...form,category_id:e.target.value});setError('')}}><option value="">เลือกประเภทงาน</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="ความสำคัญ"><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as typeof form.priority})}><option value="normal">ปกติ</option><option value="high">สำคัญ</option><option value="urgent">เร่งด่วน</option></select></Field><Field label="ผู้รับผิดชอบ *"><EmployeeSelect required value={form.assignee} employees={employees} onChange={v=>{setForm({...form,assignee:v});setError('')}}/></Field><Field label="หัวหน้างาน"><input className="input bg-gray-50" disabled value={nameOf(me)}/></Field><Field label="ผู้ประสานงาน"><EmployeeSelect value={form.coordinator} employees={employees} onChange={v=>setForm({...form,coordinator:v})}/></Field><Field label="ที่ปรึกษางาน"><EmployeeSelect value={form.advisor} employees={employees} onChange={v=>setForm({...form,advisor:v})}/></Field></div>
   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
     <Field label="วันเริ่ม"><input type="date" className="input" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></Field>
     <Field label="ให้เวลาทำ (ชม.)"><input type="number" min="0.5" step="0.5" className="input" placeholder="เช่น 4" value={form.duration_hours} onChange={e=>setForm({...form,duration_hours:e.target.value})}/></Field>
@@ -174,7 +192,7 @@ function CreateTaskModal({ me, employees, categories, tasks, onClose, onSaved }:
     :<p className="text-xs text-gray-400">ยังไม่มีข้อมูลเพียงพอสำหรับแนะนำ</p>}
     {(!form.category_id||!form.due_at)&&<p className="mt-2 text-[11px] text-gray-500">เลือก “ประเภทงาน” และ “วันและเวลาส่ง” เพื่อให้คำแนะนำแม่นยำขึ้น</p>}
   </div>
-  <div><div className="font-medium mb-2">Task ย่อย</div>{items.map((x,i)=><div key={i} className="flex gap-2 mb-2"><input className="input" placeholder={`ข้อที่ ${i+1}`} value={x} onChange={e=>setItems(items.map((v,j)=>j===i?e.target.value:v))}/>{items.length>1&&<button onClick={()=>setItems(items.filter((_,j)=>j!==i))}><FiX/></button>}</div>)}<button onClick={()=>setItems([...items,''])} className="text-sm text-emerald-600">+ เพิ่มข้อ</button></div>{error&&<p className="text-red-600 text-sm">{error}</p>}<button disabled={saving} onClick={save} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:opacity-50">{saving?'กำลังบันทึก...':'มอบหมายงาน'}</button></div></Modal>
+  <div><div className="font-medium mb-2">Task ย่อย</div>{items.map((x,i)=><div key={i} className="flex gap-2 mb-2"><input className="input" placeholder={`ข้อที่ ${i+1}`} value={x} onChange={e=>setItems(items.map((v,j)=>j===i?e.target.value:v))}/>{items.length>1&&<button onClick={()=>setItems(items.filter((_,j)=>j!==i))}><FiX/></button>}</div>)}<button onClick={()=>setItems([...items,''])} className="text-sm text-emerald-600">+ เพิ่มข้อ</button></div>{error&&<p className="text-red-600 text-sm">{error}</p>}<button disabled={saving||!form.title.trim()||!form.category_id||!form.assignee||!form.due_at} onClick={save} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:cursor-not-allowed disabled:opacity-50">{saving?'กำลังบันทึก...':'มอบหมายงาน'}</button></div></Modal>
 }
 
 function TaskDetailModal({task,employee,onClose,onEvaluate,onStatus,onSubmit}:{task:HRTask;employee:HREmployee|null;onClose:()=>void;onEvaluate:()=>void;onStatus:(status:HRTaskStatus)=>Promise<void>;onSubmit:()=>void}){
@@ -280,7 +298,7 @@ function TeamModal({me,employees,onClose}:{me:HREmployee;employees:HREmployee[];
     {error&&<p className="text-sm text-red-600">{error}</p>}
   </div></Modal>
 }
-function EmployeeSelect({value,employees,onChange}:{value:string;employees:HREmployee[];onChange:(v:string)=>void}){return <select className="input" value={value} onChange={e=>onChange(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.map(e=><option key={e.id} value={e.id}>{e.employee_code} · {nameOf(e)}</option>)}</select>}
+function EmployeeSelect({value,employees,onChange,required=false}:{value:string;employees:HREmployee[];onChange:(v:string)=>void;required?:boolean}){return <select required={required} aria-required={required} className={`input ${required&&!value?'border-red-300 bg-red-50/40':''}`} value={value} onChange={e=>onChange(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.map(e=><option key={e.id} value={e.id}>{e.employee_code} · {nameOf(e)}</option>)}</select>}
 function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="block"><span className="block text-sm font-medium mb-1">{label}</span>{children}</label>}
 function Modal({title,onClose,children}:{title:string;onClose:()=>void;children:React.ReactNode}){
   return createPortal(

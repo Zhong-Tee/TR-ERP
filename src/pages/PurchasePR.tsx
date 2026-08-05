@@ -38,7 +38,7 @@ interface DraftItem {
   note: string
 }
 
-export default function PurchasePR() {
+export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedPrType?: string; hideCreate?: boolean } = {}) {
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
@@ -103,7 +103,7 @@ export default function PurchasePR() {
   const canSeePrice = PRICE_VISIBLE_ROLES.includes(user?.role || '')
   const canManagePR = PR_ALLOWED_ROLES.includes(user?.role || '')
 
-  const handleCreateFromTopBar = useCallback(() => setCreateOpen(true), [])
+  const handleCreateFromTopBar = useCallback(() => { if (!hideCreate) setCreateOpen(true) }, [hideCreate])
 
   useEffect(() => {
     window.addEventListener('purchase-pr-create', handleCreateFromTopBar)
@@ -129,13 +129,13 @@ export default function PurchasePR() {
 
   useEffect(() => {
     loadAll()
-  }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo])
+  }, [statusFilter, typeFilter, debouncedSearch, dateFrom, dateTo, fixedPrType, canSeePrice])
 
   async function loadAll() {
     setLoading(true)
     try {
       const [prData, prodData, stockData, sellerData] = await Promise.all([
-        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: typeFilter !== 'all' ? typeFilter : undefined }, canSeePrice),
+        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: fixedPrType || (typeFilter !== 'all' ? typeFilter : undefined), excludePrType: fixedPrType ? undefined : 'machinery' }, canSeePrice),
         products.length ? Promise.resolve(products) : loadProductsWithLastPrice(canSeePrice),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
@@ -478,7 +478,7 @@ export default function PurchasePR() {
   /* ── Create / Update PR ── */
   async function handleCreatePR() {
     if (!PR_ALLOWED_ROLES.includes(user?.role || '')) { showMessage({ message: 'ไม่มีสิทธิ์ทำรายการนี้' }); return }
-    if (!selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
+    if (!fixedPrType && !selectedSupplierId) { showMessage({ message: 'กรุณาเลือกผู้ขาย' }); return }
     const valid = draftItems.filter((i) => i.product_id && (Number(i.qty) || 0) > 0)
     if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
     const ids = valid.map((i) => i.product_id)
@@ -502,7 +502,7 @@ export default function PurchasePR() {
           prId: editingPrId,
           items: itemPayload,
           note: note.trim() || undefined,
-          prType,
+          prType: fixedPrType || prType,
           supplierId: selectedSupplierId,
           supplierName: selectedSupplierName,
         })
@@ -620,7 +620,7 @@ export default function PurchasePR() {
             ))}
           </div>
           {/* type filter */}
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          {!fixedPrType && <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             {[
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
@@ -636,7 +636,7 @@ export default function PurchasePR() {
                 {t.label}
               </button>
             ))}
-          </div>
+          </div>}
           {/* search */}
           <div className="flex-1 min-w-[200px]">
             <input
@@ -708,7 +708,7 @@ export default function PurchasePR() {
                       <td className="px-4 py-3 font-medium text-gray-900">{pr.pr_no}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${isUrgent ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
-                          {isUrgent ? 'ด่วน' : 'ปกติ'}
+                        {pr.pr_type === 'machinery' ? 'Machinery' : isUrgent ? 'ด่วน' : 'ปกติ'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-600 max-w-[120px] truncate">{pr.supplier_name || '-'}</td>
@@ -1177,7 +1177,7 @@ export default function PurchasePR() {
                   <div className="text-gray-500 text-xs">ประเภท PR</div>
                   <div className="font-medium">
                     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${viewing.pr_type === 'urgent' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
-                      {viewing.pr_type === 'urgent' ? 'ด่วน' : 'ปกติ'}
+                      {viewing.pr_type === 'machinery' ? 'Machinery' : viewing.pr_type === 'urgent' ? 'ด่วน' : 'ปกติ'}
                     </span>
                   </div>
                 </div>

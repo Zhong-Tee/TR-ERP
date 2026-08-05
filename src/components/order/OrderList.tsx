@@ -355,7 +355,7 @@ export default function OrderList({
         try {
           const { data: videoRows, error: videoErr } = await supabase
             .from('pk_packing_videos')
-            .select('order_id, tracking_number, gdrive_url, created_at')
+            .select('order_id, tracking_number, gdrive_url, recorded_at, created_at')
             .in('order_id', orderIds)
             .not('gdrive_url', 'is', null)
             .order('created_at', { ascending: false })
@@ -363,13 +363,18 @@ export default function OrderList({
 
           const gdriveByOrderId = new Map<string, string>()
           const gdriveByTracking = new Map<string, string>()
+          const packedAtByOrderId = new Map<string, string>()
+          const packedAtByTracking = new Map<string, string>()
           for (const r of (videoRows || []) as any[]) {
             const url = r?.gdrive_url ? String(r.gdrive_url) : ''
             if (!url) continue
             const oid = r?.order_id ? String(r.order_id) : ''
             const tn = r?.tracking_number ? String(r.tracking_number).trim() : ''
+            const packedAt = r?.recorded_at || r?.created_at ? String(r.recorded_at || r.created_at) : ''
             if (oid && !gdriveByOrderId.has(oid)) gdriveByOrderId.set(oid, url)
             if (tn && !gdriveByTracking.has(tn)) gdriveByTracking.set(tn, url)
+            if (packedAt && oid && !packedAtByOrderId.has(oid)) packedAtByOrderId.set(oid, packedAt)
+            if (packedAt && tn && !packedAtByTracking.has(tn)) packedAtByTracking.set(tn, packedAt)
           }
 
           filteredData = filteredData.map((order: any) => {
@@ -378,7 +383,11 @@ export default function OrderList({
               gdriveByOrderId.get(String(order.id)) ||
               (tn ? gdriveByTracking.get(tn) : null) ||
               null
-            return { ...order, packing_gdrive_url: gdrive_url }
+            const packing_recorded_at =
+              packedAtByOrderId.get(String(order.id)) ||
+              (tn ? packedAtByTracking.get(tn) : null) ||
+              null
+            return { ...order, packing_gdrive_url: gdrive_url, packing_recorded_at }
           })
         } catch (_e) {
           // ignore video lookup failure
@@ -798,6 +807,26 @@ export default function OrderList({
               >
                 วิดีโอ
               </button>
+              {order.status === 'จัดส่งแล้ว' && (
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    const url = (order as any).packing_gdrive_url as string | null | undefined
+                    if (!url) return
+                    try {
+                      await navigator.clipboard.writeText(url)
+                    } catch {
+                      alert('คัดลอกลิงค์ไม่สำเร็จ กรุณากดปุ่มวิดีโอแล้วคัดลอกจากแถบที่อยู่')
+                    }
+                  }}
+                  disabled={!(order as any).packing_gdrive_url}
+                  className="px-3 py-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 whitespace-nowrap"
+                  title={(order as any).packing_gdrive_url ? 'คัดลอกลิงค์วิดีโอ' : 'ยังไม่พบวิดีโอของบิลนี้'}
+                >
+                  คัดลองลิงค์
+                </button>
+              )}
               <div className="text-right">
                 <div
                   className={`text-xl font-bold ${
@@ -813,6 +842,14 @@ export default function OrderList({
                 <div className="text-sm text-surface-500 mt-0.5">
                   {formatDateTime(order.created_at)}
                 </div>
+                {order.status === 'จัดส่งแล้ว' && (
+                  <div className="text-sm text-surface-500 mt-0.5 whitespace-nowrap">
+                    เวลาแพ็คสินค้า:{' '}
+                    {(order as any).packing_recorded_at
+                      ? formatDateTime((order as any).packing_recorded_at)
+                      : '-'}
+                  </div>
+                )}
               </div>
               {!hideActionButtons && (
                 order.status === 'ตรวจสอบไม่ผ่าน' ||

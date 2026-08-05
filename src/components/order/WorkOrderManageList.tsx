@@ -12,6 +12,7 @@ import { isRoleInAllowedList } from '../../config/accessPolicy'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
+import { createWaybillBarcodeReader, readBarcodesFromPdfPage } from '../../lib/waybillBarcode'
 import { EXPORT_ITEM_COLUMNS, buildProductionExportRows as buildProductionExportRowsShared } from '../../lib/productionExportRows'
 import {
   fetchPlanDeptSettings,
@@ -362,6 +363,7 @@ export default function WorkOrderManageList({
   const [wsLog, setWsLog] = useState<string[]>([])
   const [wsStatPdf, setWsStatPdf] = useState<string>('--')
   const [wsStatFound, setWsStatFound] = useState<string>('--')
+  const [wsStatMissing, setWsStatMissing] = useState<string>('--')
   const [wsProgress, setWsProgress] = useState(0)
   const [wsMissing, setWsMissing] = useState<string[]>([])
   const [wsProcessing, setWsProcessing] = useState(false)
@@ -768,6 +770,7 @@ export default function WorkOrderManageList({
     setWsLog(['เตรียมข้อมูลเรียบร้อย กรุณาเลือกไฟล์ PDF ใบปะหน้า'])
     setWsStatPdf('--')
     setWsStatFound('--')
+    setWsStatMissing('--')
     setWsProgress(0)
     setWsMissing([])
     setWaybillSorterModal({ open: true, workOrderName: workOrderNameForDisplay, trackingNumbers })
@@ -804,15 +807,32 @@ export default function WorkOrderManageList({
       const pdfjsLib = await import('pdfjs-dist')
       pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
       const { PDFDocument } = await import('pdf-lib')
-      const Tesseract = await import('tesseract.js')
 
-      wsLogAppend('⏳ เริ่มต้นระบบ OCR...')
-      ocrWorker = await Tesseract.createWorker('eng', 1, {
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === 'recognizing text') setWsLog((p) => [`(OCR ${(m.progress * 100).toFixed(0)}%)`, ...p.slice(1)])
-        },
-      })
-      if (ocrWorker) await ocrWorker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' })
+      // ตัวอ่านบาร์โค้ดพร้อมใช้ทันที (เบามาก) — OCR ค่อยเปิดเมื่อจำเป็นจริง เพราะต้องโหลดโมเดลหลายสิบ MB
+      const barcodeReader = await createWaybillBarcodeReader()
+      const ensureOcrWorker = async () => {
+        if (ocrWorker) return ocrWorker
+        wsLogAppend('⏳ เริ่มต้นระบบ OCR (ใช้เฉพาะหน้าที่อ่านบาร์โค้ดไม่ได้)...')
+        const Tesseract = await import('tesseract.js')
+        ocrWorker = await Tesseract.createWorker('eng', 1, {
+          logger: (m: { status: string; progress: number }) => {
+            if (m.status === 'recognizing text') setWsLog((p) => [`(OCR ${(m.progress * 100).toFixed(0)}%)`, ...p.slice(1)])
+          },
+        })
+        await ocrWorker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' })
+        return ocrWorker
+      }
+
+      /** จับคู่เลขที่อ่านได้จากหน้ากับเลขพัสดุในใบงาน — เผื่อรูปแบบต่างกันเล็กน้อยจึงยอมให้เป็น substring ของกันได้ */
+      const matchScannedCode = (raw: string): string | null => {
+        const code = normText(raw)
+        if (!code) return null
+        if (targetsTextSet.has(code)) return code
+        for (const t of targetsText) {
+          if (t.length >= 6 && (code.includes(t) || t.includes(code))) return t
+        }
+        return null
+      }
 
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
       const mapping = new Map<string, { fileIndex: number; pageIndex: number }>()
@@ -852,62 +872,99 @@ export default function WorkOrderManageList({
         return c2
       }
       const ocrCanvasToNorm = async (canvas: HTMLCanvasElement) => {
-        const { data } = await ocrWorker!.recognize(canvas)
+        const worker = await ensureOcrWorker()
+        const { data } = await worker.recognize(canvas)
         return normOCR(data?.text || '')
       }
 
       const cropTopPct = wsCropTop || 25
-      for (let idx = 0; idx < files.length; idx++) {
+      const stats = { text: 0, barcode: 0, ocr: 0, skipped: 0 }
+      let done = false
+      for (let idx = 0; idx < files.length && !done; idx++) {
         const file = files[idx]
         wsLogAppend(`🔎 สแกนไฟล์: ${file.name} (${idx + 1}/${files.length})`)
-        setWsProgress(Math.round((idx / files.length) * 100))
         await sleep(0)
         const buf = await file.arrayBuffer()
         // pdf.js จะโอน buffer ไปให้ worker (detach) — ต้องส่งสำเนา เก็บต้นฉบับไว้ให้ pdf-lib ใช้รวมไฟล์
         const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise
-        const results: { trackingKeyText: string; pageIndex: number }[] = []
+        fileBuffers.push(buf)
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i)
-          const textNorm = await pageTextNormalized(page as { getTextContent: () => Promise<{ items: Array<{ str?: string }> }> })
           let keyText: string | null = null
-          for (const t of targetsTextSet) {
-            if (textNorm.includes(t)) {
-              keyText = t
-              break
+          /** อ่านบาร์โค้ดของหน้านี้ออกมาได้ — เป็นหลักฐานที่หนักแน่นที่สุดว่าหน้านี้เป็นของใคร */
+          let codeRead = false
+          /** หน้านี้มี text layer ที่อ่านได้ — ถ้าอ่านได้แต่ไม่ใช่ของใบงานนี้ ก็ไม่ต้องเสียเวลา OCR */
+          let hasTextLayer = false
+
+          // ชั้นที่ 1 — text layer (ฟรี ใช้ได้กับ PDF ที่สร้างจากโปรแกรมโดยตรง)
+          const textNorm = await pageTextNormalized(page as { getTextContent: () => Promise<{ items: Array<{ str?: string }> }> })
+          if (textNorm.length >= 20) {
+            hasTextLayer = true
+            for (const t of targetsTextSet) {
+              if (textNorm.includes(t)) { keyText = t; break }
             }
+            if (keyText) stats.text++
           }
+
+          // ชั้นที่ 2 — บาร์โค้ดจาก image object ในไฟล์ PDF (เร็วสุด ไม่ต้อง render หน้า)
           if (!keyText) {
-            const fullCanvas = await renderPageToCanvas(page as { getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }, 2)
-            const topCanvas = cropTop(fullCanvas, cropTopPct)
-            const topNorm = await ocrCanvasToNorm(topCanvas)
-            for (const k of targetsOCRSet) {
-              if (topNorm.includes(k)) {
-                keyText = ocr2textMap.get(k) ?? null
-                break
+            const codes = await readBarcodesFromPdfPage(page, pdfjsLib.OPS, barcodeReader)
+            if (codes.length > 0) {
+              codeRead = true
+              for (const code of codes) {
+                const matched = matchScannedCode(code)
+                if (matched) { keyText = matched; stats.barcode++; break }
               }
             }
           }
-          if (!keyText) {
-            const fullCanvas = await renderPageToCanvas(page as { getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }, 2)
-            const fullNorm = await ocrCanvasToNorm(fullCanvas)
-            for (const k of targetsOCRSet) {
-              if (fullNorm.includes(k)) {
-                keyText = ocr2textMap.get(k) ?? null
-                break
-              }
+
+          // ชั้นที่ 3 — render หน้าครั้งเดียวแล้วอ่านบาร์โค้ดจาก canvas
+          // เผื่อ PDF วาดบาร์โค้ดเป็นเส้น vector หรือรวมทั้งหน้าเป็นภาพเดียว จึงไม่มี image object แยกให้ดึง
+          let fullCanvas: HTMLCanvasElement | null = null
+          if (!keyText && !codeRead) {
+            fullCanvas = await renderPageToCanvas(page as { getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }, 2)
+            const code = barcodeReader.fromCanvas(fullCanvas)
+            if (code) {
+              codeRead = true
+              const matched = matchScannedCode(code)
+              if (matched) { keyText = matched; stats.barcode++ }
             }
           }
-          if (keyText) results.push({ trackingKeyText: keyText, pageIndex: i - 1 })
-        }
-        fileBuffers.push(buf)
-        for (const p of results) {
-          if (!mapping.has(p.trackingKeyText)) {
-            mapping.set(p.trackingKeyText, { fileIndex: idx, pageIndex: p.pageIndex })
+
+          // ชั้นที่ 4 — OCR ใช้เฉพาะหน้าที่อ่านเลขไม่ออกเลยจริง ๆ (ใช้ canvas เดิม ไม่ render ซ้ำ)
+          if (!keyText && !codeRead && !hasTextLayer) {
+            if (!fullCanvas) fullCanvas = await renderPageToCanvas(page as { getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { promise: Promise<void> } }, 2)
+            const topNorm = await ocrCanvasToNorm(cropTop(fullCanvas, cropTopPct))
+            for (const k of targetsOCRSet) {
+              if (topNorm.includes(k)) { keyText = ocr2textMap.get(k) ?? null; break }
+            }
+            if (!keyText) {
+              const fullNorm = await ocrCanvasToNorm(fullCanvas)
+              for (const k of targetsOCRSet) {
+                if (fullNorm.includes(k)) { keyText = ocr2textMap.get(k) ?? null; break }
+              }
+            }
+            if (keyText) stats.ocr++
+          } else if (!keyText) {
+            stats.skipped++
+          }
+
+          if (keyText && !mapping.has(keyText)) {
+            mapping.set(keyText, { fileIndex: idx, pageIndex: i - 1 })
             setWsStatFound(String(mapping.size))
           }
+          page.cleanup()
+          setWsProgress(Math.round(((idx + i / pdf.numPages) / files.length) * 100))
+          if (mapping.size >= trackingNumbersRaw.length) {
+            wsLogAppend(`⚡ พบครบ ${mapping.size} เลขแล้วที่หน้า ${i} — หยุดสแกนส่วนที่เหลือ`)
+            done = true
+            break
+          }
+          if (i % 10 === 0) await sleep(0)
         }
       }
       setWsProgress(100)
+      wsLogAppend(`📊 บาร์โค้ด ${stats.barcode} · text layer ${stats.text} · OCR ${stats.ocr} · ข้ามหน้าที่ไม่ใช่ของใบงานนี้ ${stats.skipped}`)
       wsLogAppend('⏳ รวมหน้าเป็นไฟล์เดียวตามลำดับ...')
 
       const merged = await PDFDocument.create()
@@ -933,6 +990,7 @@ export default function WorkOrderManageList({
         await sleep(0)
       }
       setWsMissing(missing)
+      setWsStatMissing(String(missing.length))
       if (missing.length > 0) wsLogAppend(`⚠️ ไม่พบ ${missing.length} รายการ`)
       else wsLogAppend('✅ พบครบทุกเลข')
       wsLogAppend('⏳ กำลังบันทึกไฟล์ PDF...')
@@ -2109,7 +2167,7 @@ export default function WorkOrderManageList({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 text-center mb-4">
+          <div className="grid grid-cols-4 gap-4 text-center mb-4">
             <div>
               <p className="text-sm text-gray-600 mb-1">เลขในใบงาน</p>
               <p className="text-xl font-bold">{waybillSorterModal.trackingNumbers.length}</p>
@@ -2121,6 +2179,11 @@ export default function WorkOrderManageList({
             <div>
               <p className="text-sm text-gray-600 mb-1">จับคู่สำเร็จ</p>
               <p className="text-xl font-bold text-green-600">{wsStatFound}</p>
+            </div>
+            <div>
+              <p className="text-sm text-gray-600 mb-1">ไม่พบ</p>
+              {/* เป็นสีแดงเมื่อมีรายการที่หาไม่เจอ — ถ้าเจอครบ (0) ใช้สีเทาเพื่อไม่ให้อ่านผิดว่าเป็นข้อผิดพลาด */}
+              <p className={`text-xl font-bold ${wsStatMissing !== '--' && wsStatMissing !== '0' ? 'text-red-600' : 'text-gray-400'}`}>{wsStatMissing}</p>
             </div>
           </div>
 

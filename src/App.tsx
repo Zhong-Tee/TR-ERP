@@ -505,11 +505,21 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/purchase/requests"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'account']}>
+            <Layout>
+              <PurchasePR key="machinery-purchase-requests" fixedPrType="machinery" hideCreate />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/purchase/pr"
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'account']}>
             <Layout>
-              <PurchasePR />
+              <PurchasePR key="standard-purchase-pr" />
             </Layout>
           </ProtectedRoute>
         }

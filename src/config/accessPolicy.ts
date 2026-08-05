@@ -70,6 +70,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/warehouse/production', key: 'warehouse-production' },
   { prefix: '/warehouse/roll-calc', key: 'warehouse-roll-calc' },
   { prefix: '/warehouse/sales-list', key: 'warehouse-sales-list' },
+  { prefix: '/purchase/requests', key: 'purchase-requests' },
   { prefix: '/purchase/pr', key: 'purchase-pr' },
   { prefix: '/purchase/po', key: 'purchase-po' },
   { prefix: '/purchase/gr', key: 'purchase-gr' },
@@ -122,6 +123,7 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
     { path: '/hr/settings', key: 'hr-settings' },
   ],
   '/purchase': [
+    { path: '/purchase/requests', key: 'purchase-requests' },
     { path: '/purchase/pr', key: 'purchase-pr' },
     { path: '/purchase/po', key: 'purchase-po' },
     { path: '/purchase/gr', key: 'purchase-gr' },
@@ -146,6 +148,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'warehouse-sub': 'warehouse',
   'products-inactive': 'products',
   'purchase-pr': 'purchase',
+  'purchase-requests': 'purchase',
   'purchase-po': 'purchase',
   'purchase-gr': 'purchase',
   'purchase-sample': 'purchase',

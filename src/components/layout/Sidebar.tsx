@@ -241,7 +241,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
         loadWmsTabCounts(),
         supabase.from('inv_returns').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-        loadPurchaseBadgeCounts().catch(() => ({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0 })),
+        loadPurchaseBadgeCounts().catch(() => ({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0, machinery_pending: 0 })),
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
@@ -265,7 +265,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         (c.claim_pending || 0)
       const qcWoCount = Array.isArray(qcWoList) ? qcWoList.length : 0
       const qcTotal = qcWoCount + (c.qc_reject || 0)
-      const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
+      const purchaseTotal = (purchaseBadge.pr_pending || 0) + (purchaseBadge.machinery_pending || 0) + (purchaseBadge.pr_approved_no_po || 0) + (purchaseBadge.po_waiting_gr || 0)
 
       setMenuCounts({
         marketplace: mpCountRes.count || 0,

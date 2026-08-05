@@ -1520,26 +1520,6 @@ export default function Account() {
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex flex-col items-start gap-1.5">
-                              {/* ยืนยันส่งสลิปให้ลูกค้าแล้ว — ปิดงานโอนคืน (ฝั่งออเดอร์ย้ายไปแท็บเสร็จสิ้น) */}
-                              {refund.status === 'approved' && (
-                                refund.refund_slip_sent_at ? (
-                                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-violet-100 text-violet-700 rounded-lg text-sm font-medium">
-                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                                    ส่งสลิปแล้ว
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); setSlipSentModal({ open: true, refund, submitting: false }) }}
-                                    disabled={(refund.refund_slip_paths?.length || 0) === 0}
-                                    title={(refund.refund_slip_paths?.length || 0) === 0 ? 'ต้องอัปโหลดสลิปโอนคืนก่อน' : 'ยืนยันว่าส่งสลิปให้ลูกค้าแล้ว'}
-                                    className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
-                                  >
-                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
-                                    ส่งสลิปแล้ว
-                                  </button>
-                                )
-                              )}
                               {/* สลิปโอนคืน — เฉพาะรายการที่อนุมัติแล้ว */}
                               {refund.status === 'approved' && (
                                 (refund.refund_slip_paths?.length || 0) > 0 ? (

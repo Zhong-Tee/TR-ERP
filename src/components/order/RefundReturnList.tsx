@@ -30,6 +30,7 @@ export default function RefundReturnList() {
   const [thumbs, setThumbs] = useState<Record<string, string[]>>({})
   const [viewer, setViewer] = useState<{ billNo: string; urls: string[]; loading: boolean } | null>(null)
   const [viewerFailed, setViewerFailed] = useState<Set<number>>(new Set())
+  const [slipSentModal, setSlipSentModal] = useState<{ refund: RefundRow; submitting: boolean; error: string } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -97,6 +98,34 @@ export default function RefundReturnList() {
       setViewer({ billNo: r.or_orders?.bill_no || '–', urls, loading: false })
     } catch {
       setViewer({ billNo: r.or_orders?.bill_no || '–', urls: [], loading: false })
+    }
+  }
+
+  async function confirmSlipSent() {
+    if (!user || !slipSentModal) return
+    const refund = slipSentModal.refund
+    setSlipSentModal((prev) => prev ? { ...prev, submitting: true, error: '' } : prev)
+    try {
+      const sentAt = new Date().toISOString()
+      const { error } = await supabase
+        .from('ac_refunds')
+        .update({ refund_slip_sent_at: sentAt, refund_slip_sent_by: user.id })
+        .eq('id', refund.id)
+        .eq('status', 'approved')
+        .is('refund_slip_sent_at', null)
+      if (error) throw error
+
+      setRows((prev) => prev.map((row) => row.id === refund.id
+        ? { ...row, refund_slip_sent_at: sentAt, refund_slip_sent_by: user.id }
+        : row))
+      setSlipSentModal(null)
+      setSubTab('done')
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error: any) {
+      console.error('Error marking refund slip as sent:', error)
+      setSlipSentModal((prev) => prev
+        ? { ...prev, submitting: false, error: error?.message || 'บันทึกสถานะไม่สำเร็จ' }
+        : prev)
     }
   }
 
@@ -209,6 +238,16 @@ export default function RefundReturnList() {
                           <span className="absolute bottom-0 right-0 px-1 text-[10px] font-bold bg-emerald-600 text-white rounded-tl">{r.refund_slip_paths!.length}</span>
                         )}
                       </button>
+                      {subTab === 'approved' && (
+                        <button
+                          type="button"
+                          onClick={() => setSlipSentModal({ refund: r, submitting: false, error: '' })}
+                          className="inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-2 bg-sky-500 text-white rounded-lg hover:bg-sky-600 text-sm font-medium transition-colors"
+                        >
+                          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                          ส่งสลิปแล้ว
+                        </button>
+                      )}
                       {subTab === 'done' && (
                         <span className="inline-flex px-2.5 py-1 rounded-lg text-xs font-medium bg-violet-100 text-violet-700 whitespace-nowrap">โอนคืนเสร็จสิ้น</span>
                       )}
@@ -264,6 +303,40 @@ export default function RefundReturnList() {
                 ))}
               </div>
             )}
+          </div>
+        </Modal>
+      )}
+
+      {slipSentModal && (
+        <Modal open onClose={() => { if (!slipSentModal.submitting) setSlipSentModal(null) }} contentClassName="max-w-md w-full">
+          <div className="p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">ยืนยันส่งสลิปโอนคืนแล้ว</h3>
+            <p className="text-sm text-gray-600 mb-2">
+              ยืนยันว่าได้ส่งสลิปโอนคืนของบิล <span className="font-semibold text-gray-800">{slipSentModal.refund.or_orders?.bill_no || '—'}</span> ให้ลูกค้าแล้วหรือไม่?
+            </p>
+            <p className="text-sm text-gray-500 mb-5">เมื่อยืนยัน รายการจะย้ายไปแท็บ “เสร็จสิ้น” ทันที</p>
+            {slipSentModal.error && (
+              <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{slipSentModal.error}</p>
+            )}
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setSlipSentModal(null)}
+                disabled={slipSentModal.submitting}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 text-sm font-medium"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmSlipSent()}
+                disabled={slipSentModal.submitting}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-sm font-medium disabled:opacity-50"
+              >
+                {slipSentModal.submitting && <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />}
+                {slipSentModal.submitting ? 'กำลังบันทึก...' : 'ยืนยัน'}
+              </button>
+            </div>
           </div>
         </Modal>
       )}

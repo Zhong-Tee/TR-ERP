@@ -97,6 +97,12 @@ export interface CreateHRTaskInput {
 
 export async function createHRTask(input: CreateHRTaskInput) {
   const { participants, checklist, ...task } = input
+  if (!task.category_id) {
+    throw new Error('กรุณาเลือกประเภทงาน')
+  }
+  if (!participants.some((participant) => participant.role === 'assignee' && participant.employee_id)) {
+    throw new Error('กรุณาเลือกผู้รับผิดชอบอย่างน้อย 1 คน')
+  }
   const { data, error } = await supabase.from('hr_tasks').insert({ ...task, status: 'new' }).select().single()
   if (error) pgError(error)
   if (participants.length) {
@@ -126,6 +132,12 @@ export async function fetchTask(id: string) {
   const { data, error } = await supabase.from('hr_tasks').select(HR_TASK_SELECT).eq('id', id).single()
   if (error) pgError(error)
   return data as unknown as HRTask
+}
+
+/** ลบงานจากฐานข้อมูล — participants/checklist/evaluations ถูกลบตาม FK ON DELETE CASCADE */
+export async function deleteHRTask(id: string) {
+  const { error } = await supabase.from('hr_tasks').delete().eq('id', id)
+  if (error) pgError(error)
 }
 
 export async function updateTaskStatus(id: string, status: HRTaskStatus, note?: string, completionLink?: string) {

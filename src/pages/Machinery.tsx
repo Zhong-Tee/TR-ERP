@@ -28,8 +28,9 @@ import {
 import { isSuperadmin } from '../config/accessPolicy'
 import { getActiveMobileMode } from '../lib/mobileMode'
 import ModeSwitchButton from '../components/ModeSwitchButton'
+import { MachineryPurchaseRequest, MachineryPurchaseSettings, MachineryStock } from '../components/MachineryPurchase'
 
-type TabKey = 'monitor' | 'settings' | 'history'
+type TabKey = 'monitor' | 'machineSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
 
 const STATUS_ORDER: PrMachineryStatus[] = [
   'working',
@@ -104,16 +105,18 @@ export default function Machinery() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [myPendingPurchaseCount, setMyPendingPurchaseCount] = useState(0)
 
   const showSettingsTab =
     user?.role !== 'production_mb' &&
     user?.role !== 'manager' &&
     user?.role !== 'technician' &&
     (isSuperadmin(user?.role) || hasAccess('machinery-settings'))
+  const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin'
 
   useEffect(() => {
-    if (!showSettingsTab && tab === 'settings') setTab('monitor')
-  }, [showSettingsTab, tab])
+    if ((!showSettingsTab && tab === 'machineSettings') || (!showPurchaseSettingsTab && tab === 'purchaseSettings')) setTab('monitor')
+  }, [showSettingsTab, showPurchaseSettingsTab, tab])
 
   const isMobileRole =
     user?.role === 'production_mb' || user?.role === 'manager' || user?.role === 'technician'
@@ -163,6 +166,26 @@ export default function Machinery() {
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    const loadMyPendingPurchaseCount = async () => {
+      if (!user?.id) return
+      const { count } = await supabase
+        .from('inv_pr')
+        .select('*', { count: 'exact', head: true })
+        .eq('pr_type', 'machinery')
+        .eq('requested_by', user.id)
+        .eq('status', 'pending')
+      setMyPendingPurchaseCount(count || 0)
+    }
+    loadMyPendingPurchaseCount()
+    const channel = supabase.channel('machinery-purchase-count').on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'inv_pr' },
+      loadMyPendingPurchaseCount,
+    ).subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [user?.id])
 
   useEffect(() => {
     const ch = supabase
@@ -613,12 +636,16 @@ export default function Machinery() {
       )}
 
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
-        {(['monitor', 'settings', 'history'] as TabKey[]).map((k) => {
-          if (k === 'settings' && !showSettingsTab) return null
+        {(['monitor', 'machineSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
+          if (k === 'machineSettings' && !showSettingsTab) return null
+          if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null
           const labels: Record<TabKey, string> = {
             monitor: 'สถานะ / มอนิเตอร์',
-            settings: 'ตั้งค่าเครื่อง',
+            machineSettings: 'ตั้งค่าเครื่อง',
             history: 'ประวัติ / รายงาน',
+            purchaseRequest: 'คำขอซื้อ',
+            stock: 'สต๊อคคงเหลือ',
+            purchaseSettings: 'ตั้งค่า',
           }
           return (
             <button
@@ -634,6 +661,11 @@ export default function Machinery() {
               }`}
             >
               {labels[k]}
+              {k === 'purchaseRequest' && myPendingPurchaseCount > 0 && (
+                <span className="ml-1.5 inline-flex min-w-5 items-center justify-center rounded-full bg-orange-500 px-1.5 py-0.5 text-xs font-bold text-white">
+                  {myPendingPurchaseCount > 99 ? '99+' : myPendingPurchaseCount}
+                </span>
+              )}
             </button>
           )
         })}
@@ -792,7 +824,7 @@ export default function Machinery() {
         </section>
       )}
 
-      {tab === 'settings' && showSettingsTab && (
+      {tab === 'machineSettings' && showSettingsTab && (
         <section className="space-y-6">
           <form
             onSubmit={saveMachine}
@@ -1022,6 +1054,12 @@ export default function Machinery() {
           </div>
         </section>
       )}
+
+      {tab === 'purchaseRequest' && <MachineryPurchaseRequest onCountChange={setMyPendingPurchaseCount} />}
+
+      {tab === 'stock' && <MachineryStock />}
+
+      {tab === 'purchaseSettings' && showPurchaseSettingsTab && <MachineryPurchaseSettings />}
 
       {tab === 'history' && (
         <section className="space-y-4">
