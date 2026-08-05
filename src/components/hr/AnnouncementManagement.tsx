@@ -7,6 +7,7 @@ import {
   deleteAnnouncement,
   setAnnouncementApproval,
   fetchAnnouncementAckStatus,
+  fetchAnnouncementAckSummary,
   fetchDepartments,
   fetchEmployeeByUserId,
   uploadHRFile,
@@ -19,6 +20,7 @@ import type {
   HRDepartment,
 } from '../../types'
 import Modal from '../ui/Modal'
+import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { AttachmentStrip } from './employee/AttachmentViewer'
@@ -67,6 +69,8 @@ export default function AnnouncementManagement() {
   const canManage = MANAGE_ROLES.includes(user?.role ?? '')
 
   const [announcements, setAnnouncements] = useState<HRAnnouncement[]>([])
+  /** สรุปการรับทราบต่อประกาศ (announcement_id → รับทราบ/เป้าหมาย) — คอลัมน์ "รับทราบ" */
+  const [ackSummary, setAckSummary] = useState<Record<string, { acked: number; target: number }>>({})
   const [categories, setCategories] = useState<HRAnnouncementCategory[]>([])
   const [departments, setDepartments] = useState<HRDepartment[]>([])
   /** hr_employees.id ของผู้ใช้ปัจจุบัน — ใช้เช็คว่าเราเป็นผู้อนุมัติของประกาศไหน */
@@ -93,21 +97,32 @@ export default function AnnouncementManagement() {
   const [rejectTarget, setRejectTarget] = useState<HRAnnouncement | null>(null)
   const [rejectReason, setRejectReason] = useState('')
 
+  /** คลิกตัวเลขคอลัมน์ "รับทราบ" → รายชื่อพนักงานว่าใครรับทราบ/ยังไม่รับทราบ */
+  const [ackDetail, setAckDetail] = useState<HRAnnouncement | null>(null)
+  const [ackDetailRows, setAckDetailRows] = useState<HRAnnouncementAckStatus[] | null>(null)
+  const [ackDetailLoading, setAckDetailLoading] = useState(false)
+  const [ackDetailFilter, setAckDetailFilter] = useState<'all' | 'done' | 'pending'>('all')
+  const [ackDetailSearch, setAckDetailSearch] = useState('')
+
   const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
 
   const loadAll = useCallback(async () => {
     try {
       setError(null)
-      const [list, cats, depts, emp] = await Promise.all([
+      const [list, cats, depts, emp, ackRows] = await Promise.all([
         fetchAnnouncements(),
         fetchAnnouncementCategories(),
         fetchDepartments(),
         user?.id ? fetchEmployeeByUserId(user.id) : Promise.resolve(null),
+        fetchAnnouncementAckSummary().catch(() => []),
       ])
       setAnnouncements(list)
       setCategories(cats)
       setDepartments(depts)
       setMyEmployeeId(emp?.id ?? null)
+      setAckSummary(Object.fromEntries(
+        ackRows.map((r) => [r.announcement_id, { acked: Number(r.acked_count), target: Number(r.target_count) }])
+      ))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'โหลดข้อมูลไม่สำเร็จ')
     } finally {
@@ -116,6 +131,16 @@ export default function AnnouncementManagement() {
   }, [user?.id])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // เรียลไทม์: ตัวเลขรับทราบ/สถานะประกาศเด้งทันทีที่พนักงานกดรับทราบหรือผู้อนุมัติกดอนุมัติ
+  useEffect(() => {
+    const channel = supabase
+      .channel('hr-announcement-management')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcement_reads' }, () => loadAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcements' }, () => loadAll())
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [loadAll])
 
   // เปิดรายละเอียดแล้วโหลดสถานะการรับทราบ (เฉพาะประกาศที่เผยแพร่แล้ว)
   useEffect(() => {
@@ -145,6 +170,21 @@ export default function AnnouncementManagement() {
     }
     return list
   }, [announcements, filterStatus, filterCategory, search])
+
+  /** รายชื่อในโมดัล "รับทราบ" หลังกรองสถานะ + ค้นหา */
+  const ackDetailFiltered = useMemo(() => {
+    let list = ackDetailRows ?? []
+    if (ackDetailFilter === 'done') list = list.filter((r) => r.acknowledged)
+    if (ackDetailFilter === 'pending') list = list.filter((r) => !r.acknowledged)
+    if (ackDetailSearch.trim()) {
+      const q = ackDetailSearch.trim().toLowerCase()
+      list = list.filter((r) =>
+        r.employee_name.toLowerCase().includes(q) ||
+        (r.department_name ?? '').toLowerCase().includes(q) ||
+        (r.position_name ?? '').toLowerCase().includes(q))
+    }
+    return list
+  }, [ackDetailRows, ackDetailFilter, ackDetailSearch])
 
   const approvalSummary = (a: HRAnnouncement) => {
     const total = a.approvals?.length ?? 0
@@ -281,6 +321,21 @@ export default function AnnouncementManagement() {
   const ackDone = ackStatus?.filter((r) => r.acknowledged) ?? []
   const ackPending = ackStatus?.filter((r) => !r.acknowledged) ?? []
 
+  /** เปิดรายชื่อการรับทราบของประกาศ (คลิกจากคอลัมน์ "รับทราบ") */
+  const openAckDetail = (a: HRAnnouncement) => {
+    setAckDetail(a)
+    setAckDetailFilter('all')
+    setAckDetailSearch('')
+    setAckDetailRows(null)
+    setAckDetailLoading(true)
+    fetchAnnouncementAckStatus(a.id)
+      .then(setAckDetailRows)
+      .catch(() => setAckDetailRows([]))
+      .finally(() => setAckDetailLoading(false))
+  }
+
+  const ackDetailDone = ackDetailRows?.filter((r) => r.acknowledged).length ?? 0
+
   return (
     <div className="mt-4 space-y-6">
       {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm">{error}</div>}
@@ -338,16 +393,18 @@ export default function AnnouncementManagement() {
                 <th className="px-4 py-3 text-left font-semibold text-gray-700">กลุ่มเป้าหมาย</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">สถานะ</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">อนุมัติ</th>
+                <th className="px-4 py-3 text-center font-semibold text-gray-700">รับทราบ</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">วันที่สร้าง</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">จัดการ</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-10 text-gray-400">ไม่พบประกาศ</td></tr>
+                <tr><td colSpan={8} className="text-center py-10 text-gray-400">ไม่พบประกาศ</td></tr>
               ) : filtered.map((a) => {
                 const st = STATUS_LABELS[a.status] ?? STATUS_LABELS.pending
                 const { total, approved } = approvalSummary(a)
+                const ack = ackSummary[a.id]
                 const mine = myPendingApproval(a)
                 return (
                   <tr key={a.id} className="border-b border-surface-100 hover:bg-surface-50 transition-colors">
@@ -369,6 +426,25 @@ export default function AnnouncementManagement() {
                     </td>
                     <td className="px-4 py-3 text-center text-xs">
                       {total === 0 ? <span className="text-gray-400">ไม่มีผู้อนุมัติ</span> : `${approved}/${total}`}
+                    </td>
+                    {/* รับทราบ — เฉพาะประกาศที่เผยแพร่แล้ว (ยังไม่เผยแพร่ = พนักงานยังไม่เห็น) */}
+                    <td className="px-4 py-3 text-center text-xs">
+                      {a.status !== 'published' || !ack ? (
+                        <span className="text-gray-300">–</span>
+                      ) : ack.target === 0 ? (
+                        <span className="text-gray-400">ไม่มีเป้าหมาย</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => openAckDetail(a)}
+                          title="ดูรายชื่อผู้รับทราบ / ยังไม่รับทราบ"
+                          className={`font-semibold tabular-nums underline decoration-dotted underline-offset-2 hover:decoration-solid rounded px-1 ${
+                            ack.acked >= ack.target ? 'text-emerald-600 hover:bg-emerald-50' : 'text-amber-600 hover:bg-amber-50'
+                          }`}
+                        >
+                          {ack.acked}/{ack.target}
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center text-xs">{thaiDateTime(a.created_at)}</td>
                     <td className="px-4 py-3 text-center">
@@ -687,6 +763,99 @@ export default function AnnouncementManagement() {
             </button>
           </div>
         </div>
+      </Modal>
+
+      {/* รายชื่อการรับทราบ — เปิดจากการคลิกตัวเลขในคอลัมน์ "รับทราบ" */}
+      <Modal open={!!ackDetail} onClose={() => setAckDetail(null)} contentClassName="max-w-5xl max-h-[85vh]">
+        {ackDetail && (
+          <div className="p-6 space-y-4">
+            <div>
+              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <FiUsers className="w-5 h-5 text-gray-500" />
+                รายชื่อการรับทราบ
+              </h2>
+              <p className="text-sm text-gray-500 mt-0.5">{ackDetail.title}</p>
+            </div>
+
+            {ackDetailLoading ? (
+              <p className="text-sm text-gray-400 py-8 text-center">กำลังโหลด...</p>
+            ) : !ackDetailRows?.length ? (
+              <p className="text-sm text-gray-400 py-8 text-center">ไม่มีพนักงานในกลุ่มเป้าหมาย</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  {([
+                    { key: 'all', label: `ทั้งหมด (${ackDetailRows.length})`, active: 'bg-gray-800 text-white' },
+                    { key: 'done', label: `รับทราบแล้ว (${ackDetailDone})`, active: 'bg-emerald-600 text-white' },
+                    { key: 'pending', label: `ยังไม่รับทราบ (${ackDetailRows.length - ackDetailDone})`, active: 'bg-amber-500 text-white' },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setAckDetailFilter(t.key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                        ackDetailFilter === t.key ? t.active : 'bg-surface-100 text-gray-600 hover:bg-surface-200'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                  <div className="relative ml-auto">
+                    <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input
+                      value={ackDetailSearch}
+                      onChange={(e) => setAckDetailSearch(e.target.value)}
+                      placeholder="ค้นหาชื่อ / แผนก / ตำแหน่ง..."
+                      className="pl-9 pr-3 py-1.5 rounded-lg border border-surface-200 text-sm w-56"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-surface-200 overflow-hidden">
+                  {/* overflow-x: ชื่อ/ตำแหน่งยาวเลื่อนแนวนอนแทนการตัดขึ้นบรรทัดใหม่ */}
+                  <div className="overflow-auto max-h-[50vh]">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-surface-50 border-b border-surface-200">
+                        <tr>
+                          <th className="px-4 py-2.5 text-left font-semibold text-gray-700 whitespace-nowrap">ชื่อพนักงาน</th>
+                          <th className="px-4 py-2.5 text-left font-semibold text-gray-700 whitespace-nowrap">แผนก</th>
+                          <th className="px-4 py-2.5 text-left font-semibold text-gray-700 whitespace-nowrap">ตำแหน่ง</th>
+                          <th className="px-4 py-2.5 text-center font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
+                          <th className="px-4 py-2.5 text-center font-semibold text-gray-700 whitespace-nowrap">เวลารับทราบ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ackDetailFiltered.length === 0 ? (
+                          <tr><td colSpan={5} className="text-center py-8 text-gray-400">ไม่พบพนักงานตามเงื่อนไข</td></tr>
+                        ) : ackDetailFiltered.map((r) => (
+                          <tr key={r.employee_id} className="border-b border-surface-100 last:border-0 hover:bg-surface-50">
+                            <td className="px-4 py-2.5 font-medium text-gray-800 whitespace-nowrap">{r.employee_name}</td>
+                            <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{r.department_name ?? '-'}</td>
+                            <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">{r.position_name ?? '-'}</td>
+                            <td className="px-4 py-2.5 text-center">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${
+                                r.acknowledged ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {r.acknowledged ? 'รับทราบแล้ว' : 'ยังไม่รับทราบ'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-center text-xs text-gray-500 whitespace-nowrap">
+                              {r.acknowledged ? thaiDateTime(r.acknowledged_at) : '–'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="flex justify-end">
+              <button type="button" onClick={() => setAckDetail(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {ConfirmModal}

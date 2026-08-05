@@ -67,6 +67,7 @@ const HRTrainingCertificates = lazy(() => import('./components/hr/TrainingCertif
 const HRAssetRegistry = lazy(() => import('./components/hr/AssetRegistryPage'))
 const HRSettings = lazy(() => import('./components/hr/HRSettings'))
 const HRTaskManagement = lazy(() => import('./components/hr/TaskManagement'))
+const HRRequests = lazy(() => import('./components/hr/HRRequests'))
 
 const HRLoading = () => (
   <div className="flex items-center justify-center py-20">
@@ -692,6 +693,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
             <Layout><Suspense fallback={<HRLoading />}><HRTaskManagement /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hr/requests"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRRequests /></Suspense></Layout>
           </ProtectedRoute>
         }
       />

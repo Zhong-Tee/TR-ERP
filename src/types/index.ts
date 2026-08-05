@@ -1382,6 +1382,13 @@ export interface HRAnnouncementAckStatus {
   acknowledged_at: string | null
 }
 
+/** สรุปจำนวนการรับทราบต่อประกาศ — ใช้แสดงคอลัมน์ "รับทราบ" (รับทราบ/เป้าหมาย) */
+export interface HRAnnouncementAckSummary {
+  announcement_id: string
+  target_count: number
+  acked_count: number
+}
+
 export interface HRDocument {
   id: string
   category_id?: string

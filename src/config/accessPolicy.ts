@@ -88,6 +88,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/hr/certificates', key: 'hr-certificates' },
   { prefix: '/hr/assets', key: 'hr-assets' },
   { prefix: '/hr/tasks', key: 'hr-tasks' },
+  { prefix: '/hr/requests', key: 'hr-requests' },
   { prefix: '/hr/settings', key: 'hr-settings' },
 ]
 
@@ -114,6 +115,7 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
     { path: '/hr/onboarding', key: 'hr-onboarding' },
     { path: '/hr/assets', key: 'hr-assets' },
     { path: '/hr/tasks', key: 'hr-tasks' },
+    { path: '/hr/requests', key: 'hr-requests' },
     { path: '/hr/contracts', key: 'hr-contracts' },
     { path: '/hr/documents', key: 'hr-documents' },
     { path: '/hr/salary', key: 'hr-salary' },
@@ -168,6 +170,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'hr-certificates': 'hr',
   'hr-assets': 'hr',
   'hr-tasks': 'hr',
+  'hr-requests': 'hr',
   'hr-settings': 'hr',
   'settings-users': 'settings',
   'settings-role-settings': 'settings',

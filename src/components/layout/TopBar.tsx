@@ -30,6 +30,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   // Badge เมนู HR: จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
   const [hrLeavePending, setHrLeavePending] = useState(0)
   const [hrOtPending, setHrOtPending] = useState(0)
+  /** ประกาศที่ต้องดำเนินการ: รออนุมัติ + เผยแพร่แล้วแต่พนักงานรับทราบไม่ครบ */
+  const [hrAnnouncementAttention, setHrAnnouncementAttention] = useState(0)
+  /** คำร้องใหม่ที่ HR ยังไม่ได้กดรับเรื่อง */
+  const [hrRequestPending, setHrRequestPending] = useState(0)
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
   const [notifyBlinking, setNotifyBlinking] = useState(false)
   /** ตำแหน่งแนวตั้งของป้ายแจ้งเตือน (px จากขอบล่าง) — ลากขึ้น/ลงได้ จำค่าไว้ใน localStorage */
@@ -354,13 +358,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const hrTabOrder = [
     '/hr', '/hr/tasks', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
-    '/hr/announcements', '/hr/warnings', '/hr/certificates',
+    '/hr/announcements', '/hr/requests', '/hr/warnings', '/hr/certificates',
     '/hr/interview', '/hr/onboarding', '/hr/assets',
     '/hr/contracts', '/hr/documents', '/hr/salary', '/hr/settings',
   ]
   const hrTabs = [
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
     { path: '/hr/tasks', label: 'งาน' },
+    { path: '/hr/requests', label: 'คำร้อง' },
     { path: '/hr/leave', label: 'ระบบลางาน/OT' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },
@@ -469,6 +474,65 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [canSeeHrLeave])
 
+  // Badge เมนู HR "ประกาศ": ประกาศรออนุมัติ + ประกาศที่เผยแพร่แล้วแต่รับทราบไม่ครบ (เรียลไทม์)
+  const canSeeHrAnnouncements = hasAccess('hr-announcements')
+  useEffect(() => {
+    if (!canSeeHrAnnouncements) return
+    // เรียก rpc ตรง ๆ แทน import จาก hrApi — TopBar โหลดทุกหน้า ไม่ควรดึงโมดูล HR ทั้งก้อนเข้า bundle หลัก
+    const loadAnnouncementAttention = async () => {
+      try {
+        const { data, error } = await supabase.rpc('get_announcement_attention_count')
+        if (error) throw error
+        setHrAnnouncementAttention(Number(data ?? 0))
+      } catch (error) {
+        console.error('Error loading announcement badge count:', error)
+      }
+    }
+
+    loadAnnouncementAttention()
+    window.addEventListener('hr-counts-changed', loadAnnouncementAttention)
+    const channel = supabase
+      .channel('topbar-hr-announcement-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcements' }, loadAnnouncementAttention)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcement_reads' }, loadAnnouncementAttention)
+      .subscribe()
+
+    return () => {
+      window.removeEventListener('hr-counts-changed', loadAnnouncementAttention)
+      supabase.removeChannel(channel)
+    }
+  }, [canSeeHrAnnouncements])
+
+  // Badge เมนู HR "คำร้อง": นับเฉพาะเรื่องใหม่ที่ยังไม่ได้รับเรื่อง
+  const canSeeHrRequests = hasAccess('hr-requests')
+  useEffect(() => {
+    if (!canSeeHrRequests) return
+    const loadRequestPending = async () => {
+      try {
+        const { count, error } = await supabase
+          .from('hr_requests')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'submitted')
+        if (error) throw error
+        setHrRequestPending(count || 0)
+      } catch (error) {
+        console.error('Error loading HR request badge count:', error)
+      }
+    }
+
+    loadRequestPending()
+    window.addEventListener('hr-requests-changed', loadRequestPending)
+    const channel = supabase
+      .channel('topbar-hr-request-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_requests' }, loadRequestPending)
+      .subscribe()
+
+    return () => {
+      window.removeEventListener('hr-requests-changed', loadRequestPending)
+      supabase.removeChannel(channel)
+    }
+  }, [canSeeHrRequests])
+
   return (
     <>
       <header
@@ -565,7 +629,11 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                             ? purchaseBadge.po_waiting_gr
                             : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending) > 0
                               ? hrLeavePending + hrOtPending
-                              : null
+                              : tab.path === '/hr/announcements' && hrAnnouncementAttention > 0
+                                ? hrAnnouncementAttention
+                                : tab.path === '/hr/requests' && hrRequestPending > 0
+                                  ? hrRequestPending
+                                  : null
                   return (
                     <Link
                       key={tab.path}

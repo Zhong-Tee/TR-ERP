@@ -13,6 +13,7 @@ import type {
   HREmployeeWorkCalendar, HRCompanyHoliday,
   HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
   HRAnnouncement, HRAnnouncementCategory, HRAnnouncementApprover, HRAnnouncementAckStatus,
+  HRAnnouncementAckSummary,
 } from '../types'
 
 export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*)`
@@ -763,6 +764,23 @@ export async function fetchAnnouncementAckStatus(announcementId: string) {
   })
   if (error) pgError(error)
   return (data ?? []) as HRAnnouncementAckStatus[]
+}
+
+/** สรุป รับทราบ/เป้าหมาย ของทุกประกาศ — ใช้แสดงคอลัมน์ "รับทราบ" ในตารางจัดการประกาศ */
+export async function fetchAnnouncementAckSummary() {
+  const { data, error } = await supabase.rpc('get_announcement_ack_summary')
+  if (error) pgError(error)
+  return (data ?? []) as HRAnnouncementAckSummary[]
+}
+
+/**
+ * เลข badge เมนู "ประกาศ" — ประกาศที่รออนุมัติ + ที่เผยแพร่แล้วแต่รับทราบไม่ครบ
+ * คืน 0 สำหรับผู้ที่ไม่มีสิทธิ์จัดการประกาศ
+ */
+export async function fetchAnnouncementAttentionCount() {
+  const { data, error } = await supabase.rpc('get_announcement_attention_count')
+  if (error) pgError(error)
+  return Number(data ?? 0)
 }
 
 /** จำนวนประกาศที่ยังไม่กดรับทราบ — ใช้แสดง badge บนเมนูเอกสาร */

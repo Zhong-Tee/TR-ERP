@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { fetchEmployeeByUserId, fetchNotifications, fetchMyUnreadAnnouncementCount } from '../lib/hrApi'
-import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase } from 'react-icons/fi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase, FiMessageSquare } from 'react-icons/fi'
 import type { HREmployee } from '../types'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
@@ -18,6 +18,7 @@ const EmployeeOnboarding = lazy(() => import('../components/hr/employee/Employee
 const EmployeeDocuments = lazy(() => import('../components/hr/employee/EmployeeDocuments'))
 const EmployeeAssets = lazy(() => import('../components/hr/employee/EmployeeAssets'))
 const EmployeeWarningsCerts = lazy(() => import('../components/hr/employee/EmployeeWarningsCerts'))
+const EmployeeRequests = lazy(() => import('../components/hr/employee/EmployeeRequests'))
 const AdminClockLocationsMobile = lazy(() => import('../components/hr/employee/AdminClockLocationsMobile'))
 import ModeSwitchButton from '../components/ModeSwitchButton'
 
@@ -77,6 +78,7 @@ const TABS = [
   { id: 'wfh', label: 'ขอ WFH', icon: FiWifi, Component: EmployeeWFH },
   { id: 'warnings-certs', label: 'เตือน/รับรอง', icon: FiAward, Component: EmployeeWarningsCerts },
   { id: 'assets', label: 'ทรัพย์สิน', icon: FiBox, Component: EmployeeAssets },
+  { id: 'requests', label: 'คำร้อง', icon: FiMessageSquare, Component: EmployeeRequests },
   { id: 'documents', label: 'เอกสาร', icon: FiFileText, Component: EmployeeDocuments },
   { id: 'salary', label: 'เส้นทาง', icon: FiTrendingUp, Component: EmployeeSalaryPath },
   { id: 'onboarding', label: 'Onboarding', icon: FiBookOpen, Component: EmployeeOnboarding },
