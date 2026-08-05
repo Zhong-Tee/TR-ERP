@@ -22,6 +22,16 @@ interface PatternOption { id: string; pattern_name: string; product_categories: 
 
 const LAYERS = ['ชั้น1', 'ชั้น2', 'ชั้น3', 'ชั้น4', 'ชั้น5']
 
+/** สีหมึกพลาสติก → สินค้าหมึกแฟลชที่ต้องเพิ่มเป็นของแถม */
+const PLASTIC_INK_BONUS_MAP: Record<string, string> = {
+  'พลาสติกดำ': 'หมึกแฟลชพลาสติก 5 ml. (ดำ)',
+  'พลาสติกเขียว': 'หมึกแฟลชพลาสติก 5 ml. (เขียว)',
+  'พลาสติกแดง': 'หมึกแฟลชพลาสติก 5 ml. (แดง)',
+  'พลาสติกน้ำเงิน': 'หมึกแฟลชพลาสติก 5 ml. (น้ำเงิน)',
+}
+
+const PLASTIC_INK_BONUS_NAMES = new Set(Object.values(PLASTIC_INK_BONUS_MAP))
+
 /**
  * งานที่เปิดบิลแล้ว: อ่านรายการจากบิลจริง (or_order_items) แทนร่างใน mp_order_items
  * เพื่อให้แถบ "เสร็จสิ้น" แสดงข้อมูลล่าสุดหลังบิลถูกแก้ในเมนูออเดอร์
@@ -182,6 +192,92 @@ export default function MarketplaceOrderModal({
 
   function updateItem(id: string, patch: Partial<MpOrderItem>) {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+  }
+
+  /**
+   * ใช้พฤติกรรมเดียวกับเมนูออเดอร์: เมื่อเลือกหมึกพลาสติก ให้เพิ่ม/เปลี่ยน
+   * สินค้าหมึกแฟลชเป็นแถวของแถมถัดจากสินค้าหลัก และลบออกเมื่อเปลี่ยนเป็นสีชนิดอื่น
+   */
+  function handleInkColorChange(itemId: string, selectedInk: string) {
+    const bonusProductName = PLASTIC_INK_BONUS_MAP[selectedInk]
+    const bonusProduct = bonusProductName
+      ? products.find((p) => p.product_name === bonusProductName)
+      : undefined
+
+    setItems((prev) => {
+      const itemIndex = prev.findIndex((it) => it.id === itemId)
+      if (itemIndex < 0) return prev
+
+      const next = [...prev]
+      next[itemIndex] = { ...next[itemIndex], ink_color: selectedInk }
+
+      const possibleBonus = next[itemIndex + 1]
+      const possibleBonusName = possibleBonus?.product_id
+        ? productById.get(possibleBonus.product_id)?.product_name
+        : possibleBonus?.product_name_raw
+      const hasAdjacentBonus = !!(
+        possibleBonus?.is_free &&
+        possibleBonusName &&
+        PLASTIC_INK_BONUS_NAMES.has(possibleBonusName)
+      )
+
+      if (!bonusProduct) {
+        if (hasAdjacentBonus) {
+          next.splice(itemIndex + 1, 1)
+          setProductSearch((search) => {
+            const updated = { ...search }
+            delete updated[possibleBonus.id]
+            return updated
+          })
+        }
+        return next
+      }
+
+      if (hasAdjacentBonus) {
+        next[itemIndex + 1] = {
+          ...possibleBonus,
+          product_id: bonusProduct.id,
+          product_name_raw: bonusProduct.product_name,
+          qty: 1,
+          unit_price: 0,
+          line_total: 0,
+          is_free: true,
+          notes: 'สินค้าแถม',
+        }
+        setProductSearch((search) => ({ ...search, [possibleBonus.id]: bonusProduct.product_name }))
+        return next
+      }
+
+      const bonusId = crypto.randomUUID()
+      const bonusItem: MpOrderItem = {
+        id: bonusId,
+        mp_order_id: mpOrder.id,
+        line_index: itemIndex + 1,
+        product_name_raw: bonusProduct.product_name,
+        sku_ref: bonusProduct.product_code || null,
+        variation: null,
+        qty: 1,
+        unit_price: 0,
+        line_total: 0,
+        raw_snapshot: null,
+        product_id: bonusProduct.id,
+        product_type: 'ชั้น1',
+        ink_color: null,
+        cartoon_pattern: null,
+        line_pattern: null,
+        font: null,
+        line_1: null,
+        line_2: null,
+        line_3: null,
+        no_name_line: false,
+        is_free: true,
+        notes: 'สินค้าแถม',
+        created_at: new Date().toISOString(),
+      }
+      next.splice(itemIndex + 1, 0, bonusItem)
+      setProductSearch((search) => ({ ...search, [bonusId]: bonusProduct.product_name }))
+      return next
+    })
   }
 
   // แจกจำนวน total ออกเป็น n รายการให้เท่ากันมากที่สุด (เศษกระจายให้รายการแรก ๆ)
@@ -812,7 +908,7 @@ export default function MarketplaceOrderModal({
                             <select
                               value={it.ink_color || ''}
                               disabled={dis('ink_color')}
-                              onChange={(e) => updateItem(it.id, { ink_color: e.target.value })}
+                              onChange={(e) => handleInkColorChange(it.id, e.target.value)}
                               className={cls(dis('ink_color'))}
                             >
                               <option value="">เลือกสี</option>
