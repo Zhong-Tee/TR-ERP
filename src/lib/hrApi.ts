@@ -14,7 +14,9 @@ import type {
   HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
   HRAnnouncement, HRAnnouncementCategory, HRAnnouncementApprover, HRAnnouncementAckStatus,
   HRAnnouncementAckSummary,
+  HRTimeCertification, HRScoreEvent, HRScorePeriod, HRScoreAppeal, HRScoreSettings,
 } from '../types'
+import type { AttendanceFact, ScoreCategory, ScoreEventDraft, ScoreRule, ScoreSummary } from './workScore'
 
 export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*)`
 
@@ -1710,4 +1712,230 @@ export async function updateOTRequest(id: string, updates: Partial<HROTRequest>)
     .from('hr_ot_requests').update(payload).eq('id', id).select().single()
   if (error) pgError(error)
   return data as HROTRequest
+}
+
+// ─── คะแนนการปฏิบัติงาน (Work Score) ────────────────────────────────────────
+
+const SCORE_EMP_MINI = 'id,employee_code,first_name,last_name,nickname,photo_url,department_id'
+
+export async function fetchScoreCategories(activeOnly = false) {
+  let q = supabase.from('hr_score_categories').select('*').order('sort_order')
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as ScoreCategory[]
+}
+
+export async function upsertScoreCategory(c: Partial<ScoreCategory>) {
+  const payload = { ...c } as Record<string, unknown>
+  delete payload.id
+  const query = c.id
+    ? supabase.from('hr_score_categories').update(payload).eq('id', c.id)
+    : supabase.from('hr_score_categories').insert(payload)
+  const { data, error } = await query.select().single()
+  if (error) pgError(error)
+  return data as ScoreCategory
+}
+
+export async function fetchScoreRules(categoryId?: string) {
+  let q = supabase.from('hr_score_rules').select('*').order('group_code').order('sort_order')
+  if (categoryId) q = q.eq('category_id', categoryId)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return data as ScoreRule[]
+}
+
+export async function upsertScoreRule(r: Partial<ScoreRule>) {
+  const payload = { ...r } as Record<string, unknown>
+  delete payload.id
+  const query = r.id
+    ? supabase.from('hr_score_rules').update(payload).eq('id', r.id)
+    : supabase.from('hr_score_rules').insert(payload)
+  const { data, error } = await query.select().single()
+  if (error) pgError(error)
+  return data as ScoreRule
+}
+
+export async function deleteScoreRule(id: string) {
+  const { error } = await supabase.from('hr_score_rules').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function fetchScoreSettings() {
+  const { data, error } = await supabase.from('hr_score_settings').select('*').limit(1).maybeSingle()
+  if (error) pgError(error)
+  return data as HRScoreSettings | null
+}
+
+export async function saveScoreSettings(s: Partial<HRScoreSettings>) {
+  const payload = { ...s } as Record<string, unknown>
+  delete payload.id
+  const query = s.id
+    ? supabase.from('hr_score_settings').update(payload).eq('id', s.id)
+    : supabase.from('hr_score_settings').insert(payload)
+  const { data, error } = await query.select().single()
+  if (error) pgError(error)
+  return data as HRScoreSettings
+}
+
+/** ข้อเท็จจริงรายวันสำหรับคิดคะแนน — พนักงานทั่วไปต้องส่ง employeeId ของตัวเอง */
+export async function fetchAttendanceFacts(dateFrom: string, dateTo: string, employeeId?: string) {
+  const { data, error } = await supabase.rpc('hr_attendance_facts', {
+    p_from: dateFrom,
+    p_to: dateTo,
+    p_employee: employeeId ?? null,
+  })
+  if (error) pgError(error)
+  return (data ?? []) as AttendanceFact[]
+}
+
+export async function fetchScoreEvents(filters: {
+  date_from: string
+  date_to: string
+  employee_id?: string
+  category_id?: string
+}) {
+  let q = supabase.from('hr_score_events')
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI})`)
+    .gte('event_date', filters.date_from)
+    .lte('event_date', filters.date_to)
+    .order('event_date', { ascending: false })
+  if (filters.employee_id) q = q.eq('employee_id', filters.employee_id)
+  if (filters.category_id) q = q.eq('category_id', filters.category_id)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRScoreEvent[]
+}
+
+export async function fetchScorePeriods(period: string, categoryId?: string) {
+  let q = supabase.from('hr_score_periods')
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI})`)
+    .eq('period', period)
+  if (categoryId) q = q.eq('category_id', categoryId)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRScorePeriod[]
+}
+
+/**
+ * บันทึกผลคะแนนของพนักงาน 1 คน 1 เดือน (atomic ผ่าน RPC)
+ * lock = true คือปิดรอบ หลังจากนั้นเดือนนั้นแก้ไม่ได้อีก
+ */
+export async function commitScorePeriod(input: {
+  employeeId: string
+  period: string
+  categoryId: string
+  summary: ScoreSummary
+  lock?: boolean
+}) {
+  const events = input.summary.events.map((e: ScoreEventDraft) => ({
+    event_date: e.event_date,
+    rule_id: e.rule_id,
+    event_code: e.event_code,
+    points: e.points,
+    ref_table: e.ref_table,
+    ref_id: e.ref_id,
+    detail: e.detail,
+  }))
+  const { data, error } = await supabase.rpc('hr_score_commit_period', {
+    p_employee: input.employeeId,
+    p_period: input.period,
+    p_category: input.categoryId,
+    p_events: events,
+    p_base: input.summary.base_points,
+    p_raw_deduction: input.summary.raw_deduction,
+    p_total: input.summary.total_points,
+    p_lock: input.lock ?? false,
+  })
+  if (error) pgError(error)
+  return data as HRScorePeriod
+}
+
+/** เหตุการณ์ที่ HR เพิ่มเอง — ไม่ถูกลบตอนคำนวณใหม่ */
+export async function addManualScoreEvent(ev: {
+  employee_id: string
+  event_date: string
+  category_id: string
+  event_code: string
+  points: number
+  note?: string
+}) {
+  const { data, error } = await supabase.from('hr_score_events')
+    .insert({ ...ev, source: 'manual', detail: {} }).select().single()
+  if (error) pgError(error)
+  return data as HRScoreEvent
+}
+
+export async function deleteScoreEvent(id: string) {
+  const { error } = await supabase.from('hr_score_events').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function fetchTimeCertifications(dateFrom: string, dateTo: string, employeeId?: string) {
+  let q = supabase.from('hr_time_certifications')
+    .select('*, certifier:hr_employees!certified_by(first_name,last_name,nickname)')
+    .gte('work_date', dateFrom).lte('work_date', dateTo).order('work_date', { ascending: false })
+  if (employeeId) q = q.eq('employee_id', employeeId)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRTimeCertification[]
+}
+
+export async function upsertTimeCertification(c: {
+  employee_id: string
+  work_date: string
+  entry_type: 'clock_in' | 'clock_out'
+  certified_time: string
+  reason: string
+  certified_by?: string
+}) {
+  const { data, error } = await supabase.from('hr_time_certifications')
+    .upsert({ ...c, certified_at: new Date().toISOString() },
+      { onConflict: 'employee_id,work_date,entry_type' })
+    .select().single()
+  if (error) pgError(error)
+  return data as HRTimeCertification
+}
+
+export async function deleteTimeCertification(id: string) {
+  const { error } = await supabase.from('hr_time_certifications').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function fetchScoreAppeals(filters?: { status?: string; employee_id?: string }) {
+  let q = supabase.from('hr_score_appeals')
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI}), event:hr_score_events!score_event_id(*)`)
+    .order('created_at', { ascending: false })
+  if (filters?.status) q = q.eq('status', filters.status)
+  if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRScoreAppeal[]
+}
+
+export async function createScoreAppeal(scoreEventId: string, employeeId: string, reason: string) {
+  const { data, error } = await supabase.from('hr_score_appeals')
+    .insert({ score_event_id: scoreEventId, employee_id: employeeId, reason })
+    .select().single()
+  if (error) pgError(error)
+  return data as HRScoreAppeal
+}
+
+/** ยอมรับคำทักท้วง = คืนคะแนนด้วยเหตุการณ์ชดเชย (RPC ทำให้ atomic) */
+export async function acceptScoreAppeal(appealId: string, note?: string) {
+  const { error } = await supabase.rpc('hr_score_accept_appeal', {
+    p_appeal: appealId,
+    p_note: note ?? null,
+  })
+  if (error) pgError(error)
+}
+
+export async function rejectScoreAppeal(appealId: string, reviewerId: string, note?: string) {
+  const { error } = await supabase.from('hr_score_appeals').update({
+    status: 'rejected',
+    reviewed_by: reviewerId,
+    reviewed_at: new Date().toISOString(),
+    decision_note: note ?? null,
+  }).eq('id', appealId)
+  if (error) pgError(error)
 }

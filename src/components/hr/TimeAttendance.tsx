@@ -13,8 +13,12 @@ import {
   fetchCompanyHolidays,
   getTimeClockPhotoUrl,
   getTimeClockPhotoUrls,
+  fetchTimeCertifications,
+  upsertTimeCertification,
+  fetchEmployeeByUserId,
 } from '../../lib/hrApi'
-import type { HRTimeEntry, HREmployee, HRWorkSchedule, HRTimeEntryType } from '../../types'
+import { useAuthContext } from '../../contexts/AuthContext'
+import type { HRTimeEntry, HREmployee, HRWorkSchedule, HRTimeEntryType, HRTimeCertification } from '../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -115,15 +119,28 @@ function otMinutesOf(r: DashRow): number {
   return ms > 0 ? Math.round(ms / 60000) : 0
 }
 
-type DashStatusKey = 'normal' | 'late' | 'missing_out' | 'working' | 'missing_in'
-/** สถานะการบันทึกของพนักงาน 1 คนในวันนั้น — sev สูง = ต้องรีบจัดการ (เรียงขึ้นบน) */
-function dashStatusOf(r: DashRow, lateMin: number, isPast: boolean): {
+type DashStatusKey = 'normal' | 'certified' | 'late' | 'missing_out' | 'working' | 'missing_in'
+/**
+ * สถานะการบันทึกของพนักงาน 1 คนในวันนั้น — sev สูง = ต้องรีบจัดการ (เรียงขึ้นบน)
+ * ช่องที่หัวหน้ารับรองแล้วนับเหมือนมีบันทึก จึงไม่ค้างเป็น "ลืมบันทึก"
+ */
+function dashStatusOf(
+  r: DashRow,
+  lateMin: number,
+  isPast: boolean,
+  certified?: { in?: boolean; out?: boolean },
+): {
   key: DashStatusKey
   label: string
   cls: string
   tint: string
   sev: number
 } {
+  const hasIn = !!r.clockIn || !!certified?.in
+  const hasOut = !!r.clockOut || !!certified?.out
+  if ((certified?.in || certified?.out) && hasIn && (hasOut || !isPast)) {
+    return { key: 'certified', label: 'หัวหน้ารับรอง', cls: 'bg-sky-100 text-sky-700', tint: 'border-sky-200', sev: 1 }
+  }
   if (r.clockIn && r.clockOut) {
     return lateMin > 0
       ? { key: 'late', label: 'สาย', cls: 'bg-amber-100 text-amber-800', tint: 'border-amber-200', sev: 2 }
@@ -152,6 +169,20 @@ export default function TimeAttendance() {
   const [activeTab, setActiveTab] = useState<TabKey>('entries')
   const [schedules, setSchedules] = useState<HRWorkSchedule[]>([])
 
+  // ─── ใบรับรองเวลาของหัวหน้า (ใช้แทนบันทึกที่หายไป) ───
+  const { user } = useAuthContext()
+  const [myEmployeeId, setMyEmployeeId] = useState('')
+  const [certifications, setCertifications] = useState<HRTimeCertification[]>([])
+  const [certForm, setCertForm] = useState<{
+    employee: HREmployee
+    workDate: string
+    entryType: 'clock_in' | 'clock_out'
+    time: string
+    reason: string
+  } | null>(null)
+  const [certSaving, setCertSaving] = useState(false)
+  const [certError, setCertError] = useState('')
+
   // ─── แท็บบันทึกเวลาสด ───
   const [entries, setEntries] = useState<HRTimeEntry[]>([])
   const [entriesLoading, setEntriesLoading] = useState(true)
@@ -176,6 +207,46 @@ export default function TimeAttendance() {
   useEffect(() => {
     fetchWorkSchedules().then(setSchedules).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (user?.id) fetchEmployeeByUserId(user.id).then((e) => setMyEmployeeId(e?.id ?? '')).catch(() => {})
+  }, [user?.id])
+
+  /** ใบรับรองของพนักงานคนนี้ในวันนี้ (ถ้ามี) */
+  const certOf = useCallback(
+    (employeeId: string, workDate: string, entryType: 'clock_in' | 'clock_out') =>
+      certifications.find(
+        (c) => c.employee_id === employeeId && c.work_date === workDate && c.entry_type === entryType,
+      ),
+    [certifications],
+  )
+
+  const saveCertification = async () => {
+    if (!certForm) return
+    if (!certForm.time || !certForm.reason.trim()) {
+      setCertError('ต้องกรอกทั้งเวลาและเหตุผล')
+      return
+    }
+    setCertSaving(true)
+    setCertError('')
+    try {
+      await upsertTimeCertification({
+        employee_id: certForm.employee.id,
+        work_date: certForm.workDate,
+        entry_type: certForm.entryType,
+        // เวลาในฟอร์มเป็นเวลาท้องถิ่นของวันที่นั้น
+        certified_time: new Date(`${certForm.workDate}T${certForm.time}:00`).toISOString(),
+        reason: certForm.reason.trim(),
+        certified_by: myEmployeeId || undefined,
+      })
+      setCertForm(null)
+      await loadEntries()
+    } catch (e) {
+      setCertError(e instanceof Error ? e.message : 'บันทึกการรับรองไม่สำเร็จ')
+    } finally {
+      setCertSaving(false)
+    }
+  }
 
   const defaultSchedule = useMemo(
     () => schedules.find((s) => s.is_default && s.is_active) ?? schedules.find((s) => s.is_active) ?? null,
@@ -212,6 +283,7 @@ export default function TimeAttendance() {
         limit: 2000,
       })
       setEntries(data)
+      if (dateFrom && dateTo) setCertifications(await fetchTimeCertifications(dateFrom, dateTo))
     } catch (e) {
       console.error('Error loading time entries:', e)
     } finally {
@@ -785,7 +857,23 @@ export default function TimeAttendance() {
           ) : filteredEntries.length === 0 ? (
             <div className="text-center py-12 text-gray-400">ไม่มีบันทึกเวลาในช่วงที่เลือก</div>
           ) : entriesView === 'dashboard' ? (
-            <AttendanceDashboard groups={dashboardGroups} lateOf={entryLateMinutes} today={todayStr()} />
+            <AttendanceDashboard
+              groups={dashboardGroups}
+              lateOf={entryLateMinutes}
+              today={todayStr()}
+              certOf={certOf}
+              onCertify={(employee, workDate, entryType) => {
+                setCertError('')
+                const existing = certOf(employee.id, workDate, entryType)
+                setCertForm({
+                  employee,
+                  workDate,
+                  entryType,
+                  time: existing ? new Date(existing.certified_time).toTimeString().slice(0, 5) : '',
+                  reason: existing?.reason ?? '',
+                })
+              }}
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -979,6 +1067,63 @@ export default function TimeAttendance() {
       {/* Modal นำเข้าข้อมูลจากเครื่องสแกนนิ้ว */}
       <TimeEntryImport open={showImport} onClose={() => setShowImport(false)} onImported={loadEntries} />
 
+      {/* Modal หัวหน้ารับรองเวลา */}
+      <Modal open={!!certForm} onClose={() => setCertForm(null)} closeOnBackdropClick contentClassName="max-w-md">
+        {certForm && (
+          <>
+            <div className="flex items-center justify-between px-4 py-3 bg-sky-600 text-white">
+              <span className="text-sm font-medium">
+                รับรอง{certForm.entryType === 'clock_in' ? 'เวลาเข้างาน' : 'เวลาออกงาน'}
+              </span>
+              <button type="button" onClick={() => setCertForm(null)} aria-label="ปิด">
+                <FiX className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="text-sm">
+                <div className="font-medium text-gray-800">{empName(certForm.employee)}</div>
+                <div className="text-xs text-gray-400">
+                  {certForm.employee.employee_code} · {certForm.workDate}
+                </div>
+              </div>
+              {certError && (
+                <div className="rounded-lg bg-red-50 border border-red-200 text-red-800 px-3 py-2 text-sm">{certError}</div>
+              )}
+              <label className="block text-sm">
+                <span className="text-gray-600">เวลาที่รับรอง</span>
+                <input
+                  type="time"
+                  value={certForm.time}
+                  onChange={(e) => setCertForm({ ...certForm, time: e.target.value })}
+                  className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-gray-600">เหตุผล (บังคับ)</span>
+                <textarea
+                  rows={3}
+                  value={certForm.reason}
+                  onChange={(e) => setCertForm({ ...certForm, reason: e.target.value })}
+                  placeholder="เช่น มือถือแบตหมด ยืนยันจากกล้องวงจรปิดว่าเข้างาน 08:00"
+                  className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+                />
+              </label>
+              <p className="text-xs text-gray-400">
+                การรับรองถูกบันทึกแยกจากบันทึกเวลาจริง และมีชื่อผู้รับรองกำกับไว้ตรวจสอบย้อนหลังได้
+              </p>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setCertForm(null)}
+                  className="px-4 py-2 rounded-xl bg-surface-100 hover:bg-surface-200 text-sm">ยกเลิก</button>
+                <button type="button" onClick={saveCertification} disabled={certSaving}
+                  className="px-4 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50 text-sm">
+                  {certSaving ? 'กำลังบันทึก...' : 'บันทึกการรับรอง'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </Modal>
+
       {/* Modal ดูรูป — ใช้ Modal กลางที่เว้นระยะใต้ header/แถบเมนูให้อัตโนมัติ */}
       <Modal
         open={!!photoView}
@@ -1009,14 +1154,52 @@ export default function TimeAttendance() {
 type DashFilter = 'all' | 'problem' | 'late' | 'missing'
 
 /** มุมมอง Dashboard: การ์ดรายคน/รายวัน — เห็นเวลาเข้า-ออก, สาย, การลืมบันทึก และ OT รวมได้ทันที */
+/**
+ * ช่องเวลาที่ไม่มีบันทึกจริง — แสดงเวลาที่หัวหน้ารับรอง หรือปุ่มให้รับรอง
+ * เวลาที่รับรองไม่ได้เขียนทับ hr_time_entries (เก็บแยกใน hr_time_certifications)
+ */
+function CertifiedSlot({ cert, onCertify }: { cert?: HRTimeCertification; onCertify: () => void }) {
+  if (cert) {
+    return (
+      <>
+        <div className="font-bold text-gray-800 tabular-nums">{fmtClock(cert.certified_time)}</div>
+        <button
+          type="button"
+          onClick={onCertify}
+          title={`เหตุผล: ${cert.reason}`}
+          className="mt-0.5 rounded-full bg-sky-100 text-sky-700 px-1.5 py-0.5 text-[10px] font-semibold hover:bg-sky-200"
+        >
+          ✓ หัวหน้ารับรอง
+        </button>
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="font-bold text-rose-500">ไม่มีบันทึก</div>
+      <button
+        type="button"
+        onClick={onCertify}
+        className="mt-0.5 rounded-lg border border-sky-500 text-sky-700 px-1.5 py-0.5 text-[10px] font-medium hover:bg-sky-50"
+      >
+        รับรองเวลา
+      </button>
+    </>
+  )
+}
+
 function AttendanceDashboard({
   groups,
   lateOf,
   today,
+  certOf,
+  onCertify,
 }: {
   groups: { date: string; rows: DashRow[] }[]
   lateOf: (e: HRTimeEntry) => number
   today: string
+  certOf: (employeeId: string, workDate: string, entryType: 'clock_in' | 'clock_out') => HRTimeCertification | undefined
+  onCertify: (employee: HREmployee, workDate: string, entryType: 'clock_in' | 'clock_out') => void
 }) {
   const [filter, setFilter] = useState<DashFilter>('all')
 
@@ -1027,11 +1210,15 @@ function AttendanceDashboard({
       .map((r) => {
         const lateMin = r.clockIn ? lateOf(r.clockIn) : 0
         const otMin = otMinutesOf(r)
-        return { r, lateMin, otMin, status: dashStatusOf(r, lateMin, isPast) }
+        const certified = {
+          in: !!certOf(r.employee.id, date, 'clock_in'),
+          out: !!certOf(r.employee.id, date, 'clock_out'),
+        }
+        return { r, lateMin, otMin, status: dashStatusOf(r, lateMin, isPast, certified) }
       })
       .sort((a, b) => b.status.sev - a.status.sev || empName(a.r.employee).localeCompare(empName(b.r.employee), 'th'))
 
-    const counts = { normal: 0, late: 0, missing_out: 0, working: 0, missing_in: 0 } as Record<DashStatusKey, number>
+    const counts = { normal: 0, certified: 0, late: 0, missing_out: 0, working: 0, missing_in: 0 } as Record<DashStatusKey, number>
     let otTotalMin = 0
     for (const it of items) {
       counts[it.status.key]++
@@ -1142,7 +1329,10 @@ function AttendanceDashboard({
                             )}
                           </>
                         ) : (
-                          <div className="font-bold text-rose-500">ไม่มีบันทึก</div>
+                          <CertifiedSlot
+                            cert={certOf(r.employee.id, date, 'clock_in')}
+                            onCertify={() => onCertify(r.employee, date, 'clock_in')}
+                          />
                         )}
                       </div>
                       <div className="rounded-lg bg-rose-50/50 px-2.5 py-2">
@@ -1150,7 +1340,10 @@ function AttendanceDashboard({
                         {r.clockOut ? (
                           <div className="font-bold text-gray-800 tabular-nums">{fmtClock(r.clockOut.entry_time)}</div>
                         ) : isPast ? (
-                          <div className="font-bold text-rose-500">ไม่มีบันทึก</div>
+                          <CertifiedSlot
+                            cert={certOf(r.employee.id, date, 'clock_out')}
+                            onCertify={() => onCertify(r.employee, date, 'clock_out')}
+                          />
                         ) : (
                           <div className="text-sm text-gray-400">ยังไม่ออก</div>
                         )}

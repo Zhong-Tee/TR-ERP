@@ -784,6 +784,7 @@ export default function Settings() {
     { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },
     { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
     { key: 'hr-attendance', label: 'เวลาทำงาน', group: 'hr' },
+    { key: 'hr-work-score', label: 'คะแนนปฏิบัติงาน', group: 'hr' },
     { key: 'hr-contracts', label: 'สัญญาจ้าง', group: 'hr' },
     { key: 'hr-documents', label: 'กฏระเบียบ/SOP', group: 'hr' },
     { key: 'hr-onboarding', label: 'รับพนักงานใหม่', group: 'hr' },

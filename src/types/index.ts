@@ -1756,3 +1756,91 @@ export interface HRAssetLog {
   changed_by_name: string | null
   created_at: string
 }
+
+// ─── คะแนนการปฏิบัติงาน (Work Score) ────────────────────────────────────────
+// หมายเหตุ: HRScoreCategory / HRScoreRule / AttendanceFact อยู่ใน lib/workScore.ts
+// (ที่เดียวกับตรรกะการคิดคะแนน) — ที่นี่เก็บเฉพาะ row ที่ UI ใช้ตรง ๆ
+
+/** ใบรับรองเวลาเข้า-ออกโดยหัวหน้า (ใช้แทนบันทึกที่หายไป ไม่แก้ hr_time_entries) */
+export interface HRTimeCertification {
+  id: string
+  employee_id: string
+  work_date: string
+  entry_type: 'clock_in' | 'clock_out'
+  certified_time: string
+  reason: string
+  certified_by?: string | null
+  certified_at: string
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  certifier?: { first_name?: string; last_name?: string; nickname?: string } | null
+}
+
+/** เหตุการณ์คะแนนที่บันทึกลง ledger แล้ว (ตอนปิดรอบ หรือ HR เพิ่มเอง) */
+export interface HRScoreEvent {
+  id: string
+  employee_id: string
+  event_date: string
+  category_id: string
+  rule_id?: string | null
+  event_code: string
+  points: number
+  source: 'auto' | 'manual'
+  ref_table?: string | null
+  ref_id?: string | null
+  detail: Record<string, unknown>
+  note?: string | null
+  created_by?: string | null
+  created_at: string
+  employee?: HREmployee
+}
+
+/** สรุปคะแนนรายเดือนต่อคนต่อหมวด */
+export interface HRScorePeriod {
+  id: string
+  employee_id: string
+  /** วันที่ 1 ของเดือน */
+  period: string
+  category_id: string
+  base_points: number
+  /** ยอดหักจริงก่อนชนพื้น (ค่าบวก) */
+  raw_deduction: number
+  total_points: number
+  status: 'open' | 'locked'
+  locked_at?: string | null
+  locked_by?: string | null
+  note?: string | null
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+}
+
+/** คำทักท้วงคะแนนของพนักงาน */
+export interface HRScoreAppeal {
+  id: string
+  score_event_id: string
+  employee_id: string
+  reason: string
+  status: 'pending' | 'accepted' | 'rejected'
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  decision_note?: string | null
+  created_at: string
+  updated_at: string
+  employee?: HREmployee
+  event?: HRScoreEvent
+}
+
+/** ค่ากลางของรอบคะแนน (แถวเดียว) */
+export interface HRScoreSettings {
+  id: string
+  /** ปิดรอบของเดือนก่อนหน้า เมื่อถึงวันที่นี้ของเดือนถัดไป */
+  lock_day_of_month: number
+  auto_lock: boolean
+  /** พนักงานทักท้วงได้ภายในกี่วันนับจากวันเกิดเหตุ */
+  appeal_days: number
+  /** หัวหน้ารับรองเวลาย้อนหลังได้ไม่เกินกี่วัน */
+  certify_back_days: number
+  updated_at: string
+}

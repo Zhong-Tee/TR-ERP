@@ -3,6 +3,20 @@ import { supabase } from '../lib/supabase'
 import type { Session } from '@supabase/supabase-js'
 import type { User } from '../types'
 import { clearMobileModeStorage } from '../lib/mobileMode'
+import { clearSessionDay, ensureSessionDay, isSessionExpired, markSessionDay, readSessionDay } from '../lib/dailySession'
+import { MISSED_CLOCK_IN_SHOWN_KEY } from '../lib/missedClockIn'
+
+/** ล้างสถานะที่ควรอยู่แค่ช่วง session เดียว (ปลดล็อกหน้าแผน, popup เตือนลงเวลา, โหมดมือถือ) */
+function clearSessionScopedStorage() {
+  try {
+    sessionStorage.removeItem('plan_unlocked')
+    sessionStorage.removeItem(MISSED_CLOCK_IN_SHOWN_KEY)
+  } catch {
+    /* storage ไม่พร้อมใช้งาน — ข้าม */
+  }
+  // ล้างโหมดมือถือ/PC Desktop ที่จำไว้ — ให้ login ครั้งถัดไปเริ่มจากหน้าเลือกโหมด
+  clearMobileModeStorage()
+}
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
@@ -14,8 +28,16 @@ export function useAuth() {
   useEffect(() => {
     // ใช้ non-async callback เพื่อไม่ return Promise (ซึ่ง Supabase internals อาจตีความผิด)
     supabase.auth.getSession().then(({ data: { session } }) => {
+      // session ค้างจากเมื่อวาน → บังคับ login ใหม่ (ทุกเช้า)
+      if (session?.user && isSessionExpired(readSessionDay())) {
+        forceDailySignOut()
+        setSupabaseUser(null)
+        setLoading(false)
+        return
+      }
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
+        ensureSessionDay()
         handleSessionWithMfaCheck(session.user.id)
       } else {
         setLoading(false)
@@ -27,6 +49,8 @@ export function useAuth() {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
+        // session ที่มาจากทางอื่น (เช่นลิงก์ reset password) ก็ต้องนับวันเริ่มไว้ด้วย
+        ensureSessionDay()
         // Recovery flow: ไม่ต้องเช็ค MFA — ให้ ResetPassword page จัดการเอง
         if (_event === 'PASSWORD_RECOVERY') {
           setLoading(false)
@@ -43,6 +67,35 @@ export function useAuth() {
 
     return () => subscription.unsubscribe()
   }, [])
+
+  // เปิดเว็บค้างข้ามคืน → พอถึงเช้าวันใหม่ให้เตะออกไป login ใหม่
+  useEffect(() => {
+    if (!supabaseUser) return
+    const check = () => {
+      if (isSessionExpired(readSessionDay())) forceDailySignOut()
+    }
+    check()
+    const timer = setInterval(check, 60_000)
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('focus', check)
+    }
+  }, [supabaseUser])
+
+  /** ออกจากระบบเพราะข้ามวัน — ล้างสถานะที่ผูกกับ session แล้วให้ Supabase เคลียร์ token */
+  function forceDailySignOut() {
+    clearSessionScopedStorage()
+    // ล้างวันของ session เมื่อออกสำเร็จเท่านั้น — ถ้าเน็ตหลุด จะได้ลองใหม่ในรอบถัดไป
+    supabase.auth
+      .signOut()
+      .then(({ error }) => {
+        if (!error) clearSessionDay()
+      })
+      .catch(() => {})
+  }
 
   async function handleSessionWithMfaCheck(userId: string) {
     let mfaRequired = false
@@ -120,13 +173,14 @@ export function useAuth() {
     })
 
     if (error) throw error
+    // จำวันที่เริ่ม session ไว้ เพื่อบังคับ login ใหม่เมื่อข้ามไปเช้าวันถัดไป
+    markSessionDay()
     return data
   }
 
   async function signOut() {
-    sessionStorage.removeItem('plan_unlocked')
-    // ล้างโหมดมือถือ/PC Desktop ที่จำไว้ — ให้ login ครั้งถัดไปเริ่มจากหน้าเลือกโหมด
-    clearMobileModeStorage()
+    clearSessionDay()
+    clearSessionScopedStorage()
     const { error } = await supabase.auth.signOut()
     if (error) {
       if (error.message?.includes('session missing') || error.message?.includes('Session')) {

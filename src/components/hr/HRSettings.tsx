@@ -39,11 +39,15 @@ import type {
   HREmployee,
 } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
+import ScoreSettings from './ScoreSettings'
 
 const TABS = [
   'แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram',
-  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ',
+  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'คะแนนปฏิบัติงาน',
 ] as const
+
+/** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */
+const SCORE_TAB_INDEX = 8
 
 /** แท็บผู้อนุมัติประกาศ — ตั้งค่าได้เฉพาะ superadmin */
 const APPROVER_TAB_INDEX = 7
@@ -1474,6 +1478,9 @@ export default function HRSettings() {
           </div>
         </div>
       )}
+
+      {/* คะแนนปฏิบัติงาน */}
+      {activeTab === SCORE_TAB_INDEX && <ScoreSettings />}
     </div>
   )
 }

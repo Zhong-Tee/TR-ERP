@@ -44,6 +44,7 @@ import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
 import ModeLauncher from './pages/ModeLauncher'
 import ResetPassword from './pages/ResetPassword'
+import MissedClockInAlert from './components/hr/MissedClockInAlert'
 import {
   DESKTOP_MENU_PATH_ORDER,
   MACHINERY_MOBILE_ROLES,
@@ -56,6 +57,7 @@ const HREmployeeRegistry = lazy(() => import('./components/hr/EmployeeRegistry')
 const HRLeaveManagement = lazy(() => import('./components/hr/LeaveManagement'))
 const HRInterviewSchedule = lazy(() => import('./components/hr/InterviewSchedule'))
 const HRTimeAttendance = lazy(() => import('./components/hr/TimeAttendance'))
+const HRWorkScore = lazy(() => import('./components/hr/WorkScore'))
 const HRWorkCalendar = lazy(() => import('./components/hr/WorkCalendar'))
 const HRContractTemplates = lazy(() => import('./components/hr/ContractTemplates'))
 const HRCompanyDocuments = lazy(() => import('./components/hr/CompanyDocuments'))
@@ -627,6 +629,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/hr/work-score"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
+            <Layout><Suspense fallback={<HRLoading />}><HRWorkScore /></Suspense></Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/hr/work-calendar"
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'hr', 'account']}>
@@ -749,6 +759,8 @@ function App() {
       <AuthProvider>
         <MenuAccessProvider>
           <AppRoutes />
+          {/* เตือน "ลืมบันทึกเวลาเข้างาน" ทันทีที่ login — ครอบทุกหน้า */}
+          <MissedClockInAlert />
         </MenuAccessProvider>
       </AuthProvider>
     </Router>

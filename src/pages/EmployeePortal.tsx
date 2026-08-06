@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { fetchEmployeeByUserId, fetchNotifications, fetchMyUnreadAnnouncementCount } from '../lib/hrApi'
-import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase, FiMessageSquare } from 'react-icons/fi'
+import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase, FiMessageSquare, FiTarget } from 'react-icons/fi'
 import type { HREmployee } from '../types'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
@@ -13,6 +13,7 @@ const EmployeeLeave = lazy(() => import('../components/hr/employee/EmployeeLeave
 const EmployeeLeaveCalendar = lazy(() => import('../components/hr/employee/EmployeeLeaveCalendar'))
 const EmployeeWorkCalendar = lazy(() => import('../components/hr/employee/EmployeeWorkCalendar'))
 const EmployeeWFH = lazy(() => import('../components/hr/employee/EmployeeWFH'))
+const EmployeeWorkScore = lazy(() => import('../components/hr/employee/EmployeeWorkScore'))
 const EmployeeSalaryPath = lazy(() => import('../components/hr/employee/EmployeeSalaryPath'))
 const EmployeeOnboarding = lazy(() => import('../components/hr/employee/EmployeeOnboarding'))
 const EmployeeDocuments = lazy(() => import('../components/hr/employee/EmployeeDocuments'))
@@ -75,6 +76,7 @@ const TABS = [
   { id: 'timeclock', label: 'ลงเวลา', icon: FiClock, Component: EmployeeTimeClock },
   { id: 'leave', label: 'ขอลา', icon: FiCalendar, Component: EmployeeLeave },
   { id: 'calendar', label: 'ตารางงาน', icon: FiCalendar, Component: EmployeeWorkCalendar },
+  { id: 'work-score', label: 'คะแนน', icon: FiTarget, Component: EmployeeWorkScore },
   { id: 'wfh', label: 'ขอ WFH', icon: FiWifi, Component: EmployeeWFH },
   { id: 'warnings-certs', label: 'เตือน/รับรอง', icon: FiAward, Component: EmployeeWarningsCerts },
   { id: 'assets', label: 'ทรัพย์สิน', icon: FiBox, Component: EmployeeAssets },
