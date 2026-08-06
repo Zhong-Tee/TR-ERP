@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { FiArrowDown, FiArrowUp, FiMinus } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { parseBangkokDateTime } from '../../lib/marketplaceImport'
 import { computeDueTimestamps } from '../../lib/shipDueBadge'
@@ -14,6 +15,12 @@ const STATUS_TITLES: Record<Exclude<MpOrderStatus, 'new'>, string> = {
   done: 'เสร็จสิ้น (เปิดบิลแล้ว)',
   cancelled: 'ยกเลิกบิล',
 }
+
+const PAYMENT_SORT_TITLES = {
+  none: 'คลิกเพื่อเรียงตามเวลาชำระเงิน (เก่าไปใหม่)',
+  asc: 'เรียงเวลาชำระเงินเก่าไปใหม่ (คลิกเพื่อเรียงใหม่ไปเก่า)',
+  desc: 'เรียงเวลาชำระเงินใหม่ไปเก่า (คลิกเพื่อยกเลิกการเรียง)',
+} as const
 
 export default function MarketplaceWorkList({
   status,
@@ -35,6 +42,9 @@ export default function MarketplaceWorkList({
   const [orders, setOrders] = useState<MpOrder[]>([])
   const [loading, setLoading] = useState(false)
   const [filterUser, setFilterUser] = useState('')
+  const [filterChannel, setFilterChannel] = useState('')
+  /** null = เรียงตามค่าเริ่มต้นของแท็บ (วันที่ assign/เปิดบิล/ยกเลิก ล่าสุดก่อน) */
+  const [paymentSort, setPaymentSort] = useState<'asc' | 'desc' | null>(null)
   const [search, setSearch] = useState('')
   const [draftOnly, setDraftOnly] = useState(false)
   const [openOrder, setOpenOrder] = useState<MpOrder | null>(null)
@@ -73,10 +83,25 @@ export default function MarketplaceWorkList({
     loadOrders()
   }, [loadOrders, refreshKey])
 
+  /** ช่องทางที่เลือกกรองได้ — เอาเฉพาะที่มีจริงในรายการของแท็บนี้ */
+  const channelOptions = useMemo(() => {
+    const codes = new Set<string>()
+    orders.forEach((o) => {
+      if (o.channel_code) codes.add(o.channel_code)
+    })
+    return [...codes].sort((a, b) => a.localeCompare(b))
+  }, [orders])
+
+  // ช่องทางที่เลือกไว้หายไปจากรายการ (เช่นโหลดใหม่แล้วไม่มีงานช่องทางนั้น) → ล้างตัวกรอง
+  useEffect(() => {
+    if (filterChannel && !channelOptions.includes(filterChannel)) setFilterChannel('')
+  }, [channelOptions, filterChannel])
+
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return orders.filter((o) => {
+    const rows = orders.filter((o) => {
       if (draftOnly && !o.draft_saved_at) return false
+      if (filterChannel && o.channel_code !== filterChannel) return false
       if (!q) return true
       const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
       return [
@@ -95,7 +120,15 @@ export default function MarketplaceWorkList({
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q))
     })
-  }, [orders, search, draftOnly, userById])
+    if (!paymentSort) return rows
+    // ไม่มีเวลาชำระเงิน → ไว้ท้ายสุดเสมอ ไม่ว่าจะเรียงทางไหน
+    return [...rows].sort((a, b) => {
+      const ta = a.payment_time ? new Date(a.payment_time).getTime() : null
+      const tb = b.payment_time ? new Date(b.payment_time).getTime() : null
+      if (ta == null || tb == null) return ta == null ? (tb == null ? 0 : 1) : -1
+      return paymentSort === 'asc' ? ta - tb : tb - ta
+    })
+  }, [orders, search, draftOnly, filterChannel, paymentSort, userById])
 
   const readOnly = status === 'done' || status === 'cancelled'
 
@@ -209,6 +242,22 @@ export default function MarketplaceWorkList({
           placeholder="ค้นหา"
           className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-80"
         />
+        <select
+          value={filterChannel}
+          onChange={(e) => setFilterChannel(e.target.value)}
+          aria-label="กรองช่องทาง"
+          className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-auto sm:min-w-[180px]"
+        >
+          <option value="">— ทุกช่องทาง —</option>
+          {channelOptions.map((code) => {
+            const configName = configs.find((c) => c.channel_code === code)?.name
+            return (
+              <option key={code} value={code}>
+                {configName ? `${configName} (${code})` : code}
+              </option>
+            )
+          })}
+        </select>
         {isAdmin && (
           <select
             value={filterUser}
@@ -233,7 +282,34 @@ export default function MarketplaceWorkList({
                 <th className="text-left px-4 py-3">เลขคำสั่งซื้อ</th>
                 <th className="text-left px-4 py-3">ช่องทาง</th>
                 <th className="text-left px-4 py-3">ผู้ซื้อ</th>
-                <th className="text-left px-4 py-3">เวลาชำระเงิน</th>
+                <th className="text-left px-4 py-3">
+                  {/* คลิกวน: ค่าเริ่มต้นของแท็บ → เก่าไปใหม่ → ใหม่ไปเก่า → ค่าเริ่มต้น */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPaymentSort((prev) => (prev === null ? 'asc' : prev === 'asc' ? 'desc' : null))
+                    }
+                    title={PAYMENT_SORT_TITLES[paymentSort ?? 'none']}
+                    aria-label={PAYMENT_SORT_TITLES[paymentSort ?? 'none']}
+                    className={`inline-flex items-center gap-2 hover:text-blue-600 ${
+                      paymentSort ? 'text-blue-600 font-semibold' : ''
+                    }`}
+                  >
+                    เวลาชำระเงิน
+                    {paymentSort === 'asc' ? (
+                      <FiArrowUp className="w-4 h-4" />
+                    ) : paymentSort === 'desc' ? (
+                      <FiArrowDown className="w-4 h-4" />
+                    ) : (
+                      <FiMinus className="w-4 h-4" />
+                    )}
+                    {paymentSort && (
+                      <span className="text-xs font-normal whitespace-nowrap">
+                        {paymentSort === 'asc' ? 'เก่าไปใหม่' : 'ใหม่ไปเก่า'}
+                      </span>
+                    )}
+                  </button>
+                </th>
                 <th className="text-left px-4 py-3">ผู้รับผิดชอบ</th>
                 <th className="text-left px-4 py-3">วันที่ Assign</th>
                 {status === 'follow_up' && <th className="text-left px-4 py-3">โน้ตติดตาม</th>}

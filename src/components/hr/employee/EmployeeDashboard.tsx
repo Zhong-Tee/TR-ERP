@@ -128,6 +128,9 @@ function requestDetailRows(target: ApprovalTarget): { label: string; value: stri
   } else {
     const req = target.req
     rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
+    if (req.start_time && req.end_time) {
+      rows.push({ label: 'ช่วงเวลา', value: `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` })
+    }
   }
   if (target.req.reason) rows.push({ label: 'เหตุผล', value: target.req.reason })
   if (target.req.approver) {
@@ -764,6 +767,9 @@ export default function EmployeeDashboard() {
               ) : (
                 <>
                   <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date}</p>
+                  {approvalTarget.req.start_time && approvalTarget.req.end_time && (
+                    <p>ช่วงเวลา: {approvalTarget.req.start_time.slice(0, 5)} – {approvalTarget.req.end_time.slice(0, 5)} น.</p>
+                  )}
                   <p>เหตุผล: {approvalTarget.req.reason}</p>
                 </>
               )}

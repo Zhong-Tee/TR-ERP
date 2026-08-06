@@ -195,15 +195,20 @@ export default function EmployeeWorkScore() {
     return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]))
   }, [events])
 
+  /** คีย์ของเหตุการณ์ที่คำทักท้วงอ้างถึง — ใช้ได้กับคะแนนที่ยังคำนวณสด */
+  const appealKey = (date: string, code: string) => `${date}|${code}`
+
   const appealByEvent = useMemo(
-    () => new Map(appeals.map((a) => [a.score_event_id, a])),
+    () => new Map(appeals.map((a) => [appealKey(a.event_date, a.event_code), a])),
     [appeals],
   )
 
-  /** ทักท้วงได้เฉพาะเหตุการณ์ที่บันทึกลง DB แล้ว ยังไม่เกินกำหนด และรอบยังไม่ปิด */
+  /** ทักท้วงได้ถ้าเป็นรายการที่หักคะแนน ยังไม่เคยยื่น ยังไม่เกินกำหนด และรอบยังไม่ปิด */
   const canAppeal = (ev: PortalEvent): boolean => {
-    if (locked || !ev.dbId || ev.points >= 0) return false
-    if (appealByEvent.has(ev.dbId)) return false
+    if (locked || ev.points >= 0) return false
+    const existing = appealByEvent.get(appealKey(ev.event_date, ev.event_code))
+    // ที่ถูกปฏิเสธไปแล้วยื่นใหม่ได้ (ตรงกับ unique index ฝั่ง DB)
+    if (existing && existing.status !== 'rejected') return false
     const days = settings?.appeal_days ?? 7
     const deadline = new Date(`${ev.event_date}T00:00:00`)
     deadline.setDate(deadline.getDate() + days)
@@ -211,10 +216,18 @@ export default function EmployeeWorkScore() {
   }
 
   const submitAppeal = async () => {
-    if (!appealFor?.dbId || !me || !appealReason.trim()) return
+    if (!appealFor || !me || !category || !appealReason.trim()) return
     setBusy(true)
     try {
-      await createScoreAppeal(appealFor.dbId, me.id, appealReason.trim())
+      await createScoreAppeal({
+        employee_id: me.id,
+        event_date: appealFor.event_date,
+        event_code: appealFor.event_code,
+        points: appealFor.points,
+        category_id: category.id,
+        reason: appealReason.trim(),
+        score_event_id: appealFor.dbId ?? null,
+      })
       setAppealFor(null)
       setAppealReason('')
       await load()
@@ -304,7 +317,7 @@ export default function EmployeeWorkScore() {
               <div className="px-4 py-2 bg-surface-50 text-sm font-medium text-gray-600">{dayLabel(date)}</div>
               <div className="divide-y divide-surface-100">
                 {list.map((ev, i) => {
-                  const appeal = ev.dbId ? appealByEvent.get(ev.dbId) : undefined
+                  const appeal = appealByEvent.get(appealKey(ev.event_date, ev.event_code))
                   return (
                     <div key={`${ev.event_code}-${i}`} className="px-4 py-3 flex items-start gap-3">
                       <div className="flex-1 min-w-0">
@@ -338,7 +351,7 @@ export default function EmployeeWorkScore() {
         )}
       </div>
 
-      {!locked && events.some((e) => !e.dbId) && (
+      {!locked && (
         <div className="flex items-start gap-2 text-xs text-gray-400 px-1">
           <FiAlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>

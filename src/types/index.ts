@@ -789,6 +789,16 @@ export interface QCChecklistTopicProduct {
   created_at: string
 }
 
+/** กรุ๊ปหมวดหมู่สินค้าสำหรับตัวกรองในเมนู QC Operation (ตั้งค่าได้ในแถบ Settings ของ QC) */
+export interface QCCategoryGroup {
+  id: string
+  name: string
+  sort_order: number
+  created_at: string
+  /** หมวดหมู่ที่อยู่ในกรุ๊ปนี้ */
+  categories: string[]
+}
+
 // Order Review Types (Admin QC)
 export interface OrderReview {
   id: string
@@ -1110,6 +1120,7 @@ export interface HRCandidate {
   last_name: string
   first_name_en?: string
   last_name_en?: string
+  nickname?: string
   birth_date?: string
   gender?: string
   religion?: string
@@ -1118,6 +1129,7 @@ export interface HRCandidate {
   phone?: string
   applied_position?: string
   applied_department_id?: string
+  portfolio_url?: string
   resume_url?: string
   source?: string
   status: 'new' | 'scheduled' | 'interviewed' | 'passed' | 'failed' | 'hired' | 'withdrawn'
@@ -1128,6 +1140,27 @@ export interface HRCandidate {
   raw_siam_data?: Record<string, string>
   created_at: string
   updated_at: string
+}
+
+/** หัวข้อเกณฑ์การให้คะแนนสัมภาษณ์เริ่มต้นของแต่ละตำแหน่ง */
+export interface HRInterviewCriteriaTemplate {
+  id: string
+  position_id: string
+  name: string
+  max_score: number
+  sort_order: number
+  is_active: boolean
+  created_at: string
+}
+
+/** พนักงานที่ตั้งค่าไว้ให้เลือกเป็นผู้สัมภาษณ์ (ตั้งค่าโดย superadmin) */
+export interface HRInterviewer {
+  id: string
+  employee_id: string
+  sort_order: number
+  is_active: boolean
+  created_at: string
+  employee?: Pick<HREmployee, 'id' | 'employee_code' | 'first_name' | 'last_name' | 'nickname'>
 }
 
 export interface HRInterview {
@@ -1203,6 +1236,9 @@ export interface HRWFHRequest {
   employee_id: string
   start_date: string
   end_date: string
+  /** ช่วงเวลาทำงานที่ขอ WFH (HH:mm:ss) — null = ใช้ตารางเวลามาตรฐาน (คำขอเก่าก่อน migration 334) */
+  start_time?: string | null
+  end_time?: string | null
   reason: string
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   approved_by?: string
@@ -1816,11 +1852,21 @@ export interface HRScorePeriod {
   employee?: HREmployee
 }
 
-/** คำทักท้วงคะแนนของพนักงาน */
+/**
+ * คำทักท้วงคะแนนของพนักงาน
+ * ผูกกับ (employee_id + event_date + event_code) ไม่ใช่แถวใน hr_score_events
+ * เพื่อให้ทักท้วงคะแนนที่ยังคำนวณสดอยู่ได้ โดยไม่ต้องรอ HR บันทึกลง ledger ก่อน
+ */
 export interface HRScoreAppeal {
   id: string
-  score_event_id: string
+  /** มีค่าเฉพาะเมื่อตอนยื่นมีแถวใน ledger อยู่แล้ว */
+  score_event_id?: string | null
   employee_id: string
+  event_date: string
+  event_code: string
+  /** คะแนนที่ถูกหัก ณ ตอนยื่น (ค่าติดลบ) */
+  points: number
+  category_id: string
   reason: string
   status: 'pending' | 'accepted' | 'rejected'
   reviewed_by?: string | null

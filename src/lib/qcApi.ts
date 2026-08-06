@@ -4,7 +4,7 @@
 import { supabase } from './supabase'
 import { buildIlikeOr } from './searchFilter'
 import * as XLSX from 'xlsx'
-import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
+import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
 
@@ -991,4 +991,99 @@ export async function importChecklistFromExcel(file: File): Promise<BulkImportRe
   }
 
   return result
+}
+
+// ============================================
+// QC Category Groups API (ตัวกรองหมวดหมู่ในเมนู QC Operation)
+// ============================================
+
+/** โหลดกรุ๊ปหมวดหมู่ทั้งหมด พร้อมรายชื่อหมวดหมู่ในแต่ละกรุ๊ป */
+export async function fetchQcCategoryGroups(): Promise<QCCategoryGroup[]> {
+  const { data: groups, error } = await supabase
+    .from('qc_category_groups')
+    .select('*')
+    .order('sort_order')
+    .order('created_at')
+  if (error) throw error
+  if (!groups || groups.length === 0) return []
+
+  const { data: items, error: itemErr } = await supabase
+    .from('qc_category_group_items')
+    .select('group_id, category')
+    .in('group_id', groups.map((g: any) => g.id))
+  if (itemErr) throw itemErr
+
+  const byGroup: Record<string, string[]> = {}
+  items?.forEach((i: any) => {
+    if (!byGroup[i.group_id]) byGroup[i.group_id] = []
+    byGroup[i.group_id].push(i.category)
+  })
+
+  return groups.map((g: any) => ({
+    ...g,
+    categories: (byGroup[g.id] || []).sort((a, b) => a.localeCompare(b, 'th')),
+  }))
+}
+
+export async function createQcCategoryGroup(name: string, sortOrder = 0): Promise<QCCategoryGroup> {
+  const { data, error } = await supabase
+    .from('qc_category_groups')
+    .insert({ name, sort_order: sortOrder })
+    .select()
+    .single()
+  if (error) throw error
+  return { ...data, categories: [] }
+}
+
+export async function updateQcCategoryGroup(id: string, patch: { name?: string; sort_order?: number }) {
+  const { error } = await supabase
+    .from('qc_category_groups')
+    .update(patch)
+    .eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteQcCategoryGroup(id: string) {
+  const { error } = await supabase
+    .from('qc_category_groups')
+    .delete()
+    .eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * เพิ่มหมวดหมู่เข้ากรุ๊ป — ถ้าหมวดหมู่นั้นอยู่กรุ๊ปอื่นอยู่แล้วจะย้ายมากรุ๊ปใหม่
+ * (DB บังคับ UNIQUE(category) ให้หมวดหมู่หนึ่งอยู่ได้กรุ๊ปเดียว)
+ */
+export async function addQcCategoriesToGroup(groupId: string, categories: string[]) {
+  const clean = [...new Set(categories.map((c) => c.trim()).filter(Boolean))]
+  if (clean.length === 0) return
+  const { error } = await supabase
+    .from('qc_category_group_items')
+    .upsert(clean.map((category) => ({ group_id: groupId, category })), { onConflict: 'category' })
+  if (error) throw error
+}
+
+export async function removeQcCategoryFromGroup(groupId: string, category: string) {
+  const { error } = await supabase
+    .from('qc_category_group_items')
+    .delete()
+    .eq('group_id', groupId)
+    .eq('category', category)
+  if (error) throw error
+}
+
+/** หมวดหมู่สินค้าทั้งหมดที่มีในระบบ (ใช้เป็นตัวเลือกตอนตั้งค่ากรุ๊ป) */
+export async function fetchQcProductCategories(): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('pr_products')
+    .select('product_category')
+    .not('product_category', 'is', null)
+  if (error) throw error
+  const set = new Set(
+    (data || [])
+      .map((d: any) => String(d.product_category || '').trim())
+      .filter(Boolean)
+  )
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'th'))
 }

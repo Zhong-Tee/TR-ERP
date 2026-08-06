@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
-import type { QCItem, QCRecord, QCSession, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct } from '../types'
+import type { QCItem, QCRecord, QCSession, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import {
   fetchWorkOrdersWithProgress,
   fetchItemsByWorkOrder,
@@ -39,6 +39,13 @@ import {
   fetchChecklistForProduct,
   generateChecklistTemplate,
   importChecklistFromExcel,
+  fetchQcCategoryGroups,
+  createQcCategoryGroup,
+  updateQcCategoryGroup,
+  deleteQcCategoryGroup,
+  addQcCategoriesToGroup,
+  removeQcCategoryFromGroup,
+  fetchQcProductCategories,
 } from '../lib/qcApi'
 import type { BulkImportResult } from '../lib/qcApi'
 import type { WorkOrderWithProgress } from '../lib/qcApi'
@@ -60,15 +67,18 @@ const MENUS: { id: QCView; label: string }[] = [
 ]
 
 /**
- * กรุ๊ปหมวดหมู่สินค้า — ใช้เฉพาะเมนู QC Operation เท่านั้น
- * UV-CTTA ถึง UV-CTTL รวมเป็นหมวดเดียวชื่อ 'UV-CTTA-L'
- * SUB-KTA ถึง SUB-KTC รวมเป็นหมวดเดียวชื่อ 'SUB-KTA-C' (คนละกรุ๊ปกับ UV-CTTA-L)
+ * แปลงกรุ๊ปหมวดหมู่สินค้าเป็น Map<หมวดหมู่ (ตัวพิมพ์ใหญ่), ชื่อกรุ๊ป>
+ * ตั้งค่ากรุ๊ปได้เองที่ QC → Settings → กรุ๊ปหมวดหมู่ (ตาราง qc_category_groups)
  */
-function qcCategoryGroup(raw: string | null | undefined): string {
-  const c = (raw || '').trim()
-  if (/^UV-CTT[A-L]$/i.test(c)) return 'UV-CTTA-L'
-  if (/^SUB-KT[A-C]$/i.test(c)) return 'SUB-KTA-C'
-  return c
+function buildCategoryGroupMap(groups: QCCategoryGroup[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const g of groups) {
+    for (const c of g.categories) {
+      const key = (c || '').trim().toUpperCase()
+      if (key) map.set(key, g.name)
+    }
+  }
+  return map
 }
 
 function formatDate(d: string | Date | null): string {
@@ -128,6 +138,7 @@ export default function QC() {
   const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
   const [barcodeQuery, setBarcodeQuery] = useState('')
   const [qcCategoryFilter, setQcCategoryFilter] = useState<string>('')
+  const [categoryGroups, setCategoryGroups] = useState<QCCategoryGroup[]>([])
   const [showNotQcOnly, setShowNotQcOnly] = useState(false)
   const [productExt, setProductExt] = useState('.jpg')
   const [cartoonExt, setCartoonExt] = useState('.jpg')
@@ -191,7 +202,7 @@ export default function QC() {
   // Settings
   const [reasons, setReasons] = useState<SettingsReason[]>([])
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
-  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics'>('reasons')
+  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics' | 'category_groups'>('reasons')
   const [newReason, setNewReason] = useState('')
   const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
 
@@ -220,6 +231,16 @@ export default function QC() {
   const [clImporting, setClImporting] = useState(false)
   const [clImportResult, setClImportResult] = useState<BulkImportResult | null>(null)
   const clFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Category Groups (Settings) — ตั้งค่ากรุ๊ปหมวดหมู่สำหรับตัวกรองใน QC Operation
+  const [cgAllCategories, setCgAllCategories] = useState<string[]>([])
+  const [cgNewGroupName, setCgNewGroupName] = useState('')
+  const [cgEditId, setCgEditId] = useState<string | null>(null)
+  const [cgEditName, setCgEditName] = useState('')
+  const [cgAddTargetId, setCgAddTargetId] = useState<string | null>(null)
+  const [cgAddSelected, setCgAddSelected] = useState<Set<string>>(new Set())
+  const [cgSaving, setCgSaving] = useState(false)
+  const [cgDeleteTarget, setCgDeleteTarget] = useState<QCCategoryGroup | null>(null)
 
   // Checklist for QC Operation (in-memory checkbox state)
   const [checklistItems, setChecklistItems] = useState<(QCChecklistItem & { topic_name: string })[]>([])
@@ -258,6 +279,17 @@ export default function QC() {
   const activeRemainingItems = activeTotalItems - activePassedItems - activeFailedItems
   const canFinishSession = !isViewOnly && activeTotalItems > 0 && activeRemainingItems === 0 && activeFailedItems === 0
 
+  /** ชื่อกรุ๊ปของหมวดหมู่ — หมวดหมู่ที่ไม่ได้อยู่ในกรุ๊ปใดจะใช้ชื่อหมวดหมู่ตัวเอง */
+  const categoryGroupMap = useMemo(() => buildCategoryGroupMap(categoryGroups), [categoryGroups])
+  const qcCategoryGroup = useCallback(
+    (raw: string | null | undefined): string => {
+      const c = (raw || '').trim()
+      if (!c) return ''
+      return categoryGroupMap.get(c.toUpperCase()) || c
+    },
+    [categoryGroupMap]
+  )
+
   const qcCategoryOptions = useMemo(() => {
     const set = new Set<string>()
     qcData.items.forEach((i) => {
@@ -265,7 +297,7 @@ export default function QC() {
       if (c) set.add(c)
     })
     return Array.from(set).sort()
-  }, [qcData.items])
+  }, [qcData.items, qcCategoryGroup])
 
   const itemsToShow = useMemo(() => {
     let list = qcData.items
@@ -276,7 +308,14 @@ export default function QC() {
       list = list.filter((i) => i.status === 'pending')
     }
     return list
-  }, [qcData.items, qcCategoryFilter, showNotQcOnly])
+  }, [qcData.items, qcCategoryFilter, showNotQcOnly, qcCategoryGroup])
+
+  // ถ้าตั้งค่ากรุ๊ปใหม่แล้วชื่อกรุ๊ปที่เลือกอยู่หายไป ให้กลับไปแสดง "ทั้งหมด"
+  useEffect(() => {
+    if (qcCategoryFilter && !qcCategoryOptions.includes(qcCategoryFilter)) {
+      setQcCategoryFilter('')
+    }
+  }, [qcCategoryOptions, qcCategoryFilter])
 
   // เมื่อสลับตัวกรอง/ข้อมูลเปลี่ยน ให้เลือก currentItem ให้สอดคล้องกับรายการที่แสดง
   useEffect(() => {
@@ -304,7 +343,7 @@ export default function QC() {
       if (b[1] !== a[1]) return b[1] - a[1]
       return a[0].localeCompare(b[0], 'th')
     })
-  }, [qcData.items])
+  }, [qcData.items, qcCategoryGroup])
 
   const productImageUrl = currentItem ? getPublicUrl('product-images', currentItem.product_code, productExt) : ''
   const cartoonImageUrl = currentItem ? getPublicUrl('cartoon-patterns', currentItem.cartoon_name, cartoonExt) : ''
@@ -359,6 +398,105 @@ export default function QC() {
       console.error(e)
     }
   }, [])
+
+  const loadCategoryGroups = useCallback(async () => {
+    try {
+      setCategoryGroups(await fetchQcCategoryGroups())
+    } catch (e) {
+      console.error(e)
+    }
+  }, [])
+
+  const loadCategoryGroupSettings = useCallback(async () => {
+    try {
+      const [groups, cats] = await Promise.all([fetchQcCategoryGroups(), fetchQcProductCategories()])
+      setCategoryGroups(groups)
+      setCgAllCategories(cats)
+    } catch (e) {
+      console.error(e)
+      alert('โหลดข้อมูลกรุ๊ปหมวดหมู่ไม่สำเร็จ')
+    }
+  }, [])
+
+  const handleAddCategoryGroup = async () => {
+    const name = cgNewGroupName.trim()
+    if (!name) return
+    if (categoryGroups.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+      alert('มีกรุ๊ปชื่อนี้อยู่แล้ว')
+      return
+    }
+    setCgSaving(true)
+    try {
+      const maxSort = categoryGroups.reduce((m, g) => Math.max(m, g.sort_order || 0), 0)
+      await createQcCategoryGroup(name, maxSort + 1)
+      setCgNewGroupName('')
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เพิ่มกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleRenameCategoryGroup = async (id: string) => {
+    const name = cgEditName.trim()
+    if (!name) return
+    setCgSaving(true)
+    try {
+      await updateQcCategoryGroup(id, { name })
+      setCgEditId(null)
+      setCgEditName('')
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เปลี่ยนชื่อกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleDeleteCategoryGroup = async () => {
+    if (!cgDeleteTarget) return
+    setCgSaving(true)
+    try {
+      await deleteQcCategoryGroup(cgDeleteTarget.id)
+      setCgDeleteTarget(null)
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('ลบกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleSaveCategoryGroupMembers = async (groupId: string) => {
+    if (cgAddSelected.size === 0) {
+      setCgAddTargetId(null)
+      return
+    }
+    setCgSaving(true)
+    try {
+      await addQcCategoriesToGroup(groupId, Array.from(cgAddSelected))
+      setCgAddTargetId(null)
+      setCgAddSelected(new Set())
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('บันทึกหมวดหมู่ไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
+
+  const handleRemoveCategoryFromGroup = async (groupId: string, category: string) => {
+    setCgSaving(true)
+    try {
+      await removeQcCategoryFromGroup(groupId, category)
+      await loadCategoryGroups()
+    } catch (e: any) {
+      alert('เอาหมวดหมู่ออกจากกรุ๊ปไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setCgSaving(false)
+    }
+  }
 
   const refreshActiveSessionItemUids = useCallback(async () => {
     if (qcState.step !== 'working' || !qcState.filename) {
@@ -438,6 +576,11 @@ export default function QC() {
   useEffect(() => {
     if (currentView === 'settings') loadSettings()
   }, [currentView, loadSettings])
+
+  // กรุ๊ปหมวดหมู่ใช้ในตัวกรองของ QC Operation — โหลดครั้งเดียวตอนเข้าหน้า
+  useEffect(() => {
+    loadCategoryGroups()
+  }, [loadCategoryGroups])
 
   useEffect(() => {
     if (qcState.step === 'working' && qcData.items.length > 0) {
@@ -2582,6 +2725,12 @@ export default function QC() {
               >
                 หัวข้อQC
               </button>
+              <button
+                onClick={() => { setSettingsTab('category_groups'); loadCategoryGroupSettings() }}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'category_groups' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500'}`}
+              >
+                กรุ๊ปหมวดหมู่
+              </button>
             </div>
             {settingsTab === 'reasons' && (
               <div>
@@ -2769,6 +2918,199 @@ export default function QC() {
                 )}
               </div>
             )}
+            {settingsTab === 'category_groups' && (() => {
+              // หมวดหมู่ทั้งหมด = ที่มีในสินค้า + ที่ถูกใส่กรุ๊ปไว้แล้ว (กันกรณีหมวดหมู่เก่าที่ไม่มีสินค้าเหลือ)
+              const allCats = Array.from(
+                new Set([...cgAllCategories, ...categoryGroups.flatMap((g) => g.categories)])
+              ).sort((a, b) => a.localeCompare(b, 'th'))
+              const groupOfCat = new Map<string, string>()
+              categoryGroups.forEach((g) => g.categories.forEach((c) => groupOfCat.set(c, g.name)))
+              const ungrouped = allCats.filter((c) => !groupOfCat.has(c))
+
+              return (
+                <div>
+                  <p className="text-gray-600 mb-4">
+                    รวมหลายหมวดหมู่สินค้าให้เป็นกรุ๊ปเดียว เพื่อใช้เป็นตัวกรอง “หมวดหมู่สินค้า” ในเมนู QC Operation
+                    <br />
+                    <span className="text-sm text-gray-500">
+                      หมวดหมู่ที่ไม่ได้อยู่ในกรุ๊ปใด จะแสดงเป็นตัวเลือกด้วยชื่อของตัวเอง • หนึ่งหมวดหมู่อยู่ได้กรุ๊ปเดียว (ถ้าเลือกซ้ำจะย้ายกรุ๊ปให้)
+                    </span>
+                  </p>
+
+                  <div className="flex gap-2 mb-6 flex-wrap">
+                    <input
+                      type="text"
+                      value={cgNewGroupName}
+                      onChange={(e) => setCgNewGroupName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAddCategoryGroup() }}
+                      placeholder="ชื่อกรุ๊ปใหม่ (เช่น UV-CTTA-E)"
+                      className="border rounded px-3 py-2 flex-1 min-w-[240px]"
+                    />
+                    <button
+                      onClick={handleAddCategoryGroup}
+                      disabled={cgSaving || !cgNewGroupName.trim()}
+                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold disabled:opacity-50"
+                    >
+                      เพิ่มกรุ๊ป
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {categoryGroups.map((g) => (
+                      <div key={g.id} className="border rounded-xl p-4 bg-white">
+                        <div className="flex items-center gap-2 flex-wrap mb-3">
+                          {cgEditId === g.id ? (
+                            <>
+                              <input
+                                type="text"
+                                value={cgEditName}
+                                onChange={(e) => setCgEditName(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleRenameCategoryGroup(g.id) }}
+                                className="border rounded px-3 py-1.5 font-bold flex-1 min-w-[200px]"
+                                autoFocus
+                              />
+                              <button
+                                onClick={() => handleRenameCategoryGroup(g.id)}
+                                disabled={cgSaving}
+                                className="px-3 py-1.5 bg-blue-500 text-white rounded text-sm font-bold hover:bg-blue-600 disabled:opacity-50"
+                              >
+                                บันทึก
+                              </button>
+                              <button
+                                onClick={() => { setCgEditId(null); setCgEditName('') }}
+                                className="px-3 py-1.5 border border-gray-300 rounded text-sm hover:bg-gray-100"
+                              >
+                                ยกเลิก
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="font-bold text-lg text-indigo-700">{g.name}</span>
+                              <span className="text-xs text-gray-400">({g.categories.length} หมวดหมู่)</span>
+                              <div className="flex-1"></div>
+                              <button
+                                onClick={() => {
+                                  setCgAddTargetId(cgAddTargetId === g.id ? null : g.id)
+                                  setCgAddSelected(new Set())
+                                }}
+                                className="px-3 py-1.5 bg-indigo-500 text-white rounded text-sm font-bold hover:bg-indigo-600"
+                              >
+                                <i className="fas fa-plus mr-1"></i>เลือกหมวดหมู่
+                              </button>
+                              <button
+                                onClick={() => { setCgEditId(g.id); setCgEditName(g.name) }}
+                                className="text-gray-400 hover:text-blue-600 px-2"
+                                title="เปลี่ยนชื่อกรุ๊ป"
+                              >
+                                <i className="fas fa-pen"></i>
+                              </button>
+                              <button
+                                onClick={() => setCgDeleteTarget(g)}
+                                className="text-red-400 hover:text-red-600 px-2"
+                                title="ลบกรุ๊ป"
+                              >
+                                <i className="fas fa-trash-alt"></i>
+                              </button>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {g.categories.map((c) => (
+                            <span key={c} className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full pl-3 pr-2 py-1 text-sm">
+                              {c}
+                              <button
+                                onClick={() => handleRemoveCategoryFromGroup(g.id, c)}
+                                disabled={cgSaving}
+                                className="text-indigo-400 hover:text-red-600 disabled:opacity-50"
+                                title="เอาออกจากกรุ๊ป"
+                              >
+                                <i className="fas fa-times"></i>
+                              </button>
+                            </span>
+                          ))}
+                          {g.categories.length === 0 && (
+                            <span className="text-sm text-gray-400">ยังไม่มีหมวดหมู่ในกรุ๊ปนี้ — กด “เลือกหมวดหมู่”</span>
+                          )}
+                        </div>
+
+                        {cgAddTargetId === g.id && (
+                          <div className="mt-4 border-t pt-3">
+                            <div className="text-sm font-semibold text-gray-600 mb-2">
+                              เลือกหมวดหมู่ที่ต้องการรวมเข้ากรุ๊ป “{g.name}”
+                            </div>
+                            {allCats.length === 0 ? (
+                              <div className="text-sm text-gray-400 py-3">ไม่พบหมวดหมู่สินค้าในระบบ</div>
+                            ) : (
+                              <div className="max-h-60 overflow-y-auto border rounded-lg p-2 grid grid-cols-2 md:grid-cols-3 gap-1">
+                                {allCats
+                                  .filter((c) => !g.categories.includes(c))
+                                  .map((c) => {
+                                    const owner = groupOfCat.get(c)
+                                    return (
+                                      <label key={c} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm">
+                                        <input
+                                          type="checkbox"
+                                          checked={cgAddSelected.has(c)}
+                                          onChange={(e) => {
+                                            const next = new Set(cgAddSelected)
+                                            if (e.target.checked) next.add(c)
+                                            else next.delete(c)
+                                            setCgAddSelected(next)
+                                          }}
+                                          className="w-4 h-4"
+                                        />
+                                        <span className="truncate">{c}</span>
+                                        {owner && (
+                                          <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded px-1 shrink-0">
+                                            ย้ายจาก {owner}
+                                          </span>
+                                        )}
+                                      </label>
+                                    )
+                                  })}
+                              </div>
+                            )}
+                            <div className="flex gap-2 mt-3">
+                              <button
+                                onClick={() => handleSaveCategoryGroupMembers(g.id)}
+                                disabled={cgSaving || cgAddSelected.size === 0}
+                                className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-sm font-bold hover:bg-indigo-600 disabled:opacity-50"
+                              >
+                                เพิ่ม {cgAddSelected.size > 0 ? `(${cgAddSelected.size})` : ''}
+                              </button>
+                              <button
+                                onClick={() => { setCgAddTargetId(null); setCgAddSelected(new Set()) }}
+                                className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-100"
+                              >
+                                ยกเลิก
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {categoryGroups.length === 0 && (
+                      <div className="py-8 text-center text-gray-400 border rounded-xl">
+                        ยังไม่มีกรุ๊ป — เพิ่มในช่องด้านบน (ตัวกรองจะแสดงหมวดหมู่ตามค่าจริงทั้งหมด)
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="text-sm font-semibold text-gray-600 mb-2">
+                      หมวดหมู่ที่ยังไม่อยู่ในกรุ๊ปใด ({ungrouped.length}) — แสดงเป็นตัวเลือกแยกด้วยชื่อตัวเอง
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {ungrouped.map((c) => (
+                        <span key={c} className="bg-gray-100 text-gray-600 border rounded-full px-3 py-1 text-sm">{c}</span>
+                      ))}
+                      {ungrouped.length === 0 && <span className="text-sm text-gray-400">ทุกหมวดหมู่ถูกจัดกรุ๊ปแล้ว</span>}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
             {settingsTab === 'checklist_topics' && (
               <div>
                 {!clSelectedTopic ? (
@@ -3233,6 +3575,42 @@ export default function QC() {
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
           >
             ตกลง
+          </button>
+        </div>
+      </Modal>
+
+      {/* Delete category group confirm Modal */}
+      <Modal
+        open={!!cgDeleteTarget}
+        onClose={() => setCgDeleteTarget(null)}
+        closeOnBackdropClick
+        contentClassName="max-w-sm"
+      >
+        <div className="p-4 border-b bg-gray-50 font-bold text-gray-800 flex items-center gap-2">
+          <i className="fas fa-exclamation-triangle text-red-500"></i>
+          <span>ยืนยันการลบกรุ๊ป</span>
+        </div>
+        <div className="p-5 text-sm text-gray-700">
+          <p>ต้องการลบกรุ๊ป <strong className="text-red-600">"{cgDeleteTarget?.name}"</strong> หรือไม่?</p>
+          <p className="text-xs text-gray-400 mt-2">
+            หมวดหมู่ {cgDeleteTarget?.categories.length || 0} รายการในกรุ๊ปนี้จะกลับไปแสดงเป็นตัวเลือกแยกตามชื่อหมวดหมู่เดิม (ข้อมูลสินค้าไม่ถูกลบ)
+          </p>
+        </div>
+        <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
+          <button
+            type="button"
+            onClick={() => setCgDeleteTarget(null)}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 font-medium"
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteCategoryGroup}
+            disabled={cgSaving}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium disabled:opacity-50"
+          >
+            ลบ
           </button>
         </div>
       </Modal>

@@ -45,6 +45,7 @@ const rule = (
   cap_per_month: null,
   applies_to: 'all',
   counts_event_prefix: null,
+  points_step: 0,
   is_active: true,
   sort_order: 0,
   ...extra,
@@ -499,6 +500,64 @@ describe('กติกาสะสม (attendance_cumulative)', () => {
     expect(extra.filter((e) => e.event_code === 'absent_repeat')).toHaveLength(2)
     expect(applyCumulativeRules([...events, ...extra], WITH_CUMULATIVE)
       .filter((e) => e.event_code === 'absent_repeat')).toHaveLength(2)
+  })
+
+  it('เหตุการณ์ที่ HR คืนคะแนนให้แล้ว ไม่ถูกนับเป็นความผิดสะสมอีก', () => {
+    const events = lateDays(8).flatMap((f) => evaluateDay(f, WITH_CUMULATIVE))
+    // ยอมรับคำทักท้วงของวันที่ 3 และ 4 → สร้างเหตุการณ์ชดเชย
+    const reversal = (date: string): ScoreEventDraft => ({
+      employee_id: 'emp-1', event_date: date, event_code: 'late_1_15_reversed',
+      rule_id: '', category_id: CATEGORY.id, group_code: 'manual',
+      label: 'ยอมรับคำทักท้วง', points: 1, ref_table: 'hr_score_appeals', ref_id: 'appeal-1', detail: {},
+    })
+    const withReversals = [...events, reversal('2026-08-03'), reversal('2026-08-04')]
+    // เหลือสายจริง 6 ครั้ง โควตา 5 → หักเพิ่มครั้งเดียว (จากเดิม 3 ครั้ง)
+    expect(applyCumulativeRules(withReversals, WITH_CUMULATIVE)).toHaveLength(1)
+  })
+
+  it('รายการชดเชย (คะแนนบวก) ไม่ถูกนับเป็นฐานของกติกาสะสม', () => {
+    const bonus: ScoreEventDraft = {
+      employee_id: 'emp-1', event_date: '2026-08-03', event_code: 'late_bonus',
+      rule_id: '', category_id: CATEGORY.id, group_code: 'attendance',
+      label: 'โบนัส', points: 3, ref_table: null, ref_id: null, detail: {},
+    }
+    expect(applyCumulativeRules(Array(8).fill(bonus), WITH_CUMULATIVE)).toEqual([])
+  })
+
+  it('points_step = 0 → หักเท่ากันทุกครั้งที่เกิน (พฤติกรรมเดิม)', () => {
+    const events = lateDays(8).flatMap((f) => evaluateDay(f, WITH_CUMULATIVE))
+    const extra = applyCumulativeRules(events, WITH_CUMULATIVE)
+    expect(extra.map((e) => e.points)).toEqual([-2, -2, -2])
+  })
+
+  it('points_step ติดลบ → หักเพิ่มขึ้นทีละขั้นในแต่ละครั้งที่เกิน', () => {
+    // ยอมให้ 5 ครั้ง · ฐาน -2 · เพิ่มขึ้นครั้งละ -2
+    const escalating = indexRules([...RULES, { ...lateRepeat, points_step: -2 }])
+    const events = lateDays(9).flatMap((f) => evaluateDay(f, escalating))
+    const extra = applyCumulativeRules(events, escalating)
+    expect(extra.map((e) => e.points)).toEqual([-2, -4, -6, -8])
+    expect(extra[2].detail).toMatchObject({ escalation_nth: 3, base_points: -2, points_step: -2 })
+    // สาย 9 ครั้ง: -1 × 9 จากขั้นความสาย + (2+4+6+8) จากสะสม
+    const s = summarizeMonth('emp-1', events, CATEGORY, escalating)
+    expect(s.raw_deduction).toBe(29)
+    expect(s.total_points).toBe(71)
+  })
+
+  it('เพดานต่อเดือนยังคุมยอดสะสมที่ไล่ระดับได้', () => {
+    const capped = indexRules([...RULES, { ...lateRepeat, points_step: -2, cap_per_month: 10 }])
+    const events = lateDays(9).flatMap((f) => evaluateDay(f, capped))
+    const s = summarizeMonth('emp-1', events, CATEGORY, capped)
+    // สะสมรวม -20 แต่เพดาน 10 → หักจริง 10 (+9 จากขั้นความสาย)
+    expect(s.raw_deduction).toBe(19)
+    expect(s.capped_amount).toBe(10)
+  })
+
+  it('step ผิดทาง (บวกในกติกาหัก) ไม่ทำให้กลายเป็นให้คะแนน', () => {
+    const wrongWay = indexRules([...RULES, { ...lateRepeat, points_step: 5 }])
+    const events = lateDays(9).flatMap((f) => evaluateDay(f, wrongWay))
+    const extra = applyCumulativeRules(events, wrongWay)
+    // -2, +3→0, +8→0, +13→0 — หยุดที่ 0 ไม่กลายเป็นคะแนนบวก
+    expect(extra.map((e) => e.points)).toEqual([-2, 0, 0, 0])
   })
 
   it('summarizeMonth เติมเหตุการณ์สะสมให้เอง', () => {

@@ -2,7 +2,8 @@
 import { buildIlikeOr } from './searchFilter'
 import type {
   HRDepartment, HRPosition, HREmployee, HRLeaveType, HRLeaveRequest,
-  HRLeaveBalance, HRCandidate, HRInterview, HRInterviewScore,
+  HRLeaveBalance, HRCandidate, HRInterview, HRInterviewer, HRInterviewScore,
+  HRInterviewCriteriaTemplate,
   HRContractTemplate, HRContract, HRDocumentCategory, HRDocument,
   HRExam, HRExamResult, HROnboardingTemplate, HROnboardingPlan,
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
@@ -439,6 +440,35 @@ export async function upsertCandidate(c: Partial<HRCandidate>) {
   return data as HRCandidate
 }
 
+// ─── ผู้สัมภาษณ์ (ตั้งค่าโดย superadmin) ─────────────────────────────────────
+
+export async function fetchInterviewers() {
+  const { data, error } = await supabase.from('hr_interviewers')
+    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname)')
+    .order('sort_order')
+  // ตาราง hr_interviewers เพิ่มใน migration 335 — ถ้ายังไม่ได้รัน อย่าให้ทั้งหน้าพัง
+  if (error && (error.code === '42P01' || error.code === 'PGRST205')) return []
+  if (error) pgError(error)
+  return (data ?? []) as unknown as HRInterviewer[]
+}
+
+export async function addInterviewer(employeeId: string, sortOrder: number) {
+  const { data, error } = await supabase.from('hr_interviewers')
+    .insert({ employee_id: employeeId, sort_order: sortOrder }).select().single()
+  if (error) pgError(error)
+  return data as HRInterviewer
+}
+
+export async function updateInterviewer(id: string, updates: Partial<HRInterviewer>) {
+  const { error } = await supabase.from('hr_interviewers').update(updates).eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function deleteInterviewer(id: string) {
+  const { error } = await supabase.from('hr_interviewers').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
 // ─── Interviews ─────────────────────────────────────────────────────────────
 
 export async function fetchInterviews() {
@@ -460,6 +490,47 @@ export async function upsertInterview(iv: Partial<HRInterview>) {
     .from('hr_interviews').insert(iv).select().single()
   if (error) pgError(error)
   return data as HRInterview
+}
+
+export async function deleteInterview(id: string) {
+  const { error } = await supabase.from('hr_interviews').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+// ─── หัวข้อเกณฑ์การให้คะแนน (ผูกกับตำแหน่ง) ──────────────────────────────────
+
+export async function fetchInterviewCriteriaTemplates() {
+  const { data, error } = await supabase.from('hr_interview_criteria_templates')
+    .select('*').order('position_id').order('sort_order')
+  // ตารางเพิ่มใน migration 337 — ถ้ายังไม่ได้รัน อย่าให้ทั้งหน้าพัง
+  if (error && (error.code === '42P01' || error.code === 'PGRST205')) return []
+  if (error) pgError(error)
+  return (data ?? []) as HRInterviewCriteriaTemplate[]
+}
+
+export async function upsertInterviewCriteriaTemplate(row: Partial<HRInterviewCriteriaTemplate>) {
+  if (row.id) {
+    const { data, error } = await supabase
+      .from('hr_interview_criteria_templates').update(row).eq('id', row.id).select().single()
+    if (error) pgError(error)
+    return data as HRInterviewCriteriaTemplate
+  }
+  const { data, error } = await supabase
+    .from('hr_interview_criteria_templates').insert(row).select().single()
+  if (error) pgError(error)
+  return data as HRInterviewCriteriaTemplate
+}
+
+export async function deleteInterviewCriteriaTemplate(id: string) {
+  const { error } = await supabase.from('hr_interview_criteria_templates').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+/** คะแนนทั้งหมด (ใช้แสดงสรุปในตาราง "สัมภาษณ์และคะแนน") */
+export async function fetchAllInterviewScores() {
+  const { data, error } = await supabase.from('hr_interview_scores').select('*')
+  if (error) pgError(error)
+  return (data ?? []) as HRInterviewScore[]
 }
 
 export async function fetchInterviewScores(interviewId: string) {
@@ -1913,9 +1984,18 @@ export async function fetchScoreAppeals(filters?: { status?: string; employee_id
   return (data ?? []) as HRScoreAppeal[]
 }
 
-export async function createScoreAppeal(scoreEventId: string, employeeId: string, reason: string) {
+/** ยื่นทักท้วง — ใช้ได้กับคะแนนที่ยังคำนวณสด (scoreEventId มีก็ใส่ไว้อ้างอิง) */
+export async function createScoreAppeal(input: {
+  employee_id: string
+  event_date: string
+  event_code: string
+  points: number
+  category_id: string
+  reason: string
+  score_event_id?: string | null
+}) {
   const { data, error } = await supabase.from('hr_score_appeals')
-    .insert({ score_event_id: scoreEventId, employee_id: employeeId, reason })
+    .insert({ ...input, score_event_id: input.score_event_id ?? null })
     .select().single()
   if (error) pgError(error)
   return data as HRScoreAppeal

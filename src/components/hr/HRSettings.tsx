@@ -24,6 +24,13 @@ import {
   addAnnouncementApprover,
   updateAnnouncementApprover,
   deleteAnnouncementApprover,
+  fetchInterviewers,
+  addInterviewer,
+  updateInterviewer,
+  deleteInterviewer,
+  fetchInterviewCriteriaTemplates,
+  upsertInterviewCriteriaTemplate,
+  deleteInterviewCriteriaTemplate,
   fetchEmployees,
 } from '../../lib/hrApi'
 import type {
@@ -36,6 +43,8 @@ import type {
   HRNotificationSettings,
   HRAnnouncementCategory,
   HRAnnouncementApprover,
+  HRInterviewer,
+  HRInterviewCriteriaTemplate,
   HREmployee,
 } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -43,7 +52,7 @@ import ScoreSettings from './ScoreSettings'
 
 const TABS = [
   'แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram',
-  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'คะแนนปฏิบัติงาน',
+  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'คะแนนปฏิบัติงาน', 'ผู้สัมภาษณ์', 'เกณฑ์การให้คะแนนสัมภาษณ์',
 ] as const
 
 /** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */
@@ -51,6 +60,12 @@ const SCORE_TAB_INDEX = 8
 
 /** แท็บผู้อนุมัติประกาศ — ตั้งค่าได้เฉพาะ superadmin */
 const APPROVER_TAB_INDEX = 7
+
+/** แท็บผู้สัมภาษณ์ — ตั้งค่าได้เฉพาะ superadmin (เหมือนผู้อนุมัติประกาศ) */
+const INTERVIEWER_TAB_INDEX = 9
+
+/** แท็บหัวข้อเกณฑ์การให้คะแนนสัมภาษณ์ (ผูกกับตำแหน่ง) — HR/admin ตั้งค่าได้ */
+const INTERVIEW_CRITERIA_TAB_INDEX = 10
 
 type LevelForm = {
   id?: string
@@ -148,6 +163,11 @@ export default function HRSettings() {
   const [approvers, setApprovers] = useState<HRAnnouncementApprover[]>([])
   const [employees, setEmployees] = useState<HREmployee[]>([])
   const [newApproverId, setNewApproverId] = useState('')
+  const [interviewers, setInterviewers] = useState<HRInterviewer[]>([])
+  const [newInterviewerId, setNewInterviewerId] = useState('')
+  const [criteriaTemplates, setCriteriaTemplates] = useState<HRInterviewCriteriaTemplate[]>([])
+  const [criteriaPositionId, setCriteriaPositionId] = useState('')
+  const [criteriaForm, setCriteriaForm] = useState<{ name: string; max_score: string }>({ name: '', max_score: '10' })
 
   const [deptForm, setDeptForm] = useState<{ id?: string; name: string; description: string; telegram_group_id: string }>({
     name: '',
@@ -207,7 +227,7 @@ export default function HRSettings() {
     setLoading(true)
     setError(null)
     try {
-      const [depts, pos, lt, tr, tmpl, notif, annCats, apprs, emps] = await Promise.all([
+      const [depts, pos, lt, tr, tmpl, notif, annCats, apprs, emps, itvs, crit] = await Promise.all([
         fetchDepartments(),
         fetchPositions(),
         fetchLeaveTypes(),
@@ -217,6 +237,8 @@ export default function HRSettings() {
         fetchAnnouncementCategories(),
         fetchAnnouncementApprovers(),
         fetchEmployees(),
+        fetchInterviewers(),
+        fetchInterviewCriteriaTemplates(),
       ])
       setDepartments(depts)
       setPositions(pos)
@@ -227,6 +249,8 @@ export default function HRSettings() {
       setAnnCategories(annCats)
       setApprovers(apprs)
       setEmployees(emps)
+      setInterviewers(itvs)
+      setCriteriaTemplates(crit)
       setNotifForm({
         id: notif?.id,
         bot_token: notif?.bot_token ?? '',
@@ -357,6 +381,85 @@ export default function HRSettings() {
     try {
       await deleteAnnouncementApprover(id)
       setApprovers(await fetchAnnouncementApprovers())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addInterviewerRow = async () => {
+    if (!newInterviewerId) return
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      await addInterviewer(newInterviewerId, interviewers.length + 1)
+      setNewInterviewerId('')
+      setInterviewers(await fetchInterviewers())
+      setMessage('เพิ่มผู้สัมภาษณ์แล้ว')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'เพิ่มผู้สัมภาษณ์ไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const toggleInterviewer = async (itv: HRInterviewer) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await updateInterviewer(itv.id, { is_active: !itv.is_active })
+      setInterviewers(await fetchInterviewers())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'อัปเดตไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeInterviewer = async (id: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteInterviewer(id)
+      setInterviewers(await fetchInterviewers())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const addCriteriaTemplate = async () => {
+    if (!criteriaPositionId || !criteriaForm.name.trim()) return
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const siblings = criteriaTemplates.filter((c) => c.position_id === criteriaPositionId)
+      await upsertInterviewCriteriaTemplate({
+        position_id: criteriaPositionId,
+        name: criteriaForm.name.trim(),
+        max_score: Number(criteriaForm.max_score) || 10,
+        sort_order: siblings.length + 1,
+      })
+      setCriteriaForm({ name: '', max_score: '10' })
+      setCriteriaTemplates(await fetchInterviewCriteriaTemplates())
+      setMessage('เพิ่มหัวข้อเกณฑ์แล้ว')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'เพิ่มหัวข้อเกณฑ์ไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeCriteriaTemplate = async (id: string) => {
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteInterviewCriteriaTemplate(id)
+      setCriteriaTemplates(await fetchInterviewCriteriaTemplates())
     } catch (e) {
       setError(e instanceof Error ? e.message : 'ลบไม่สำเร็จ')
     } finally {
@@ -648,7 +751,7 @@ export default function HRSettings() {
       )}
       <div className="flex gap-2 border-b border-surface-200 flex-wrap">
         {TABS.map((label, i) => ({ label, i }))
-          .filter(({ i }) => i !== APPROVER_TAB_INDEX || isSuperadmin)
+          .filter(({ i }) => ![APPROVER_TAB_INDEX, INTERVIEWER_TAB_INDEX].includes(i) || isSuperadmin)
           .map(({ label, i }) => (
           <button
             key={i}
@@ -1481,6 +1584,174 @@ export default function HRSettings() {
 
       {/* คะแนนปฏิบัติงาน */}
       {activeTab === SCORE_TAB_INDEX && <ScoreSettings />}
+
+      {/* ผู้สัมภาษณ์ (เฉพาะ superadmin) */}
+      {activeTab === INTERVIEWER_TAB_INDEX && isSuperadmin && (
+        <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+          <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
+            <p className="text-xs text-gray-500 mb-3">
+              รายชื่อที่เปิดใช้งานจะปรากฏให้เลือกในหน้า HR → นัดสัมภาษณ์ ตอนสร้างนัดหมาย
+            </p>
+            <table className="w-full text-sm">
+              <thead className="bg-surface-100 border-b border-surface-200">
+                <tr>
+                  <th className="text-left py-2 px-3">ลำดับ</th>
+                  <th className="text-left py-2 px-3">ผู้สัมภาษณ์</th>
+                  <th className="text-center py-2 px-3">สถานะ</th>
+                  <th className="text-right py-2 px-3">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {interviewers.map((itv, idx) => (
+                  <tr key={itv.id} className="border-b border-surface-100">
+                    <td className="py-2 px-3 text-gray-500">{idx + 1}</td>
+                    <td className="py-2 px-3 font-medium">
+                      {[itv.employee?.first_name, itv.employee?.last_name].filter(Boolean).join(' ')}
+                      {itv.employee?.nickname ? ` (${itv.employee.nickname})` : ''}
+                    </td>
+                    <td className="py-2 px-3 text-center">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${itv.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'}`}>
+                        {itv.is_active ? 'ใช้งาน' : 'พัก'}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-right space-x-2">
+                      <button type="button" onClick={() => toggleInterviewer(itv)} disabled={saving} className="px-2 py-1 rounded-lg bg-surface-100 hover:bg-surface-200 text-xs">
+                        {itv.is_active ? 'พักการใช้งาน' : 'เปิดใช้งาน'}
+                      </button>
+                      <button type="button" onClick={() => removeInterviewer(itv.id)} disabled={saving} className="px-2 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs">ลบ</button>
+                    </td>
+                  </tr>
+                ))}
+                {interviewers.length === 0 && (
+                  <tr><td colSpan={4} className="py-4 text-center text-gray-400">ยังไม่ได้กำหนดผู้สัมภาษณ์</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+            <h3 className="font-medium text-gray-900">เพิ่มผู้สัมภาษณ์</h3>
+            <label className="block text-sm">
+              <span className="text-gray-600">เลือกพนักงาน</span>
+              <select
+                value={newInterviewerId}
+                onChange={(e) => setNewInterviewerId(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              >
+                <option value="">-- เลือกพนักงาน --</option>
+                {employees
+                  .filter((e) => ['active', 'probation'].includes(e.employment_status ?? '') && !interviewers.some((i) => i.employee_id === e.id))
+                  .map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.first_name} {e.last_name}{e.nickname ? ` (${e.nickname})` : ''}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div className="flex justify-end">
+              <button type="button" onClick={addInterviewerRow} disabled={saving || !newInterviewerId} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
+                {saving ? 'กำลังบันทึก...' : 'เพิ่มผู้สัมภาษณ์'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* หัวข้อเกณฑ์การให้คะแนนสัมภาษณ์ (ผูกกับตำแหน่ง) */}
+      {activeTab === INTERVIEW_CRITERIA_TAB_INDEX && (
+        <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+          <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
+            <p className="text-xs text-gray-500 mb-3">
+              หัวข้อของตำแหน่งที่เลือก จะถูกดึงมาเป็นค่าเริ่มต้นตอนให้คะแนนสัมภาษณ์
+              (ในหน้าให้คะแนนยังเพิ่ม/ลบหัวข้อเองได้ตามปกติ)
+            </p>
+            <label className="block text-sm mb-3">
+              <span className="text-gray-600">ตำแหน่ง</span>
+              <select
+                value={criteriaPositionId}
+                onChange={(e) => setCriteriaPositionId(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              >
+                <option value="">-- เลือกตำแหน่ง --</option>
+                {positions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {departments.find((d) => d.id === p.department_id)?.name
+                      ? ` — ${departments.find((d) => d.id === p.department_id)?.name}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {criteriaPositionId ? (
+              <table className="w-full text-sm">
+                <thead className="bg-surface-100 border-b border-surface-200">
+                  <tr>
+                    <th className="text-left py-2 px-3">ลำดับ</th>
+                    <th className="text-left py-2 px-3">หัวข้อ</th>
+                    <th className="text-right py-2 px-3">คะแนนเต็ม</th>
+                    <th className="text-right py-2 px-3">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {criteriaTemplates
+                    .filter((c) => c.position_id === criteriaPositionId)
+                    .map((c, idx) => (
+                      <tr key={c.id} className="border-b border-surface-100">
+                        <td className="py-2 px-3 text-gray-500">{idx + 1}</td>
+                        <td className="py-2 px-3 font-medium">{c.name}</td>
+                        <td className="py-2 px-3 text-right">{c.max_score}</td>
+                        <td className="py-2 px-3 text-right">
+                          <button type="button" onClick={() => removeCriteriaTemplate(c.id)} disabled={saving} className="px-2 py-1 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs">ลบ</button>
+                        </td>
+                      </tr>
+                    ))}
+                  {criteriaTemplates.filter((c) => c.position_id === criteriaPositionId).length === 0 && (
+                    <tr><td colSpan={4} className="py-4 text-center text-gray-400">ยังไม่ได้กำหนดหัวข้อเกณฑ์ของตำแหน่งนี้</td></tr>
+                  )}
+                </tbody>
+              </table>
+            ) : (
+              <p className="py-4 text-center text-gray-400 text-sm">เลือกตำแหน่งเพื่อดู/แก้ไขหัวข้อเกณฑ์</p>
+            )}
+          </div>
+          <div className="rounded-xl border border-surface-200 bg-white p-4 space-y-3">
+            <h3 className="font-medium text-gray-900">เพิ่มหัวข้อเกณฑ์</h3>
+            <label className="block text-sm">
+              <span className="text-gray-600">หัวข้อ</span>
+              <input
+                type="text"
+                value={criteriaForm.name}
+                onChange={(e) => setCriteriaForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="เช่น ทักษะการออกแบบ"
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="text-gray-600">คะแนนเต็ม</span>
+              <input
+                type="number"
+                min={1}
+                value={criteriaForm.max_score}
+                onChange={(e) => setCriteriaForm((f) => ({ ...f, max_score: e.target.value }))}
+                className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2"
+              />
+            </label>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={addCriteriaTemplate}
+                disabled={saving || !criteriaPositionId || !criteriaForm.name.trim()}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {saving ? 'กำลังบันทึก...' : 'เพิ่มหัวข้อ'}
+              </button>
+            </div>
+            {!criteriaPositionId && (
+              <p className="text-xs text-gray-400">เลือกตำแหน่งทางซ้ายก่อน</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

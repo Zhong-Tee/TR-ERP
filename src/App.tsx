@@ -45,6 +45,7 @@ import EmployeePortal from './pages/EmployeePortal'
 import ModeLauncher from './pages/ModeLauncher'
 import ResetPassword from './pages/ResetPassword'
 import MissedClockInAlert from './components/hr/MissedClockInAlert'
+import UnreadAnnouncementAlert from './components/hr/UnreadAnnouncementAlert'
 import {
   DESKTOP_MENU_PATH_ORDER,
   MACHINERY_MOBILE_ROLES,
@@ -761,6 +762,8 @@ function App() {
           <AppRoutes />
           {/* เตือน "ลืมบันทึกเวลาเข้างาน" ทันทีที่ login — ครอบทุกหน้า */}
           <MissedClockInAlert />
+          {/* เตือน "ประกาศที่ยังไม่รับทราบ" ทันทีที่ login — ครอบทุกหน้า ทั้ง PC และมือถือ */}
+          <UnreadAnnouncementAlert />
         </MenuAccessProvider>
       </AuthProvider>
     </Router>

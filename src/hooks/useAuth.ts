@@ -5,12 +5,14 @@ import type { User } from '../types'
 import { clearMobileModeStorage } from '../lib/mobileMode'
 import { clearSessionDay, ensureSessionDay, isSessionExpired, markSessionDay, readSessionDay } from '../lib/dailySession'
 import { MISSED_CLOCK_IN_SHOWN_KEY } from '../lib/missedClockIn'
+import { ANNOUNCEMENT_ALERT_SHOWN_KEY } from '../lib/announcementAlert'
 
-/** ล้างสถานะที่ควรอยู่แค่ช่วง session เดียว (ปลดล็อกหน้าแผน, popup เตือนลงเวลา, โหมดมือถือ) */
+/** ล้างสถานะที่ควรอยู่แค่ช่วง session เดียว (ปลดล็อกหน้าแผน, popup เตือนลงเวลา/ประกาศ, โหมดมือถือ) */
 function clearSessionScopedStorage() {
   try {
     sessionStorage.removeItem('plan_unlocked')
     sessionStorage.removeItem(MISSED_CLOCK_IN_SHOWN_KEY)
+    sessionStorage.removeItem(ANNOUNCEMENT_ALERT_SHOWN_KEY)
   } catch {
     /* storage ไม่พร้อมใช้งาน — ข้าม */
   }

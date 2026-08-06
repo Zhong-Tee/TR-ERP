@@ -47,6 +47,11 @@ export interface ScoreRule {
    * เกิน threshold_min ครั้ง → หัก points เพิ่มต่อครั้งที่เกิน (null = ไม่ใช่กติกาสะสม)
    */
   counts_event_prefix: string | null
+  /**
+   * กติกาสะสม: หักเพิ่มขึ้นทีละเท่านี้ในครั้งที่เกินถัดไป — ครั้งที่เกินลำดับที่ n
+   * หัก points + points_step × (n − 1) · 0 = หักเท่ากันทุกครั้ง
+   */
+  points_step: number
   is_active: boolean
   sort_order: number
 }
@@ -125,6 +130,12 @@ export const scopeOfDay = (fact: AttendanceFact): Exclude<RuleScope, 'all'> =>
 
 /** ขั้นความสายเป็นกติกาในกลุ่ม attendance ที่ event_code ขึ้นต้นด้วย late_ — HR เพิ่มขั้นเองได้ */
 const LATE_PREFIX = 'late_'
+
+/**
+ * ท้าย event_code ของเหตุการณ์ชดเชยที่ระบบสร้างเมื่อ HR ยอมรับคำทักท้วง
+ * (ดู hr_score_accept_appeal ใน migration 331) — คะแนนเป็นบวก และหักล้างเหตุการณ์เดิม
+ */
+export const REVERSED_SUFFIX = '_reversed'
 
 /** นาทีขั้นต่ำระหว่างเวลาเข้างานถึงเวลาที่กดออก จึงจะเชื่อว่ามาทำงานจริงแต่ลืมกดเข้า */
 const DEFAULT_PRESENCE_MIN = 240
@@ -347,23 +358,42 @@ const round2 = (n: number) => Math.round(n * 100) / 100
  * เหตุการณ์เพิ่มจากกติกาสะสม — ทำผิดซ้ำ ๆ ต้องหักหนักขึ้น ไม่ใช่หักเท่าเดิมทุกครั้ง
  * เช่น late_repeat (ยอมให้ 5 ครั้ง หักเพิ่มครั้งละ -2): สาย 8 ครั้ง → เกิดเหตุการณ์เพิ่ม 3 รายการ
  * ลงวันที่ของครั้งที่ 6, 7, 8 (คนละวันเสมอ จึงไม่ชน unique index ของ hr_score_events)
+ *
+ * points_step > 0 ทำให้ยอดหักไล่ระดับขึ้นในแต่ละครั้งที่เกิน: ครั้งที่เกินลำดับที่ n
+ * หัก points + points_step × (n − 1) — ตั้ง 0 = หักเท่ากันทุกครั้ง (พฤติกรรมเดิม)
  */
 export function applyCumulativeRules(events: ScoreEventDraft[], rules: RuleIndex): ScoreEventDraft[] {
   const cumulative = [...rules.values()].filter((r) => r.counts_event_prefix)
   if (cumulative.length === 0) return []
   // เหตุการณ์ที่กติกาสะสมสร้างขึ้นเอง ห้ามถูกนับซ้ำเป็นฐานของกติกาสะสมอื่น
   const cumulativeCodes = new Set(cumulative.map((r) => r.event_code))
+  // เหตุการณ์ที่ HR ยอมรับคำทักท้วงแล้วคืนคะแนนให้ ต้องไม่ถูกนับเป็นความผิดสะสมอีก
+  const reversedKeys = new Set(
+    events
+      .filter((e) => e.event_code.endsWith(REVERSED_SUFFIX))
+      .map((e) => `${e.event_date}|${e.event_code.slice(0, -REVERSED_SUFFIX.length)}`),
+  )
 
   const extra: ScoreEventDraft[] = []
   for (const rule of cumulative) {
     const prefix = rule.counts_event_prefix as string
     const allowance = rule.threshold_min ?? 0
     const matched = events
-      .filter((e) => e.event_code.startsWith(prefix) && !cumulativeCodes.has(e.event_code))
+      .filter((e) => e.event_code.startsWith(prefix)
+        && !cumulativeCodes.has(e.event_code)
+        // นับเฉพาะรายการที่หักคะแนนจริง (ตัดรายการชดเชยที่เป็นบวกออก)
+        && e.points < 0
+        && !reversedKeys.has(`${e.event_date}|${e.event_code}`))
       .sort((a, b) => a.event_date.localeCompare(b.event_date))
 
+    const step = rule.points_step || 0
     for (let i = allowance; i < matched.length; i++) {
       const source = matched[i]
+      // ครั้งที่เกินลำดับที่เท่าไหร่ (1 = ครั้งแรกที่เกินโควตา)
+      const nth = i - allowance + 1
+      const escalated = round2(rule.points + step * (nth - 1))
+      // กันตั้งค่า step ผิดทางแล้วกติกา "หัก" กลายเป็น "ให้คะแนน"
+      const points = rule.points < 0 ? Math.min(escalated, 0) : Math.max(escalated, 0)
       extra.push({
         employee_id: source.employee_id,
         event_date: source.event_date,
@@ -372,10 +402,15 @@ export function applyCumulativeRules(events: ScoreEventDraft[], rules: RuleIndex
         category_id: rule.category_id,
         group_code: rule.group_code,
         label: rule.name,
-        points: rule.points,
+        points,
         ref_table: source.ref_table,
         ref_id: source.ref_id,
-        detail: { occurrence: i + 1, allowance, triggered_by: source.event_code },
+        detail: {
+          occurrence: i + 1,
+          allowance,
+          triggered_by: source.event_code,
+          ...(step ? { escalation_nth: nth, base_points: rule.points, points_step: step } : {}),
+        },
       })
     }
   }

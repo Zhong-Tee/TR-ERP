@@ -138,20 +138,30 @@ export default function EmployeeTimeClock() {
   const approvedOtToday = otRequests.some((r) => r.status === 'approved' && r.request_date === todayStr())
   const isRemoteWorkToday = employee?.work_mode === 'wfh' || (employee?.work_mode === 'hybrid' && !!approvedWFHToday)
 
+  /** 'HH:mm[:ss]' → นาทีนับจากเที่ยงคืน */
+  const toMinuteOfDay = (time: string): number => {
+    const [h, m] = time.slice(0, 5).split(':').map(Number)
+    return h * 60 + (m || 0)
+  }
+
+  /** เวลาเข้า-ออกที่ใช้ตัดสินสาย/ออกก่อนของวันนี้
+   *  วัน WFH ที่อนุมัติแล้วและระบุช่วงเวลาไว้ → ยึดช่วงเวลาในคำขอ (ตรงกับ hr_attendance_facts)
+   *  ไม่ได้ระบุ (คำขอเก่า) → ใช้ตารางเวลามาตรฐานเหมือนเดิม */
+  const effectiveWorkStart = approvedWFHToday?.start_time || schedule?.work_start || null
+  const effectiveWorkEnd = approvedWFHToday?.end_time || schedule?.work_end || null
+
   /** นาทีที่สายเกินผ่อนผัน (เฉพาะเข้างานปกติ) — 0 = ไม่สาย */
   const lateMinutes = (entry: HRTimeEntry): number => {
-    if (entry.entry_type !== 'clock_in' || !schedule) return 0
-    const [h, m] = schedule.work_start.slice(0, 5).split(':').map(Number)
-    const startMin = h * 60 + (m || 0) + (schedule.late_grace_min ?? 0)
+    if (entry.entry_type !== 'clock_in' || !effectiveWorkStart) return 0
+    const startMin = toMinuteOfDay(effectiveWorkStart) + (schedule?.late_grace_min ?? 0)
     const d = new Date(entry.entry_time)
     return Math.max(0, d.getHours() * 60 + d.getMinutes() - startMin)
   }
 
   /** นาทีที่ออกก่อนเวลาเลิกงานตามตาราง — 0 = ครบเวลา */
   const earlyLeaveMinutes = (entry: HRTimeEntry): number => {
-    if (entry.entry_type !== 'clock_out' || !schedule) return 0
-    const [h, m] = schedule.work_end.slice(0, 5).split(':').map(Number)
-    const endMin = h * 60 + (m || 0)
+    if (entry.entry_type !== 'clock_out' || !effectiveWorkEnd) return 0
+    const endMin = toMinuteOfDay(effectiveWorkEnd)
     const d = new Date(entry.entry_time)
     return Math.max(0, endMin - (d.getHours() * 60 + d.getMinutes()))
   }
@@ -404,6 +414,16 @@ export default function EmployeeTimeClock() {
           message.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'
         }`}>
           {message.text}
+        </div>
+      )}
+
+      {/* วัน WFH ที่อนุมัติแล้ว — เวลาเข้า-ออกยึดตามช่วงเวลาในคำขอ */}
+      {approvedWFHToday && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          <span className="font-medium">วันนี้ทำงานแบบ WFH (อนุมัติแล้ว)</span>
+          {approvedWFHToday.start_time && approvedWFHToday.end_time && (
+            <span> — เวลาทำงาน {approvedWFHToday.start_time.slice(0, 5)} – {approvedWFHToday.end_time.slice(0, 5)} น.</span>
+          )}
         </div>
       )}
 

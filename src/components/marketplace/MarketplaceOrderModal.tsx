@@ -370,6 +370,22 @@ export default function MarketplaceOrderModal({
     return resolveFieldEnabled(product, fieldKey, fieldRules)
   }
 
+  /** ฟอนต์เริ่มต้น = F01 (ตรรกะเดียวกับฟอร์มเปิดบิล) */
+  const defaultFontName = useMemo(() => {
+    if (!fonts.length) return ''
+    const f01 = fonts.find((f) => String(f.font_code || '').trim().toUpperCase() === 'F01')
+    return (f01?.font_name || fonts[0]?.font_name || '').trim()
+  }, [fonts])
+
+  // เติมฟอนต์เริ่มต้นเฉพาะรายการที่ช่องฟอนต์ "ต้องกรอก" — รายการที่ไม่ต้องกรอกยังคงเป็นช่องเทาว่างเหมือนเดิม
+  useEffect(() => {
+    if (readOnly || !defaultFontName || items.length === 0) return
+    const next = items.map((it) =>
+      fieldEnabled(it, 'font') && !String(it.font || '').trim() ? { ...it, font: defaultFontName } : it
+    )
+    if (next.some((it, i) => it !== items[i])) setItems(next)
+  }, [items, defaultFontName, fieldRules, productById, readOnly]) // eslint-disable-line react-hooks/exhaustive-deps
+
   /** ลายที่เลือกได้ตามหมวดหมู่ของสินค้าที่จับคู่ไว้ — ตรรกะเดียวกับฟอร์มเปิดบิล
    * (ยังไม่ได้จับคู่สินค้า = ยังไม่รู้หมวด จึงแสดงทั้งหมด) */
   function patternsForItem(item: MpOrderItem): PatternOption[] {

@@ -329,19 +329,20 @@ export default function WorkScore() {
   const openCount = rows.filter((r) => !r.locked).length
   const dueForLock = settings ? isPeriodDue(month, settings.lock_day_of_month) : false
 
-  /** บันทึกผลคะแนนของทุกคนในเดือนนี้ — lock=true คือปิดรอบถาวร */
-  const commitAll = async (lock: boolean) => {
+  /**
+   * ปิดรอบเดือนนี้ — เขียนผลคะแนนลง ledger แล้วล็อกในคำสั่งเดียว (atomic ต่อคน)
+   * ระหว่างเดือนไม่ต้องบันทึกอะไร ทุกหน้าคำนวณสดจากข้อเท็จจริง + กติกาปัจจุบัน
+   */
+  const lockAll = async () => {
     if (!category) return
     const targets = rows.filter((r) => !r.locked)
     if (targets.length === 0) return
-    if (lock) {
-      const ok = await showConfirm({
-        title: 'ปิดรอบคะแนน',
-        message: `ปิดรอบเดือน ${month} ของพนักงาน ${targets.length} คน?\n\nหลังปิดรอบจะแก้คะแนน เพิ่มเหตุการณ์ และรับรองเวลาย้อนหลังของเดือนนี้ไม่ได้อีก`,
-        confirmText: 'ปิดรอบ',
-      })
-      if (!ok) return
-    }
+    const ok = await showConfirm({
+      title: 'ปิดรอบคะแนน',
+      message: `ปิดรอบเดือน ${month} ของพนักงาน ${targets.length} คน?\n\nหลังปิดรอบจะแก้คะแนน เพิ่มเหตุการณ์ รับรองเวลาย้อนหลัง และทักท้วงคะแนนของเดือนนี้ไม่ได้อีก`,
+      confirmText: 'ปิดรอบ',
+    })
+    if (!ok) return
 
     setSaving(true)
     setError('')
@@ -362,13 +363,13 @@ export default function WorkScore() {
             // เหตุการณ์ที่ HR เพิ่มเองถูกเก็บไว้แล้ว ส่งไปซ้ำจะกลายเป็น auto
             events: row.events.filter((e) => e.rule_id),
           },
-          lock,
+          lock: true,
         })
       }
-      setMessage(lock ? `ปิดรอบเดือน ${month} แล้ว (${targets.length} คน)` : `บันทึกคะแนน ${targets.length} คนแล้ว`)
+      setMessage(`ปิดรอบเดือน ${month} แล้ว (${targets.length} คน)`)
       await load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'บันทึกคะแนนไม่สำเร็จ')
+      setError(e instanceof Error ? e.message : 'ปิดรอบไม่สำเร็จ')
     } finally {
       setSaving(false)
     }
@@ -527,7 +528,7 @@ export default function WorkScore() {
             </button>
             <button
               type="button"
-              onClick={() => void commitAll(true)}
+              onClick={() => void lockAll()}
               disabled={saving || openCount === 0}
               className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg disabled:opacity-40 ${
                 dueForLock
@@ -545,6 +546,9 @@ export default function WorkScore() {
               {scoredUntil
                 ? `คิดคะแนนถึงวันที่ ${scoredUntil} (ไม่รวมวันนี้ที่ยังไม่จบ)`
                 : 'เดือนนี้ยังไม่มีวันที่คิดคะแนนได้'}
+            </span>
+            <span className="text-sky-600">
+              ระหว่างเดือนไม่ต้องบันทึกอะไร — คะแนนคำนวณสดตลอด พนักงานเห็นและทักท้วงได้ทันที · "ปิดรอบ" คือล็อกถาวรตอนสิ้นรอบ
             </span>
             {settings && <span>ปิดรอบวันที่ {settings.lock_day_of_month} ของเดือนถัดไป · รับรองเวลาย้อนหลัง {settings.certify_back_days} วัน</span>}
             {dueForLock && openCount > 0 && (
@@ -652,9 +656,9 @@ export default function WorkScore() {
                         <div className="text-xs text-gray-400">{a.employee?.employee_code}</div>
                       </td>
                       <td className="p-3">
-                        <div>{ruleByCode.get(a.event?.event_code ?? '')?.name ?? a.event?.event_code ?? '-'}</div>
+                        <div>{ruleByCode.get(a.event_code)?.name ?? a.event_code}</div>
                         <div className="text-xs text-gray-400">
-                          {a.event?.event_date} · {a.event ? Number(a.event.points) : 0} คะแนน
+                          {a.event_date} · {Number(a.points)} คะแนน
                         </div>
                       </td>
                       <td className="p-3 max-w-xs">{a.reason}</td>
@@ -710,9 +714,9 @@ export default function WorkScore() {
                     : '-'}
                 </div>
                 <div className="text-xs text-gray-400">
-                  {ruleByCode.get(reviewForm.appeal.event?.event_code ?? '')?.name ?? reviewForm.appeal.event?.event_code}
-                  {' · '}{reviewForm.appeal.event?.event_date}
-                  {' · '}{reviewForm.appeal.event ? Number(reviewForm.appeal.event.points) : 0} คะแนน
+                  {ruleByCode.get(reviewForm.appeal.event_code)?.name ?? reviewForm.appeal.event_code}
+                  {' · '}{reviewForm.appeal.event_date}
+                  {' · '}{Number(reviewForm.appeal.points)} คะแนน
                 </div>
               </div>
               <div className="rounded-lg bg-surface-50 border border-surface-200 px-3 py-2 text-sm text-gray-600">

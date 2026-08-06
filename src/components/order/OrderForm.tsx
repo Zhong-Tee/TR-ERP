@@ -1549,11 +1549,16 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return v === true || v === 'true'
   }
 
+  /** รหัสฟอนต์เริ่มต้นตาม role ผู้ใช้ — sales-pump ใช้ TH01, role อื่นใช้ F01 */
+  const defaultFontCode = normalizeRole(user?.role) === 'sales-pump' ? 'TH01' : 'F01'
+
   const defaultFontName = useMemo(() => {
     if (!fonts.length) return ''
-    const f01 = fonts.find((f) => String(f.font_code || '').trim().toUpperCase() === 'F01')
-    return (f01?.font_name || fonts[0]?.font_name || '').trim()
-  }, [fonts])
+    const match = fonts.find(
+      (f) => String(f.font_code || '').trim().toUpperCase() === defaultFontCode
+    )
+    return (match?.font_name || fonts[0]?.font_name || '').trim()
+  }, [fonts, defaultFontCode])
 
   useEffect(() => {
     if (!defaultFontName || items.length === 0) return

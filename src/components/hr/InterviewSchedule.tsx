@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   FiUpload,
-  FiUsers,
-  FiCalendar,
+  FiEye,
   FiEdit2,
   FiCheck,
   FiPlus,
   FiTrash2,
+  FiExternalLink,
 } from 'react-icons/fi'
 import {
   fetchCandidates,
@@ -20,9 +20,17 @@ import {
   siamIdToCandidate,
   fetchEmployees,
   fetchPositions,
+  fetchDepartments,
+  fetchInterviewers,
+  fetchInterviewCriteriaTemplates,
+  fetchAllInterviewScores,
+  deleteInterview,
   type SiamIdRecord,
 } from '../../lib/hrApi'
-import type { HRCandidate, HRInterview, HRInterviewScore, HREmployee, HRPosition } from '../../types'
+import type {
+  HRCandidate, HRInterview, HRInterviewer, HRInterviewScore,
+  HRInterviewCriteriaTemplate, HREmployee, HRPosition, HRDepartment,
+} from '../../types'
 import Modal from '../ui/Modal'
 
 type CandidateStatus = HRCandidate['status']
@@ -51,8 +59,60 @@ function interviewStatusLabel(status: InterviewStatus): string {
   return INTERVIEW_STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status
 }
 
+/** ประเภทค่าจ้างของผู้สมัคร เก็บใน custom_field_2 (custom_field_1 = จำนวนเงิน) */
+type SalaryType = 'monthly' | 'daily'
+
+const SALARY_TYPE_OPTIONS: { value: SalaryType; label: string; unit: string }[] = [
+  { value: 'monthly', label: 'เงินเดือน', unit: 'บาท/เดือน' },
+  { value: 'daily', label: 'รายวัน', unit: 'บาท/วัน' },
+]
+
+function salaryTypeOf(c: HRCandidate | null | undefined): SalaryType {
+  return c?.custom_field_2 === 'daily' ? 'daily' : 'monthly'
+}
+
+function salaryUnit(type: SalaryType): string {
+  return SALARY_TYPE_OPTIONS.find((o) => o.value === type)?.unit ?? 'บาท'
+}
+
+/**
+ * รวมวันที่+เวลาที่ผู้ใช้กรอก (เวลาท้องถิ่น) เป็น ISO ที่มี timezone
+ * ถ้าส่ง "2026-08-20T09:00:00" เปล่าๆ เข้า TIMESTAMPTZ Postgres จะตีความเป็น UTC
+ * แล้วแสดงกลับเป็นเวลาไทย +7 ชม. (นัด 09:00 กลายเป็น 16:00)
+ */
+function toLocalIso(date: string, time: string): string {
+  return new Date(`${date}T${time}:00`).toISOString()
+}
+
+/** แยก ISO ที่เก็บใน DB กลับเป็น {date, time} ของ input ตามเวลาท้องถิ่น (ตรงข้ามกับ toLocalIso) */
+function splitLocalIso(iso: string): { date: string; time: string } {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { date: '', time: '09:00' }
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  }
+}
+
 function candidateName(c: HRCandidate): string {
   return [c.prefix, c.first_name, c.last_name].filter(Boolean).join(' ')
+}
+
+/** ที่อยู่จากบัตรประชาชนเก็บเป็น JSON แยกช่อง — ต่อกลับเป็นบรรทัดเดียว */
+function formatAddress(address?: Record<string, string>): string {
+  if (!address) return '-'
+  const parts = [
+    address.house_no && `บ้านเลขที่ ${address.house_no}`,
+    address.moo && `หมู่ ${address.moo}`,
+    address.trok && `ตรอก ${address.trok}`,
+    address.soi && `ซอย ${address.soi}`,
+    address.road && `ถนน ${address.road}`,
+    address.tambon,
+    address.amphoe,
+    address.province,
+  ].filter((p): p is string => Boolean(p && p.trim()))
+  return parts.length > 0 ? parts.join(' ') : '-'
 }
 
 function formatDate(d: string): string {
@@ -81,19 +141,20 @@ function formatDateTime(d: string): string {
 }
 
 export default function InterviewSchedule() {
-  const [subTab, setSubTab] = useState<'appointments' | 'scoring'>('appointments')
+  const [subTab, setSubTab] = useState<'appointments' | 'scoring' | 'candidates'>('appointments')
   const [candidates, setCandidates] = useState<HRCandidate[]>([])
   const [interviews, setInterviews] = useState<HRInterview[]>([])
   const [employees, setEmployees] = useState<HREmployee[]>([])
   const [positions, setPositions] = useState<HRPosition[]>([])
-  const [statusFilter, setStatusFilter] = useState<CandidateStatus | ''>('')
+  const [departments, setDepartments] = useState<HRDepartment[]>([])
+  const [interviewers, setInterviewers] = useState<HRInterviewer[]>([])
   const [appointmentSearch, setAppointmentSearch] = useState('')
+  const [scoringSearch, setScoringSearch] = useState('')
   const [appointmentDateFrom, setAppointmentDateFrom] = useState('')
   const [appointmentDateTo, setAppointmentDateTo] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
-  const [savingCandidatePositionId, setSavingCandidatePositionId] = useState<string | null>(null)
 
   const [importOpen, setImportOpen] = useState(false)
   const [, setImportFile] = useState<File | null>(null)
@@ -109,7 +170,10 @@ export default function InterviewSchedule() {
   const [scheduleNickname, setScheduleNickname] = useState('')
   const [schedulePhone, setSchedulePhone] = useState('')
   const [scheduleSalary, setScheduleSalary] = useState('')
+  const [scheduleSalaryType, setScheduleSalaryType] = useState<SalaryType>('monthly')
+  const [scheduleDepartmentId, setScheduleDepartmentId] = useState('')
   const [scheduleAppliedPosition, setScheduleAppliedPosition] = useState('')
+  const [schedulePortfolio, setSchedulePortfolio] = useState('')
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTime, setScheduleTime] = useState('09:00')
   const [scheduleLocation, setScheduleLocation] = useState('')
@@ -124,6 +188,16 @@ export default function InterviewSchedule() {
   const [scoreComments, setScoreComments] = useState('')
   const [scoreSaving, setScoreSaving] = useState(false)
   const [hiringCandidateId, setHiringCandidateId] = useState<string | null>(null)
+  const [deletingInterviewId, setDeletingInterviewId] = useState<string | null>(null)
+  /** นัดหมายที่กำลังรอยืนยันการลบ (null = ไม่มีหน้าต่างยืนยันเปิดอยู่) */
+  const [confirmDeleteInterview, setConfirmDeleteInterview] = useState<HRInterview | null>(null)
+  /** ตั้งค่า = หน้าต่างนัดหมายกำลัง "แก้ไข" นัดเดิม (null = สร้างใหม่) */
+  const [editingInterviewId, setEditingInterviewId] = useState<string | null>(null)
+  /** ตั้งค่า = นำเข้าบัตรประชาชนเข้าไปในผู้สมัครคนนี้โดยเฉพาะ */
+  const [importTargetCandidate, setImportTargetCandidate] = useState<HRCandidate | null>(null)
+  const [detailCandidate, setDetailCandidate] = useState<HRCandidate | null>(null)
+  const [criteriaTemplates, setCriteriaTemplates] = useState<HRInterviewCriteriaTemplate[]>([])
+  const [scoresByInterview, setScoresByInterview] = useState<Map<string, HRInterviewScore>>(new Map())
 
   /** Optional: current employee id for interviewer_id when saving score (e.g. from auth). */
   const currentEmployeeId: string | undefined = undefined
@@ -132,16 +206,24 @@ export default function InterviewSchedule() {
     setLoading(true)
     setError(null)
     try {
-      const [cand, ints, emps, pos] = await Promise.all([
+      const [cand, ints, emps, pos, depts, itvs, crit, allScores] = await Promise.all([
         fetchCandidates(),
         fetchInterviews(),
         fetchEmployees({ status: 'active' }),
         fetchPositions(),
+        fetchDepartments(),
+        fetchInterviewers(),
+        fetchInterviewCriteriaTemplates(),
+        fetchAllInterviewScores(),
       ])
       setCandidates(cand)
       setInterviews(ints)
       setEmployees(emps)
       setPositions(pos)
+      setDepartments(depts)
+      setInterviewers(itvs)
+      setCriteriaTemplates(crit)
+      setScoresByInterview(new Map(allScores.map((s) => [s.interview_id, s])))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดข้อมูลไม่สำเร็จ')
     } finally {
@@ -153,11 +235,7 @@ export default function InterviewSchedule() {
     loadData()
   }, [loadData])
 
-  const filteredCandidates = useMemo(() => {
-    if (!statusFilter) return candidates
-    return candidates.filter((c) => c.status === statusFilter)
-  }, [candidates, statusFilter])
-  const scheduleCandidateOptions = filteredCandidates.length > 0 ? filteredCandidates : candidates
+  const scheduleCandidateOptions = candidates
 
   const candidateMap = useMemo(() => {
     const map = new Map<string, HRCandidate>()
@@ -190,7 +268,7 @@ export default function InterviewSchedule() {
       if (!q) return true
       const haystack = [
         candidate ? candidateName(candidate) : '',
-        (candidate as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '',
+        candidate?.nickname ?? '',
         candidate?.phone ?? '',
         candidate?.applied_position ?? '',
         interviewStatusLabel(iv.status),
@@ -202,18 +280,68 @@ export default function InterviewSchedule() {
     })
   }, [interviews, candidateMap, appointmentSearch, appointmentDateFrom, appointmentDateTo])
 
-  const positionOptions = useMemo(() => {
+  const filteredScoringInterviews = useMemo(() => {
+    const q = scoringSearch.trim().toLowerCase()
+    if (!q) return interviews
+    return interviews.filter((iv) => {
+      const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+      const score = scoresByInterview.get(iv.id)
+      const haystack = [
+        candidate ? candidateName(candidate) : '',
+        candidate?.nickname ?? '',
+        candidate?.phone ?? '',
+        candidate?.applied_position ?? '',
+        interviewStatusLabel(iv.status),
+        score ? `${score.total_score ?? 0}/${score.max_possible ?? 0}` : 'ยังไม่ให้คะแนน',
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [interviews, candidateMap, scoresByInterview, scoringSearch])
+
+  /** ตำแหน่งให้เลือกในหน้าต่างนัดหมาย — กรองตามแผนกที่เลือก (ถ้ายังไม่เลือกแผนก = ทุกตำแหน่ง) */
+  const schedulePositionOptions = useMemo(() => {
     const names = new Set<string>()
     for (const p of positions) {
+      if (scheduleDepartmentId && p.department_id !== scheduleDepartmentId) continue
       const n = p.name?.trim()
       if (n) names.add(n)
     }
-    for (const c of candidates) {
-      const n = c.applied_position?.trim()
-      if (n) names.add(n)
-    }
+    // ค่าเดิมของผู้สมัครอาจไม่อยู่ในทะเบียนตำแหน่ง — คงไว้ไม่ให้หายตอนบันทึก
+    const current = scheduleAppliedPosition.trim()
+    if (current) names.add(current)
     return Array.from(names).sort((a, b) => a.localeCompare(b, 'th'))
-  }, [positions, candidates])
+  }, [positions, scheduleDepartmentId, scheduleAppliedPosition])
+
+  /** ผู้สัมภาษณ์ที่เลือกได้ = รายชื่อที่ตั้งค่าไว้และเปิดใช้งาน (+ คนที่ถูกเลือกไว้แล้วแต่ถูกถอดออกภายหลัง) */
+  const interviewerOptions = useMemo(() => {
+    const rows = interviewers
+      .filter((i) => i.is_active && i.employee)
+      .map((i) => ({
+        id: i.employee_id,
+        label: [i.employee?.employee_code, i.employee?.first_name, i.employee?.last_name]
+          .filter(Boolean).join(' '),
+      }))
+    const known = new Set(rows.map((r) => r.id))
+    for (const id of scheduleInterviewers) {
+      if (known.has(id)) continue
+      const emp = employees.find((e) => e.id === id)
+      rows.push({
+        id,
+        label: emp
+          ? `${emp.employee_code} ${emp.first_name} ${emp.last_name}`
+          : 'พนักงานที่ถูกลบออกจากรายชื่อ',
+      })
+    }
+    return rows
+  }, [interviewers, scheduleInterviewers, employees])
+
+  const toggleScheduleInterviewer = (id: string) => {
+    setScheduleInterviewers((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    )
+  }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -230,37 +358,52 @@ export default function InterviewSchedule() {
       const records = parseSiamIdData(text)
       const latest = getLatestSiamIdRecords(records)
       setParsedRecords(latest)
-      setSelectedImportIds(new Set(latest.map((r) => r.citizen_id)))
+      // โหมดยิงเข้าผู้สมัครคนเดียว ให้ผู้ใช้เลือกเองว่าแถวไหน (ไม่ติ๊กให้อัตโนมัติ)
+      setSelectedImportIds(importTargetCandidate ? new Set() : new Set(latest.map((r) => r.citizen_id)))
     }
     reader.readAsText(file, 'UTF-8')
   }
 
+  /**
+   * ข้อมูลจากบัตรประชาชนที่ปลอดภัยจะเขียนทับผู้สมัครที่มีอยู่แล้ว
+   * custom_field_1/2 ถูกแอปใช้เก็บ "เงินเดือน/ประเภทค่าจ้าง" จึงต้องไม่ให้ค่าจากบัตรมาทับ
+   */
+  const siamIdPatchForExisting = (r: SiamIdRecord, existing: HRCandidate) => {
+    const mapped = siamIdToCandidate(r)
+    delete mapped.custom_field_1
+    delete mapped.custom_field_2
+    return { ...mapped, id: existing.id, status: existing.status }
+  }
+
   const handleImport = async () => {
     if (parsedRecords.length === 0) return
+    const toImport = parsedRecords.filter((r) => selectedImportIds.has(r.citizen_id))
+    if (toImport.length === 0) return
     setImporting(true)
     setError(null)
     try {
-      const toImport = parsedRecords.filter((r) => selectedImportIds.has(r.citizen_id))
-      let mappedHistoryCount = 0
-      for (const r of toImport) {
-        const existing = candidates.find((c) => (c.citizen_id ?? '') === r.citizen_id)
-        if (existing) {
-          const history = candidateInterviewHistory.get(existing.id)
-          if ((history?.totalAppointments ?? 0) > 0 || (history?.interviewedCount ?? 0) > 0) {
-            mappedHistoryCount += 1
+      // เปิดจากปุ่มในแถว = ยัดข้อมูลบัตรเข้าไปในผู้สมัครคนนั้นโดยตรง (ไม่สนเลขบัตรตรงกันไหม)
+      if (importTargetCandidate) {
+        await upsertCandidate(siamIdPatchForExisting(toImport[0], importTargetCandidate))
+        setSuccessMessage(`นำข้อมูลบัตรประชาชนเข้า ${candidateName(importTargetCandidate)} แล้ว`)
+      } else {
+        let mappedHistoryCount = 0
+        for (const r of toImport) {
+          const existing = candidates.find((c) => (c.citizen_id ?? '') === r.citizen_id)
+          if (existing) {
+            const history = candidateInterviewHistory.get(existing.id)
+            if ((history?.totalAppointments ?? 0) > 0 || (history?.interviewedCount ?? 0) > 0) {
+              mappedHistoryCount += 1
+            }
+            await upsertCandidate(siamIdPatchForExisting(r, existing))
+          } else {
+            await upsertCandidate(siamIdToCandidate(r))
           }
-          await upsertCandidate({
-            ...siamIdToCandidate(r),
-            id: existing.id,
-            // คงสถานะเดิม เพื่อไม่ทับ flow นัดหมาย/สัมภาษณ์ที่ทำไปแล้ว
-            status: existing.status,
-          })
-        } else {
-          await upsertCandidate(siamIdToCandidate(r))
         }
+        setSuccessMessage(`นำเข้าสำเร็จ ${toImport.length} รายการ (แมปประวัตินัด/สัมภาษณ์ได้ ${mappedHistoryCount} รายการ)`)
       }
-      setSuccessMessage(`นำเข้าสำเร็จ ${toImport.length} รายการ (แมปประวัตินัด/สัมภาษณ์ได้ ${mappedHistoryCount} รายการ)`)
       setImportOpen(false)
+      setImportTargetCandidate(null)
       setImportFile(null)
       setParsedRecords([])
       setSelectedImportIds(new Set())
@@ -272,33 +415,54 @@ export default function InterviewSchedule() {
     }
   }
 
-  const openScheduleModal = (candidate: HRCandidate) => {
+  const openImportForCandidate = (candidate: HRCandidate) => {
+    setImportTargetCandidate(candidate)
+    setImportOpen(true)
+    setImportFile(null)
+    setParsedRecords([])
+    setSelectedImportIds(new Set())
+    setError(null)
+  }
+
+  /** เปิดหน้าต่างเดิมในโหมด "แก้ไขนัดหมาย" — บันทึกแล้วอัปเดตนัดเดิม ไม่สร้างนัดใหม่ */
+  const openEditScheduleModal = (iv: HRInterview) => {
+    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id) ?? null
     setScheduleCandidate(candidate)
-    setScheduleCandidateId(candidate.id)
-    setScheduleFirstName(candidate.first_name ?? '')
-    setScheduleLastName(candidate.last_name ?? '')
-    setScheduleNickname((candidate as HRCandidate & { nickname?: string }).nickname ?? '')
-    setSchedulePhone(candidate.phone ?? '')
-    setScheduleSalary(candidate.custom_field_1 ?? '')
-    setScheduleAppliedPosition(candidate.applied_position ?? '')
-    setScheduleDate('')
-    setScheduleTime('09:00')
-    setScheduleLocation('')
-    setScheduleInterviewers([])
-    setScheduleStatus('scheduled')
+    setScheduleCandidateId(candidate?.id ?? '')
+    setScheduleFirstName(candidate?.first_name ?? '')
+    setScheduleLastName(candidate?.last_name ?? '')
+    setScheduleNickname(candidate?.nickname ?? '')
+    setSchedulePhone(candidate?.phone ?? '')
+    setScheduleSalary(candidate?.custom_field_1 ?? '')
+    setScheduleSalaryType(salaryTypeOf(candidate))
+    setScheduleDepartmentId(candidate?.applied_department_id ?? '')
+    setScheduleAppliedPosition(candidate?.applied_position ?? '')
+    setSchedulePortfolio(candidate?.portfolio_url ?? '')
+    const { date, time } = splitLocalIso(iv.interview_date)
+    setScheduleDate(date)
+    setScheduleTime(time)
+    setScheduleLocation(iv.location ?? '')
+    setScheduleInterviewers(Array.isArray(iv.interviewer_ids) ? iv.interviewer_ids : [])
+    setScheduleStatus(iv.status as InterviewStatus)
+    setEditingInterviewId(iv.id)
     setScheduleModalOpen(true)
   }
 
   const openCreateScheduleModal = () => {
+    setEditingInterviewId(null)
+    // เริ่มที่ "ไม่เลือกผู้สมัครเดิม" เสมอ — ถ้า preset เป็นผู้สมัครคนแรก
+    // การพิมพ์ชื่อใหม่ทับจะกลายเป็นการ "แก้ชื่อผู้สมัครเดิม" โดยไม่ตั้งใจ
     setScheduleCandidate(null)
-    setScheduleCandidateId(scheduleCandidateOptions[0]?.id ?? '')
-    const preset = scheduleCandidateOptions[0]
-    setScheduleFirstName(preset?.first_name ?? '')
-    setScheduleLastName(preset?.last_name ?? '')
-    setScheduleNickname((preset as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '')
-    setSchedulePhone(preset?.phone ?? '')
-    setScheduleSalary(preset?.custom_field_1 ?? '')
-    setScheduleAppliedPosition(preset?.applied_position ?? '')
+    setScheduleCandidateId('')
+    setScheduleFirstName('')
+    setScheduleLastName('')
+    setScheduleNickname('')
+    setSchedulePhone('')
+    setScheduleSalary('')
+    setScheduleSalaryType('monthly')
+    setScheduleDepartmentId('')
+    setScheduleAppliedPosition('')
+    setSchedulePortfolio('')
     setScheduleDate('')
     setScheduleTime('09:00')
     setScheduleLocation('')
@@ -321,12 +485,13 @@ export default function InterviewSchedule() {
           last_name: scheduleLastName.trim(),
           phone: schedulePhone.trim() || undefined,
           custom_field_1: scheduleSalary.trim() || undefined,
+          custom_field_2: scheduleSalaryType,
+          applied_department_id: scheduleDepartmentId || undefined,
           applied_position: scheduleAppliedPosition.trim() || undefined,
+          portfolio_url: schedulePortfolio.trim() || undefined,
+          nickname: scheduleNickname.trim() || undefined,
           status: 'scheduled',
           source: 'manual-appointment',
-          ...(scheduleNickname.trim()
-            ? ({ nickname: scheduleNickname.trim() } as Partial<HRCandidate>)
-            : {}),
         })
         candidateId = createdCandidate.id
       } else {
@@ -334,23 +499,33 @@ export default function InterviewSchedule() {
           id: candidateId,
           first_name: scheduleFirstName.trim() || undefined,
           last_name: scheduleLastName.trim() || undefined,
+          nickname: scheduleNickname.trim() || undefined,
           phone: schedulePhone.trim() || undefined,
           custom_field_1: scheduleSalary.trim() || undefined,
+          custom_field_2: scheduleSalaryType,
+          applied_department_id: scheduleDepartmentId || undefined,
           applied_position: scheduleAppliedPosition.trim() || undefined,
+          portfolio_url: schedulePortfolio.trim() || undefined,
         })
       }
       await upsertInterview({
+        ...(editingInterviewId ? { id: editingInterviewId } : {}),
         candidate_id: candidateId,
-        interview_date: `${scheduleDate}T${scheduleTime}:00`,
+        interview_date: toLocalIso(scheduleDate, scheduleTime),
         location: scheduleLocation || undefined,
         interviewer_ids: scheduleInterviewers,
         status: scheduleStatus,
       })
-      await upsertCandidate({ id: candidateId, status: 'scheduled' })
-      setSuccessMessage('นัดสัมภาษณ์แล้ว')
+      // นัดใหม่เท่านั้นที่ดันสถานะผู้สมัครเป็น "นัดสัมภาษณ์"
+      // (แก้ไขนัดเดิมไม่ควรย้อนสถานะที่เดินไปแล้ว เช่น สัมภาษณ์แล้ว/ผ่าน)
+      if (!editingInterviewId) {
+        await upsertCandidate({ id: candidateId, status: 'scheduled' })
+      }
+      setSuccessMessage(editingInterviewId ? 'แก้ไขนัดสัมภาษณ์แล้ว' : 'นัดสัมภาษณ์แล้ว')
       setScheduleModalOpen(false)
       setScheduleCandidate(null)
       setScheduleCandidateId('')
+      setEditingInterviewId(null)
       await loadData()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'บันทึกไม่สำเร็จ')
@@ -359,9 +534,26 @@ export default function InterviewSchedule() {
     }
   }
 
+  /** หัวข้อเกณฑ์เริ่มต้นของตำแหน่งที่ผู้สมัครสมัคร (ว่าง = ยังไม่ได้ตั้งค่าไว้) */
+  const defaultCriteriaFor = useCallback(
+    (candidate: HRCandidate | undefined) => {
+      const posName = candidate?.applied_position?.trim()
+      if (!posName) return []
+      const posIds = positions.filter((p) => p.name?.trim() === posName).map((p) => p.id)
+      if (posIds.length === 0) return []
+      return criteriaTemplates
+        .filter((t) => t.is_active && posIds.includes(t.position_id))
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((t) => ({ name: t.name, max_score: t.max_score, score: 0, note: '' }))
+    },
+    [positions, criteriaTemplates]
+  )
+
   const openScoring = async (interview: HRInterview) => {
     setScoringInterview(interview)
-    setCriteriaRows([{ name: '', max_score: 10, score: 0, note: '' }])
+    const candidate = interview.candidate ?? candidateMap.get(interview.candidate_id)
+    const preset = defaultCriteriaFor(candidate)
+    setCriteriaRows(preset.length > 0 ? preset : [{ name: '', max_score: 10, score: 0, note: '' }])
     setRecommendation('maybe')
     setScoreComments('')
     setError(null)
@@ -370,6 +562,7 @@ export default function InterviewSchedule() {
       setExistingScores(scores)
       if (scores.length > 0) {
         const s = scores[0]
+        // มีคะแนนเดิมอยู่แล้ว = ใช้ของเดิม ไม่ทับด้วยเกณฑ์เริ่มต้น
         setCriteriaRows(
           s.criteria.length > 0
             ? s.criteria.map((c) => ({
@@ -378,7 +571,9 @@ export default function InterviewSchedule() {
                 score: c.score ?? 0,
                 note: c.note ?? '',
               }))
-            : [{ name: '', max_score: 10, score: 0, note: '' }]
+            : preset.length > 0
+              ? preset
+              : [{ name: '', max_score: 10, score: 0, note: '' }]
         )
         setRecommendation(s.recommendation)
         setScoreComments(s.comments ?? '')
@@ -487,27 +682,20 @@ export default function InterviewSchedule() {
     }
   }
 
-  const handleAppliedPositionChange = async (candidate: HRCandidate, nextPosition: string) => {
-    const trimmed = nextPosition.trim()
-    setSavingCandidatePositionId(candidate.id)
+  const handleDeleteInterview = async () => {
+    const iv = confirmDeleteInterview
+    if (!iv) return
+    setDeletingInterviewId(iv.id)
     setError(null)
     try {
-      await upsertCandidate({
-        id: candidate.id,
-        applied_position: trimmed || undefined,
-      })
-      setCandidates((prev) =>
-        prev.map((c) =>
-          c.id === candidate.id
-            ? { ...c, applied_position: trimmed || undefined }
-            : c
-        )
-      )
-      setSuccessMessage('อัปเดตตำแหน่งที่สมัครแล้ว')
+      await deleteInterview(iv.id)
+      setConfirmDeleteInterview(null)
+      setSuccessMessage('ลบนัดสัมภาษณ์แล้ว')
+      await loadData()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'อัปเดตตำแหน่งที่สมัครไม่สำเร็จ')
+      setError(e instanceof Error ? e.message : 'ลบนัดสัมภาษณ์ไม่สำเร็จ')
     } finally {
-      setSavingCandidatePositionId(null)
+      setDeletingInterviewId(null)
     }
   }
 
@@ -565,7 +753,7 @@ export default function InterviewSchedule() {
           <h2 className="text-lg font-semibold text-surface-800">
             {subTab === 'appointments' ? 'รายการนัดสัมภาษณ์' : 'สัมภาษณ์และคะแนน'}
           </h2>
-          {subTab === 'appointments' ? (
+          {subTab === 'appointments' && (
             <button
               type="button"
               onClick={openCreateScheduleModal}
@@ -573,20 +761,6 @@ export default function InterviewSchedule() {
             >
               <FiPlus className="w-4 h-4" />
               สร้างนัดหมาย
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setImportOpen(true)
-                setImportFile(null)
-                setParsedRecords([])
-                setError(null)
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 shadow-soft"
-            >
-              <FiUpload className="w-4 h-4" />
-              นำเข้าข้อมูลผู้สมัคร
             </button>
           )}
         </div>
@@ -659,6 +833,7 @@ export default function InterviewSchedule() {
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่/เวลานัด</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่ง</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เงินเดือน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">Portfolio</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">เบอร์โทร</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
                   <th className="px-6 py-3 text-sm font-semibold text-surface-700">จัดการ</th>
@@ -667,7 +842,7 @@ export default function InterviewSchedule() {
               <tbody>
                 {filteredAppointments.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="px-6 py-12 text-center text-surface-500 text-sm">
+                    <td colSpan={10} className="px-6 py-12 text-center text-surface-500 text-sm">
                       ไม่มีรายการ
                     </td>
                   </tr>
@@ -675,27 +850,37 @@ export default function InterviewSchedule() {
                   filteredAppointments.map((iv, idx) => {
                     const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
                     return (
-                      <tr
-                        key={iv.id}
-                        onClick={() => openScoring(iv)}
-                        className="border-b border-surface-100 hover:bg-emerald-50/50 cursor-pointer transition-colors"
-                      >
+                      <tr key={iv.id} className="border-b border-surface-100 hover:bg-surface-50/50 transition-colors">
                         <td className="px-6 py-3 text-sm text-surface-700">{idx + 1}</td>
                         <td className="px-6 py-3 text-sm text-surface-800">
                           {candidate ? candidateName(candidate) : '-'}
                         </td>
                         <td className="px-6 py-3 text-sm text-surface-700">
-                          {(candidate as HRCandidate & { nickname?: string } | undefined)?.nickname ?? '-'}
+                          {candidate?.nickname ?? '-'}
                         </td>
                         <td className="px-6 py-3 text-sm text-surface-700">{formatDateTime(iv.interview_date)}</td>
                         <td className="px-6 py-3 text-sm text-surface-700">{candidate?.applied_position ?? '-'}</td>
                         <td className="px-6 py-3 text-sm text-surface-700">
                           {candidate?.custom_field_1
-                            ? `${Number(candidate.custom_field_1).toLocaleString('th-TH')} บาท`
+                            ? `${Number(candidate.custom_field_1).toLocaleString('th-TH')} ${salaryUnit(salaryTypeOf(candidate))}`
                             : '-'}
                         </td>
+                        <td className="px-6 py-3 text-sm">
+                          {candidate?.portfolio_url ? (
+                            <a
+                              href={candidate.portfolio_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-emerald-700 hover:underline"
+                            >
+                              <FiExternalLink className="w-4 h-4" /> เปิด
+                            </a>
+                          ) : (
+                            <span className="text-surface-500">-</span>
+                          )}
+                        </td>
                         <td className="px-6 py-3 text-sm text-surface-700">{candidate?.phone ?? '-'}</td>
-                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
+                        <td className="px-6 py-3">
                           <select
                             value={iv.status}
                             onChange={(e) => void handleInterviewStatusChange(iv.id, e.target.value as InterviewStatus)}
@@ -708,14 +893,27 @@ export default function InterviewSchedule() {
                             ))}
                           </select>
                         </td>
-                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={() => openScoring(iv)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
-                          >
-                            <FiEdit2 className="w-4 h-4" /> ให้คะแนน
-                          </button>
+                        <td className="px-6 py-3">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openEditScheduleModal(iv)}
+                              title="แก้ไขนัดหมาย"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
+                            >
+                              <FiEdit2 className="w-4 h-4" /> แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteInterview(iv)}
+                              disabled={deletingInterviewId === iv.id}
+                              title="ลบนัดหมาย"
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-red-100 text-red-700 text-sm hover:bg-red-200 disabled:opacity-50"
+                            >
+                              <FiTrash2 className="w-4 h-4" />
+                              {deletingInterviewId === iv.id ? 'กำลังลบ...' : 'ลบ'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     )
@@ -725,119 +923,314 @@ export default function InterviewSchedule() {
             </table>
             </div>
           </div>
-        ) : (
-          <>
-            <div className="px-6 py-4 border-b border-surface-100">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2">
-                <FiUsers className="w-5 h-5 text-surface-500" />
-                <span className="text-sm font-medium text-surface-700">ผู้สมัคร</span>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter((e.target.value || '') as CandidateStatus | '')}
-                  className="ml-2 rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm"
-                >
-                  {STATUS_OPTIONS.map((o) => (
-                    <option key={o.value || 'all'} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-                </div>
+        ) : subTab === 'scoring' ? (
+          <div>
+            <div className="px-6 py-4 border-b border-surface-100 flex flex-wrap items-end gap-3">
+              <div className="min-w-[260px]">
+                <label className="block text-xs text-surface-600 mb-1">ค้นหา</label>
+                <input
+                  type="text"
+                  value={scoringSearch}
+                  onChange={(e) => setScoringSearch(e.target.value)}
+                  placeholder="ค้นหาผู้สมัคร, ชื่อเล่น, ตำแหน่ง, เบอร์โทร, สถานะ..."
+                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                />
               </div>
+              <button
+                type="button"
+                onClick={() => setScoringSearch('')}
+                className="px-3 py-2 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
+              >
+                ล้างตัวกรอง
+              </button>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="bg-surface-50 border-b border-surface-200">
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชื่อ-นามสกุล</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่งที่สมัคร</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่สมัคร</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประวัตินัดสัมภาษณ์</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประวัติสัมภาษณ์</th>
-                    <th className="px-6 py-3 text-sm font-semibold text-surface-700">Actions</th>
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-surface-50 border-b border-surface-200">
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ลำดับ</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้สมัคร</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ชื่อเล่น</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่/เวลานัด</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ตำแหน่ง</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">Portfolio</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะนัด</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">คะแนน</th>
+                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จัดการ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredScoringInterviews.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-12 text-center text-surface-500 text-sm">
+                      {interviews.length === 0
+                        ? 'ยังไม่มีนัดสัมภาษณ์ — สร้างได้ที่แถบ "รายการนัดสัมภาษณ์"'
+                        : 'ไม่พบรายการที่ตรงกับคำค้นหา'}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {filteredCandidates.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="px-6 py-12 text-center text-surface-500 text-sm">
-                        ไม่มีรายการ
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredCandidates.map((c) => (
-                      <tr key={c.id} className="border-b border-surface-100 hover:bg-surface-50/50">
-                        <td className="px-6 py-3 text-sm text-surface-800">{candidateName(c)}</td>
+                ) : (
+                  filteredScoringInterviews.map((iv, idx) => {
+                    const candidate = iv.candidate ?? candidateMap.get(iv.candidate_id)
+                    const score = scoresByInterview.get(iv.id)
+                    return (
+                      <tr
+                        key={iv.id}
+                        onClick={() => openScoring(iv)}
+                        className="border-b border-surface-100 hover:bg-emerald-50/50 cursor-pointer transition-colors"
+                      >
+                        <td className="px-6 py-3 text-sm text-surface-700">{idx + 1}</td>
+                        <td className="px-6 py-3 text-sm text-surface-800">
+                          {candidate ? candidateName(candidate) : '-'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{candidate?.nickname ?? '-'}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{formatDateTime(iv.interview_date)}</td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{candidate?.applied_position ?? '-'}</td>
+                        <td className="px-6 py-3 text-sm" onClick={(e) => e.stopPropagation()}>
+                          {candidate?.portfolio_url ? (
+                            <a
+                              href={candidate.portfolio_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-emerald-700 hover:underline"
+                            >
+                              <FiExternalLink className="w-4 h-4" /> เปิด
+                            </a>
+                          ) : (
+                            <span className="text-surface-500">-</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-surface-700">{interviewStatusLabel(iv.status)}</td>
                         <td className="px-6 py-3 text-sm text-surface-700">
-                          <select
-                            value={c.applied_position ?? ''}
-                            onChange={(e) => void handleAppliedPositionChange(c, e.target.value)}
-                            disabled={savingCandidatePositionId === c.id}
-                            className="min-w-[180px] rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm disabled:opacity-60"
-                          >
-                            <option value="">- เลือกตำแหน่งที่สมัคร -</option>
-                            {positionOptions.map((name) => (
-                              <option key={name} value={name}>
-                                {name}
-                              </option>
-                            ))}
-                          </select>
+                          {score
+                            ? `${score.total_score ?? 0}/${score.max_possible ?? 0}`
+                            : <span className="text-surface-500">ยังไม่ให้คะแนน</span>}
                         </td>
-                        <td className="px-6 py-3">
-                          <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-medium bg-surface-100 text-surface-700 border border-surface-200">
-                            {statusLabel(c.status)}
-                          </span>
-                        </td>
-                        <td className="px-6 py-3 text-sm text-surface-700">{formatDate(c.created_at)}</td>
-                        <td className="px-6 py-3 text-sm text-surface-700">
-                          {(candidateInterviewHistory.get(c.id)?.totalAppointments ?? 0) > 0
-                            ? `มี (${candidateInterviewHistory.get(c.id)?.totalAppointments ?? 0} ครั้ง)`
-                            : 'ยังไม่เคยนัด'}
-                        </td>
-                        <td className="px-6 py-3 text-sm text-surface-700">
-                          {(candidateInterviewHistory.get(c.id)?.interviewedCount ?? 0) > 0
-                            ? `มี (${candidateInterviewHistory.get(c.id)?.interviewedCount ?? 0} ครั้ง)`
-                            : 'ยังไม่เคยสัมภาษณ์'}
-                        </td>
-                        <td className="px-6 py-3">
+                        <td className="px-6 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center gap-2">
-                            {c.status === 'new' && (
-                              <button
-                                type="button"
-                                onClick={() => openScheduleModal(c)}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-sm hover:bg-emerald-200"
-                              >
-                                <FiCalendar className="w-4 h-4" /> นัดสัมภาษณ์
-                              </button>
-                            )}
-                            {c.status === 'passed' && (
-                              <button
-                                type="button"
-                                onClick={() => handleHire(c.id)}
-                                disabled={!!hiringCandidateId}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50"
-                              >
-                                <FiCheck className="w-4 h-4" /> รับเข้าทำงาน
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => openScoring(iv)}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-100 text-surface-700 text-sm hover:bg-surface-200"
+                            >
+                              <FiEdit2 className="w-4 h-4" /> {score ? 'แก้ไขคะแนน' : 'ให้คะแนน'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => candidate && setDetailCandidate(candidate)}
+                              disabled={!candidate}
+                              title="ดูข้อมูลผู้สมัคร"
+                              aria-label="ดูข้อมูลผู้สมัคร"
+                              className="p-1.5 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 disabled:opacity-40"
+                            >
+                              <FiEye className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => candidate && openImportForCandidate(candidate)}
+                              disabled={!candidate}
+                              title="นำเข้าข้อมูลบัตรประชาชน"
+                              aria-label="นำเข้าข้อมูลบัตรประชาชน"
+                              className="p-1.5 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 disabled:opacity-40"
+                            >
+                              <FiUpload className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
             </div>
-          </>
-        )}
+          </div>
+        ) : null}
       </div>
 
+      {/* ยืนยันลบนัดสัมภาษณ์ */}
+      <Modal
+        open={!!confirmDeleteInterview}
+        onClose={() => setConfirmDeleteInterview(null)}
+        contentClassName="max-w-md"
+        closeOnBackdropClick
+      >
+        {confirmDeleteInterview && (
+          <div className="p-6">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
+                <FiTrash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-surface-800">ลบนัดสัมภาษณ์</h3>
+                <p className="mt-1 text-sm text-surface-700">
+                  {(() => {
+                    const c =
+                      confirmDeleteInterview.candidate ??
+                      candidateMap.get(confirmDeleteInterview.candidate_id)
+                    return c ? candidateName(c) : 'รายการนี้'
+                  })()}{' '}
+                  · {formatDateTime(confirmDeleteInterview.interview_date)}
+                </p>
+                <p className="mt-2 text-sm text-red-700">
+                  คะแนนสัมภาษณ์ของนัดนี้จะถูกลบไปด้วย และกู้คืนไม่ได้
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteInterview(null)}
+                disabled={!!deletingInterviewId}
+                className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 text-sm font-medium hover:bg-surface-200 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteInterview}
+                disabled={!!deletingInterviewId}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {deletingInterviewId ? 'กำลังลบ...' : 'ลบนัดหมาย'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ดูข้อมูลผู้สมัคร */}
+      <Modal open={!!detailCandidate} onClose={() => setDetailCandidate(null)} contentClassName="max-w-2xl" closeOnBackdropClick>
+        {detailCandidate && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-surface-800">{candidateName(detailCandidate)}</h3>
+                <p className="text-sm text-surface-500">
+                  {detailCandidate.nickname ? `ชื่อเล่น ${detailCandidate.nickname} · ` : ''}
+                  สมัครเมื่อ {formatDate(detailCandidate.created_at)}
+                </p>
+              </div>
+              <span className="inline-flex px-2.5 py-1 rounded-full text-xs font-medium bg-surface-100 text-surface-700 border border-surface-200">
+                {statusLabel(detailCandidate.status)}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+              <div>
+                <dt className="text-surface-500">แผนก</dt>
+                <dd className="text-surface-800">
+                  {departments.find((d) => d.id === detailCandidate.applied_department_id)?.name ?? '-'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">ตำแหน่งที่สมัคร</dt>
+                <dd className="text-surface-800">{detailCandidate.applied_position || '-'}</dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">ค่าจ้าง</dt>
+                <dd className="text-surface-800">
+                  {detailCandidate.custom_field_1
+                    ? `${Number(detailCandidate.custom_field_1).toLocaleString('th-TH')} ${salaryUnit(salaryTypeOf(detailCandidate))}`
+                    : '-'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">เบอร์โทร</dt>
+                <dd className="text-surface-800">{detailCandidate.phone || '-'}</dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">เลขบัตรประชาชน</dt>
+                <dd className="text-surface-800">{detailCandidate.citizen_id || '-'}</dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">วันเกิด</dt>
+                <dd className="text-surface-800">
+                  {detailCandidate.birth_date ? formatDate(detailCandidate.birth_date) : '-'}
+                </dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-surface-500">ที่อยู่</dt>
+                <dd className="text-surface-800">{formatAddress(detailCandidate.address)}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-surface-500">Portfolio</dt>
+                <dd>
+                  {detailCandidate.portfolio_url ? (
+                    <a
+                      href={detailCandidate.portfolio_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-emerald-700 hover:underline break-all"
+                    >
+                      <FiExternalLink className="w-4 h-4 shrink-0" /> {detailCandidate.portfolio_url}
+                    </a>
+                  ) : (
+                    <span className="text-surface-500">-</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">ประวัตินัดสัมภาษณ์</dt>
+                <dd className="text-surface-800">
+                  {candidateInterviewHistory.get(detailCandidate.id)?.totalAppointments ?? 0} ครั้ง
+                </dd>
+              </div>
+              <div>
+                <dt className="text-surface-500">ประวัติสัมภาษณ์</dt>
+                <dd className="text-surface-800">
+                  {candidateInterviewHistory.get(detailCandidate.id)?.interviewedCount ?? 0} ครั้ง
+                </dd>
+              </div>
+            </dl>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-surface-100">
+              {detailCandidate.status === 'passed' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleHire(detailCandidate.id)
+                    setDetailCandidate(null)
+                  }}
+                  disabled={!!hiringCandidateId}
+                  className="inline-flex items-center gap-1 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <FiCheck className="w-4 h-4" /> รับเข้าทำงาน
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setDetailCandidate(null)}
+                className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 text-sm font-medium hover:bg-surface-200"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Import modal */}
-      <Modal open={importOpen} onClose={() => setImportOpen(false)} contentClassName="max-w-4xl" closeOnBackdropClick>
+      <Modal
+        open={importOpen}
+        onClose={() => {
+          setImportOpen(false)
+          setImportTargetCandidate(null)
+        }}
+        contentClassName="max-w-4xl"
+        closeOnBackdropClick
+      >
         <div className="p-6">
-          <h3 className="text-lg font-semibold text-surface-800 mb-2">นำเข้าข้อมูลผู้สมัคร (Data.txt จาก SIAM-ID)</h3>
+          <h3 className="text-lg font-semibold text-surface-800 mb-2">
+            {importTargetCandidate
+              ? `นำเข้าข้อมูลบัตรประชาชน → ${candidateName(importTargetCandidate)}`
+              : 'นำเข้าข้อมูลผู้สมัคร (Data.txt จาก SIAM-ID)'}
+          </h3>
+          {importTargetCandidate && (
+            <p className="text-sm text-surface-600 mb-3">
+              เลือกรายการจากไฟล์ Data.txt 1 รายการ เพื่อเติมเลขบัตร/ที่อยู่/วันเกิด ลงในผู้สมัครคนนี้
+              (ตำแหน่ง เงินเดือน ชื่อเล่น และ Portfolio จะไม่ถูกทับ)
+            </p>
+          )}
           <div className="mb-4">
             <input
               type="file"
@@ -849,24 +1242,27 @@ export default function InterviewSchedule() {
           {parsedRecords.length > 0 && (
             <>
               <p className="text-sm text-surface-600 mb-2">
-                พบ {parsedRecords.length} รายการ (ล่าสุดตามเลขบัตร) — เลือกรายการที่ต้องการนำเข้า
+                พบ {parsedRecords.length} รายการ (ล่าสุดตามเลขบัตร) —{' '}
+                {importTargetCandidate ? 'เลือก 1 รายการที่ตรงกับผู้สมัครคนนี้' : 'เลือกรายการที่ต้องการนำเข้า'}
               </p>
               <div className="max-h-64 overflow-auto rounded-lg border border-surface-200">
                 <table className="w-full text-left text-sm">
                   <thead className="bg-surface-50 sticky top-0">
                     <tr>
                       <th className="px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedImportIds.size === parsedRecords.length}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedImportIds(new Set(parsedRecords.map((r) => r.citizen_id)))
-                            } else {
-                              setSelectedImportIds(new Set())
-                            }
-                          }}
-                        />
+                        {!importTargetCandidate && (
+                          <input
+                            type="checkbox"
+                            checked={selectedImportIds.size === parsedRecords.length}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedImportIds(new Set(parsedRecords.map((r) => r.citizen_id)))
+                              } else {
+                                setSelectedImportIds(new Set())
+                              }
+                            }}
+                          />
+                        )}
                       </th>
                       <th className="px-3 py-2 font-semibold text-surface-700">ชื่อ-นามสกุล</th>
                       <th className="px-3 py-2 font-semibold text-surface-700">เลขบัตร</th>
@@ -877,9 +1273,15 @@ export default function InterviewSchedule() {
                       <tr key={r.citizen_id} className="border-t border-surface-100">
                         <td className="px-3 py-2">
                           <input
-                            type="checkbox"
+                            type={importTargetCandidate ? 'radio' : 'checkbox'}
+                            name={importTargetCandidate ? 'siam-import-target' : undefined}
                             checked={selectedImportIds.has(r.citizen_id)}
                             onChange={(e) => {
+                              // โหมดยิงเข้าผู้สมัครคนเดียว = เลือกได้ทีละรายการ
+                              if (importTargetCandidate) {
+                                setSelectedImportIds(new Set([r.citizen_id]))
+                                return
+                              }
                               setSelectedImportIds((prev) => {
                                 const next = new Set(prev)
                                 if (e.target.checked) next.add(r.citizen_id)
@@ -899,7 +1301,10 @@ export default function InterviewSchedule() {
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setImportOpen(false)}
+                  onClick={() => {
+                    setImportOpen(false)
+                    setImportTargetCandidate(null)
+                  }}
                   className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
                 >
                   ยกเลิก
@@ -930,7 +1335,9 @@ export default function InterviewSchedule() {
         closeOnBackdropClick
       >
         <div className="p-6">
-          <h3 className="text-lg font-semibold text-surface-800 mb-4">สร้างนัดหมาย</h3>
+          <h3 className="text-lg font-semibold text-surface-800 mb-4">
+            {editingInterviewId ? 'แก้ไขนัดหมาย' : 'สร้างนัดหมาย'}
+          </h3>
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">อ้างอิงผู้สมัครเดิม (ถ้ามี)</label>
@@ -949,10 +1356,13 @@ export default function InterviewSchedule() {
                   if (found) {
                     setScheduleFirstName(found.first_name ?? '')
                     setScheduleLastName(found.last_name ?? '')
-                    setScheduleNickname((found as HRCandidate & { nickname?: string }).nickname ?? '')
+                    setScheduleNickname(found.nickname ?? '')
                     setSchedulePhone(found.phone ?? '')
                     setScheduleSalary(found.custom_field_1 ?? '')
+                    setScheduleSalaryType(salaryTypeOf(found))
+                    setScheduleDepartmentId(found.applied_department_id ?? '')
                     setScheduleAppliedPosition(found.applied_position ?? '')
+                    setSchedulePortfolio(found.portfolio_url ?? '')
                   }
                 }}
                 className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
@@ -964,11 +1374,6 @@ export default function InterviewSchedule() {
                   </option>
                 ))}
               </select>
-              {filteredCandidates.length === 0 && candidates.length > 0 && (
-                <p className="mt-1 text-xs text-surface-500">
-                  ไม่พบผู้สมัครในตัวกรองปัจจุบัน จึงแสดงผู้สมัครทั้งหมดให้เลือก
-                </p>
-              )}
             </div>
 
             {scheduleCandidate && (
@@ -1013,27 +1418,82 @@ export default function InterviewSchedule() {
                   className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
                 />
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">เงินเดือน</label>
+                <label className="block text-sm font-medium text-surface-700 mb-1">แผนก</label>
+                <select
+                  value={scheduleDepartmentId}
+                  onChange={(e) => {
+                    const deptId = e.target.value
+                    setScheduleDepartmentId(deptId)
+                    // ตำแหน่งเดิมอาจไม่อยู่ในแผนกใหม่ — ล้างทิ้งไม่ให้ค้างข้ามแผนก
+                    const stillValid = !deptId || positions.some(
+                      (p) => p.department_id === deptId && p.name?.trim() === scheduleAppliedPosition.trim()
+                    )
+                    if (!stillValid) setScheduleAppliedPosition('')
+                  }}
+                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">-- เลือกแผนก --</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">ตำแหน่ง</label>
+                <select
+                  value={scheduleAppliedPosition}
+                  onChange={(e) => setScheduleAppliedPosition(e.target.value)}
+                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">-- เลือกตำแหน่ง --</option>
+                  {schedulePositionOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">ประเภท</label>
+                <select
+                  value={scheduleSalaryType}
+                  onChange={(e) => setScheduleSalaryType(e.target.value as SalaryType)}
+                  className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm"
+                >
+                  {SALARY_TYPE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-surface-700 mb-1">จำนวนเงิน</label>
                 <input
                   type="number"
                   min={0}
                   step="0.01"
                   value={scheduleSalary}
                   onChange={(e) => setScheduleSalary(e.target.value)}
-                  placeholder="เช่น 18000"
+                  placeholder={scheduleSalaryType === 'daily' ? 'เช่น 500' : 'เช่น 18000'}
                   className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">ตำแหน่ง</label>
-                <input
-                  type="text"
-                  value={scheduleAppliedPosition}
-                  onChange={(e) => setScheduleAppliedPosition(e.target.value)}
-                  className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
-                />
-              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-surface-700 mb-1">ลิงก์ Portfolio</label>
+              <input
+                type="url"
+                value={schedulePortfolio}
+                onChange={(e) => setSchedulePortfolio(e.target.value)}
+                placeholder="https://..."
+                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm"
+              />
             </div>
             <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1080,22 +1540,27 @@ export default function InterviewSchedule() {
             </div>
             <div>
               <label className="block text-sm font-medium text-surface-700 mb-1">ผู้สัมภาษณ์</label>
-              <select
-                multiple
-                value={scheduleInterviewers}
-                onChange={(e) => {
-                  const opts = Array.from(e.target.selectedOptions, (o) => o.value)
-                  setScheduleInterviewers(opts)
-                }}
-                className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm min-h-[80px]"
-              >
-                {employees.map((emp) => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.employee_code} {emp.first_name} {emp.last_name}
-                  </option>
+              <div className="w-full rounded-lg border border-surface-300 bg-white px-1 py-1 text-sm max-h-[120px] overflow-y-auto">
+                {interviewerOptions.map((opt) => (
+                  <label
+                    key={opt.id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-50 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={scheduleInterviewers.includes(opt.id)}
+                      onChange={() => toggleScheduleInterviewer(opt.id)}
+                      className="rounded border-surface-300"
+                    />
+                    <span className="text-surface-700">{opt.label}</span>
+                  </label>
                 ))}
-              </select>
-              <p className="text-xs text-surface-500 mt-1">กด Ctrl/Cmd เพื่อเลือกหลายคน</p>
+                {interviewerOptions.length === 0 && (
+                  <p className="px-2 py-2 text-xs text-surface-500">
+                    ยังไม่ได้ตั้งค่าผู้สัมภาษณ์ — เพิ่มได้ที่ ตั้งค่า HR → ผู้สัมภาษณ์
+                  </p>
+                )}
+              </div>
             </div>
             </div>
           </div>
