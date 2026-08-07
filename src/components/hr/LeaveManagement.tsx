@@ -9,8 +9,11 @@ import {
   updateOTRequest,
   getMedicalCertUrl,
   fetchEmployeeByUserId,
+  fetchEmployees,
+  fetchWorkCalendar,
+  fetchCompanyHolidays,
 } from '../../lib/hrApi'
-import type { HRLeaveRequest, HROTRequest } from '../../types'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
@@ -32,6 +35,26 @@ function toDateKey(d: Date): string {
 
 function thaiWeekdayName(d: Date): string {
   return d.toLocaleDateString('th-TH', { weekday: 'long' })
+}
+
+/** ช่วงวันที่ทั้งหมดที่ตารางปฏิทินแสดง (รวมวันของเดือนข้างเคียงที่ล้นมาต้น/ท้ายตาราง) */
+function calendarGridRange(month: Date) {
+  const monthStart = new Date(month.getFullYear(), month.getMonth(), 1)
+  const monthEnd = new Date(month.getFullYear(), month.getMonth() + 1, 0)
+  const startOffset = (monthStart.getDay() + 6) % 7 // Mon=0 ... Sun=6
+  const totalCells = Math.ceil((startOffset + monthEnd.getDate()) / 7) * 7
+  const start = new Date(monthStart)
+  start.setDate(1 - startOffset)
+  const end = new Date(monthStart)
+  end.setDate(1 - startOffset + totalCells - 1)
+  return { monthStart, startOffset, totalCells, start, end }
+}
+
+/** ชื่อพนักงานจากทะเบียนพนักงาน (ใช้กับรายการวันหยุดที่มีแค่ employee_id) */
+function employeeName(emp?: HREmployee): string {
+  if (!emp) return 'ไม่ทราบชื่อ'
+  const name = [emp.first_name, emp.last_name].filter(Boolean).join(' ')
+  return emp.nickname ? `${name} (${emp.nickname})` : name || '-'
 }
 
 function statusBadgeClass(status: HRLeaveRequest['status']): string {
@@ -153,6 +176,10 @@ export default function LeaveManagement() {
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date())
+  /** วันหยุดที่กำหนดพิเศษรายคน (เมนูตารางวันทำงาน/วันหยุด) ของเดือนที่แสดงอยู่ */
+  const [dayOffEntries, setDayOffEntries] = useState<HREmployeeWorkCalendar[]>([])
+  const [companyHolidays, setCompanyHolidays] = useState<HRCompanyHoliday[]>([])
+  const [employeeById, setEmployeeById] = useState<Record<string, HREmployee>>({})
   const [detailRequest, setDetailRequest] = useState<HRLeaveRequest | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -194,6 +221,30 @@ export default function LeaveManagement() {
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  // วันหยุดของพนักงานในเดือนที่ปฏิทินแสดงอยู่ — โหลดเฉพาะตอนเปิดแท็บปฏิทิน
+  useEffect(() => {
+    if (activeTab !== 'calendar') return
+    let cancelled = false
+    const { start, end } = calendarGridRange(calendarMonth)
+    Promise.all([
+      fetchWorkCalendar(toDateKey(start), toDateKey(end)),
+      fetchCompanyHolidays(toDateKey(start), toDateKey(end)),
+      fetchEmployees(),
+    ])
+      .then(([calendar, holidays, employees]) => {
+        if (cancelled) return
+        setDayOffEntries(calendar.filter((e) => e.day_type === 'weekly_off'))
+        setCompanyHolidays(holidays)
+        setEmployeeById(Object.fromEntries(employees.map((e) => [e.id, e])))
+      })
+      .catch(() => {
+        /* สิทธิ์ไม่ถึงหรือโหลดไม่สำเร็จ — ปฏิทินลายังใช้งานได้ตามปกติ */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, calendarMonth])
 
   // โหลดข้อมูลใหม่แบบเงียบ (ไม่โชว์ spinner) สำหรับ realtime
   const reloadSilent = useCallback(async () => {
@@ -255,10 +306,7 @@ export default function LeaveManagement() {
     year: 'numeric',
   })
 
-  const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
-  const monthEnd = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0)
-  const startOffset = (monthStart.getDay() + 6) % 7 // Mon=0 ... Sun=6
-  const totalCells = Math.ceil((startOffset + monthEnd.getDate()) / 7) * 7
+  const { monthStart, startOffset, totalCells } = calendarGridRange(calendarMonth)
 
   const leavesByDate = calendarRequests.reduce<Record<string, HRLeaveRequest[]>>((acc, req) => {
     const start = asDateOnly(req.start_date)
@@ -268,6 +316,17 @@ export default function LeaveManagement() {
       if (!acc[key]) acc[key] = []
       acc[key].push(req)
     }
+    return acc
+  }, {})
+
+  const dayOffsByDate = dayOffEntries.reduce<Record<string, HREmployeeWorkCalendar[]>>((acc, entry) => {
+    if (!acc[entry.work_date]) acc[entry.work_date] = []
+    acc[entry.work_date].push(entry)
+    return acc
+  }, {})
+
+  const holidayByDate = companyHolidays.reduce<Record<string, HRCompanyHoliday>>((acc, h) => {
+    acc[h.holiday_date] = h
     return acc
   }, {})
 
@@ -281,10 +340,14 @@ export default function LeaveManagement() {
       inMonth: d.getMonth() === calendarMonth.getMonth(),
       isToday: key === todayKey,
       leaves: leavesByDate[key] ?? [],
+      dayOffs: dayOffsByDate[key] ?? [],
+      holiday: holidayByDate[key],
     }
   })
 
   const selectedDateLeaves = leavesByDate[selectedDateKey] ?? []
+  const selectedDateDayOffs = dayOffsByDate[selectedDateKey] ?? []
+  const selectedDateHoliday = holidayByDate[selectedDateKey]
 
   const approvedUsedByEmpYearType = requests.reduce<Record<string, number>>((acc, req) => {
     if (req.status !== 'approved') return acc
@@ -571,6 +634,8 @@ export default function LeaveManagement() {
                 <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-surface-600">
                   <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" /> อนุมัติ
                   <span className="w-3 h-3 rounded bg-yellow-200 border border-yellow-400 ml-2" /> รออนุมัติ
+                  <span className="w-3 h-3 rounded bg-sky-100 border border-sky-300 ml-2" /> วันหยุดพนักงาน
+                  <span className="w-3 h-3 rounded bg-violet-100 border border-violet-300 ml-2" /> วันหยุดบริษัท
                 </span>
                 <button
                   type="button"
@@ -618,6 +683,10 @@ export default function LeaveManagement() {
                   ))}
                   {calendarCells.map((cell) => {
                     const hasPending = cell.leaves.some((r) => r.status === 'pending')
+                    const shownLeaves = cell.leaves.slice(0, 3)
+                    const shownDayOffs = cell.dayOffs.slice(0, 2)
+                    const hiddenCount =
+                      cell.leaves.length - shownLeaves.length + (cell.dayOffs.length - shownDayOffs.length)
                     return (
                     <button
                       type="button"
@@ -628,13 +697,15 @@ export default function LeaveManagement() {
                           setCalendarMonth(new Date(cell.date.getFullYear(), cell.date.getMonth(), 1))
                         }
                       }}
-                      aria-label={`ดูรายการลา ${cell.date.toLocaleDateString('th-TH')}`}
+                      aria-label={`ดูรายการลาและวันหยุด ${cell.date.toLocaleDateString('th-TH')}`}
                       aria-pressed={cell.key === selectedDateKey}
                       className={`min-h-[96px] rounded-lg border p-1.5 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/60 ${
                         cell.inMonth
                           ? hasPending
                             ? 'bg-yellow-50 border-yellow-300'
-                            : 'bg-white border-surface-200'
+                            : cell.holiday
+                              ? 'bg-violet-50/60 border-violet-200'
+                              : 'bg-white border-surface-200'
                           : 'bg-surface-50 border-surface-100 text-surface-400'
                       } ${cell.key === selectedDateKey ? 'ring-2 ring-emerald-500 border-emerald-400' : ''} ${
                         cell.isToday && cell.key !== selectedDateKey ? 'ring-1 ring-emerald-300' : ''
@@ -644,14 +715,34 @@ export default function LeaveManagement() {
                         <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
                           {cell.date.getDate()}
                         </span>
-                        {cell.leaves.length > 0 && cell.inMonth && (
-                          <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
-                            {cell.leaves.length}
+                        {cell.inMonth && (cell.leaves.length > 0 || cell.dayOffs.length > 0) && (
+                          <span className="flex items-center gap-1">
+                            {cell.leaves.length > 0 && (
+                              <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
+                                {cell.leaves.length}
+                              </span>
+                            )}
+                            {cell.dayOffs.length > 0 && (
+                              <span
+                                className="text-[10px] rounded-full px-1.5 py-0.5 bg-sky-100 text-sky-700 font-medium"
+                                title={`วันหยุดพนักงาน ${cell.dayOffs.length} คน`}
+                              >
+                                {cell.dayOffs.length}
+                              </span>
+                            )}
                           </span>
                         )}
                       </div>
                       <div className="space-y-0.5">
-                        {cell.leaves.slice(0, 3).map((req) => (
+                        {cell.holiday && (
+                          <div
+                            className="rounded px-1.5 py-0.5 text-[11px] leading-tight truncate bg-violet-100 text-violet-800 font-medium"
+                            title={`วันหยุดบริษัท · ${cell.holiday.name}`}
+                          >
+                            {cell.holiday.name}
+                          </div>
+                        )}
+                        {shownLeaves.map((req) => (
                           <div
                             key={`${cell.key}-${req.id}`}
                             className={`rounded px-1.5 py-0.5 text-[11px] leading-tight truncate ${
@@ -659,13 +750,22 @@ export default function LeaveManagement() {
                                 ? 'bg-emerald-50 text-emerald-800'
                                 : 'bg-yellow-200 text-yellow-900 font-medium'
                             }`}
-                            title={`${employeeDisplayName(req)} · ${statusLabel(req.status)}`}
+                            title={`ลา · ${employeeDisplayName(req)} · ${statusLabel(req.status)}`}
                           >
                             {employeeDisplayName(req)}
                           </div>
                         ))}
-                        {cell.leaves.length > 3 && (
-                          <div className="text-[10px] text-surface-500">+ อีก {cell.leaves.length - 3}</div>
+                        {shownDayOffs.map((entry) => (
+                          <div
+                            key={`${cell.key}-off-${entry.id}`}
+                            className="rounded px-1.5 py-0.5 text-[11px] leading-tight truncate bg-sky-50 text-sky-800"
+                            title={`วันหยุด · ${employeeName(employeeById[entry.employee_id])}${entry.note ? ` · ${entry.note}` : ''}`}
+                          >
+                            {employeeName(employeeById[entry.employee_id])}
+                          </div>
+                        ))}
+                        {hiddenCount > 0 && (
+                          <div className="text-[10px] text-surface-500">+ อีก {hiddenCount}</div>
                         )}
                       </div>
                     </button>
@@ -674,8 +774,8 @@ export default function LeaveManagement() {
                 </div>
               </div>
 
-              {/* รายการลาของวันที่เลือก (ขวา) */}
-              <div className="lg:w-72 flex-shrink-0">
+              {/* รายการลา + วันหยุดของวันที่เลือก (ขวา) */}
+              <div className="lg:w-72 flex-shrink-0 space-y-3">
                 <div className="rounded-lg border border-surface-200 bg-white p-3">
                   <div className="flex items-center justify-between mb-3">
                     <div>
@@ -707,6 +807,52 @@ export default function LeaveManagement() {
                         >
                           <div className="text-sm font-medium text-surface-800 truncate">{employeeDisplayName(r)}</div>
                           <div className="text-xs text-surface-500 truncate">{employeePositionName(r)}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* วันหยุดของพนักงาน — แยกการ์ดออกจากรายการลา */}
+                <div className="rounded-lg border border-sky-200 bg-white p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h4 className="text-sm font-semibold text-sky-800">
+                        {isSelectedToday ? 'วันหยุดพนักงานวันนี้' : 'วันหยุดพนักงานวันที่เลือก'}
+                      </h4>
+                      <p className="text-[11px] text-surface-500">
+                        {thaiWeekdayName(selectedCalendarDate)} {selectedCalendarDate.toLocaleDateString('th-TH')}
+                      </p>
+                    </div>
+                    <span className="text-xs rounded-full px-2.5 py-0.5 bg-sky-100 text-sky-700 font-semibold">
+                      {selectedDateDayOffs.length} คนหยุด
+                    </span>
+                  </div>
+
+                  {selectedDateHoliday && (
+                    <div className="mb-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2">
+                      <div className="text-[11px] font-medium text-violet-600">วันหยุดบริษัท</div>
+                      <div className="text-sm font-medium text-violet-900 truncate">{selectedDateHoliday.name}</div>
+                    </div>
+                  )}
+
+                  {selectedDateDayOffs.length === 0 ? (
+                    <p className="text-sm text-surface-500 py-6 text-center">
+                      {selectedDateHoliday ? 'ไม่มีวันหยุดกำหนดพิเศษรายบุคคล' : 'ไม่มีวันหยุดในวันที่เลือก'}
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {selectedDateDayOffs.map((entry) => (
+                        <li
+                          key={`${selectedDateKey}-off-${entry.id}`}
+                          className="rounded-lg px-3 py-2 border bg-sky-50 border-sky-100"
+                        >
+                          <div className="text-sm font-medium text-surface-800 truncate">
+                            {employeeName(employeeById[entry.employee_id])}
+                          </div>
+                          <div className="text-xs text-surface-500 truncate">
+                            {entry.note || employeeById[entry.employee_id]?.position?.name || 'วันหยุดตามที่กำหนด'}
+                          </div>
                         </li>
                       ))}
                     </ul>

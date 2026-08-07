@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { authErrorMessage } from '../../lib/authErrorMessage'
 
 interface LoginProps {
   onLoginSuccess: () => void
@@ -34,7 +35,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
       await signIn(email, password)
       console.log('Login successful, waiting for auth state...')
     } catch (err: any) {
-      setError(err.message || 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ')
+      setError(authErrorMessage(err, 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ'))
       setLoading(false)
     }
   }
@@ -46,7 +47,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
     try {
       await verifyMfa(otpCode)
     } catch (err: any) {
-      setMfaError(err.message || 'รหัส OTP ไม่ถูกต้อง กรุณาลองใหม่')
+      setMfaError(authErrorMessage(err, 'รหัส OTP ไม่ถูกต้อง กรุณาลองใหม่'))
       setMfaLoading(false)
     }
   }
@@ -61,7 +62,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
       setForgotMessage('ส่ง link รีเซ็ตรหัสผ่านไปยัง email แล้ว กรุณาตรวจสอบ inbox (และ Spam folder)')
     } catch (err: any) {
       setForgotIsError(true)
-      setForgotMessage('เกิดข้อผิดพลาด: ' + (err.message || 'ลองใหม่อีกครั้ง'))
+      setForgotMessage(authErrorMessage(err, 'ส่งลิงก์รีเซ็ตรหัสผ่านไม่สำเร็จ กรุณาลองใหม่อีกครั้ง'))
     } finally {
       setForgotLoading(false)
     }

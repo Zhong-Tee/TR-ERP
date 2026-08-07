@@ -83,6 +83,8 @@ export type UrgencyLevel = 'urgent' | 'overdue' | null
 export interface UrgencyBadgeSource {
   ship_due_at?: string | null
   overdue_at?: string | null
+  urgency_label?: string | null
+  urgency_color?: string | null
   status?: string | null
   shipped_time?: string | null
 }

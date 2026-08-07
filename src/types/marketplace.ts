@@ -1,6 +1,16 @@
 import type { DueRule } from '../lib/shipDueBadge'
 import type { MpMapRow } from '../lib/marketplaceImport'
 
+export interface MpShippingRule {
+  source_type: 'header_exact' | 'header_contains' | 'excel_column_letter'
+  source_value: string
+  match_type: 'exact' | 'contains'
+  match_value: string
+  channel_code: string
+  label: string
+  color: 'blue' | 'orange' | 'green' | 'purple' | 'pink' | 'slate'
+}
+
 /** ตาราง mp_channel_configs — ตั้งค่าช่องทางนำเข้าไฟล์ Order (เมนู Marketplace) */
 export interface MpChannelConfig {
   id: string
@@ -10,6 +20,7 @@ export interface MpChannelConfig {
   header_row: number
   column_map: MpMapRow[]
   due_rule: DueRule
+  shipping_rules: MpShippingRule[]
   is_active: boolean
   created_at: string
   updated_at: string
@@ -23,6 +34,9 @@ export interface MpOrder {
   batch_id: string
   config_id: string
   channel_code: string
+  shipping_option: string | null
+  urgency_label: string | null
+  urgency_color: string | null
   marketplace_order_no: string
   platform_status: string | null
   buyer_username: string | null

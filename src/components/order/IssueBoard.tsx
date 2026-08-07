@@ -12,6 +12,7 @@ import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
+import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
 
 type IssueBoardProps = {
   scope: 'orders' | 'plan'
@@ -83,6 +84,7 @@ export default function IssueBoard({
   const [billSearching, setBillSearching] = useState(false)
   const billSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [unreadByIssue, setUnreadByIssue] = useState<Record<string, number>>({})
+  const [deliveryByIssue, setDeliveryByIssue] = useState<Record<string, ChatDeliveryStatus>>({})
   const issuesWithUnread = useMemo(
     () => [...issuesOn, ...issuesClosed].filter((i) => (unreadByIssue[i.id] || 0) > 0),
     [issuesOn, issuesClosed, unreadByIssue]
@@ -198,6 +200,24 @@ export default function IssueBoard({
           setUnreadByIssue((prev) => ({ ...prev, [row.issue_id]: (prev[row.issue_id] || 0) + 1 }))
         }
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issue_reads' }, (payload) => {
+        void (async () => {
+          const read = payload.new as { issue_id?: string; user_id?: string; last_read_at?: string }
+          if (!user || !read.issue_id || !read.user_id || read.user_id === user.id || !read.last_read_at) return
+          const { data: latestOwn } = await supabase
+            .from('or_issue_messages')
+            .select('created_at')
+            .eq('issue_id', read.issue_id)
+            .eq('sender_id', user.id)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (latestOwn && new Date(read.last_read_at).getTime() >= new Date(latestOwn.created_at).getTime()) {
+            setDeliveryByIssue((prev) => ({ ...prev, [read.issue_id as string]: 'read' }))
+          }
+        })()
+      })
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
@@ -311,11 +331,11 @@ export default function IssueBoard({
     }
     try {
       const [{ data: reads }, { data: messages }] = await Promise.all([
-        supabase.from('or_issue_reads').select('issue_id, last_read_at').eq('user_id', user.id),
+        supabase.from('or_issue_reads').select('issue_id, user_id, last_read_at').in('issue_id', issueIds),
         supabase.from('or_issue_messages').select('issue_id, created_at, sender_id').eq('is_hidden', false).in('issue_id', issueIds),
       ])
       const readMap = new Map(
-        (reads || []).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
+        (reads || []).filter((r: any) => r.user_id === user.id).map((r: any) => [r.issue_id, new Date(r.last_read_at).getTime()])
       )
       const counts: Record<string, number> = {}
       ;(messages || []).forEach((m: { issue_id: string; created_at: string; sender_id: string }) => {
@@ -327,6 +347,11 @@ export default function IssueBoard({
         }
       })
       setUnreadByIssue(counts)
+      setDeliveryByIssue(deriveChatDeliveryStatuses(
+        user.id,
+        (messages || []).map((m: any) => ({ order_id: m.issue_id, sender_id: m.sender_id, created_at: m.created_at })),
+        (reads || []).map((r: any) => ({ order_id: r.issue_id, user_id: r.user_id, last_read_at: r.last_read_at })),
+      ))
     } catch (error) {
       console.error('Error loading unread counts:', error)
     }
@@ -440,6 +465,7 @@ export default function IssueBoard({
       if (data) {
         setChatLogs((prev) => (prev.some((m) => m.id === (data as IssueMessage).id) ? prev : [...prev, data as IssueMessage]))
       }
+      setDeliveryByIssue((prev) => ({ ...prev, [chatIssue.id]: 'sent' }))
       setChatMessage('')
     } catch (error: any) {
       console.error('Error sending issue message:', error)
@@ -461,6 +487,19 @@ export default function IssueBoard({
       console.error('Error hiding issue chat:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     }
+  }
+
+  function issueDeliveryStatus(issueId: string) {
+    const status = deliveryByIssue[issueId]
+    if (!status) return null
+    return (
+      <span
+        className={`inline-flex items-center whitespace-nowrap text-[10px] font-semibold ${status === 'read' ? 'text-blue-600' : 'text-gray-500'}`}
+        title={status === 'read' ? 'ผู้รับเปิดอ่าน Issue Chat แล้ว' : 'ส่งข้อความเข้าระบบแล้ว แต่ยังไม่มีผู้รับเปิดอ่าน'}
+      >
+        {status === 'read' ? '✓✓ อ่านแล้ว' : '✓ ส่งแล้ว'}
+      </span>
+    )
   }
 
   async function updateIssueStatus(issue: IssueWithOrder, status: 'On' | 'Close') {
@@ -678,6 +717,7 @@ export default function IssueBoard({
                           <FiMessageCircle className="w-4 h-4" />
                           เปิดแชท
                         </button>
+                        {issueDeliveryStatus(issue.id)}
                       </div>
                     ))}
                   </div>
@@ -784,6 +824,7 @@ export default function IssueBoard({
                       <FiMessageCircle className="w-4 h-4" />
                       Chat
                     </button>
+                    {issueDeliveryStatus(issue.id)}
                     {(unreadByIssue[issue.id] || 0) > 0 && (
                       <span className="min-w-[1.2rem] h-5 px-1.5 flex items-center justify-center rounded-full text-[10px] font-bold bg-red-500 text-white animate-pulse">
                         {unreadByIssue[issue.id]}

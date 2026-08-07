@@ -178,6 +178,9 @@ export async function openBillFromMpOrder(params: {
     billing_details: billingDetails ?? null,
     ship_due_at: mpOrder.ship_due_at,
     overdue_at: mpOrder.overdue_at,
+    urgency_label: mpOrder.urgency_label,
+    urgency_color: mpOrder.urgency_color,
+    shipping_option: mpOrder.shipping_option,
   }
 
   // 1) สร้างบิล (retry เมื่อเลขบิลชน)

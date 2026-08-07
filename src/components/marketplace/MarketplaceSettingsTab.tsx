@@ -15,7 +15,7 @@ import {
   type MpParseResult,
 } from '../../lib/marketplaceImport'
 import { DEFAULT_DUE_RULE, type DueRule } from '../../lib/shipDueBadge'
-import type { MpChannelConfig } from '../../types/marketplace'
+import type { MpChannelConfig, MpShippingRule } from '../../types/marketplace'
 
 interface ChannelOption {
   channel_code: string
@@ -36,6 +36,7 @@ interface EditorState {
   header_row: number
   column_map: MpMapRow[]
   due_rule: DueRule
+  shipping_rules: MpShippingRule[]
   is_active: boolean
 }
 
@@ -47,6 +48,7 @@ const emptyEditor = (): EditorState => ({
   header_row: 0,
   column_map: SHOPEE_DEFAULT_MAP.map((r) => ({ ...r })),
   due_rule: { ...DEFAULT_DUE_RULE },
+  shipping_rules: [],
   is_active: true,
 })
 
@@ -125,6 +127,8 @@ export default function MarketplaceSettingsTab({
         header_row: editor.header_row,
         column_map: editor.column_map.filter((r) => r.source_value.trim() !== ''),
         due_rule: editor.due_rule,
+        channel_code: editor.channel_code,
+        shipping_rules: editor.shipping_rules,
       })
       setTestResult(result)
     } catch (err) {
@@ -165,6 +169,7 @@ export default function MarketplaceSettingsTab({
       header_row: cfg.header_row ?? 0,
       column_map: Array.isArray(cfg.column_map) ? cfg.column_map.map((r) => ({ ...r })) : [],
       due_rule: { ...DEFAULT_DUE_RULE, ...(cfg.due_rule || {}) },
+      shipping_rules: Array.isArray(cfg.shipping_rules) ? cfg.shipping_rules.map((r) => ({ ...r })) : [],
       is_active: cfg.is_active,
     })
   }
@@ -180,6 +185,7 @@ export default function MarketplaceSettingsTab({
       return
     }
     const validMap = editor.column_map.filter((r) => r.source_value.trim() !== '')
+    const validShippingRules = editor.shipping_rules.filter((r) => r.source_value.trim() && r.match_value.trim())
     if (!validMap.some((r) => r.field_key === 'order_no')) {
       showMessage({ message: 'ต้องมีการจับคู่คอลัมน์ "เลขคำสั่งซื้อ" อย่างน้อย 1 รายการ' })
       return
@@ -199,6 +205,13 @@ export default function MarketplaceSettingsTab({
           due_day_offset_after_cutoff: Math.max(0, Number(editor.due_rule.due_day_offset_after_cutoff) || 1),
           overdue_after_hours: Math.max(1, Number(editor.due_rule.overdue_after_hours) || 24),
         },
+        shipping_rules: validShippingRules.map((r) => ({
+          ...r,
+          source_value: r.source_value.trim(),
+          match_value: r.match_value.trim(),
+          label: r.label.trim(),
+          color: r.color || 'orange',
+        })),
         is_active: editor.is_active,
       }
       if (editor.id) {
@@ -423,7 +436,7 @@ export default function MarketplaceSettingsTab({
 
           {/* กติกาวันกำหนดส่ง */}
           <div className="border border-orange-200 bg-orange-50/50 rounded-xl p-4 space-y-3">
-            <h4 className="font-bold text-slate-800">กติกาวันกำหนดส่ง (ป้าย ส่งด่วน / ล่าช้า)</h4>
+            <h4 className="font-bold text-slate-800">กติกาวันกำหนดส่ง (ป้าย ส่งวันนี้ / ล่าช้า)</h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-1">เวลาตัดรอบ</label>
@@ -489,6 +502,78 @@ export default function MarketplaceSettingsTab({
               <br />
               หมายเหตุ: การแก้กติกามีผลเฉพาะไฟล์ที่อัปโหลดครั้งถัดไป (งานที่นำเข้าแล้วใช้ค่าเดิม)
             </p>
+          </div>
+
+          {/* กฎตัวเลือกการจัดส่ง */}
+          <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-4 space-y-3">
+            <div>
+              <h4 className="font-bold text-slate-800">จับคู่ตัวเลือกการจัดส่ง</h4>
+              <p className="text-xs text-slate-500 mt-1">
+                ระบบตรวจจากบนลงล่างและใช้กฎแรกที่ตรง เพื่อเปลี่ยนช่องทางขายและชื่อป้ายอัตโนมัติ
+              </p>
+            </div>
+            {editor.shipping_rules.map((rule, idx) => (
+              <div key={idx} className="grid grid-cols-1 md:grid-cols-7 gap-3 rounded-lg border border-blue-100 bg-white p-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">หัวคอลัมน์</label>
+                  {sampleHeaders.length > 0 ? (
+                    <select
+                      value={rule.source_value}
+                      onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, source_value: e.target.value, source_type: 'header_exact' } : r) })}
+                      className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm"
+                    >
+                      <option value="">— เลือก —</option>
+                      {rule.source_value && !sampleHeaders.includes(rule.source_value) && <option value={rule.source_value}>{rule.source_value}</option>}
+                      {sampleHeaders.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  ) : (
+                    <input value={rule.source_value} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, source_value: e.target.value } : r) })} placeholder="ตัวเลือกการจัดส่ง" className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm" />
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">วิธีเทียบ</label>
+                  <select value={rule.match_type} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, match_type: e.target.value as MpShippingRule['match_type'] } : r) })} className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm">
+                    <option value="exact">ตรงกัน</option>
+                    <option value="contains">มีคำว่า</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">ค่าตัวเลือกการจัดส่ง</label>
+                  <input value={rule.match_value} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, match_value: e.target.value } : r) })} placeholder="เช่น Express Delivery" className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">ช่องทางขาย</label>
+                  <select value={rule.channel_code} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, channel_code: e.target.value } : r) })} className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm">
+                    {channels.map((ch) => <option key={ch.channel_code} value={ch.channel_code}>{ch.channel_code}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">ชื่อป้าย</label>
+                  <input value={rule.label} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, label: e.target.value } : r) })} placeholder="เช่น ส่งด่วน SPX" className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">สีป้าย</label>
+                  <select value={rule.color || 'orange'} onChange={(e) => setEditor({ ...editor, shipping_rules: editor.shipping_rules.map((r, i) => i === idx ? { ...r, color: e.target.value as MpShippingRule['color'] } : r) })} className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm">
+                    <option value="orange">ส้ม</option>
+                    <option value="blue">น้ำเงิน</option>
+                    <option value="green">เขียว</option>
+                    <option value="purple">ม่วง</option>
+                    <option value="pink">ชมพู</option>
+                    <option value="slate">เทา</option>
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <button type="button" onClick={() => setEditor({ ...editor, shipping_rules: editor.shipping_rules.filter((_, i) => i !== idx) })} className="w-full px-2 py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-sm">ลบ</button>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setEditor({ ...editor, shipping_rules: [...editor.shipping_rules, { source_type: 'header_exact', source_value: sampleHeaders.find((h) => h.includes('ตัวเลือกการจัดส่ง')) || 'ตัวเลือกการจัดส่ง', match_type: 'contains', match_value: '', channel_code: editor.channel_code || channels[0]?.channel_code || '', label: '', color: 'orange' }] })}
+              className="px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 text-sm font-semibold"
+            >
+              + เพิ่มตัวเลือกการจัดส่ง
+            </button>
           </div>
 
           {/* จับคู่คอลัมน์ */}

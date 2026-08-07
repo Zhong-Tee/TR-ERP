@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { FiBell, FiCheck, FiStar, FiChevronRight, FiArrowDown } from 'react-icons/fi'
 import {
   fetchAnnouncements,
@@ -61,6 +62,16 @@ export default function EmployeeAnnouncements({ onUnreadChange }: { onUnreadChan
       if (el.scrollHeight <= el.clientHeight + 8) setScrolledToEnd(true)
     }, 100)
     return () => clearTimeout(t)
+  }, [reading])
+
+  // เปิดหน้าอ่านอยู่ → ล็อกไม่ให้หน้าเบื้องหลังเลื่อนตาม
+  useEffect(() => {
+    if (!reading) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
   }, [reading])
 
   const handleScroll = () => {
@@ -179,15 +190,22 @@ export default function EmployeeAnnouncements({ onUnreadChange }: { onUnreadChan
         )}
       </section>
 
-      {/* หน้าอ่านประกาศเต็มจอ */}
-      {reading && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white">
-          <div className="flex items-center justify-between gap-2 px-4 py-3 bg-emerald-600 text-white shadow">
+      {/*
+        หน้าอ่านประกาศเต็มจอ — ต้อง render ที่ body ผ่าน portal
+        ถ้าปล่อยไว้ใน <main> ของ Employee Portal กล่องจะยึดกับ containing block ของ main
+        ทำให้เหลือแถบ header โผล่ด้านบนแทนที่จะเต็มจอจริง
+      */}
+      {reading && createPortal(
+        <div className="fixed inset-0 z-[70] flex flex-col bg-white h-[100dvh]">
+          <div
+            className="flex items-center justify-between gap-2 px-4 py-3 bg-emerald-600 text-white shadow shrink-0"
+            style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+          >
             <h3 className="font-semibold truncate">{reading.title}</h3>
             <button type="button" onClick={() => setReading(null)} className="shrink-0 rounded-lg px-3 py-1.5 text-sm hover:bg-white/20">ปิด</button>
           </div>
 
-          <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
             <div>
               <div className="flex items-center gap-1.5">
                 {reading.is_pinned && <FiStar className="w-4 h-4 text-amber-500" />}
@@ -212,7 +230,10 @@ export default function EmployeeAnnouncements({ onUnreadChange }: { onUnreadChan
             <p className="pt-2 pb-8 text-center text-xs text-gray-400">— จบประกาศ —</p>
           </div>
 
-          <div className="border-t border-gray-200 bg-white p-4 shadow-[0_-2px_10px_rgba(0,0,0,0.06)]">
+          <div
+            className="border-t border-gray-200 bg-white p-4 shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.06)]"
+            style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+          >
             {!scrolledToEnd ? (
               <p className="flex items-center justify-center gap-2 py-3 text-sm text-gray-500">
                 <FiArrowDown className="w-4 h-4 animate-bounce" />
@@ -255,7 +276,8 @@ export default function EmployeeAnnouncements({ onUnreadChange }: { onUnreadChan
               </button>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

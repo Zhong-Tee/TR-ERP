@@ -54,7 +54,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       // ป้าย ส่งด่วน/ล่าช้า: กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace)
       const { data: dueRows } = await supabase
         .from('or_orders')
-        .select('work_order_id, ship_due_at, overdue_at')
+        .select('work_order_id, ship_due_at, overdue_at, urgency_label, urgency_color')
         .in('work_order_id', woIds)
         .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
         .neq('status', 'จัดส่งแล้ว')

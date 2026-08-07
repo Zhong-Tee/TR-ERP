@@ -14,6 +14,7 @@ import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
 import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
 import OrderDetailView from './OrderDetailView'
 import UrgencyBadge from '../common/UrgencyBadge'
+import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
 
 /** ใช้ให้สอดคล้อง RPC unread: username / email ใน us_users + อีเมล JWT (ถ้ามี) — ไม่สนตัวพิมพ์ */
 function salesPumpAdminMatchesUser(
@@ -256,6 +257,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [viewMode, setViewMode] = useState<ViewMode>('default')
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
+  const [deliveryByOrder, setDeliveryByOrder] = useState<Record<string, ChatDeliveryStatus>>({})
 
   useEffect(() => {
     if (!user?.id) {
@@ -440,6 +442,24 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
           setUnreadByOrder((prev) => ({ ...prev, [row.order_id]: (prev[row.order_id] || 0) + 1 }))
         })()
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_chat_reads' }, (payload) => {
+        void (async () => {
+          const read = payload.new as { order_id?: string; user_id?: string; last_read_at?: string }
+          if (!user || !read.order_id || !read.user_id || read.user_id === user.id || !read.last_read_at) return
+          const { data: latestOwn } = await supabase
+            .from('or_order_chat_logs')
+            .select('created_at')
+            .eq('order_id', read.order_id)
+            .eq('sender_id', user.id)
+            .eq('is_hidden', false)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (latestOwn && new Date(read.last_read_at).getTime() >= new Date(latestOwn.created_at).getTime()) {
+            setDeliveryByOrder((prev) => ({ ...prev, [read.order_id as string]: 'read' }))
+          }
+        })()
+      })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [chatOrder, user])
@@ -481,15 +501,15 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
     try {
       const [{ data: reads }, { data: messages }] = await Promise.all([
-        supabase.from('or_order_chat_reads').select('order_id, last_read_at').eq('user_id', user.id),
+        supabase.from('or_order_chat_reads').select('order_id, user_id, last_read_at').in('order_id', orderIds),
         supabase.from('or_order_chat_logs').select('order_id, created_at, sender_id').eq('is_hidden', false).in('order_id', orderIds),
       ])
       const readMap = new Map(
-        (reads || []).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
+        (reads || []).filter((r: any) => r.user_id === user.id).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
       )
       const counts: Record<string, number> = {}
       ;(messages || []).forEach((m: { order_id: string; created_at: string; sender_id: string }) => {
-        if (user && m.sender_id === user.id) return
+        if (m.sender_id === user.id) return
         const lastRead = readMap.get(m.order_id) ?? 0
         const msgTime = new Date(m.created_at).getTime()
         if (msgTime > lastRead) {
@@ -497,6 +517,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         }
       })
       setUnreadByOrder(counts)
+      setDeliveryByOrder(deriveChatDeliveryStatuses(user.id, messages || [], reads || []))
     } catch (error) {
       console.error('Error loading order unread counts:', error)
     }
@@ -893,6 +914,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         .single()
       if (error) throw error
       if (data) setChatLogs((prev) => [...prev, data as OrderChatLog])
+      setDeliveryByOrder((prev) => ({ ...prev, [chatOrder.id]: 'sent' }))
       setChatMessage('')
       await supabase.from('or_order_chat_reads').upsert({
         order_id: chatOrder.id,
@@ -920,6 +942,19 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       console.error('Error hiding chat:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
     }
+  }
+
+  function chatDeliveryStatus(orderId: string) {
+    const status = deliveryByOrder[orderId]
+    if (!status) return null
+    return (
+      <span
+        className={`inline-flex items-center whitespace-nowrap text-[10px] font-semibold ${status === 'read' ? 'text-blue-600' : 'text-gray-500'}`}
+        title={status === 'read' ? 'ผู้รับเปิดอ่านแชทแล้ว' : 'ส่งข้อความเข้าระบบแล้ว แต่ยังไม่มีผู้รับเปิดอ่าน'}
+      >
+        {status === 'read' ? '✓✓ อ่านแล้ว' : '✓ ส่งแล้ว'}
+      </span>
+    )
   }
 
   async function handleStatusUpdate() {
@@ -1346,6 +1381,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               >
                                 Chat
                               </button>
+                              {chatDeliveryStatus(order.id)}
                               {(unreadByOrder[order.id] || 0) > 0 && (
                                 <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
                                   {unreadByOrder[order.id]}
@@ -1576,6 +1612,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                 >
                                   Chat
                                 </button>
+                                {chatDeliveryStatus(order.id)}
                                 {(unreadByOrder[order.id] || 0) > 0 && (
                                   <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white">
                                     {unreadByOrder[order.id]}
@@ -1717,10 +1754,15 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         )}
 
                         {['design', 'designed', 'waiting', 'confirmed'].includes(column.key) && (() => {
-                          const orderItems = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null }>
-                          const fileLinks = orderItems.map((i) => i.file_attachment).filter((f): f is string => !!f && f.trim() !== '')
-                          if (fileLinks.length === 0) return null
-                          return fileLinks.map((link, fi) => (
+                          const orderItems = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null; attachment_name?: string | null }>
+                          const files = orderItems
+                            .filter((item) => !!item.file_attachment?.trim())
+                            .map((item, index) => ({
+                              link: item.file_attachment!.trim(),
+                              label: item.attachment_name?.trim() || `ไฟล์ ${index + 1}`,
+                            }))
+                          if (files.length === 0) return null
+                          return files.map(({ link, label }, fi) => (
                             <button
                               key={fi}
                               type="button"
@@ -1730,7 +1772,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                               </svg>
-                              ไฟล์{fileLinks.length > 1 ? ` ${fi + 1}` : ''}
+                              {label}
                             </button>
                           ))
                         })()}
@@ -1747,6 +1789,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               </svg>
                               Chat
                             </button>
+                            {chatDeliveryStatus(order.id)}
                             {(unreadByOrder[order.id] || 0) > 0 && (
                               <span className="min-w-[1rem] h-4 px-1 flex items-center justify-center rounded-full text-[9px] font-bold bg-red-500 text-white animate-pulse">
                                 {unreadByOrder[order.id]}
@@ -1814,7 +1857,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       </Modal>
 
       {/* ── Detail Modal ── */}
-      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
       </Modal>
 

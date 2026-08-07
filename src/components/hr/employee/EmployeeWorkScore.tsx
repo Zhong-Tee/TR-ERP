@@ -13,9 +13,11 @@ import {
   fetchScoreSettings,
 } from '../../../lib/hrApi'
 import {
+  ABSENCE_GROUP,
   buildMonthlyScores,
   minutesToClock,
   scoringEndDate,
+  splitAbsenceGroup,
   type AttendanceFact,
   type ScoreCategory,
   type ScoreEventDraft,
@@ -29,6 +31,7 @@ const GROUP_LABELS: Record<string, string> = {
   attendance_cumulative: 'ทำผิดซ้ำ',
   time_entry: 'การลงเวลา',
   leave: 'การลา',
+  [ABSENCE_GROUP]: 'ขาดงาน',
   ot: 'OT',
 }
 
@@ -182,7 +185,10 @@ export default function EmployeeWorkScore() {
   const byGroup = useMemo(() => {
     const map: Record<string, number> = {}
     events.forEach((e) => { map[e.group_code] = (map[e.group_code] ?? 0) + e.points })
-    return Object.entries(map).filter(([, v]) => v !== 0).sort((a, b) => a[1] - b[1])
+    // ขาดงานต้องแยกจากการลา ให้ตรงกับหน้าคะแนนฝั่ง HR
+    return Object.entries(splitAbsenceGroup(map, events))
+      .filter(([, v]) => v !== 0)
+      .sort((a, b) => a[1] - b[1])
   }, [events])
 
   const byDate = useMemo(() => {

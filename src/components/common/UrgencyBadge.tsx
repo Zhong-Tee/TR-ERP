@@ -14,9 +14,26 @@ export default function UrgencyBadge({ order, className = '' }: { order: Urgency
     ? 'bg-red-100 text-red-700 border border-red-300'
     : 'bg-orange-100 text-orange-700 border border-orange-300'
 
+  const shippingLabel = order.urgency_label?.trim() || 'ส่งวันนี้'
+  const colorStyles: Record<string, string> = {
+    blue: 'bg-blue-100 text-blue-700 border-blue-300',
+    orange: 'bg-orange-100 text-orange-700 border-orange-300',
+    green: 'bg-green-100 text-green-700 border-green-300',
+    purple: 'bg-purple-100 text-purple-700 border-purple-300',
+    pink: 'bg-pink-100 text-pink-700 border-pink-300',
+    slate: 'bg-slate-100 text-slate-700 border-slate-300',
+  }
+  const shippingStyle = colorStyles[order.urgency_color || ''] || (order.urgency_label ? colorStyles.orange : colorStyles.blue)
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold whitespace-nowrap ${style} ${className}`}>
-      {level === 'overdue' ? 'ล่าช้า' : 'ส่งด่วน'}
+    <span className={`inline-flex items-center gap-1 ${className}`}>
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold whitespace-nowrap border ${shippingStyle}`}>
+        {shippingLabel}
+      </span>
+      {level === 'overdue' && (
+        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold whitespace-nowrap ${style}`}>
+          ล่าช้า
+        </span>
+      )}
     </span>
   )
 }
@@ -25,6 +42,8 @@ export default function UrgencyBadge({ order, className = '' }: { order: Urgency
 export interface DueBillInfo {
   ship_due_at: string | null
   overdue_at: string | null
+  urgency_label?: string | null
+  urgency_color?: string | null
 }
 
 /**
@@ -53,7 +72,7 @@ export function WoUrgencyChips({ bills, className = '' }: { bills: DueBillInfo[]
       )}
       {urgent > 0 && (
         <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold whitespace-nowrap bg-orange-100 text-orange-700 border border-orange-300 ${className}`}>
-          ส่งด่วน {urgent} บิล
+          ส่งวันนี้ {urgent} บิล
         </span>
       )}
     </>

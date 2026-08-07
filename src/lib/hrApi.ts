@@ -709,6 +709,7 @@ export async function fetchDocumentReads(employeeId: string) {
 
 /** bucket ไฟล์แนบประกาศ (private — เปิดผ่าน signed URL) */
 export const ANNOUNCEMENT_BUCKET = 'hr-announcements'
+export const HR_WARNING_CERT_BUCKET = 'hr-warning-certificates'
 
 const ANNOUNCEMENT_SELECT =
   '*, category:hr_announcement_categories(name), creator:hr_employees!created_by(first_name, last_name, nickname), ' +
@@ -1383,6 +1384,11 @@ export async function fetchEmployeeWarningCount(employeeId: string) {
   return count ?? 0
 }
 
+export async function acknowledgeMyWarning(warningId: string) {
+  const { error } = await supabase.rpc('acknowledge_my_warning', { p_warning_id: warningId })
+  if (error) pgError(error)
+}
+
 // =============================================================================
 // Training Certificates (ใบรับรอง)
 // =============================================================================
@@ -1422,6 +1428,11 @@ export async function upsertCertificate(c: Partial<HRCertificate>) {
 
 export async function deleteCertificate(id: string) {
   const { error } = await supabase.from('hr_certificates').delete().eq('id', id)
+  if (error) pgError(error)
+}
+
+export async function acknowledgeMyCertificate(certificateId: string) {
+  const { error } = await supabase.rpc('acknowledge_my_certificate', { p_certificate_id: certificateId })
   if (error) pgError(error)
 }
 

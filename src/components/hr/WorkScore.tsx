@@ -23,10 +23,12 @@ import {
   rejectScoreAppeal,
 } from '../../lib/hrApi'
 import {
+  ABSENCE_GROUP,
   buildMonthlyScores,
   indexRules,
   minutesToClock,
   scoringEndDate,
+  splitAbsenceGroup,
   summarizeMonth,
   type AttendanceFact,
   type ScoreCategory,
@@ -42,6 +44,7 @@ const GROUP_LABELS: Record<string, string> = {
   attendance_cumulative: 'สะสม',
   time_entry: 'การลงเวลา',
   leave: 'การลา',
+  [ABSENCE_GROUP]: 'ขาดงาน',
   ot: 'OT',
 }
 
@@ -266,7 +269,7 @@ export default function WorkScore() {
             base: Number(locked.base_points),
             deduction: Number(locked.raw_deduction),
             total: Number(locked.total_points),
-            byGroup, events,
+            byGroup: splitAbsenceGroup(byGroup, events), events,
           })
           continue
         }
@@ -282,7 +285,7 @@ export default function WorkScore() {
           base: summary.base_points,
           deduction: summary.raw_deduction,
           total: summary.total_points,
-          byGroup: summary.by_group,
+          byGroup: splitAbsenceGroup(summary.by_group, summary.events),
           events: summary.events,
         })
       }

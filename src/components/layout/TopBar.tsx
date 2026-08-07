@@ -358,8 +358,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   })
 
   const hrTabOrder = [
-    '/hr', '/hr/tasks', '/hr/leave', '/hr/attendance', '/hr/work-score', '/hr/work-calendar',
-    '/hr/announcements', '/hr/requests', '/hr/warnings', '/hr/certificates',
+    '/hr', '/hr/tasks', '/hr/leave', '/hr/attendance', '/hr/work-calendar',
+    '/hr/announcements', '/hr/work-score', '/hr/requests', '/hr/warnings', '/hr/certificates',
     '/hr/interview', '/hr/onboarding', '/hr/assets',
     '/hr/contracts', '/hr/documents', '/hr/salary', '/hr/settings',
   ]

@@ -167,7 +167,7 @@ export default function NewOrdersSection() {
       if (finalList.length > 0) {
         const { data: cntRows } = await supabase
           .from('or_orders')
-          .select('work_order_id, ship_due_at, overdue_at')
+          .select('work_order_id, ship_due_at, overdue_at, urgency_label, urgency_color')
           .in('work_order_id', finalList.map((w) => w.id))
           .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
           .neq('status', 'จัดส่งแล้ว')

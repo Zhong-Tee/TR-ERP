@@ -338,6 +338,36 @@ export function evaluateDay(fact: AttendanceFact, rules: RuleIndex): ScoreEventD
   return events
 }
 
+/**
+ * หัวข้อย่อยเสมือนสำหรับ "ขาดงาน"
+ * กติกา absent* ถูกจัดไว้ในกลุ่ม leave ตั้งแต่ตอน seed จึงต้องแยกตอนแสดงผลแทนการย้ายกลุ่มใน DB
+ * (ย้าย group_code จะทำให้เหตุการณ์เก่าที่บันทึกไว้แล้วนับคนละกลุ่มกับของใหม่)
+ */
+export const ABSENCE_GROUP = 'absence'
+
+/** event_code ต้นทาง — ตัดส่วนต่อท้ายของรายการชดเชยจากการทักท้วงออก */
+export const baseEventCode = (code: string): string =>
+  code.endsWith(REVERSED_SUFFIX) ? code.slice(0, -REVERSED_SUFFIX.length) : code
+
+const isAbsenceEvent = (e: ScoreEventDraft): boolean =>
+  e.group_code === 'leave' && baseEventCode(e.event_code).startsWith('absent')
+
+/**
+ * แยกคะแนน "ขาดงาน" ออกจากหัวข้อ "การลา" สำหรับแสดงผล — ยอดรวมไม่เปลี่ยน
+ * (leave ใหม่ = leave เดิม − absence)
+ */
+export function splitAbsenceGroup(
+  byGroup: Record<string, number>,
+  events: ScoreEventDraft[],
+): Record<string, number> {
+  const absence = events.filter(isAbsenceEvent).reduce((sum, e) => sum + e.points, 0)
+  return {
+    ...byGroup,
+    leave: round2((byGroup.leave ?? 0) - absence),
+    [ABSENCE_GROUP]: round2(absence),
+  }
+}
+
 export interface ScoreSummary {
   employee_id: string
   base_points: number

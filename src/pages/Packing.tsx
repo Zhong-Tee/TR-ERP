@@ -1097,7 +1097,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, or_order_items(id, item_uid, quantity)')
+            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity)')
             .in('work_order_name', names)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase

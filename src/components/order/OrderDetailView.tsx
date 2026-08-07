@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
 import { Order, OrderItem, IssueType } from '../../types'
@@ -52,60 +52,47 @@ export default function OrderDetailView({
     message: '',
   })
 
-  /* ── Right-click context menu & edit link ── */
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; itemIdx: number } | null>(null)
-  const [editLinkItem, setEditLinkItem] = useState<{ idx: number; value: string } | null>(null)
+  /* ── Edit attachment link ── */
+  const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
   const [editLinkSaving, setEditLinkSaving] = useState(false)
-  const ctxMenuRef = useRef<HTMLDivElement>(null)
 
-  // Close context menu on outside click / scroll
-  useEffect(() => {
-    if (!ctxMenu) return
-    const handleClose = () => setCtxMenu(null)
-    window.addEventListener('click', handleClose)
-    window.addEventListener('scroll', handleClose, true)
-    return () => {
-      window.removeEventListener('click', handleClose)
-      window.removeEventListener('scroll', handleClose, true)
-    }
-  }, [ctxMenu])
-
-  function handleContextMenu(e: React.MouseEvent, idx: number) {
-    e.preventDefault()
-    setCtxMenu({ x: e.clientX, y: e.clientY, itemIdx: idx })
-  }
-
-  function handleEditLinkOpen() {
+  function handleEditLinkOpen(item: OrderItem, displayIndex: number) {
     if (readOnly) return
-    if (ctxMenu == null) return
-    const item = items[ctxMenu.itemIdx]
-    setEditLinkItem({ idx: ctxMenu.itemIdx, value: item?.file_attachment || '' })
-    setCtxMenu(null)
+    setEditLinkItem({
+      itemId: item.id,
+      displayIndex,
+      productName: item.product_name || '',
+      value: item.file_attachment || '',
+      name: item.attachment_name || '',
+    })
   }
 
   async function handleEditLinkSave() {
     if (readOnly) return
     if (!editLinkItem) return
-    const item = items[editLinkItem.idx]
+    const item = items.find((candidate) => candidate.id === editLinkItem.itemId)
     if (!item?.id) return
     setEditLinkSaving(true)
     try {
       const { error } = await supabase
         .from('or_order_items')
-        .update({ file_attachment: editLinkItem.value.trim() || null })
+        .update({
+          file_attachment: editLinkItem.value.trim() || null,
+          attachment_name: editLinkItem.name.trim() || null,
+        })
         .eq('id', item.id)
       if (error) throw error
       // Update local state
       if (loadedItems) {
         setLoadedItems(prev => prev!.map((it) => {
-          if (it.id === item.id) return { ...it, file_attachment: editLinkItem.value.trim() || null } as OrderItem
+          if (it.id === item.id) return { ...it, file_attachment: editLinkItem.value.trim() || null, attachment_name: editLinkItem.name.trim() || null } as OrderItem
           return it
         }))
       }
       // Also update inline if present
       const inl = ((order as any).or_order_items || []) as OrderItem[]
       if (inl.length > 0) {
-        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: editLinkItem.value.trim() || null } : it)
+        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: editLinkItem.value.trim() || null, attachment_name: editLinkItem.name.trim() || null } : it)
         ;(order as any).or_order_items = updated
       }
       setEditLinkItem(null)
@@ -459,6 +446,12 @@ export default function OrderDetailView({
           const SHOW_TIER_PRODUCTS = ['ตรายางคอนโด TWP ชมพู', 'ตรายางคอนโด TWB ฟ้า']
           const hasAnyTierProduct = displayItems.some((item) => SHOW_TIER_PRODUCTS.includes(item.product_name || ''))
           const hasAnyFileAttachment = displayItems.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
+          const showAttachmentColumn = hasAnyFileAttachment || !readOnly
+          const attachmentOrder = new Map(
+            displayItems
+              .filter((item) => item.file_attachment && item.file_attachment.trim() !== '')
+              .map((item, index) => [item.id, index + 1]),
+          )
           return (
           <section>
             <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-3">
@@ -481,18 +474,18 @@ export default function OrderDetailView({
                     <th className="px-3 py-2 text-right font-semibold">จำนวน</th>
                     <th className="px-3 py-2 text-right font-semibold">ราคา/หน่วย</th>
                     <th className="px-3 py-2 text-left font-semibold">หมายเหตุ</th>
-                    {hasAnyFileAttachment && <th className="px-3 py-2 text-center font-semibold">ไฟล์แนบ</th>}
+                    {showAttachmentColumn && <th className="px-3 py-2 text-center font-semibold">ไฟล์แนบ</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {displayItems.map((item, idx) => {
                     const isTierProduct = SHOW_TIER_PRODUCTS.includes(item.product_name || '')
                     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
+                    const attachmentLabel = item.attachment_name?.trim() || `ไฟล์ ${attachmentOrder.get(item.id) || 1}`
                     return (
                     <tr
                       key={item.id}
-                      className={`hover:bg-blue-50/40 transition-colors ${readOnly ? '' : 'cursor-context-menu'}`}
-                      onContextMenu={readOnly ? undefined : (e) => handleContextMenu(e, idx)}
+                      className="hover:bg-blue-50/40 transition-colors"
                     >
                       <td className="px-3 py-2 text-gray-400">{idx + 1}</td>
                       <td className="px-3 py-2 font-medium text-gray-900 select-all">{item.product_name}</td>
@@ -509,23 +502,39 @@ export default function OrderDetailView({
                       <td className="px-3 py-2 text-gray-600 text-xs">
                         {item.no_name_line ? <span className="text-red-500 font-medium">ไม่รับชื่อ</span> : (item.notes || '-')}
                       </td>
-                      {hasAnyFileAttachment && (
+                      {showAttachmentColumn && (
                         <td className="px-3 py-2 text-center">
-                          {hasFile ? (
+                          <div className="inline-grid grid-cols-[6rem_2rem] items-center gap-1.5">
+                          {hasFile && (
                             <a
                               href={item.file_attachment!}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 transition-colors"
-                              title="เปิดไฟล์แนบ"
+                              className="inline-flex w-24 items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap px-2.5 py-1.5 rounded-lg bg-cyan-50 text-cyan-700 hover:bg-cyan-100 hover:text-cyan-800 transition-colors"
+                              title={`เปิดไฟล์แนบ: ${attachmentLabel}`}
                             >
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
                               </svg>
+                              <span className="truncate">{attachmentLabel}</span>
                             </a>
-                          ) : (
-                            <span className="text-gray-300">-</span>
                           )}
+                          {!hasFile && !readOnly && <span className="block w-24" aria-hidden="true" />}
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              onClick={() => handleEditLinkOpen(item, idx)}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 transition-colors"
+                              title="แก้ไขลิงก์และชื่อไฟล์แนบ"
+                              aria-label={`แก้ไขไฟล์แนบรายการ ${idx + 1}`}
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7m-1.414-9.414a2 2 0 112.828 2.828L11.828 16H8v-3.828l10.586-10.586z" />
+                              </svg>
+                            </button>
+                          )}
+                          {!hasFile && readOnly && <span className="text-gray-300">-</span>}
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -556,34 +565,13 @@ export default function OrderDetailView({
         )}
       </div>
 
-      {/* ── Right-click Context Menu ── */}
-      {ctxMenu && (
-        <div
-          ref={ctxMenuRef}
-          className="fixed z-[9999] bg-white rounded-lg shadow-xl border border-gray-200 py-1 min-w-[160px] animate-in fade-in"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-        >
-          <button
-            type="button"
-            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-2 transition-colors"
-            onClick={handleEditLinkOpen}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.102 1.101" />
-            </svg>
-            แก้ไขลิงค์ไฟล์แนบ
-          </button>
-        </div>
-      )}
-
       {/* ── Edit Link Dialog ── */}
       {editLinkItem && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40" onClick={() => !editLinkSaving && setEditLinkItem(null)}>
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 p-5" onClick={(e) => e.stopPropagation()}>
             <h4 className="text-sm font-bold text-gray-800 mb-1">แก้ไขลิงค์ไฟล์แนบ</h4>
             <p className="text-xs text-gray-500 mb-3">
-              รายการที่ {editLinkItem.idx + 1}: {items[editLinkItem.idx]?.product_name || ''}
+              รายการที่ {editLinkItem.displayIndex + 1}: {editLinkItem.productName}
             </p>
             <input
               type="url"
@@ -593,6 +581,14 @@ export default function OrderDetailView({
               onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
               placeholder="https://..."
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <input
+              type="text"
+              value={editLinkItem.name}
+              onChange={(e) => setEditLinkItem({ ...editLinkItem, name: e.target.value })}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
+              placeholder="ชื่อกำกับไฟล์ (ไม่บังคับ)"
+              className="w-full mt-2 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
             <div className="flex justify-end gap-2 mt-4">
               <button

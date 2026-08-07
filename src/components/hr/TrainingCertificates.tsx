@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { FiPlus, FiSearch, FiEdit2, FiTrash2, FiEye, FiAward, FiCheck, FiClock, FiXCircle } from 'react-icons/fi'
-import { fetchCertificates, upsertCertificate, deleteCertificate, fetchEmployees } from '../../lib/hrApi'
+import { fetchCertificates, upsertCertificate, deleteCertificate, fetchEmployees, HR_WARNING_CERT_BUCKET } from '../../lib/hrApi'
 import type { HRCertificate, HREmployee } from '../../types'
 import Modal from '../ui/Modal'
 import { useWmsModal } from '../wms/useWmsModal'
+import HRDocumentAttachments from './HRDocumentAttachments'
+import { AttachmentStrip } from './employee/AttachmentViewer'
 
 const TYPE_LABELS: Record<string, string> = { internal: 'ภายใน', external: 'ภายนอก' }
 
@@ -358,6 +360,14 @@ export default function TrainingCertificates() {
             </div>
           </div>
 
+          <HRDocumentAttachments
+            employeeId={form.employee_id}
+            category="certificates"
+            paths={form.attachment_urls || []}
+            onChange={(paths) => setForm((current) => ({ ...current, attachment_urls: paths }))}
+            onError={(message) => showMessage({ message })}
+          />
+
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ยกเลิก</button>
             <button onClick={handleSave} disabled={saving} className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 transition-colors">
@@ -450,6 +460,10 @@ export default function TrainingCertificates() {
                   <div className="text-gray-500 text-xs mb-1">รายละเอียด</div>
                   <div className="text-sm text-gray-700 whitespace-pre-wrap bg-surface-50 border border-surface-200 rounded-xl p-3">{viewItem.description}</div>
                 </div>
+              )}
+
+              {viewItem.attachment_urls?.length > 0 && (
+                <AttachmentStrip label="รูปภาพ / ไฟล์แนบ" items={viewItem.attachment_urls.map((path) => ({ bucket: HR_WARNING_CERT_BUCKET, path }))} />
               )}
 
               <div className="flex justify-end">

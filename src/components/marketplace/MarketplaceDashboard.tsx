@@ -154,7 +154,7 @@ export default function MarketplaceDashboard({
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {statCard('รอมอบหมาย', totals.newCount, 'text-slate-800')}
         {statCard('กำลังทำ (ค้าง)', totals.open, 'text-blue-600')}
-        {statCard('ส่งด่วน', totals.urgent, 'text-orange-600')}
+        {statCard('ส่งวันนี้', totals.urgent, 'text-blue-600')}
         {statCard('ล่าช้า', totals.overdue, 'text-red-600')}
         {statCard('เปิดบิลแล้ว', totals.done, 'text-green-600')}
         {statCard('ยกเลิก', totals.cancelled, 'text-gray-500')}
@@ -175,7 +175,7 @@ export default function MarketplaceDashboard({
                 <th className="text-left px-4 py-3">ผู้รับผิดชอบ</th>
                 <th className="text-right px-4 py-3">คงเหลือ</th>
                 <th className="text-right px-4 py-3">รอติดตาม</th>
-                <th className="text-right px-4 py-3">ส่งด่วน</th>
+                <th className="text-right px-4 py-3">ส่งวันนี้</th>
                 <th className="text-right px-4 py-3">ล่าช้า</th>
                 <th className="text-right px-4 py-3">เสร็จแล้ว</th>
                 <th className="text-right px-4 py-3">ยกเลิก</th>

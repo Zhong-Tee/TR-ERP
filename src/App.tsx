@@ -46,6 +46,7 @@ import ModeLauncher from './pages/ModeLauncher'
 import ResetPassword from './pages/ResetPassword'
 import MissedClockInAlert from './components/hr/MissedClockInAlert'
 import UnreadAnnouncementAlert from './components/hr/UnreadAnnouncementAlert'
+import UnreadWarningCertificateAlert from './components/hr/UnreadWarningCertificateAlert'
 import {
   DESKTOP_MENU_PATH_ORDER,
   MACHINERY_MOBILE_ROLES,
@@ -764,6 +765,7 @@ function App() {
           <MissedClockInAlert />
           {/* เตือน "ประกาศที่ยังไม่รับทราบ" ทันทีที่ login — ครอบทุกหน้า ทั้ง PC และมือถือ */}
           <UnreadAnnouncementAlert />
+          <UnreadWarningCertificateAlert />
         </MenuAccessProvider>
       </AuthProvider>
     </Router>

@@ -9,6 +9,7 @@ import {
   otRequestedBeforeStart,
   pickLateRule,
   scoringEndDate,
+  splitAbsenceGroup,
   summarizeMonth,
   type AttendanceFact,
   type ScoreCategory,
@@ -610,6 +611,40 @@ describe('scoringEndDate', () => {
   })
   it('เดือนในอนาคต → ยังไม่มีวันที่คิดได้', () => {
     expect(scoringEndDate('2026-09', '2026-08-06')).toBeNull()
+  })
+})
+
+describe('splitAbsenceGroup', () => {
+  const ev = (event_code: string, group_code: string, points: number): ScoreEventDraft => ({
+    employee_id: 'emp-1', event_date: '2026-08-03', event_code,
+    rule_id: `rule-${event_code}`, category_id: CATEGORY.id, group_code,
+    label: event_code, points, ref_table: null, ref_id: null, detail: {},
+  })
+
+  it('แยกขาดงานออกจากการลา โดยยอดรวมทั้งสองหัวข้อเท่าเดิม', () => {
+    const events = [
+      ev('leave_late_notice', 'leave', -2),
+      ev('absent', 'leave', -20),
+      ev('absent_pending_leave', 'leave', -10),
+    ]
+    const result = splitAbsenceGroup({ leave: -32, attendance: -4 }, events)
+    expect(result).toEqual({ leave: -2, absence: -30, attendance: -4 })
+  })
+
+  it('รายการชดเชยจากคำทักท้วง (absent_reversed) นับเข้าหัวข้อขาดงานด้วย', () => {
+    const events = [ev('absent', 'leave', -20), ev('absent_reversed', 'leave', 20)]
+    expect(splitAbsenceGroup({ leave: 0 }, events)).toEqual({ leave: 0, absence: 0 })
+  })
+
+  it('ไม่มีเหตุการณ์ขาดงาน → คงหัวข้อการลาไว้เหมือนเดิม และมีคอลัมน์ขาดงานเป็น 0', () => {
+    const events = [ev('leave_late_notice', 'leave', -2)]
+    expect(splitAbsenceGroup({ leave: -2 }, events)).toEqual({ leave: -2, absence: 0 })
+  })
+
+  it('เหตุการณ์ absent ที่อยู่กลุ่มอื่น (เช่นกติกาสะสม) ไม่ถูกดึงออกจากการลา', () => {
+    const events = [ev('absent_repeat', 'attendance_cumulative', -5), ev('absent', 'leave', -20)]
+    const result = splitAbsenceGroup({ leave: -20, attendance_cumulative: -5 }, events)
+    expect(result).toEqual({ leave: 0, absence: -20, attendance_cumulative: -5 })
   })
 })
 

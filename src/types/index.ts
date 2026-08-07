@@ -89,6 +89,12 @@ export interface Order {
   ship_due_at?: string | null
   /** เวลาที่นับเป็น "ล่าช้า" (เวลาชำระเงิน + ชั่วโมงตามตั้งค่า) */
   overdue_at?: string | null
+  /** ชื่อป้ายตัวเลือกการจัดส่งจากกฎ Marketplace */
+  urgency_label?: string | null
+  /** สีป้ายตัวเลือกการจัดส่งจากกฎ Marketplace */
+  urgency_color?: string | null
+  /** ค่าตัวเลือกการจัดส่งต้นทางจากไฟล์ Marketplace */
+  shipping_option?: string | null
   tracking_number: string | null
   claim_type: string | null
   claim_details: string | null
@@ -137,6 +143,7 @@ export interface OrderItem {
   is_free?: boolean
   notes: string | null
   file_attachment: string | null
+  attachment_name?: string | null
   packing_status: string | null
   item_scan_time?: string | null
   created_at: string
@@ -1691,7 +1698,8 @@ export interface HRWarning {
   id: string
   warning_number: string
   employee_id: string
-  warning_level: 'verbal' | 'written_1' | 'written_2' | 'final'
+  warning_level: 'verbal' | 'verbal_2' | 'written_1' | 'written_2' | 'final'
+  reference_warning_id?: string
   subject: string
   description?: string
   incident_date: string
@@ -1700,6 +1708,7 @@ export interface HRWarning {
   witness_id?: string
   employee_response?: string
   status: 'draft' | 'issued' | 'acknowledged' | 'appealed' | 'resolved'
+  acknowledged_at?: string
   resolution_note?: string
   resolved_at?: string
   attachment_urls: string[]
@@ -1727,6 +1736,7 @@ export interface HRCertificate {
   expiry_date?: string
   issued_by?: string
   status: 'draft' | 'issued'
+  acknowledged_at?: string
   attachment_urls: string[]
   created_at: string
   updated_at: string

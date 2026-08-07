@@ -46,7 +46,7 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at, urgency_label, urgency_color')
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
@@ -63,7 +63,7 @@ export default function WorkOrderSelectionList({
 
       const { data, error } = await query.limit(500)
       if (error) throw error
-      const raw = (data || []) as Order[]
+      const raw = (data || []) as unknown as Order[]
       const list = raw.filter((o) => {
         const bn = String(o.bill_no || '')
         if (!bn.startsWith('REQ')) return true

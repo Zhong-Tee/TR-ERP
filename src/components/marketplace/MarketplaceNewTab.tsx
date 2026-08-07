@@ -131,18 +131,22 @@ export default function MarketplaceNewTab({
         return
       }
 
-      // เช็คซ้ำกับงานที่เคยนำเข้าแล้ว (ขอบเขต: ช่องทางขายเดียวกัน)
-      const orderNos = result.orders.map((o) => o.marketplace_order_no)
+      // เช็คซ้ำแยกตามช่องทางขาย (กฎตัวเลือกการจัดส่งอาจเปลี่ยนช่องทางอัตโนมัติ)
       const existing = new Set<string>()
-      for (const chunk of chunked(orderNos, CHUNK)) {
+      const ordersByChannel = new Map<string, string[]>()
+      result.orders.forEach((o) => {
+        const channel = o.channel_code || config.channel_code
+        ordersByChannel.set(channel, [...(ordersByChannel.get(channel) || []), o.marketplace_order_no])
+      })
+      for (const [channel, orderNos] of ordersByChannel) for (const chunk of chunked(orderNos, CHUNK)) {
         const { data } = await supabase
           .from('mp_orders')
-          .select('marketplace_order_no')
-          .eq('channel_code', config.channel_code)
+          .select('marketplace_order_no, channel_code')
+          .eq('channel_code', channel)
           .in('marketplace_order_no', chunk)
-        ;(data || []).forEach((r: { marketplace_order_no: string }) => existing.add(r.marketplace_order_no))
+        ;(data || []).forEach((r: { marketplace_order_no: string; channel_code: string }) => existing.add(`${r.channel_code}\u0000${r.marketplace_order_no}`))
       }
-      const freshOrders = result.orders.filter((o) => !existing.has(o.marketplace_order_no))
+      const freshOrders = result.orders.filter((o) => !existing.has(`${o.channel_code || config.channel_code}\u0000${o.marketplace_order_no}`))
       const duplicateCount = result.orders.length - freshOrders.length
 
       if (freshOrders.length === 0) {
@@ -224,7 +228,10 @@ export default function MarketplaceNewTab({
         const payload = chunk.map((o: MpParsedOrder) => ({
           batch_id: batch.id,
           config_id: config.id,
-          channel_code: config.channel_code,
+          channel_code: o.channel_code || config.channel_code,
+          shipping_option: o.shipping_option,
+          urgency_label: o.urgency_label,
+          urgency_color: o.urgency_color,
           marketplace_order_no: o.marketplace_order_no,
           platform_status: o.platform_status,
           buyer_username: o.buyer_username,
@@ -248,16 +255,16 @@ export default function MarketplaceNewTab({
         const { data: inserted, error: orderError } = await supabase
           .from('mp_orders')
           .insert(payload)
-          .select('id, marketplace_order_no')
+          .select('id, marketplace_order_no, channel_code')
         if (orderError) throw orderError
         insertedOrders += (inserted || []).length
 
         const idByOrderNo = new Map<string, string>()
-        ;(inserted || []).forEach((r: { id: string; marketplace_order_no: string }) =>
-          idByOrderNo.set(r.marketplace_order_no, r.id),
+        ;(inserted || []).forEach((r: { id: string; marketplace_order_no: string; channel_code: string }) =>
+          idByOrderNo.set(`${r.channel_code}\u0000${r.marketplace_order_no}`, r.id),
         )
         const itemsPayload = chunk.flatMap((o) => {
-          const mpOrderId = idByOrderNo.get(o.marketplace_order_no)
+          const mpOrderId = idByOrderNo.get(`${o.channel_code || config.channel_code}\u0000${o.marketplace_order_no}`)
           if (!mpOrderId) return []
           const built = buildMpItemRows(mpOrderId, o.items, skuToProductId)
           unmatchedSku += built.unmatchedSku

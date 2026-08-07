@@ -2,9 +2,10 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { fetchEmployeeByUserId, fetchNotifications, fetchMyUnreadAnnouncementCount } from '../lib/hrApi'
+import { fetchAnnouncements, fetchCertificates, fetchEmployeeByUserId, fetchNotifications, fetchMyAnnouncementReads, fetchMyUnreadAnnouncementCount, fetchWarnings } from '../lib/hrApi'
+import { pickPendingHRDocuments } from '../lib/hrDocumentAlert'
 import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase, FiMessageSquare, FiTarget } from 'react-icons/fi'
-import type { HREmployee } from '../types'
+import type { HRAnnouncement, HRCertificate, HREmployee, HRNotification, HRWarning } from '../types'
 
 const EmployeeDashboard = lazy(() => import('../components/hr/employee/EmployeeDashboard'))
 const EmployeeTasks = lazy(() => import('../components/hr/employee/EmployeeTasks'))
@@ -119,8 +120,14 @@ export default function EmployeePortal() {
   const visibleTabs: readonly TabDef[] = user?.role === 'superadmin' ? [...employeeTabs, ...ADMIN_TABS] : employeeTabs
   /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
   const [resultUnread, setResultUnread] = useState(0)
+  const [resultNotifications, setResultNotifications] = useState<HRNotification[]>([])
   /** ประกาศที่ยังไม่กดรับทราบ — โชว์เป็นตัวเลขบนแท็บเอกสาร */
   const [announcementUnread, setAnnouncementUnread] = useState(0)
+  const [hrDocumentUnread, setHrDocumentUnread] = useState(0)
+  const [unreadAnnouncements, setUnreadAnnouncements] = useState<HRAnnouncement[]>([])
+  const [unreadWarnings, setUnreadWarnings] = useState<HRWarning[]>([])
+  const [unreadCertificates, setUnreadCertificates] = useState<HRCertificate[]>([])
+  const [notificationOpen, setNotificationOpen] = useState(false)
 
   useEffect(() => {
     const t = searchParams.get('tab')
@@ -132,6 +139,30 @@ export default function EmployeePortal() {
     fetchEmployeeByUserId(user.id).then(setPortalEmployee).catch(() => setPortalEmployee(null))
   }, [user?.id])
 
+  useEffect(() => {
+    if (!portalEmployee?.id) return
+    const loadCount = () => Promise.all([
+      fetchWarnings({ employeeId: portalEmployee.id }),
+      fetchCertificates({ employeeId: portalEmployee.id }),
+    ]).then(([warnings, certificates]) => {
+      const pending = pickPendingHRDocuments(warnings, certificates)
+      setUnreadWarnings(pending.filter((entry) => entry.kind === 'warning').map((entry) => entry.item as HRWarning))
+      setUnreadCertificates(pending.filter((entry) => entry.kind === 'certificate').map((entry) => entry.item as HRCertificate))
+      setHrDocumentUnread(pending.length)
+    }).catch(() => {})
+    loadCount()
+    window.addEventListener('hr-documents-changed', loadCount)
+    const channel = supabase
+      .channel(`employee-portal-hr-documents-${portalEmployee.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_warnings', filter: `employee_id=eq.${portalEmployee.id}` }, loadCount)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_certificates', filter: `employee_id=eq.${portalEmployee.id}` }, loadCount)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-documents-changed', loadCount)
+      supabase.removeChannel(channel)
+    }
+  }, [portalEmployee?.id])
+
   // นับแจ้งเตือนผลอนุมัติที่ยังไม่อ่าน (เรียลไทม์)
   useEffect(() => {
     if (!user?.id) return
@@ -141,7 +172,11 @@ export default function EmployeePortal() {
       if (!emp || cancelled) return
       const loadCount = () =>
         fetchNotifications(emp.id, true)
-          .then((list) => setResultUnread(list.filter((n) => n.type.includes('result')).length))
+          .then((list) => {
+            const results = list.filter((n) => n.type.includes('result'))
+            setResultNotifications(results)
+            setResultUnread(results.length)
+          })
           .catch(() => {})
       loadCount()
       channel = supabase
@@ -159,6 +194,20 @@ export default function EmployeePortal() {
     }
   }, [user?.id])
 
+  useEffect(() => {
+    if (!portalEmployee?.id) return
+    const loadItems = () => Promise.all([
+      fetchAnnouncements(),
+      fetchMyAnnouncementReads(portalEmployee.id),
+    ]).then(([announcements, readIds]) => {
+      const readSet = new Set(readIds)
+      setUnreadAnnouncements(announcements.filter((item) => item.status === 'published' && !readSet.has(item.id)))
+    }).catch(() => {})
+    loadItems()
+    window.addEventListener('hr-announcements-changed', loadItems)
+    return () => window.removeEventListener('hr-announcements-changed', loadItems)
+  }, [portalEmployee?.id])
+
   // นับประกาศที่ยังไม่กดรับทราบ (อัปเดตเมื่อมีประกาศใหม่เผยแพร่ หรือกดรับทราบ)
   useEffect(() => {
     if (!user?.id) return
@@ -168,7 +217,10 @@ export default function EmployeePortal() {
     window.addEventListener('hr-announcements-changed', loadCount)
     const channel = supabase
       .channel('employee-portal-announcements')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcements' }, loadCount)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_announcements' }, () => {
+        loadCount()
+        window.dispatchEvent(new Event('hr-announcements-changed'))
+      })
       .subscribe()
     return () => {
       window.removeEventListener('hr-announcements-changed', loadCount)
@@ -182,8 +234,21 @@ export default function EmployeePortal() {
   }
 
   const openResultNotifications = () => {
-    setActiveTab('dashboard')
-    setSearchParams({ notif: 'result' })
+    setNotificationOpen((open) => !open)
+  }
+
+  const totalBellUnread = resultUnread + announcementUnread + hrDocumentUnread
+
+  const openNotificationTarget = (target: 'result' | 'announcement' | 'hr-document') => {
+    setNotificationOpen(false)
+    if (target === 'result') {
+      setActiveTab('dashboard')
+      setSearchParams({ notif: 'result' })
+    } else if (target === 'announcement') {
+      setActiveTabAndUrl('documents')
+    } else {
+      setActiveTabAndUrl('warnings-certs')
+    }
   }
 
   if (!isMobile) return <DesktopBlockScreen />
@@ -205,12 +270,12 @@ export default function EmployeePortal() {
             type="button"
             onClick={openResultNotifications}
             className="relative p-2 rounded-full bg-white/15 hover:bg-white/30"
-            aria-label="แจ้งเตือนผลอนุมัติ"
+            aria-label="การแจ้งเตือน"
           >
             <FiBell className="w-5 h-5" />
-            {resultUnread > 0 && (
+            {totalBellUnread > 0 && (
               <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
-                {resultUnread > 99 ? '99+' : resultUnread}
+                {totalBellUnread > 99 ? '99+' : totalBellUnread}
               </span>
             )}
           </button>
@@ -224,6 +289,47 @@ export default function EmployeePortal() {
           </button>
         </div>
       </header>
+
+      {notificationOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setNotificationOpen(false)}>
+          <div className="absolute top-[68px] left-3 right-3 max-h-[70vh] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div>
+                <h2 className="font-bold text-gray-900">การแจ้งเตือน</h2>
+                <p className="text-xs text-gray-500">ยังไม่รับทราบ {totalBellUnread} รายการ</p>
+              </div>
+              <button type="button" onClick={() => setNotificationOpen(false)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">✕</button>
+            </div>
+            <div className="max-h-[calc(70vh-64px)] overflow-y-auto divide-y">
+              {totalBellUnread === 0 && <p className="p-8 text-center text-sm text-gray-400">ไม่มีการแจ้งเตือนใหม่</p>}
+              {unreadAnnouncements.map((item) => (
+                <button key={`announcement-${item.id}`} type="button" onClick={() => openNotificationTarget('announcement')} className="w-full px-4 py-3 text-left hover:bg-amber-50">
+                  <div className="text-xs font-semibold text-amber-600">ประกาศ</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.title}</div>
+                </button>
+              ))}
+              {unreadWarnings.map((item) => (
+                <button key={`warning-${item.id}`} type="button" onClick={() => openNotificationTarget('hr-document')} className="w-full px-4 py-3 text-left hover:bg-red-50">
+                  <div className="text-xs font-semibold text-red-600">ใบเตือน · {item.warning_number}</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.subject}</div>
+                </button>
+              ))}
+              {unreadCertificates.map((item) => (
+                <button key={`certificate-${item.id}`} type="button" onClick={() => openNotificationTarget('hr-document')} className="w-full px-4 py-3 text-left hover:bg-emerald-50">
+                  <div className="text-xs font-semibold text-emerald-600">ใบรับรอง · {item.certificate_number}</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.training_name}</div>
+                </button>
+              ))}
+              {resultNotifications.map((item) => (
+                <button key={`result-${item.id}`} type="button" onClick={() => openNotificationTarget('result')} className="w-full px-4 py-3 text-left hover:bg-blue-50">
+                  <div className="text-xs font-semibold text-blue-600">ผลคำร้อง</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.title}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 overflow-auto p-4">
         <Suspense fallback={<Loading />}>
@@ -251,6 +357,11 @@ export default function EmployeePortal() {
               {tab.id === 'documents' && announcementUnread > 0 && (
                 <span className="absolute top-1 right-[18%] min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
                   {announcementUnread > 99 ? '99+' : announcementUnread}
+                </span>
+              )}
+              {tab.id === 'warnings-certs' && hrDocumentUnread > 0 && (
+                <span className="absolute top-1 right-[18%] min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
+                  {hrDocumentUnread > 99 ? '99+' : hrDocumentUnread}
                 </span>
               )}
               <span className="text-[11px] font-medium whitespace-nowrap">{tab.label}</span>

@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx'
 import { excelColumnToIndex } from './ecommerceImport'
 import { computeDueTimestamps, DEFAULT_DUE_RULE, type DueRule } from './shipDueBadge'
+import type { MpShippingRule } from '../types/marketplace'
 
 /**
  * Parser ไฟล์ Order จากแพลตฟอร์ม (Shopee/TikTok/...) สำหรับเมนู Marketplace
@@ -305,6 +306,10 @@ export interface MpParsedOrder {
   raw_snapshot: Record<string, string | number | null>
   ship_due_at: string | null
   overdue_at: string | null
+  channel_code: string | null
+  shipping_option: string | null
+  urgency_label: string | null
+  urgency_color: string | null
   items: MpParsedItem[]
 }
 
@@ -319,6 +324,8 @@ export interface MpParseConfig {
   header_row?: number | null
   column_map: MpMapRow[]
   due_rule?: DueRule | null
+  channel_code?: string | null
+  shipping_rules?: MpShippingRule[] | null
 }
 
 /** อ่าน workbook + group เป็นออเดอร์ พร้อมคำนวณ ship_due_at/overdue_at ตาม due_rule */
@@ -335,6 +342,15 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
   const headerRowIdx = Math.max(0, config.header_row ?? 0)
   const headerRow = (rows[headerRowIdx] as unknown[]) || []
   const colIndex = buildMpColIndex(config.column_map || [], headerRow)
+  const shippingRuleIndexes = (config.shipping_rules || []).map((rule) => ({
+    rule,
+    index: buildMpColIndex([{
+      field_key: 'order_no',
+      source_type: rule.source_type,
+      source_value: rule.source_value,
+      priority: 0,
+    }], headerRow).order_no,
+  }))
 
   const warnings: string[] = []
   if (colIndex.order_no == null) {
@@ -377,6 +393,13 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
     if (!order) {
       const paymentTime = parseBangkokDateTime(cell(row, 'payment_time'))
       const due = computeDueTimestamps(paymentTime, dueRule)
+      const matchedShipping = shippingRuleIndexes.find(({ rule, index }) => {
+        if (index == null) return false
+        const actual = String(row[index] ?? '').trim().toLocaleLowerCase('th-TH')
+        const expected = rule.match_value.trim().toLocaleLowerCase('th-TH')
+        return expected !== '' && (rule.match_type === 'contains' ? actual.includes(expected) : actual === expected)
+      })
+      const shippingOption = matchedShipping?.index == null ? null : str(row[matchedShipping.index])
       if (!paymentTime) warnings.push(`ออเดอร์ ${orderNo}: ไม่มีเวลาชำระเงิน — จะไม่มีป้ายส่งด่วน/ล่าช้า`)
       order = {
         marketplace_order_no: orderNo,
@@ -397,6 +420,10 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
         raw_snapshot: snap,
         ship_due_at: due.ship_due_at,
         overdue_at: due.overdue_at,
+        channel_code: matchedShipping?.rule.channel_code || config.channel_code || null,
+        shipping_option: shippingOption,
+        urgency_label: matchedShipping?.rule.label.trim() || null,
+        urgency_color: matchedShipping?.rule.color || null,
         items: [],
       }
       orderMap.set(orderNo, order)

@@ -522,6 +522,7 @@ type ImportedOrderItem = {
   line_3?: string
   notes?: string
   file_attachment?: string
+  attachment_name?: string
 }
 
 type ImportedOrder = {
@@ -561,6 +562,7 @@ type ClaimDraftRow = {
   is_free: boolean
   notes: string | null
   file_attachment: string | null
+  attachment_name: string | null
 }
 
 /** ร่างเคลม (or_claim_requests สถานะ draft) ที่ส่งมาเปิดใน modal เพื่อแก้ต่อ */
@@ -593,6 +595,7 @@ function snapshotItemToClaimDraftRow(item: Record<string, unknown>, idx: number)
     is_free: !!(item as { is_free?: boolean }).is_free,
     notes: item.notes != null ? String(item.notes) : null,
     file_attachment: item.file_attachment != null ? String(item.file_attachment) : null,
+    attachment_name: item.attachment_name != null ? String(item.attachment_name) : null,
   }
 }
 
@@ -2063,6 +2066,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               is_free: !!(item as { is_free?: boolean }).is_free,
               notes: item.notes || null,
               file_attachment: item.file_attachment || null,
+              attachment_name: item.attachment_name?.trim() || null,
             }
           })
         
@@ -3486,6 +3490,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               is_free: !!(item as { is_free?: boolean }).is_free,
               notes: item.notes || null,
               file_attachment: item.file_attachment || null,
+              attachment_name: item.attachment_name?.trim() || null,
             }))
           const { error: itemsErr } = await supabase.from('or_order_items').insert(itemsToInsert)
           if (itemsErr) {
@@ -3690,6 +3695,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         is_free: !!(item as { is_free?: boolean }).is_free,
         notes: item.notes != null ? String(item.notes) : null,
         file_attachment: item.file_attachment != null ? String(item.file_attachment) : null,
+        attachment_name: item.attachment_name != null ? String(item.attachment_name) : null,
       }))
       setClaimDraftItems(rows)
       setClaimShippingCost(Number(selectedClaimRefOrder.shipping_cost) || 0)
@@ -3785,6 +3791,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         is_free: r.is_free,
         notes: r.notes,
         file_attachment: r.file_attachment,
+        attachment_name: r.attachment_name,
       }))
 
       const refSnapshot = {
@@ -3922,6 +3929,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         is_free: r.is_free,
         notes: r.notes,
         file_attachment: r.file_attachment,
+        attachment_name: r.attachment_name,
       }))
       const refSnapshot = {
         bill_no: ref.bill_no,
@@ -5563,7 +5571,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       const attachValue = (item.file_attachment || '').trim()
                       const isInvalidUrl = attachValue !== '' && !/^https?:\/\/.+/i.test(attachValue)
                       return (
-                        <div>
+                        <div className="space-y-1.5">
+                          <input
+                            type="text"
+                            value={item.attachment_name || ''}
+                            onChange={(e) => updateItem(index, 'attachment_name', e.target.value)}
+                            disabled={formDisabled || !isFieldEnabled(index, 'attachment')}
+                            placeholder="ชื่อกำกับ"
+                            className={`w-full px-1.5 py-1 border rounded text-xs min-w-[120px] ${(formDisabled || !isFieldEnabled(index, 'attachment')) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                          />
                           {isFileExpanded ? (
                             <textarea
                               value={item.file_attachment || ''}
@@ -7255,6 +7271,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                   is_free: false,
                   notes: null,
                   file_attachment: null,
+                  attachment_name: null,
                 }
                 setClaimDraftItems((prev) => [...prev, row])
               }}

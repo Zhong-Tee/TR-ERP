@@ -1,20 +1,30 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { FiPlus, FiSearch, FiEdit2, FiTrash2, FiEye, FiAlertTriangle, FiCheck, FiX } from 'react-icons/fi'
-import { fetchWarnings, upsertWarning, deleteWarning, fetchEmployees } from '../../lib/hrApi'
+import { fetchWarnings, upsertWarning, deleteWarning, fetchEmployees, HR_WARNING_CERT_BUCKET } from '../../lib/hrApi'
 import type { HRWarning, HREmployee } from '../../types'
 import Modal from '../ui/Modal'
 import { useWmsModal } from '../wms/useWmsModal'
+import HRDocumentAttachments from './HRDocumentAttachments'
+import { AttachmentStrip } from './employee/AttachmentViewer'
 
 const LEVEL_LABELS: Record<string, { label: string; color: string; bg: string }> = {
-  verbal: { label: 'ตักเตือนด้วยวาจา', color: 'text-yellow-700', bg: 'bg-yellow-50 border-yellow-200' },
+  verbal: { label: 'ตักเตือนด้วยวาจา ครั้งที่ 1', color: 'text-yellow-700', bg: 'bg-yellow-50 border-yellow-200' },
+  verbal_2: { label: 'ตักเตือนด้วยวาจา ครั้งที่ 2', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' },
   written_1: { label: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 1', color: 'text-orange-700', bg: 'bg-orange-50 border-orange-200' },
   written_2: { label: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 2', color: 'text-red-600', bg: 'bg-red-50 border-red-200' },
   final: { label: 'เตือนครั้งสุดท้าย', color: 'text-red-800', bg: 'bg-red-100 border-red-300' },
 }
 
+const LEVEL_SEQUENCE: HRWarning['warning_level'][] = ['verbal', 'verbal_2', 'written_1', 'written_2', 'final']
+
+function nextWarningLevel(level: HRWarning['warning_level']): HRWarning['warning_level'] {
+  const index = LEVEL_SEQUENCE.indexOf(level)
+  return LEVEL_SEQUENCE[Math.min(Math.max(index, 0) + 1, LEVEL_SEQUENCE.length - 1)]
+}
+
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   draft: { label: 'แบบร่าง', color: 'bg-gray-100 text-gray-600' },
-  issued: { label: 'ออกใบเตือนแล้ว', color: 'bg-blue-100 text-blue-700' },
+  issued: { label: 'อนุมัติ', color: 'bg-blue-100 text-blue-700' },
   acknowledged: { label: 'รับทราบแล้ว', color: 'bg-green-100 text-green-700' },
   appealed: { label: 'อุทธรณ์', color: 'bg-amber-100 text-amber-700' },
   resolved: { label: 'ยุติแล้ว', color: 'bg-gray-200 text-gray-700' },
@@ -51,6 +61,7 @@ export default function WarningLetters() {
   const [saving, setSaving] = useState(false)
 
   const [viewItem, setViewItem] = useState<HRWarning | null>(null)
+  const [referenceItem, setReferenceItem] = useState<HRWarning | null>(null)
 
   const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
 
@@ -84,12 +95,34 @@ export default function WarningLetters() {
   }, [warnings, filterLevel, filterStatus, search])
 
   const openCreate = () => {
+    setReferenceItem(null)
     setForm({ ...EMPTY_FORM })
     setFormOpen(true)
   }
 
   const openEdit = (w: HRWarning) => {
+    setReferenceItem(null)
     setForm({ ...w })
+    setFormOpen(true)
+  }
+
+  const openFollowUp = (source: HRWarning) => {
+    setReferenceItem(source)
+    setForm({
+      ...EMPTY_FORM,
+      employee_id: source.employee_id,
+      warning_level: nextWarningLevel(source.warning_level),
+      subject: source.subject,
+      description: source.description || '',
+      issued_by: source.issued_by,
+      witness_id: source.witness_id,
+      reference_warning_id: source.id,
+      incident_date: new Date().toISOString().split('T')[0],
+      issued_date: new Date().toISOString().split('T')[0],
+      employee_response: '',
+      status: 'draft',
+      attachment_urls: [],
+    })
     setFormOpen(true)
   }
 
@@ -167,7 +200,7 @@ export default function WarningLetters() {
         {[
           { label: 'ทั้งหมด', value: warnings.length, color: 'bg-surface-50 border-surface-200' },
           { label: 'แบบร่าง', value: warnings.filter(w => w.status === 'draft').length, color: 'bg-gray-50 border-gray-200' },
-          { label: 'ออกแล้ว', value: warnings.filter(w => w.status === 'issued').length, color: 'bg-blue-50 border-blue-200' },
+          { label: 'อนุมัติ', value: warnings.filter(w => w.status === 'issued').length, color: 'bg-blue-50 border-blue-200' },
           { label: 'รับทราบแล้ว', value: warnings.filter(w => w.status === 'acknowledged').length, color: 'bg-green-50 border-green-200' },
           { label: 'อุทธรณ์', value: warnings.filter(w => w.status === 'appealed').length, color: 'bg-amber-50 border-amber-200' },
         ].map(s => (
@@ -205,7 +238,7 @@ export default function WarningLetters() {
               <tr className="bg-surface-50 border-b border-surface-200">
                 <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขที่</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-700">พนักงาน</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">ระดับ</th>
+                <th className="px-4 py-3 text-left font-semibold text-gray-700">ระดับ (คลิกเพื่อเตือนซ้ำ)</th>
                 <th className="px-4 py-3 text-left font-semibold text-gray-700">เรื่อง</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">วันที่เกิดเหตุ</th>
                 <th className="px-4 py-3 text-center font-semibold text-gray-700">สถานะ</th>
@@ -226,11 +259,18 @@ export default function WarningLetters() {
                       <div className="text-xs text-gray-400">{w.employee?.employee_code}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium ${lvl.bg} ${lvl.color}`}>
+                      <button type="button" onClick={() => openFollowUp(w)} title="สร้างใบเตือนครั้งถัดไปโดยอ้างอิงฉบับนี้" className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium hover:ring-2 hover:ring-offset-1 hover:ring-red-200 transition ${lvl.bg} ${lvl.color}`}>
                         <FiAlertTriangle className="w-3 h-3" />{lvl.label}
-                      </span>
+                      </button>
                     </td>
-                    <td className="px-4 py-3 max-w-[200px] truncate">{w.subject}</td>
+                    <td className="px-4 py-3 max-w-[240px]">
+                      <div className="truncate">{w.subject}</div>
+                      {w.reference_warning_id && (
+                        <div className="mt-0.5 text-[11px] text-blue-600">
+                          อ้างอิง {warnings.find(item => item.id === w.reference_warning_id)?.warning_number || 'ใบเตือนเดิม'}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-center text-xs">{w.incident_date}</td>
                     <td className="px-4 py-3 text-center">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${st.color}`}>{st.label}</span>
@@ -265,6 +305,14 @@ export default function WarningLetters() {
       <Modal open={formOpen} onClose={() => setFormOpen(false)} contentClassName="max-w-2xl">
         <div className="p-6 space-y-5">
           <h2 className="text-lg font-bold text-gray-800">{form.id ? 'แก้ไขใบเตือน' : 'สร้างใบเตือนใหม่'}</h2>
+
+          {referenceItem && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+              <div className="font-semibold">สร้างครั้งถัดไปโดยอ้างอิง {referenceItem.warning_number}</div>
+              <div className="mt-1 text-xs text-blue-700">{LEVEL_LABELS[referenceItem.warning_level]?.label} · {referenceItem.subject}</div>
+              <div className="mt-1 text-xs text-blue-600">ระบบคัดลอกเรื่องและรายละเอียดเดิมให้แล้ว สามารถแก้ไขได้ก่อนบันทึก</div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -331,6 +379,14 @@ export default function WarningLetters() {
             <textarea value={form.employee_response || ''} onChange={e => setForm(f => ({ ...f, employee_response: e.target.value }))} rows={2} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" placeholder="คำชี้แจงหรือข้อเท็จจริงจากพนักงาน (ถ้ามี)" />
           </div>
 
+          <HRDocumentAttachments
+            employeeId={form.employee_id}
+            category="warnings"
+            paths={form.attachment_urls || []}
+            onChange={(paths) => setForm((current) => ({ ...current, attachment_urls: paths }))}
+            onError={(message) => showMessage({ message })}
+          />
+
           <div className="flex justify-end gap-3 pt-2">
             <button onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ยกเลิก</button>
             <button onClick={handleSave} disabled={saving} className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 transition-colors">
@@ -386,6 +442,11 @@ export default function WarningLetters() {
               <div>
                 <div className="text-gray-500 text-xs mb-1">เรื่อง</div>
                 <div className="font-medium text-gray-800">{viewItem.subject}</div>
+                {viewItem.reference_warning_id && (
+                  <div className="mt-1 text-xs text-blue-600">
+                    อ้างอิงจาก {warnings.find(item => item.id === viewItem.reference_warning_id)?.warning_number || 'ใบเตือนเดิม'}
+                  </div>
+                )}
               </div>
 
               {viewItem.description && (
@@ -407,6 +468,10 @@ export default function WarningLetters() {
                   <div className="text-gray-500 text-xs mb-1">หมายเหตุการยุติ</div>
                   <div className="text-sm text-gray-700 whitespace-pre-wrap bg-green-50 border border-green-200 rounded-xl p-3">{viewItem.resolution_note}</div>
                 </div>
+              )}
+
+              {viewItem.attachment_urls?.length > 0 && (
+                <AttachmentStrip label="รูปภาพ / ไฟล์แนบ" items={viewItem.attachment_urls.map((path) => ({ bucket: HR_WARNING_CERT_BUCKET, path }))} />
               )}
 
               <div className="flex justify-end">
