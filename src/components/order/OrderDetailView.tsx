@@ -55,9 +55,11 @@ export default function OrderDetailView({
   /* ── Edit attachment link ── */
   const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
   const [editLinkSaving, setEditLinkSaving] = useState(false)
+  const [editLinkError, setEditLinkError] = useState('')
 
   function handleEditLinkOpen(item: OrderItem, displayIndex: number) {
     if (readOnly) return
+    setEditLinkError('')
     setEditLinkItem({
       itemId: item.id,
       displayIndex,
@@ -72,12 +74,18 @@ export default function OrderDetailView({
     if (!editLinkItem) return
     const item = items.find((candidate) => candidate.id === editLinkItem.itemId)
     if (!item?.id) return
+    const linkValue = editLinkItem.value.trim()
+    if (linkValue && !/^https?:\/\/\S+$/i.test(linkValue)) {
+      setEditLinkError('กรุณากรอกลิงก์ที่ขึ้นต้นด้วย http:// หรือ https://')
+      return
+    }
+    setEditLinkError('')
     setEditLinkSaving(true)
     try {
       const { error } = await supabase
         .from('or_order_items')
         .update({
-          file_attachment: editLinkItem.value.trim() || null,
+          file_attachment: linkValue || null,
           attachment_name: editLinkItem.name.trim() || null,
         })
         .eq('id', item.id)
@@ -85,14 +93,14 @@ export default function OrderDetailView({
       // Update local state
       if (loadedItems) {
         setLoadedItems(prev => prev!.map((it) => {
-          if (it.id === item.id) return { ...it, file_attachment: editLinkItem.value.trim() || null, attachment_name: editLinkItem.name.trim() || null } as OrderItem
+          if (it.id === item.id) return { ...it, file_attachment: linkValue || null, attachment_name: editLinkItem.name.trim() || null } as OrderItem
           return it
         }))
       }
       // Also update inline if present
       const inl = ((order as any).or_order_items || []) as OrderItem[]
       if (inl.length > 0) {
-        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: editLinkItem.value.trim() || null, attachment_name: editLinkItem.name.trim() || null } : it)
+        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: linkValue || null, attachment_name: editLinkItem.name.trim() || null } : it)
         ;(order as any).or_order_items = updated
       }
       setEditLinkItem(null)
@@ -577,11 +585,15 @@ export default function OrderDetailView({
               type="url"
               autoFocus
               value={editLinkItem.value}
-              onChange={(e) => setEditLinkItem({ ...editLinkItem, value: e.target.value })}
+              onChange={(e) => {
+                setEditLinkItem({ ...editLinkItem, value: e.target.value })
+                if (editLinkError) setEditLinkError('')
+              }}
               onKeyDown={(e) => { if (e.key === 'Enter') handleEditLinkSave() }}
               placeholder="https://..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 ${editLinkError ? 'border-red-500 focus:ring-red-300' : 'border-gray-300 focus:ring-blue-500 focus:border-blue-500'}`}
             />
+            {editLinkError && <p className="mt-1.5 text-xs text-red-600">{editLinkError}</p>}
             <input
               type="text"
               value={editLinkItem.name}

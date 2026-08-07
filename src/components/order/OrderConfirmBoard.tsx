@@ -1336,9 +1336,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             <button
                               type="button"
                               onClick={() => setDetailOrder(order)}
-                              className="inline-flex items-center px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-800 hover:bg-gray-50"
+                              className="inline-flex items-center justify-center p-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                              title="รายละเอียด"
+                              aria-label="รายละเอียด"
                             >
-                              รายละเอียด
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                             </button>
                             {NEW_COLUMN.actionTargetStatus && NEW_COLUMN.actionLabel && !isProduction && (
                               <button
@@ -1352,7 +1354,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                 }
                                 className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${NEW_COLUMN.actionBtn}`}
                               >
-                                {NEW_COLUMN.actionLabel}
+                                สถานะ
                               </button>
                             )}
                             {isProduction && canProductionChangeStatus(order.status as OrderStatus) && (
@@ -1361,7 +1363,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                 onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
                                 className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
                               >
-                                เปลี่ยนสถานะ
+                                สถานะ
                               </button>
                             )}
                             {(!isProduction || canProductionChangeStatus(order.status as OrderStatus)) && (
@@ -1377,9 +1379,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               <button
                                 type="button"
                                 onClick={() => openChat(order)}
-                                className="inline-flex items-center px-2.5 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-semibold hover:bg-gray-800"
+                                className="inline-flex items-center justify-center p-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                                title="Chat"
+                                aria-label="Chat"
                               >
-                                Chat
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
                               </button>
                               {chatDeliveryStatus(order.id)}
                               {(unreadByOrder[order.id] || 0) > 0 && (
@@ -1571,9 +1575,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               <button
                                 type="button"
                                 onClick={() => setDetailOrder(order)}
-                                className="inline-flex items-center px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                className="inline-flex items-center justify-center p-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                                title="รายละเอียด"
+                                aria-label="รายละเอียด"
                               >
-                                รายละเอียด
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               </button>
                               {viewMode === 'noDesign' &&
                                 tableColumn.actionTargetStatus &&
@@ -1590,7 +1596,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                     }
                                     className={`inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white ${tableColumn.actionBtn}`}
                                   >
-                                    {tableColumn.actionLabel}
+                                    สถานะ
                                   </button>
                                 )}
                               {viewMode === 'noDesign' &&
@@ -1601,16 +1607,18 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                                     onClick={() => openStatusModal(order, order.status as OrderStatus, 'เปลี่ยนสถานะ')}
                                     className="inline-flex items-center px-2.5 py-1.5 bg-gradient-to-r from-violet-500 to-indigo-600 text-white rounded-lg text-xs font-semibold"
                                   >
-                                    เปลี่ยนสถานะ
+                                    สถานะ
                                   </button>
                                 )}
                               <div className="inline-flex items-center gap-0.5">
                                 <button
                                   type="button"
                                   onClick={() => openChat(order)}
-                                  className="inline-flex items-center px-2.5 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-semibold hover:bg-gray-800"
+                                  className="inline-flex items-center justify-center p-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                                  title="Chat"
+                                  aria-label="Chat"
                                 >
-                                  Chat
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
                                 </button>
                                 {chatDeliveryStatus(order.id)}
                                 {(unreadByOrder[order.id] || 0) > 0 && (
@@ -1695,13 +1703,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         <button
                           type="button"
                           onClick={() => setDetailOrder(order)}
-                          className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-white border border-gray-200 rounded-md text-xs font-medium text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                          className="inline-flex items-center justify-center p-2 bg-white border border-gray-200 rounded-md text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
+                          title="รายละเอียด"
+                          aria-label="รายละเอียด"
                         >
                           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                           </svg>
-                          รายละเอียด
                         </button>
 
                         {column.actionTargetStatus && column.actionLabel && !isProduction && (
@@ -1713,7 +1722,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                             </svg>
-                            {column.actionLabel}
+                            สถานะ
                           </button>
                         )}
 
@@ -1726,7 +1735,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                             </svg>
-                            เปลี่ยนสถานะ
+                            สถานะ
                           </button>
                         )}
 
@@ -1782,12 +1791,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             <button
                               type="button"
                               onClick={() => openChat(order)}
-                              className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                              className="inline-flex items-center justify-center p-2 bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white rounded-md shadow-sm transition-all"
+                              title="Chat"
+                              aria-label="Chat"
                             >
                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                               </svg>
-                              Chat
                             </button>
                             {chatDeliveryStatus(order.id)}
                             {(unreadByOrder[order.id] || 0) > 0 && (

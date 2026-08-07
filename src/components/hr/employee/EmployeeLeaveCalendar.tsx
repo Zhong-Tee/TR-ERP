@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FiChevronLeft, FiChevronRight } from 'react-icons/fi'
-import { fetchLeaveCalendar } from '../../../lib/hrApi'
+import { fetchCompanyHolidays, fetchEmployees, fetchLeaveCalendar, fetchWorkCalendar } from '../../../lib/hrApi'
 import type { LeaveCalendarEntry } from '../../../lib/hrApi'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar } from '../../../types'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 const monthKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`
@@ -18,6 +19,9 @@ export default function EmployeeLeaveCalendar() {
   const [month, setMonth] = useState(() => monthKey(new Date()))
   const [selectedDate, setSelectedDate] = useState(() => dateKey(new Date()))
   const [entries, setEntries] = useState<LeaveCalendarEntry[]>([])
+  const [dayOffs, setDayOffs] = useState<HREmployeeWorkCalendar[]>([])
+  const [holidays, setHolidays] = useState<HRCompanyHoliday[]>([])
+  const [employeeById, setEmployeeById] = useState<Record<string, HREmployee>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -31,9 +35,20 @@ export default function EmployeeLeaveCalendar() {
     setLoading(true)
     setError(null)
     try {
-      setEntries(await fetchLeaveCalendar(start, end))
+      const [leaveEntries, calendarEntries, companyHolidays, employees] = await Promise.all([
+        fetchLeaveCalendar(start, end),
+        fetchWorkCalendar(start, end),
+        fetchCompanyHolidays(start, end),
+        fetchEmployees(),
+      ])
+      setEntries(leaveEntries)
+      setDayOffs(calendarEntries.filter((entry) => entry.day_type === 'weekly_off'))
+      setHolidays(companyHolidays)
+      setEmployeeById(Object.fromEntries(employees.map((employee) => [employee.id, employee])))
     } catch (e) {
       setEntries([])
+      setDayOffs([])
+      setHolidays([])
       setError(e instanceof Error ? e.message : 'โหลดปฏิทินลาไม่สำเร็จ')
     } finally {
       setLoading(false)
@@ -60,6 +75,18 @@ export default function EmployeeLeaveCalendar() {
     return map
   }, [entries])
 
+  const dayOffsByDate = useMemo(() => {
+    const map = new Map<string, HREmployeeWorkCalendar[]>()
+    for (const entry of dayOffs) {
+      const list = map.get(entry.work_date)
+      if (list) list.push(entry)
+      else map.set(entry.work_date, [entry])
+    }
+    return map
+  }, [dayOffs])
+
+  const holidayByDate = useMemo(() => new Map(holidays.map((holiday) => [holiday.holiday_date, holiday])), [holidays])
+
   const firstWeekday = new Date(year, mon - 1, 1).getDay()
   const cells = [...Array(firstWeekday).fill(null), ...Array.from({ length: lastDay }, (_, i) => i + 1)]
   const move = (delta: number) => {
@@ -68,6 +95,8 @@ export default function EmployeeLeaveCalendar() {
   }
 
   const selectedLeaves = leavesByDate.get(selectedDate) ?? []
+  const selectedDayOffs = dayOffsByDate.get(selectedDate) ?? []
+  const selectedHoliday = holidayByDate.get(selectedDate)
   const selectedLabel = new Date(`${selectedDate}T00:00:00`).toLocaleDateString('th-TH', {
     weekday: 'long',
     day: 'numeric',
@@ -97,12 +126,18 @@ export default function EmployeeLeaveCalendar() {
         </button>
       </div>
 
-      <div className="flex items-center gap-4 text-[11px] text-gray-600">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-gray-600">
         <span className="inline-flex items-center gap-1">
           <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" /> อนุมัติ
         </span>
         <span className="inline-flex items-center gap-1">
           <span className="w-3 h-3 rounded bg-amber-200 border border-amber-400" /> รออนุมัติ
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-3 h-3 rounded bg-sky-100 border border-sky-300" /> หยุดพนักงาน
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="w-3 h-3 rounded bg-violet-100 border border-violet-300" /> หยุดบริษัท
         </span>
         <button
           type="button"
@@ -136,6 +171,8 @@ export default function EmployeeLeaveCalendar() {
                 if (!day) return <div key={`blank-${i}`} className="min-h-14 border-t border-r border-gray-100 bg-gray-50/40" />
                 const key = `${month}-${pad(day)}`
                 const leaves = leavesByDate.get(key) ?? []
+                const dateDayOffs = dayOffsByDate.get(key) ?? []
+                const holiday = holidayByDate.get(key)
                 const hasPending = leaves.some((l) => l.status === 'pending')
                 const isSelected = key === selectedDate
                 return (
@@ -146,7 +183,7 @@ export default function EmployeeLeaveCalendar() {
                     aria-pressed={isSelected}
                     aria-label={`ดูรายการลาวันที่ ${day}`}
                     className={`relative min-h-14 border-t border-r border-gray-100 p-1.5 text-left transition-colors ${
-                      leaves.length ? (hasPending ? 'bg-amber-50' : 'bg-emerald-50') : 'bg-white'
+                      hasPending ? 'bg-amber-50' : leaves.length ? 'bg-emerald-50' : holiday ? 'bg-violet-50' : dateDayOffs.length ? 'bg-sky-50' : 'bg-white'
                     } ${isSelected ? 'ring-2 ring-inset ring-emerald-500' : ''}`}
                   >
                     <span
@@ -165,6 +202,10 @@ export default function EmployeeLeaveCalendar() {
                         {leaves.length}
                       </span>
                     )}
+                    {dateDayOffs.length > 0 && (
+                      <span className="absolute bottom-1 left-1 rounded-full bg-sky-200 px-1.5 text-[10px] font-bold text-sky-900">{dateDayOffs.length}</span>
+                    )}
+                    {holiday && <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-violet-500" title={holiday.name} />}
                   </button>
                 )
               })}
@@ -206,6 +247,39 @@ export default function EmployeeLeaveCalendar() {
                       </span>
                     </li>
                   ))}
+                </ul>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-gray-900">วันหยุด</h3>
+                <p className="text-xs text-gray-500">{selectedLabel}</p>
+              </div>
+              <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-semibold text-sky-700">{selectedDayOffs.length} คนหยุด</span>
+            </div>
+            {selectedHoliday && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3">
+                <div className="text-xs font-semibold text-violet-600">วันหยุดบริษัท</div>
+                <div className="mt-0.5 text-sm font-medium text-violet-900">{selectedHoliday.name}</div>
+              </div>
+            )}
+            <div className="rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+              {selectedDayOffs.length === 0 ? (
+                <p className="p-4 text-center text-sm text-gray-500">{selectedHoliday ? 'ไม่มีวันหยุดรายบุคคลเพิ่มเติม' : 'ไม่มีวันหยุดในวันนี้'}</p>
+              ) : (
+                <ul className="divide-y divide-gray-100">
+                  {selectedDayOffs.map((entry) => {
+                    const employee = employeeById[entry.employee_id]
+                    return (
+                      <li key={entry.id} className="p-4">
+                        <p className="font-medium text-gray-900">{employee ? `${employee.first_name} ${employee.last_name}` : 'พนักงาน'}</p>
+                        <p className="text-xs text-gray-500">{employee?.employee_code || '-'}</p>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>
