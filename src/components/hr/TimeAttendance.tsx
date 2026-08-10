@@ -7,6 +7,7 @@ import TimeEntryImport from './TimeEntryImport'
 import {
   fetchTimeEntries,
   fetchEmployees,
+  fetchDepartments,
   fetchWorkSchedules,
   fetchLeaveRequests,
   fetchWorkCalendar,
@@ -18,7 +19,7 @@ import {
   fetchEmployeeByUserId,
 } from '../../lib/hrApi'
 import { useAuthContext } from '../../contexts/AuthContext'
-import type { HRTimeEntry, HREmployee, HRWorkSchedule, HRTimeEntryType, HRTimeCertification } from '../../types'
+import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification } from '../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -187,6 +188,8 @@ export default function TimeAttendance() {
   const [entries, setEntries] = useState<HRTimeEntry[]>([])
   const [entriesLoading, setEntriesLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [departments, setDepartments] = useState<HRDepartment[]>([])
+  const [departmentFilter, setDepartmentFilter] = useState('')
   const [dateFrom, setDateFrom] = useState(todayStr().slice(0, 7) + '-01')
   const [dateTo, setDateTo] = useState(todayStr())
   const [typeFilter, setTypeFilter] = useState('')
@@ -206,6 +209,7 @@ export default function TimeAttendance() {
 
   useEffect(() => {
     fetchWorkSchedules().then(setSchedules).catch(() => {})
+    fetchDepartments().then(setDepartments).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -327,17 +331,18 @@ export default function TimeAttendance() {
 
   const filteredEntries = useMemo(() => {
     const term = search.trim().toLowerCase()
-    if (!term) return entries
     return entries.filter((e) => {
       const emp = e.employee
       if (!emp) return false
+      if (departmentFilter && emp.department_id !== departmentFilter && emp.department?.id !== departmentFilter) return false
+      if (!term) return true
       return (
         `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(term) ||
         (emp.nickname ?? '').toLowerCase().includes(term) ||
         (emp.employee_code ?? '').toLowerCase().includes(term)
       )
     })
-  }, [entries, search])
+  }, [entries, search, departmentFilter])
 
   /** จัดกลุ่มบันทึกเวลาเป็นรายวัน → รายคน สำหรับมุมมอง Dashboard */
   const dashboardGroups = useMemo(() => {
@@ -803,6 +808,15 @@ export default function TimeAttendance() {
                 <option value="clock_out">ออกงาน</option>
                 <option value="ot_in">เข้า OT</option>
                 <option value="ot_out">ออก OT</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="block text-gray-500 mb-1">แผนก</span>
+              <select value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)} className={inputClass}>
+                <option value="">ทุกแผนก</option>
+                {departments.map((department) => (
+                  <option key={department.id} value={department.id}>{department.name}</option>
+                ))}
               </select>
             </label>
             <button

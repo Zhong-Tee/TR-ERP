@@ -20,9 +20,11 @@ import { ISSUE_ON_COUNT_EVENT } from '../lib/issueOnCountBroadcast'
 import type { Order } from '../types'
 import OrderDetailView from '../components/order/OrderDetailView'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../lib/issueTypeSlugs'
+import ManpowerPanel from '../components/plan/ManpowerPanel'
+import EmployeeSkillsPanel from '../components/plan/EmployeeSkillsPanel'
 
 // --- Types (จาก plan.html) ---
-type ViewKey = 'dash' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'issue'
+type ViewKey = 'dash' | 'manpower' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'manpower-set' | 'employee-skills' | 'issue'
 type ManageSubView = 'new' | 'all'
 
 interface ProcessStep {
@@ -560,16 +562,19 @@ function DeptStatusIcon({ phase, className = '' }: { phase: 'pending' | 'progres
 
 const PLAN_MENU_KEY_MAP: Record<string, string> = {
   dash: 'plan-dash',
+  manpower: 'plan-dash',
   'work-orders': 'orders-work-orders',
   'work-orders-manage': 'orders-work-orders-manage',
   dept: 'plan-dept',
   jobs: 'plan-jobs',
   form: 'plan-form',
   set: 'plan-set',
+  'manpower-set': 'plan-set',
+  'employee-skills': 'plan-set',
   issue: 'plan-issue',
 }
 
-const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'work-orders', 'work-orders-manage', 'dept', 'jobs', 'form', 'set', 'issue']
+const ALL_PLAN_VIEWS: ViewKey[] = ['dash', 'manpower', 'work-orders', 'work-orders-manage', 'dept', 'jobs', 'form', 'set', 'manpower-set', 'employee-skills', 'issue']
 
 // แสดงเฉพาะชื่อใบงานจริง เช่น SPTR-250369-R4 (กัน REQ/WY ที่ไม่ใช่ใบงานเข้า Dashboard)
 const isWorkOrderDisplayName = (name?: string | null) => /-R\d+$/i.test(String(name || '').trim())
@@ -1936,6 +1941,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 {(
                   [
                     ['dash', 'Dashboard (Master Plan)'],
+                    ['manpower', 'กำลังคน'],
                     ['work-orders', `ใบสั่งงาน (${workOrdersCount})`],
                     // เลขบนแท็บ = ใบงานใหม่ (กำลังผลิต) ที่ต้องจัดการจริง — ไม่ผูกกับตัวกรองวันที่ของแท็บ "ใบงานทั้งหมด"
                     ['work-orders-manage', `จัดการใบงาน (${manageNewCount})`],
@@ -1943,6 +1949,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     ['jobs', 'ใบงานทั้งหมด'],
                     ['form', 'สร้าง/แก้ไขใบงาน'],
                     ['set', 'ตั้งค่า'],
+                    ['manpower-set', 'ตั้งค่ากำลังคน'],
+                    ['employee-skills', 'ทักษะพนักงาน'],
                     ['issue', `Issue (${issueOpenCount})`],
                   ] as [ViewKey, string][]
                 ).filter(([key]) => hasAccess(PLAN_MENU_KEY_MAP[key] || key)).map(([key, label]) => (
@@ -1975,6 +1983,29 @@ export default function Plan({ tvMode = false }: PlanProps) {
       )}
 
       <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'pt-16 space-y-4'}>
+      {currentView === 'manpower' && (
+        <ManpowerPanel
+          mode="overview"
+          departments={settings.departments}
+          processes={settings.processes}
+          selectedDate={dDate}
+          canEdit={unlocked}
+          workOrders={scopedJobs
+            .filter((job) => job.date === dDate && !job.is_production_voided)
+            .map((job) => ({
+              id: job.id,
+              name: job.name,
+              departments: settings.departments.filter((dept) => getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) > 0),
+              lineAssignments: job.line_assignments || {},
+            }))}
+        />
+      )}
+      {currentView === 'manpower-set' && (
+        <ManpowerPanel mode="settings" departments={settings.departments} processes={settings.processes} selectedDate={dDate} canEdit={unlocked} />
+      )}
+      {currentView === 'employee-skills' && (
+        <EmployeeSkillsPanel departments={settings.departments} processes={settings.processes} canEdit={unlocked} />
+      )}
       {/* View: Form สร้าง/แก้ไขใบงาน */}
       {currentView === 'form' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">

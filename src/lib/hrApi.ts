@@ -1592,7 +1592,7 @@ export async function deleteWorkSchedule(id: string) {
 
 // ─── Time Entries (บันทึกเวลา) ──────────────────────────────────────────────
 
-const TIME_ENTRY_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, work_schedule_id, department:hr_departments!department_id(name))'
+const TIME_ENTRY_SELECT = '*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, work_schedule_id, department_id, department:hr_departments!department_id(id, name))'
 
 export async function fetchTimeEntries(filters?: {
   employee_id?: string

@@ -63,3 +63,22 @@ code {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+/* Employee skills: keep the employee list as tall as the matrix card. */
+aside:has(> .max-h-\[570px\]) {
+  display: flex;
+  height: 0;
+  min-height: 100%;
+  max-height: 100%;
+  flex-direction: column;
+}
+
+aside > .max-h-\[570px\] {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 0%;
+}
+
+/* Evaluation belongs to its own sub-tab; keep only responsibility in Skill Matrix. */
+.employee-skills-page main > div:first-child .mt-4.grid > label:nth-child(n + 2) {
+  display: none;
+}
