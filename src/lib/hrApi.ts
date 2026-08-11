@@ -1614,6 +1614,13 @@ export async function fetchTimeEntries(filters?: {
   return data as HRTimeEntry[]
 }
 
+/** รายการลงเวลาวันนี้สำหรับ Employee Portal — ขอบเขตข้อมูลถูกบังคับใน RPC */
+export async function fetchPortalVisibleTimeEntries(workDate: string) {
+  const { data, error } = await supabase.rpc('hr_portal_visible_time_entries', { p_work_date: workDate })
+  if (error) pgError(error)
+  return data as import('../types').HRPortalVisibleTimeEntry[]
+}
+
 export async function createTimeEntry(entry: Partial<HRTimeEntry>) {
   const payload = { ...entry }
   delete payload.employee

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload } from 'react-icons/fi'
+import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi } from 'react-icons/fi'
 import LeaveImport from './LeaveImport'
 import {
   fetchLeaveRequests,
@@ -12,8 +12,10 @@ import {
   fetchEmployees,
   fetchWorkCalendar,
   fetchCompanyHolidays,
+  fetchWFHRequests,
+  updateWFHRequest,
 } from '../../lib/hrApi'
-import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest } from '../../types'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../types'
 import Modal from '../ui/Modal'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { supabase } from '../../lib/supabase'
@@ -125,6 +127,24 @@ function leaveTimeRange(req: HRLeaveRequest): string | null {
   return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
 }
 
+function calendarLeaveDuration(req: HRLeaveRequest): string {
+  if (req.leave_mode === 'hourly') {
+    const hours = Number(req.total_hours ?? 0)
+    if (!hours) return 'ลาเป็นช่วงเวลา'
+    const totalMinutes = Math.round(hours * 60)
+    const hourPart = Math.floor(totalMinutes / 60)
+    const minutePart = totalMinutes % 60
+    return [hourPart ? `${hourPart} ชม.` : '', minutePart ? `${minutePart} นาที` : ''].filter(Boolean).join(' ')
+  }
+
+  const days = Number(req.total_days ?? 0)
+  return days ? `${days.toLocaleString('th-TH')} วัน` : 'เต็มวัน'
+}
+
+function compactThaiDate(value: string): string {
+  return asDateOnly(value).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' })
+}
+
 /** ชั่วโมงทศนิยม → hh:mm */
 function hoursToHHMM(hours?: number | null): string {
   if (hours == null || !Number.isFinite(Number(hours))) return '-'
@@ -162,13 +182,15 @@ export default function LeaveManagement() {
   const canApproveOT = user?.role === 'superadmin' || user?.role === 'admin'
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
+  const [wfhRequests, setWfhRequests] = useState<HRWFHRequest[]>([])
+  const [wfhStatusFilter, setWfhStatusFilter] = useState<StatusFilter>('all')
   const [otStatusFilter, setOtStatusFilter] = useState<StatusFilter>('all')
   const [otRejectingId, setOtRejectingId] = useState<string | null>(null)
   const [balanceView, setBalanceView] = useState<{ name: string; rows: LeaveBalanceRow[] } | null>(null)
   const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'calendar'>('list')
+  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'wfh' | 'calendar'>('list')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchName, setSearchName] = useState('')
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -201,14 +223,16 @@ export default function LeaveManagement() {
     setLoading(true)
     setError(null)
     try {
-      const [reqs, types, ots] = await Promise.all([
+      const [reqs, types, ots, wfh] = await Promise.all([
         fetchLeaveRequests(),
         fetchLeaveTypes(),
         fetchOTRequests(),
+        fetchWFHRequests(),
       ])
       setRequests(reqs)
       setLeaveTypes(types)
       setOtRequests(ots)
+      setWfhRequests(wfh)
       // แจ้ง sidebar/topbar ให้อัปเดต badge ทันที (ไม่ต้องรอ realtime)
       window.dispatchEvent(new Event('hr-counts-changed'))
     } catch (e) {
@@ -249,14 +273,16 @@ export default function LeaveManagement() {
   // โหลดข้อมูลใหม่แบบเงียบ (ไม่โชว์ spinner) สำหรับ realtime
   const reloadSilent = useCallback(async () => {
     try {
-      const [reqs, types, ots] = await Promise.all([
+      const [reqs, types, ots, wfh] = await Promise.all([
         fetchLeaveRequests(),
         fetchLeaveTypes(),
         fetchOTRequests(),
+        fetchWFHRequests(),
       ])
       setRequests(reqs)
       setLeaveTypes(types)
       setOtRequests(ots)
+      setWfhRequests(wfh)
       window.dispatchEvent(new Event('hr-counts-changed'))
     } catch {
       /* เงียบไว้ — เดี๋ยว realtime ครั้งถัดไปหรือรีเฟรชจะอัปเดตเอง */
@@ -269,6 +295,7 @@ export default function LeaveManagement() {
       .channel('leave-mgmt-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => reloadSilent())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, () => reloadSilent())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, () => reloadSilent())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)
@@ -287,12 +314,18 @@ export default function LeaveManagement() {
 
   const pendingRequests = requests.filter((r) => r.status === 'pending')
   const pendingOtRequests = otRequests.filter((r) => r.status === 'pending')
+  const pendingWfhRequests = wfhRequests.filter((r) => r.status === 'pending')
   const filteredOtRequests = otRequests.filter((r) => {
     if (otStatusFilter !== 'all' && r.status !== otStatusFilter) return false
     if (searchName.trim()) {
       const name = otEmployeeName(r).toLowerCase()
       if (!name.includes(searchName.trim().toLowerCase())) return false
     }
+    return true
+  })
+  const filteredWfhRequests = wfhRequests.filter((r) => {
+    if (wfhStatusFilter !== 'all' && r.status !== wfhStatusFilter) return false
+    if (searchName.trim() && !employeeDisplayName(r as unknown as HRLeaveRequest).toLowerCase().includes(searchName.trim().toLowerCase())) return false
     return true
   })
   const calendarRequests = requests.filter((r) => r.status === 'approved' || r.status === 'pending')
@@ -471,6 +504,27 @@ export default function LeaveManagement() {
     }
   }
 
+  const handleWFHStatus = async (id: string, status: 'approved' | 'rejected') => {
+    const reason = status === 'rejected' ? window.prompt('ระบุเหตุผลที่ไม่อนุมัติ WFH')?.trim() : ''
+    if (status === 'rejected' && !reason) return
+    setActionLoading(true)
+    setError(null)
+    try {
+      await updateWFHRequest(id, {
+        status,
+        approved_by: currentEmployeeId ?? undefined,
+        approved_at: new Date().toISOString(),
+        reject_reason: reason || undefined,
+      })
+      setSuccessMessage(status === 'approved' ? 'อนุมัติคำขอ WFH สำเร็จ' : 'ไม่อนุมัติคำขอ WFH แล้ว')
+      await loadData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ดำเนินการคำขอ WFH ไม่สำเร็จ')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!successMessage) return
     const t = setTimeout(() => setSuccessMessage(null), 3000)
@@ -538,6 +592,23 @@ export default function LeaveManagement() {
             </button>
             <button
               type="button"
+              onClick={() => setActiveTab('wfh')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                activeTab === 'wfh'
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
+              }`}
+            >
+              <FiWifi className="w-4 h-4" />
+              คำขอ WFH
+              {pendingWfhRequests.length > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-amber-500 text-white text-xs">
+                  {pendingWfhRequests.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab('calendar')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
                 activeTab === 'calendar'
@@ -549,6 +620,14 @@ export default function LeaveManagement() {
               ปฏิทินลา
             </button>
           </div>
+          {activeTab === 'wfh' && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <select value={wfhStatusFilter} onChange={(e) => setWfhStatusFilter(e.target.value as StatusFilter)} className="rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-800">
+                <option value="all">ทุกสถานะ</option><option value="pending">รออนุมัติ</option><option value="approved">อนุมัติ</option><option value="rejected">ไม่อนุมัติ</option>
+              </select>
+              <div className="relative"><FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-surface-400" /><input type="text" placeholder="ค้นหาชื่อพนักงาน..." value={searchName} onChange={(e) => setSearchName(e.target.value)} className="pl-9 pr-4 py-2 rounded-lg border border-surface-300 bg-white text-sm w-56" /></div>
+            </div>
+          )}
           {activeTab === 'ot' && (
             <div className="flex items-center gap-3 flex-wrap">
               <select
@@ -775,7 +854,7 @@ export default function LeaveManagement() {
               </div>
 
               {/* รายการลา + วันหยุดของวันที่เลือก (ขวา) */}
-              <div className="lg:w-72 flex-shrink-0 space-y-3">
+              <div className="lg:w-80 flex-shrink-0 space-y-3">
                 <div className="rounded-lg border border-surface-200 bg-white p-3">
                   <div className="flex items-center justify-between mb-3">
                     <div>
@@ -795,20 +874,66 @@ export default function LeaveManagement() {
                       {isSelectedToday ? 'ไม่มีผู้ลาวันนี้' : 'ไม่มีผู้ลาในวันที่เลือก'}
                     </p>
                   ) : (
-                    <ul className="space-y-2">
-                      {selectedDateLeaves.map((r) => (
+                    <ul className="space-y-2.5">
+                      {selectedDateLeaves.map((r) => {
+                        const time = leaveTimeRange(r)
+                        const isHourly = r.leave_mode === 'hourly'
+                        const spansMultipleDays = r.start_date !== r.end_date
+                        return (
                         <li
                           key={`${selectedDateKey}-${r.id}`}
-                          className={`rounded-lg px-3 py-2 border ${
+                          className={`rounded-lg border ${
                             r.status === 'approved'
                               ? 'bg-emerald-50 border-emerald-100'
                               : 'bg-yellow-50 border-yellow-200'
                           }`}
                         >
-                          <div className="text-sm font-medium text-surface-800 truncate">{employeeDisplayName(r)}</div>
-                          <div className="text-xs text-surface-500 truncate">{employeePositionName(r)}</div>
+                          <button
+                            type="button"
+                            onClick={() => setDetailRequest(r)}
+                            className="w-full px-3 py-2.5 text-left"
+                            aria-label={`ดูรายละเอียดใบลาของ ${employeeDisplayName(r)}`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-surface-800 truncate">{employeeDisplayName(r)}</div>
+                                <div className="text-xs text-surface-500 truncate">{employeePositionName(r)}</div>
+                              </div>
+                              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                isHourly ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'
+                              }`}>
+                                {isHourly ? 'ลาช่วงเวลา' : 'ลาทั้งวัน'}
+                              </span>
+                            </div>
+
+                            <div className="mt-2 border-t border-black/5 pt-2 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2 text-xs">
+                                <span className="font-medium text-surface-700 truncate">{r.leave_type?.name || 'ไม่ระบุประเภทลา'}</span>
+                                <span className="shrink-0 text-surface-500">{statusLabel(r.status)}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 text-xs text-surface-700">
+                                {isHourly ? <FiClock className="shrink-0 text-blue-600" /> : <FiCalendar className="shrink-0 text-emerald-600" />}
+                                <span className="font-medium">{time ?? 'เต็มวัน'}</span>
+                                <span className="text-surface-400">·</span>
+                                <span>{calendarLeaveDuration(r)}</span>
+                              </div>
+                              {spansMultipleDays && (
+                                <div className="flex items-center gap-1.5 text-[11px] text-surface-500">
+                                  <FiCalendar className="shrink-0" />
+                                  <span>{compactThaiDate(r.start_date)} – {compactThaiDate(r.end_date)}</span>
+                                </div>
+                              )}
+                              {r.reason && (
+                                <p className="line-clamp-2 text-[11px] leading-relaxed text-surface-500" title={r.reason}>
+                                  เหตุผล: {r.reason}
+                                </p>
+                              )}
+                              <div className="pt-0.5 text-right text-[10px] font-medium text-emerald-700">ดูรายละเอียดเพิ่มเติม</div>
+                            </div>
+                          </button>
                         </li>
-                      ))}
+                        )
+                      })}
                     </ul>
                   )}
                 </div>
@@ -947,6 +1072,33 @@ export default function LeaveManagement() {
                     </tr>
                   ))
                 )}
+              </tbody>
+            </table>
+          </div>
+        ) : activeTab === 'wfh' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead><tr className="bg-surface-50 border-b border-surface-200">
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม–สิ้นสุด</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">ช่วงเวลา</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
+                {canApproveOT && <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>}
+              </tr></thead>
+              <tbody>
+                {filteredWfhRequests.length === 0 ? <tr><td colSpan={canApproveOT ? 7 : 6} className="px-6 py-12 text-center text-surface-500 text-sm">ไม่มีคำขอ WFH</td></tr> : filteredWfhRequests.map((req) => (
+                  <tr key={req.id} className="border-b border-surface-100 hover:bg-emerald-50/50 transition-colors">
+                    <td className="px-6 py-3 text-sm text-surface-800">{employeeName(req.employee)}</td>
+                    <td className="px-6 py-3 text-sm text-surface-700">{req.start_date} – {req.end_date}</td>
+                    <td className="px-6 py-3 text-sm text-surface-700">{req.start_time && req.end_time ? `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` : 'ตามตารางงาน'}</td>
+                    <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px]" title={req.reason}><div className="truncate">{req.reason || '-'}</div>{req.reject_reason && <div className="text-xs text-red-500 truncate">เหตุผลไม่อนุมัติ: {req.reject_reason}</div>}</td>
+                    <td className="px-6 py-3"><span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium border ${statusBadgeClass(req.status)}`}>{req.status === 'pending' ? 'รออนุมัติ' : statusLabel(req.status)}</span></td>
+                    <td className="px-6 py-3 text-sm text-surface-700">{req.approver ? [req.approver.first_name, req.approver.last_name].filter(Boolean).join(' ') || '-' : '-'}</td>
+                    {canApproveOT && <td className="px-6 py-3">{req.status === 'pending' ? <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => handleWFHStatus(req.id, 'approved')} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium disabled:opacity-50">อนุมัติ</button><button type="button" disabled={actionLoading} onClick={() => handleWFHStatus(req.id, 'rejected')} className="px-3 py-1.5 rounded-lg bg-red-100 text-red-700 text-sm font-medium disabled:opacity-50">ไม่อนุมัติ</button></div> : <span className="text-surface-400">-</span>}</td>}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

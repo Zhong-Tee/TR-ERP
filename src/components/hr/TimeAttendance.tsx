@@ -10,6 +10,7 @@ import {
   fetchDepartments,
   fetchWorkSchedules,
   fetchLeaveRequests,
+  fetchWFHRequests,
   fetchWorkCalendar,
   fetchCompanyHolidays,
   getTimeClockPhotoUrl,
@@ -19,7 +20,7 @@ import {
   fetchEmployeeByUserId,
 } from '../../lib/hrApi'
 import { useAuthContext } from '../../contexts/AuthContext'
-import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification } from '../../types'
+import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification, HRLeaveRequest, HRWFHRequest } from '../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -186,6 +187,8 @@ export default function TimeAttendance() {
 
   // ─── แท็บบันทึกเวลาสด ───
   const [entries, setEntries] = useState<HRTimeEntry[]>([])
+  const [approvedLeaves, setApprovedLeaves] = useState<HRLeaveRequest[]>([])
+  const [approvedWFH, setApprovedWFH] = useState<HRWFHRequest[]>([])
   const [entriesLoading, setEntriesLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [departments, setDepartments] = useState<HRDepartment[]>([])
@@ -263,8 +266,30 @@ export default function TimeAttendance() {
     const empSchedId = (entry.employee as (HREmployee & { work_schedule_id?: string }))?.work_schedule_id
     const assigned = empSchedId ? schedules.find((s) => s.id === empSchedId && s.is_active) : undefined
     const sched = assigned ?? defaultSchedule ?? FALLBACK_SCHEDULE
-    const startMin = parseTimeToMinutes(sched.work_start.slice(0, 5)) + (sched.late_grace_min ?? 0)
-    return Math.max(0, localMinutes(entry.entry_time) - startMin)
+    const actualMin = localMinutes(entry.entry_time)
+    const wfh = approvedWFH.find((r) =>
+      r.employee_id === entry.employee_id && r.start_date <= entry.work_date && r.end_date >= entry.work_date,
+    )
+    let expectedMin = wfh?.start_time
+      ? parseTimeToMinutes(wfh.start_time.slice(0, 5))
+      : parseTimeToMinutes(sched.work_start.slice(0, 5))
+
+    const dayLeaves = approvedLeaves.filter((r) =>
+      r.employee_id === entry.employee_id && r.start_date <= entry.work_date && r.end_date >= entry.work_date,
+    )
+    // ลาเต็มวัน หรือบันทึกเข้าในช่วงลาที่อนุมัติแล้ว: ไม่แสดงว่าสาย
+    if (dayLeaves.some((r) => r.leave_mode !== 'hourly')) return 0
+    const ranges = dayLeaves
+      .filter((r) => r.leave_mode === 'hourly' && r.start_time && r.end_time)
+      .map((r) => [parseTimeToMinutes(r.start_time!.slice(0, 5)), parseTimeToMinutes(r.end_time!.slice(0, 5))] as const)
+      .sort((a, b) => a[0] - b[0])
+    if (ranges.some(([start, end]) => actualMin >= start && actualMin <= end)) return 0
+    // ถ้าลาต่อเนื่องจากเวลาเริ่มงาน ให้เลื่อนเวลาเริ่มที่คาดหวังไปหลังสิ้นสุดการลา
+    for (const [start, end] of ranges) {
+      if (start <= expectedMin && end > expectedMin) expectedMin = end
+    }
+
+    return Math.max(0, actualMin - (expectedMin + (sched.late_grace_min ?? 0)))
   }
 
   /** นาทีที่ออกก่อนเวลาเลิกงาน ของบันทึกออกงาน (clock_out) ตามมาตรฐานเวลาของพนักงาน */
@@ -280,13 +305,19 @@ export default function TimeAttendance() {
   const loadEntries = useCallback(async () => {
     setEntriesLoading(true)
     try {
-      const data = await fetchTimeEntries({
-        date_from: dateFrom || undefined,
-        date_to: dateTo || undefined,
-        entry_type: typeFilter || undefined,
-        limit: 2000,
-      })
+      const [data, leaves, wfh] = await Promise.all([
+        fetchTimeEntries({
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          entry_type: typeFilter || undefined,
+          limit: 2000,
+        }),
+        fetchLeaveRequests({ status: 'approved' }),
+        fetchWFHRequests({ status: 'approved' }),
+      ])
       setEntries(data)
+      setApprovedLeaves(leaves)
+      setApprovedWFH(wfh)
       if (dateFrom && dateTo) setCertifications(await fetchTimeCertifications(dateFrom, dateTo))
     } catch (e) {
       console.error('Error loading time entries:', e)

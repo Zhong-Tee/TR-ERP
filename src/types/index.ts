@@ -1238,6 +1238,19 @@ export interface HRTimeEntry {
   employee?: HREmployee
 }
 
+export interface HRPortalVisibleTimeEntry {
+  id: string
+  employee_id: string
+  employee_code: string
+  employee_name: string
+  nickname?: string | null
+  department_id?: string | null
+  department_name?: string | null
+  entry_type: HRTimeEntryType
+  work_date: string
+  entry_time: string
+}
+
 export interface HRWFHRequest {
   id: string
   employee_id: string

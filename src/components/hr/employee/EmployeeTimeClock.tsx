@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FiLogIn, FiLogOut, FiClock, FiMapPin, FiCamera, FiRefreshCw, FiX, FiPlus } from 'react-icons/fi'
+import { FiLogIn, FiLogOut, FiClock, FiMapPin, FiCamera, FiRefreshCw, FiX, FiPlus, FiUsers } from 'react-icons/fi'
 import {
   fetchEmployeeByUserId,
   fetchClockLocations,
@@ -10,11 +10,13 @@ import {
   createOTRequest,
   fetchWorkSchedules,
   fetchWFHRequests,
+  fetchLeaveRequests,
+  fetchPortalVisibleTimeEntries,
   haversineMeters,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
-import type { HREmployee, HRClockLocation, HRTimeEntry, HRTimeEntryType, HROTRequest, HRWorkSchedule, HRWFHRequest } from '../../../types'
+import type { HREmployee, HRClockLocation, HRTimeEntry, HRTimeEntryType, HROTRequest, HRWorkSchedule, HRWFHRequest, HRLeaveRequest, HRPortalVisibleTimeEntry } from '../../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -70,6 +72,8 @@ export default function EmployeeTimeClock() {
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
   const [schedule, setSchedule] = useState<HRWorkSchedule | null>(null)
   const [approvedWFHToday, setApprovedWFHToday] = useState<HRWFHRequest | null>(null)
+  const [approvedLeavesToday, setApprovedLeavesToday] = useState<HRLeaveRequest[]>([])
+  const [visibleTimeEntries, setVisibleTimeEntries] = useState<HRPortalVisibleTimeEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -89,7 +93,7 @@ export default function EmployeeTimeClock() {
       setEmployee(emp)
       if (!emp) return
       const today = todayStr()
-      const [locs, entries, ots, scheds, wfhRequests] = await Promise.all([
+      const [locs, entries, ots, scheds, wfhRequests, leaves, visibleEntries] = await Promise.all([
         fetchClockLocations(true),
         fetchTimeEntries({ employee_id: emp.id, date_from: today, date_to: today }),
         fetchOTRequests({ employee_id: emp.id }),
@@ -97,11 +101,15 @@ export default function EmployeeTimeClock() {
         emp.work_mode === 'hybrid'
           ? fetchWFHRequests({ employee_id: emp.id, status: 'approved', date: today }).catch(() => [] as HRWFHRequest[])
           : Promise.resolve([] as HRWFHRequest[]),
+        fetchLeaveRequests({ employee_id: emp.id, status: 'approved' }).catch(() => [] as HRLeaveRequest[]),
+        fetchPortalVisibleTimeEntries(today).catch(() => [] as HRPortalVisibleTimeEntry[]),
       ])
       setLocations(locs)
       setTodayEntries(entries)
       setOtRequests(ots.slice(0, 10))
       setApprovedWFHToday(wfhRequests[0] ?? null)
+      setApprovedLeavesToday(leaves.filter((r) => r.start_date <= today && r.end_date >= today))
+      setVisibleTimeEntries(visibleEntries)
       // มาตรฐานเวลาของพนักงาน: ชุดประจำตัว ถ้าไม่ได้กำหนด → ชุดค่าเริ่มต้น
       const mySched =
         (emp.work_schedule_id ? scheds.find((s) => s.id === emp.work_schedule_id) : undefined) ??
@@ -153,9 +161,19 @@ export default function EmployeeTimeClock() {
   /** นาทีที่สายเกินผ่อนผัน (เฉพาะเข้างานปกติ) — 0 = ไม่สาย */
   const lateMinutes = (entry: HRTimeEntry): number => {
     if (entry.entry_type !== 'clock_in' || !effectiveWorkStart) return 0
-    const startMin = toMinuteOfDay(effectiveWorkStart) + (schedule?.late_grace_min ?? 0)
     const d = new Date(entry.entry_time)
-    return Math.max(0, d.getHours() * 60 + d.getMinutes() - startMin)
+    const actualMin = d.getHours() * 60 + d.getMinutes()
+    if (approvedLeavesToday.some((r) => r.leave_mode !== 'hourly')) return 0
+    const ranges = approvedLeavesToday
+      .filter((r) => r.leave_mode === 'hourly' && r.start_time && r.end_time)
+      .map((r) => [toMinuteOfDay(r.start_time!), toMinuteOfDay(r.end_time!)] as const)
+      .sort((a, b) => a[0] - b[0])
+    if (ranges.some(([start, end]) => actualMin >= start && actualMin <= end)) return 0
+    let expectedMin = toMinuteOfDay(effectiveWorkStart)
+    for (const [start, end] of ranges) {
+      if (start <= expectedMin && end > expectedMin) expectedMin = end
+    }
+    return Math.max(0, actualMin - (expectedMin + (schedule?.late_grace_min ?? 0)))
   }
 
   /** นาทีที่ออกก่อนเวลาเลิกงานตามตาราง — 0 = ครบเวลา */
@@ -406,6 +424,28 @@ export default function EmployeeTimeClock() {
   const clockOutDone = hasEntry('clock_out')
   const otInDone = hasEntry('ot_in')
   const otOutDone = hasEntry('ot_out')
+  const canSeeAllEmployees = ['superadmin', 'admin', 'account'].includes(user?.role ?? '')
+  const visibleEmployeesToday = [...visibleTimeEntries.reduce((rows, entry) => {
+    const row = rows.get(entry.employee_id) ?? {
+      employeeId: entry.employee_id,
+      employeeCode: entry.employee_code,
+      employeeName: entry.nickname ? `(${entry.nickname}) ${entry.employee_name}` : entry.employee_name,
+      departmentName: entry.department_name ?? '-',
+      clockIn: undefined as HRPortalVisibleTimeEntry | undefined,
+      clockOut: undefined as HRPortalVisibleTimeEntry | undefined,
+    }
+    if (entry.entry_type === 'clock_in' && (!row.clockIn || entry.entry_time < row.clockIn.entry_time)) row.clockIn = entry
+    if (entry.entry_type === 'clock_out' && (!row.clockOut || entry.entry_time > row.clockOut.entry_time)) row.clockOut = entry
+    rows.set(entry.employee_id, row)
+    return rows
+  }, new Map<string, {
+    employeeId: string
+    employeeCode: string
+    employeeName: string
+    departmentName: string
+    clockIn?: HRPortalVisibleTimeEntry
+    clockOut?: HRPortalVisibleTimeEntry
+  }>()).values()]
 
   return (
     <div className="space-y-5">
@@ -570,6 +610,50 @@ export default function EmployeeTimeClock() {
               })}
             </div>
           </>
+        )}
+      </div>
+
+      {/* รายการลงเวลาของคนในแผนก; role ที่กำหนดเห็นทุกคน */}
+      <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 font-semibold text-gray-800">
+              <FiUsers className="text-emerald-600" /> แสดงทั้งแผนก
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-400">
+              {canSeeAllEmployees ? 'บันทึกเวลาวันนี้ของพนักงานทั้งหมด' : `บันทึกเวลาวันนี้ของ${employee.department?.name ? `แผนก ${employee.department.name}` : 'แผนกเดียวกัน'}`}
+            </p>
+          </div>
+          <span className="shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+            {visibleEmployeesToday.length} คน
+          </span>
+        </div>
+
+        {visibleEmployeesToday.length === 0 ? (
+          <p className="text-sm text-gray-400">ยังไม่มีพนักงานบันทึกเวลาในวันนี้</p>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {visibleEmployeesToday.map((row) => (
+              <div key={row.employeeId} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-gray-800">{row.employeeName}</div>
+                  <div className="truncate text-[11px] text-gray-400">
+                    {row.employeeCode}{canSeeAllEmployees ? ` · ${row.departmentName}` : ''}
+                  </div>
+                </div>
+                <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
+                  <div className="min-w-[58px] rounded-lg bg-emerald-50 px-2 py-1">
+                    <div className="text-[10px] text-emerald-600">เข้า</div>
+                    <div className="text-xs font-semibold text-emerald-800">{row.clockIn ? timeStr(row.clockIn.entry_time) : '--:--'}</div>
+                  </div>
+                  <div className="min-w-[58px] rounded-lg bg-rose-50 px-2 py-1">
+                    <div className="text-[10px] text-rose-500">ออก</div>
+                    <div className="text-xs font-semibold text-rose-700">{row.clockOut ? timeStr(row.clockOut.entry_time) : '--:--'}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
