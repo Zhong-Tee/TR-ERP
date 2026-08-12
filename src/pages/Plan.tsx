@@ -1997,6 +1997,12 @@ export default function Plan({ tvMode = false }: PlanProps) {
               name: job.name,
               departments: settings.departments.filter((dept) => getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) > 0),
               lineAssignments: job.line_assignments || {},
+              schedules: Object.fromEntries(
+                settings.departments.flatMap((dept) => {
+                  const item = dashTimelines[dept]?.find((timeline) => timeline.id === job.id)
+                  return item ? [[dept, { start: secToHHMM(item.start), end: secToHHMM(item.end) }]] : []
+                }),
+              ),
             }))}
         />
       )}

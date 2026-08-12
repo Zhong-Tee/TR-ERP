@@ -2,26 +2,66 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { RESPONSIBILITY_LABELS, isSkillUsable, manpowerScore, type EmployeeProfile, type EmployeeSkill, type ManpowerEmployee, type OperationRequirement, type QualificationStatus, type ResponsibilityLevel } from '../../lib/planManpower'
 
-type WorkOrderSummary={id:string;name:string;departments:string[];lineAssignments:Record<string,number>}
+type WorkOrderSummary={id:string;name:string;departments:string[];lineAssignments:Record<string,number>;schedules:Record<string,{start:string;end:string}>}
+type WorkerAssignment={id:string;plan_job_id:string;employee_id:string;department_name:string;process_name:string;line_no:number;planned_start:string;planned_end:string;status:string;assignment_role:'operator'|'supervisor'}
 type Props={mode:'overview'|'settings';departments:string[];processes:Record<string,{name:string}[]>;selectedDate:string;canEdit:boolean;workOrders?:WorkOrderSummary[]}
 const qLabels:Record<QualificationStatus,string>={qualified:'ทำได้',training:'ฝึกงาน',blocked:'มือใหม่'}
 const empName=(e:ManpowerEmployee)=>e.nickname||`${e.first_name} ${e.last_name}`
 
+type CoverageRow={dept:string;process:string;eligible:EmployeeSkill[];requirement:Pick<OperationRequirement,'required_workers'|'minimum_proficiency'|'required_supervisors'>;shortage:number;supervisorShortage:number;risk:string}
+
+function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,available,leaves,error,assignments,canEdit,onAssign,onRemove}:{selectedDate:string;workOrders:WorkOrderSummary[];coverage:CoverageRow[];employees:ManpowerEmployee[];profiles:EmployeeProfile[];available:ManpowerEmployee[];leaves:Set<string>;error:string;assignments:WorkerAssignment[];canEdit:boolean;onAssign:(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor')=>void;onRemove:(id:string)=>void}){
+ const profileMap=new Map(profiles.map(p=>[p.employee_id,p]))
+ const employeeMap=new Map(employees.map(e=>[e.id,e]))
+ const jobs=workOrders.map(job=>{
+  const rows=coverage.filter(r=>job.departments.includes(r.dept)).map(r=>{
+   const usable=r.eligible.filter(s=>s.qualification_status==='qualified')
+   const operators=usable.filter(s=>!['supervisor','lead'].includes(profileMap.get(s.employee_id)?.responsibility_level||'operator')).sort((a,b)=>manpowerScore(b)-manpowerScore(a))
+   const supervisors=usable.filter(s=>['supervisor','lead'].includes(profileMap.get(s.employee_id)?.responsibility_level||'')).sort((a,b)=>manpowerScore(b)-manpowerScore(a))
+   const trainees=r.eligible.filter(s=>s.qualification_status==='training').sort((a,b)=>manpowerScore(b)-manpowerScore(a))
+   const operatorShortage=Math.max(0,r.requirement.required_workers-operators.length)
+   const supervisorShortage=Math.max(0,r.requirement.required_supervisors-supervisors.length)
+   const assigned=assignments.filter(a=>a.plan_job_id===job.id&&a.department_name===r.dept&&a.process_name===r.process)
+   const assignedOperatorShortage=Math.max(0,r.requirement.required_workers-assigned.filter(a=>a.assignment_role==='operator').length)
+   const assignedSupervisorShortage=Math.max(0,r.requirement.required_supervisors-assigned.filter(a=>a.assignment_role==='supervisor').length)
+   return{...r,operators,supervisors,trainees,operatorShortage,supervisorShortage,assigned,assignedOperatorShortage,assignedSupervisorShortage}
+  })
+  return{...job,rows,shortage:rows.reduce((sum,r)=>sum+r.assignedOperatorShortage+r.assignedSupervisorShortage,0)}
+ })
+ const totalProcesses=jobs.reduce((sum,j)=>sum+j.rows.length,0)
+ const shortageProcesses=jobs.reduce((sum,j)=>sum+j.rows.filter(r=>r.operatorShortage||r.supervisorShortage).length,0)
+ return <section className="space-y-4">
+  <div className="rounded-xl border bg-white p-5 shadow-sm">
+   <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">วางกำลังคนตามใบงาน</h2><p className="text-sm text-gray-500">วันที่ {new Date(`${selectedDate}T00:00:00`).toLocaleDateString('th-TH',{dateStyle:'long'})} · แยกคนลงผลิตออกจากหัวหน้าคุมงาน</p></div><div className="flex flex-wrap gap-2 text-sm"><span className="rounded-lg bg-emerald-50 px-3 py-2 font-medium text-emerald-700">พร้อมจัดแผน {available.length} คน</span><span className="rounded-lg bg-amber-50 px-3 py-2 font-medium text-amber-700">ลา {leaves.size} คน</span></div></div>
+   {error&&<p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+   <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><div className="rounded-xl bg-slate-50 p-4"><div className="text-xs text-gray-500">ใบงานวันนี้</div><b className="text-2xl text-slate-800">{jobs.length}</b></div><div className="rounded-xl bg-blue-50 p-4"><div className="text-xs text-blue-600">กระบวนการที่ต้องจัดคน</div><b className="text-2xl text-blue-800">{totalProcesses}</b></div><div className={`rounded-xl p-4 ${shortageProcesses?'bg-red-50':'bg-emerald-50'}`}><div className={`text-xs ${shortageProcesses?'text-red-600':'text-emerald-600'}`}>กระบวนการที่ยังขาด</div><b className={`text-2xl ${shortageProcesses?'text-red-700':'text-emerald-700'}`}>{shortageProcesses}</b></div><div className="rounded-xl bg-violet-50 p-4"><div className="text-xs text-violet-600">พนักงานที่เปิดใช้จัดแผน</div><b className="text-2xl text-violet-800">{available.length}</b></div></div>
+  </div>
+  {jobs.length===0?<div className="rounded-xl border border-dashed bg-white p-12 text-center text-gray-500"><p className="font-semibold">ไม่มีใบงานในวันที่เลือก</p><p className="mt-1 text-sm">เลือกวันที่มีใบงาน หรือสร้างใบงานก่อนวางกำลังคน</p></div>:jobs.map(job=><article key={job.id} className="overflow-hidden rounded-xl border bg-white shadow-sm"><header className="flex flex-wrap items-center justify-between gap-3 border-b bg-slate-50 px-5 py-4"><div><h3 className="text-lg font-bold text-slate-900">{job.name}</h3><p className="text-xs text-gray-500">ใบงาน {job.id}</p></div><span className={`rounded-full px-3 py-1 text-sm font-semibold ${job.shortage?'bg-red-100 text-red-700':'bg-emerald-100 text-emerald-700'}`}>{job.shortage?`ยังขาด ${job.shortage} ตำแหน่ง`:'กำลังคนครบ'}</span></header><div className="divide-y">{job.rows.map(r=><div key={`${r.dept}|${r.process}`} className={`p-4 ${r.operatorShortage||r.supervisorShortage?'bg-red-50/30':''}`}><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-semibold text-slate-900">{r.dept} · {r.process}</div><div className="text-xs text-gray-500">ไลน์ L{(job.lineAssignments[r.dept]??0)+1} · Skill ขั้นต่ำ S{r.requirement.minimum_proficiency} · เวลา {job.schedules[r.dept]?.start||'--:--'}–{job.schedules[r.dept]?.end||'--:--'}</div></div><div className="flex gap-2 text-xs"><span className="rounded-full bg-emerald-100 px-2.5 py-1 font-semibold text-emerald-700">จัดแล้ว {r.assigned.filter(a=>a.assignment_role==='operator').length}/{r.requirement.required_workers}</span><span className="rounded-full bg-blue-100 px-2.5 py-1 font-semibold text-blue-700">หัวหน้า {r.assigned.filter(a=>a.assignment_role==='supervisor').length}/{r.requirement.required_supervisors}</span></div></div>{r.assigned.length>0&&<div className="mt-3 flex flex-wrap gap-2">{r.assigned.map(a=><span key={a.id} className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${a.assignment_role==='supervisor'?'bg-blue-100 text-blue-700':'bg-emerald-100 text-emerald-700'}`}>{employeeMap.get(a.employee_id)?empName(employeeMap.get(a.employee_id)!):a.employee_id}{canEdit&&<button type="button" onClick={()=>onRemove(a.id)} className="font-bold hover:text-red-600">×</button>}</span>)}</div>}<div className="mt-3 grid gap-3 lg:grid-cols-3"><CandidateBox title="แนะนำคนลงผลิต" color="emerald" skills={r.operators} employeeMap={employeeMap} canEdit={canEdit} assigned={r.assigned} role="operator" onAssign={skill=>onAssign(job,r,skill,'operator')}/><CandidateBox title="หัวหน้าคุมงาน" color="blue" skills={r.supervisors} employeeMap={employeeMap} canEdit={canEdit} assigned={r.assigned} role="supervisor" onAssign={skill=>onAssign(job,r,skill,'supervisor')}/><CandidateBox title="ฝึกงาน / กำลังสำรอง" color="amber" skills={r.trainees} employeeMap={employeeMap}/></div></div>)}</div></article>)}
+ </section>
+}
+
+function CandidateBox({title,color,skills,employeeMap,canEdit=false,assigned=[],role,onAssign}:{title:string;color:'emerald'|'blue'|'amber';skills:EmployeeSkill[];employeeMap:Map<string,ManpowerEmployee>;canEdit?:boolean;assigned?:WorkerAssignment[];role?:'operator'|'supervisor';onAssign?:(skill:EmployeeSkill)=>void}){
+ const cls={emerald:'border-emerald-100 bg-emerald-50/60 text-emerald-700',blue:'border-blue-100 bg-blue-50/60 text-blue-700',amber:'border-amber-100 bg-amber-50/60 text-amber-700'}[color]
+ return <div className={`rounded-xl border p-3 ${cls}`}><div className="mb-2 text-xs font-semibold">{title}</div>{skills.length?<div className="space-y-1.5">{skills.map(skill=>{const emp=employeeMap.get(skill.employee_id),isAssigned=assigned.some(a=>a.employee_id===skill.employee_id&&a.assignment_role===role);return emp?<div key={skill.employee_id} className="flex items-center justify-between gap-2 rounded-lg bg-white/80 px-2.5 py-2 text-xs"><span className="min-w-0 truncate font-medium text-slate-700">{empName(emp)}</span><span className="shrink-0 font-semibold">S{skill.proficiency} · {Number(skill.efficiency_percent)}%</span>{canEdit&&role&&onAssign&&<button type="button" disabled={isAssigned} onClick={()=>onAssign(skill)} className="shrink-0 rounded-md bg-white px-2 py-1 font-semibold shadow-sm disabled:opacity-40">{isAssigned?'จัดแล้ว':'จัดสรร'}</button>}</div>:null})}</div>:<div className="rounded-lg border border-dashed border-current/20 px-2 py-3 text-center text-xs opacity-70">ไม่มีผู้ผ่านเกณฑ์</div>}</div>
+}
+
 export default function ManpowerPanel({mode,departments,processes,selectedDate,canEdit,workOrders=[]}:Props){
  const [employees,setEmployees]=useState<ManpowerEmployee[]>([]),[profiles,setProfiles]=useState<EmployeeProfile[]>([]),[skills,setSkills]=useState<EmployeeSkill[]>([])
  const [requirements,setRequirements]=useState<OperationRequirement[]>([])
+ const [assignments,setAssignments]=useState<WorkerAssignment[]>([])
  const [leaves,setLeaves]=useState<Set<string>>(new Set()),[loading,setLoading]=useState(true),[error,setError]=useState(''),[saving,setSaving]=useState(false)
  const [employeeId,setEmployeeId]=useState(''),[department,setDepartment]=useState(departments[0]||''),[processName,setProcessName]=useState('')
  const [requirementDept,setRequirementDept]=useState('ALL')
  const [proficiency,setProficiency]=useState(3),[efficiency,setEfficiency]=useState(100),[qualification,setQualification]=useState<QualificationStatus>('qualified')
  useEffect(()=>{const first=processes[department]?.[0]?.name||'';if(!processes[department]?.some(p=>p.name===processName))setProcessName(first)},[department,processes,processName])
- const load=useCallback(async()=>{setLoading(true);setError('');const [er,pr,sr,rr,lr]=await Promise.all([
+ const load=useCallback(async()=>{setLoading(true);setError('');const [er,pr,sr,rr,lr,ar]=await Promise.all([
   supabase.from('hr_employees').select('id,employee_code,first_name,last_name,nickname,employment_status,department:hr_departments!hr_employees_department_id_fkey(name),position:hr_positions!hr_employees_position_id_fkey(name)').in('employment_status',['active','probation']).order('employee_code'),
   supabase.from('plan_employee_profiles').select('*'),supabase.from('plan_employee_skills').select('*').order('department_name').order('process_name'),
   supabase.from('plan_operation_requirements').select('*').order('department_name').order('process_name'),
-  supabase.from('hr_leave_requests').select('employee_id').eq('status','approved').lte('start_date',selectedDate).gte('end_date',selectedDate)])
-  const err=er.error||pr.error||sr.error||rr.error||lr.error;if(err)setError(err.message.includes('plan_employee_')?'ยังไม่ได้ติดตั้งฐานข้อมูลกำลังคน กรุณารัน migration 349_plan_manpower.sql':err.message)
-  setEmployees((er.data||[]) as unknown as ManpowerEmployee[]);setProfiles((pr.data||[]) as EmployeeProfile[]);setSkills((sr.data||[]) as EmployeeSkill[]);setRequirements((rr.data||[]) as OperationRequirement[]);setLeaves(new Set((lr.data||[]).map(x=>x.employee_id)));setLoading(false)},[selectedDate])
+  supabase.from('hr_leave_requests').select('employee_id').eq('status','approved').lte('start_date',selectedDate).gte('end_date',selectedDate),
+  supabase.from('plan_worker_assignments').select('*').lt('planned_start',`${selectedDate}T23:59:59+07:00`).gt('planned_end',`${selectedDate}T00:00:00+07:00`).not('status','in','(cancelled,completed)')])
+  const err=er.error||pr.error||sr.error||rr.error||lr.error||ar.error;if(err)setError(err.message.includes('plan_employee_')?'ยังไม่ได้ติดตั้งฐานข้อมูลกำลังคน กรุณารัน migration 349_plan_manpower.sql':err.message)
+  setEmployees((er.data||[]) as unknown as ManpowerEmployee[]);setProfiles((pr.data||[]) as EmployeeProfile[]);setSkills((sr.data||[]) as EmployeeSkill[]);setRequirements((rr.data||[]) as OperationRequirement[]);setLeaves(new Set((lr.data||[]).map(x=>x.employee_id)));setAssignments((ar.data||[]) as WorkerAssignment[]);setLoading(false)},[selectedDate])
  useEffect(()=>{void load()},[load])
  const profileMap=useMemo(()=>new Map(profiles.map(p=>[p.employee_id,p])),[profiles])
  const available=employees.filter(e=>profileMap.get(e.id)?.is_available_for_planning!==false&&!leaves.has(e.id))
@@ -29,8 +69,16 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
  async function saveSkill(){if(!employeeId||!department||!processName)return;setSaving(true);const {error:e}=await supabase.from('plan_employee_skills').upsert({employee_id:employeeId,department_name:department,process_name:processName,proficiency,efficiency_percent:efficiency,qualification_status:qualification,assessed_at:selectedDate},{onConflict:'employee_id,department_name,process_name'});setSaving(false);if(e)setError(e.message);else await load()}
  async function updateProfile(id:string,patch:Partial<EmployeeProfile>){const p=profileMap.get(id);const {error:e}=await supabase.from('plan_employee_profiles').upsert({employee_id:id,responsibility_level:p?.responsibility_level||'operator',is_available_for_planning:p?.is_available_for_planning??true,...patch},{onConflict:'employee_id'});if(e)setError(e.message);else await load()}
  async function updateRequirement(dept:string,process:string,patch:Partial<OperationRequirement>){const current=requirements.find(r=>r.department_name===dept&&r.process_name===process);const {error:e}=await supabase.from('plan_operation_requirements').upsert({department_name:dept,process_name:process,required_workers:current?.required_workers||1,minimum_proficiency:current?.minimum_proficiency||1,required_supervisors:current?.required_supervisors||0,...patch},{onConflict:'department_name,process_name'});if(e)setError(e.message);else await load()}
+ async function assignWorker(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor'){
+  const schedule=job.schedules[row.dept];if(!schedule){setError(`ไม่พบเวลาเริ่ม–สิ้นสุดของ ${row.dept} ในใบงานนี้`);return}
+  setSaving(true);setError('')
+  const {error:e}=await supabase.rpc('plan_assign_worker',{p_plan_job_id:job.id,p_employee_id:skill.employee_id,p_department_name:row.dept,p_process_name:row.process,p_line_no:(job.lineAssignments[row.dept]??0)+1,p_planned_start:`${selectedDate}T${schedule.start}:00+07:00`,p_planned_end:`${selectedDate}T${schedule.end}:00+07:00`,p_assignment_role:role,p_score:manpowerScore(skill),p_score_detail:{proficiency:skill.proficiency,efficiency_percent:skill.efficiency_percent,qualification_status:skill.qualification_status,is_primary:skill.is_primary}})
+  setSaving(false);if(e)setError(e.message);else await load()
+ }
+ async function removeAssignment(id:string){const {error:e}=await supabase.from('plan_worker_assignments').update({status:'cancelled'}).eq('id',id);if(e)setError(e.message);else await load()}
  if(loading)return <div className="rounded-xl border bg-white p-10 text-center text-gray-500">กำลังโหลดข้อมูลกำลังคน...</div>
- if(mode==='overview')return <section className="space-y-4">
+ if(mode==='overview')return <ManpowerOverview selectedDate={selectedDate} workOrders={workOrders} coverage={coverage} employees={employees} profiles={profiles} available={available} leaves={leaves} error={error} assignments={assignments} canEdit={canEdit&&!saving} onAssign={assignWorker} onRemove={removeAssignment}/>
+ if(false&&mode==='overview')return <section className="space-y-4">
   <div className="rounded-xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap justify-between gap-3"><div><h2 className="text-xl font-semibold">กำลังคนตามใบงาน</h2><p className="text-sm text-gray-500">แสดงผู้ที่มีคุณสมบัติเหมาะสมสำหรับใบงานวันที่ {selectedDate} — ยังไม่ใช่การมอบหมายตัวจริง</p></div><div className="flex gap-2 text-sm"><span className="rounded-lg bg-emerald-50 px-3 py-2 text-emerald-700">พร้อม {available.length} คน</span><span className="rounded-lg bg-amber-50 px-3 py-2 text-amber-700">ลา {leaves.size} คน</span></div></div>{error&&<p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}</div>
   {workOrders.length===0?<div className="rounded-xl border border-dashed bg-white p-12 text-center text-gray-500"><p className="font-semibold">ไม่มีใบงานในวันที่เลือก</p><p className="mt-1 text-sm">เมื่อมีใบงาน ระบบจะแสดงความต้องการกำลังคนแยกตามใบงานและกระบวนการที่นี่</p></div>:workOrders.map(job=>{
    const rows=coverage.filter(r=>job.departments.includes(r.dept));const shortageCount=rows.reduce((n,r)=>n+r.shortage+r.supervisorShortage,0)

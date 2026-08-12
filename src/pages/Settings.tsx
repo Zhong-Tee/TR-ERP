@@ -780,7 +780,7 @@ export default function Settings() {
     { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
     { key: 'hr-tasks', label: 'งาน', group: 'hr' },
     { key: 'hr-requests', label: 'คำร้อง', group: 'hr' },
-    { key: 'hr-leave', label: 'ระบบลางาน/OT', group: 'hr' },
+    { key: 'hr-leave', label: 'ลางาน/OT/WFH', group: 'hr' },
     { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },
     { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
     { key: 'hr-attendance', label: 'เวลาทำงาน', group: 'hr' },

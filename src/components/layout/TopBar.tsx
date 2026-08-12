@@ -367,7 +367,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/hr', label: 'ทะเบียนพนักงาน' },
     { path: '/hr/tasks', label: 'งาน' },
     { path: '/hr/requests', label: 'คำร้อง' },
-    { path: '/hr/leave', label: 'ระบบลางาน/OT' },
+    { path: '/hr/leave', label: 'ลางาน/OT/WFH' },
     { path: '/hr/interview', label: 'นัดสัมภาษณ์' },
     { path: '/hr/attendance', label: 'เวลาทำงาน' },
     { path: '/hr/work-score', label: 'คะแนนปฏิบัติงาน' },
@@ -444,7 +444,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [])
 
-  // Badge เมนู HR "ระบบลางาน/OT": จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
+  // Badge เมนู HR "ลางาน/OT/WFH": จำนวนคำขอที่รออนุมัติ (เรียลไทม์)
   const canSeeHrLeave = hasAccess('hr-leave')
   useEffect(() => {
     if (!canSeeHrLeave) return
