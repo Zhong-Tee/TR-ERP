@@ -205,6 +205,19 @@ export function parseBangkokDateTime(val: unknown): string | null {
     )
     return Number.isNaN(d.getTime()) ? null : d.toISOString()
   }
+  // Lazada export: English abbreviated month, e.g. "12 Aug 2026 13:05"
+  const lazadaDate = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+  if (lazadaDate) {
+    const [, day, monthName, y, h, mi, sec] = lazadaDate
+    const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+      .indexOf(monthName.toLowerCase()) + 1
+    if (month > 0) {
+      const d = new Date(
+        `${y}-${String(month).padStart(2, '0')}-${day.padStart(2, '0')}T${h.padStart(2, '0')}:${mi}:${sec || '00'}+07:00`,
+      )
+      return Number.isNaN(d.getTime()) ? null : d.toISOString()
+    }
+  }
   // รูปแบบวันที่อย่างเดียว
   const md = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
   if (md) {

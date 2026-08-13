@@ -27,6 +27,10 @@ describe('parseBangkokDateTime', () => {
   it('keeps supporting the existing year-month-day format', () => {
     expect(parseBangkokDateTime('2026-07-31 19:24:46')).toBe('2026-07-31T12:24:46.000Z')
   })
+
+  it('parses Lazada createTime with an English abbreviated month as Bangkok time', () => {
+    expect(parseBangkokDateTime('12 Aug 2026 13:05')).toBe('2026-08-12T06:05:00.000Z')
+  })
 })
 
 describe('buildMpItemRows', () => {

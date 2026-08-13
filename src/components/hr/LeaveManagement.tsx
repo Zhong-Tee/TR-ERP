@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi } from 'react-icons/fi'
 import LeaveImport from './LeaveImport'
+import LeaveOverageReport from './LeaveOverageReport'
 import {
   fetchLeaveRequests,
   updateLeaveRequest,
@@ -89,7 +90,7 @@ function statusLabel(status: HRLeaveRequest['status']): string {
 const MAIN_LEAVE_KEYWORDS = ['กิจ', 'ป่วย', 'พักร้อน'] as const
 const isMainLeaveType = (name: string) => MAIN_LEAVE_KEYWORDS.some((k) => name.includes(k))
 
-type LeaveBalanceRow = { id: string; name: string; entitled: number; used: number; remaining: number }
+type LeaveBalanceRow = { id: string; name: string; entitled: number; used: number; remaining: number; excess: number }
 
 function employeeDisplayName(req: HRLeaveRequest): string {
   const emp = req.employee as { first_name?: string; last_name?: string; nickname?: string } | undefined
@@ -111,21 +112,28 @@ function approverDisplayName(req: HRLeaveRequest): string {
 }
 
 /** ระยะเวลาลา → dd:hh:mm โดย 1 วันทำงาน = 8 ชั่วโมง */
-function leaveDurationDDHHMM(req: HRLeaveRequest): string {
-  const totalMinutes = req.leave_mode === 'hourly' && req.total_hours != null
-    ? Math.round(Number(req.total_hours) * 60)
-    : Math.round(Number(req.total_days ?? 0) * WORK_MINUTES_PER_DAY)
-  const days = Math.floor(totalMinutes / WORK_MINUTES_PER_DAY)
-  const remainingMinutes = totalMinutes % WORK_MINUTES_PER_DAY
-  const hours = Math.floor(remainingMinutes / 60)
-  const minutes = remainingMinutes % 60
-  return `${String(days).padStart(2, '0')}:${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
-}
-
 /** ช่วงเวลาลาแบบรายชั่วโมง — คืน null เมื่อเป็นการลาเต็มวันหรือไม่ได้ระบุเวลา */
 function leaveTimeRange(req: HRLeaveRequest): string | null {
   if (req.leave_mode !== 'hourly' || !req.start_time || !req.end_time) return null
   return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
+}
+
+/** แสดงจำนวนวันทศนิยมเป็นหน่วยที่อ่านง่าย โดย 1 วันทำงาน = 8 ชั่วโมง */
+function formatLeaveDays(value: number, emptyAsDash = false): string {
+  const totalMinutes = Math.max(0, Math.round(Number(value || 0) * WORK_MINUTES_PER_DAY))
+  if (totalMinutes === 0) return emptyAsDash ? '-' : '0 วัน'
+  const days = Math.floor(totalMinutes / WORK_MINUTES_PER_DAY)
+  const remainder = totalMinutes % WORK_MINUTES_PER_DAY
+  const hours = Math.floor(remainder / 60)
+  const minutes = remainder % 60
+  return [days ? `${days} วัน` : '', hours ? `${hours} ชม.` : '', minutes ? `${minutes} นาที` : ''].filter(Boolean).join(' ')
+}
+
+function formatLeaveDuration(req: HRLeaveRequest): string {
+  const days = req.leave_mode === 'hourly'
+    ? Number(req.total_hours ?? 0) / (WORK_MINUTES_PER_DAY / 60)
+    : Number(req.total_days ?? 0)
+  return formatLeaveDays(days)
 }
 
 function calendarLeaveDuration(req: HRLeaveRequest): string {
@@ -192,7 +200,7 @@ export default function LeaveManagement() {
   const [openingBalances, setOpeningBalances] = useState<Awaited<ReturnType<typeof fetchAllOpeningLeaveBalances>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'wfh' | 'calendar'>('list')
+  const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'wfh' | 'calendar' | 'overage'>('list')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [searchName, setSearchName] = useState('')
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -402,7 +410,7 @@ export default function LeaveManagement() {
       const used = opening
         ? requests.filter((req) => req.employee_id === employeeId && req.leave_type_id === t.id && req.status === 'approved' && new Date(req.start_date).getFullYear() === year && req.start_date >= opening.effective_date).reduce((sum, req) => sum + Number(req.total_days ?? 0), 0)
         : (approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0)
-      return { id: t.id, name: t.name, entitled, used, remaining: Math.max(0, entitled - used) }
+      return { id: t.id, name: t.name, entitled, used, remaining: Math.max(0, entitled - used), excess: Math.max(0, used - entitled) }
     })
   }
 
@@ -625,6 +633,13 @@ export default function LeaveManagement() {
             >
               <FiCalendar className="w-4 h-4" />
               ปฏิทินลา
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('overage')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'overage' ? 'bg-red-600 text-white' : 'bg-surface-100 text-surface-700 hover:bg-surface-200'}`}
+            >
+              ลาเกินสิทธิ์
             </button>
           </div>
           {activeTab === 'wfh' && (
@@ -995,7 +1010,7 @@ export default function LeaveManagement() {
           </div>
         )}
 
-        {activeTab === 'calendar' ? null : loading ? (
+        {activeTab === 'overage' ? <LeaveOverageReport /> : activeTab === 'calendar' ? null : loading ? (
           <div className="flex items-center justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-2 border-surface-300 border-t-emerald-600" />
           </div>
@@ -1114,15 +1129,15 @@ export default function LeaveManagement() {
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-surface-50 border-b border-surface-200">
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม-สิ้นสุด</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน (dd:hh:mm)</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันลาคงเหลือ</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700 whitespace-nowrap">วันที่เริ่ม-สิ้นสุด</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700 whitespace-nowrap">จำนวนวัน/ชั่วโมง</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
+                  <th className="w-72 px-3 py-3 text-sm font-semibold text-surface-700">วันลาคงเหลือ</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">สถานะ</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">ผู้อนุมัติ</th>
+                  <th className="px-3 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
                 </tr>
               </thead>
               <tbody>
@@ -1143,34 +1158,37 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700">
                         {(req.leave_type as { name?: string })?.name ?? '-'}
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700">
+                      <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">
                         {req.start_date} – {req.end_date}
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700 font-mono whitespace-nowrap">{leaveDurationDDHHMM(req)}</td>
+                      <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
-                      <td className="px-6 py-3 text-xs text-surface-700">
+                      <td className="w-72 px-3 py-3 text-xs text-surface-700">
                         {(() => {
                           const rows = getLeaveBalanceRows(req.employee_id, req.start_date)
                           const main = rows.filter((r) => isMainLeaveType(r.name))
                           return (
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span>
+                            <div className="space-y-1 leading-5">
+                              <div className="whitespace-nowrap">
                                 {main.length
-                                  ? main.map((r) => `${r.name}: ${r.remaining}`).join(' | ')
+                                  ? main.slice(0, 2).map((r) => `${r.name}: ${formatLeaveDays(r.remaining)}`).join(' | ')
                                   : '-'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setBalanceView({ name: employeeDisplayName(req), rows })
-                                }}
-                                className="text-emerald-600 hover:underline whitespace-nowrap"
-                              >
-                                ดูทั้งหมด
-                              </button>
+                              </div>
+                              <div className="flex items-center gap-2 whitespace-nowrap">
+                                {main.slice(2).map((r) => <span key={r.id}>{r.name}: {formatLeaveDays(r.remaining)}</span>)}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setBalanceView({ name: employeeDisplayName(req), rows })
+                                  }}
+                                  className="text-emerald-600 hover:underline whitespace-nowrap"
+                                >
+                                  ดูทั้งหมด
+                                </button>
+                              </div>
                             </div>
                           )
                         })()}
@@ -1212,13 +1230,13 @@ export default function LeaveManagement() {
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-surface-50 border-b border-surface-200">
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">พนักงาน</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ประเภทลา</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">วันที่เริ่ม-สิ้นสุด</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">จำนวนวัน (dd:hh:mm)</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">เหตุผล</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ใบรับรองแพทย์</th>
-                  <th className="px-6 py-3 text-sm font-semibold text-surface-700">ดำเนินการ</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700">พนักงาน</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700">ประเภทลา</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700 whitespace-nowrap">วันที่เริ่ม-สิ้นสุด</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700 whitespace-nowrap">จำนวนวัน/ชั่วโมง</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700">เหตุผล</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700">ใบรับรองแพทย์</th>
+                  <th className="px-4 py-3 text-xs font-semibold text-surface-700">ดำเนินการ</th>
                 </tr>
               </thead>
               <tbody>
@@ -1240,7 +1258,7 @@ export default function LeaveManagement() {
                       <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
                         {req.start_date} – {req.end_date}
                       </td>
-                      <td className="px-6 py-3 text-sm text-surface-700 font-mono whitespace-nowrap">{leaveDurationDDHHMM(req)}</td>
+                      <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px] truncate" title={req.reason ?? ''}>
                         {req.reason ?? '-'}
                       </td>
@@ -1306,7 +1324,7 @@ export default function LeaveManagement() {
               {leaveTimeRange(detailRequest) && (
                 <p><span className="text-surface-500">ช่วงเวลา:</span> <span className="font-mono">{leaveTimeRange(detailRequest)}</span></p>
               )}
-              <p><span className="text-surface-500">จำนวนวัน (dd:hh:mm):</span> <span className="font-mono">{leaveDurationDDHHMM(detailRequest)}</span></p>
+              <p><span className="text-surface-500">ระยะเวลาลา:</span> <span>{formatLeaveDuration(detailRequest)}</span></p>
               <p><span className="text-surface-500">เหตุผล:</span> {detailRequest.reason ?? '-'}</p>
               <p>
                 <span className="text-surface-500">สถานะ:</span>{' '}
@@ -1426,7 +1444,7 @@ export default function LeaveManagement() {
       <Modal
         open={!!balanceView}
         onClose={() => setBalanceView(null)}
-        contentClassName="max-w-md"
+        contentClassName="max-w-3xl"
         closeOnBackdropClick
       >
         {balanceView && (
@@ -1441,15 +1459,17 @@ export default function LeaveManagement() {
                     <th className="px-4 py-2 text-center font-semibold">สิทธิ์</th>
                     <th className="px-4 py-2 text-center font-semibold">ใช้ไป</th>
                     <th className="px-4 py-2 text-center font-semibold">คงเหลือ</th>
+                    <th className="px-4 py-2 text-center font-semibold">เกินสิทธิ์</th>
                   </tr>
                 </thead>
                 <tbody>
                   {balanceView.rows.map((r) => (
                     <tr key={r.id} className="border-t border-surface-100">
                       <td className="px-4 py-2 text-surface-800">{r.name}</td>
-                      <td className="px-4 py-2 text-center text-surface-600">{r.entitled || '-'}</td>
-                      <td className="px-4 py-2 text-center text-surface-600">{r.used}</td>
-                      <td className="px-4 py-2 text-center font-semibold text-emerald-700">{r.remaining}</td>
+                      <td className="px-4 py-2 text-center text-surface-600 whitespace-nowrap">{formatLeaveDays(r.entitled, true)}</td>
+                      <td className="px-4 py-2 text-center text-surface-600 whitespace-nowrap">{formatLeaveDays(r.used)}</td>
+                      <td className="px-4 py-2 text-center font-semibold text-emerald-700 whitespace-nowrap">{formatLeaveDays(r.remaining)}</td>
+                      <td className={`px-4 py-2 text-center font-semibold whitespace-nowrap ${r.excess > 0 ? 'text-red-700' : 'text-surface-400'}`}>{formatLeaveDays(r.excess)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -29,8 +29,8 @@ export default function WorkCalendar() {
   const [department, setDepartment] = useState('')
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [fromDate, setFromDate] = useState(`${month}-01`)
-  const [toDate, setToDate] = useState(`${month}-01`)
+  const [selectedDates, setSelectedDates] = useState<Set<string>>(new Set())
+  const [dateSelectionEnabled, setDateSelectionEnabled] = useState(false)
   const [dayType, setDayType] = useState<HRWorkCalendarDayType>('weekly_off')
   const [note, setNote] = useState('')
   const [holidayDate, setHolidayDate] = useState(`${month}-01`)
@@ -39,11 +39,6 @@ export default function WorkCalendar() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [confirmAction, setConfirmAction] = useState<{ type: 'restore' } | { type: 'delete-holiday'; id: string } | null>(null)
-  const [dragSelection, setDragSelection] = useState<
-    | { mode: 'cells'; startEmployeeIndex: number; startDate: string }
-    | { mode: 'dates'; startDate: string }
-    | null
-  >(null)
 
   const [year, mon] = month.split('-').map(Number)
   const lastDay = new Date(year, mon, 0).getDate()
@@ -68,12 +63,7 @@ export default function WorkCalendar() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    const stopDragging = () => setDragSelection(null)
-    window.addEventListener('mouseup', stopDragging)
-    return () => window.removeEventListener('mouseup', stopDragging)
-  }, [])
-  useEffect(() => {
-    setFromDate(monthStart); setToDate(monthStart); setHolidayDate(monthStart); setSelected(new Set())
+    setHolidayDate(monthStart); setSelected(new Set()); setSelectedDates(new Set()); setDateSelectionEnabled(false)
   }, [monthStart])
 
   const departments = useMemo(() => [...new Map(employees.filter(e => e.department).map(e => [e.department!.id, e.department!])).values()], [employees])
@@ -86,48 +76,40 @@ export default function WorkCalendar() {
   const defaultSchedule = schedules.find(s => s.is_default) ?? schedules[0]
   const scheduleMap = useMemo(() => new Map(schedules.map(s => [s.id, s])), [schedules])
 
-  const toggleEmployee = (id: string) => setSelected(cur => {
-    const next = new Set(cur); next.has(id) ? next.delete(id) : next.add(id); return next
-  })
-  const selectVisible = () => setSelected(cur => visibleEmployees.every(e => cur.has(e.id)) ? new Set() : new Set(visibleEmployees.map(e => e.id)))
-
-  const setDateRange = (start: string, end: string) => {
-    setFromDate(start <= end ? start : end)
-    setToDate(start <= end ? end : start)
+  const toggleEmployee = (id: string) => {
+    setSelected(cur => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const selectVisible = () => {
+    setSelected(cur => visibleEmployees.every(e => cur.has(e.id)) ? new Set() : new Set(visibleEmployees.map(e => e.id)))
   }
 
-  const startDateDrag = (date: string) => {
-    setDateRange(date, date)
-    setDragSelection({ mode: 'dates', startDate: date })
-  }
-
-  const startCellDrag = (employeeIndex: number, date: string) => {
-    setSelected(new Set([visibleEmployees[employeeIndex].id]))
-    setDateRange(date, date)
-    setDragSelection({ mode: 'cells', startEmployeeIndex: employeeIndex, startDate: date })
-  }
-
-  const extendDragToDate = (date: string) => {
-    if (!dragSelection) return
-    setDateRange(dragSelection.startDate, date)
-  }
-
-  const extendCellDrag = (employeeIndex: number, date: string) => {
-    if (!dragSelection || dragSelection.mode !== 'cells') return
-    const first = Math.min(dragSelection.startEmployeeIndex, employeeIndex)
-    const last = Math.max(dragSelection.startEmployeeIndex, employeeIndex)
-    setSelected(new Set(visibleEmployees.slice(first, last + 1).map(e => e.id)))
-    setDateRange(dragSelection.startDate, date)
+  const toggleDate = (date: string) => {
+    if (!dateSelectionEnabled) {
+      setSelectedDates(new Set([date]))
+      return
+    }
+    setSelectedDates(cur => {
+      const next = new Set(cur)
+      if (next.has(date)) next.delete(date)
+      else next.add(date)
+      return next
+    })
   }
 
   async function applyRange() {
     if (!selected.size) return setMessage('กรุณาเลือกพนักงานอย่างน้อย 1 คน')
-    if (fromDate > toDate) return setMessage('ช่วงวันที่ไม่ถูกต้อง')
+    const targetDates = [...selectedDates].sort()
+    if (!targetDates.length) return setMessage('กรุณาเลือกวันที่อย่างน้อย 1 วัน')
     setSaving(true); setMessage('')
     try {
       const rows: Partial<HREmployeeWorkCalendar>[] = []
       for (const employee_id of selected) {
-        for (let d = fromDate; d <= toDate; d = addDays(d, 1)) {
+        for (const d of targetDates) {
           rows.push({ employee_id, work_date: d, day_type: dayType, source: 'manual', note: note || undefined, updated_by: user?.id, created_by: user?.id })
         }
       }
@@ -139,20 +121,25 @@ export default function WorkCalendar() {
 
   async function restoreRange() {
     if (!selected.size) return setMessage('กรุณาเลือกพนักงานอย่างน้อย 1 คน')
+    if (!selectedDates.size) return setMessage('กรุณาเลือกวันที่อย่างน้อย 1 วัน')
     setConfirmAction({ type: 'restore' })
   }
 
   async function confirmRestoreRange() {
     setConfirmAction(null)
     setSaving(true)
-    try { await deleteWorkCalendarDays([...selected], fromDate, toDate); setMessage('กลับไปใช้ตารางมาตรฐานแล้ว'); await load() }
+    try {
+      await Promise.all([...selectedDates].map(date => deleteWorkCalendarDays([...selected], date, date)))
+      setMessage('กลับไปใช้ตารางมาตรฐานแล้ว'); await load()
+    }
     catch (e) { setMessage(e instanceof Error ? e.message : 'ดำเนินการไม่สำเร็จ') }
     finally { setSaving(false) }
   }
 
   async function copyPreviousWeek() {
     if (!selected.size) return setMessage('กรุณาเลือกพนักงานอย่างน้อย 1 คน')
-    const targetStart = fromDate
+    const targetStart = [...selectedDates].sort()[0]
+    if (!targetStart) return setMessage('กรุณาเลือกวันที่เริ่มต้นอย่างน้อย 1 วัน')
     const targetEnd = addDays(targetStart, 6)
     const sourceStart = addDays(targetStart, -7)
     const sourceEnd = addDays(targetStart, -1)
@@ -192,6 +179,7 @@ export default function WorkCalendar() {
     if (!schedule) return 'work'
     return resolveEmployeeDayType(date, schedule, entryMap.get(`${emp.id}|${date}`), holidayMap.get(date))
   }
+  const saveTargetCount = selected.size
 
   return <div className="space-y-5 p-1">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -204,13 +192,13 @@ export default function WorkCalendar() {
     <div className="grid xl:grid-cols-[2fr_1fr] gap-4">
       <section className="bg-white border rounded-xl p-4 space-y-3">
         <h2 className="font-bold">กำหนดแบบกลุ่ม</h2>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <label className="text-sm">ตั้งแต่<input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); if (e.target.value > toDate) setToDate(e.target.value) }} className="mt-1 w-full border rounded-lg px-3 py-2"/></label>
-          <label className="text-sm">ถึง<input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="mt-1 w-full border rounded-lg px-3 py-2"/></label>
-          <label className="text-sm">สถานะ<select value={dayType} onChange={e => setDayType(e.target.value as HRWorkCalendarDayType)} className="mt-1 w-full border rounded-lg px-3 py-2"><option value="weekly_off">วันหยุด</option><option value="work">วันทำงาน</option></select></label>
-          <label className="text-sm">หมายเหตุ<input value={note} onChange={e => setNote(e.target.value)} className="mt-1 w-full border rounded-lg px-3 py-2" placeholder="เช่น สลับวันหยุด"/></label>
+        <div className="flex flex-wrap xl:flex-nowrap items-end gap-3">
+          <label className="text-sm min-w-40 flex-1">สถานะ<select value={dayType} onChange={e => setDayType(e.target.value as HRWorkCalendarDayType)} className="mt-1 w-full border rounded-lg px-3 py-2"><option value="weekly_off">วันหยุด</option><option value="work">วันทำงาน</option></select></label>
+          <label className="text-sm min-w-56 flex-[1.5]">หมายเหตุ<input value={note} onChange={e => setNote(e.target.value)} className="mt-1 w-full border rounded-lg px-3 py-2" placeholder="เช่น สลับวันหยุด"/></label>
+          <button disabled={saving || saveTargetCount === 0 || selectedDates.size === 0} onClick={applyRange} className="h-[42px] shrink-0 flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50"><FiSave/>บันทึกให้ {saveTargetCount} คน</button>
+          <button disabled={saving || selectedDates.size === 0} onClick={copyPreviousWeek} className="h-[42px] shrink-0 flex items-center gap-2 px-4 py-2 border rounded-lg disabled:opacity-50"><FiCopy/>คัดลอกสัปดาห์ก่อน</button>
+          <button disabled={saving || selectedDates.size === 0} onClick={restoreRange} className="h-[42px] shrink-0 flex items-center gap-2 px-4 py-2 border rounded-lg text-gray-600 disabled:opacity-50"><FiRefreshCw/>ล้างค่าที่กำหนดพิเศษ</button>
         </div>
-        <div className="flex flex-wrap gap-2"><button disabled={saving} onClick={applyRange} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50"><FiSave/>บันทึกให้ {selected.size} คน</button><button disabled={saving} onClick={copyPreviousWeek} className="flex items-center gap-2 px-4 py-2 border rounded-lg"><FiCopy/>คัดลอกสัปดาห์ก่อน</button><button disabled={saving} onClick={restoreRange} className="flex items-center gap-2 px-4 py-2 border rounded-lg text-gray-600"><FiRefreshCw/>ล้างค่าที่กำหนดพิเศษ</button></div>
       </section>
       <section className="bg-white border rounded-xl p-4 space-y-3">
         <h2 className="font-bold flex items-center gap-2"><FiCalendar/>วันหยุดบริษัท</h2>
@@ -220,11 +208,24 @@ export default function WorkCalendar() {
     </div>
 
     <section className="bg-white border rounded-xl overflow-hidden">
-      <div className="p-3 border-b flex flex-wrap items-center gap-2"><input value={search} onChange={e => setSearch(e.target.value)} placeholder="ค้นหาชื่อหรือรหัสพนักงาน" className="border rounded-lg px-3 py-2 w-64"/><select value={department} onChange={e => setDepartment(e.target.value)} className="border rounded-lg px-3 py-2"><option value="">ทุกแผนก</option>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select><span className="text-xs text-violet-600">ลากช่องเพื่อเลือกหลายคน · ลากหัววันที่เพื่อเลือกช่วงวัน</span><div className="ml-auto flex items-center gap-3 text-xs"><span className="text-emerald-700">● ทำงาน</span><span className="text-gray-500">● หยุด</span><span className="text-blue-600">● วันหยุดบริษัท</span><span className="text-amber-600">● กำหนดพิเศษ</span></div></div>
+      <div className="p-3 border-b flex flex-wrap items-center gap-2">
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="ค้นหาชื่อหรือรหัสพนักงาน" className="border rounded-lg px-3 py-2 w-64"/>
+        <select value={department} onChange={e => setDepartment(e.target.value)} className="border rounded-lg px-3 py-2"><option value="">ทุกแผนก</option>{departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+        <label className={`flex items-center gap-2 px-3 py-2 border rounded-lg cursor-pointer ${dateSelectionEnabled ? 'border-blue-500 bg-blue-50 text-blue-700' : 'text-gray-700'}`}>
+          <input type="checkbox" checked={dateSelectionEnabled} onChange={e => {
+            const enabled = e.target.checked
+            setDateSelectionEnabled(enabled)
+            if (!enabled) setSelectedDates(cur => new Set([...cur].sort().slice(0, 1)))
+          }}/>
+          เลือกวัน
+        </label>
+        <button type="button" disabled={selectedDates.size === 0} onClick={() => setSelectedDates(new Set())} className="flex items-center gap-2 px-3 py-2 border rounded-lg text-gray-600 disabled:opacity-40"><FiRefreshCw/>ล้างวันที่ที่เลือก ({selectedDates.size})</button>
+        <div className="ml-auto flex items-center gap-3 text-xs"><span className="text-emerald-700">● ทำงาน</span><span className="text-gray-500">● หยุด</span><span className="text-blue-600">● วันหยุดบริษัท</span><span className="text-amber-600">● กำหนดพิเศษ</span></div>
+      </div>
       <div className="overflow-auto max-h-[60vh]">
         <table className="border-collapse text-xs min-w-max w-full select-none">
-          <thead className="sticky top-0 z-20 bg-gray-50"><tr><th className="sticky left-0 z-30 bg-gray-50 border p-2 min-w-56 text-left"><label className="flex gap-2"><input type="checkbox" checked={visibleEmployees.length > 0 && visibleEmployees.every(e => selected.has(e.id))} onChange={selectVisible}/>พนักงาน ({visibleEmployees.length})</label></th>{dates.map(d => { const dt = new Date(`${d}T12:00:00`); const inRange = d >= fromDate && d <= toDate; return <th key={d} onMouseDown={() => startDateDrag(d)} onMouseEnter={() => extendDragToDate(d)} title="คลิกหรือลากเพื่อเลือกช่วงวันที่" className={`border p-1 min-w-10 cursor-ew-resize ${inRange ? 'bg-blue-100 ring-2 ring-inset ring-blue-400' : ''} ${dt.getDay() === 0 ? 'text-red-600' : ''}`}><div>{thDays[dt.getDay()]}</div><div className="text-sm">{dt.getDate()}</div></th> })}</tr></thead>
-          <tbody>{visibleEmployees.map((emp, employeeIndex) => <tr key={emp.id} className="hover:bg-gray-50"><td className="sticky left-0 z-10 bg-white border p-2"><label className="flex items-center gap-2"><input type="checkbox" checked={selected.has(emp.id)} onChange={() => toggleEmployee(emp.id)}/><span><b>{emp.first_name} {emp.last_name}{emp.nickname ? ` (${emp.nickname})` : ''}</b><small className="block text-gray-400">{emp.employee_code} · {emp.department?.name ?? '-'}</small></span></label></td>{dates.map(date => { const status = statusFor(emp, date); const special = entryMap.get(`${emp.id}|${date}`); const holiday = holidayMap.get(date); const cls = status === 'work' ? 'bg-emerald-100' : status === 'company_holiday' ? 'bg-blue-100' : 'bg-gray-100'; const label = special?.note || holiday?.name || (status === 'work' ? 'วันทำงาน' : 'วันหยุด'); const isSelected = selected.has(emp.id) && date >= fromDate && date <= toDate; return <td key={date} onMouseDown={() => startCellDrag(employeeIndex, date)} onMouseEnter={() => extendCellDrag(employeeIndex, date)} title={label} aria-label={label} className={`h-12 border cursor-crosshair hover:ring-2 ring-inset ring-blue-400 ${cls} ${isSelected ? 'ring-2 ring-inset ring-violet-500' : ''} ${special ? 'border-b-4 !border-b-amber-400' : ''}`} />})}</tr>)}</tbody>
+          <thead className="sticky top-0 z-20 bg-gray-50"><tr><th className="sticky left-0 z-30 bg-gray-50 border p-2 min-w-56 text-left"><label className="flex gap-2"><input type="checkbox" checked={visibleEmployees.length > 0 && visibleEmployees.every(e => selected.has(e.id))} onChange={selectVisible}/>พนักงาน ({visibleEmployees.length})</label></th>{dates.map(d => { const dt = new Date(`${d}T12:00:00`); const isDateSelected = selectedDates.has(d); return <th key={d} onMouseDown={() => toggleDate(d)} title={dateSelectionEnabled ? 'คลิกเพื่อเลือกหรือยกเลิกวันนี้' : 'คลิกเพื่อเลือกวันนี้ (เลือกได้ 1 วัน)'} className={`border p-1 min-w-10 cursor-pointer hover:bg-blue-50 ${isDateSelected ? 'bg-blue-100 ring-2 ring-inset ring-blue-400' : ''} ${dt.getDay() === 0 ? 'text-red-600' : ''}`}><div>{thDays[dt.getDay()]}</div><div className="text-sm">{dt.getDate()}</div></th> })}</tr></thead>
+          <tbody>{visibleEmployees.map(emp => <tr key={emp.id} className="hover:bg-gray-50"><td className="sticky left-0 z-10 bg-white border p-2"><label className="flex items-center gap-2"><input type="checkbox" checked={selected.has(emp.id)} onChange={() => toggleEmployee(emp.id)}/><span><b>{emp.first_name} {emp.last_name}{emp.nickname ? ` (${emp.nickname})` : ''}</b><small className="block text-gray-400">{emp.employee_code} · {emp.department?.name ?? '-'}</small></span></label></td>{dates.map(date => { const status = statusFor(emp, date); const special = entryMap.get(`${emp.id}|${date}`); const holiday = holidayMap.get(date); const cls = status === 'work' ? 'bg-emerald-100' : status === 'company_holiday' ? 'bg-blue-100' : 'bg-gray-100'; const label = special?.note || holiday?.name || (status === 'work' ? 'วันทำงาน' : 'วันหยุด'); const isSelected = selected.has(emp.id) && selectedDates.has(date); return <td key={date} title={label} aria-label={label} className={`h-12 border ${cls} ${isSelected ? 'ring-2 ring-inset ring-violet-500' : ''} ${special ? 'border-b-4 !border-b-amber-400' : ''}`} />})}</tr>)}</tbody>
         </table>
         {!loading && visibleEmployees.length === 0 && <div className="p-12 text-center text-gray-400">ไม่พบพนักงาน</div>}
         {loading && <div className="p-12 text-center text-gray-500">กำลังโหลด...</div>}
@@ -237,7 +238,7 @@ export default function WorkCalendar() {
         </h3>
         <p className="mt-2 text-sm leading-6 text-gray-600">
           {confirmAction?.type === 'restore'
-            ? `ต้องการล้างสถานะที่ตั้งเองในวันที่ ${fromDate}${fromDate !== toDate ? ` ถึง ${toDate}` : ''} ของพนักงาน ${selected.size} คนหรือไม่? หลังล้างแล้ว ระบบจะใช้วันทำงานและวันหยุดประจำตามตารางของพนักงานโดยอัตโนมัติ`
+            ? `ต้องการล้างสถานะที่ตั้งเองในวันที่เลือก ${selectedDates.size} วัน ของพนักงาน ${selected.size} คนหรือไม่? หลังล้างแล้ว ระบบจะใช้วันทำงานและวันหยุดประจำตามตารางของพนักงานโดยอัตโนมัติ`
             : 'ต้องการลบวันหยุดบริษัทนี้ใช่หรือไม่?'}
         </p>
         <div className="mt-6 flex justify-end gap-2">
