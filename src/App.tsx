@@ -302,9 +302,7 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production']}>
             <Layout>
-              <div className="p-6">
-                <Plan />
-              </div>
+              <Plan />
             </Layout>
           </ProtectedRoute>
         }

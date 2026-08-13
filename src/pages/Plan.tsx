@@ -65,6 +65,8 @@ interface PlanJob {
   is_production_voided?: boolean
   /** โน้ตติดตามของหัวหน้างานต่อแผนก: ใกล้เสร็จ (almost) / อาจจะช้า (slow) */
   follow_notes?: Record<string, 'almost' | 'slow'>
+  manpower_locked_at?: string | null
+  manpower_locked_by?: string | null
 }
 type DeptQtyByWorkOrderId = Record<string, Record<string, number>>
 /** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
@@ -281,6 +283,46 @@ function calcPlanFor(
   })
   const minSec = (settings.prepPerJob?.[dept] || 0) * 60
   return Math.max(minSec, processTotalSec)
+}
+
+/** แบ่งช่วงเวลารวมของแผนกออกเป็นช่วงของแต่ละกระบวนการตามน้ำหนักเวลามาตรฐานจริง */
+function buildProcessScheduleEntries(
+  dept: string,
+  job: PlanJob,
+  settings: PlanSettingsData,
+  timeline: TimelineItem,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId,
+  catQtyByWorkOrderId?: CatQtyByWorkOrderId,
+): [string,{start:string;end:string}][] {
+  const steps=settings.processes[dept]||[]
+  if(steps.length===0)return []
+  const qty=getEffectiveQty(job,dept,settings,deptQtyByWorkOrderId)
+  const workOrderId=job.work_order_id!=null?String(job.work_order_id):''
+  const categoryQty=workOrderId?catQtyByWorkOrderId?.[workOrderId]||{}:{}
+  const deptCategories=new Set(settings.departmentProductCategories?.[dept]||[])
+  const rawDurations=steps.map(step=>{
+    if(step.type==='per_piece')return Math.max(0,(Number(step.value)||0)*qty)
+    if(step.type==='fixed')return Math.max(0,Number(step.value)||0)
+    return Object.entries(step.categoryValues||{}).reduce((sum,[category,seconds])=>deptCategories.has(category)?sum+(categoryQty[category]||0)*(Number(seconds)||0):sum,0)
+  })
+  const rawTotal=rawDurations.reduce((sum,value)=>sum+value,0)
+  const weights=rawTotal>0?rawDurations:steps.map(()=>1)
+  const weightTotal=weights.reduce((sum,value)=>sum+value,0)
+  const startMinute=Math.floor(timeline.start/60)
+  const plannedEndMinute=Math.ceil(timeline.end/60)
+  // ทุกกระบวนการต้องมีช่วงเวลาที่จัดคนได้อย่างน้อย 1 นาที
+  const totalMinutes=Math.max(steps.length,plannedEndMinute-startMinute)
+  const distributable=Math.max(0,totalMinutes-steps.length)
+  const exactExtras=weights.map(weight=>distributable*(weight/weightTotal))
+  const allocations=exactExtras.map(value=>1+Math.floor(value))
+  let remainder=totalMinutes-allocations.reduce((sum,value)=>sum+value,0)
+  exactExtras.map((value,index)=>({index,fraction:value-Math.floor(value)})).sort((a,b)=>b.fraction-a.fraction).forEach(item=>{if(remainder>0){allocations[item.index]+=1;remainder-=1}})
+  let cursorMinute=startMinute
+  return steps.map((step,index)=>{
+    const start=cursorMinute
+    cursorMinute+=allocations[index]
+    return [`${dept}|${step.name}`,{start:secToHHMM(start*60),end:secToHHMM(cursorMinute*60)}]
+  })
 }
 
 // --- Dashboard timeline helpers (จาก plan.html) ---
@@ -1932,10 +1974,10 @@ export default function Plan({ tvMode = false }: PlanProps) {
       {/* เมนูย่อยอยู่ภายในพื้นที่ scroll หลักและยึดด้านบนใต้ TopBar */}
       {!tvMode && (
         <div
-          className="sticky top-0 z-30 shrink-0 bg-white border-b border-surface-200 shadow-soft"
+          className="sticky top-0 z-30 -mx-6 shrink-0 border-b border-surface-200 bg-white px-6 shadow-soft"
         >
-          <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
-            <div className="flex items-center justify-between gap-4">
+          <div className="flex w-full items-center gap-3 pl-4 pr-2 sm:pl-6 sm:pr-2 lg:pl-8 lg:pr-2">
+            <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {(
                   [
@@ -1967,6 +2009,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   </button>
                 ))}
               </nav>
+            </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <span
                   className={`rounded-full px-3 py-2 text-sm font-semibold ${
@@ -1976,12 +2019,11 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   {unlocked ? '🔓 แก้ไขได้' : '🔒 ดูอย่างเดียว'}
                 </span>
               </div>
-            </div>
           </div>
         </div>
       )}
 
-      <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'space-y-4'}>
+      <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'space-y-4 pt-4'}>
       {currentView === 'manpower' && (
         <ManpowerPanel
           mode="overview"
@@ -1999,9 +2041,13 @@ export default function Plan({ tvMode = false }: PlanProps) {
               schedules: Object.fromEntries(
                 settings.departments.flatMap((dept) => {
                   const item = dashTimelines[dept]?.find((timeline) => timeline.id === job.id)
-                  return item ? [[dept, { start: secToHHMM(item.start), end: secToHHMM(item.end) }]] : []
+                  return item ? [
+                    [dept, { start: secToHHMM(item.start), end: secToHHMM(item.end) }],
+                    ...buildProcessScheduleEntries(dept,job,settings,item,deptQtyByWorkOrderId,catQtyByWorkOrderId),
+                  ] : []
                 }),
               ),
+              manpowerLockedAt: job.manpower_locked_at || null,
             }))}
         />
       )}
@@ -2714,7 +2760,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                   <span>Line:</span>
                                   <select
                                     value={j.line_assignments?.[dept] ?? 0}
-                                    disabled={!unlocked}
+                                    disabled={!unlocked || Boolean(j.manpower_locked_at)}
                                     onChange={async (e) => {
                                       const newLine = parseInt(e.target.value, 10)
                                       const next = { ...j, line_assignments: { ...j.line_assignments, [dept]: newLine } }
@@ -3160,7 +3206,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                     <span className="font-semibold text-xs whitespace-nowrap">{status.text}</span>
                                     <select
                                       value={currentLine}
-                                      disabled={!unlocked}
+                                      disabled={!unlocked || Boolean(j.manpower_locked_at)}
                                       onChange={async (e) => {
                                         const newLine = parseInt(e.target.value, 10)
                                         const next = { ...j, line_assignments: { ...j.line_assignments, [d]: newLine } }
