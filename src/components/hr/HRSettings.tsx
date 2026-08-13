@@ -179,9 +179,10 @@ export default function HRSettings() {
     department_id: '',
     level: '1',
   })
-  const [leaveForm, setLeaveForm] = useState<{ id?: string; name: string; max_days_per_year: string; requires_doc: boolean; doc_label: string; is_paid: boolean }>({
+  const [leaveForm, setLeaveForm] = useState<{ id?: string; name: string; max_days_per_year: string; advance_notice_days: string; requires_doc: boolean; doc_label: string; is_paid: boolean }>({
     name: '',
     max_days_per_year: '',
+    advance_notice_days: '0',
     requires_doc: false,
     doc_label: '',
     is_paid: true,
@@ -294,7 +295,7 @@ export default function HRSettings() {
 
   const resetDeptForm = () => setDeptForm({ name: '', description: '', telegram_group_id: '' })
   const resetPosForm = () => setPosForm({ name: '', department_id: '', level: '1' })
-  const resetLeaveForm = () => setLeaveForm({ name: '', max_days_per_year: '', requires_doc: false, doc_label: '', is_paid: true })
+  const resetLeaveForm = () => setLeaveForm({ name: '', max_days_per_year: '', advance_notice_days: '0', requires_doc: false, doc_label: '', is_paid: true })
   const resetTrackForm = () => setTrackForm({ name: '', department_id: '', description: '' })
   const resetLevelForm = () => setLevelForm(buildLevelForm(getNextLevelOrder(levels)))
   const resetTemplateForm = () =>
@@ -555,6 +556,7 @@ export default function HRSettings() {
         id: leaveForm.id,
         name: leaveForm.name.trim(),
         max_days_per_year: leaveForm.max_days_per_year.trim() === '' ? undefined : Number(leaveForm.max_days_per_year),
+        advance_notice_days: Math.max(0, Math.floor(Number(leaveForm.advance_notice_days) || 0)),
         requires_doc: leaveForm.requires_doc,
         doc_label: leaveForm.requires_doc ? (leaveForm.doc_label.trim() || 'เอกสารประกอบการลา') : undefined,
         is_paid: leaveForm.is_paid,
@@ -940,6 +942,7 @@ export default function HRSettings() {
                 <tr>
                   <th className="text-left py-2 px-3">ประเภทการลา</th>
                   <th className="text-left py-2 px-3">จำนวนวัน/ปี</th>
+                  <th className="text-left py-2 px-3">แจ้งล่วงหน้า</th>
                   <th className="text-left py-2 px-3">เอกสารที่ต้องแนบ</th>
                   <th className="text-left py-2 px-3">ได้รับเงิน</th>
                   <th className="text-right py-2 px-3">จัดการ</th>
@@ -950,6 +953,7 @@ export default function HRSettings() {
                   <tr key={lt.id} className="border-b border-surface-100">
                     <td className="py-2 px-3 font-medium">{lt.name}</td>
                     <td className="py-2 px-3">{lt.max_days_per_year ?? '-'}</td>
+                    <td className="py-2 px-3">{lt.advance_notice_days || 0} วัน</td>
                     <td className="py-2 px-3">{lt.requires_doc ? (lt.doc_label || 'ใช่') : '-'}</td>
                     <td className="py-2 px-3">{lt.is_paid ? 'ใช่' : 'ไม่'}</td>
                     <td className="py-2 px-3 text-right">
@@ -960,6 +964,7 @@ export default function HRSettings() {
                             id: lt.id,
                             name: lt.name,
                             max_days_per_year: lt.max_days_per_year == null ? '' : String(lt.max_days_per_year),
+                            advance_notice_days: String(lt.advance_notice_days || 0),
                             requires_doc: lt.requires_doc,
                             doc_label: lt.doc_label ?? '',
                             is_paid: lt.is_paid,
@@ -973,7 +978,7 @@ export default function HRSettings() {
                   </tr>
                 ))}
                 {leaveTypes.length === 0 && (
-                  <tr><td colSpan={5} className="py-4 text-center text-gray-400">ยังไม่มีข้อมูลประเภทการลา</td></tr>
+                  <tr><td colSpan={6} className="py-4 text-center text-gray-400">ยังไม่มีข้อมูลประเภทการลา</td></tr>
                 )}
               </tbody>
             </table>
@@ -987,6 +992,11 @@ export default function HRSettings() {
             <label className="block text-sm">
               <span className="text-gray-600">จำนวนวัน/ปี (เว้นว่างได้)</span>
               <input type="number" min={0} value={leaveForm.max_days_per_year} onChange={(e) => setLeaveForm((p) => ({ ...p, max_days_per_year: e.target.value }))} className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2" />
+            </label>
+            <label className="block text-sm">
+              <span className="text-gray-600">แจ้งล่วงหน้า (วัน)</span>
+              <input type="number" min={0} step={1} value={leaveForm.advance_notice_days} onChange={(e) => setLeaveForm((p) => ({ ...p, advance_notice_days: e.target.value }))} className="mt-1 w-full rounded-xl border border-surface-200 px-3 py-2" />
+              <span className="mt-1 block text-xs text-gray-500">ระบบจะไม่อนุญาตให้พนักงานเลือกวันลาก่อนครบกำหนด</span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={leaveForm.requires_doc} onChange={(e) => setLeaveForm((p) => ({ ...p, requires_doc: e.target.checked }))} />

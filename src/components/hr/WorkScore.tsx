@@ -5,6 +5,7 @@ import Modal from '../ui/Modal'
 import PhotoLightbox from './PhotoLightbox'
 import { useWmsModal } from '../wms/useWmsModal'
 import { useAuthContext } from '../../contexts/AuthContext'
+import { supabase } from '../../lib/supabase'
 import {
   fetchEmployees,
   getHRFileUrl,
@@ -21,10 +22,13 @@ import {
   fetchScoreAppeals,
   acceptScoreAppeal,
   rejectScoreAppeal,
+  fetchOpeningAttendance,
+  fetchScorePeriodsRange,
 } from '../../lib/hrApi'
 import {
   ABSENCE_GROUP,
   buildMonthlyScores,
+  buildOpeningAttendanceEvents,
   indexRules,
   minutesToClock,
   scoringEndDate,
@@ -116,6 +120,9 @@ const manualEventId = (ev: ScoreEventDraft): string | null => {
 function explain(ev: ScoreEventDraft): string {
   const d = ev.detail as Record<string, unknown>
   const parts: string[] = []
+  if (d.source === 'opening_balance') parts.push('ยอดยกมาก่อนเริ่ม ERP')
+  if (typeof d.opening_count === 'number') parts.push(`${d.opening_count} ครั้ง`)
+  if (typeof d.average_minutes === 'number') parts.push(`เฉลี่ย ${d.average_minutes} นาที/ครั้ง`)
   if (typeof d.late_min === 'number') parts.push(`สาย ${d.late_min} นาที`)
   if (typeof d.early_min === 'number') parts.push(`กลับก่อน ${d.early_min} นาที`)
   if (typeof d.clock_in_min === 'number') parts.push(`เข้า ${minutesToClock(d.clock_in_min)}`)
@@ -143,7 +150,7 @@ interface ScoreRow {
   events: ScoreEventDraft[]
 }
 
-type TabKey = 'summary' | 'appeals'
+type TabKey = 'summary' | 'annual' | 'appeals'
 
 export default function WorkScore() {
   const { user } = useAuthContext()
@@ -171,6 +178,8 @@ export default function WorkScore() {
 
   // ─── แท็บคำทักท้วง ───
   const [appeals, setAppeals] = useState<HRScoreAppeal[]>([])
+  const [annualPeriods, setAnnualPeriods] = useState<HRScorePeriod[]>([])
+  const [annualLoading, setAnnualLoading] = useState(false)
   const [appealsLoading, setAppealsLoading] = useState(false)
   const [reviewForm, setReviewForm] = useState<{ appeal: HRScoreAppeal; accept: boolean; note: string } | null>(null)
   const [reviewError, setReviewError] = useState('')
@@ -203,13 +212,14 @@ export default function WorkScore() {
       // ไม่คิดวันในอนาคต/วันนี้ที่ยังไม่จบ — ไม่งั้นทุกคนจะกลายเป็น "ขาดงาน" ทั้งเดือน
       const scoreUntil = scoringEndDate(month, localISODate())
       setScoredUntil(scoreUntil)
-      const [facts, periods, savedEvents, employees] = await Promise.all([
+      const [facts, periods, savedEvents, employees, openings] = await Promise.all([
         scoreUntil ? fetchAttendanceFacts(from, scoreUntil) : Promise.resolve([]),
         fetchScorePeriods(`${month}-01`, category.id),
         // เหตุการณ์ที่บันทึกไว้แล้วอ่านทั้งเดือน (HR อาจเพิ่มเองในวันที่ยังไม่ถึงรอบคิด)
         fetchScoreEvents({ date_from: from, date_to: monthEnd, category_id: category.id }),
         // RPC ไม่ได้คืนชื่อเล่น/รูป จึงต้อง join จากทะเบียนพนักงานฝั่ง client
         fetchEmployees(),
+        fetchOpeningAttendance({ year: Number(month.slice(0, 4)) }),
       ])
       const employeeById = new Map(employees.map((e) => [e.id, e]))
 
@@ -255,6 +265,11 @@ export default function WorkScore() {
           ))
         }
       })
+      openings
+        .filter((o) => o.effective_date.slice(0, 7) === month)
+        .forEach((o) => {
+          if (!nameByEmployee.has(o.employee_id)) nameByEmployee.set(o.employee_id, whoOf(o.employee_id, '', 'พนักงาน'))
+        })
 
       const result: ScoreRow[] = []
       for (const [employeeId, who] of nameByEmployee) {
@@ -274,9 +289,11 @@ export default function WorkScore() {
           continue
         }
         const daily = computed.get(employeeId)?.events ?? []
+        const opening = openings.find((o) => o.employee_id === employeeId && o.effective_date.slice(0, 7) === month)
+        const openingEvents = buildOpeningAttendanceEvents(opening, category, rules)
         const summary: ScoreSummary = summarizeMonth(
           employeeId,
-          [...daily, ...(manualByEmployee.get(employeeId) ?? [])],
+          [...daily, ...openingEvents, ...(manualByEmployee.get(employeeId) ?? [])],
           category,
           index,
         )
@@ -312,7 +329,28 @@ export default function WorkScore() {
     }
   }, [])
 
-  useEffect(() => { if (activeTab === 'appeals') void loadAppeals() }, [activeTab, loadAppeals])
+  useEffect(() => {
+    void loadAppeals()
+    const refresh = () => { void loadAppeals() }
+    window.addEventListener('hr-score-appeals-changed', refresh)
+    const channel = supabase.channel('work-score-appeals-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_score_appeals' }, refresh)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-score-appeals-changed', refresh)
+      void supabase.removeChannel(channel)
+    }
+  }, [loadAppeals])
+
+  useEffect(() => {
+    if (activeTab !== 'annual' || !categoryId) return
+    const year = month.slice(0, 4)
+    setAnnualLoading(true)
+    fetchScorePeriodsRange(`${year}-01-01`, `${year}-12-01`, categoryId)
+      .then(setAnnualPeriods)
+      .catch((e) => setError(e instanceof Error ? e.message : 'โหลดสรุปรายปีไม่สำเร็จ'))
+      .finally(() => setAnnualLoading(false))
+  }, [activeTab, categoryId, month])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -328,6 +366,69 @@ export default function WorkScore() {
     rows.forEach((r) => Object.keys(r.byGroup).forEach((k) => keys.add(k)))
     return [...keys].sort((a, b) => (GROUP_LABELS[a] ?? a).localeCompare(GROUP_LABELS[b] ?? b, 'th'))
   }, [rows])
+
+  const annualRows = useMemo(() => {
+    const map = new Map<string, { code: string; name: string; months: Record<number, number>; deduction: number }>()
+    annualPeriods.forEach((p) => {
+      const item = map.get(p.employee_id) ?? {
+        code: p.employee?.employee_code ?? '',
+        name: p.employee ? `${p.employee.first_name} ${p.employee.last_name}` : p.employee_id,
+        months: {}, deduction: 0,
+      }
+      item.months[Number(p.period.slice(5, 7))] = Number(p.total_points)
+      item.deduction += Number(p.raw_deduction)
+      map.set(p.employee_id, item)
+    })
+    if (month.slice(0, 4) === String(new Date().getFullYear())) rows.forEach((r) => {
+      const item = map.get(r.employeeId) ?? { code: r.code, name: r.name, months: {}, deduction: 0 }
+      item.months[Number(month.slice(5, 7))] = r.total
+      map.set(r.employeeId, item)
+    })
+    return [...map.values()].map((item) => {
+      const values = Object.values(item.months)
+      return { ...item, average: values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length * 100) / 100 : 0, counted: values.length }
+    }).sort((a, b) => a.average - b.average || a.name.localeCompare(b.name, 'th'))
+  }, [annualPeriods, rows, month])
+
+  const numberedDetailEvents = useMemo(() => {
+    if (!detailRow) return []
+    const sorted = [...detailRow.events].sort((a, b) =>
+      a.event_date.localeCompare(b.event_date)
+      || (a.event_code.endsWith('_reversed') ? 1 : 0) - (b.event_code.endsWith('_reversed') ? 1 : 0),
+    )
+    return sorted.map((event, index) => {
+      const linkedAppeal = event.ref_table === 'hr_score_appeals' && event.ref_id
+        ? appeals.find((appeal) => appeal.id === event.ref_id)
+        : null
+      const reversedCode = typeof event.detail.reversed_code === 'string'
+        ? event.detail.reversed_code
+        : linkedAppeal?.event_code ?? null
+      const reversedDate = linkedAppeal?.event_date ?? event.event_date
+      const sourceIndex = reversedCode
+        ? sorted.findIndex((candidate) =>
+            candidate.event_date === reversedDate
+            && candidate.event_code === reversedCode
+            && !candidate.event_code.endsWith('_reversed'))
+        : -1
+      const cumulativeRule = reversedCode ? rules.find((rule) => rule.event_code === reversedCode && rule.counts_event_prefix) : null
+      const cumulativeTriggerIndex = sourceIndex < 0 && cumulativeRule?.counts_event_prefix
+        ? sorted.findIndex((candidate) =>
+            candidate.event_date === reversedDate
+            && candidate.event_code.startsWith(cumulativeRule.counts_event_prefix as string)
+            && candidate.points < 0
+            && !candidate.event_code.endsWith('_reversed'))
+        : -1
+      return {
+        event,
+        sequence: index + 1,
+        sourceSequence: sourceIndex >= 0 ? sourceIndex + 1 : null,
+        missingAppealReference: event.ref_table === 'hr_score_appeals' && sourceIndex < 0 && cumulativeTriggerIndex < 0,
+        cumulativeTriggerSequence: cumulativeTriggerIndex >= 0 ? cumulativeTriggerIndex + 1 : null,
+        appealedPoints: linkedAppeal ? Number(linkedAppeal.points) : null,
+        unlinkedManualCredit: event.points > 0 && !event.ref_table && !reversedCode,
+      }
+    })
+  }, [detailRow, appeals, rules])
 
   const openCount = rows.filter((r) => !r.locked).length
   const dueForLock = settings ? isPeriodDue(month, settings.lock_day_of_month) : false
@@ -468,7 +569,7 @@ export default function WorkScore() {
       )}
 
       <div className="flex gap-2 border-b border-surface-200 flex-wrap">
-        {([['summary', 'คะแนนรายเดือน'], ['appeals', 'คำทักท้วง']] as const).map(([key, label]) => (
+        {([['summary', 'คะแนนรายเดือน'], ['annual', 'สรุปรายปี'], ['appeals', 'คำทักท้วง']] as const).map(([key, label]) => (
           <button
             key={key}
             type="button"
@@ -635,6 +736,20 @@ export default function WorkScore() {
         </div>
       )}
 
+      {activeTab === 'annual' && (
+        <div className="bg-white rounded-xl shadow p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div><h3 className="font-semibold text-gray-900">สรุปคะแนนปี {Number(month.slice(0, 4)) + 543}</h3><p className="text-xs text-gray-500">ค่าเฉลี่ยคำนวณจากเดือนที่ปิดรอบแล้ว และเดือนปัจจุบันที่กำลังคำนวณสด</p></div>
+            <input type="number" value={month.slice(0, 4)} onChange={(e) => setMonth(`${e.target.value || new Date().getFullYear()}-${month.slice(5, 7)}`)} className={inputClass} />
+          </div>
+          {annualLoading ? <Loading /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="bg-emerald-600 text-white"><th className="p-3 text-left">พนักงาน</th>{Array.from({ length: 12 }, (_, i) => <th key={i} className="p-3 text-center whitespace-nowrap">{i + 1}</th>)}<th className="p-3 text-center">เฉลี่ย</th><th className="p-3 text-center">หักรวม</th></tr></thead>
+              <tbody>{annualRows.map((r) => <tr key={r.code} className="border-t"><td className="p-3 whitespace-nowrap"><span className="font-medium">{r.name}</span><span className="ml-2 text-xs text-gray-400">{r.code}</span></td>{Array.from({ length: 12 }, (_, i) => <td key={i} className="p-3 text-center tabular-nums">{r.months[i + 1] ?? '-'}</td>)}<td className="p-3 text-center font-bold text-emerald-700">{r.average}</td><td className="p-3 text-center text-red-600">{r.deduction ? `-${r.deduction}` : '-'}</td></tr>)}</tbody>
+            </table>{annualRows.length === 0 && <p className="py-10 text-center text-gray-400">ยังไม่มีรอบคะแนนของปีนี้</p>}</div>
+          )}
+        </div>
+      )}
+
       {activeTab === 'appeals' && (
         <div className="bg-white rounded-xl shadow p-4">
           {appealsLoading ? <Loading /> : appeals.length === 0 ? (
@@ -655,7 +770,10 @@ export default function WorkScore() {
                   {appeals.map((a, idx) => (
                     <tr key={a.id} className={`border-t border-surface-200 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3">
-                        <div className="font-medium">{a.employee ? `${a.employee.first_name} ${a.employee.last_name}` : '-'}</div>
+                        <div className="font-medium">
+                          {a.employee ? `${a.employee.first_name} ${a.employee.last_name}` : '-'}
+                          {a.employee?.nickname && <span className="ml-1.5 font-normal text-emerald-700">({a.employee.nickname})</span>}
+                        </div>
                         <div className="text-xs text-gray-400">{a.employee?.employee_code}</div>
                       </td>
                       <td className="p-3">
@@ -715,6 +833,9 @@ export default function WorkScore() {
                   {reviewForm.appeal.employee
                     ? `${reviewForm.appeal.employee.first_name} ${reviewForm.appeal.employee.last_name}`
                     : '-'}
+                  {reviewForm.appeal.employee?.nickname && (
+                    <span className="ml-1.5 font-normal text-emerald-700">({reviewForm.appeal.employee.nickname})</span>
+                  )}
                 </div>
                 <div className="text-xs text-gray-400">
                   {ruleByCode.get(reviewForm.appeal.event_code)?.name ?? reviewForm.appeal.event_code}
@@ -764,7 +885,7 @@ export default function WorkScore() {
       {photoView && <PhotoLightbox url={photoView.url} alt={photoView.name} onClose={() => setPhotoView(null)} />}
 
       {/* รายละเอียดรายวันของพนักงาน 1 คน */}
-      <Modal open={!!detailRow} onClose={() => setDetailRow(null)} closeOnBackdropClick contentClassName="max-w-3xl">
+      <Modal open={!!detailRow} onClose={() => setDetailRow(null)} closeOnBackdropClick contentClassName="max-w-5xl w-[96vw]">
         {detailRow && (
           <>
             <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
@@ -788,22 +909,44 @@ export default function WorkScore() {
               {detailRow.events.length === 0 ? (
                 <div className="text-center py-8 text-gray-400">ไม่มีเหตุการณ์หักคะแนนในเดือนนี้ 🎉</div>
               ) : (
-                <table className="w-full text-sm">
+                <table className="w-full table-fixed text-sm">
                   <thead className="bg-surface-100 border-b border-surface-200">
                     <tr>
-                      <th className="text-left py-2 px-3">วันที่</th>
-                      <th className="text-left py-2 px-3">เหตุการณ์</th>
+                      <th className="w-16 text-center py-2 px-2">ลำดับ</th>
+                      <th className="w-28 text-left py-2 px-3">วันที่</th>
+                      <th className="w-[42%] text-left py-2 px-3">เหตุการณ์</th>
                       <th className="text-left py-2 px-3">รายละเอียด</th>
-                      <th className="text-center py-2 px-3">คะแนน</th>
+                      <th className="w-20 text-center py-2 px-3">คะแนน</th>
                       <th className="w-10" />
                     </tr>
                   </thead>
                   <tbody>
-                    {[...detailRow.events].sort((a, b) => a.event_date.localeCompare(b.event_date)).map((ev, i) => (
-                      <tr key={`${ev.event_date}-${ev.event_code}-${i}`} className="border-b border-surface-100">
+                    {numberedDetailEvents.map(({ event: ev, sequence, sourceSequence, missingAppealReference, cumulativeTriggerSequence, appealedPoints, unlinkedManualCredit }) => (
+                      <tr key={`${ev.event_date}-${ev.event_code}-${sequence}`} className="border-b border-surface-100">
+                        <td className="py-2 px-2 text-center font-medium text-gray-500">#{sequence}</td>
                         <td className="py-2 px-3 whitespace-nowrap">{ev.event_date}</td>
-                        <td className="py-2 px-3">
-                          {ev.label}
+                        <td className="py-2 px-3 break-words align-top">
+                          <span>{ev.label}</span>
+                          {sourceSequence && (
+                            <span className="ml-1.5 inline-flex max-w-full flex-wrap rounded-lg bg-sky-100 px-2 py-0.5 text-xs font-medium leading-5 text-sky-700">
+                              คืนคะแนนจาก #{sourceSequence}
+                            </span>
+                          )}
+                          {cumulativeTriggerSequence && (
+                            <span className="ml-1.5 inline-flex max-w-full flex-wrap rounded-lg bg-violet-100 px-2 py-0.5 text-xs font-medium leading-5 text-violet-700">
+                              คืนคะแนนสะสมจาก #{cumulativeTriggerSequence}{appealedPoints !== null ? ` (${appealedPoints} คะแนน)` : ''}
+                            </span>
+                          )}
+                          {missingAppealReference && (
+                            <span className="ml-1.5 inline-flex max-w-full flex-wrap rounded-lg bg-amber-100 px-2 py-0.5 text-xs font-medium leading-5 text-amber-700">
+                              ไม่พบรายการต้นทาง
+                            </span>
+                          )}
+                          {unlinkedManualCredit && (
+                            <span className="ml-1.5 inline-flex max-w-full flex-wrap rounded-lg bg-gray-100 px-2 py-0.5 text-xs font-medium leading-5 text-gray-600">
+                              เพิ่มเอง · ไม่มีรายการอ้างอิง
+                            </span>
+                          )}
                           <span className="ml-1.5 text-xs text-gray-400">{GROUP_LABELS[ev.group_code] ?? ev.group_code}</span>
                         </td>
                         <td className="py-2 px-3 text-xs text-gray-500">{explain(ev)}</td>

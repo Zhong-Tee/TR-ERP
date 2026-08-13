@@ -50,6 +50,24 @@ function diffDays(start: string, end: string): number {
   return Math.max(0, diff) + 1
 }
 
+function toLocalDateInput(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function earliestLeaveDate(advanceDays: number): string {
+  const date = new Date()
+  date.setHours(12, 0, 0, 0)
+  date.setDate(date.getDate() + Math.max(0, advanceDays))
+  return toLocalDateInput(date)
+}
+
+function formatThaiDate(value: string): string {
+  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'long' }).format(new Date(`${value}T12:00:00`))
+}
+
 function statusBadge(status: string) {
   const map: Record<string, string> = {
     pending: 'bg-amber-100 text-amber-800',
@@ -117,6 +135,9 @@ export default function EmployeeLeave() {
         : 0
 
   const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
+  const advanceNoticeDays = Math.max(0, selectedType?.advance_notice_days || 0)
+  const minLeaveDate = earliestLeaveDate(advanceNoticeDays)
+  const startDateTooEarly = !!form.start_date && form.start_date < minLeaveDate
   const requiresDoc = !!selectedType?.requires_doc
   const docLabel = selectedType?.doc_label || 'เอกสารประกอบการลา'
 
@@ -153,6 +174,10 @@ export default function EmployeeLeave() {
     if (!employee || !form.leave_type_id || !form.start_date) return
     const isHourly = form.leave_mode === 'hourly'
     if (!isHourly && !form.end_date) return
+    if (startDateTooEarly) {
+      setDocError(`ประเภท${selectedType?.name || 'การลานี้'}ต้องแจ้งล่วงหน้า ${advanceNoticeDays} วัน เลือกได้ตั้งแต่วันที่ ${formatThaiDate(minLeaveDate)}`)
+      return
+    }
     if (!form.reason.trim()) {
       setDocError('กรุณากรอกเหตุผลการลา')
       return
@@ -311,7 +336,10 @@ export default function EmployeeLeave() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">ประเภทการลา</label>
                 <select
                   value={form.leave_type_id}
-                  onChange={(e) => setForm((f) => ({ ...f, leave_type_id: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, leave_type_id: e.target.value, start_date: '', end_date: '' }))
+                    setDocError(null)
+                  }}
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base"
                   required
                 >
@@ -319,6 +347,11 @@ export default function EmployeeLeave() {
                     <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </select>
+                {advanceNoticeDays > 0 && (
+                  <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    ต้องแจ้งล่วงหน้า {advanceNoticeDays} วัน — เลือกวันลาได้ตั้งแต่ {formatThaiDate(minLeaveDate)}
+                  </p>
+                )}
               </div>
               {/* เลือกช่วงลา: เต็มวัน / ชั่วโมง */}
               <div>
@@ -351,8 +384,12 @@ export default function EmployeeLeave() {
                       <label className="block text-sm font-medium text-gray-700 mb-1">วันเริ่ม</label>
                       <input
                         type="date"
+                        min={minLeaveDate}
                         value={form.start_date}
-                        onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+                        onChange={(e) => {
+                          setForm((f) => ({ ...f, start_date: e.target.value, end_date: f.end_date && f.end_date < e.target.value ? '' : f.end_date }))
+                          setDocError(null)
+                        }}
                         className="w-full rounded-xl border border-gray-300 px-4 py-3"
                         required
                       />
@@ -361,6 +398,7 @@ export default function EmployeeLeave() {
                       <label className="block text-sm font-medium text-gray-700 mb-1">วันสิ้นสุด</label>
                       <input
                         type="date"
+                        min={form.start_date || minLeaveDate}
                         value={form.end_date}
                         onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
                         className="w-full rounded-xl border border-gray-300 px-4 py-3"
@@ -376,8 +414,12 @@ export default function EmployeeLeave() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">วันที่ลา</label>
                     <input
                       type="date"
+                      min={minLeaveDate}
                       value={form.start_date}
-                      onChange={(e) => setForm((f) => ({ ...f, start_date: e.target.value }))}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, start_date: e.target.value }))
+                        setDocError(null)
+                      }}
                       className="w-full rounded-xl border border-gray-300 px-4 py-3"
                       required
                     />
@@ -406,6 +448,11 @@ export default function EmployeeLeave() {
                   </div>
                   <p className="text-sm text-gray-600">รวม {totalHours} ชั่วโมง</p>
                 </>
+              )}
+              {startDateTooEarly && (
+                <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  วันที่เลือกเร็วเกินไป กรุณาเลือกตั้งแต่ {formatThaiDate(minLeaveDate)} เป็นต้นไป
+                </p>
               )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -448,6 +495,9 @@ export default function EmployeeLeave() {
                   {docError && <p className="text-xs text-red-500 mt-1.5">{docError}</p>}
                 </div>
               )}
+              {!requiresDoc && docError && (
+                <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{docError}</p>
+              )}
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -458,7 +508,7 @@ export default function EmployeeLeave() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || startDateTooEarly}
                   className="flex-1 py-3 rounded-xl bg-emerald-600 text-white font-medium disabled:opacity-60"
                 >
                   {submitting ? 'กำลังส่ง...' : 'ส่งคำขอ'}

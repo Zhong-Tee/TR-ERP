@@ -468,7 +468,7 @@ export default function EmployeeTimeClock() {
       )}
 
       {/* ปุ่มเข้า/ออกงาน */}
-      <div className="grid grid-cols-2 gap-3">
+      {employee.work_mode !== 'no_clock' && <div className="grid grid-cols-2 gap-3">
         <button
           type="button"
           onClick={() => startCapture('clock_in')}
@@ -505,7 +505,7 @@ export default function EmployeeTimeClock() {
             </span>
           )}
         </button>
-      </div>
+      </div>}
 
       {/* OT */}
       <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">

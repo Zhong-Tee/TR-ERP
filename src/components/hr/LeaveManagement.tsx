@@ -14,6 +14,7 @@ import {
   fetchCompanyHolidays,
   fetchWFHRequests,
   updateWFHRequest,
+  fetchAllOpeningLeaveBalances,
 } from '../../lib/hrApi'
 import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HROTRequest, HRWFHRequest } from '../../types'
 import Modal from '../ui/Modal'
@@ -188,6 +189,7 @@ export default function LeaveManagement() {
   const [otRejectingId, setOtRejectingId] = useState<string | null>(null)
   const [balanceView, setBalanceView] = useState<{ name: string; rows: LeaveBalanceRow[] } | null>(null)
   const [leaveTypes, setLeaveTypes] = useState<Awaited<ReturnType<typeof fetchLeaveTypes>>>([])
+  const [openingBalances, setOpeningBalances] = useState<Awaited<ReturnType<typeof fetchAllOpeningLeaveBalances>>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'list' | 'approval' | 'ot' | 'wfh' | 'calendar'>('list')
@@ -223,16 +225,18 @@ export default function LeaveManagement() {
     setLoading(true)
     setError(null)
     try {
-      const [reqs, types, ots, wfh] = await Promise.all([
+      const [reqs, types, ots, wfh, openings] = await Promise.all([
         fetchLeaveRequests(),
         fetchLeaveTypes(),
         fetchOTRequests(),
         fetchWFHRequests(),
+        fetchAllOpeningLeaveBalances(),
       ])
       setRequests(reqs)
       setLeaveTypes(types)
       setOtRequests(ots)
       setWfhRequests(wfh)
+      setOpeningBalances(openings)
       // แจ้ง sidebar/topbar ให้อัปเดต badge ทันที (ไม่ต้องรอ realtime)
       window.dispatchEvent(new Event('hr-counts-changed'))
     } catch (e) {
@@ -393,8 +397,11 @@ export default function LeaveManagement() {
   const getLeaveBalanceRows = (employeeId: string, dateForYear: string) => {
     const year = new Date(dateForYear).getFullYear()
     return leaveTypes.map((t) => {
-      const entitled = Number(t.max_days_per_year ?? 0)
-      const used = approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0
+      const opening = openingBalances.find((row) => row.employee_id === employeeId && row.leave_type_id === t.id && row.year === year)
+      const entitled = opening ? Number(opening.opening_remaining_days) : Number(t.max_days_per_year ?? 0)
+      const used = opening
+        ? requests.filter((req) => req.employee_id === employeeId && req.leave_type_id === t.id && req.status === 'approved' && new Date(req.start_date).getFullYear() === year && req.start_date >= opening.effective_date).reduce((sum, req) => sum + Number(req.total_days ?? 0), 0)
+        : (approvedUsedByEmpYearType[`${employeeId}|${year}|${t.id}`] ?? 0)
       return { id: t.id, name: t.name, entitled, used, remaining: Math.max(0, entitled - used) }
     })
   }
@@ -1168,9 +1175,9 @@ export default function LeaveManagement() {
                           )
                         })()}
                       </td>
-                      <td className="px-6 py-3">
+                      <td className="px-3 py-3">
                         <span
-                          className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium border ${statusBadgeClass(req.status)}`}
+                          className={`inline-flex max-w-full items-center justify-center whitespace-nowrap px-2.5 py-1 rounded-full text-xs leading-5 font-medium border ${statusBadgeClass(req.status)}`}
                         >
                           {statusLabel(req.status)}
                         </span>

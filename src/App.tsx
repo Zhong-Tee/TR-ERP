@@ -16,6 +16,7 @@ import Plan from './pages/Plan'
 import Wms from './pages/Wms'
 import Products from './pages/Products'
 import ProductsInactive from './pages/ProductsInactive'
+import ProductInformation from './pages/ProductInformation'
 import CartoonPatterns from './pages/CartoonPatterns'
 import SalesReports from './pages/SalesReports'
 import KPIDashboard from './pages/KPI'
@@ -378,6 +379,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff']}>
             <Layout>
               <TransportVerification />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/products/information"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+            <Layout>
+              <ProductInformation />
             </Layout>
           </ProtectedRoute>
         }

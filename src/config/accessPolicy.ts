@@ -76,6 +76,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/purchase/gr', key: 'purchase-gr' },
   { prefix: '/purchase/sample', key: 'purchase-sample' },
   { prefix: '/products/inactive', key: 'products-inactive' },
+  { prefix: '/products/information', key: 'product-information' },
   { prefix: '/hr/leave', key: 'hr-leave' },
   { prefix: '/hr/interview', key: 'hr-interview' },
   { prefix: '/hr/attendance', key: 'hr-attendance' },
@@ -133,6 +134,7 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
   ],
   '/products': [
     { path: '/products', key: 'products' },
+    { path: '/products/information', key: 'product-information' },
     { path: '/products/inactive', key: 'products-inactive' },
   ],
 }
@@ -149,6 +151,7 @@ const MENU_KEY_ALIASES: Record<string, string[]> = {
 const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'warehouse-sub': 'warehouse',
   'products-inactive': 'products',
+  'product-information': 'products',
   'purchase-pr': 'purchase',
   'purchase-requests': 'purchase',
   'purchase-po': 'purchase',

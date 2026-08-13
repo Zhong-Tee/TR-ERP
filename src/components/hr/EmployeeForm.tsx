@@ -14,6 +14,7 @@ import {
 import { supabase } from '../../lib/supabase'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
 import PhotoLightbox from './PhotoLightbox'
+import EmployeeOpeningBalances from './EmployeeOpeningBalances'
 import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule } from '../../types'
 
 const BUCKET_PHOTOS = 'hr-photos'
@@ -418,6 +419,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
     { label: 'ข้อมูลการทำงาน', index: 1 },
     { label: 'ประวัติเงินเดือน', index: 2 },
     { label: 'เอกสาร', index: 3 },
+    { label: 'ยอดยกมา', index: 4 },
   ]
 
   return (
@@ -874,6 +876,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   <option value="office">เข้าออฟฟิศ</option>
                   <option value="hybrid">เข้าออฟฟิศ + WFH (ต้องขออนุมัติ)</option>
                   <option value="wfh">WFH 100% (ไม่ต้องขออนุมัติ)</option>
+                  <option value="no_clock">ไม่ต้องบันทึกเวลาเข้างาน</option>
                 </select>
               </label>
               <label>
@@ -881,10 +884,10 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 <select
                   value={clock_location_id}
                   onChange={(e) => setClockLocationId(e.target.value)}
-                  disabled={work_mode === 'wfh'}
+                  disabled={work_mode === 'wfh' || work_mode === 'no_clock'}
                   className={fieldClass}
                 >
-                  <option value="">{work_mode === 'wfh' ? '— ไม่ตรวจพิกัดสำนักงาน —' : '— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —'}</option>
+                  <option value="">{work_mode === 'wfh' || work_mode === 'no_clock' ? '— ไม่ตรวจพิกัดสำนักงาน —' : '— ใช้จุดที่ใกล้ที่สุดอัตโนมัติ —'}</option>
                   {clockLocations.map((loc) => (
                     <option key={loc.id} value={loc.id}>
                       {loc.name} (รัศมี {loc.radius_m} ม.)
@@ -1006,6 +1009,12 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
             </ul>
           </div>
         )}
+
+        {activeTab === 4 && (
+          employee?.id
+            ? <EmployeeOpeningBalances employeeId={employee.id} />
+            : <p className="text-sm text-gray-600">บันทึกพนักงานก่อน จึงจะกรอกยอดยกมาได้</p>
+        )}
       </div>
 
       <div className="flex justify-end gap-2 p-4 border-t border-gray-200 shrink-0">
@@ -1016,13 +1025,15 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         >
           ยกเลิก
         </button>
-        <button
-          type="submit"
-          disabled={saving}
-          className="px-6 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
-        >
-          {saving ? 'กำลังบันทึก...' : 'บันทึก'}
-        </button>
+        {activeTab !== 4 && (
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-6 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {saving ? 'กำลังบันทึก...' : 'บันทึก'}
+          </button>
+        )}
       </div>
     </form>
   )

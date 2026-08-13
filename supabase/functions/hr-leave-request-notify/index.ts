@@ -46,7 +46,7 @@ Deno.serve(async (req) => {
 
     const { data: leave, error } = await supabase
       .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name))')
+      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name)), approver:hr_employees!approved_by(first_name, last_name, nickname)')
       .eq('id', leave_id)
       .single()
     if (error || !leave) throw new Error('leave request not found: ' + error?.message)
@@ -55,6 +55,10 @@ Deno.serve(async (req) => {
     const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
     const nickname = emp?.nickname ?? '-'
     const dept = emp?.department?.name ?? '-'
+    const approver = leave.approver
+    const approverName = `${approver?.first_name ?? ''} ${approver?.last_name ?? ''}`.trim()
+      || approver?.nickname
+      || '-'
     const leaveType = leave.leave_type?.name ?? '-'
     const leaveDateText = leave.start_date === leave.end_date
       ? thaiDate(leave.start_date)
@@ -81,6 +85,9 @@ Deno.serve(async (req) => {
       `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
       `📅 <b>วันที่:</b> ${escapeHtml(leaveDateText)}`,
     ]
+    if (event === 'approved') {
+      textLines.splice(1, 0, `👤 <b>ผู้อนุมัติ:</b> ${escapeHtml(approverName)}`)
+    }
     if (leaveTimeText) textLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
     textLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)
     if (leave.reason) textLines.push(`📝 <b>เหตุผล:</b> ${escapeHtml(leave.reason)}`)
@@ -129,6 +136,9 @@ Deno.serve(async (req) => {
         `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
         `📅 <b>วันที่:</b> ${escapeHtml(leaveDateText)}`,
       ]
+      if (event === 'approved') {
+        pLines.splice(1, 0, `👤 <b>ผู้อนุมัติ:</b> ${escapeHtml(approverName)}`)
+      }
       if (leaveTimeText) pLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
       pLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)
       if (event === 'rejected' && leave.reject_reason) {
@@ -148,7 +158,7 @@ Deno.serve(async (req) => {
           status: pRes.ok ? 'sent' : 'failed',
           related_id: leave_id,
         })
-      } catch (_) { /* ไม่ให้กระทบผลรวม */ }
+      } catch { /* ไม่ให้กระทบผลรวม */ }
     }
 
     return new Response(JSON.stringify({ success: ok, detail }), {

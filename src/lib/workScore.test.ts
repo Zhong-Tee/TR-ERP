@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   applyCumulativeRules,
   buildMonthlyScores,
+  buildOpeningAttendanceEvents,
   evaluateDay,
   indexRules,
   isLateLeaveNotice,
@@ -111,6 +112,40 @@ const baseFact = (over: Partial<AttendanceFact> = {}): AttendanceFact => ({
 
 const codes = (fact: AttendanceFact) => evaluateDay(fact, INDEX).map((e) => e.event_code)
 const points = (fact: AttendanceFact) => evaluateDay(fact, INDEX).reduce((s, e) => s + e.points, 0)
+
+describe('รูปแบบไม่ต้องบันทึกเวลา', () => {
+  it('ไม่หักขาดงานเมื่อไม่มีเวลาเข้าและออก', () => {
+    expect(codes(baseFact({
+      work_mode: 'no_clock',
+      actual_in_min: null,
+      actual_in_source: null,
+      actual_in_ref: null,
+      actual_out_min: null,
+      actual_out_source: null,
+      actual_out_ref: null,
+    }))).toEqual([])
+  })
+
+  it('ไม่หักมาสาย ลืมลงเวลา หรือกลับก่อน', () => {
+    expect(codes(baseFact({
+      work_mode: 'no_clock',
+      actual_in_min: 10 * 60,
+      actual_out_min: 15 * 60,
+    }))).toEqual([])
+  })
+
+  it('ยังคำนวณกติกาการลาเต็มวัน', () => {
+    expect(codes(baseFact({
+      work_mode: 'no_clock',
+      leave_id: 'leave-1',
+      leave_status: 'approved',
+      leave_mode: 'full_day',
+      leave_start_date: '2026-08-03',
+      leave_filed_date: '2026-08-03',
+      leave_filed_min: 9 * 60,
+    }))).toContain('leave_late_notice')
+  })
+})
 
 describe('pickLateRule', () => {
   const onsite = baseFact()
@@ -654,5 +689,21 @@ describe('minutesToClock', () => {
     expect(minutesToClock(17 * 60 + 30)).toBe('17:30')
     expect(minutesToClock(25 * 60)).toBe('25:00')
     expect(minutesToClock(null)).toBe('-')
+  })
+})
+
+describe('opening attendance score', () => {
+  it('คิดยอดมาสายจากนาทีเฉลี่ยและนำจำนวนครั้งไปใช้กับกติกาสะสม', () => {
+    const rules = [...RULES, rule('late_repeat', 'attendance_cumulative', -2, {
+      threshold_min: 5, counts_event_prefix: 'late_', points_step: 0,
+    })]
+    const opening = buildOpeningAttendanceEvents({
+      employee_id: 'emp-1', effective_date: '2026-08-13', absence_days: 1,
+      late_count: 7, late_minutes: 140, early_leave_count: 2, early_leave_minutes: 30,
+    }, CATEGORY, rules)
+    const summary = summarizeMonth('emp-1', opening, CATEGORY, indexRules(rules))
+    expect(opening.find((e) => e.event_code === 'late_16_30')?.points).toBe(-14)
+    expect(summary.events.find((e) => e.event_code === 'late_repeat')?.points).toBe(-4)
+    expect(summary.total_points).toBe(54)
   })
 })

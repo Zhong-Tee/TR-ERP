@@ -1629,20 +1629,20 @@ export default function Products() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-blue-600 text-white">
-                  <th className="px-3 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">รหัสสินค้า</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
-                  <th className="px-3 py-2.5 text-center font-semibold">ประเภท</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
-                  <th className="px-3 py-2.5 text-left font-semibold">หมวดหมู่</th>
-                  <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
-                  <th className="px-3 py-2.5 text-center font-semibold">จุดสั่งซื้อ(วัน)</th>
-                  <th className="px-3 py-2.5 text-center font-semibold">หน่วย</th>
-                  <th className="px-3 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
+                <tr className="bg-blue-600 text-[12px] leading-tight text-white">
+                  <th className="px-2 py-2.5 text-left font-semibold rounded-tl-xl">รูป</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">รหัสสินค้า</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อสินค้า</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">ประเภท</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อผู้ขาย</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">ชื่อภาษาจีน</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">จุดจัดเก็บ</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">รหัสหน้ายาง</th>
+                  <th className="px-2 py-2.5 text-left font-semibold">หมวดหมู่</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">จุดสั่งซื้อ<wbr />(วัน)</th>
+                  <th className="px-2 py-2.5 text-center font-semibold">หน่วย</th>
+                  <th className="px-2 py-2.5 text-right font-semibold rounded-tr-xl">การจัดการ</th>
                 </tr>
               </thead>
               <tbody>

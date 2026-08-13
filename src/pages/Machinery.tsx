@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FiImage, FiPrinter } from 'react-icons/fi'
+import { FiImage } from 'react-icons/fi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
@@ -605,24 +605,6 @@ export default function Machinery() {
           isStandaloneMobile ? 'px-3 pb-10 pt-3' : 'px-2 sm:px-4 lg:px-6 pb-8 pt-1'
         }`}
       >
-      {!isStandaloneMobile && (
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <span
-            className="mt-1 flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80"
-            aria-hidden
-          >
-            <FiPrinter className="h-7 w-7" />
-          </span>
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold tracking-tight text-gray-900">
-              Machinery
-            </h1>
-          </div>
-        </div>
-      </header>
-      )}
-
       {error && (
         <div
           className={`rounded-lg px-4 py-3 text-sm sm:text-base border ${

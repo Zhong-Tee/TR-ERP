@@ -1929,11 +1929,10 @@ export default function Plan({ tvMode = false }: PlanProps) {
           : 'w-full flex flex-col min-h-0 h-full flex-1'
       }
     >
-      {/* เมนูย่อย — fixed ชิด TopBar เต็มซ้ายขวา (ไม่มี transition เพื่อแสดงทันที) */}
+      {/* เมนูย่อยอยู่ภายในพื้นที่ scroll หลักและยึดด้านบนใต้ TopBar */}
       {!tvMode && (
         <div
-          className="fixed top-16 right-0 z-30 bg-white border-b border-surface-200 shadow-soft"
-          style={{ left: 'var(--content-offset-left, 16rem)' }}
+          className="sticky top-0 z-30 shrink-0 bg-white border-b border-surface-200 shadow-soft"
         >
           <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
             <div className="flex items-center justify-between gap-4">
@@ -1982,7 +1981,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
         </div>
       )}
 
-      <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'pt-16 space-y-4'}>
+      <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'space-y-4'}>
       {currentView === 'manpower' && (
         <ManpowerPanel
           mode="overview"

@@ -1384,6 +1384,58 @@ export async function fetchEmployeeWarningCount(employeeId: string) {
   return count ?? 0
 }
 
+export async function fetchEmployeeOpeningData(employeeId: string, year: number) {
+  const [balances, attendance] = await Promise.all([
+    supabase.from('hr_employee_opening_leave_balances').select('*').eq('employee_id', employeeId).eq('year', year),
+    supabase.from('hr_employee_opening_attendance').select('*').eq('employee_id', employeeId).eq('year', year).maybeSingle(),
+  ])
+  if (balances.error) pgError(balances.error)
+  if (attendance.error) pgError(attendance.error)
+  return { balances: balances.data ?? [], attendance: attendance.data ?? null }
+}
+
+export async function fetchAllOpeningLeaveBalances() {
+  const { data, error } = await supabase.from('hr_employee_opening_leave_balances').select('*')
+  if (error) pgError(error)
+  return data ?? []
+}
+
+export async function fetchOpeningAttendance(filters?: { employeeId?: string; year?: number }) {
+  let query = supabase.from('hr_employee_opening_attendance').select('*')
+  if (filters?.employeeId) query = query.eq('employee_id', filters.employeeId)
+  if (filters?.year) query = query.eq('year', filters.year)
+  const { data, error } = await query
+  if (error) pgError(error)
+  return data ?? []
+}
+
+export async function saveEmployeeOpeningData(args: {
+  employeeId: string
+  year: number
+  effectiveDate: string
+  balances: { leave_type_id: string; opening_remaining_days: number; note?: string }[]
+  attendance: { absence_days: number; late_count: number; late_minutes: number; early_leave_count: number; early_leave_minutes: number; note?: string }
+}) {
+  const balanceRows = args.balances.map((row) => ({
+    employee_id: args.employeeId,
+    year: args.year,
+    effective_date: args.effectiveDate,
+    ...row,
+  }))
+  if (balanceRows.length) {
+    const { error } = await supabase.from('hr_employee_opening_leave_balances')
+      .upsert(balanceRows, { onConflict: 'employee_id,leave_type_id,year' })
+    if (error) pgError(error)
+  }
+  const { error } = await supabase.from('hr_employee_opening_attendance').upsert({
+    employee_id: args.employeeId,
+    year: args.year,
+    effective_date: args.effectiveDate,
+    ...args.attendance,
+  }, { onConflict: 'employee_id,year' })
+  if (error) pgError(error)
+}
+
 export async function acknowledgeMyWarning(warningId: string) {
   const { error } = await supabase.rpc('acknowledge_my_warning', { p_warning_id: warningId })
   if (error) pgError(error)
@@ -1906,6 +1958,17 @@ export async function fetchScorePeriods(period: string, categoryId?: string) {
   return (data ?? []) as HRScorePeriod[]
 }
 
+export async function fetchScorePeriodsRange(dateFrom: string, dateTo: string, categoryId?: string, employeeId?: string) {
+  let q = supabase.from('hr_score_periods')
+    .select(`*, employee:hr_employees!employee_id(${SCORE_EMP_MINI})`)
+    .gte('period', dateFrom).lte('period', dateTo).order('period')
+  if (categoryId) q = q.eq('category_id', categoryId)
+  if (employeeId) q = q.eq('employee_id', employeeId)
+  const { data, error } = await q
+  if (error) pgError(error)
+  return (data ?? []) as HRScorePeriod[]
+}
+
 /**
  * บันทึกผลคะแนนของพนักงาน 1 คน 1 เดือน (atomic ผ่าน RPC)
  * lock = true คือปิดรอบ หลังจากนั้นเดือนนั้นแก้ไม่ได้อีก
@@ -2016,6 +2079,7 @@ export async function createScoreAppeal(input: {
     .insert({ ...input, score_event_id: input.score_event_id ?? null })
     .select().single()
   if (error) pgError(error)
+  window.dispatchEvent(new Event('hr-score-appeals-changed'))
   return data as HRScoreAppeal
 }
 
@@ -2026,6 +2090,7 @@ export async function acceptScoreAppeal(appealId: string, note?: string) {
     p_note: note ?? null,
   })
   if (error) pgError(error)
+  window.dispatchEvent(new Event('hr-score-appeals-changed'))
 }
 
 export async function rejectScoreAppeal(appealId: string, reviewerId: string, note?: string) {
@@ -2036,4 +2101,5 @@ export async function rejectScoreAppeal(appealId: string, reviewerId: string, no
     decision_note: note ?? null,
   }).eq('id', appealId)
   if (error) pgError(error)
+  window.dispatchEvent(new Event('hr-score-appeals-changed'))
 }

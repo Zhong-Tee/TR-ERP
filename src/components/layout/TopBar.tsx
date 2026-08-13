@@ -34,6 +34,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [hrAnnouncementAttention, setHrAnnouncementAttention] = useState(0)
   /** คำร้องใหม่ที่ HR ยังไม่ได้กดรับเรื่อง */
   const [hrRequestPending, setHrRequestPending] = useState(0)
+  /** คำทักท้วงคะแนนที่ HR ยังไม่ได้ตัดสิน */
+  const [hrScoreAppealPending, setHrScoreAppealPending] = useState(0)
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
   const [notifyBlinking, setNotifyBlinking] = useState(false)
   /** ตำแหน่งแนวตั้งของป้ายแจ้งเตือน (px จากขอบล่าง) — ลากขึ้น/ลงได้ จำค่าไว้ใน localStorage */
@@ -351,6 +353,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
 
   const productTabs = [
     { path: '/products', label: 'รายการสินค้า' },
+    { path: '/products/information', label: 'ข้อมูลสินค้า' },
     { path: '/products/inactive', label: 'รายการสินค้าไม่เคลื่อนไหว' },
   ].filter((tab) => {
     const menuKey = resolveMenuKeyFromPath(tab.path)
@@ -476,6 +479,31 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [canSeeHrLeave])
 
+  // Badge เมนู HR "คะแนนปฏิบัติงาน": คำทักท้วงรอตรวจสอบ (เรียลไทม์ทุกหน้า)
+  const canSeeHrWorkScore = hasAccess('hr-work-score')
+  useEffect(() => {
+    if (!canSeeHrWorkScore) return
+    const loadScoreAppealPending = async () => {
+      try {
+        const { count, error } = await supabase.from('hr_score_appeals')
+          .select('*', { count: 'exact', head: true }).eq('status', 'pending')
+        if (error) throw error
+        setHrScoreAppealPending(count || 0)
+      } catch (error) {
+        console.error('Error loading score appeal badge count:', error)
+      }
+    }
+    void loadScoreAppealPending()
+    window.addEventListener('hr-score-appeals-changed', loadScoreAppealPending)
+    const channel = supabase.channel('topbar-hr-score-appeal-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_score_appeals' }, loadScoreAppealPending)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-score-appeals-changed', loadScoreAppealPending)
+      void supabase.removeChannel(channel)
+    }
+  }, [canSeeHrWorkScore])
+
   // Badge เมนู HR "ประกาศ": ประกาศรออนุมัติ + ประกาศที่เผยแพร่แล้วแต่รับทราบไม่ครบ (เรียลไทม์)
   const canSeeHrAnnouncements = hasAccess('hr-announcements')
   useEffect(() => {
@@ -538,9 +566,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   return (
     <>
       <header
-        className={`bg-white text-slate-900 h-16 flex items-center justify-between px-6 border-b border-slate-200 shadow-sm fixed top-0 right-0 z-40 transition-all duration-300 ${
-          sidebarOpen ? 'left-64' : 'left-20'
-        }`}
+        className="relative z-40 flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6 text-slate-900 shadow-sm"
       >
         <div className="flex items-center gap-3">
           {onToggleSidebar && (
@@ -610,9 +636,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       {activeSubTabs.length > 0 && (
         <div
           ref={subnavRef}
-          className={`fixed top-16 right-0 z-30 border-b border-surface-200 bg-white shadow-soft transition-all duration-300 ${
-            sidebarOpen ? 'left-64' : 'left-20'
-          }`}
+          className="relative z-30 shrink-0 border-b border-surface-200 bg-white shadow-soft"
         >
           <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
             <div className="flex items-center justify-between gap-4">
@@ -637,6 +661,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                                 ? hrAnnouncementAttention
                                 : tab.path === '/hr/requests' && hrRequestPending > 0
                                   ? hrRequestPending
+                                  : tab.path === '/hr/work-score' && hrScoreAppealPending > 0
+                                    ? hrScoreAppealPending
                                   : null
                   return (
                     <Link

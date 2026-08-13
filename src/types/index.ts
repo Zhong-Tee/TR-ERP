@@ -1052,7 +1052,7 @@ export interface HREmployee {
   /** ประเภทสัญญาจ้าง: permanent=ประจำ, daily=รายวัน */
   contract_type?: 'permanent' | 'daily'
   /** รูปแบบการทำงาน: office=ออฟฟิศ, hybrid=ออฟฟิศ+WFH (ต้องขอ), wfh=WFH ประจำ */
-  work_mode?: 'office' | 'hybrid' | 'wfh'
+  work_mode?: 'office' | 'hybrid' | 'wfh' | 'no_clock'
   /** จุดบันทึกเวลา (hr_clock_locations) ที่พนักงานคนนี้ใช้ */
   clock_location_id?: string
   /** มาตรฐานเวลาทำงาน (hr_work_schedules) ของพนักงานคนนี้ — ว่าง = ใช้ชุดค่าเริ่มต้น */
@@ -1072,6 +1072,8 @@ export interface HRLeaveType {
   id: string
   name: string
   max_days_per_year?: number
+  /** จำนวนวันปฏิทินขั้นต่ำที่พนักงานต้องยื่นคำขอล่วงหน้า */
+  advance_notice_days: number
   requires_doc: boolean
   /** ชื่อเอกสารที่ต้องแนบ (ป้ายปุ่มอัปโหลดตอนขอลา) เมื่อ requires_doc = true */
   doc_label?: string
@@ -1236,6 +1238,31 @@ export interface HRTimeEntry {
   wfh_request_id?: string
   created_at: string
   employee?: HREmployee
+}
+
+export interface HREmployeeOpeningBalance {
+  id: string
+  employee_id: string
+  leave_type_id: string
+  year: number
+  effective_date: string
+  opening_remaining_days: number
+  note?: string
+  updated_at?: string
+}
+
+export interface HREmployeeOpeningAttendance {
+  id: string
+  employee_id: string
+  year: number
+  effective_date: string
+  absence_days: number
+  late_count: number
+  late_minutes: number
+  early_leave_count: number
+  early_leave_minutes: number
+  note?: string
+  updated_at?: string
 }
 
 export interface HRPortalVisibleTimeEntry {

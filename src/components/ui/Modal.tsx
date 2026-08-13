@@ -53,11 +53,18 @@ export default function Modal({
         role={role}
         aria-modal={ariaModal}
         aria-labelledby={ariaLabelledby}
-        className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 overflow-y-auto ${contentClassName}`}
-        style={{ maxHeight: 'calc(100vh - 6rem - var(--subnav-height, 0rem))' }}
+        className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 ${contentClassName}`}
+        style={{
+          maxHeight: 'calc(100vh - 6rem - var(--subnav-height, 0rem))',
+          // Keep the native scrollbar away from the rounded outer corners.
+          // Scrolling belongs to the inner viewport below.
+          overflow: 'hidden',
+        }}
         onClick={closeOnBackdropClick ? (e) => e.stopPropagation() : undefined}
       >
-        {children}
+        <div className="modal-scroll-viewport min-h-0 flex-1 overflow-y-auto rounded-[inherit]">
+          {children}
+        </div>
       </div>
     </div>
   )

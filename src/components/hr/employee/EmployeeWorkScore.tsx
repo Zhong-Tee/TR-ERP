@@ -11,13 +11,18 @@ import {
   fetchScorePeriods,
   fetchScoreRules,
   fetchScoreSettings,
+  fetchOpeningAttendance,
+  fetchScorePeriodsRange,
 } from '../../../lib/hrApi'
 import {
   ABSENCE_GROUP,
   buildMonthlyScores,
+  buildOpeningAttendanceEvents,
+  indexRules,
   minutesToClock,
   scoringEndDate,
   splitAbsenceGroup,
+  summarizeMonth,
   type AttendanceFact,
   type ScoreCategory,
   type ScoreEventDraft,
@@ -62,6 +67,9 @@ const dayLabel = (date: string) =>
 function explain(ev: ScoreEventDraft): string {
   const d = ev.detail as Record<string, unknown>
   const parts: string[] = []
+  if (d.source === 'opening_balance') parts.push('ยอดยกมาก่อนเริ่ม ERP')
+  if (typeof d.opening_count === 'number') parts.push(`${d.opening_count} ครั้ง`)
+  if (typeof d.average_minutes === 'number') parts.push(`เฉลี่ย ${d.average_minutes} นาที/ครั้ง`)
   if (typeof d.late_min === 'number') parts.push(`สาย ${d.late_min} นาที`)
   if (typeof d.early_min === 'number') parts.push(`กลับก่อน ${d.early_min} นาที`)
   if (typeof d.clock_in_min === 'number') parts.push(`เข้า ${minutesToClock(d.clock_in_min)}`)
@@ -89,6 +97,8 @@ export default function EmployeeWorkScore() {
   const [appealFor, setAppealFor] = useState<PortalEvent | null>(null)
   const [appealReason, setAppealReason] = useState('')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState<'monthly' | 'annual'>('monthly')
+  const [annualPeriods, setAnnualPeriods] = useState<Awaited<ReturnType<typeof fetchScorePeriodsRange>>>([])
 
   useEffect(() => {
     if (!user?.id) return
@@ -115,11 +125,12 @@ export default function EmployeeWorkScore() {
       const { from, to } = monthRange(month)
       // ไม่คิดวันในอนาคต/วันนี้ที่ยังไม่จบ — ไม่งั้นจะขึ้นว่าขาดงานทั้งเดือน
       const scoreUntil = scoringEndDate(month, localISODate())
-      const [facts, periods, saved, myAppeals] = await Promise.all([
+      const [facts, periods, saved, myAppeals, openings] = await Promise.all([
         scoreUntil ? fetchAttendanceFacts(from, scoreUntil, me.id) : Promise.resolve([]),
         fetchScorePeriods(`${month}-01`, category.id),
         fetchScoreEvents({ date_from: from, date_to: to, employee_id: me.id, category_id: category.id }),
         fetchScoreAppeals({ employee_id: me.id }),
+        fetchOpeningAttendance({ employeeId: me.id, year: Number(month.slice(0, 4)) }),
       ])
       setAppeals(myAppeals)
 
@@ -155,6 +166,7 @@ export default function EmployeeWorkScore() {
       const manual = saved.filter((ev) => ev.source === 'manual')
       const all: PortalEvent[] = [
         ...(computed?.events ?? []).map((e) => ({ ...e, dbId: savedById.get(`${e.event_date}|${e.event_code}`)?.id })),
+        ...buildOpeningAttendanceEvents(openings.find((o) => o.effective_date.slice(0, 7) === month), category, rules),
         ...manual.map((ev) => ({
           employee_id: ev.employee_id,
           event_date: ev.event_date,
@@ -170,9 +182,9 @@ export default function EmployeeWorkScore() {
           dbId: ev.id,
         })),
       ]
-      const deduction = all.reduce((s, e) => s + e.points, 0)
-      setTotal(Math.max(category.min_points, category.base_points + deduction))
-      setEvents(all)
+      const summary = summarizeMonth(me.id, all, category, indexRules(rules))
+      setTotal(summary.total_points)
+      setEvents(summary.events)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดคะแนนไม่สำเร็จ')
     } finally {
@@ -181,6 +193,13 @@ export default function EmployeeWorkScore() {
   }, [me, category, rules, month])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    if (view !== 'annual' || !me || !category) return
+    const year = month.slice(0, 4)
+    fetchScorePeriodsRange(`${year}-01-01`, `${year}-12-01`, category.id, me.id)
+      .then(setAnnualPeriods).catch((e) => setError(e instanceof Error ? e.message : 'โหลดสรุปรายปีไม่สำเร็จ'))
+  }, [view, me, category, month])
 
   const byGroup = useMemo(() => {
     const map: Record<string, number> = {}
@@ -255,6 +274,11 @@ export default function EmployeeWorkScore() {
         <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-3 py-2 text-sm">{error}</div>
       )}
 
+      <div className="grid grid-cols-2 rounded-xl bg-gray-100 p-1">
+        {([['monthly', 'คะแนนรายเดือน'], ['annual', 'สรุปรายปี']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setView(key)} className={`rounded-lg py-2 text-sm font-medium ${view === key ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'}`}>{label}</button>)}
+      </div>
+
+      {view === 'monthly' && <>
       {/* เลือกเดือน */}
       <div className="flex items-center justify-between">
         <button type="button" onClick={() => setMonth(shiftMonth(month, -1))}
@@ -366,6 +390,15 @@ export default function EmployeeWorkScore() {
           </span>
         </div>
       )}
+      </>}
+
+      {view === 'annual' && (() => {
+        const byMonth = new Map(annualPeriods.map((p) => [Number(p.period.slice(5, 7)), Number(p.total_points)]))
+        if (month.slice(0, 4) === String(new Date().getFullYear())) byMonth.set(Number(month.slice(5, 7)), total)
+        const values = [...byMonth.values()]
+        const average = values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length * 100) / 100 : 0
+        return <div className="space-y-3"><div className="flex items-center justify-between rounded-xl bg-white p-4 shadow-sm"><button type="button" onClick={() => setMonth(`${Number(month.slice(0, 4)) - 1}-${month.slice(5, 7)}`)} className="text-gray-500">‹</button><span className="font-semibold">ปี {Number(month.slice(0, 4)) + 543}</span><button type="button" onClick={() => setMonth(`${Number(month.slice(0, 4)) + 1}-${month.slice(5, 7)}`)} className="text-gray-500">›</button></div><div className="rounded-2xl bg-white p-5 text-center shadow-sm"><p className="text-sm text-gray-500">คะแนนเฉลี่ย {values.length} เดือน</p><p className="mt-1 text-4xl font-bold text-emerald-700">{average || '-'}</p></div><div className="grid grid-cols-3 gap-2">{Array.from({ length: 12 }, (_, i) => <div key={i} className="rounded-xl bg-white p-3 text-center shadow-sm"><p className="text-xs text-gray-400">เดือน {i + 1}</p><p className="mt-1 font-bold text-gray-800">{byMonth.get(i + 1) ?? '-'}</p></div>)}</div><p className="text-xs text-gray-400">แสดงเดือนที่ปิดรอบแล้ว และเดือนปัจจุบันที่คำนวณสด</p></div>
+      })()}
 
       {/* ฟอร์มทักท้วง */}
       {appealFor && (

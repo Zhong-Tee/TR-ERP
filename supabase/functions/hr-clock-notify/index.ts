@@ -55,6 +55,16 @@ function bangkokTimeText(iso: string): string {
   })
 }
 
+function bangkokDateText(iso: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(iso))
+  const year = parts.find((p) => p.type === 'year')?.value ?? ''
+  const month = parts.find((p) => p.type === 'month')?.value ?? ''
+  const day = parts.find((p) => p.type === 'day')?.value ?? ''
+  return `${year}-${month}-${day}`
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -84,7 +94,7 @@ Deno.serve(async (req) => {
 
     const { data: entry, error: entryError } = await supabase
       .from('hr_time_entries')
-      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, work_schedule_id, position:hr_positions!position_id(name))')
+      .select('*, employee:hr_employees!employee_id(first_name, last_name, nickname, work_schedule_id, work_mode, position:hr_positions!position_id(name))')
       .eq('id', entry_id)
       .single()
     if (entryError || !entry) throw new Error('entry not found: ' + entryError?.message)
@@ -98,7 +108,7 @@ Deno.serve(async (req) => {
     // คำนวณมาสาย/ออกก่อน ตามมาตรฐานเวลาของพนักงาน
     let timingAlertText = ''
     let graceText = ''
-    if (entry.entry_type === 'clock_in' || entry.entry_type === 'clock_out') {
+    if (emp?.work_mode !== 'no_clock' && (entry.entry_type === 'clock_in' || entry.entry_type === 'clock_out')) {
       let sched: { work_start: string; work_end: string; late_grace_min: number } | null = null
       if (emp?.work_schedule_id) {
         const { data } = await supabase
@@ -123,8 +133,28 @@ Deno.serve(async (req) => {
           const grace = sched.late_grace_min ?? 0
           const lateBeyond = bangkokMinutes(entry.entry_time) - (toMinutes(sched.work_start) + grace)
           if (lateBeyond > 0) {
-            timingAlertText = `⚠️ <b>มาสาย:</b> ${minutesToHHMM(lateBeyond)}`
-            if (grace > 0) graceText = `ℹ️ (เกินผ่อนผัน ${grace} นาที)`
+            const workDate = bangkokDateText(entry.entry_time)
+            const expectedStart = toMinutes(sched.work_start)
+            const { data: hourlyLeaves } = await supabase.from('hr_leave_requests')
+              .select('start_time, end_time, leave_type:hr_leave_types(name)')
+              .eq('employee_id', entry.employee_id)
+              .eq('status', 'approved')
+              .eq('leave_mode', 'hourly')
+              .lte('start_date', workDate)
+              .gte('end_date', workDate)
+            const coveredLeave = (hourlyLeaves ?? []).find((leave) => {
+              if (!leave.start_time || !leave.end_time) return false
+              return toMinutes(leave.start_time) <= expectedStart && expectedStart <= toMinutes(leave.end_time)
+            })
+            if (coveredLeave) {
+              const leaveType = Array.isArray(coveredLeave.leave_type)
+                ? coveredLeave.leave_type[0]?.name
+                : (coveredLeave.leave_type as { name?: string } | null)?.name
+              timingAlertText = `✅ <b>มีใบลารายชั่วโมงที่อนุมัติแล้ว:</b> ${escapeHtml(leaveType ?? 'ลา')} ${escapeHtml(String(coveredLeave.start_time).slice(0, 5))}–${escapeHtml(String(coveredLeave.end_time).slice(0, 5))} น.`
+            } else {
+              timingAlertText = `⚠️ <b>มาสาย:</b> ${minutesToHHMM(lateBeyond)}`
+              if (grace > 0) graceText = `ℹ️ (เกินผ่อนผัน ${grace} นาที)`
+            }
           }
         } else {
           const earlyBy = toMinutes(sched.work_end) - bangkokMinutes(entry.entry_time)

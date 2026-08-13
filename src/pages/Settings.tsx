@@ -752,6 +752,7 @@ export default function Settings() {
     { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },
+    { key: 'product-information', label: 'ข้อมูลสินค้า', group: 'products' },
     { key: 'products-inactive', label: 'รายการสินค้าไม่เคลื่อนไหว', group: 'products' },
     // ── ลายการ์ตูน ──
     { key: 'cartoon-patterns', label: 'ลายการ์ตูน', group: '' },

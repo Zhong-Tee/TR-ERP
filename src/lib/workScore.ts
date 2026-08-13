@@ -12,7 +12,7 @@
 export type ScoreGroupCode = 'attendance' | 'attendance_cumulative' | 'time_entry' | 'leave' | 'ot'
 export type DayType = 'work' | 'weekly_off' | 'company_holiday'
 export type TimeSource = 'entry' | 'certified'
-export type WorkMode = 'office' | 'hybrid' | 'wfh'
+export type WorkMode = 'office' | 'hybrid' | 'wfh' | 'no_clock'
 /** ขอบเขตการใช้กติกา — วันทำงานนอกสถานที่ (WFH) นับเป็น remote */
 export type RuleScope = 'all' | 'onsite' | 'remote'
 
@@ -123,6 +123,59 @@ export const EVENT = {
   otLateRequest: 'ot_late_request',
   otUnapproved: 'ot_unapproved',
 } as const
+
+export interface OpeningAttendanceInput {
+  employee_id: string
+  effective_date: string
+  absence_days: number
+  late_count: number
+  late_minutes: number
+  early_leave_count: number
+  early_leave_minutes: number
+}
+
+/** แปลงยอดสะสมก่อนเริ่ม ERP เป็นเหตุการณ์คะแนนแบบรวม โดยใช้ค่าเฉลี่ยนาทีต่อครั้ง */
+export function buildOpeningAttendanceEvents(
+  opening: OpeningAttendanceInput | null | undefined,
+  category: ScoreCategory,
+  rules: ScoreRule[],
+): ScoreEventDraft[] {
+  if (!opening) return []
+  const active = rules.filter((r) => r.is_active)
+  const result: ScoreEventDraft[] = []
+  const add = (rule: ScoreRule | undefined, count: number, detail: Record<string, unknown>) => {
+    if (!rule || count <= 0) return
+    result.push({
+      employee_id: opening.employee_id,
+      event_date: opening.effective_date,
+      event_code: rule.event_code,
+      rule_id: rule.id,
+      category_id: category.id,
+      group_code: rule.group_code,
+      label: `ข้อมูลยกมา: ${rule.name}`,
+      points: Math.round(rule.points * count * 100) / 100,
+      ref_table: 'hr_employee_opening_attendance',
+      ref_id: null,
+      detail: { ...detail, source: 'opening_balance', opening_count: count },
+    })
+  }
+  add(active.find((r) => r.event_code === EVENT.absent), Number(opening.absence_days), {
+    absence_days: Number(opening.absence_days),
+  })
+  const lateCount = Math.max(0, Number(opening.late_count))
+  const avgLate = lateCount ? Number(opening.late_minutes) / lateCount : 0
+  const lateRule = active
+    .filter((r) => r.group_code === 'attendance' && r.event_code.startsWith('late_')
+      && avgLate >= (r.threshold_min ?? 1) && avgLate <= (r.threshold_max ?? Infinity))
+    .sort((a, b) => (b.threshold_min ?? 1) - (a.threshold_min ?? 1))[0]
+  add(lateRule, lateCount, { late_count: lateCount, late_minutes: Number(opening.late_minutes), average_minutes: Math.round(avgLate * 100) / 100 })
+  const earlyCount = Math.max(0, Number(opening.early_leave_count))
+  add(active.find((r) => r.event_code === EVENT.earlyLeave), earlyCount, {
+    early_leave_count: earlyCount, early_leave_minutes: Number(opening.early_leave_minutes),
+    average_minutes: earlyCount ? Math.round(Number(opening.early_leave_minutes) / earlyCount * 100) / 100 : 0,
+  })
+  return result
+}
 
 /** ขอบเขตของวันนี้ ใช้เทียบกับ ScoreRule.applies_to */
 export const scopeOfDay = (fact: AttendanceFact): Exclude<RuleScope, 'all'> =>
@@ -287,6 +340,10 @@ export function evaluateDay(fact: AttendanceFact, rules: RuleIndex): ScoreEventD
     return events
   }
 
+  // พนักงานรูปแบบนี้ไม่ต้องลงเวลา จึงไม่สร้างเหตุการณ์จากการขาดเวลาเข้า/ออก
+  // แต่กติกาการลาเต็มวันและ OT ด้านบนยังคงทำงานตามปกติ
+  if (fact.work_mode === 'no_clock') return events
+
   // ── ไม่มา ทั้งที่ใบลายังไม่อนุมัติ
   if (!hasIn && !hasOut && fact.leave_status === 'pending') {
     const rule = ruleFor(rules, EVENT.absentPendingLeave, fact)
@@ -408,15 +465,23 @@ export function applyCumulativeRules(events: ScoreEventDraft[], rules: RuleIndex
   for (const rule of cumulative) {
     const prefix = rule.counts_event_prefix as string
     const allowance = rule.threshold_min ?? 0
-    const matched = events
+    const matchedBase = events
       .filter((e) => e.event_code.startsWith(prefix)
         && !cumulativeCodes.has(e.event_code)
         // นับเฉพาะรายการที่หักคะแนนจริง (ตัดรายการชดเชยที่เป็นบวกออก)
         && e.points < 0
-        && !reversedKeys.has(`${e.event_date}|${e.event_code}`))
+      && !reversedKeys.has(`${e.event_date}|${e.event_code}`))
       .sort((a, b) => a.event_date.localeCompare(b.event_date))
+    // ยอดยกมาเก็บเป็นรายการรวม แต่กติกาสะสมต้องนับตามจำนวนครั้งจริง
+    const matched = matchedBase.flatMap((e) => {
+      const count = e.detail.source === 'opening_balance'
+        ? Math.max(1, Math.floor(Number(e.detail.opening_count) || 1))
+        : 1
+      return Array.from({ length: count }, () => e)
+    })
 
     const step = rule.points_step || 0
+    let openingAggregate: ScoreEventDraft | null = null
     for (let i = allowance; i < matched.length; i++) {
       const source = matched[i]
       // ครั้งที่เกินลำดับที่เท่าไหร่ (1 = ครั้งแรกที่เกินโควตา)
@@ -424,7 +489,7 @@ export function applyCumulativeRules(events: ScoreEventDraft[], rules: RuleIndex
       const escalated = round2(rule.points + step * (nth - 1))
       // กันตั้งค่า step ผิดทางแล้วกติกา "หัก" กลายเป็น "ให้คะแนน"
       const points = rule.points < 0 ? Math.min(escalated, 0) : Math.max(escalated, 0)
-      extra.push({
+      const generated: ScoreEventDraft = {
         employee_id: source.employee_id,
         event_date: source.event_date,
         event_code: rule.event_code,
@@ -441,8 +506,16 @@ export function applyCumulativeRules(events: ScoreEventDraft[], rules: RuleIndex
           triggered_by: source.event_code,
           ...(step ? { escalation_nth: nth, base_points: rule.points, points_step: step } : {}),
         },
-      })
+      }
+      if (source.detail.source === 'opening_balance') {
+        if (!openingAggregate) openingAggregate = { ...generated, label: `ข้อมูลยกมา: ${rule.name}`, detail: { ...generated.detail, source: 'opening_balance', opening_count: 1 } }
+        else {
+          openingAggregate.points = round2(openingAggregate.points + generated.points)
+          openingAggregate.detail.opening_count = Number(openingAggregate.detail.opening_count) + 1
+        }
+      } else extra.push(generated)
     }
+    if (openingAggregate) extra.push(openingAggregate)
   }
   return extra
 }

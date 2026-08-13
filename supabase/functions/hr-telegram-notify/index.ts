@@ -11,6 +11,10 @@ interface LeaveRequest {
   start_date: string
   end_date: string
   total_days: number
+  leave_mode: 'full_day' | 'hourly'
+  start_time: string | null
+  end_time: string | null
+  total_hours: number | null
   leave_type: { name: string } | null
   employee: {
     first_name: string
@@ -53,13 +57,20 @@ function empBlock(l: LeaveRequest): string {
   const nickname = emp?.nickname || '-'
   const dept = emp?.department?.name || '-'
   const leaveType = l.leave_type?.name || '-'
+  const amount = l.leave_mode === 'hourly'
+    ? `${Number(l.total_hours ?? 0)} ชั่วโมง`
+    : `${Number(l.total_days)} วัน`
+  const timeRange = l.leave_mode === 'hourly'
+    ? `🕐 <b>ช่วงเวลา:</b> ${escapeHtml(String(l.start_time ?? '').slice(0, 5))}–${escapeHtml(String(l.end_time ?? '').slice(0, 5))} น.`
+    : null
   return [
     `👤 <b>ชื่อ:</b> ${escapeHtml(name)}`,
     `🏷️ <b>ชื่อเล่น:</b> ${escapeHtml(nickname)}`,
     `🏢 <b>แผนก:</b> ${escapeHtml(dept)}`,
     `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
-    `⏱️ <b>จำนวน:</b> ${escapeHtml(l.total_days)} วัน`,
-  ].join('\n')
+    timeRange,
+    `⏱️ <b>จำนวน:</b> ${escapeHtml(amount)}`,
+  ].filter(Boolean).join('\n')
 }
 
 async function sendTelegramMessage(botToken: string, chatId: string, text: string) {
