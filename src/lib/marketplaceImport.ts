@@ -320,12 +320,21 @@ export interface MpParseResult {
 }
 
 export interface MpParseConfig {
+  /** Display name of the import config, used to identify platform-specific formats. */
+  name?: string | null
   sheet_name?: string | null
   header_row?: number | null
   column_map: MpMapRow[]
   due_rule?: DueRule | null
   channel_code?: string | null
   shipping_rules?: MpShippingRule[] | null
+}
+
+/** Lazada exports omit quantity; each exported row represents one item. */
+export function isLazadaImport(config: Pick<MpParseConfig, 'name' | 'channel_code'>): boolean {
+  const name = (config.name || '').trim().toLowerCase()
+  const channelCode = (config.channel_code || '').trim().toLowerCase()
+  return name.includes('lazada') || name.includes('ลาซาด้า') || /^lz(?:$|[-_a-z0-9])/.test(channelCode)
 }
 
 /** อ่าน workbook + group เป็นออเดอร์ พร้อมคำนวณ ship_due_at/overdue_at ตาม due_rule */
@@ -353,10 +362,12 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
   }))
 
   const warnings: string[] = []
+  const lazadaImport = isLazadaImport(config)
   if (colIndex.order_no == null) {
     throw new Error('จับคู่คอลัมน์ "เลขคำสั่งซื้อ" ไม่ได้ — ตรวจสอบการตั้งค่าจับคู่คอลัมน์กับหัวตารางของไฟล์')
   }
   for (const key of ['payment_time', 'sku_ref', 'qty'] as MpFieldKey[]) {
+    if (key === 'qty' && lazadaImport) continue
     if (colIndex[key] == null) warnings.push(`จับคู่คอลัมน์ "${MP_FIELD_LABELS[key]}" ไม่ได้`)
   }
 
@@ -434,7 +445,7 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
       product_name_raw: str(cell(row, 'product_name')),
       sku_ref: str(cell(row, 'sku_ref')),
       variation: str(cell(row, 'variation')),
-      qty: parseNum(cell(row, 'qty')),
+      qty: lazadaImport && colIndex.qty == null ? 1 : parseNum(cell(row, 'qty')),
       unit_price: parseNum(cell(row, 'unit_price')),
       line_total: parseNum(cell(row, 'line_total')),
       raw_snapshot: snap,

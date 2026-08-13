@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMpItemRows, parseBangkokDateTime, type MpParsedItem } from './marketplaceImport'
+import { buildMpItemRows, isLazadaImport, parseBangkokDateTime, type MpParsedItem } from './marketplaceImport'
 
 function item(partial: Partial<MpParsedItem>): MpParsedItem {
   return {
@@ -67,5 +67,17 @@ describe('buildMpItemRows', () => {
     const { rows } = buildMpItemRows('mp-1', [item({ variation: 'SET B,FPB01สีฟ้า' })], new Map())
     expect(rows[0].variation).toBe('SET B,FPB01สีฟ้า')
     expect(rows[0].cartoon_pattern).toBeNull()
+  })
+})
+
+describe('isLazadaImport', () => {
+  it('recognizes Lazada from the config name or common LZ channel codes', () => {
+    expect(isLazadaImport({ name: 'Lazada', channel_code: 'TR' })).toBe(true)
+    expect(isLazadaImport({ name: null, channel_code: 'LZTR' })).toBe(true)
+  })
+
+  it('does not apply the Lazada quantity rule to other marketplaces', () => {
+    expect(isLazadaImport({ name: 'Shopee', channel_code: 'SPTR' })).toBe(false)
+    expect(isLazadaImport({ name: 'TikTok Shop', channel_code: 'TTTR' })).toBe(false)
   })
 })
