@@ -268,6 +268,16 @@ function getEffectiveFinishSec(
   return getPlannedEndSecForDept(dept, job, precomputed)
 }
 
+function getEffectiveStartSec(
+  dept: string,
+  job: PlanJob,
+  precomputed: Record<string, TimelineItem[]>
+): number {
+  const actualStart = getEarliestActualStartSecForDept(job, dept)
+  if (actualStart > 0) return actualStart
+  return getPlannedStartSecForDept(dept, job, precomputed)
+}
+
 function adjustForBreaks(
   startSec: number,
   durationSec: number,
@@ -341,10 +351,11 @@ export function computePlanTimeline(
       prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
     }
 
-    let stdDuration = calcPlanFor(dept, j, settings)
+    const stdDuration = calcPlanFor(dept, j, settings)
     const cutSec = j.cut ? parseTimeToMin(j.cut) * 60 : -Infinity
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
+    let followsQcWindow = false
 
     const delayDepts = ['เบิก', 'TUBE']
     if (delayDepts.includes(dept) && cutSec !== -Infinity) {
@@ -368,21 +379,24 @@ export function computePlanTimeline(
         })
         if (finishTimes.length > 0) {
           const firstFinish = Math.min(...finishTimes)
-          const lastFinish = Math.max(...finishTimes)
           base = Math.max(base, firstFinish + 300)
-          const requiredEndTime = lastFinish + stdDuration
-          finalDur = Math.max(stdDuration, requiredEndTime - base)
         }
       }
       if (dept === 'PACK') {
+        const qcStartSec = getEffectiveStartSec('QC', j, precomputed)
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)
-        if (qcFinishSec > 0) {
-          base = Math.max(base, qcFinishSec + 300)
+        if (qcStartSec > 0 && qcFinishSec > 0) {
+          // PACK follows the QC window directly; PACK's configured duration/minimum is not used.
+          base = qcStartSec + 300
+          finalDur = Math.max(0, qcFinishSec - qcStartSec)
+          followsQcWindow = true
         }
       }
     }
 
-    const { start, end } = adjustForBreaks(base, finalDur, breakPeriodsSec)
+    const { start, end } = followsQcWindow
+      ? { start: base, end: base + finalDur }
+      : adjustForBreaks(base, finalDur, breakPeriodsSec)
     results.push({ id: j.id, start, end, dur: finalDur, line: li })
     lineLastEnd[li] = end
   }

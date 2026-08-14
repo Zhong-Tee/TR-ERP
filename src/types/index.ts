@@ -1324,6 +1324,8 @@ export interface HRWorkSchedule {
   name: string
   work_start: string
   work_end: string
+  lunch_start: string
+  lunch_end: string
   late_grace_min: number
   /** วันทำงานต่อสัปดาห์ (ISO: 1=จันทร์ ... 7=อาทิตย์) คั่นด้วย comma */
   work_days: string

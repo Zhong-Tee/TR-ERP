@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi } from 'react-icons/fi'
+import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi, FiX } from 'react-icons/fi'
 import LeaveImport from './LeaveImport'
 import LeaveOverageReport from './LeaveOverageReport'
 import {
@@ -25,6 +25,15 @@ import { supabase } from '../../lib/supabase'
 type StatusFilter = 'all' | 'pending' | 'approved' | 'rejected'
 const WORK_MINUTES_PER_DAY = 8 * 60
 const WEEKDAY_LABELS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์'] as const
+const WEEKDAY_HEADER_CLASSES = [
+  'bg-yellow-300 text-black',
+  'bg-pink-300 text-black',
+  'bg-green-300 text-black',
+  'bg-orange-300 text-black',
+  'bg-sky-300 text-black',
+  'bg-purple-300 text-black',
+  'bg-red-300 text-black',
+] as const
 
 function asDateOnly(value: string): Date {
   return new Date(`${value}T00:00:00`)
@@ -194,6 +203,7 @@ export default function LeaveManagement() {
   /** สิทธิ์เข้าหน้า + อนุมัติลา: เฉพาะ superadmin / admin / hr / account */
   const canManageLeave = ['superadmin', 'admin', 'hr', 'account'].includes(user?.role ?? '')
   const canApproveOT = user?.role === 'superadmin' || user?.role === 'admin'
+  const canCancelLeave = user?.role === 'superadmin' || user?.role === 'admin'
   const [requests, setRequests] = useState<HRLeaveRequest[]>([])
   const [otRequests, setOtRequests] = useState<HROTRequest[]>([])
   const [wfhRequests, setWfhRequests] = useState<HRWFHRequest[]>([])
@@ -524,6 +534,27 @@ export default function LeaveManagement() {
     }
   }
 
+  const handleCancelLeave = async (request: HRLeaveRequest) => {
+    if (!canCancelLeave || request.status === 'cancelled') return
+    if (!window.confirm(`ยืนยันยกเลิกใบลาของ ${employeeDisplayName(request)} หรือไม่?`)) return
+
+    setActionLoading(true)
+    setError(null)
+    try {
+      await updateLeaveRequest(request.id, { status: 'cancelled' })
+      supabase.functions.invoke('hr-leave-request-notify', {
+        body: { leave_id: request.id, event: 'cancelled' },
+      }).catch(() => {})
+      setDetailRequest(null)
+      setSuccessMessage('ยกเลิกใบลาสำเร็จ')
+      await loadData()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'ยกเลิกใบลาไม่สำเร็จ')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   const handleWFHStatus = async (id: string, status: 'approved' | 'rejected') => {
     const reason = status === 'rejected' ? window.prompt('ระบุเหตุผลที่ไม่อนุมัติ WFH')?.trim() : ''
     if (status === 'rejected' && !reason) return
@@ -726,18 +757,15 @@ export default function LeaveManagement() {
         {activeTab === 'calendar' && (
           <div className="mx-6 mt-4 mb-4 rounded-xl border border-surface-200 bg-surface-50/70 p-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <h3 className="text-sm font-semibold text-surface-800">ปฏิทินลา</h3>
-                <p className="text-xs text-surface-600">
-                  วันนี้คือ{` `}
-                  <span className="font-medium text-surface-800">
-                    {thaiWeekdayName(today)} {today.toLocaleDateString('th-TH')}
-                  </span>
-                </p>
-              </div>
+              <h3 className="text-sm font-semibold text-black">
+                ปฏิทินลา
+                <span className="ml-2 font-medium text-black">
+                  วันนี้คือ {thaiWeekdayName(today)} {today.toLocaleDateString('th-TH')}
+                </span>
+              </h3>
               <div className="flex items-center gap-2">
                 {/* คำอธิบายสี */}
-                <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-surface-600">
+                <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-black">
                   <span className="w-3 h-3 rounded bg-emerald-100 border border-emerald-300" /> อนุมัติ
                   <span className="w-3 h-3 rounded bg-yellow-200 border border-yellow-400 ml-2" /> รออนุมัติ
                   <span className="w-3 h-3 rounded bg-sky-100 border border-sky-300 ml-2" /> วันหยุดพนักงาน
@@ -759,7 +787,7 @@ export default function LeaveManagement() {
                   onClick={() =>
                     setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))
                   }
-                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-surface-700 hover:bg-surface-100"
+                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-black hover:bg-surface-100"
                 >
                   เดือนก่อน
                 </button>
@@ -771,7 +799,7 @@ export default function LeaveManagement() {
                   onClick={() =>
                     setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))
                   }
-                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-surface-700 hover:bg-surface-100"
+                  className="px-2.5 py-1 rounded-lg border border-surface-300 bg-white text-xs text-black hover:bg-surface-100"
                 >
                   เดือนถัดไป
                 </button>
@@ -782,8 +810,8 @@ export default function LeaveManagement() {
               {/* ปฏิทิน (ซ้าย) */}
               <div className="flex-1 min-w-0">
                 <div className="grid grid-cols-7 gap-1.5">
-                  {WEEKDAY_LABELS.map((day) => (
-                    <div key={day} className="rounded bg-surface-100 px-1 py-1.5 text-center text-xs font-semibold text-surface-600">
+                  {WEEKDAY_LABELS.map((day, index) => (
+                    <div key={day} className={`rounded px-1 py-1.5 text-center text-xs font-semibold ${WEEKDAY_HEADER_CLASSES[index]}`}>
                       {day}
                     </div>
                   ))}
@@ -805,24 +833,24 @@ export default function LeaveManagement() {
                       }}
                       aria-label={`ดูรายการลาและวันหยุด ${cell.date.toLocaleDateString('th-TH')}`}
                       aria-pressed={cell.key === selectedDateKey}
-                      className={`min-h-[96px] rounded-lg border p-1.5 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/60 ${
+                      className={`relative min-h-[96px] rounded-lg border p-1.5 pt-7 text-left transition-colors hover:border-emerald-400 hover:bg-emerald-50/60 ${
                         cell.inMonth
                           ? hasPending
                             ? 'bg-yellow-50 border-yellow-300'
                             : cell.holiday
                               ? 'bg-violet-50/60 border-violet-200'
                               : 'bg-white border-surface-200'
-                          : 'bg-surface-50 border-surface-100 text-surface-400'
+                          : 'bg-surface-50 border-surface-100 text-black'
                       } ${cell.key === selectedDateKey ? 'ring-2 ring-emerald-500 border-emerald-400' : ''} ${
                         cell.isToday && cell.key !== selectedDateKey ? 'ring-1 ring-emerald-300' : ''
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className={`text-sm font-semibold ${cell.isToday ? 'text-emerald-700' : 'text-surface-700'}`}>
+                      <div className="mb-1">
+                        <span className={`absolute left-2 top-1.5 text-sm font-semibold ${cell.isToday ? 'text-emerald-800' : 'text-black'}`}>
                           {cell.date.getDate()}
                         </span>
                         {cell.inMonth && (cell.leaves.length > 0 || cell.dayOffs.length > 0) && (
-                          <span className="flex items-center gap-1">
+                          <span className="absolute right-2 top-1.5 flex items-center gap-1">
                             {cell.leaves.length > 0 && (
                               <span className="text-[10px] rounded-full px-1.5 py-0.5 bg-emerald-100 text-emerald-700 font-medium">
                                 {cell.leaves.length}
@@ -871,7 +899,7 @@ export default function LeaveManagement() {
                           </div>
                         ))}
                         {hiddenCount > 0 && (
-                          <div className="text-[10px] text-surface-500">+ อีก {hiddenCount}</div>
+                          <div className="text-[10px] text-black">+ อีก {hiddenCount}</div>
                         )}
                       </div>
                     </button>
@@ -881,23 +909,20 @@ export default function LeaveManagement() {
               </div>
 
               {/* รายการลา + วันหยุดของวันที่เลือก (ขวา) */}
-              <div className="lg:w-80 flex-shrink-0 space-y-3">
+              <div className="lg:w-96 flex-shrink-0 space-y-3">
                 <div className="rounded-lg border border-surface-200 bg-white p-3">
                   <div className="flex items-center justify-between mb-3">
                     <div>
-                      <h4 className="text-sm font-semibold text-surface-800">
+                      <h4 className="text-sm font-semibold text-black">
                         {isSelectedToday ? 'รายการลาวันนี้' : 'รายการลาวันที่เลือก'}
                       </h4>
-                      <p className="text-[11px] text-surface-500">
-                        {thaiWeekdayName(selectedCalendarDate)} {selectedCalendarDate.toLocaleDateString('th-TH')}
-                      </p>
                     </div>
                     <span className="text-xs rounded-full px-2.5 py-0.5 bg-emerald-100 text-emerald-700 font-semibold">
                       {selectedDateLeaves.length} คนลา
                     </span>
                   </div>
                   {selectedDateLeaves.length === 0 ? (
-                    <p className="text-sm text-surface-500 py-6 text-center">
+                    <p className="text-sm text-black py-6 text-center">
                       {isSelectedToday ? 'ไม่มีผู้ลาวันนี้' : 'ไม่มีผู้ลาในวันที่เลือก'}
                     </p>
                   ) : (
@@ -923,8 +948,8 @@ export default function LeaveManagement() {
                           >
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="text-sm font-semibold text-surface-800 truncate">{employeeDisplayName(r)}</div>
-                                <div className="text-xs text-surface-500 truncate">{employeePositionName(r)}</div>
+                                <div className="text-sm font-semibold text-black truncate">{employeeDisplayName(r)}</div>
+                                <div className="text-xs text-black truncate">{employeePositionName(r)}</div>
                               </div>
                               <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
                                 isHourly ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'
@@ -935,23 +960,23 @@ export default function LeaveManagement() {
 
                             <div className="mt-2 border-t border-black/5 pt-2 space-y-1.5">
                               <div className="flex items-center justify-between gap-2 text-xs">
-                                <span className="flex min-w-0 items-center font-medium text-surface-700"><span className="truncate">{r.leave_type?.name || 'ไม่ระบุประเภทลา'}</span><EmergencyBadge request={r}/></span>
-                                <span className="shrink-0 text-surface-500">{statusLabel(r.status)}</span>
+                                <span className="flex min-w-0 items-center font-medium text-black"><span className="truncate">{r.leave_type?.name || 'ไม่ระบุประเภทลา'}</span><EmergencyBadge request={r}/></span>
+                                <span className="shrink-0 text-black">{statusLabel(r.status)}</span>
                               </div>
-                              <div className="flex items-center gap-1.5 text-xs text-surface-700">
+                              <div className="flex items-center gap-1.5 text-xs text-black">
                                 {isHourly ? <FiClock className="shrink-0 text-blue-600" /> : <FiCalendar className="shrink-0 text-emerald-600" />}
                                 <span className="font-medium">{time ?? 'เต็มวัน'}</span>
-                                <span className="text-surface-400">·</span>
+                                <span className="text-black">·</span>
                                 <span>{calendarLeaveDuration(r)}</span>
                               </div>
                               {spansMultipleDays && (
-                                <div className="flex items-center gap-1.5 text-[11px] text-surface-500">
+                                <div className="flex items-center gap-1.5 text-[11px] text-black">
                                   <FiCalendar className="shrink-0" />
                                   <span>{compactThaiDate(r.start_date)} – {compactThaiDate(r.end_date)}</span>
                                 </div>
                               )}
                               {r.reason && (
-                                <p className="line-clamp-2 text-[11px] leading-relaxed text-surface-500" title={r.reason}>
+                                <p className="line-clamp-3 text-xs leading-relaxed text-black" title={r.reason}>
                                   เหตุผล: {r.reason}
                                 </p>
                               )}
@@ -972,9 +997,6 @@ export default function LeaveManagement() {
                       <h4 className="text-sm font-semibold text-sky-800">
                         {isSelectedToday ? 'วันหยุดพนักงานวันนี้' : 'วันหยุดพนักงานวันที่เลือก'}
                       </h4>
-                      <p className="text-[11px] text-surface-500">
-                        {thaiWeekdayName(selectedCalendarDate)} {selectedCalendarDate.toLocaleDateString('th-TH')}
-                      </p>
                     </div>
                     <span className="text-xs rounded-full px-2.5 py-0.5 bg-sky-100 text-sky-700 font-semibold">
                       {selectedDateDayOffs.length} คนหยุด
@@ -989,7 +1011,7 @@ export default function LeaveManagement() {
                   )}
 
                   {selectedDateDayOffs.length === 0 ? (
-                    <p className="text-sm text-surface-500 py-6 text-center">
+                    <p className="text-sm text-black py-6 text-center">
                       {selectedDateHoliday ? 'ไม่มีวันหยุดกำหนดพิเศษรายบุคคล' : 'ไม่มีวันหยุดในวันที่เลือก'}
                     </p>
                   ) : (
@@ -1002,7 +1024,7 @@ export default function LeaveManagement() {
                           <div className="text-sm font-medium text-surface-800 truncate">
                             {employeeName(employeeById[entry.employee_id])}
                           </div>
-                          <div className="text-xs text-surface-500 truncate">
+                          <div className="text-xs text-black truncate">
                             {entry.note || employeeById[entry.employee_id]?.position?.name || 'วันหยุดตามที่กำหนด'}
                           </div>
                         </li>
@@ -1164,7 +1186,8 @@ export default function LeaveManagement() {
                         {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">
-                        {req.start_date} – {req.end_date}
+                        <div>{req.start_date} – {req.end_date}</div>
+                        <div className="mt-1 text-xs text-surface-500">{leaveTimeRange(req) ?? 'เต็มวัน'}</div>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[200px] truncate" title={req.reason ?? ''}>
@@ -1261,7 +1284,8 @@ export default function LeaveManagement() {
                         {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
                       </td>
                       <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
-                        {req.start_date} – {req.end_date}
+                        <div>{req.start_date} – {req.end_date}</div>
+                        <div className="mt-1 text-xs text-surface-500">{leaveTimeRange(req) ?? 'เต็มวัน'}</div>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">{formatLeaveDuration(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700 max-w-[260px] truncate" title={req.reason ?? ''}>
@@ -1320,7 +1344,15 @@ export default function LeaveManagement() {
         closeOnBackdropClick
       >
         {detailRequest && (
-          <div className="p-6">
+          <div className="relative p-6 pt-14">
+            <button
+              type="button"
+              onClick={() => setDetailRequest(null)}
+              aria-label="ปิด"
+              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-red-100 text-red-600 transition-colors hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
+            >
+              <FiX className="h-5 w-5" aria-hidden="true" />
+            </button>
             <h3 className="text-lg font-semibold text-surface-800 mb-4">รายละเอียดคำขอลา</h3>
             <div className="space-y-3 text-sm">
               <p><span className="text-surface-500">พนักงาน:</span> {employeeDisplayName(detailRequest)}</p>
@@ -1352,14 +1384,17 @@ export default function LeaveManagement() {
                 </p>
               )}
             </div>
-            <div className="mt-6 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setDetailRequest(null)}
-                className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
-              >
-                ปิด
-              </button>
+            <div className="mt-6 flex justify-end gap-2">
+              {canCancelLeave && detailRequest.status !== 'cancelled' && (
+                <button
+                  type="button"
+                  onClick={() => handleCancelLeave(detailRequest)}
+                  disabled={actionLoading}
+                  className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 text-sm font-medium disabled:opacity-50"
+                >
+                  {actionLoading ? 'กำลังยกเลิกใบลา...' : 'ยกเลิกใบลา'}
+                </button>
+              )}
             </div>
           </div>
         )}

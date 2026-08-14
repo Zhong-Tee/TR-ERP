@@ -16,6 +16,8 @@ const EMPTY_SCHED_FORM = {
   name: '',
   work_start: '08:00',
   work_end: '17:00',
+  lunch_start: '12:00',
+  lunch_end: '13:00',
   late_grace_min: '0',
   work_days: [1, 2, 3, 4, 5, 6] as number[],
   is_default: false,
@@ -169,6 +171,8 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
       name: s.name,
       work_start: s.work_start.slice(0, 5),
       work_end: s.work_end.slice(0, 5),
+      lunch_start: s.lunch_start?.slice(0, 5) ?? '12:00',
+      lunch_end: s.lunch_end?.slice(0, 5) ?? '13:00',
       late_grace_min: String(s.late_grace_min),
       work_days: parseWorkDays(s.work_days),
       is_default: s.is_default,
@@ -181,6 +185,11 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
     if (!schedForm.name.trim()) return setMessage({ type: 'error', text: 'กรุณาตั้งชื่อมาตรฐานเวลา' })
     if (schedForm.work_days.length === 0) return setMessage({ type: 'error', text: 'เลือกวันทำงานอย่างน้อย 1 วัน' })
     if (isNaN(grace) || grace < 0) return setMessage({ type: 'error', text: 'นาทีผ่อนผันไม่ถูกต้อง' })
+    if (schedForm.work_end <= schedForm.work_start) return setMessage({ type: 'error', text: 'เวลาเลิกงานต้องมากกว่าเวลาเข้างาน' })
+    if (schedForm.lunch_end <= schedForm.lunch_start) return setMessage({ type: 'error', text: 'เวลาสิ้นสุดพักเที่ยงต้องมากกว่าเวลาเริ่มพัก' })
+    if (schedForm.lunch_start < schedForm.work_start || schedForm.lunch_end > schedForm.work_end) {
+      return setMessage({ type: 'error', text: 'เวลาพักเที่ยงต้องอยู่ภายในช่วงเวลาทำงาน' })
+    }
 
     setSaving(true)
     try {
@@ -189,6 +198,8 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
         name: schedForm.name.trim(),
         work_start: schedForm.work_start,
         work_end: schedForm.work_end,
+        lunch_start: schedForm.lunch_start,
+        lunch_end: schedForm.lunch_end,
         late_grace_min: grace,
         work_days: [...schedForm.work_days].sort((a, b) => a - b).join(','),
         is_default: schedForm.is_default,
@@ -461,6 +472,7 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
                   <th className="p-3 text-left font-semibold rounded-tl-xl">ชื่อชุด</th>
                   <th className="p-3 text-center font-semibold">วันทำงาน</th>
                   <th className="p-3 text-center font-semibold">เวลาเข้า–เลิก</th>
+                  <th className="p-3 text-center font-semibold">เวลาพักเที่ยง</th>
                   <th className="p-3 text-center font-semibold">ผ่อนผันสาย (นาที)</th>
                   <th className="p-3 text-center font-semibold">ค่าเริ่มต้น</th>
                   <th className="p-3 text-center font-semibold">ใช้งาน</th>
@@ -474,6 +486,9 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
                     <td className="p-3 text-center text-sm text-gray-600">{workDaysLabel(s.work_days)}</td>
                     <td className="p-3 text-center">
                       {s.work_start.slice(0, 5)}–{s.work_end.slice(0, 5)} น.
+                    </td>
+                    <td className="p-3 text-center">
+                      {(s.lunch_start?.slice(0, 5) ?? '12:00')}–{(s.lunch_end?.slice(0, 5) ?? '13:00')} น.
                     </td>
                     <td className="p-3 text-center">{s.late_grace_min}</td>
                     <td className="p-3 text-center">
@@ -576,7 +591,7 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
               <div>
                 <label className="block text-sm font-medium text-gray-600 mb-1">เวลาเข้างาน</label>
                 <input
@@ -592,6 +607,24 @@ export default function ClockLocationsPanel({ canEdit }: Props) {
                   type="time"
                   value={schedForm.work_end}
                   onChange={(e) => setSchedForm({ ...schedForm, work_end: e.target.value })}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">เริ่มพักเที่ยง</label>
+                <input
+                  type="time"
+                  value={schedForm.lunch_start}
+                  onChange={(e) => setSchedForm({ ...schedForm, lunch_start: e.target.value })}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">สิ้นสุดพักเที่ยง</label>
+                <input
+                  type="time"
+                  value={schedForm.lunch_end}
+                  onChange={(e) => setSchedForm({ ...schedForm, lunch_end: e.target.value })}
                   className={inputClass}
                 />
               </div>

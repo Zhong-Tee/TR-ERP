@@ -5,13 +5,14 @@ import {
   getEmployeeLeaveSummary,
   createLeaveRequest,
   fetchLeaveTypes,
+  fetchWorkSchedules,
   updateLeaveRequest,
   uploadHRFile,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
 import AttachmentViewer from './AttachmentViewer'
-import type { HRLeaveType } from '../../../types'
+import type { HREmployee, HRLeaveType, HRWorkSchedule } from '../../../types'
 
 const BUCKET_MEDICAL = 'hr-medical-certs'
 const CURRENT_YEAR = new Date().getFullYear()
@@ -41,8 +42,27 @@ type RecentRequest = {
   created_at: string
 }
 
-/** ชั่วโมงต่อวันทำงานมาตรฐาน — ใช้แปลงลาเป็นชั่วโมง → สัดส่วนวัน */
-const HOURS_PER_DAY = 8
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.slice(0, 5).split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function workingMinutesBetween(start: string, end: string, schedule?: HRWorkSchedule): number {
+  const startMin = timeToMinutes(start)
+  const endMin = timeToMinutes(end)
+  if (endMin <= startMin) return 0
+  if (!schedule) return endMin - startMin
+
+  const lunchStart = timeToMinutes(schedule.lunch_start || '12:00')
+  const lunchEnd = timeToMinutes(schedule.lunch_end || '13:00')
+  const lunchOverlap = Math.max(0, Math.min(endMin, lunchEnd) - Math.max(startMin, lunchStart))
+  return Math.max(0, endMin - startMin - lunchOverlap)
+}
+
+function scheduleWorkingMinutes(schedule?: HRWorkSchedule): number {
+  if (!schedule) return 8 * 60
+  return workingMinutesBetween(schedule.work_start, schedule.work_end, schedule)
+}
 
 function diffDays(start: string, end: string): number {
   const a = new Date(start)
@@ -96,7 +116,8 @@ function statusBadge(status: string) {
 
 export default function EmployeeLeave() {
   const { user } = useAuthContext()
-  const [employee, setEmployee] = useState<{ id: string } | null>(null)
+  const [employee, setEmployee] = useState<HREmployee | null>(null)
+  const [workSchedule, setWorkSchedule] = useState<HRWorkSchedule | undefined>()
   const [loading, setLoading] = useState(true)
   const [summary, setSummary] = useState<{
     balances: LeaveSummaryBalance[]
@@ -128,15 +149,13 @@ export default function EmployeeLeave() {
   /** ชั่วโมงลา (โหมดชั่วโมง) — รองรับข้ามเที่ยงคืนไม่ได้ (ลาในวันเดียว) */
   const totalHours = (() => {
     if (form.leave_mode !== 'hourly' || !form.start_time || !form.end_time) return 0
-    const [sh, sm] = form.start_time.split(':').map(Number)
-    const [eh, em] = form.end_time.split(':').map(Number)
-    const mins = eh * 60 + em - (sh * 60 + sm)
+    const mins = workingMinutesBetween(form.start_time, form.end_time, workSchedule)
     return mins > 0 ? Math.round((mins / 60) * 100) / 100 : 0
   })()
 
   const totalDays =
     form.leave_mode === 'hourly'
-      ? Math.round((totalHours / HOURS_PER_DAY) * 100) / 100
+      ? Math.round((totalHours / (scheduleWorkingMinutes(workSchedule) / 60)) * 100) / 100
       : form.start_date && form.end_date
         ? diffDays(form.start_date, form.end_date)
         : 0
@@ -160,12 +179,18 @@ export default function EmployeeLeave() {
         setLoading(false)
         return
       }
-      const [sum, types] = await Promise.all([
+      const [sum, types, schedules] = await Promise.all([
         getEmployeeLeaveSummary(emp.id, CURRENT_YEAR),
         fetchLeaveTypes(),
+        fetchWorkSchedules(true),
       ])
       setSummary(sum)
       setLeaveTypes(types)
+      setWorkSchedule(
+        schedules.find((schedule) => schedule.id === emp.work_schedule_id)
+          ?? schedules.find((schedule) => schedule.is_default)
+          ?? schedules[0],
+      )
       if (types.length && !form.leave_type_id) setForm((f) => ({ ...f, leave_type_id: types[0].id }))
     } catch (e) {
       console.error(e)

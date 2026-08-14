@@ -26,6 +26,7 @@ import EmployeeSkillsPanel from '../components/plan/EmployeeSkillsPanel'
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'manpower' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'manpower-set' | 'employee-skills' | 'issue'
 type ManageSubView = 'new' | 'all'
+type DashboardSubView = 'schedule' | 'assignment' | 'analytics' | 'report'
 
 interface ProcessStep {
   name: string
@@ -45,6 +46,7 @@ interface PlanSettingsData {
   linesPerDept: Record<string, number>
   /** หมวดสินค้าที่ผูกกับแผนก (metadata — ไม่ใช้ใน timeline) */
   departmentProductCategories: Record<string, string[]>
+  allow_supervisor_as_worker: boolean
 }
 
 interface PlanJob {
@@ -130,6 +132,7 @@ const defaultSettings: PlanSettingsData = {
   },
   linesPerDept: { เบิก: 1, STAMP: 1, STK: 1, CTT: 1, LASER: 1, TUBE: 1, QC: 1, PACK: 1 },
   departmentProductCategories: {},
+  allow_supervisor_as_worker: false,
 }
 
 // --- Utils ---
@@ -374,6 +377,17 @@ function getEffectiveFinishSec(
   return getPlannedEndSecForDept(dept, job, precomputed)
 }
 
+function getEffectiveStartSec(
+  dept: string,
+  job: PlanJob,
+  precomputed: Record<string, { id: string; start: number; end: number; line: number }[]>
+): number {
+  const actualStart = getEarliestActualStartSecForDept(job, dept)
+  if (actualStart > 0) return actualStart
+  const timeline = precomputed[dept]
+  return timeline?.find((item) => item.id === job.id)?.start ?? 0
+}
+
 function adjustForBreaks(
   startSec: number,
   durationSec: number,
@@ -461,10 +475,11 @@ function computePlanTimeline(
       prevEnd = actualLastEnd > 0 ? actualLastEnd : lastRes.end
     }
 
-    let stdDuration = calcPlanFor(dept, j, settings, deptQtyByWorkOrderId, catQtyByWorkOrderId)
+    const stdDuration = calcPlanFor(dept, j, settings, deptQtyByWorkOrderId, catQtyByWorkOrderId)
     const cutSec = j.cut ? parseTimeToMin(j.cut) * 60 : -Infinity
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
+    let followsQcWindow = false
 
     const delayDepts = ['เบิก', 'TUBE']
     if (delayDepts.includes(dept) && cutSec !== -Infinity) {
@@ -488,21 +503,24 @@ function computePlanTimeline(
         })
         if (finishTimes.length > 0) {
           const firstFinish = Math.min(...finishTimes)
-          const lastFinish = Math.max(...finishTimes)
           base = Math.max(base, firstFinish + 300)
-          const requiredEndTime = lastFinish + stdDuration
-          finalDur = Math.max(stdDuration, requiredEndTime - base)
         }
       }
       if (dept === 'PACK') {
+        const qcStartSec = getEffectiveStartSec('QC', j, precomputed)
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)
-        if (qcFinishSec > 0) {
-          base = Math.max(base, qcFinishSec + 300)
+        if (qcStartSec > 0 && qcFinishSec > 0) {
+          // PACK follows the QC window directly; PACK's configured duration/minimum is not used.
+          base = qcStartSec + 300
+          finalDur = Math.max(0, qcFinishSec - qcStartSec)
+          followsQcWindow = true
         }
       }
     }
 
-    const { start, end } = adjustForBreaks(base, finalDur, breakPeriodsSec)
+    const { start, end } = followsQcWindow
+      ? { start: base, end: base + finalDur }
+      : adjustForBreaks(base, finalDur, breakPeriodsSec)
     results.push({ id: j.id, start, end, dur: finalDur, line: li })
     lineLastEnd[li] = end
   }
@@ -649,6 +667,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [loading, setLoading] = useState(true)
   const [_dbStatus, setDbStatus] = useState('กำลังโหลด...')
   const [currentView, setCurrentView] = useState<ViewKey>('dash')
+  const [dashboardSubView, setDashboardSubView] = useState<DashboardSubView>('schedule')
   const [issueOpenCount, setIssueOpenCount] = useState(0)
 
   useEffect(() => {
@@ -736,19 +755,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [woStatusById, setWoStatusById] = useState<Record<string, string>>({})
   const [hideCompleted, setHideCompleted] = useState(true)
   const [hideVoided, setHideVoided] = useState(true)
-  const [dashViewMode, setDashViewMode] = useState<'table' | 'card'>(() => {
-    if (typeof window === 'undefined') return 'table'
-    return localStorage.getItem('planDashViewMode') === 'card' ? 'card' : 'table'
-  })
-  useEffect(() => {
-    try {
-      localStorage.setItem('planDashViewMode', dashViewMode)
-    } catch {
-      /* ignore */
-    }
-  }, [dashViewMode])
+  const [dashViewMode] = useState<'table' | 'card'>('table')
   /** กรองแสดงเฉพาะใบงานที่เลยกำหนด (มุมมองการ์ด) */
-  const [showOverdueOnly, setShowOverdueOnly] = useState(false)
+  const [showOverdueOnly] = useState(false)
   /** เมนูโน้ตติดตามที่กำลังเปิดอยู่ (มุมมองการ์ด) */
   const [noteMenu, setNoteMenu] = useState<{ jobId: string; dept: string } | null>(null)
   useEffect(() => {
@@ -1982,7 +1991,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 {(
                   [
                     ['dash', 'Dashboard (Master Plan)'],
-                    ['manpower', 'กำลังคน'],
                     ['work-orders', `ใบสั่งงาน (${workOrdersCount})`],
                     // เลขบนแท็บ = ใบงานใหม่ (กำลังผลิต) ที่ต้องจัดการจริง — ไม่ผูกกับตัวกรองวันที่ของแท็บ "ใบงานทั้งหมด"
                     ['work-orders-manage', `จัดการใบงาน (${manageNewCount})`],
@@ -2024,18 +2032,51 @@ export default function Plan({ tvMode = false }: PlanProps) {
       )}
 
       <div className={tvMode ? 'space-y-4 min-h-0 flex-1' : 'space-y-4 pt-4'}>
-      {currentView === 'manpower' && (
+      {currentView === 'dash' && !tvMode && (
+        <nav className="flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm" aria-label="เมนูแผนการผลิต">
+          {([
+            ['schedule', 'แผนเวลา'],
+            ['assignment', 'มอบหมายงาน'],
+            ['analytics', 'วิเคราะห์กำลังคน'],
+            ['report', 'รายงาน'],
+          ] as [DashboardSubView, string][]).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setDashboardSubView(key)}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${dashboardSubView === key ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              {label}
+            </button>
+          ))}
+          <label className="ml-auto flex items-center gap-2 text-sm font-medium text-slate-600">
+            <span className="hidden sm:inline">วันที่</span>
+            <input
+              type="date"
+              value={dDate}
+              onChange={(event) => setDDate(event.target.value)}
+              disabled={!unlocked}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-slate-700 disabled:bg-slate-50"
+            />
+          </label>
+        </nav>
+      )}
+      {currentView === 'dash' && dashboardSubView !== 'schedule' && !tvMode && (
         <ManpowerPanel
           mode="overview"
+          view={dashboardSubView === 'assignment' ? 'planning' : dashboardSubView}
+          showNavigation={false}
           departments={settings.departments}
           processes={settings.processes}
           selectedDate={dDate}
           canEdit={unlocked}
+          allowSupervisorAsWorker={settings.allow_supervisor_as_worker}
           workOrders={scopedJobs
             .filter((job) => job.date === dDate && !job.is_production_voided)
             .map((job) => ({
               id: job.id,
               name: job.name,
+              date: job.date,
               departments: settings.departments.filter((dept) => getEffectiveQty(job, dept, settings, deptQtyByWorkOrderId) > 0),
               lineAssignments: job.line_assignments || {},
               schedules: Object.fromEntries(
@@ -2047,12 +2088,32 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   ] : []
                 }),
               ),
+              processStates: Object.fromEntries(
+                settings.departments.flatMap((dept) => {
+                  const timeline = dashTimelines[dept]?.find((item) => item.id === job.id)
+                  const status = getJobStatusForDept(job, dept, settings, deptQtyByWorkOrderId)
+                  const now = new Date()
+                  const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()
+                  const state = status.key === 'done'
+                    ? 'done'
+                    : status.key === 'progress'
+                      ? 'progress'
+                      : job.date === localISODate(now) && timeline && nowSec > timeline.end
+                        ? 'late'
+                        : 'pending'
+                  return (settings.processes[dept] || []).map((process) => [`${dept}|${process.name}`, state])
+                }),
+              ),
+              finalFinish: secToHHMM(settings.departments.reduce((latest, dept) => {
+                const item = dashTimelines[dept]?.find((timeline) => timeline.id === job.id)
+                return Math.max(latest, item?.end || 0)
+              }, 0)),
               manpowerLockedAt: job.manpower_locked_at || null,
             }))}
         />
       )}
       {currentView === 'manpower-set' && (
-        <ManpowerPanel mode="settings" departments={settings.departments} processes={settings.processes} selectedDate={dDate} canEdit={unlocked} />
+        <ManpowerPanel mode="settings" departments={settings.departments} processes={settings.processes} selectedDate={dDate} canEdit={unlocked} allowSupervisorAsWorker={settings.allow_supervisor_as_worker} />
       )}
       {currentView === 'employee-skills' && (
         <EmployeeSkillsPanel departments={settings.departments} processes={settings.processes} canEdit={unlocked} />
@@ -2813,7 +2874,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       )}
 
       {/* View: Dashboard (Master Plan) - logic ตาม plan.html */}
-      {currentView === 'dash' && (() => {
+      {currentView === 'dash' && (tvMode || dashboardSubView === 'schedule') && (() => {
         const visibleDayJobs = dayJobs.filter((j) => {
           if (hideVoided && j.is_production_voided) return false
           if (!hideCompleted) return true
@@ -2839,10 +2900,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
           })
         }
         const dashIsToday = dDate === dashTodayISO
-        const overdueCount = visibleDayJobs.filter(isJobLate).length
         return (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
-            <h2 className="border-b border-gray-200 px-4 py-3 text-lg font-semibold">Dashboard & Master Plan</h2>
             <div className="p-4 space-y-4">
               <div className="flex flex-wrap gap-4 items-center justify-between">
                 <div className="flex flex-wrap gap-4 items-center">
@@ -2876,46 +2935,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     />
                     <span className="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border border-gray-200 bg-gray-200 transition-colors after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:ring-4 peer-focus:ring-blue-300" />
                   </label>
-                  <div className="mt-6 inline-flex overflow-hidden rounded-full border border-gray-300">
-                    <button
-                      type="button"
-                      onClick={() => setDashViewMode('table')}
-                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${dashViewMode === 'table' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                    >
-                      ตาราง
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDashViewMode('card')}
-                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${dashViewMode === 'card' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
-                    >
-                      การ์ด
-                    </button>
-                  </div>
-                  {dashViewMode === 'card' && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setShowOverdueOnly((v) => !v)}
-                        className={`mt-6 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
-                          showOverdueOnly
-                            ? 'border-red-500 bg-red-600 text-white'
-                            : overdueCount > 0
-                              ? 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100'
-                              : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
-                        }`}
-                      >
-                        ‼️ เฉพาะเลยกำหนด
-                        <span className={`rounded-full px-1.5 text-xs font-bold ${showOverdueOnly ? 'bg-white text-red-600' : 'bg-red-600 text-white'}`}>
-                          {overdueCount}
-                        </span>
-                      </button>
-                      <span className="mt-6 inline-flex items-center gap-1.5 text-xs text-gray-400">
-                        <span className="inline-block h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                        อัปเดตสด {pad(dashNowDate.getHours())}:{pad(dashNowDate.getMinutes())}
-                      </span>
-                    </>
-                  )}
                 </div>
                 {unlocked && (
                   <button
@@ -3940,6 +3959,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       }}
                       className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
                     />
+                    {currentDept === 'PACK' && (
+                      <p className="mt-1 text-xs text-gray-500">ไม่ได้ใช้คำนวน</p>
+                    )}
                   </div>
                   <div>
                     <h4 className="font-medium mb-1">จำนวนไลน์การผลิต</h4>
