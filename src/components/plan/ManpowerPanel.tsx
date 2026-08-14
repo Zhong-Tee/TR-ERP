@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { localISODate } from '../../lib/localDate'
 import Modal from '../ui/Modal'
-import { RESPONSIBILITY_LABELS, isSkillUsable, manpowerScore, type EmployeeProfile, type EmployeeSkill, type ManpowerEmployee, type OperationRequirement, type QualificationStatus, type ResponsibilityLevel } from '../../lib/planManpower'
+import { RESPONSIBILITY_LABELS, effectiveOperatorCount, effectiveRequiredHeadcount, isSkillUsable, manpowerScore, type EmployeeProfile, type EmployeeSkill, type ManpowerEmployee, type OperationRequirement, type QualificationStatus, type ResponsibilityLevel } from '../../lib/planManpower'
 
 type WorkOrderSummary={id:string;name:string;departments:string[];lineAssignments:Record<string,number>;schedules:Record<string,{start:string;end:string}>;manpowerLockedAt?:string|null}
 type WorkerAssignment={id:string;plan_job_id:string;employee_id:string;department_name:string;process_name:string;line_no:number;planned_start:string;planned_end:string;status:string;assignment_role:'operator'|'supervisor'}
@@ -15,7 +15,7 @@ type AssignOptions={reload?:boolean;silent?:boolean}
 const qLabels:Record<QualificationStatus,string>={qualified:'ทำได้',training:'ฝึกงาน',blocked:'มือใหม่'}
 const empName=(e:ManpowerEmployee)=>e.nickname||`${e.first_name} ${e.last_name}`
 
-type CoverageRow={dept:string;process:string;eligible:EmployeeSkill[];requirement:Pick<OperationRequirement,'required_workers'|'minimum_proficiency'|'required_supervisors'>;shortage:number;supervisorShortage:number;risk:string}
+type CoverageRow={dept:string;process:string;eligible:EmployeeSkill[];requirement:Pick<OperationRequirement,'required_workers'|'minimum_proficiency'|'required_supervisors'>;shortage:number;supervisorShortage:number;risk:string;allowSupervisorAsWorker:boolean}
 type PreparedRow=CoverageRow&{operators:EmployeeSkill[];supervisors:EmployeeSkill[];trainees:EmployeeSkill[];operatorShortage:number;supervisorShortage:number;assigned:WorkerAssignment[];assignedOperatorShortage:number;assignedSupervisorShortage:number}
 type PreparedJob=WorkOrderSummary&{rows:PreparedRow[];shortage:number}
 
@@ -37,6 +37,7 @@ function ManpowerReport({history,employees,jobNames}:{history:AssignmentHistory[
 
 function ManpowerAnalytics({history,jobs,requirements,processes}:{history:AssignmentHistory[];jobs:HistoryJob[];requirements:OperationRequirement[];processes:Record<string,{name:string}[]>}){
  const [range,setRange]=useState('90')
+ const allowSupervisorAsWorker=requirements.some(requirement=>requirement.allow_supervisor_as_worker===true)
  const cutoff=range==='ALL'?'':localISODate(new Date(Date.now()-Number(range)*86400000))
  const scopedJobs=jobs.filter(job=>!cutoff||job.date>=cutoff)
  const activeAssignments=history.filter(item=>item.status!=='cancelled')
@@ -44,7 +45,7 @@ function ManpowerAnalytics({history,jobs,requirements,processes}:{history:Assign
  const rows=new Map<string,AnalysisRow>()
  scopedJobs.forEach(job=>Object.entries(job.qty||{}).filter(([,qty])=>Number(qty)>0).forEach(([department,qty])=>(processes[department]||[]).forEach(process=>{
   const requirement=requirements.find(item=>item.department_name===department&&item.process_name===process.name)
-  const demand=(requirement?.required_workers||1)+(requirement?.required_supervisors||0)
+  const demand=effectiveRequiredHeadcount(requirement?.required_workers||1,requirement?.required_supervisors||0,allowSupervisorAsWorker)
   const filled=Math.min(demand,activeAssignments.filter(item=>item.plan_job_id===job.id&&item.department_name===department&&item.process_name===process.name).length)
   const shortage=Math.max(0,demand-filled),key=`${department}|${process.name}`
   const current=rows.get(key)||{department,process:process.name,jobs:0,volume:0,demand:0,filled:0,shortage:0,shortageJobs:0,peakShortage:0}
@@ -54,7 +55,7 @@ function ManpowerAnalytics({history,jobs,requirements,processes}:{history:Assign
  const shortageRows=ranked.filter(row=>row.shortage>0),maxShortage=Math.max(1,...shortageRows.map(row=>row.shortage))
  const totalDemand=ranked.reduce((sum,row)=>sum+row.demand,0),totalFilled=ranked.reduce((sum,row)=>sum+row.filled,0),totalShortage=Math.max(0,totalDemand-totalFilled),coveragePercent=totalDemand?Math.round(totalFilled/totalDemand*100):100
  const dates=[...new Set(scopedJobs.map(job=>job.date))].sort().slice(-14)
- const daily=dates.map(date=>{const dayJobs=scopedJobs.filter(job=>job.date===date),volume=dayJobs.reduce((sum,job)=>sum+Object.values(job.qty||{}).reduce((qtySum,qty)=>qtySum+(Number(qty)||0),0),0),demand=dayJobs.reduce((sum,job)=>sum+Object.entries(job.qty||{}).filter(([,qty])=>Number(qty)>0).reduce((deptSum,[department])=>deptSum+(processes[department]||[]).reduce((processSum,process)=>{const req=requirements.find(item=>item.department_name===department&&item.process_name===process.name);return processSum+(req?.required_workers||1)+(req?.required_supervisors||0)},0),0),0);return{date,jobs:dayJobs.length,volume,demand}})
+ const daily=dates.map(date=>{const dayJobs=scopedJobs.filter(job=>job.date===date),volume=dayJobs.reduce((sum,job)=>sum+Object.values(job.qty||{}).reduce((qtySum,qty)=>qtySum+(Number(qty)||0),0),0),demand=dayJobs.reduce((sum,job)=>sum+Object.entries(job.qty||{}).filter(([,qty])=>Number(qty)>0).reduce((deptSum,[department])=>deptSum+(processes[department]||[]).reduce((processSum,process)=>{const req=requirements.find(item=>item.department_name===department&&item.process_name===process.name);return processSum+effectiveRequiredHeadcount(req?.required_workers||1,req?.required_supervisors||0,allowSupervisorAsWorker)},0),0),0);return{date,jobs:dayJobs.length,volume,demand}})
  const maxDaily=Math.max(1,...daily.map(day=>day.demand)),half=Math.max(1,Math.floor(daily.length/2)),previous=daily.slice(0,half),recent=daily.slice(half)
  const avg=(items:typeof daily,key:'jobs'|'volume'|'demand')=>items.length?items.reduce((sum,item)=>sum+item[key],0)/items.length:0
  const change=(key:'jobs'|'volume'|'demand')=>{const before=avg(previous,key),after=avg(recent,key);return before?Math.round((after-before)/before*100):after>0?100:0},jobChange=change('jobs'),volumeChange=change('volume')
@@ -86,6 +87,7 @@ function ManpowerJobCard({job,employeeMap,canEdit,onAssign,onRemove,onAutoAssign
 }
 
 function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,available,leaveEmployees,error,assignments,canEdit,onAssign,onRemove,onRefresh,onLock}:{selectedDate:string;workOrders:WorkOrderSummary[];coverage:CoverageRow[];employees:ManpowerEmployee[];profiles:EmployeeProfile[];available:ManpowerEmployee[];leaveEmployees:ManpowerEmployee[];error:string;assignments:WorkerAssignment[];canEdit:boolean;onAssign:(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor',options?:AssignOptions)=>Promise<boolean>;onRemove:(id:string)=>void;onRefresh:()=>Promise<void>;onLock:(job:PreparedJob)=>void}){
+ const allowSupervisorAsWorker=coverage.some(row=>row.allowSupervisorAsWorker)
  const profileMap=new Map(profiles.map(p=>[p.employee_id,p]))
  const employeeMap=new Map(employees.map(e=>[e.id,e]))
  const jobs=workOrders.map(job=>{
@@ -97,8 +99,9 @@ function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,a
    const operatorShortage=Math.max(0,r.requirement.required_workers-operators.length)
    const supervisorShortage=Math.max(0,r.requirement.required_supervisors-supervisors.length)
    const assigned=assignments.filter(a=>a.plan_job_id===job.id&&a.department_name===r.dept&&a.process_name===r.process)
-   const assignedOperatorShortage=Math.max(0,r.requirement.required_workers-assigned.filter(a=>a.assignment_role==='operator').length)
-   const assignedSupervisorShortage=Math.max(0,r.requirement.required_supervisors-assigned.filter(a=>a.assignment_role==='supervisor').length)
+    const assignedSupervisorShortage=Math.max(0,r.requirement.required_supervisors-assigned.filter(a=>a.assignment_role==='supervisor').length)
+    const rawAssignedOperatorShortage=Math.max(0,r.requirement.required_workers-effectiveOperatorCount(r.requirement.required_supervisors,assigned.filter(a=>a.assignment_role==='operator').length,assigned.filter(a=>a.assignment_role==='supervisor').length,allowSupervisorAsWorker))
+    const assignedOperatorShortage=Math.max(0,rawAssignedOperatorShortage-(allowSupervisorAsWorker&&r.requirement.required_supervisors>0?assignedSupervisorShortage:0))
    return{...r,operators,supervisors,trainees,operatorShortage,supervisorShortage,assigned,assignedOperatorShortage,assignedSupervisorShortage}
   })
   return{...job,rows,shortage:rows.reduce((sum,r)=>sum+r.assignedOperatorShortage+r.assignedSupervisorShortage,0)}
@@ -117,9 +120,9 @@ function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,a
    if(!schedule)continue
    const start=timeOf(schedule.start),end=timeOf(schedule.end)
    const isFree=(employeeId:string)=>(busy.get(employeeId)||[]).every(slot=>slot.end<=start||slot.start>=end)
-   const assignMissing=async(role:'operator'|'supervisor',skillsForRole:EmployeeSkill[],missing:number)=>{for(let slot=0;slot<missing;slot++){const candidate=skillsForRole.find(skill=>!row.assigned.some(a=>a.employee_id===skill.employee_id)&&isFree(skill.employee_id));if(candidate){const success=await onAssign(job,row,candidate,role,{reload:false,silent:true});if(success){const list=busy.get(candidate.employee_id)||[];list.push({start,end});busy.set(candidate.employee_id,list);skillsForRole=skillsForRole.filter(skill=>skill.employee_id!==candidate.employee_id)}}current+=1;onProgress(current,total)}}
-   await assignMissing('operator',[...row.operators],row.assignedOperatorShortage)
-   await assignMissing('supervisor',[...row.supervisors],row.assignedSupervisorShortage)
+    const assignMissing=async(role:'operator'|'supervisor',skillsForRole:EmployeeSkill[],missing:number)=>{let assignedCount=0;for(let slot=0;slot<missing;slot++){const candidate=skillsForRole.find(skill=>!row.assigned.some(a=>a.employee_id===skill.employee_id)&&isFree(skill.employee_id));if(candidate){const success=await onAssign(job,row,candidate,role,{reload:false,silent:true});if(success){assignedCount+=1;const list=busy.get(candidate.employee_id)||[];list.push({start,end});busy.set(candidate.employee_id,list);skillsForRole=skillsForRole.filter(skill=>skill.employee_id!==candidate.employee_id)}}current+=1;onProgress(current,total)}return assignedCount}
+    if(allowSupervisorAsWorker&&row.requirement.required_supervisors>0){await assignMissing('supervisor',[...row.supervisors],row.assignedSupervisorShortage);await assignMissing('operator',[...row.operators],row.assignedOperatorShortage)}
+    else{await assignMissing('operator',[...row.operators],row.assignedOperatorShortage);await assignMissing('supervisor',[...row.supervisors],row.assignedSupervisorShortage)}
   }
   await onRefresh()
  }
@@ -140,7 +143,7 @@ function CandidateBox({title,color,skills,employeeMap,canEdit=false,assigned=[],
 
 export default function ManpowerPanel({mode,departments,processes,selectedDate,canEdit,workOrders=[]}:Props){
  const [employees,setEmployees]=useState<ManpowerEmployee[]>([]),[profiles,setProfiles]=useState<EmployeeProfile[]>([]),[skills,setSkills]=useState<EmployeeSkill[]>([])
- const [requirements,setRequirements]=useState<OperationRequirement[]>([])
+ const [requirements,setRequirements]=useState<OperationRequirement[]>([]),[allowSupervisorAsWorker,setAllowSupervisorAsWorker]=useState(false)
  const [assignments,setAssignments]=useState<WorkerAssignment[]>([])
  const [assignmentHistory,setAssignmentHistory]=useState<AssignmentHistory[]>([]),[historyEmployees,setHistoryEmployees]=useState<ManpowerEmployee[]>([]),[historyJobs,setHistoryJobs]=useState<HistoryJob[]>([]),[historyJobNames,setHistoryJobNames]=useState<Map<string,string>>(new Map()),[manpowerView,setManpowerView]=useState<'planning'|'report'|'analytics'>('planning')
  const [leaves,setLeaves]=useState<LeaveRecord[]>([]),[timeEntries,setTimeEntries]=useState<TimeEntry[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[saving,setSaving]=useState(false)
@@ -150,7 +153,7 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
  const [requirementDept,setRequirementDept]=useState('ALL')
  const [proficiency,setProficiency]=useState(3),[efficiency,setEfficiency]=useState(100),[qualification,setQualification]=useState<QualificationStatus>('qualified')
  useEffect(()=>{const first=processes[department]?.[0]?.name||'';if(!processes[department]?.some(p=>p.name===processName))setProcessName(first)},[department,processes,processName])
- const load=useCallback(async()=>{setLoading(true);setError('');const [er,pr,sr,rr,lr,tr,ar,ahr,her,jhr]=await Promise.all([
+ const load=useCallback(async()=>{setLoading(true);setError('');const [er,pr,sr,rr,lr,tr,ar,ahr,her,jhr,psr]=await Promise.all([
   supabase.from('hr_employees').select('id,employee_code,first_name,last_name,nickname,employment_status,department:hr_departments!hr_employees_department_id_fkey(name),position:hr_positions!hr_employees_position_id_fkey(name)').in('employment_status',['active','probation']).order('employee_code'),
   supabase.from('plan_employee_profiles').select('*'),supabase.from('plan_employee_skills').select('*').order('department_name').order('process_name'),
   supabase.from('plan_operation_requirements').select('*').order('department_name').order('process_name'),
@@ -159,15 +162,16 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
   supabase.from('plan_worker_assignments').select('*').lt('planned_start',`${selectedDate}T23:59:59+07:00`).gt('planned_end',`${selectedDate}T00:00:00+07:00`).not('status','in','(cancelled,completed)'),
   supabase.from('plan_worker_assignments').select('*').order('planned_start',{ascending:false}).limit(2000),
   supabase.from('hr_employees').select('id,employee_code,first_name,last_name,nickname,employment_status,department:hr_departments!hr_employees_department_id_fkey(name),position:hr_positions!hr_employees_position_id_fkey(name)').order('employee_code'),
-  supabase.from('plan_jobs').select('id,name,date,qty').order('date',{ascending:false})])
+   supabase.from('plan_jobs').select('id,name,date,qty').order('date',{ascending:false}),
+   supabase.from('plan_settings').select('data').eq('id',1).maybeSingle()])
   let loadedAssignments=(ar.data||[]) as WorkerAssignment[],loadedHistory=(ahr.data||[]) as AssignmentHistory[]
   const localTime=(value:string)=>new Date(value).toLocaleTimeString('en-GB',{timeZone:'Asia/Bangkok',hour:'2-digit',minute:'2-digit',hour12:false})
   const jobsNeedingSync=workOrders.filter(job=>!job.manpowerLockedAt&&loadedAssignments.some(item=>{if(item.plan_job_id!==job.id)return false;const schedule=job.schedules[`${item.department_name}|${item.process_name}`]||job.schedules[item.department_name],expectedLine=(job.lineAssignments[item.department_name]??0)+1;return Boolean(schedule)&&(item.line_no!==expectedLine||localTime(item.planned_start)!==schedule.start||localTime(item.planned_end)!==schedule.end)}))
   const syncErrors:string[]=[]
   for(const job of jobsNeedingSync){const {data,error:syncError}=await supabase.rpc('plan_sync_job_manpower_schedule',{p_plan_job_id:job.id,p_schedules:job.schedules,p_line_assignments:job.lineAssignments});if(syncError)syncErrors.push(`${job.name}: ${syncError.message}`);else if(data){const synced=data as WorkerAssignment[],ids=new Set(synced.map(item=>item.id));loadedAssignments=[...loadedAssignments.filter(item=>!ids.has(item.id)),...synced];loadedHistory=loadedHistory.map(item=>synced.find(current=>current.id===item.id)||item)}}
   if(syncErrors.length){const message=`พบใบงานที่ไม่สามารถซิงก์ไลน์และเวลาใหม่ได้\n\n${syncErrors.join('\n')}`;setError(message);setModalMessage(message)}
-  const err=er.error||pr.error||sr.error||rr.error||lr.error||tr.error||ar.error||ahr.error||her.error||jhr.error;if(err)setError(err.message.includes('plan_employee_')?'ยังไม่ได้ติดตั้งฐานข้อมูลกำลังคน กรุณารัน migration 349_plan_manpower.sql':err.message)
-  setEmployees((er.data||[]) as unknown as ManpowerEmployee[]);setProfiles((pr.data||[]) as EmployeeProfile[]);setSkills((sr.data||[]) as EmployeeSkill[]);setRequirements((rr.data||[]) as OperationRequirement[]);setLeaves((lr.data||[]) as LeaveRecord[]);setTimeEntries((tr.data||[]) as TimeEntry[]);setAssignments(loadedAssignments);setAssignmentHistory(loadedHistory);setHistoryEmployees((her.data||[]) as unknown as ManpowerEmployee[]);setHistoryJobs((jhr.data||[]) as HistoryJob[]);setHistoryJobNames(new Map((jhr.data||[]).map(job=>[job.id,job.name])));setLoading(false)},[selectedDate])
+   const err=er.error||pr.error||sr.error||rr.error||lr.error||tr.error||ar.error||ahr.error||her.error||jhr.error||psr.error;if(err)setError(err.message.includes('plan_employee_')?'ยังไม่ได้ติดตั้งฐานข้อมูลกำลังคน กรุณารัน migration 349_plan_manpower.sql':err.message)
+   const planSettings=(psr.data?.data||{}) as Record<string,unknown>,allowHeadAsWorker=planSettings.allow_supervisor_as_worker===true;setAllowSupervisorAsWorker(allowHeadAsWorker);setEmployees((er.data||[]) as unknown as ManpowerEmployee[]);setProfiles((pr.data||[]) as EmployeeProfile[]);setSkills((sr.data||[]) as EmployeeSkill[]);setRequirements(((rr.data||[]) as OperationRequirement[]).map(requirement=>({...requirement,allow_supervisor_as_worker:allowHeadAsWorker})));setLeaves((lr.data||[]) as LeaveRecord[]);setTimeEntries((tr.data||[]) as TimeEntry[]);setAssignments(loadedAssignments);setAssignmentHistory(loadedHistory);setHistoryEmployees((her.data||[]) as unknown as ManpowerEmployee[]);setHistoryJobs((jhr.data||[]) as HistoryJob[]);setHistoryJobNames(new Map((jhr.data||[]).map(job=>[job.id,job.name])));setLoading(false)},[selectedDate])
  useEffect(()=>{void load()},[load])
  const profileMap=useMemo(()=>new Map(employees.map(e=>[e.id,profiles.find(p=>p.employee_id===e.id)||({employee_id:e.id,is_available_for_planning:true,responsibility_level:'operator'} as EmployeeProfile)])),[employees,profiles])
  const now=new Date(),isToday=selectedDate===localISODate(now),nowMinutes=now.getHours()*60+now.getMinutes()
@@ -175,10 +179,11 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
  const activeLeaveIds=new Set(leaves.filter(leave=>{if(leave.leave_mode!=='hourly')return true;const start=toMinutes(leave.start_time),end=toMinutes(leave.end_time);if(start===null||end===null||!isToday)return true;if(nowMinutes<start||nowMinutes>=end)return false;const hasReturned=timeEntries.some(entry=>entry.employee_id===leave.employee_id&&entry.entry_type==='clock_in'&&new Date(entry.entry_time).getHours()*60+new Date(entry.entry_time).getMinutes()>=start);return !hasReturned}).map(leave=>leave.employee_id))
  const planningEmployees=employees.filter(e=>profileMap.get(e.id)?.is_available_for_planning===true)
  const available=planningEmployees.filter(e=>!activeLeaveIds.has(e.id))
- const coverage=departments.flatMap(dept=>(processes[dept]||[]).map(proc=>{const requirement=requirements.find(r=>r.department_name===dept&&r.process_name===proc.name)||{required_workers:1,minimum_proficiency:1,required_supervisors:0};const eligible=skills.filter(s=>s.department_name===dept&&s.process_name===proc.name&&s.proficiency>=requirement.minimum_proficiency&&isSkillUsable(s,selectedDate)&&available.some(e=>e.id===s.employee_id));const supervisors=eligible.filter(s=>['supervisor','lead'].includes(profileMap.get(s.employee_id)?.responsibility_level||''));const shortage=Math.max(0,requirement.required_workers-eligible.length),supervisorShortage=Math.max(0,requirement.required_supervisors-supervisors.length);return{dept,process:proc.name,eligible,requirement,shortage,supervisorShortage,risk:shortage>0||supervisorShortage>0?'ขาดคน':eligible.length===requirement.required_workers?'พอดี':'พร้อม'}}))
+ const coverage=departments.flatMap(dept=>(processes[dept]||[]).map(proc=>{const requirement=requirements.find(r=>r.department_name===dept&&r.process_name===proc.name)||{required_workers:1,minimum_proficiency:1,required_supervisors:0};const eligible=skills.filter(s=>s.department_name===dept&&s.process_name===proc.name&&s.proficiency>=requirement.minimum_proficiency&&isSkillUsable(s,selectedDate)&&available.some(e=>e.id===s.employee_id));const supervisors=eligible.filter(s=>['supervisor','lead'].includes(profileMap.get(s.employee_id)?.responsibility_level||''));const shortage=Math.max(0,requirement.required_workers-eligible.length),supervisorShortage=Math.max(0,requirement.required_supervisors-supervisors.length);return{dept,process:proc.name,eligible,requirement,shortage,supervisorShortage,risk:shortage>0||supervisorShortage>0?'ขาดคน':eligible.length===requirement.required_workers?'พอดี':'พร้อม',allowSupervisorAsWorker}}))
  async function saveSkill(){if(!employeeId||!department||!processName)return;setSaving(true);const {error:e}=await supabase.from('plan_employee_skills').upsert({employee_id:employeeId,department_name:department,process_name:processName,proficiency,efficiency_percent:efficiency,qualification_status:qualification,assessed_at:selectedDate},{onConflict:'employee_id,department_name,process_name'});setSaving(false);if(e)setError(e.message);else await load()}
  async function updateProfile(id:string,patch:Partial<EmployeeProfile>){const p=profileMap.get(id);const {error:e}=await supabase.from('plan_employee_profiles').upsert({employee_id:id,responsibility_level:p?.responsibility_level||'operator',is_available_for_planning:p?.is_available_for_planning??true,...patch},{onConflict:'employee_id'});if(e)setError(e.message);else await load()}
  async function updateRequirement(dept:string,process:string,patch:Partial<OperationRequirement>){const current=requirements.find(r=>r.department_name===dept&&r.process_name===process);const {error:e}=await supabase.from('plan_operation_requirements').upsert({department_name:dept,process_name:process,required_workers:current?.required_workers||1,minimum_proficiency:current?.minimum_proficiency||1,required_supervisors:current?.required_supervisors||0,...patch},{onConflict:'department_name,process_name'});if(e)setError(e.message);else await load()}
+ async function updateAllowSupervisorAsWorker(enabled:boolean){setSaving(true);setError('');const {data,error:currentError}=await supabase.from('plan_settings').select('data').eq('id',1).maybeSingle();if(currentError){setSaving(false);setError(currentError.message);return}const current=(data?.data||{}) as Record<string,unknown>;const {error:e}=await supabase.from('plan_settings').upsert({id:1,data:{...current,allow_supervisor_as_worker:enabled}},{onConflict:'id'});setSaving(false);if(e)setError(e.message);else{setAllowSupervisorAsWorker(enabled);setRequirements(items=>items.map(item=>({...item,allow_supervisor_as_worker:enabled})))}}
  async function assignWorker(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor',options:AssignOptions={}){
   const schedule=job.schedules[`${row.dept}|${row.process}`]||job.schedules[row.dept];if(!schedule){const message=`ไม่สามารถจัดสรรได้: ไม่พบเวลาเริ่ม–สิ้นสุดของ ${row.dept} ในใบงานนี้`;if(!options.silent){setError(message);setModalMessage(message)}return false}
   setSaving(true);setError('')
@@ -209,6 +214,7 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
   })}
  </section>
  if(mode==='settings')return <section className="space-y-4">
+  <label className={`flex items-center justify-between gap-4 rounded-xl border p-4 shadow-sm transition ${allowSupervisorAsWorker?'border-emerald-200 bg-emerald-50':'border-slate-200 bg-white'} ${canEdit?'cursor-pointer':'cursor-not-allowed opacity-70'}`}><span><b className="block text-slate-900">อนุญาตให้หัวหน้าทำงาน</b><span className="mt-1 block text-xs text-slate-500">เมื่อกระบวนการต้องการหัวหน้า ระบบจะนับหัวหน้าคนนั้นเป็นคนทำงานได้ด้วย</span></span><span className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${allowSupervisorAsWorker?'bg-emerald-500':'bg-slate-300'}`}><input type="checkbox" className="sr-only" checked={allowSupervisorAsWorker} disabled={!canEdit||saving} onChange={event=>void updateAllowSupervisorAsWorker(event.target.checked)}/><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${allowSupervisorAsWorker?'translate-x-6':'translate-x-1'}`}/></span></label>
   <div className="rounded-xl border bg-white p-5 shadow-sm"><h2 className="text-xl font-semibold">ตั้งค่าความต้องการกำลังคน</h2><p className="text-sm text-gray-500">กำหนดจำนวนคนและระดับขั้นต่ำที่แต่ละกระบวนการต้องใช้ สำหรับข้อมูลรายบุคคลให้ไปที่แถบ “ทักษะพนักงาน”</p>{error&&<p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}</div>
   <div className="overflow-x-auto rounded-xl border bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b p-4"><div><h3 className="font-semibold">จำนวนคนที่ต้องการต่อกระบวนการ</h3><p className="text-xs text-gray-500">ใช้ตรวจคนขาดและความพร้อมก่อนเพิ่มไลน์ผลิต</p></div><select className="rounded-lg border px-3 py-2 text-sm" value={requirementDept} onChange={e=>setRequirementDept(e.target.value)}><option value="ALL">ทุกแผนก</option>{departments.map(d=><option key={d}>{d}</option>)}</select></div><table className="w-full min-w-[720px] text-sm"><thead className="bg-gray-50 text-left"><tr><th className="p-3">แผนก / กระบวนการ</th><th>จำนวนคน</th><th>Skill ขั้นต่ำ</th><th>หัวหน้า/ผู้เชี่ยวชาญ</th></tr></thead><tbody>{coverage.filter(r=>requirementDept==='ALL'||r.dept===requirementDept).map(r=><tr key={`${r.dept}-${r.process}`} className="border-t"><td className="p-3"><b>{r.dept}</b> · {r.process}</td><td><input className="w-20 rounded border px-2 py-1" type="number" min="1" value={r.requirement.required_workers} disabled={!canEdit} onChange={e=>updateRequirement(r.dept,r.process,{required_workers:Number(e.target.value)})}/></td><td><select className="rounded border px-2 py-1" value={r.requirement.minimum_proficiency} disabled={!canEdit} onChange={e=>updateRequirement(r.dept,r.process,{minimum_proficiency:Number(e.target.value)})}>{[1,2,3,4,5].map(n=><option key={n}>{n}</option>)}</select></td><td><input className="w-20 rounded border px-2 py-1" type="number" min="0" value={r.requirement.required_supervisors} disabled={!canEdit} onChange={e=>updateRequirement(r.dept,r.process,{required_supervisors:Number(e.target.value)})}/></td></tr>)}</tbody></table></div>
  </section>

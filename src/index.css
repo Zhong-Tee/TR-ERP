@@ -79,6 +79,10 @@ aside > .max-h-\[570px\] {
 }
 
 /* Evaluation belongs to its own sub-tab; keep only responsibility in Skill Matrix. */
+.employee-skills-page {
+  padding-bottom: 16px;
+}
+
 .employee-skills-page main > div:first-child .mt-4.grid > label:nth-child(n + 2) {
   display: none;
 }

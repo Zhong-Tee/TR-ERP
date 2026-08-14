@@ -118,6 +118,11 @@ function leaveTimeRange(req: HRLeaveRequest): string | null {
   return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
 }
 
+function EmergencyBadge({ request }: { request: HRLeaveRequest }) {
+  if (!request.is_emergency) return null
+  return <span className="ml-2 inline-flex shrink-0 rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">ฉุกเฉิน</span>
+}
+
 /** แสดงจำนวนวันทศนิยมเป็นหน่วยที่อ่านง่าย โดย 1 วันทำงาน = 8 ชั่วโมง */
 function formatLeaveDays(value: number, emptyAsDash = false): string {
   const totalMinutes = Math.max(0, Math.round(Number(value || 0) * WORK_MINUTES_PER_DAY))
@@ -930,7 +935,7 @@ export default function LeaveManagement() {
 
                             <div className="mt-2 border-t border-black/5 pt-2 space-y-1.5">
                               <div className="flex items-center justify-between gap-2 text-xs">
-                                <span className="font-medium text-surface-700 truncate">{r.leave_type?.name || 'ไม่ระบุประเภทลา'}</span>
+                                <span className="flex min-w-0 items-center font-medium text-surface-700"><span className="truncate">{r.leave_type?.name || 'ไม่ระบุประเภทลา'}</span><EmergencyBadge request={r}/></span>
                                 <span className="shrink-0 text-surface-500">{statusLabel(r.status)}</span>
                               </div>
                               <div className="flex items-center gap-1.5 text-xs text-surface-700">
@@ -1156,7 +1161,7 @@ export default function LeaveManagement() {
                     >
                       <td className="px-6 py-3 text-sm text-surface-800">{employeeDisplayName(req)}</td>
                       <td className="px-6 py-3 text-sm text-surface-700">
-                        {(req.leave_type as { name?: string })?.name ?? '-'}
+                        {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
                       </td>
                       <td className="px-4 py-3 text-sm text-surface-700 whitespace-nowrap">
                         {req.start_date} – {req.end_date}
@@ -1253,7 +1258,7 @@ export default function LeaveManagement() {
                         {employeeDisplayName(req)}
                       </td>
                       <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
-                        {(req.leave_type as { name?: string })?.name ?? '-'}
+                        {(req.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={req}/>
                       </td>
                       <td className="px-6 py-3 text-sm text-surface-700 whitespace-nowrap">
                         {req.start_date} – {req.end_date}
@@ -1319,7 +1324,7 @@ export default function LeaveManagement() {
             <h3 className="text-lg font-semibold text-surface-800 mb-4">รายละเอียดคำขอลา</h3>
             <div className="space-y-3 text-sm">
               <p><span className="text-surface-500">พนักงาน:</span> {employeeDisplayName(detailRequest)}</p>
-              <p><span className="text-surface-500">ประเภทลา:</span> {(detailRequest.leave_type as { name?: string })?.name ?? '-'}</p>
+              <p><span className="text-surface-500">ประเภทลา:</span> {(detailRequest.leave_type as { name?: string })?.name ?? '-'}<EmergencyBadge request={detailRequest}/></p>
               <p><span className="text-surface-500">วันที่:</span> {detailRequest.start_date} – {detailRequest.end_date}</p>
               {leaveTimeRange(detailRequest) && (
                 <p><span className="text-surface-500">ช่วงเวลา:</span> <span className="font-mono">{leaveTimeRange(detailRequest)}</span></p>

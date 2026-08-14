@@ -17,6 +17,8 @@ export interface MissedClockInInput {
   hasClockIn: boolean
   /** วันนี้มีใบลาที่อนุมัติแล้วครอบคลุมอยู่หรือไม่ */
   onApprovedLeave: boolean
+  /** พนักงานอยู่ในรูปแบบที่ต้องบันทึกเวลาเข้าใช่หรือไม่ */
+  requiresClockIn: boolean
 }
 
 /** 'HH:MM[:SS]' → นาทีนับจากเที่ยงคืน (คืน null ถ้ารูปแบบไม่ถูกต้อง) */
@@ -38,6 +40,7 @@ export function minutesPastWorkStart(now: Date, workStart: string): number {
 
 /** true = ควรเด้ง popup เตือนลืมบันทึกเวลาเข้างาน */
 export function shouldWarnMissedClockIn(input: MissedClockInInput): boolean {
+  if (!input.requiresClockIn) return false
   if (input.dayType !== 'work') return false
   if (input.hasClockIn) return false
   if (input.onApprovedLeave) return false

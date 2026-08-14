@@ -1094,6 +1094,8 @@ export interface HRLeaveRequest {
   end_time?: string
   total_hours?: number
   reason?: string
+  /** ลากิจฉุกเฉิน: อนุญาตให้ข้ามเงื่อนไขแจ้งล่วงหน้า */
+  is_emergency?: boolean
   status: 'pending' | 'approved' | 'rejected' | 'cancelled'
   approved_by?: string
   approved_at?: string

@@ -39,6 +39,7 @@ describe('shouldWarnMissedClockIn', () => {
     workStart: '08:00:00',
     hasClockIn: false,
     onApprovedLeave: false,
+    requiresClockIn: true,
   }
 
   it('วันทำงาน เลยเวลา ยังไม่บันทึก → เตือน', () => {
@@ -56,6 +57,9 @@ describe('shouldWarnMissedClockIn', () => {
   })
   it('ลาที่อนุมัติแล้ว → ไม่เตือน', () => {
     expect(shouldWarnMissedClockIn({ ...base, onApprovedLeave: true })).toBe(false)
+  })
+  it('รูปแบบการทำงานไม่ต้องบันทึกเวลา → ไม่เตือน', () => {
+    expect(shouldWarnMissedClockIn({ ...base, requiresClockIn: false })).toBe(false)
   })
 })
 

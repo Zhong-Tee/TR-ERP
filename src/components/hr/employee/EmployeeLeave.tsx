@@ -36,6 +36,7 @@ type RecentRequest = {
   total_hours?: number | null
   status: string
   reason?: string
+  is_emergency?: boolean
   medical_cert_url?: string | null
   created_at: string
 }
@@ -66,6 +67,11 @@ function earliestLeaveDate(advanceDays: number): string {
 
 function formatThaiDate(value: string): string {
   return new Intl.DateTimeFormat('th-TH', { dateStyle: 'long' }).format(new Date(`${value}T12:00:00`))
+}
+
+function formatDisplayDate(value: string): string {
+  const [year, month, day] = value.split('-')
+  return `${day}/${month}/${year}`
 }
 
 function statusBadge(status: string) {
@@ -116,6 +122,7 @@ export default function EmployeeLeave() {
     start_time: '09:00',
     end_time: '12:00',
     reason: '',
+    is_emergency: false,
   })
 
   /** ชั่วโมงลา (โหมดชั่วโมง) — รองรับข้ามเที่ยงคืนไม่ได้ (ลาในวันเดียว) */
@@ -135,9 +142,11 @@ export default function EmployeeLeave() {
         : 0
 
   const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
+  const isPersonalLeave = (selectedType?.name || '').includes('กิจ')
+  const emergencyBypass = isPersonalLeave && form.is_emergency
   const advanceNoticeDays = Math.max(0, selectedType?.advance_notice_days || 0)
-  const minLeaveDate = earliestLeaveDate(advanceNoticeDays)
-  const startDateTooEarly = !!form.start_date && form.start_date < minLeaveDate
+  const minLeaveDate = earliestLeaveDate(emergencyBypass ? 0 : advanceNoticeDays)
+  const startDateTooEarly = !emergencyBypass && !!form.start_date && form.start_date < minLeaveDate
   const requiresDoc = !!selectedType?.requires_doc
   const docLabel = selectedType?.doc_label || 'เอกสารประกอบการลา'
 
@@ -203,6 +212,7 @@ export default function EmployeeLeave() {
         total_hours: isHourly ? totalHours : undefined,
         total_days: totalDays,
         reason: form.reason || undefined,
+        is_emergency: emergencyBypass,
         status: 'pending',
         notified_before: false,
         notified_morning: false,
@@ -223,6 +233,7 @@ export default function EmployeeLeave() {
         start_time: '09:00',
         end_time: '12:00',
         reason: '',
+        is_emergency: false,
       })
       setDocFile(null)
       setDocError(null)
@@ -337,7 +348,7 @@ export default function EmployeeLeave() {
                 <select
                   value={form.leave_type_id}
                   onChange={(e) => {
-                    setForm((f) => ({ ...f, leave_type_id: e.target.value, start_date: '', end_date: '' }))
+                    setForm((f) => ({ ...f, leave_type_id: e.target.value, start_date: '', end_date: '', is_emergency: false }))
                     setDocError(null)
                   }}
                   className="w-full rounded-xl border border-gray-300 px-4 py-3 text-base"
@@ -347,10 +358,28 @@ export default function EmployeeLeave() {
                     <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </select>
-                {advanceNoticeDays > 0 && (
+                {advanceNoticeDays > 0 && !emergencyBypass && (
                   <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    ต้องแจ้งล่วงหน้า {advanceNoticeDays} วัน — เลือกวันลาได้ตั้งแต่ {formatThaiDate(minLeaveDate)}
+                    <span className="block">ต้องแจ้งล่วงหน้า {advanceNoticeDays} วัน</span>
+                    <span className="block">เลือกได้ตั้งแต่ {formatDisplayDate(minLeaveDate)}</span>
                   </p>
+                )}
+                {isPersonalLeave && (
+                  <label className={`mt-3 flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 transition ${form.is_emergency?'border-red-300 bg-red-50':'border-gray-200 bg-white'}`}>
+                    <input
+                      type="checkbox"
+                      checked={form.is_emergency}
+                      onChange={(e) => {
+                        setForm((f) => ({ ...f, is_emergency: e.target.checked }))
+                        setDocError(null)
+                      }}
+                      className="mt-0.5 h-4 w-4 accent-red-600"
+                    />
+                    <span>
+                      <b className="block text-sm text-red-700">ฉุกเฉิน</b>
+                      <span className="block text-xs text-gray-500">สำหรับลากิจเรื่องฉุกเฉินเท่านั้น</span>
+                    </span>
+                  </label>
                 )}
               </div>
               {/* เลือกช่วงลา: เต็มวัน / ชั่วโมง */}

@@ -110,6 +110,7 @@ function requestDetailRows(target: ApprovalTarget): { label: string; value: stri
   if (target.kind === 'leave') {
     const req = target.req
     rows.push({ label: 'ประเภทลา', value: (req.leave_type as { name?: string })?.name ?? '-' })
+    if (req.is_emergency) rows.push({ label: 'ความเร่งด่วน', value: 'ฉุกเฉิน' })
     rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
     rows.push({
       label: 'จำนวน',
@@ -754,6 +755,7 @@ export default function EmployeeDashboard() {
               <p>ผู้ขอ: <span className="font-medium">{reqEmpName(approvalTarget.req.employee)}</span></p>
               {approvalTarget.kind === 'leave' ? (
                 <>
+                  {approvalTarget.req.is_emergency && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">คำขอลากิจฉุกเฉิน</div>}
                   <p>ประเภท: {(approvalTarget.req.leave_type as { name?: string })?.name ?? '-'}</p>
                   <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date} ({approvalTarget.req.total_days} วัน)</p>
                   {approvalTarget.req.reason && <p>เหตุผล: {approvalTarget.req.reason}</p>}

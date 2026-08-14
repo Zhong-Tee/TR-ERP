@@ -78,6 +78,12 @@ export default function MissedClockInAlert() {
         return
       }
 
+      // พนักงานรูปแบบ no_clock ไม่ต้องถูกตรวจหรือแจ้งเตือนเรื่องการลงเวลา
+      if (employee.work_mode === 'no_clock') {
+        markChecked()
+        return
+      }
+
       const [schedules, overrides, holidays, clockIns, leaves] = await Promise.all([
         fetchWorkSchedules(true),
         fetchWorkCalendar(today, today, [employee.id]),
@@ -107,6 +113,7 @@ export default function MissedClockInAlert() {
         workStart,
         hasClockIn: clockIns.length > 0,
         onApprovedLeave: coversDate(leaves, today),
+        requiresClockIn: true,
       })
       markChecked()
       if (!warn) return
