@@ -662,6 +662,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
   const canSelectPlanDate = unlocked || user?.role === 'production' || tvMode
+  const canEditProductionLine = unlocked || (user?.role === 'production' && !tvMode)
   const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
@@ -2822,7 +2823,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                   <span>Line:</span>
                                   <select
                                     value={j.line_assignments?.[dept] ?? 0}
-                                    disabled={!unlocked || Boolean(j.manpower_locked_at)}
+                                    disabled={!canEditProductionLine || Boolean(j.manpower_locked_at)}
                                     onChange={async (e) => {
                                       const newLine = parseInt(e.target.value, 10)
                                       const next = { ...j, line_assignments: { ...j.line_assignments, [dept]: newLine } }
@@ -3226,7 +3227,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                     <span className="font-semibold text-xs whitespace-nowrap">{status.text}</span>
                                     <select
                                       value={currentLine}
-                                      disabled={!unlocked || Boolean(j.manpower_locked_at)}
+                                      disabled={!canEditProductionLine || Boolean(j.manpower_locked_at)}
                                       onChange={async (e) => {
                                         const newLine = parseInt(e.target.value, 10)
                                         const next = { ...j, line_assignments: { ...j.line_assignments, [d]: newLine } }
