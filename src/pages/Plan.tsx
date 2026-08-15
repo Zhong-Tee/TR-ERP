@@ -1639,6 +1639,25 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [])
 
+  const updateJobProductionLine = useCallback(async (job: PlanJob, department: string, lineIndex: number) => {
+    const nextAssignments = { ...job.line_assignments, [department]: lineIndex }
+    const { data, error } = await supabase.rpc('plan_update_job_line_assignment', {
+      p_plan_job_id: job.id,
+      p_department_name: department,
+      p_line_index: lineIndex,
+    })
+    if (error) {
+      alert('บันทึกไลน์ผลิตไม่สำเร็จ! ' + error.message)
+      return
+    }
+    const savedAssignments = data && typeof data === 'object'
+      ? data as Record<string, number>
+      : nextAssignments
+    setJobs((prev) => prev.map((item) => (
+      item.id === job.id ? { ...item, line_assignments: savedAssignments } : item
+    )))
+  }, [])
+
   const setDeptFollowNote = useCallback(
     (job: PlanJob, dept: string, value: 'almost' | 'slow' | null) => {
       const next = { ...(job.follow_notes || {}) }
@@ -2823,11 +2842,10 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                   <span>Line:</span>
                                   <select
                                     value={j.line_assignments?.[dept] ?? 0}
-                                    disabled={!canEditProductionLine || Boolean(j.manpower_locked_at)}
+                                    disabled={!canEditProductionLine}
                                     onChange={async (e) => {
                                       const newLine = parseInt(e.target.value, 10)
-                                      const next = { ...j, line_assignments: { ...j.line_assignments, [dept]: newLine } }
-                                      await updateJobField(j.id, { line_assignments: next.line_assignments })
+                                      await updateJobProductionLine(j, dept, newLine)
                                     }}
                                     className="w-14 rounded border border-gray-300 bg-white py-1 text-xs"
                                   >
@@ -3227,11 +3245,10 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                     <span className="font-semibold text-xs whitespace-nowrap">{status.text}</span>
                                     <select
                                       value={currentLine}
-                                      disabled={!canEditProductionLine || Boolean(j.manpower_locked_at)}
+                                      disabled={!canEditProductionLine}
                                       onChange={async (e) => {
                                         const newLine = parseInt(e.target.value, 10)
-                                        const next = { ...j, line_assignments: { ...j.line_assignments, [d]: newLine } }
-                                        await updateJobField(j.id, { line_assignments: next.line_assignments })
+                                        await updateJobProductionLine(j, d, newLine)
                                       }}
                                       className="w-12 py-0.5 text-xs border border-gray-300 rounded bg-white"
                                     >

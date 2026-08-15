@@ -26,9 +26,8 @@ import {
   FiUsers,
   FiUser,
 } from 'react-icons/fi'
-import { LuWarehouse, LuGauge, LuPackage, LuPackageOpen, LuClipboardList } from 'react-icons/lu'
-import { MdConveyorBelt } from 'react-icons/md'
-import { TbHandGrab } from 'react-icons/tb'
+import { LuWarehouse, LuGauge, LuPackageOpen, LuClipboardList } from 'react-icons/lu'
+import { MdConveyorBelt, MdTrolley } from 'react-icons/md'
 
 interface MenuItem {
   key: string
@@ -89,12 +88,7 @@ const menuItems: MenuItem[] = [
   {
     key: 'wms',
     label: 'จัดสินค้า',
-    icon: (
-      <span className="relative block h-6 w-6" aria-hidden="true">
-        <LuPackage className="absolute right-0 top-0 h-4 w-4 stroke-[2.25]" />
-        <TbHandGrab className="absolute -bottom-0.5 -left-0.5 h-5 w-5 stroke-[1.8]" />
-      </span>
-    ),
+    icon: <MdTrolley className="h-6 w-6" />,
     path: '/wms',
     roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production'],
   },
@@ -103,14 +97,14 @@ const menuItems: MenuItem[] = [
     label: 'QC Operation',
     icon: <FiSearch className="w-6 h-6" />,
     path: '/qc',
-    roles: ['superadmin', 'admin', 'sales-tr', 'qc_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'qc_staff', 'production'],
   },
   {
     key: 'packing',
     label: 'แพ็คสินค้า',
     icon: <LuPackageOpen className="w-6 h-6" />,
     path: '/packing',
-    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff', 'production'],
   },
   {
     key: 'transport',

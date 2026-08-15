@@ -54,16 +54,30 @@ import Modal from '../components/ui/Modal'
 import Papa from 'papaparse'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import UrgencyBadge, { WoUrgencyChips } from '../components/common/UrgencyBadge'
+import QcSkipAutomationSettings from '../components/qc/QcSkipAutomationSettings'
 
 type QCView = 'qc' | 'reject' | 'report' | 'history' | 'settings'
 type QCStep = 'select' | 'working'
+type QcSkipEligibility = {
+  eligible: boolean
+  urgent: boolean
+  mandatory_qc: boolean
+  mandatory_reasons: string[]
+  reasons: string[]
+  remaining_items: number
+  backlog_work_orders: number
+  available_qc_workers: number
+  required_qc_workers: number
+  predicted_finish: string | null
+  pickup_deadline: string | null
+}
 
 const MENUS: { id: QCView; label: string }[] = [
   { id: 'qc', label: 'QC Operation' },
-  { id: 'reject', label: 'Reject' },
-  { id: 'report', label: 'Reports & KPI' },
-  { id: 'history', label: 'History Check' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'reject', label: 'งานไม่ผ่าน' },
+  { id: 'report', label: 'รายงานและตัวชี้วัด' },
+  { id: 'history', label: 'ประวัติการตรวจ' },
+  { id: 'settings', label: 'ตั้งค่า' },
 ]
 
 /**
@@ -114,7 +128,8 @@ const QC_MENU_KEY_MAP: Record<string, string> = {
 export default function QC() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const canSkipQc = isAdminOrSuperadmin(user?.role)
+  const canAlwaysSkipQc = isAdminOrSuperadmin(user?.role)
+  const isProduction = user?.role === 'production'
   const isViewOnly = isAdminOrSuperadmin(user?.role)
 
   const { menuAccessLoading } = useMenuAccess()
@@ -202,13 +217,15 @@ export default function QC() {
   // Settings
   const [reasons, setReasons] = useState<SettingsReason[]>([])
   const [inkTypes, setInkTypes] = useState<InkType[]>([])
-  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics' | 'category_groups'>('reasons')
+  const [settingsTab, setSettingsTab] = useState<'reasons' | 'ink' | 'skip_logs' | 'checklist_topics' | 'category_groups' | 'skip_automation'>('reasons')
   const [newReason, setNewReason] = useState('')
   const [newReasonType, setNewReasonType] = useState<'Man' | 'Machine' | 'Material' | 'Method'>('Man')
 
   // Skip QC (ไม่ต้อง QC)
   const [skipQcLoading, setSkipQcLoading] = useState<string | null>(null)
   const [skipQcConfirmWo, setSkipQcConfirmWo] = useState<string | null>(null)
+  const [skipEligibilityByWo, setSkipEligibilityByWo] = useState<Record<string, QcSkipEligibility>>({})
+  const [productionSkipReason, setProductionSkipReason] = useState('')
   const [skipLogs, setSkipLogs] = useState<any[]>([])
 
   // Sub-reason management (Settings)
@@ -362,6 +379,15 @@ export default function QC() {
     try {
       const list = await fetchWorkOrdersWithProgress(true)
       setWorkOrdersWithProgress(list)
+      if (isProduction && list.length > 0) {
+        const results = await Promise.all(list.map(async (workOrder) => {
+          const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: workOrder.work_order_name })
+          return [workOrder.work_order_name, error ? null : data as QcSkipEligibility] as const
+        }))
+        setSkipEligibilityByWo(Object.fromEntries(results.filter((entry): entry is readonly [string, QcSkipEligibility] => Boolean(entry[1]))))
+      } else if (!isProduction) {
+        setSkipEligibilityByWo({})
+      }
       if (list.length > 0) {
         const names = list.map((w) => w.work_order_name)
         const { data: planJobs } = await supabase
@@ -378,7 +404,7 @@ export default function QC() {
     } catch (e) {
       console.error(e)
     }
-  }, [])
+  }, [isProduction])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -1165,8 +1191,22 @@ export default function QC() {
 
   async function handleSkipQcConfirm() {
     const woName = skipQcConfirmWo
-    setSkipQcConfirmWo(null)
     if (!woName) return
+    let eligibilitySnapshot: QcSkipEligibility | null = skipEligibilityByWo[woName] || null
+    if (isProduction) {
+      if (!productionSkipReason.trim()) {
+        alert('กรุณาระบุเหตุผลที่ต้องข้าม QC')
+        return
+      }
+      const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: woName })
+      if (error || !(data as QcSkipEligibility | null)?.eligible) {
+        alert(error?.message || 'ใบงานนี้ไม่เข้าเงื่อนไขข้าม QC แล้ว กรุณารีเฟรชข้อมูล')
+        await loadWorkOrders()
+        return
+      }
+      eligibilitySnapshot = data as QcSkipEligibility
+    }
+    setSkipQcConfirmWo(null)
     setSkipQcLoading(woName)
     try {
       const items = await fetchItemsByWorkOrder(woName)
@@ -1236,6 +1276,9 @@ export default function QC() {
         work_order_name: woName,
         skipped_by: qcUsername,
         total_items: items.length,
+        production_reason: isProduction ? productionSkipReason.trim() : null,
+        eligibility_snapshot: eligibilitySnapshot,
+        eligibility_source: isProduction ? 'production_conditional' : 'admin_override',
         item_details: items.map((i) => ({
           uid: i.uid,
           product_name: i.product_name,
@@ -1248,6 +1291,7 @@ export default function QC() {
 
       // เอารายการใบงานออกจากหน้าให้ทันทีหลังข้าม QC สำเร็จ
       setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
+      setProductionSkipReason('')
       await loadWorkOrders()
       loadRejectItems()
     } catch (e: any) {
@@ -1533,6 +1577,8 @@ export default function QC() {
                   {workOrdersWithProgress.map((wo) => {
                     const isAllDone = wo.remaining === 0
                     const hasProgress = wo.pass_items > 0 || wo.fail_items > 0
+                    const skipEligibility = skipEligibilityByWo[wo.work_order_name]
+                    const canSkipThisWorkOrder = canAlwaysSkipQc || (isProduction && skipEligibility?.eligible === true)
 
                     let cardClass = ''
                     let borderLeftColor = ''
@@ -1592,10 +1638,10 @@ export default function QC() {
                             <span className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
                               {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
                             </span>
-                            {canSkipQc && (
+                            {canSkipThisWorkOrder && (
                               <span
                                 role="button"
-                                onClick={(e) => { e.stopPropagation(); setSkipQcConfirmWo(wo.work_order_name) }}
+                                onClick={(e) => { e.stopPropagation(); setProductionSkipReason(''); setSkipQcConfirmWo(wo.work_order_name) }}
                                 className="px-3 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold shadow-sm hover:bg-amber-600 transition-colors"
                               >
                                 {skipQcLoading === wo.work_order_name ? 'กำลังข้าม...' : 'ไม่ต้อง QC'}
@@ -1603,6 +1649,15 @@ export default function QC() {
                             )}
                           </div>
                         </div>
+                        {isProduction && skipEligibility && (
+                          <div className={`mt-3 rounded-lg px-3 py-2 text-xs ${skipEligibility.mandatory_qc ? 'bg-red-50 text-red-700' : skipEligibility.eligible ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-500'}`}>
+                            {skipEligibility.mandatory_qc
+                              ? `บังคับ QC: ${skipEligibility.mandatory_reasons.join(', ')}`
+                              : skipEligibility.reasons.length > 0
+                                ? `${skipEligibility.eligible ? 'อนุญาตข้าม QC' : 'ยังไม่เปิดสิทธิ์'} · ${skipEligibility.reasons.join(' · ')} · คนพร้อม ${skipEligibility.available_qc_workers}/${skipEligibility.required_qc_workers}`
+                                : 'ยังไม่เข้าเงื่อนไขความเร่งด่วน'}
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -1616,19 +1671,19 @@ export default function QC() {
                   <div className="flex items-start gap-6 sm:gap-8 min-w-0 flex-1">
                     <div className="flex items-end gap-6 sm:gap-8 shrink-0">
                       <div className="text-center">
-                        <div className="text-xs text-gray-500 uppercase">Total</div>
+                        <div className="text-xs text-gray-500 uppercase">ทั้งหมด</div>
                         <div className="text-2xl font-bold">{totalItems}</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-xs text-green-600 uppercase">Pass</div>
+                        <div className="text-xs text-green-600 uppercase">ผ่าน</div>
                         <div className="text-2xl font-bold text-green-600">{passedItems}</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-xs text-red-600 uppercase">Fail</div>
+                        <div className="text-xs text-red-600 uppercase">ไม่ผ่าน</div>
                         <div className="text-2xl font-bold text-red-600">{failedItems}</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-xs text-blue-600 uppercase">Left</div>
+                        <div className="text-xs text-blue-600 uppercase">คงเหลือ</div>
                         <div className="text-2xl font-bold text-blue-600">{remainingItems}</div>
                       </div>
                     </div>
@@ -1769,7 +1824,7 @@ export default function QC() {
                           />
                         </a>
                       ) : (
-                        <div className="text-gray-400 text-sm">No Image (Product: {currentItem?.product_code || '-'})</div>
+                        <div className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentItem?.product_code || '-'})</div>
                       )}
                     </div>
                     <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
@@ -1789,7 +1844,7 @@ export default function QC() {
                           />
                         </a>
                       ) : (
-                        <div className="text-gray-400 text-sm">No Pattern ({currentItem?.cartoon_name || '-'})</div>
+                        <div className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentItem?.cartoon_name || '-'})</div>
                       )}
                     </div>
                   </div>
@@ -1872,7 +1927,7 @@ export default function QC() {
                           )}
                           <div className="bg-white p-2 rounded border">
                             <div className="text-xs text-gray-400">จำนวน</div>
-                            <div className="text-2xl font-bold">{currentItem.qty || 1} pcs</div>
+                            <div className="text-2xl font-bold">{currentItem.qty || 1} ชิ้น</div>
                           </div>
                         </div>
                           )
@@ -1895,7 +1950,7 @@ export default function QC() {
                         )}
                         {currentItem.remark && (
                           <div className="mb-2 text-sm">
-                            <span className="text-gray-500">Remark: </span>
+                            <span className="text-gray-500">หมายเหตุ: </span>
                             <span className="font-medium">{currentItem.remark}</span>
                           </div>
                         )}
@@ -1945,7 +2000,7 @@ export default function QC() {
                       </>
                     ) : (
                       <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
-                        <p className="text-lg">สแกน Barcode เพื่อเริ่ม</p>
+                        <p className="text-lg">สแกนบาร์โค้ดเพื่อเริ่ม</p>
                       </div>
                     )}
                   </div>
@@ -2049,7 +2104,7 @@ export default function QC() {
             <div className="shrink-0 bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center justify-between gap-4">
               <div className="flex gap-2 flex-wrap">
                 <span className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 text-red-600 font-bold">
-                  Reject Pending: {rejectData.length}
+                  งานไม่ผ่านที่รอดำเนินการ: {rejectData.length}
                 </span>
                 {(['queue', 1, 2, 3, 4] as const).map((tab) => (
                   <button
@@ -2059,7 +2114,7 @@ export default function QC() {
                       activeRejectTab === tab ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     }`}
                   >
-                    {tab === 'queue' ? 'QUEUE' : `REJECT ${tab}`}
+                    {tab === 'queue' ? 'คิวงาน' : `ไม่ผ่านครั้งที่ ${tab}`}
                     {tab !== 'queue' && (
                       <span className="ml-1 opacity-80">({rejectData.filter((i) => i.retry_count === tab).length})</span>
                     )}
@@ -2076,10 +2131,10 @@ export default function QC() {
                   className="border-2 border-blue-400 rounded-full pl-4 pr-4 py-2 w-64 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
                 />
                 <button onClick={handleRejectScan} className="px-4 py-2 bg-blue-600 text-white rounded-full font-bold hover:bg-blue-700">
-                  Search
+                  ค้นหา
                 </button>
                 <button onClick={() => setRejectSearchQuery('')} className="px-4 py-2 bg-gray-200 rounded-full font-bold">
-                  Clear
+                  ล้าง
                 </button>
               </div>
             </div>
@@ -2090,14 +2145,14 @@ export default function QC() {
                   <thead className="bg-gray-100 text-gray-700 font-bold uppercase text-xs sticky top-0">
                     <tr>
                       <th className="px-3 py-3">#</th>
-                      <th className="px-3 py-3">User</th>
-                      <th className="px-3 py-3">Product / Bill / UID</th>
-                      <th className="px-3 py-3">Text (1/2/3)</th>
-                      <th className="px-3 py-3">Ink/Font/Floor</th>
-                      <th className="px-3 py-3">Fail Reason</th>
-                      <th className="px-3 py-3 text-center">RETRY</th>
-                      <th className="px-3 py-3 text-center">Reject Time</th>
-                      <th className="px-3 py-3 text-right">Duration</th>
+                      <th className="px-3 py-3">ผู้ตรวจ</th>
+                      <th className="px-3 py-3">สินค้า / ใบงาน / UID</th>
+                      <th className="px-3 py-3">ข้อความ (1/2/3)</th>
+                      <th className="px-3 py-3">สีหมึก / ฟอนต์ / ชั้น</th>
+                      <th className="px-3 py-3">เหตุผลที่ไม่ผ่าน</th>
+                      <th className="px-3 py-3 text-center">ครั้งที่ตรวจ</th>
+                      <th className="px-3 py-3 text-center">เวลาที่รอดำเนินการ</th>
+                      <th className="px-3 py-3 text-right">ระยะเวลา</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2114,7 +2169,7 @@ export default function QC() {
                         <td className="px-3 py-3 font-bold text-blue-600">{item.qc_by}</td>
                         <td className="px-3 py-3">
                           <div className="font-bold">{item.product_name || '-'}</div>
-                          <div className="text-gray-500 text-xs">Bill: {item.bill_no || '-'} <UrgencyBadge order={item} className="ml-1" /></div>
+                          <div className="text-gray-500 text-xs">ใบงาน: {item.bill_no || '-'} <UrgencyBadge order={item} className="ml-1" /></div>
                           <div className="text-blue-600 font-mono text-xs">{item.item_uid}</div>
                         </td>
                         <td className="px-3 py-3 text-xs">
@@ -2123,7 +2178,7 @@ export default function QC() {
                           {item.line3 && <div>3: {item.line3}</div>}
                         </td>
                         <td className="px-3 py-3 text-xs">
-                          Ink: {item.ink_color || '-'} / Font: {item.font || '-'} / Floor: {item.floor || '-'}
+                          สีหมึก: {item.ink_color || '-'} / ฟอนต์: {item.font || '-'} / ชั้น: {item.floor || '-'}
                         </td>
                         <td className="px-3 py-3 italic text-red-500 font-bold">{item.fail_reason || '-'}</td>
                         <td className="px-3 py-3 text-center">
@@ -2146,7 +2201,7 @@ export default function QC() {
             ) : (
               <div className="flex gap-4 flex-1 min-h-0 mt-4 min-w-0 overflow-hidden">
                 <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
-                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">Reject List (Step {activeRejectTab})</div>
+                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">รายการไม่ผ่าน (ครั้งที่ {activeRejectTab})</div>
                   <div className="flex-1 overflow-y-auto p-1 space-y-1">
                     {filteredRejectItems.map((item, index) => (
                       <div
@@ -2164,7 +2219,7 @@ export default function QC() {
                         </div>
                       </div>
                     ))}
-                    {filteredRejectItems.length === 0 && <div className="text-center py-8 text-gray-400 text-xs">No items</div>}
+                    {filteredRejectItems.length === 0 && <div className="text-center py-8 text-gray-400 text-xs">ไม่มีรายการ</div>}
                   </div>
                 </div>
                 <div className="flex-1 min-w-[180px] max-w-[380px] flex flex-col gap-2 min-h-0 overflow-hidden">
@@ -2180,7 +2235,7 @@ export default function QC() {
                         <img src={rejectProductImageUrl} alt="Product" className="w-full h-full object-contain p-2" />
                       </a>
                     ) : (
-                      <span className="text-gray-400 text-sm">No Image (Product: {currentRejectItem?.product_code || '-'})</span>
+                      <span className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentRejectItem?.product_code || '-'})</span>
                     )}
                   </div>
                   <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
@@ -2195,7 +2250,7 @@ export default function QC() {
                         <img src={rejectCartoonImageUrl} alt="Pattern" className="w-full h-full object-contain p-2" />
                       </a>
                     ) : (
-                      <span className="text-gray-400 text-sm">No Pattern ({currentRejectItem?.cartoon_name || '-'})</span>
+                      <span className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentRejectItem?.cartoon_name || '-'})</span>
                     )}
                   </div>
                 </div>
@@ -2204,13 +2259,13 @@ export default function QC() {
                     <>
                       <div className="flex-1 min-h-0 overflow-auto p-4">
                         <div className="bg-red-50 p-3 rounded-lg border border-red-100 mb-3">
-                          <span className="text-xs font-bold text-red-500 uppercase">Previous Fail Reason</span>
+                          <span className="text-xs font-bold text-red-500 uppercase">เหตุผลที่ไม่ผ่านครั้งก่อน</span>
                           <p className="text-lg font-bold text-red-600">{currentRejectItem.fail_reason || '-'}</p>
                         </div>
                         <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentRejectItem.product_name}</h2>
-                            <p className="text-xs text-gray-500">Bill: {currentRejectItem.bill_no} <UrgencyBadge order={currentRejectItem} className="ml-1" /></p>
+                            <p className="text-xs text-gray-500">ใบงาน: {currentRejectItem.bill_no} <UrgencyBadge order={currentRejectItem} className="ml-1" /></p>
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
@@ -2218,30 +2273,30 @@ export default function QC() {
                           </div>
                         </div>
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
-                          <div className="text-[10px] text-gray-400 uppercase mb-2">Text Details</div>
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">รายละเอียดข้อความ</div>
                           <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line1 || '-'}</div>
                           <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentRejectItem.line2 || '-'}</div>
                           <div className="text-lg font-bold text-gray-800">{currentRejectItem.line3 || '-'}</div>
                         </div>
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Ink Color</div>
+                            <div className="text-xs text-gray-400 uppercase">สีหมึก</div>
                             <div className="flex items-center gap-2">
                               <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentRejectItem.ink_color) }} />
                               <span className="font-bold truncate">{currentRejectItem.ink_color || '-'}</span>
                             </div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Font</div>
+                            <div className="text-xs text-gray-400 uppercase">ฟอนต์</div>
                             <div className="font-bold">{currentRejectItem.font || '-'}</div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Qty</div>
-                            <div className="text-2xl font-bold">{currentRejectItem.qty || 1} pcs</div>
+                            <div className="text-xs text-gray-400 uppercase">จำนวน</div>
+                            <div className="text-2xl font-bold">{currentRejectItem.qty || 1} ชิ้น</div>
                           </div>
                         </div>
                         <div className="mb-2 text-sm">
-                          <span className="text-gray-500">Floor: </span>
+                          <span className="text-gray-500">ชั้น: </span>
                           <span className="font-bold">{currentRejectItem.floor || '-'}</span>
                         </div>
                       </div>
@@ -2278,17 +2333,17 @@ export default function QC() {
                         </div>
                         <div className="flex gap-4">
                           <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
-                            Prev
+                            ก่อนหน้า
                           </button>
                           <button onClick={() => navigateRejectItem(1)} className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold">
-                            Next
+                            ถัดไป
                           </button>
                         </div>
                       </div>
                     </>
                   ) : (
                     <div className="flex flex-col items-center justify-center flex-1 text-gray-400">
-                      <p className="text-lg">Select item to process</p>
+                      <p className="text-lg">เลือกรายการเพื่อดำเนินการ</p>
                     </div>
                   )}
                 </div>
@@ -2387,10 +2442,10 @@ export default function QC() {
         {/* Reports & KPI */}
         {currentView === 'report' && (
           <div className="bg-white rounded-xl shadow-sm p-6">
-            <h2 className="text-2xl font-bold mb-4">Performance Reports</h2>
+            <h2 className="text-2xl font-bold mb-4">รายงานประสิทธิภาพ</h2>
             <div className="flex flex-wrap gap-4 mb-6">
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase">Start Date</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase">วันที่เริ่มต้น</label>
                 <input
                   type="date"
                   value={reportFilter.startDate}
@@ -2399,7 +2454,7 @@ export default function QC() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase">End Date</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase">วันที่สิ้นสุด</label>
                 <input
                   type="date"
                   value={reportFilter.endDate}
@@ -2408,13 +2463,13 @@ export default function QC() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase">QC User</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase">ผู้ตรวจคุณภาพ</label>
                 <select
                   value={reportFilter.user}
                   onChange={(e) => setReportFilter((f) => ({ ...f, user: e.target.value }))}
                   className="border rounded px-2 py-1"
                 >
-                  <option value="">ALL USERS</option>
+                  <option value="">ผู้ตรวจทั้งหมด</option>
                   {reportUsers.map((u) => (
                     <option key={u.id} value={u.username || ''}>
                       {u.username || u.id}
@@ -2423,7 +2478,7 @@ export default function QC() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase">Work Order</label>
+                <label className="block text-xs font-bold text-gray-500 uppercase">ใบงาน</label>
                 <input
                   type="text"
                   value={reportFilter.workOrder}
@@ -2440,15 +2495,15 @@ export default function QC() {
               <table className="w-full text-sm text-left">
                 <thead className="bg-gray-50 text-gray-700 font-bold uppercase text-xs">
                   <tr>
-                    <th className="px-4 py-3 text-center">เริ่ม QC</th>
+                    <th className="px-4 py-3 text-center">เริ่มตรวจ</th>
                     <th className="px-4 py-3 text-center">เสร็จสิ้น</th>
-                    <th className="px-4 py-3">User</th>
-                    <th className="px-4 py-3">File</th>
-                    <th className="px-4 py-3 text-center">Total</th>
-                    <th className="px-4 py-3 text-center text-green-600">Pass</th>
-                    <th className="px-4 py-3 text-center text-red-600">Fail</th>
-                    <th className="px-4 py-3 text-center">KPI (ชม:นาที:วินาที)</th>
-                    <th className="px-4 py-3 text-center">Action</th>
+                    <th className="px-4 py-3">ผู้ตรวจ</th>
+                    <th className="px-4 py-3">ไฟล์</th>
+                    <th className="px-4 py-3 text-center">ทั้งหมด</th>
+                    <th className="px-4 py-3 text-center text-green-600">ผ่าน</th>
+                    <th className="px-4 py-3 text-center text-red-600">ไม่ผ่าน</th>
+                    <th className="px-4 py-3 text-center">ตัวชี้วัด (ชม:นาที:วินาที)</th>
+                    <th className="px-4 py-3 text-center">ดำเนินการ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2501,7 +2556,7 @@ export default function QC() {
         {currentView === 'history' && (
           <div className={historySearched && historyResults.length > 0 ? 'flex flex-col flex-1 min-h-0 overflow-hidden' : 'space-y-4'}>
             <div className="bg-white rounded-xl shadow-sm p-4 flex flex-wrap items-center gap-4">
-              <h2 className="text-xl font-bold">Item History Check</h2>
+              <h2 className="text-xl font-bold">ตรวจสอบประวัติรายการ</h2>
               <input
                 type="text"
                 value={historySearch}
@@ -2528,7 +2583,7 @@ export default function QC() {
             {historySearched && historyResults.length > 0 && (
               <div className="flex gap-4 flex-1 min-h-0 mt-4 overflow-hidden">
                 <div className="w-56 shrink-0 bg-white rounded-xl shadow-sm border flex flex-col overflow-hidden min-w-0 sm:w-64">
-                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">History List</div>
+                  <div className="p-2 border-b text-xs font-bold text-gray-600 uppercase">รายการประวัติ</div>
                   <div className="flex-1 overflow-y-auto p-1 space-y-1">
                     {historyResults.map((rec, index) => (
                       <div
@@ -2568,7 +2623,7 @@ export default function QC() {
                         />
                       </a>
                     ) : (
-                      <div className="text-gray-400 text-sm">No Image (Product: {currentHistoryRecord?.product_code || '-'})</div>
+                      <div className="text-gray-400 text-sm">ไม่มีรูปสินค้า (รหัสสินค้า: {currentHistoryRecord?.product_code || '-'})</div>
                     )}
                   </div>
                   <div className="flex-1 min-h-0 bg-white rounded-xl border flex items-center justify-center overflow-hidden">
@@ -2586,7 +2641,7 @@ export default function QC() {
                         />
                       </a>
                     ) : (
-                      <div className="text-gray-400 text-sm">No Pattern ({currentHistoryRecord?.cartoon_name || '-'})</div>
+                      <div className="text-gray-400 text-sm">ไม่มีรูปลาย ({currentHistoryRecord?.cartoon_name || '-'})</div>
                     )}
                   </div>
                 </div>
@@ -2598,7 +2653,7 @@ export default function QC() {
                         <div className="border-b pb-3 mb-3 flex justify-between items-start">
                           <div>
                             <h2 className="text-xl font-bold text-gray-800 uppercase">{currentHistoryRecord.product_name || '-'}</h2>
-                            <p className="text-xs text-gray-500">Bill: {currentHistoryRecord.bill_no || '-'}</p>
+                            <p className="text-xs text-gray-500">ใบงาน: {currentHistoryRecord.bill_no || '-'}</p>
                           </div>
                           <div className="text-right">
                             <div className="text-[10px] text-gray-400 uppercase">UID</div>
@@ -2606,34 +2661,34 @@ export default function QC() {
                           </div>
                         </div>
                         <div className="bg-gray-50 p-4 rounded-lg border mb-4">
-                          <div className="text-[10px] text-gray-400 uppercase mb-2">Text Details</div>
+                          <div className="text-[10px] text-gray-400 uppercase mb-2">รายละเอียดข้อความ</div>
                           <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line1 || '-'}</div>
                           <div className="text-lg font-bold text-gray-800 border-b border-gray-200 pb-2">{currentHistoryRecord.line2 || '-'}</div>
                           <div className="text-lg font-bold text-gray-800">{currentHistoryRecord.line3 || '-'}</div>
                         </div>
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Ink Color</div>
+                            <div className="text-xs text-gray-400 uppercase">สีหมึก</div>
                             <div className="flex items-center gap-2">
                               <span className="w-8 h-8 rounded-full border shrink-0" style={{ backgroundColor: getInkColor(currentHistoryRecord.ink_color) }} />
                               <span className="font-bold truncate">{currentHistoryRecord.ink_color || '-'}</span>
                             </div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Font</div>
+                            <div className="text-xs text-gray-400 uppercase">ฟอนต์</div>
                             <div className="font-bold">{currentHistoryRecord.font || '-'}</div>
                           </div>
                           <div className="bg-white p-2 rounded border">
-                            <div className="text-xs text-gray-400 uppercase">Qty</div>
-                            <div className="text-2xl font-bold">{currentHistoryRecord.qty || 1} pcs</div>
+                            <div className="text-xs text-gray-400 uppercase">จำนวน</div>
+                            <div className="text-2xl font-bold">{currentHistoryRecord.qty || 1} ชิ้น</div>
                           </div>
                         </div>
                         <div className="mb-2 text-sm">
-                          <span className="text-gray-500">Floor: </span>
+                          <span className="text-gray-500">ชั้น: </span>
                           <span className="font-bold">{currentHistoryRecord.floor || '-'}</span>
                           {currentHistoryRecord.remark && (
                             <>
-                              <span className="text-gray-500 ml-2">Remark: </span>
+                              <span className="text-gray-500 ml-2">หมายเหตุ: </span>
                               <span className="font-medium">{currentHistoryRecord.remark}</span>
                             </>
                           )}
@@ -2651,10 +2706,10 @@ export default function QC() {
                                 currentHistoryRecord.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
                               }`}
                             >
-                              {currentHistoryRecord.status.toUpperCase()}
+                              {currentHistoryRecord.status === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
                             </span>
                             {currentHistoryRecord.status === 'fail' && currentHistoryRecord.fail_reason && (
-                              <span className="text-red-600 font-medium">Reason: {currentHistoryRecord.fail_reason}</span>
+                              <span className="text-red-600 font-medium">เหตุผล: {currentHistoryRecord.fail_reason}</span>
                             )}
                           </div>
                         </div>
@@ -2668,7 +2723,7 @@ export default function QC() {
                           }}
                           className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold"
                         >
-                          Prev
+                          ก่อนหน้า
                         </button>
                         <button
                           type="button"
@@ -2678,7 +2733,7 @@ export default function QC() {
                           }}
                           className="flex-1 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-bold"
                         >
-                          Next
+                          ถัดไป
                         </button>
                       </div>
                     </>
@@ -2699,19 +2754,19 @@ export default function QC() {
         {/* Settings */}
         {currentView === 'settings' && (
           <div className="bg-white rounded-xl shadow-sm p-6">
-            <h2 className="text-2xl font-bold mb-6">System Settings</h2>
+            <h2 className="text-2xl font-bold mb-6">ตั้งค่าระบบ</h2>
             <div className="flex border-b mb-6">
               <button
                 onClick={() => setSettingsTab('reasons')}
                 className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'reasons' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
               >
-                Reasons
+                เหตุผลที่ไม่ผ่าน
               </button>
               <button
                 onClick={() => setSettingsTab('ink')}
                 className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'ink' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500'}`}
               >
-                Ink
+                สีหมึก
               </button>
               <button
                 onClick={() => { setSettingsTab('skip_logs'); loadSkipLogs() }}
@@ -2731,7 +2786,14 @@ export default function QC() {
               >
                 กรุ๊ปหมวดหมู่
               </button>
+              <button
+                onClick={() => setSettingsTab('skip_automation')}
+                className={`px-6 py-3 font-bold border-b-2 ${settingsTab === 'skip_automation' ? 'border-red-500 text-red-600' : 'border-transparent text-gray-500'}`}
+              >
+                เงื่อนไขไม่ต้อง QC
+              </button>
             </div>
+            {settingsTab === 'skip_automation' && <QcSkipAutomationSettings />}
             {settingsTab === 'reasons' && (
               <div>
                 <div className="flex gap-2 mb-4 flex-wrap">
@@ -2747,13 +2809,13 @@ export default function QC() {
                     onChange={(e) => setNewReasonType(e.target.value as 'Man' | 'Machine' | 'Material' | 'Method')}
                     className="border rounded px-3 py-2 bg-white"
                   >
-                    <option value="Man">Man</option>
-                    <option value="Machine">Machine</option>
-                    <option value="Material">Material</option>
-                    <option value="Method">Method</option>
+                    <option value="Man">คน</option>
+                    <option value="Machine">เครื่องจักร</option>
+                    <option value="Material">วัสดุ</option>
+                    <option value="Method">วิธีการ</option>
                   </select>
                   <button onClick={handleAddReason} className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-bold">
-                    ADD
+                    เพิ่ม
                   </button>
                 </div>
                 <ul className="divide-y border rounded-xl overflow-hidden">
@@ -2776,10 +2838,10 @@ export default function QC() {
                             'bg-blue-100 text-blue-700'
                           }`}
                         >
-                          <option value="Man">Man</option>
-                          <option value="Machine">Machine</option>
-                          <option value="Material">Material</option>
-                          <option value="Method">Method</option>
+                          <option value="Man">คน</option>
+                          <option value="Machine">เครื่องจักร</option>
+                          <option value="Material">วัสดุ</option>
+                          <option value="Method">วิธีการ</option>
                         </select>
                         <button
                           onClick={() => { setAddSubReasonParentId(addSubReasonParentId === r.id ? null : r.id); setNewSubReason('') }}
@@ -2840,7 +2902,7 @@ export default function QC() {
             )}
             {settingsTab === 'ink' && (
               <div>
-                <p className="text-gray-600 mb-4">แก้ไขสีหมึก (hex) สำหรับแสดงใน QC / Reject / History</p>
+                <p className="text-gray-600 mb-4">แก้ไขรหัสสีหมึกสำหรับแสดงในหน้าตรวจคุณภาพ งานไม่ผ่าน และประวัติการตรวจ</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {inkTypes.map((ink) => (
                     <div key={ink.id} className="p-4 border rounded-xl flex flex-wrap items-center justify-between gap-2 bg-white">
@@ -2861,7 +2923,7 @@ export default function QC() {
                       />
                     </div>
                   ))}
-                  {inkTypes.length === 0 && <div className="col-span-2 py-8 text-center text-gray-400">ไม่มีข้อมูล ink_types</div>}
+                  {inkTypes.length === 0 && <div className="col-span-2 py-8 text-center text-gray-400">ไม่มีข้อมูลสีหมึก</div>}
                 </div>
               </div>
             )}
@@ -3412,6 +3474,18 @@ export default function QC() {
           <p>ต้องการข้ามการ QC ใบงาน <strong className="text-amber-700">{skipQcConfirmWo}</strong> ทั้งหมดใช่หรือไม่?</p>
           <p className="mt-2 text-red-500 text-xs">* ระบบจะบันทึกทุกรายการเป็น "ผ่าน" และจบงานอัตโนมัติ</p>
         </div>
+          {isProduction && skipQcConfirmWo && skipEligibilityByWo[skipQcConfirmWo] && (
+            <div className="mx-4 mb-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
+              {skipEligibilityByWo[skipQcConfirmWo].reasons.join(' · ')}<br />
+              ค้าง {skipEligibilityByWo[skipQcConfirmWo].remaining_items} ชิ้น · คนพร้อม {skipEligibilityByWo[skipQcConfirmWo].available_qc_workers}/{skipEligibilityByWo[skipQcConfirmWo].required_qc_workers}
+            </div>
+          )}
+          {isProduction && (
+            <label className="mx-4 mb-4 block text-sm font-medium text-slate-700">
+              เหตุผลที่ต้องข้าม QC
+              <textarea value={productionSkipReason} onChange={(e) => setProductionSkipReason(e.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="ระบุสถานการณ์หรือเหตุผลเพิ่มเติม" />
+            </label>
+          )}
         <div className="p-4 border-t bg-gray-50 flex gap-3 justify-end">
           <button
             type="button"
@@ -3423,7 +3497,8 @@ export default function QC() {
           <button
             type="button"
             onClick={handleSkipQcConfirm}
-            className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-medium"
+            disabled={isProduction && !productionSkipReason.trim()}
+            className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 font-medium disabled:opacity-50"
           >
             ยืนยัน ข้าม QC
           </button>
@@ -3519,7 +3594,7 @@ export default function QC() {
                   </div>
                 </>
               ) : (
-                <p className="text-sm text-gray-600">ยังไม่มีเหตุผลใน Settings กรุณาเพิ่มก่อนใช้งาน</p>
+                <p className="text-sm text-gray-600">ยังไม่มีเหตุผลในการตั้งค่า กรุณาเพิ่มก่อนใช้งาน</p>
               )}
             </>
           )}
@@ -3662,14 +3737,14 @@ export default function QC() {
               <tr>
                 <th className="px-3 py-2 text-center">#</th>
                 <th className="px-3 py-2 text-center">เวลาตรวจ</th>
-                <th className="px-3 py-2">Reject Duration</th>
-                <th className="px-3 py-2">Item UID</th>
-                <th className="px-3 py-2 text-center">Result</th>
-                <th className="px-3 py-2 text-center">RETRY</th>
-                <th className="px-3 py-2">Product / Bill</th>
-                <th className="px-3 py-2">Text (1/2/3)</th>
-                <th className="px-3 py-2">Ink/Font/Floor</th>
-                <th className="px-3 py-2">Fail Reason</th>
+                <th className="px-3 py-2">ระยะเวลาที่ไม่ผ่าน</th>
+                <th className="px-3 py-2">รหัสรายการ</th>
+                <th className="px-3 py-2 text-center">ผลตรวจ</th>
+                <th className="px-3 py-2 text-center">ครั้งที่ตรวจ</th>
+                <th className="px-3 py-2">สินค้า / ใบงาน</th>
+                <th className="px-3 py-2">ข้อความ (1/2/3)</th>
+                <th className="px-3 py-2">สีหมึก / ฟอนต์ / ชั้น</th>
+                <th className="px-3 py-2">เหตุผลที่ไม่ผ่าน</th>
               </tr>
             </thead>
             <tbody>
@@ -3681,13 +3756,13 @@ export default function QC() {
                   <td className="px-3 py-2 font-mono font-bold text-blue-600">{item.item_uid}</td>
                   <td className="px-3 py-2 text-center">
                     <span className={`px-2 py-0.5 rounded text-xs font-bold ${item.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
-                      {item.status}
+                      {item.status === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center font-bold">{item.retry_count || 1}</td>
                   <td className="px-3 py-2">
                     <div className="font-bold">{item.product_name || '-'}</div>
-                    <div className="text-xs text-blue-600">Bill: {item.bill_no || '-'}</div>
+                    <div className="text-xs text-blue-600">ใบงาน: {item.bill_no || '-'}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">
                     {item.line1 && <div>1: {item.line1}</div>}
@@ -3695,7 +3770,7 @@ export default function QC() {
                     {item.line3 && <div>3: {item.line3}</div>}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    Ink: {item.ink_color || '-'} / Font: {item.font || '-'} / Floor: {item.floor || '-'}
+                    สีหมึก: {item.ink_color || '-'} / ฟอนต์: {item.font || '-'} / ชั้น: {item.floor || '-'}
                   </td>
                   <td className="px-3 py-2 italic font-bold text-red-500">{item.fail_reason || '-'}</td>
                 </tr>

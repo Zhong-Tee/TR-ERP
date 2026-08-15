@@ -354,7 +354,7 @@ function AppRoutes() {
       <Route
         path="/qc"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_staff', 'production']}>
             <Layout>
               <QC />
             </Layout>
@@ -364,7 +364,7 @@ function AppRoutes() {
       <Route
         path="/packing"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'packing_staff', 'production']}>
             <Layout>
               <Packing />
             </Layout>
