@@ -33,10 +33,16 @@ export function useAuth() {
   const dailySignOutRef = useRef(false)
   // กัน alert เด้งซ้ำจาก event หลายทาง (alert เป็น blocking จึงกองคิวกันได้)
   const profileAlertShownRef = useRef(false)
+  // รวม auth events/getSession ที่เกิดพร้อมกันให้ใช้ flow เดียว ป้องกันโหลด profile ซ้ำ
+  const authFlowRef = useRef<{ userId: string; promise: Promise<void> } | null>(null)
+  // สร้าง MFA challenge ล่วงหน้าระหว่างผู้ใช้กำลังกรอก OTP
+  const mfaChallengeRef = useRef<{ factorId: string; promise: Promise<string> } | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     // ใช้ non-async callback เพื่อไม่ return Promise (ซึ่ง Supabase internals อาจตีความผิด)
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (cancelled) return
       // session ค้างจากเมื่อวาน → บังคับ login ใหม่ (ทุกเช้า)
       if (session?.user && isSessionExpired(readSessionDay())) {
         forceDailySignOut()
@@ -47,7 +53,7 @@ export function useAuth() {
       setSupabaseUser(session?.user ?? null)
       if (session?.user) {
         ensureSessionDay()
-        handleSessionWithMfaCheck(session.user.id)
+        void handleSessionWithMfaCheck(session)
       } else {
         setLoading(false)
       }
@@ -67,7 +73,7 @@ export function useAuth() {
           setLoading(false)
           return
         }
-        handleSessionWithMfaCheck(session.user.id)
+        void handleSessionWithMfaCheck(session)
       } else {
         setUser(null)
         setMfaPending(false)
@@ -76,7 +82,10 @@ export function useAuth() {
       }
     })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+    }
   }, [])
 
   // เปิดเว็บค้างข้ามคืน → พอถึงเช้าวันใหม่ให้เตะออกไป login ใหม่
@@ -116,30 +125,75 @@ export function useAuth() {
       })
   }
 
-  async function handleSessionWithMfaCheck(userId: string) {
-    let mfaRequired = false
+  /** อ่านระดับ MFA จาก access token ในเครื่อง ไม่ต้องรอ network */
+  function readSessionAal(session: Session): 'aal1' | 'aal2' | null {
     try {
-      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
-      if (aal?.nextLevel === 'aal2' && aal?.currentLevel !== 'aal2') {
-        const { data: factors } = await supabase.auth.mfa.listFactors()
-        const verifiedTotp = factors?.totp?.find((f) => f.status === 'verified')
-        if (verifiedTotp) {
+      const payload = session.access_token.split('.')[1]
+      if (!payload) return null
+      const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+      const decoded = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')))
+      return decoded?.aal === 'aal1' || decoded?.aal === 'aal2' ? decoded.aal : null
+    } catch {
+      return null
+    }
+  }
+
+  function prepareMfaChallenge(factorId: string): Promise<string> {
+    const existing = mfaChallengeRef.current
+    if (existing?.factorId === factorId) return existing.promise
+
+    const promise = supabase.auth.mfa.challenge({ factorId }).then(({ data, error }) => {
+      if (error) throw error
+      return data.id
+    })
+    mfaChallengeRef.current = { factorId, promise }
+    void promise.catch(() => {
+      if (mfaChallengeRef.current?.promise === promise) mfaChallengeRef.current = null
+    })
+    return promise
+  }
+
+  function handleSessionWithMfaCheck(session: Session): Promise<void> {
+    const authUser = session.user
+    const existing = authFlowRef.current
+    if (existing?.userId === authUser.id) return existing.promise
+
+    const promise = (async () => {
+      // Supabase ใส่ factors มากับ auth user อยู่แล้ว บัญชีที่ไม่มี TOTP ไม่ต้องยิง MFA API เพิ่ม
+      const verifiedTotp = authUser.factors?.find(
+        (factor) => factor.factor_type === 'totp' && factor.status === 'verified',
+      )
+
+      if (verifiedTotp) {
+        let currentAal = readSessionAal(session)
+        if (currentAal === null) {
+          try {
+            const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+            currentAal = aal?.currentLevel === 'aal2' ? 'aal2' : 'aal1'
+          } catch {
+            currentAal = 'aal1'
+          }
+        }
+        if (currentAal !== 'aal2') {
           setMfaPending(true)
           setMfaFactorId(verifiedTotp.id)
-          mfaRequired = true
+          setLoading(false)
+          // ไม่ await: แสดงหน้า OTP ทันทีและเตรียม challenge เบื้องหลัง
+          void prepareMfaChallenge(verifiedTotp.id).catch(() => {})
+          return
         }
       }
-    } catch {
-      // MFA check ล้มเหลว → ข้ามไปโหลด user ปกติ
-    } finally {
-      if (mfaRequired) {
-        setLoading(false)
-        return
-      }
-    }
-    setMfaPending(false)
-    setMfaFactorId(null)
-    loadUserData(userId)
+
+      setMfaPending(false)
+      setMfaFactorId(null)
+      await loadUserData(authUser.id)
+    })()
+
+    authFlowRef.current = { userId: authUser.id, promise }
+    void promise.finally(() => {
+      if (authFlowRef.current?.promise === promise) authFlowRef.current = null
+    })
+    return promise
   }
 
   /** true = token ของ user คนนี้ยังอยู่จริง (ไม่ได้ถูกล้างไประหว่างทาง) */
@@ -254,7 +308,16 @@ export function useAuth() {
   async function signOut() {
     clearSessionDay()
     clearSessionScopedStorage()
-    const { error } = await supabase.auth.signOut()
+    // เปลี่ยนหน้าเป็น Login ทันที ไม่ให้ UI รอ logout request จาก server
+    authFlowRef.current = null
+    mfaChallengeRef.current = null
+    setUser(null)
+    setSupabaseUser(null)
+    setMfaPending(false)
+    setMfaFactorId(null)
+    setLoading(false)
+
+    const { error } = await supabase.auth.signOut({ scope: 'local' })
     if (error) {
       if (error.message?.includes('session missing') || error.message?.includes('Session')) {
         setUser(null)
@@ -269,16 +332,18 @@ export function useAuth() {
 
   async function verifyMfa(code: string) {
     if (!mfaFactorId) throw new Error('ไม่พบข้อมูล MFA กรุณา login ใหม่')
-    const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({
-      factorId: mfaFactorId,
-    })
-    if (challengeError) throw challengeError
-    const { error } = await supabase.auth.mfa.verify({
-      factorId: mfaFactorId,
-      challengeId: challenge.id,
-      code,
-    })
-    if (error) throw error
+    const challengeId = await prepareMfaChallenge(mfaFactorId)
+    try {
+      const { error } = await supabase.auth.mfa.verify({
+        factorId: mfaFactorId,
+        challengeId,
+        code,
+      })
+      if (error) throw error
+    } finally {
+      // OTP ครั้งถัดไปต้องใช้ challenge ใหม่
+      mfaChallengeRef.current = null
+    }
     // onAuthStateChange จะ fire ด้วย AAL2 session แล้วเรียก loadUserData อัตโนมัติ
   }
 
