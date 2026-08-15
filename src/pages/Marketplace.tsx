@@ -65,18 +65,28 @@ export default function Marketplace() {
     loadSalesUsers()
   }, [loadConfigs, loadSalesUsers])
 
-  // realtime: งานเปลี่ยน (assign/เปิดบิล/รอติดตาม) → refresh list ทุก tab
+  // Realtime is useful only for active work queues. History/settings pages are
+  // refreshed when opened, so keeping another subscription there only duplicates
+  // the global Sidebar subscription and wastes Realtime messages.
   useEffect(() => {
+    if (!['new', 'assign', 'follow-up'].includes(activeTab)) return
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
     const channel = supabase
       .channel('mp-orders-page')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'mp_orders' }, () => {
-        setRefreshKey((k) => k + 1)
+        // One import/assign action can emit many events. Refresh once after the
+        // burst instead of querying the list and all badges for every row.
+        if (document.visibilityState !== 'visible') return
+        if (refreshTimer) clearTimeout(refreshTimer)
+        refreshTimer = setTimeout(() => setRefreshKey((k) => k + 1), 750)
       })
       .subscribe()
     return () => {
+      if (refreshTimer) clearTimeout(refreshTimer)
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [activeTab])
 
   const triggerRefresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 
@@ -85,7 +95,9 @@ export default function Marketplace() {
   useEffect(() => {
     let cancelled = false
     async function loadCounts() {
-      const statuses = ['new', 'assigned', 'follow_up', 'done', 'cancelled'] as const
+      // The completed tab intentionally has no badge, so do not spend a count
+      // query on the largest/history status.
+      const statuses = ['new', 'assigned', 'follow_up', 'cancelled'] as const
       const results = await Promise.all(
         statuses.map((s) =>
           supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', s),
@@ -116,14 +128,24 @@ export default function Marketplace() {
         return tabCounts.assigned || 0
       case 'follow-up':
         return tabCounts.follow_up || 0
-      case 'done':
-        return tabCounts.done || 0
       case 'cancelled':
         return tabCounts.cancelled || 0
       default:
         return 0
     }
   }
+
+  // Events received while the browser was hidden are deliberately ignored.
+  // Refresh once when the operator returns instead of consuming every event.
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshKey((k) => k + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => document.removeEventListener('visibilitychange', refreshWhenVisible)
+  }, [])
 
   const visibleTabs = useMemo(
     () => MP_TABS.filter((tab) => hasAccess(`marketplace-${tab.key}`)),

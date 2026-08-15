@@ -11,13 +11,10 @@ import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
 import { isAdminOrSuperadmin, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 import { ISSUE_ON_COUNT_EVENT } from '../../lib/issueOnCountBroadcast'
 import {
-  FiPackage,
   FiCheckCircle,
   FiDollarSign,
   FiClipboard,
-  FiGrid,
   FiSearch,
-  FiArchive,
   FiTruck,
   FiShoppingBag,
   FiImage,
@@ -27,9 +24,11 @@ import {
   FiBarChart2,
   FiSettings,
   FiUsers,
-  FiPrinter,
+  FiUser,
 } from 'react-icons/fi'
-import { LuWarehouse, LuGauge } from 'react-icons/lu'
+import { LuWarehouse, LuGauge, LuPackage, LuPackageOpen, LuClipboardList } from 'react-icons/lu'
+import { MdConveyorBelt } from 'react-icons/md'
+import { TbHandGrab } from 'react-icons/tb'
 
 interface MenuItem {
   key: string
@@ -57,7 +56,12 @@ const menuItems: MenuItem[] = [
   {
     key: 'orders',
     label: 'ออเดอร์',
-    icon: <FiPackage className="w-6 h-6" />,
+    icon: (
+      <span className="relative block h-6 w-6" aria-hidden="true">
+        <FiUser className="absolute left-0 top-0 h-5 w-5" />
+        <LuClipboardList className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 stroke-[2.5]" />
+      </span>
+    ),
     path: '/orders',
     roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'],
   },
@@ -78,14 +82,19 @@ const menuItems: MenuItem[] = [
   {
     key: 'machinery',
     label: 'Machinery',
-    icon: <FiPrinter className="w-6 h-6" />,
+    icon: <MdConveyorBelt className="w-6 h-6" />,
     path: '/machinery',
     roles: ['superadmin', 'admin', 'production'],
   },
   {
     key: 'wms',
     label: 'จัดสินค้า',
-    icon: <FiGrid className="w-6 h-6" />,
+    icon: (
+      <span className="relative block h-6 w-6" aria-hidden="true">
+        <LuPackage className="absolute right-0 top-0 h-4 w-4 stroke-[2.25]" />
+        <TbHandGrab className="absolute -bottom-0.5 -left-0.5 h-5 w-5 stroke-[1.8]" />
+      </span>
+    ),
     path: '/wms',
     roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production'],
   },
@@ -98,8 +107,8 @@ const menuItems: MenuItem[] = [
   },
   {
     key: 'packing',
-    label: 'จัดของ',
-    icon: <FiArchive className="w-6 h-6" />,
+    label: 'แพ็คสินค้า',
+    icon: <LuPackageOpen className="w-6 h-6" />,
     path: '/packing',
     roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'],
   },

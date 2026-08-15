@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FiRefreshCw, FiDownload, FiLock, FiSearch, FiPlus, FiTrash2, FiX, FiAlertCircle } from 'react-icons/fi'
+import { FiRefreshCw, FiDownload, FiLock, FiSearch, FiPlus, FiTrash2, FiX, FiAlertCircle, FiChevronDown } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import Modal from '../ui/Modal'
 import PhotoLightbox from './PhotoLightbox'
@@ -151,6 +151,9 @@ interface ScoreRow {
 }
 
 type TabKey = 'summary' | 'annual' | 'appeals'
+type ScoreSortKey = 'code' | 'deduction' | 'total' | `group:${string}`
+
+const SORTABLE_SCORE_GROUPS = new Set(['attendance', 'time_entry', 'leave', ABSENCE_GROUP, 'attendance_cumulative'])
 
 export default function WorkScore() {
   const { user } = useAuthContext()
@@ -165,6 +168,8 @@ export default function WorkScore() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [search, setSearch] = useState('')
+  const [sortKey, setSortKey] = useState<ScoreSortKey | null>(null)
+  const [sortDirection, setSortDirection] = useState<'desc' | 'asc'>('desc')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [detailRow, setDetailRow] = useState<ScoreRow | null>(null)
@@ -354,12 +359,41 @@ export default function WorkScore() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter((r) =>
+    const matches = q ? rows.filter((r) =>
       r.name.toLowerCase().includes(q)
       || r.code.toLowerCase().includes(q)
-      || r.nickname.toLowerCase().includes(q))
-  }, [rows, search])
+      || r.nickname.toLowerCase().includes(q)) : rows
+    if (!sortKey) return matches
+
+    return [...matches].sort((a, b) => {
+      let comparison: number
+      if (sortKey === 'code') {
+        comparison = a.code.localeCompare(b.code, undefined, { numeric: true })
+      } else {
+      const aValue = sortKey === 'deduction'
+        ? -a.deduction
+        : sortKey === 'total'
+          ? a.total
+          : (a.byGroup[sortKey.slice(6)] ?? 0)
+      const bValue = sortKey === 'deduction'
+        ? -b.deduction
+        : sortKey === 'total'
+          ? b.total
+          : (b.byGroup[sortKey.slice(6)] ?? 0)
+        comparison = aValue - bValue
+      }
+      return (sortDirection === 'desc' ? -comparison : comparison) || a.name.localeCompare(b.name, 'th')
+    })
+  }, [rows, search, sortKey, sortDirection])
+
+  const handleSort = (key: ScoreSortKey) => {
+    if (sortKey === key) {
+      setSortDirection((direction) => direction === 'desc' ? 'asc' : 'desc')
+      return
+    }
+    setSortKey(key)
+    setSortDirection('desc')
+  }
 
   const groupKeys = useMemo(() => {
     const keys = new Set<string>()
@@ -669,14 +703,35 @@ export default function WorkScore() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-emerald-600 text-white">
-                    <th className="p-3 text-left font-semibold rounded-tl-xl whitespace-nowrap">รหัสพนักงาน</th>
+                    <th className="p-3 text-left font-semibold rounded-tl-xl whitespace-nowrap">
+                      <button type="button" onClick={() => handleSort('code')} className="inline-flex items-center gap-1 hover:text-emerald-100" title="สลับการเรียงมากไปน้อย/น้อยไปมาก">
+                        รหัสพนักงาน <FiChevronDown className={`${sortKey === 'code' ? 'opacity-100' : 'opacity-60'} ${sortKey === 'code' && sortDirection === 'asc' ? 'rotate-180' : ''} transition-transform`} />
+                      </button>
+                    </th>
                     <th className="p-3 text-left font-semibold">ชื่อ-สกุล</th>
                     <th className="p-3 text-left font-semibold">ชื่อเล่น</th>
-                    {groupKeys.map((k) => (
-                      <th key={k} className="p-3 text-center font-semibold whitespace-nowrap">{GROUP_LABELS[k] ?? k}</th>
-                    ))}
-                    <th className="p-3 text-center font-semibold">หักรวม</th>
-                    <th className="p-3 text-center font-semibold">คะแนน</th>
+                    {groupKeys.map((k) => {
+                      const key: ScoreSortKey = `group:${k}`
+                      return (
+                        <th key={k} className="p-3 text-center font-semibold whitespace-nowrap">
+                          {SORTABLE_SCORE_GROUPS.has(k) ? (
+                            <button type="button" onClick={() => handleSort(key)} className="inline-flex items-center gap-1 hover:text-emerald-100" title="สลับการเรียงมากไปน้อย/น้อยไปมาก">
+                              {GROUP_LABELS[k] ?? k} <FiChevronDown className={`${sortKey === key ? 'opacity-100' : 'opacity-60'} ${sortKey === key && sortDirection === 'asc' ? 'rotate-180' : ''} transition-transform`} />
+                            </button>
+                          ) : (GROUP_LABELS[k] ?? k)}
+                        </th>
+                      )
+                    })}
+                    <th className="p-3 text-center font-semibold">
+                      <button type="button" onClick={() => handleSort('deduction')} className="inline-flex items-center gap-1 hover:text-emerald-100" title="สลับการเรียงมากไปน้อย/น้อยไปมาก">
+                        หักรวม <FiChevronDown className={`${sortKey === 'deduction' ? 'opacity-100' : 'opacity-60'} ${sortKey === 'deduction' && sortDirection === 'asc' ? 'rotate-180' : ''} transition-transform`} />
+                      </button>
+                    </th>
+                    <th className="p-3 text-center font-semibold">
+                      <button type="button" onClick={() => handleSort('total')} className="inline-flex items-center gap-1 hover:text-emerald-100" title="สลับการเรียงมากไปน้อย/น้อยไปมาก">
+                        คะแนน <FiChevronDown className={`${sortKey === 'total' ? 'opacity-100' : 'opacity-60'} ${sortKey === 'total' && sortDirection === 'asc' ? 'rotate-180' : ''} transition-transform`} />
+                      </button>
+                    </th>
                     <th className="p-3 text-center font-semibold rounded-tr-xl">รอบ</th>
                   </tr>
                 </thead>

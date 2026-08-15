@@ -7,13 +7,15 @@ import {
   MACHINERY_STATUS_LABELS,
   type MachineryMachine,
   type MachineryEvent,
+  type MachineryProductOption,
   type PrMachineryStatus,
   fetchMachines,
   upsertMachine,
   deleteMachine,
   changeMachineStatus,
   fetchEventsOverlappingRange,
-  computeEffectiveUnitsToday,
+  fetchMachineryProductOptions,
+  fetchTodayWorkOrderQuantityByProduct,
   computeWorkingTimeInShiftMsToday,
   computeShiftDurationMsForDay,
   formatMsAsHms,
@@ -102,6 +104,8 @@ export default function Machinery() {
   const [tab, setTab] = useState<TabKey>('monitor')
   const [machines, setMachines] = useState<MachineryMachine[]>([])
   const [events, setEvents] = useState<MachineryEvent[]>([])
+  const [productOptions, setProductOptions] = useState<MachineryProductOption[]>([])
+  const [todayQuantityByProduct, setTodayQuantityByProduct] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -134,6 +138,7 @@ export default function Machinery() {
   const [histFrom, setHistFrom] = useState(() => new Date().toISOString().slice(0, 10))
   const [histTo, setHistTo] = useState(() => new Date().toISOString().slice(0, 10))
   const [histMachineId, setHistMachineId] = useState<string>('')
+  const [monitorMachineType, setMonitorMachineType] = useState('')
   /** กรองตารางช่วงสถานะ — ว่าง = ทั้งหมด */
   const [histStatus, setHistStatus] = useState<'' | PrMachineryStatus>('')
   /** อัปเดตทุกวินาที — จับเวลาในกะที่หน้ามอนิเตอร์ */
@@ -146,8 +151,14 @@ export default function Machinery() {
   const load = useCallback(async () => {
     setError(null)
     try {
-      const m = await fetchMachines()
+      const [m, products, quantities] = await Promise.all([
+        fetchMachines(),
+        fetchMachineryProductOptions(),
+        fetchTodayWorkOrderQuantityByProduct(),
+      ])
       setMachines(m)
+      setProductOptions(products)
+      setTodayQuantityByProduct(quantities)
       const from = new Date()
       from.setDate(from.getDate() - 2)
       from.setHours(0, 0, 0, 0)
@@ -199,6 +210,16 @@ export default function Machinery() {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'or_work_orders' },
+        () => { load() },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'or_orders' },
+        () => { load() },
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'pr_machinery_status_events' },
         () => {
           load()
@@ -231,6 +252,62 @@ export default function Machinery() {
     setOpenStatusDropdownMachineId(null)
   }, [selectedMonitorMachineId])
 
+  const machineTypes = useMemo(
+    () => [...new Set(machines.map((m) => m.machine_type || 'ทั่วไป'))].sort((a, b) => a.localeCompare(b, 'th')),
+    [machines],
+  )
+  const monitorMachines = useMemo(
+    () => machines.filter((m) => !monitorMachineType || (m.machine_type || 'ทั่วไป') === monitorMachineType),
+    [machines, monitorMachineType],
+  )
+  const monitorCapacityUnits = useMemo(
+    () => [...new Set(monitorMachines.map((m) => m.capacity_unit || 'หน่วย'))],
+    [monitorMachines],
+  )
+  const monitorCapacityUnit = monitorCapacityUnits.length === 1 ? monitorCapacityUnits[0] : null
+  const machineTypeStats = useMemo(() => {
+    const result = new Map<string, {
+      type: string
+      machines: MachineryMachine[]
+      productionToday: number
+      maxCapacity: number
+      capacityUnit: string | null
+      utilizationPercent: number
+      brokenCount: number
+      repairingCount: number
+      workingCount: number
+    }>()
+    for (const type of machineTypes) {
+      const groupMachines = machines.filter((m) => (m.machine_type || 'ทั่วไป') === type)
+      const productIds = new Set(groupMachines.flatMap((m) => m.product_ids || []))
+      const productionToday = [...productIds].reduce(
+        (sum, productId) => sum + (todayQuantityByProduct.get(productId) || 0),
+        0,
+      )
+      const units = [...new Set(groupMachines.map((m) => m.capacity_unit || 'หน่วย'))]
+      const capacityUnit = units.length === 1 ? units[0] : null
+      const maxCapacity = capacityUnit
+        ? groupMachines.reduce((sum, m) => sum + totalProductionCapacityPerShift(m), 0)
+        : 0
+      result.set(type, {
+        type,
+        machines: groupMachines,
+        productionToday,
+        maxCapacity,
+        capacityUnit,
+        utilizationPercent: maxCapacity > 0 ? (productionToday / maxCapacity) * 100 : 0,
+        brokenCount: groupMachines.filter((m) => m.current_status === 'broken').length,
+        repairingCount: groupMachines.filter((m) => m.current_status === 'repairing').length,
+        workingCount: groupMachines.filter((m) => m.current_status === 'working').length,
+      })
+    }
+    return result
+  }, [machineTypes, machines, todayQuantityByProduct])
+  const totalProductionToday = useMemo(() => {
+    const productIds = new Set(monitorMachines.flatMap((m) => m.product_ids || []))
+    return [...productIds].reduce((sum, productId) => sum + (todayQuantityByProduct.get(productId) || 0), 0)
+  }, [monitorMachines, todayQuantityByProduct])
+
   const statusCounts = useMemo(() => {
     const c: Record<PrMachineryStatus, number> = {
       working: 0,
@@ -240,20 +317,16 @@ export default function Machinery() {
       decommissioned: 0,
       power_off: 0,
     }
-    for (const m of machines) {
+    for (const m of monitorMachines) {
       c[m.current_status]++
     }
     return c
-  }, [machines])
-
-  const totalEffectiveToday = useMemo(() => {
-    return machines.reduce((sum, m) => sum + computeEffectiveUnitsToday(m, events), 0)
-  }, [machines, events])
+  }, [monitorMachines])
 
   /** ผลรวมกำลังผลิตรวม/วัน (ชม.กะ × หน่วย/ชม.) ของทุกเครื่อง */
   const totalMaxProductionPerDay = useMemo(() => {
-    return machines.reduce((sum, m) => sum + totalProductionCapacityPerShift(m), 0)
-  }, [machines])
+    return monitorMachines.reduce((sum, m) => sum + totalProductionCapacityPerShift(m), 0)
+  }, [monitorMachines])
 
   const onStatusChange = async (machineId: string, status: PrMachineryStatus) => {
     setOpenStatusDropdownMachineId(null)
@@ -272,6 +345,9 @@ export default function Machinery() {
 
   const [form, setForm] = useState<Partial<MachineryMachine>>({
     name: '',
+    machine_type: 'ทั่วไป',
+    capacity_unit: 'หน่วย',
+    product_ids: [],
     location: '',
     work_start: '08:00',
     work_end: '17:00',
@@ -280,6 +356,8 @@ export default function Machinery() {
     image_url: null,
   })
   const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [productSearch, setProductSearch] = useState('')
+  const [showSelectedProducts, setShowSelectedProducts] = useState(false)
   const [photoRemove, setPhotoRemove] = useState(false)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
 
@@ -293,6 +371,9 @@ export default function Machinery() {
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setForm({
       name: '',
+      machine_type: 'ทั่วไป',
+      capacity_unit: 'หน่วย',
+      product_ids: [],
       location: '',
       work_start: '08:00',
       work_end: '17:00',
@@ -313,6 +394,9 @@ export default function Machinery() {
       const base = {
         id: form.id,
         name: form.name.trim(),
+        machine_type: form.machine_type?.trim() || 'ทั่วไป',
+        capacity_unit: form.capacity_unit?.trim() || 'หน่วย',
+        product_ids: form.product_ids || [],
         location: form.location || null,
         work_start: normalizeTime(form.work_start || '08:00'),
         work_end: normalizeTime(form.work_end || '17:00'),
@@ -343,6 +427,9 @@ export default function Machinery() {
     setForm({
       id: m.id,
       name: m.name,
+      machine_type: m.machine_type || 'ทั่วไป',
+      capacity_unit: m.capacity_unit || 'หน่วย',
+      product_ids: m.product_ids || [],
       location: m.location || '',
       work_start: m.work_start.slice(0, 5),
       work_end: m.work_end.slice(0, 5),
@@ -452,7 +539,7 @@ export default function Machinery() {
     const now = new Date(monitorTick)
     const workingMs = computeWorkingTimeInShiftMsToday(m, events, now)
     const shiftTotalMs = computeShiftDurationMsForDay(m, now)
-    const units = computeEffectiveUnitsToday(m, events)
+    const groupStats = machineTypeStats.get(m.machine_type || 'ทั่วไป')
     const st = m.current_status
     const isPowerOff = st === 'power_off'
     const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
@@ -462,7 +549,7 @@ export default function Machinery() {
         key={m.id}
         className={`${monitorCardShellClass(st)} ${isMobileRole ? '!overflow-visible relative z-10' : ''}`}
       >
-        <div className="relative aspect-[4/3] w-full shrink-0 bg-black/50 overflow-hidden rounded-t-2xl">
+        <div className="relative aspect-video w-full shrink-0 bg-black/50 overflow-hidden rounded-t-2xl">
           {m.image_url ? (
             <img src={m.image_url} alt="" className="h-full w-full object-cover" loading="lazy" />
           ) : (
@@ -476,6 +563,9 @@ export default function Machinery() {
         <div className={`flex flex-1 flex-col gap-2.5 p-3 ${textColor}`}>
           <div>
             <h3 className="text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
+            <p className={`mt-1 text-[11px] font-semibold uppercase tracking-wide ${subTextColor}`}>
+              {m.machine_type || 'ทั่วไป'}
+            </p>
             <p className={`mt-0.5 text-xs sm:text-sm ${subTextColor}`}>
               สถานที่ {m.location?.trim() ? m.location : '—'}
             </p>
@@ -486,11 +576,13 @@ export default function Machinery() {
               {formatMsAsHms(workingMs)} / {formatMsAsHms(shiftTotalMs)}
             </dd>
             <dt>กำลังผลิต/ชม.</dt>
-            <dd className="text-right font-mono tabular-nums">{fmtInt(Number(m.capacity_units_per_hour))} หน่วย</dd>
+            <dd className="text-right font-mono tabular-nums">{fmtInt(Number(m.capacity_units_per_hour))} {m.capacity_unit || 'หน่วย'}</dd>
             <dt>กำลังผลิตรวม/วัน</dt>
-            <dd className="text-right font-mono tabular-nums">{fmtInt(totalProductionCapacityPerShift(m))} หน่วย</dd>
-            <dt>ผลิตวันนี้</dt>
-            <dd className="text-right font-mono tabular-nums font-semibold">{fmtInt(units)} หน่วย</dd>
+            <dd className="text-right font-mono tabular-nums">{fmtInt(totalProductionCapacityPerShift(m))} {m.capacity_unit || 'หน่วย'}</dd>
+            <dt>ภาระงานร่วมของกลุ่ม</dt>
+            <dd className="text-right font-mono tabular-nums font-semibold">{fmtInt(groupStats?.productionToday || 0)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}</dd>
+            <dt>ใช้กำลังผลิตรวมของกลุ่ม</dt>
+            <dd className="text-right font-mono tabular-nums font-semibold">{(groupStats?.utilizationPercent || 0).toFixed(1)}%</dd>
           </dl>
           {isMobileRole ? (
             <div className="relative z-20 mt-auto">
@@ -627,7 +719,7 @@ export default function Machinery() {
             history: 'ประวัติ / รายงาน',
             purchaseRequest: 'คำขอซื้อ',
             stock: 'สต๊อคคงเหลือ',
-            purchaseSettings: 'ตั้งค่า',
+            purchaseSettings: 'ตั้งค่าสินค้า',
           }
           return (
             <button
@@ -655,26 +747,74 @@ export default function Machinery() {
 
       {tab === 'monitor' && (
         <section className="space-y-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {machineTypes.map((type) => {
+              const stats = machineTypeStats.get(type)
+              if (!stats) return null
+              const abnormalCount = stats.brokenCount + stats.repairingCount
+              const selected = monitorMachineType === type
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setMonitorMachineType((current) => (current === type ? '' : type))}
+                  className={`rounded-xl border p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md ${
+                    selected ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300' : 'border-gray-200 bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-bold text-gray-900">{type}</div>
+                      <div className="mt-0.5 text-xs text-gray-500">
+                        {stats.machines.length} เครื่อง · ทำงาน {stats.workingCount}
+                      </div>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${
+                      abnormalCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                    }`}>
+                      {abnormalCount > 0 ? `ผิดปกติ ${abnormalCount}` : 'ปกติ'}
+                    </span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+                    <div><div className="text-xs text-gray-500">งานวันนี้</div><div className="font-bold tabular-nums">{fmtInt(stats.productionToday)}</div></div>
+                    <div><div className="text-xs text-gray-500">กำลังผลิตรวม</div><div className="font-bold tabular-nums">{fmtInt(stats.maxCapacity)}</div></div>
+                    <div><div className="text-xs text-gray-500">ใช้งาน</div><div className="font-bold tabular-nums">{stats.utilizationPercent.toFixed(1)}%</div></div>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className={`h-full rounded-full ${stats.utilizationPercent > 100 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                      style={{ width: `${Math.min(stats.utilizationPercent, 100)}%` }}
+                    />
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <div className="grid gap-3 xl:grid-cols-[minmax(420px,2fr)_minmax(0,6fr)]">
           <div
-            className={`rounded-xl border px-4 py-4 sm:px-5 sm:py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${
+            className={`grid grid-cols-2 items-center rounded-xl border px-4 py-4 sm:px-5 sm:py-4 ${
               isMobileRole
                 ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
                 : 'border-emerald-200 bg-emerald-50 text-emerald-900'
             }`}
           >
             <div>
-              <span className="font-semibold text-sm sm:text-base">ผลิตวันนี้: </span>
-              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalEffectiveToday)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-700' : ''}`}>หน่วย</span>
+              <div className="text-left text-sm font-semibold sm:text-base">ผลิตวันนี้:</div>
+              <div className="mt-1 text-left">
+                <span className="text-xl font-black tabular-nums sm:text-2xl">{monitorCapacityUnit ? fmtInt(totalProductionToday) : '—'}</span>
+                <span className={`ml-1 text-sm sm:text-base ${isMobileRole ? 'text-emerald-700' : ''}`}>{monitorCapacityUnit || 'เลือกประเภทเพื่อรวมกำลังผลิต'}</span>
+              </div>
             </div>
             <div
-              className={`sm:text-right sm:pl-4 sm:border-l ${
-                isMobileRole ? 'sm:border-emerald-300/80' : 'sm:border-emerald-300/80'
+              className={`border-l pl-4 text-left ${
+                isMobileRole ? 'border-emerald-300/80' : 'border-emerald-300/80'
               }`}
             >
-              <span className="font-semibold text-sm sm:text-base">กำลังผลิตสูงสุด: </span>
-              <span className="text-xl sm:text-2xl font-black tabular-nums">{fmtInt(totalMaxProductionPerDay)}</span>
-              <span className={`text-sm sm:text-base ml-1 ${isMobileRole ? 'text-emerald-700' : ''}`}>หน่วย</span>
+              <div className="text-sm font-semibold sm:text-base">กำลังผลิตสูงสุด:</div>
+              <div className="mt-1">
+                <span className="text-xl font-black tabular-nums sm:text-2xl">{monitorCapacityUnit ? fmtInt(totalMaxProductionPerDay) : '—'}</span>
+                <span className={`ml-1 text-sm sm:text-base ${isMobileRole ? 'text-emerald-700' : ''}`}>{monitorCapacityUnit || 'หน่วยต่างกัน ไม่สามารถรวมได้'}</span>
+              </div>
             </div>
           </div>
 
@@ -694,7 +834,7 @@ export default function Machinery() {
                   isMobileRole ? 'text-emerald-900' : 'text-emerald-900'
                 }`}
               >
-                {machines.length}/{statusCounts.power_off}
+                {monitorMachines.length}/{statusCounts.power_off}
               </div>
             </div>
             {STATUS_SUMMARY_ORDER.map((s) => (
@@ -715,10 +855,11 @@ export default function Machinery() {
               </div>
             ))}
           </div>
+          </div>
 
           {isMobileRole ? (
             <div className="space-y-4">
-              {machines.length === 0 ? (
+              {monitorMachines.length === 0 ? (
                 <div
                   className={`rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
                     isMobileRole ? 'border-slate-200 bg-white text-gray-500' : 'border-gray-200 bg-gray-50 text-gray-500'
@@ -731,10 +872,10 @@ export default function Machinery() {
                   <div>
                     <p className="text-xs font-medium text-gray-500 mb-2">เลือกเครื่องจักร</p>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {machines.map((m) => {
+                      {monitorMachines.map((m) => {
                         const st = m.current_status
                         const selected = selectedMonitorMachineId === m.id
-                        const unitsToday = computeEffectiveUnitsToday(m, events)
+                        const groupStats = machineTypeStats.get(m.machine_type || 'ทั่วไป')
                         return (
                           <button
                             key={m.id}
@@ -769,7 +910,7 @@ export default function Machinery() {
                                   {MACHINERY_STATUS_LABELS[st]}
                                 </span>
                                 <span className="mt-1 block text-[11px] sm:text-xs tabular-nums font-medium text-emerald-700">
-                                  ผลิตวันนี้ {fmtInt(unitsToday)} หน่วย
+                                  งานร่วม {fmtInt(groupStats?.productionToday || 0)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}
                                 </span>
                               </span>
                             </div>
@@ -791,7 +932,7 @@ export default function Machinery() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-              {machines.length === 0 && (
+              {monitorMachines.length === 0 && (
                 <div
                   className={`col-span-full rounded-2xl border px-6 py-12 text-center text-sm sm:text-base ${
                     isMobileRole ? 'border-slate-600 bg-slate-800/60 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-500'
@@ -800,7 +941,7 @@ export default function Machinery() {
                   ยังไม่มีเครื่อง — ไปแท็บตั้งค่าเพื่อเพิ่ม
                 </div>
               )}
-              {machines.map((m) => renderMonitorMachineArticle(m))}
+              {monitorMachines.map((m) => renderMonitorMachineArticle(m))}
             </div>
           )}
         </section>
@@ -821,7 +962,7 @@ export default function Machinery() {
             >
               {form.id ? 'แก้ไขเครื่อง' : 'เพิ่มเครื่อง'}
             </h2>
-            <div className="grid sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-[repeat(20,minmax(0,1fr))] [&>label]:xl:col-span-5">
               <label className="block">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>ชื่อเครื่อง *</span>
                 <input
@@ -858,7 +999,7 @@ export default function Machinery() {
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>สิ้นสุดกะ</span>
                 <input
                   type="time"
-                  className={`w-full border rounded-lg px-3 py-2.5 text-base ${
+                  className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
                     isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
                   }`}
                   value={form.work_end || ''}
@@ -866,8 +1007,22 @@ export default function Machinery() {
                 />
               </label>
               <label className="block">
+                <span className="text-sm text-gray-500">ประเภทเครื่องจักร *</span>
+                <input
+                  list="machinery-type-options"
+                  className="mt-1 w-full rounded-lg border px-3 py-2.5 text-base"
+                  value={form.machine_type || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, machine_type: e.target.value }))}
+                  placeholder="เช่น เครื่องพิมพ์, เครื่องตัด, เครื่องเคลือบ"
+                  required
+                />
+                <datalist id="machinery-type-options">
+                  {machineTypes.map((type) => <option key={type} value={type} />)}
+                </datalist>
+              </label>
+              <label className="block">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>
-                  กำลังผลิต (หน่วย/ชม.)
+                  กำลังผลิตต่อชั่วโมง
                 </span>
                 <input
                   type="number"
@@ -877,6 +1032,16 @@ export default function Machinery() {
                   }`}
                   value={form.capacity_units_per_hour ?? 0}
                   onChange={(e) => setForm((f) => ({ ...f, capacity_units_per_hour: parseFloat(e.target.value) }))}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-500">หน่วยกำลังผลิต *</span>
+                <input
+                  className="mt-1 w-full rounded-lg border px-3 py-2.5 text-base"
+                  value={form.capacity_unit || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, capacity_unit: e.target.value }))}
+                  placeholder="เช่น ชิ้น, แผ่น, เมตร, กก."
+                  required
                 />
               </label>
               <label className="block">
@@ -890,7 +1055,73 @@ export default function Machinery() {
                   onChange={(e) => setForm((f) => ({ ...f, sort_order: parseInt(e.target.value, 10) }))}
                 />
               </label>
-              <div className="sm:col-span-2 space-y-2">
+              <div className="sm:col-span-2 xl:order-2 xl:col-span-12 rounded-xl border border-gray-200 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-sm font-semibold text-gray-700">สินค้าที่ผลิตด้วยเครื่องนี้</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSelectedProducts((current) => !current)}
+                    className={`rounded-full px-2.5 py-1 text-xs font-semibold transition ${
+                      showSelectedProducts
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    }`}
+                    title={showSelectedProducts ? 'แสดงสินค้าทั้งหมด' : 'ดูเฉพาะสินค้าที่เลือก'}
+                  >
+                    เลือกแล้ว {(form.product_ids || []).length} รายการ
+                  </button>
+                </div>
+                <input
+                  className="mt-3 w-full rounded-lg border px-3 py-2 text-sm"
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  placeholder="ค้นหารหัสสินค้า ชื่อสินค้า หมวดหมู่ หรือประเภท"
+                />
+                <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                  <div className="sticky top-0 z-10 grid grid-cols-[1.15fr_2fr_1fr_0.8fr] gap-3 border-b border-gray-200 bg-gray-50 px-10 py-2 text-xs font-semibold text-gray-500">
+                    <span>รหัสสินค้า</span>
+                    <span>ชื่อสินค้า</span>
+                    <span>หมวดหมู่</span>
+                    <span>ประเภท</span>
+                  </div>
+                  {productOptions
+                    .filter((product) => {
+                      if (showSelectedProducts && !(form.product_ids || []).includes(product.id)) return false
+                      const q = productSearch.trim().toLowerCase()
+                      if (!q) return true
+                      return [product.product_code, product.product_name, product.product_category, product.product_type]
+                        .filter(Boolean)
+                        .some((value) => String(value).toLowerCase().includes(q))
+                    })
+                    .map((product) => {
+                      const checked = (form.product_ids || []).includes(product.id)
+                      return (
+                        <label key={product.id} className="flex cursor-pointer items-center gap-3 border-b border-gray-100 px-3 py-2.5 last:border-0 hover:bg-emerald-50">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 shrink-0 rounded border-gray-300 text-emerald-600"
+                            checked={checked}
+                            onChange={(e) => setForm((current) => ({
+                              ...current,
+                              product_ids: e.target.checked
+                                ? [...new Set([...(current.product_ids || []), product.id])]
+                                : (current.product_ids || []).filter((id) => id !== product.id),
+                            }))}
+                          />
+                          <span className="grid min-w-0 flex-1 grid-cols-[1.15fr_2fr_1fr_0.8fr] items-center gap-3 text-sm">
+                            <span className="truncate font-semibold text-gray-800">{product.product_code}</span>
+                            <span className="truncate text-gray-700" title={product.product_name}>{product.product_name}</span>
+                            <span className="truncate text-gray-500">{product.product_category || '—'}</span>
+                            <span className="truncate text-gray-500">{product.product_type || '—'}</span>
+                          </span>
+                        </label>
+                      )
+                    })}
+                </div>
+              </div>
+              <div className="sm:col-span-2 xl:order-1 xl:col-span-8 space-y-2 rounded-xl border border-gray-200 p-4">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>รูปเครื่อง (JPEG/PNG/WebP)</span>
                 <input
                   type="file"
@@ -911,17 +1142,17 @@ export default function Machinery() {
                   }}
                 />
                 {(photoRemove ? null : photoPreview || form.image_url) && (
-                  <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-3">
                     <img
                       src={(photoRemove ? null : photoPreview || form.image_url) || ''}
                       alt=""
-                      className={`h-28 w-40 rounded-xl object-cover border ${
+                      className={`h-64 w-full rounded-xl object-contain border bg-gray-50 sm:h-72 ${
                         isMobileRole ? 'border-slate-600/50' : 'border-gray-200'
                       }`}
                     />
                     <button
                       type="button"
-                      className={`text-sm font-semibold px-3 py-2 rounded-lg ${
+                      className={`block text-sm font-semibold px-3 py-2 rounded-lg ${
                         isMobileRole ? 'bg-red-900/50 text-red-300 hover:bg-red-900/70' : 'bg-red-100 text-red-800 hover:bg-red-200'
                       }`}
                       onClick={() => {
@@ -931,7 +1162,7 @@ export default function Machinery() {
                         setPhotoRemove(true)
                       }}
                     >
-                      ลบรูป (บันทึกเพื่อยืนยัน)
+                      ลบรูป
                     </button>
                   </div>
                 )}
@@ -942,7 +1173,7 @@ export default function Machinery() {
                 )}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex justify-end gap-2">
               <button
                 type="submit"
                 className="px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-base font-semibold hover:bg-emerald-700"
@@ -978,9 +1209,10 @@ export default function Machinery() {
                   <th className="px-3 py-3 whitespace-nowrap">ลำดับ</th>
                   <th className="px-3 py-3 whitespace-nowrap w-16">รูป</th>
                   <th className="px-3 py-3 whitespace-nowrap">เครื่อง</th>
+                  <th className="px-3 py-3 whitespace-nowrap">ประเภท</th>
                   <th className="px-3 py-3 whitespace-nowrap min-w-[8rem]">สถานที่</th>
                   <th className="px-3 py-3 whitespace-nowrap">กะ</th>
-                  <th className="px-3 py-3 whitespace-nowrap">units/ชม.</th>
+                  <th className="px-3 py-3 whitespace-nowrap">กำลังผลิต/ชม.</th>
                   <th className="px-3 py-3 whitespace-nowrap">กำลังผลิตรวม</th>
                   <th className="px-3 py-3 whitespace-nowrap text-right" />
                 </tr>
@@ -1001,6 +1233,7 @@ export default function Machinery() {
                     <td className={`px-3 py-3 font-medium ${isMobileRole ? 'text-slate-100' : 'text-gray-900'}`}>
                       {m.name}
                     </td>
+                    <td className="px-3 py-3 text-gray-600">{m.machine_type || 'ทั่วไป'}</td>
                     <td className={`px-3 py-3 ${isMobileRole ? 'text-gray-400' : 'text-gray-600'}`}>
                       {m.location?.trim() ? m.location : '—'}
                     </td>
@@ -1008,10 +1241,10 @@ export default function Machinery() {
                       {m.work_start.slice(0, 5)} – {m.work_end.slice(0, 5)}
                     </td>
                     <td className={`px-3 py-3 tabular-nums ${isMobileRole ? 'text-gray-200' : ''}`}>
-                      {fmtInt(Number(m.capacity_units_per_hour))}
+                      {fmtInt(Number(m.capacity_units_per_hour))} {m.capacity_unit || 'หน่วย'}
                     </td>
                     <td className={`px-3 py-3 tabular-nums font-medium ${isMobileRole ? 'text-emerald-300/90' : 'text-emerald-800'}`}>
-                      {fmtInt(totalProductionCapacityPerShift(m))}
+                      {fmtInt(totalProductionCapacityPerShift(m))} {m.capacity_unit || 'หน่วย'}
                     </td>
                     <td className="px-3 py-3 text-right space-x-2 whitespace-nowrap">
                       <button

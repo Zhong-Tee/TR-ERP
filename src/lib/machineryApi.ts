@@ -11,6 +11,9 @@ export type PrMachineryStatus =
 export interface MachineryMachine {
   id: string
   name: string
+  machine_type: string
+  capacity_unit: string
+  product_ids: string[]
   location: string | null
   image_url: string | null
   work_start: string
@@ -32,6 +35,58 @@ export interface MachineryEvent {
   note: string | null
   created_by: string | null
   created_at: string
+}
+
+export interface MachineryProductOption {
+  id: string
+  product_code: string
+  product_name: string
+  product_category: string | null
+  product_type: string | null
+}
+
+export async function fetchMachineryProductOptions(): Promise<MachineryProductOption[]> {
+  const { data, error } = await supabase
+    .from('pr_products')
+    .select('id, product_code, product_name, product_category, product_type')
+    .eq('is_active', true)
+    .order('product_code')
+  if (error) throw error
+  return ((data || []) as MachineryProductOption[]).filter(
+    (product) => String(product.product_type || '').trim().toUpperCase() !== 'RM',
+  )
+}
+
+/** Sum quantities by product from work orders created during the local day. */
+export async function fetchTodayWorkOrderQuantityByProduct(): Promise<Map<string, number>> {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  const { data: workOrders, error: workOrderError } = await supabase
+    .from('or_work_orders')
+    .select('id')
+    .gte('created_at', start.toISOString())
+    .lt('created_at', end.toISOString())
+    .neq('status', 'ยกเลิก')
+  if (workOrderError) throw workOrderError
+  const ids = (workOrders || []).map((row: { id: string }) => row.id)
+  if (ids.length === 0) return new Map()
+  const { data: orders, error: orderError } = await supabase
+    .from('or_orders')
+    .select('or_order_items(product_id, quantity)')
+    .in('work_order_id', ids)
+  if (orderError) throw orderError
+  const totals = new Map<string, number>()
+  for (const order of orders || []) {
+    for (const item of (order as any).or_order_items || []) {
+      const productId = String(item.product_id || '')
+      if (!productId) continue
+      const quantity = Number(item.quantity)
+      totals.set(productId, (totals.get(productId) || 0) + (Number.isFinite(quantity) ? quantity : 0))
+    }
+  }
+  return totals
 }
 
 export const MACHINERY_STATUS_LABELS: Record<PrMachineryStatus, string> = {
@@ -58,6 +113,9 @@ export async function upsertMachine(
 ): Promise<MachineryMachine> {
   const payload: Record<string, unknown> = {
     name: row.name,
+    machine_type: row.machine_type?.trim() || 'ทั่วไป',
+    capacity_unit: row.capacity_unit?.trim() || 'หน่วย',
+    product_ids: row.product_ids || [],
     location: row.location ?? null,
     work_start: row.work_start ?? '08:00:00',
     work_end: row.work_end ?? '17:00:00',

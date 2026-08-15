@@ -661,6 +661,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
+  const canSelectPlanDate = unlocked || user?.role === 'production' || tvMode
   const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
   const [jobs, setJobs] = useState<PlanJob[]>([])
@@ -2055,7 +2056,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
               type="date"
               value={dDate}
               onChange={(event) => setDDate(event.target.value)}
-              disabled={!unlocked}
+              disabled={!canSelectPlanDate}
               className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-slate-700 disabled:bg-slate-50"
             />
           </label>
@@ -2592,7 +2593,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   type="date"
                   value={depDate}
                   onChange={(e) => setDepDate(e.target.value)}
-                  disabled={!unlocked}
+                  disabled={!canSelectPlanDate}
                   className="rounded-lg border border-gray-300 px-3 py-2"
                 />
               </div>
@@ -2911,7 +2912,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       type="date"
                       value={dDate}
                       onChange={(e) => setDDate(e.target.value)}
-                      disabled={!unlocked && !tvMode}
+                      disabled={!canSelectPlanDate}
                       className="rounded-lg border border-gray-300 px-3 py-2"
                     />
                   </div>

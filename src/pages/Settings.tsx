@@ -707,8 +707,9 @@ export default function Settings() {
     { key: 'plan-form', label: 'สร้าง/แก้ไขใบงาน', group: 'plan' },
     { key: 'plan-set', label: 'ตั้งค่า', group: 'plan' },
     { key: 'plan-issue', label: 'Issue', group: 'plan' },
-    { key: 'machinery', label: 'Machinery', group: 'plan' },
-    { key: 'machinery-settings', label: 'Machinery · ตั้งค่าเครื่อง', group: 'plan' },
+    // ── Machinery ──
+    { key: 'machinery', label: 'Machinery', group: '' },
+    { key: 'machinery-settings', label: 'ตั้งค่าเครื่อง', group: 'machinery' },
     // ── จัดสินค้า (WMS) ──
     { key: 'wms', label: 'จัดสินค้า', group: '' },
     { key: 'wms-new-orders', label: 'ใบงานใหม่', group: 'wms' },
@@ -727,8 +728,8 @@ export default function Settings() {
     { key: 'qc-report', label: 'Reports & KPI', group: 'qc' },
     { key: 'qc-history', label: 'History Check', group: 'qc' },
     { key: 'qc-settings', label: 'Settings', group: 'qc' },
-    // ── จัดของ ──
-    { key: 'packing', label: 'จัดของ', group: '' },
+    // ── แพ็คสินค้า ──
+    { key: 'packing', label: 'แพ็คสินค้า', group: '' },
     { key: 'packing-new', label: 'ใบงานใหม่', group: 'packing' },
     { key: 'packing-shipped', label: 'จัดส่งแล้ว', group: 'packing' },
     { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
@@ -3038,7 +3039,7 @@ export default function Settings() {
                       <td
                         className={`p-2 whitespace-nowrap sticky left-0 z-[5] transition-colors duration-150 ${
                           isSub
-                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 border-l-2 border-blue-200 group-hover:bg-blue-100'
+                            ? 'pl-8 text-gray-500 text-xs bg-gray-50/70 group-hover:bg-blue-100'
                             : 'font-bold text-gray-800 bg-white'
                         }`}
                         style={{ backgroundColor: 'inherit' }}

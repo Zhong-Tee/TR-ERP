@@ -135,7 +135,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (path.startsWith('/machinery')) return 'Machinery'
     if (path.startsWith('/wms')) return 'จัดสินค้า'
     if (path.startsWith('/qc')) return 'QC Operation'
-    if (path.startsWith('/packing')) return 'จัดของ'
+    if (path.startsWith('/packing')) return 'แพ็คสินค้า'
     if (path.startsWith('/transport')) return 'ทวนสอบขนส่ง'
     if (path.startsWith('/products')) return 'สินค้า'
     if (path.startsWith('/cartoon-patterns')) return 'ลายการ์ตูน'
