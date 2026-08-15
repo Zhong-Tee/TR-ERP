@@ -100,9 +100,9 @@ export const SITUATIONS: Situation[] = [
   },
   {
     key: EVENT.absentPendingLeave, kind: 'fixed', code: EVENT.absentPendingLeave, group: 'leave',
-    label: 'ไม่มาทำงาน ทั้งที่ใบลายังไม่อนุมัติ',
-    defaultName: 'ไม่มาทำงาน ทั้งที่การลายังไม่อนุมัติ',
-    hint: 'มีใบลาในระบบแต่ยังรออนุมัติ แล้วไม่มาทำงาน',
+    label: 'ใบลารออนุมัติ (ยังไม่หักคะแนน)',
+    defaultName: 'ใบลารออนุมัติ (ยังไม่หักคะแนน)',
+    hint: 'พักการให้คะแนนไว้ก่อน เมื่ออนุมัติจะถือเป็นวันลา และเมื่อปฏิเสธจึงนับเป็นขาดงาน',
   },
   {
     key: EVENT.absent, kind: 'fixed', code: EVENT.absent, group: 'leave',
@@ -112,15 +112,15 @@ export const SITUATIONS: Situation[] = [
   },
   {
     key: EVENT.otLateRequest, kind: 'fixed', code: EVENT.otLateRequest, group: 'ot',
-    label: 'ลืมขอ OT ก่อนเริ่มทำ',
-    defaultName: 'ลืมขอ OT ก่อนเริ่มทำ',
-    hint: 'ใบขอ OT อนุมัติแล้ว แต่ยื่นหลังเริ่มทำจริง',
+    label: 'ยื่นขอ OT หลังเริ่มทำ',
+    defaultName: 'ยื่นขอ OT หลังเริ่มทำ',
+    hint: 'ใบขอ OT ได้รับอนุมัติแล้ว แต่ยื่นคำขอหลังเริ่มทำจริง',
   },
   {
     key: EVENT.otUnapproved, kind: 'fixed', code: EVENT.otUnapproved, group: 'ot',
     label: 'ทำ OT โดยไม่ได้รับอนุมัติ',
     defaultName: 'ทำ OT โดยไม่ได้รับอนุมัติ',
-    hint: 'มีการกดเริ่ม OT แต่ใบขอยังไม่อนุมัติ หรือถูกปฏิเสธ',
+    hint: 'มีการกดเริ่ม OT โดยไม่มีคำขอ หรือคำขอถูกปฏิเสธ (สถานะรออนุมัติยังไม่หักคะแนน)',
   },
   {
     key: CUMULATIVE_KEY, kind: 'cumulative', code: null, group: 'attendance_cumulative',

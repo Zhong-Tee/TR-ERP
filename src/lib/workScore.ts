@@ -273,6 +273,10 @@ function evaluateOt(fact: AttendanceFact, rules: RuleIndex): ScoreEventDraft[] {
   if (fact.ot_in_min === null) return []
   const ref = { table: 'hr_time_entries', id: fact.ot_in_ref }
 
+  // ยังรอผู้มีอำนาจอนุมัติ ไม่ใช่ความผิดของพนักงาน จึงพักการให้คะแนนไว้ก่อน
+  if (fact.ot_request_status === 'pending') return []
+
+  // ไม่มีคำขอ หรือคำขอถูกปฏิเสธ แต่มีการเริ่มทำ OT จริง
   if (fact.ot_request_status !== 'approved') {
     const rule = ruleFor(rules, EVENT.otUnapproved, fact)
     if (!rule) return []
@@ -344,13 +348,10 @@ export function evaluateDay(fact: AttendanceFact, rules: RuleIndex): ScoreEventD
   // แต่กติกาการลาเต็มวันและ OT ด้านบนยังคงทำงานตามปกติ
   if (fact.work_mode === 'no_clock') return events
 
-  // ── ไม่มา ทั้งที่ใบลายังไม่อนุมัติ
+  // ── ไม่มาและมีใบลารออนุมัติ: พักการให้คะแนนจนกว่าจะทราบผล
+  // หากอนุมัติ ระบบจะถือว่าเป็นวันลา; หากปฏิเสธ ใบลาจะไม่ถูกเลือกจาก RPC
+  // และการคำนวณรอบถัดไปจะจัดเป็น "ขาดงาน" ตามปกติ
   if (!hasIn && !hasOut && fact.leave_status === 'pending') {
-    const rule = ruleFor(rules, EVENT.absentPendingLeave, fact)
-    if (rule) {
-      events.push(draft(fact, rule, { leave_type: fact.leave_type_name },
-        { table: 'hr_leave_requests', id: fact.leave_id }))
-    }
     return events
   }
 

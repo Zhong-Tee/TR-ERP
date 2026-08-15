@@ -288,10 +288,10 @@ describe('3. การลา', () => {
     const f = leaveDay({ work_date: '2026-08-04', leave_start_date: '2026-08-03', leave_filed_date: '2026-08-01' })
     expect(codes(f)).toEqual(['leave_approved'])
   })
-  it('ไม่มาทำงาน ทั้งที่การลายังไม่อนุมัติ → -10', () => {
+  it('ไม่มาทำงานและใบลายังรออนุมัติ → พักการให้คะแนน', () => {
     const f = leaveDay({ leave_status: 'pending' })
-    expect(codes(f)).toEqual(['absent_pending_leave'])
-    expect(points(f)).toBe(-10)
+    expect(codes(f)).toEqual([])
+    expect(points(f)).toBe(0)
   })
   it('ขาดงาน (ไม่มีทั้งเวลาและใบลา) → -20', () => {
     const f = leaveDay({ leave_id: null, leave_status: null, leave_mode: null, leave_start_date: null, leave_filed_date: null })
@@ -344,7 +344,7 @@ describe('4. OT', () => {
     })
     expect(codes(f)).toEqual([])
   })
-  it('ลืมขอ OT ก่อนทำ (ขอหลังเริ่มไปแล้ว) → -2', () => {
+  it('ยื่นขอ OT หลังเริ่มทำ และได้รับอนุมัติ → -2', () => {
     const f = otDay({
       ot_request_id: 'ot-1',
       ot_request_status: 'approved',
@@ -354,10 +354,13 @@ describe('4. OT', () => {
     expect(codes(f)).toEqual(['ot_late_request'])
     expect(points(f)).toBe(-2)
   })
-  it('ทำ OT โดยไม่มีคำขออนุมัติ → -3', () => {
+  it('ทำ OT โดยไม่มีคำขอ หรือคำขอถูกปฏิเสธ → -3', () => {
     expect(points(otDay())).toBe(-3)
-    expect(points(otDay({ ot_request_id: 'ot-1', ot_request_status: 'pending' }))).toBe(-3)
     expect(points(otDay({ ot_request_id: 'ot-1', ot_request_status: 'rejected' }))).toBe(-3)
+  })
+  it('ทำ OT ขณะที่คำขอยังรออนุมัติ → พักการให้คะแนน', () => {
+    expect(codes(otDay({ ot_request_id: 'ot-1', ot_request_status: 'pending' }))).toEqual([])
+    expect(points(otDay({ ot_request_id: 'ot-1', ot_request_status: 'pending' }))).toBe(0)
   })
   it('ทำ OT วันหยุดโดยไม่ได้รับอนุมัติ ก็ยังหัก', () => {
     const f = otDay({ day_type: 'weekly_off', actual_in_min: null, actual_out_min: null })
