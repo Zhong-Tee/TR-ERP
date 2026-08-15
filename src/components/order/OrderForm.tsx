@@ -691,6 +691,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     title: '',
     message: '',
   })
+  /** ยืนยันเปิดบิลต่อ เมื่อปุ่มออกแบบกับลิงก์ไฟล์แนบไม่สอดคล้องกัน */
+  const [designAttachmentConfirm, setDesignAttachmentConfirm] = useState<{
+    title: string
+    message: string
+    itemsToSave: Partial<OrderItem>[]
+  } | null>(null)
   const [importModalOpen, setImportModalOpen] = useState(false)
   const [importMode, setImportMode] = useState<'standard-pgtr' | 'wy'>('standard-pgtr')
   const [importFile, setImportFile] = useState<File | null>(null)
@@ -1806,11 +1812,38 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       await handleSubmitInternal(items, 'รอลงข้อมูล')
   }
 
-  async function handleSubmitInternal(itemsToSave: typeof items, targetStatus: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' = 'รอลงข้อมูล') {
+  async function handleSubmitInternal(
+    itemsToSave: typeof items,
+    targetStatus: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' = 'รอลงข้อมูล',
+    skipDesignAttachmentConfirmation = false
+  ) {
     if (!user) {
       console.error('User not found')
       setLoading(false)
       return
+    }
+
+    // ก่อนเปิดบิลเข้าสู่ workflow ต้องให้ตัวเลือก "ออกแบบ" และลิงก์ไฟล์แนบสอดคล้องกัน
+    if (targetStatus === 'ลงข้อมูลเสร็จสิ้น' && !skipDesignAttachmentConfirmation) {
+      const hasAttachmentLink = itemsToSave.some((item) => Boolean(item.file_attachment?.trim()))
+
+      if (requiresConfirmDesign && !hasAttachmentLink) {
+        setDesignAttachmentConfirm({
+          title: 'ข้อมูลออกแบบไม่ครบ',
+          message: 'เลือก “ออกแบบ” ไว้ แต่ยังไม่ได้กรอกลิงก์ไฟล์แนบ ต้องการยืนยันเปิดบิลต่อหรือไม่',
+          itemsToSave,
+        })
+        return
+      }
+
+      if (!requiresConfirmDesign && hasAttachmentLink) {
+        setDesignAttachmentConfirm({
+          title: 'พบลิงก์ไฟล์แนบ',
+          message: 'ไม่ได้เลือก “ออกแบบ” แต่พบลิงก์ไฟล์แนบ ต้องการยืนยันเปิดบิลต่อหรือไม่',
+          itemsToSave,
+        })
+        return
+      }
     }
 
     // Validation: prefix เลขคำสั่งซื้อให้ตรงช่องทาง (กันหลุดจาก flow อื่น)
@@ -6776,6 +6809,41 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             className="px-4 py-2 rounded-lg bg-gray-800 text-white text-sm hover:bg-gray-900"
           >
             ตกลง
+          </button>
+        </div>
+      </div>
+    </Modal>
+
+    {/* ยืนยันเปิดบิล เมื่อปุ่มออกแบบกับลิงก์ไฟล์แนบไม่สอดคล้องกัน */}
+    <Modal
+      open={designAttachmentConfirm != null}
+      onClose={() => setDesignAttachmentConfirm(null)}
+      contentClassName="max-w-md"
+    >
+      <div className="p-6">
+        <h3 className="text-lg font-semibold text-amber-800 mb-2">{designAttachmentConfirm?.title}</h3>
+        <p className="text-gray-700 text-sm whitespace-pre-line">{designAttachmentConfirm?.message}</p>
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => setDesignAttachmentConfirm(null)}
+            disabled={loading}
+            className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-50 transition-colors"
+          >
+            กลับไปแก้ไข
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!designAttachmentConfirm) return
+              const pendingItems = designAttachmentConfirm.itemsToSave
+              setDesignAttachmentConfirm(null)
+              await handleSubmitInternal(pendingItems, 'ลงข้อมูลเสร็จสิ้น', true)
+            }}
+            disabled={loading}
+            className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+          >
+            ยืนยันเปิดบิล
           </button>
         </div>
       </div>

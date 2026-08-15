@@ -145,6 +145,66 @@ function orderBillingPhone(o: Order): string {
   return p || '—'
 }
 
+function OrderCreatedDateTime({ value }: { value: string }) {
+  const formatted = formatDateTime(value)
+  const [datePart, timePart] = formatted.split(' เวลา ')
+
+  return (
+    <div className="min-w-[9rem] leading-snug">
+      <div className="whitespace-nowrap">{datePart}</div>
+      {timePart && <div className="mt-1 whitespace-nowrap text-sm text-gray-500">เวลา {timePart}</div>}
+    </div>
+  )
+}
+
+function OrderAttachmentLinks({ order }: { order: Order }) {
+  const items = ((order as any).or_order_items || []) as Array<{
+    file_attachment?: string | null
+    attachment_name?: string | null
+  }>
+  const files = items
+    .filter((item) => Boolean(item.file_attachment?.trim()))
+    .map((item, index) => ({
+      url: item.file_attachment!.trim(),
+      label: item.attachment_name?.trim() || `ไฟล์ ${index + 1}`,
+    }))
+
+  if (files.length === 0) return <span className="text-gray-400">—</span>
+
+  return (
+    <div className="flex min-w-[7rem] items-start gap-1.5">
+      {order.status === 'ไม่ต้องออกแบบ' && (
+        <span
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-yellow-100 text-yellow-600"
+          title="ไม่ต้องออกแบบ แต่มีลิงก์ไฟล์แนบ"
+          aria-label="แจ้งเตือน: ไม่ต้องออกแบบ แต่มีลิงก์ไฟล์แนบ"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+          </svg>
+        </span>
+      )}
+      <div className="flex flex-col items-start gap-1.5">
+        {files.map((file, index) => (
+          <a
+            key={`${file.url}-${index}`}
+            href={file.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`เปิดไฟล์แนบ: ${file.label}`}
+            className="inline-flex max-w-[10rem] items-center gap-1.5 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-800"
+          >
+            <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+            <span className="truncate">{file.label}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 const STATUS_OPTIONS: Array<{ label: string; value: OrderStatus }> = [
   { label: 'Order ใหม่', value: 'ตรวจสอบแล้ว' },
   { label: 'รอออกแบบ', value: 'รอออกแบบ' },
@@ -289,8 +349,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   ordersByKeyRef.current = ordersByKey
 
   const [salesTrTeamAdminValues, setSalesTrTeamAdminValues] = useState<string[]>([])
-  const [salesTrTeamScopeReady, setSalesTrTeamScopeReady] = useState(true)
+  const [salesTrTeamScopeReady, setSalesTrTeamScopeReady] = useState(false)
   const salesTrTeamSetRef = useRef<Set<string>>(new Set())
+  const realtimeReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     salesTrTeamSetRef.current = new Set(
@@ -355,6 +416,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   /* ── Data Loading ── */
 
   useEffect(() => {
+    if (!user?.role) return
     if (!salesTrTeamScopeReady) return
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -365,10 +427,18 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     const channel = supabase
       .channel('confirm-board-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadAll()
+        if (realtimeReloadTimerRef.current) clearTimeout(realtimeReloadTimerRef.current)
+        realtimeReloadTimerRef.current = setTimeout(() => {
+          realtimeReloadTimerRef.current = null
+          void loadAll()
+        }, 300)
       })
       .subscribe()
-    return () => { supabase.removeChannel(channel) }
+    return () => {
+      if (realtimeReloadTimerRef.current) clearTimeout(realtimeReloadTimerRef.current)
+      realtimeReloadTimerRef.current = null
+      supabase.removeChannel(channel)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate])
 
@@ -500,24 +570,28 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       return
     }
     try {
-      const [{ data: reads }, { data: messages }] = await Promise.all([
+      const orderIdSet = new Set(orderIds)
+      const [{ data: unreadRows, error: unreadError }, { data: reads }, { data: ownMessages }] = await Promise.all([
+        supabase.rpc('list_unread_order_chat_summaries', {
+          p_user_id: user.id,
+          p_role: (user.role || '').trim(),
+          p_username: (user.username || user.email || '').trim(),
+        }),
         supabase.from('or_order_chat_reads').select('order_id, user_id, last_read_at').in('order_id', orderIds),
-        supabase.from('or_order_chat_logs').select('order_id, created_at, sender_id').eq('is_hidden', false).in('order_id', orderIds),
+        supabase
+          .from('or_order_chat_logs')
+          .select('order_id, created_at, sender_id')
+          .eq('sender_id', user.id)
+          .eq('is_hidden', false)
+          .in('order_id', orderIds),
       ])
-      const readMap = new Map(
-        (reads || []).filter((r: any) => r.user_id === user.id).map((r: any) => [r.order_id, new Date(r.last_read_at).getTime()])
-      )
+      if (unreadError) throw unreadError
       const counts: Record<string, number> = {}
-      ;(messages || []).forEach((m: { order_id: string; created_at: string; sender_id: string }) => {
-        if (m.sender_id === user.id) return
-        const lastRead = readMap.get(m.order_id) ?? 0
-        const msgTime = new Date(m.created_at).getTime()
-        if (msgTime > lastRead) {
-          counts[m.order_id] = (counts[m.order_id] || 0) + 1
-        }
+      ;(unreadRows || []).forEach((row: { order_id: string; unread_count: number }) => {
+        if (orderIdSet.has(row.order_id)) counts[row.order_id] = Number(row.unread_count || 0)
       })
       setUnreadByOrder(counts)
-      setDeliveryByOrder(deriveChatDeliveryStatuses(user.id, messages || [], reads || []))
+      setDeliveryByOrder(deriveChatDeliveryStatuses(user.id, ownMessages || [], reads || []))
     } catch (error) {
       console.error('Error loading order unread counts:', error)
     }
@@ -526,24 +600,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   async function loadAll() {
     setLoading(true)
     try {
-      const [
-        newOrders,
-        noDesignOrders,
-        designOrders,
-        designedOrders,
-        waitingOrders,
-        confirmedOrders,
-        completedOrders,
-      ] =
-        await Promise.all([
-          loadOrdersByStatus('ตรวจสอบแล้ว'),
-          loadOrdersByStatus('ไม่ต้องออกแบบ'),
-          loadOrdersByStatus('รอออกแบบ'),
-          loadOrdersByStatus('ออกแบบแล้ว'),
-          loadOrdersByStatus('รอคอนเฟิร์ม'),
-          loadOrdersByStatus('คอนเฟิร์มแล้ว'),
-          loadOrdersByStatus('เสร็จสิ้น'),
-        ])
+      const groupedOrders = await loadConfirmOrders()
+      const newOrders = groupedOrders.new
+      const noDesignOrders = groupedOrders.noDesign
+      const designOrders = groupedOrders.design
+      const designedOrders = groupedOrders.designed
+      const waitingOrders = groupedOrders.waiting
+      const confirmedOrders = groupedOrders.confirmed
+      const completedOrders = groupedOrders.completed
 
       setOrdersByKey({
         new: newOrders,
@@ -576,40 +640,51 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
-  async function loadOrdersByStatus(status: OrderStatus): Promise<Order[]> {
-    const buildQuery = (pumpOnly: boolean) => {
-      let q = supabase.from('or_orders').select('*, or_order_items(*)').eq('status', status)
-      if (pumpOnly) {
-        q = q.eq('channel_code', 'PUMP')
-      } else {
-        q = q.eq('requires_confirm_design', true).neq('channel_code', 'PUMP')
-      }
-      if (fromDate) q = q.gte('created_at', `${fromDate}T00:00:00.000Z`)
-      if (toDate) q = q.lte('created_at', `${toDate}T23:59:59.999Z`)
-      if (isSalesTrTeamRole(user?.role)) {
-        if (salesTrTeamAdminValues.length === 0) {
-          q = q.eq('admin_user', '__no_sales_tr_team__')
-        } else {
-          q = q.in('admin_user', salesTrTeamAdminValues)
-        }
-      }
-      return q
+  async function loadConfirmOrders(): Promise<Record<ConfirmColumnKey, Order[]>> {
+    const statuses: OrderStatus[] = [
+      'ตรวจสอบแล้ว',
+      'ไม่ต้องออกแบบ',
+      'รอออกแบบ',
+      'ออกแบบแล้ว',
+      'รอคอนเฟิร์ม',
+      'คอนเฟิร์มแล้ว',
+      'เสร็จสิ้น',
+    ]
+    let query = supabase
+      .from('or_orders')
+      .select('*, or_order_items(*)')
+      .in('status', statuses)
+      .or('channel_code.eq.PUMP,requires_confirm_design.eq.true')
+      .order('created_at', { ascending: true })
+
+    if (fromDate) query = query.gte('created_at', `${fromDate}T00:00:00.000Z`)
+    if (toDate) query = query.lte('created_at', `${toDate}T23:59:59.999Z`)
+    if (isSalesTrTeamRole(user?.role)) {
+      query = salesTrTeamAdminValues.length === 0
+        ? query.eq('admin_user', '__no_sales_tr_team__')
+        : query.in('admin_user', salesTrTeamAdminValues)
     }
 
-    const [{ data: pumpRows, error: pumpErr }, { data: otherRows, error: otherErr }] = await Promise.all([
-      buildQuery(true),
-      buildQuery(false),
-    ])
-    if (pumpErr) throw pumpErr
-    if (otherErr) throw otherErr
+    const { data, error } = await query
+    if (error) throw error
 
-    const map = new Map<string, Order>()
-    for (const o of [...(pumpRows || []), ...(otherRows || [])] as Order[]) {
-      map.set(o.id, o)
+    const grouped: Record<ConfirmColumnKey, Order[]> = {
+      new: [], noDesign: [], design: [], designed: [], waiting: [], confirmed: [], completed: [],
     }
-    return [...map.values()].sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-    )
+    const statusToKey: Partial<Record<OrderStatus, ConfirmColumnKey>> = {
+      'ตรวจสอบแล้ว': 'new',
+      'ไม่ต้องออกแบบ': 'noDesign',
+      'รอออกแบบ': 'design',
+      'ออกแบบแล้ว': 'designed',
+      'รอคอนเฟิร์ม': 'waiting',
+      'คอนเฟิร์มแล้ว': 'confirmed',
+      'เสร็จสิ้น': 'completed',
+    }
+    for (const order of (data || []) as Order[]) {
+      const key = statusToKey[order.status]
+      if (key) grouped[key].push(order)
+    }
+    return grouped
   }
 
   /* ── Event Handlers ── */
@@ -1263,12 +1338,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                       <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
                       <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
                       <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
-                      <th className="p-4 text-left font-semibold min-w-[10rem]">ที่อยู่</th>
+                      <th className="p-4 text-left font-semibold min-w-[22rem]">ที่อยู่</th>
                       <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                      <th className="p-4 text-left font-semibold whitespace-nowrap">ไฟล์แนบ</th>
                       <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="text-sm">
                     {ordersByKey.new.map((order, idx) => (
                       <tr
                         key={order.id}
@@ -1284,8 +1360,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             onChange={() => toggleNewSelect(order.id)}
                           />
                         </td>
-                        <td className="p-4 text-gray-700 whitespace-nowrap align-top">
-                          {formatDateTime(order.created_at)}
+                        <td className="p-4 text-gray-700 align-top">
+                          <OrderCreatedDateTime value={order.created_at} />
                         </td>
                         <td className="p-4 align-top whitespace-nowrap">
                           <button
@@ -1303,12 +1379,15 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
                           {order.recipient_name || '—'}
                         </td>
-                        <td className="p-4 text-gray-700 text-sm align-top max-w-[14rem] break-words">
+                        <td className="p-4 text-gray-700 text-sm align-top min-w-[22rem] max-w-[30rem] break-words">
                           {(order.customer_address || '').slice(0, 200)}
                           {(order.customer_address || '').length > 200 ? '…' : ''}
                         </td>
                         <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
                           {orderBillingPhone(order)}
+                        </td>
+                        <td className="p-4 align-top">
+                          <OrderAttachmentLinks order={order} />
                         </td>
                         <td className="p-4 align-top">
                           <div className="flex flex-wrap gap-1">
@@ -1500,12 +1579,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         <th className="p-4 text-left font-semibold whitespace-nowrap">เลขบิล</th>
                         <th className="p-4 text-left font-semibold">ชื่อลูกค้า</th>
                         <th className="p-4 text-left font-semibold">ชื่อผู้รับ</th>
-                        <th className="p-4 text-left font-semibold min-w-[10rem]">ที่อยู่</th>
+                        <th className="p-4 text-left font-semibold min-w-[22rem]">ที่อยู่</th>
                         <th className="p-4 text-left font-semibold whitespace-nowrap">เบอร์โทร</th>
+                        <th className="p-4 text-left font-semibold whitespace-nowrap">ไฟล์แนบ</th>
                         <th className="p-4 text-left font-semibold whitespace-nowrap">การทำงาน</th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="text-sm">
                       {filteredTableOrders.map((order, idx) => (
                         <tr
                           key={order.id}
@@ -1529,8 +1609,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               }
                             />
                           </td>
-                          <td className="p-4 text-gray-700 whitespace-nowrap align-top">
-                            {formatDateTime(order.created_at)}
+                          <td className="p-4 text-gray-700 align-top">
+                            <OrderCreatedDateTime value={order.created_at} />
                           </td>
                           <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
                             {order.bill_no}
@@ -1542,12 +1622,15 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           <td className="p-4 text-gray-800 align-top max-w-[10rem] break-words">
                             {order.recipient_name || '—'}
                           </td>
-                          <td className="p-4 text-gray-700 text-sm align-top max-w-[14rem] break-words">
+                          <td className="p-4 text-gray-700 text-sm align-top min-w-[22rem] max-w-[30rem] break-words">
                             {(order.customer_address || '').slice(0, 200)}
                             {(order.customer_address || '').length > 200 ? '…' : ''}
                           </td>
                           <td className="p-4 text-gray-800 whitespace-nowrap text-sm align-top">
                             {orderBillingPhone(order)}
+                          </td>
+                          <td className="p-4 align-top">
+                            <OrderAttachmentLinks order={order} />
                           </td>
                           <td className="p-4 align-top">
                             <div className="flex flex-wrap gap-1">

@@ -205,6 +205,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     title: '',
     message: '',
   })
+  const [approveAllModalOpen, setApproveAllModalOpen] = useState(false)
+  const [approveAllSelectedIds, setApproveAllSelectedIds] = useState<Set<string>>(new Set())
   /** ตั้งค่าฟิลด์ที่อนุญาตให้กรอกต่อหมวดหมู่ (pr_category_field_settings) — ใช้กรองปุ่มติ๊ก "ลงข้อมูลผิด" */
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
   /** product_id → product_category สำหรับรายการในบิลที่เลือก (ใช้ร่วมกับ categoryFieldSettings) */
@@ -512,6 +514,43 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
     }
   }
 
+  async function handleMoveToDesign() {
+    if (!selectedOrder) return
+
+    setUpdating(true)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          requires_confirm_design: true,
+          status: 'ตรวจสอบแล้ว',
+        })
+        .eq('id', selectedOrder.id)
+        .eq('status', 'รอตรวจคำสั่งซื้อ')
+
+      if (error) throw error
+
+      const movedBillNo = selectedOrder.bill_no
+      const newOrders = await loadOrders(true)
+      setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
+      if (onStatusUpdate) onStatusUpdate()
+      setMessageModal({
+        open: true,
+        title: 'ย้ายไปออกแบบสำเร็จ',
+        message: `บิล ${movedBillNo} ถูกย้ายไปกลุ่ม “งานใหม่” แล้ว`,
+      })
+    } catch (error: any) {
+      console.error('Error moving order to design:', error)
+      setMessageModal({
+        open: true,
+        title: 'เกิดข้อผิดพลาด',
+        message: error?.message || 'ไม่สามารถย้ายรายการไปออกแบบได้',
+      })
+    } finally {
+      setUpdating(false)
+    }
+  }
+
   async function handleRejectSubmit() {
     if (!selectedOrder || !user?.id) return
 
@@ -635,12 +674,13 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   }
 
   async function handleApproveAllOrders() {
-    if (orders.length === 0) return
+    const selectedOrders = orders.filter((order) => approveAllSelectedIds.has(order.id))
+    if (selectedOrders.length === 0) return
 
     setUpdating(true)
     try {
-      const pumpOrderIds = orders.filter((order) => order.channel_code === 'PUMP').map((order) => order.id)
-      const defaultOrderIds = orders.filter((order) => order.channel_code !== 'PUMP').map((order) => order.id)
+      const pumpOrderIds = selectedOrders.filter((order) => order.channel_code === 'PUMP').map((order) => order.id)
+      const defaultOrderIds = selectedOrders.filter((order) => order.channel_code !== 'PUMP').map((order) => order.id)
 
       const updates = []
       if (defaultOrderIds.length > 0) {
@@ -664,7 +704,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       const error = results.find((result) => result.error)?.error
       if (error) throw error
 
-      const approvedCount = orders.length
+      const approvedCount = selectedOrders.length
+      setApproveAllModalOpen(false)
+      setApproveAllSelectedIds(new Set())
       const newOrders = await loadOrders(true)
       setSelectedOrder(newOrders.length > 0 ? newOrders[0] : null)
       if (onStatusUpdate) onStatusUpdate()
@@ -737,6 +779,20 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="font-semibold text-gray-900 flex items-center gap-2">
+                      {(order as any).requires_confirm_design !== true &&
+                        (((order as any).order_items || (order as any).or_order_items) || []).some(
+                          (item: any) => Boolean(item.file_attachment?.trim())
+                        ) && (
+                          <span
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600"
+                            title="ไม่ได้เลือกออกแบบ แต่มีลิงก์ไฟล์แนบ"
+                            aria-label="แจ้งเตือน: ไม่ได้เลือกออกแบบ แต่มีลิงก์ไฟล์แนบ"
+                          >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+                            </svg>
+                          </span>
+                        )}
                       {order.bill_no}
                       <UrgencyBadge order={order} />
                       {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
@@ -855,6 +911,33 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                   </div>
                 </div>
 
+                {(selectedOrder as any).requires_confirm_design !== true &&
+                  (((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).some(
+                    (item: any) => Boolean(item.file_attachment?.trim())
+                  ) && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+                      <div className="flex items-start gap-3 text-amber-900">
+                        <svg className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+                        </svg>
+                        <div>
+                          <div className="font-semibold">พบลิงก์ไฟล์แนบในรายการที่ไม่ได้เลือกออกแบบ</div>
+                          <p className="mt-1 text-sm text-amber-800">
+                            รายการนี้ไม่ได้ระบุให้ออกแบบ แต่มีลิงก์ไฟล์แนบ กรุณาตรวจสอบและย้ายไปออกแบบหากต้องดำเนินงานออกแบบ
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleMoveToDesign()}
+                        disabled={updating}
+                        className="mt-3 w-full rounded-lg bg-amber-500 px-4 py-2.5 font-medium text-white transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {updating ? 'กำลังย้าย...' : 'ย้ายไปออกแบบ'}
+                      </button>
+                    </div>
+                  )}
+
                 {/* Order Items */}
                 {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length > 0 && (
                   <div className="mt-6">
@@ -898,6 +981,8 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           })
                         const showQuantity = perItemKeys.has('quantity')
                         const showUnitPrice = perItemKeys.has('unit_price')
+                        const attachmentUrl = item.file_attachment?.trim()
+                        const attachmentLabel = item.attachment_name?.trim() || 'เปิดลิงก์แนบ'
 
                         return (
                           <div key={item.id} className="border rounded-lg p-3">
@@ -959,6 +1044,23 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                                             <div className="flex-1">{row.value}</div>
                                           </div>
                                         ))}
+                                      </div>
+                                    )}
+                                    {attachmentUrl && (
+                                      <div className="mt-3 flex items-start gap-3 text-sm">
+                                        <div className="w-24 shrink-0 font-medium text-gray-600">ลิงก์แนบ</div>
+                                        <a
+                                          href={attachmentUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex min-w-0 items-center gap-1.5 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-cyan-700 transition-colors hover:bg-cyan-100 hover:text-cyan-800"
+                                          title={`เปิดลิงก์แนบ: ${attachmentLabel}`}
+                                        >
+                                          <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 010 5.656l-2 2a4 4 0 01-5.656-5.656l1.1-1.1m3.9 2.756a4 4 0 010-5.656l2-2a4 4 0 015.656 5.656l-1.1 1.1" />
+                                          </svg>
+                                          <span className="break-all">{attachmentLabel}</span>
+                                        </a>
                                       </div>
                                     )}
                                   </div>
@@ -1024,7 +1126,10 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
             {user?.role === 'superadmin' && (
               <button
                 type="button"
-                onClick={handleApproveAllOrders}
+                onClick={() => {
+                  setApproveAllSelectedIds(new Set(orders.map((order) => order.id)))
+                  setApproveAllModalOpen(true)
+                }}
                 disabled={updating || orders.length === 0}
                 className="px-3 py-1.5 text-sm font-bold rounded-md bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
               >
@@ -1144,6 +1249,104 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           </div>
         )}
       </div>
+
+      {/* เลือกรายบิลก่อนตรวจผ่านแบบกลุ่ม */}
+      <Modal
+        open={approveAllModalOpen}
+        onClose={() => !updating && setApproveAllModalOpen(false)}
+        contentClassName="max-w-2xl w-full"
+      >
+        <div className="flex max-h-[80vh] flex-col">
+          <div className="border-b p-5">
+            <h3 className="text-lg font-semibold text-gray-900">เลือกรายการที่ต้องการตรวจผ่าน</h3>
+            <p className="mt-1 text-sm text-gray-600">เลือกบิลที่ต้องการ แล้วกดยืนยันตรวจผ่าน</p>
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-3 border-b bg-gray-50 px-5 py-3 font-medium text-gray-800">
+            <input
+              type="checkbox"
+              checked={orders.length > 0 && approveAllSelectedIds.size === orders.length}
+              onChange={(e) => {
+                setApproveAllSelectedIds(
+                  e.target.checked ? new Set(orders.map((order) => order.id)) : new Set()
+                )
+              }}
+              className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+            />
+            เลือกทั้งหมด
+            <span className="ml-auto text-sm text-gray-500">
+              เลือกแล้ว {approveAllSelectedIds.size} / {orders.length} บิล
+            </span>
+          </label>
+
+          <div className="flex-1 overflow-y-auto divide-y">
+            {orders.map((order) => (
+              <label key={order.id} className="flex cursor-pointer items-start gap-3 px-5 py-3 hover:bg-blue-50">
+                <input
+                  type="checkbox"
+                  checked={approveAllSelectedIds.has(order.id)}
+                  onChange={(e) => {
+                    setApproveAllSelectedIds((previous) => {
+                      const next = new Set(previous)
+                      if (e.target.checked) next.add(order.id)
+                      else next.delete(order.id)
+                      return next
+                    })
+                  }}
+                  className="mt-1 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2 font-semibold text-gray-900">
+                      {(order as any).requires_confirm_design !== true &&
+                        (((order as any).order_items || (order as any).or_order_items) || []).some(
+                          (item: any) => Boolean(item.file_attachment?.trim())
+                        ) && (
+                          <span
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-yellow-100 text-yellow-600"
+                            title="ไม่ได้เลือกออกแบบ แต่มีลิงก์ไฟล์แนบ"
+                            aria-label="แจ้งเตือน: ไม่ได้เลือกออกแบบ แต่มีลิงก์ไฟล์แนบ"
+                          >
+                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+                            </svg>
+                          </span>
+                        )}
+                      <span className="truncate">{order.bill_no}</span>
+                    </span>
+                    <span className="shrink-0 text-sm font-semibold text-green-600">
+                      ฿{Number(order.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-3 text-sm text-gray-500">
+                    <span className="truncate">{order.customer_name || '-'}</span>
+                    <span className="shrink-0">{formatDateTime(order.created_at)}</span>
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-3 border-t bg-gray-50 p-4">
+            <button
+              type="button"
+              onClick={() => setApproveAllModalOpen(false)}
+              disabled={updating}
+              className="rounded-lg bg-gray-200 px-4 py-2 text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleApproveAllOrders()}
+              disabled={updating || approveAllSelectedIds.size === 0}
+              className="rounded-lg bg-green-500 px-4 py-2 font-medium text-white hover:bg-green-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {updating ? 'กำลังตรวจผ่าน...' : `ยืนยันตรวจผ่าน (${approveAllSelectedIds.size})`}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Modal แจ้งเตือน/ผลลัพธ์ (แทน alert) */}
       <Modal

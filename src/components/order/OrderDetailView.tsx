@@ -374,8 +374,16 @@ export default function OrderDetailView({
             </svg>
             ดาวน์โหลด Excel
           </button>
-          <button type="button" onClick={onClose} className="px-3 py-1.5 border border-white/30 rounded-lg text-sm font-medium text-white hover:bg-white/15 transition-colors">
-            ปิดหน้าต่าง
+          <button
+            type="button"
+            onClick={onClose}
+            title="ปิดหน้าต่าง"
+            aria-label="ปิดหน้าต่าง"
+            className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500 text-white shadow-sm ring-2 ring-white/40 transition-colors hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-white"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         </div>
       </div>
