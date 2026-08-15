@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
@@ -54,6 +54,8 @@ interface OrderListProps {
   detailReadOnly?: boolean
   /** ซ่อนบิลเคลม/REQ (claim_type ไม่ว่าง) ออกจากรายการ — ใช้กับแท็บรอลงข้อมูล เพราะบิลเคลมทำงานที่แท็บบิลเคลม */
   excludeClaimBills?: boolean
+  /** โหลดสินค้า/รีวิวพร้อมรายการหรือไม่; ปิดได้เมื่อหน้ารายละเอียดรองรับ lazy-load */
+  loadOrderRelations?: boolean
 }
 
 export default function OrderList({
@@ -81,6 +83,7 @@ export default function OrderList({
   hideActionButtons = false,
   detailReadOnly = false,
   excludeClaimBills = false,
+  loadOrderRelations = true,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -90,6 +93,8 @@ export default function OrderList({
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
+  /** ป้องกัน request เก่าที่ตอบช้ากว่าเขียนทับผลจากตัวกรองล่าสุด */
+  const loadRequestRef = useRef(0)
 
   // ส่งตรวจสลิป modal
   const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
@@ -180,6 +185,7 @@ export default function OrderList({
     dateTo,
     salesTrTeamAdminValues,
     narrowSalesTrAdminUser,
+    loadOrderRelations,
     user?.role,
     user?.username,
     user?.email,
@@ -202,9 +208,18 @@ export default function OrderList({
   }
 
   async function loadOrders() {
+    const requestId = ++loadRequestRef.current
+    const isLatestRequest = () => requestId === loadRequestRef.current
+    const commitEmptyResult = () => {
+      if (!isLatestRequest()) return
+      setOrders([])
+      onCountChange?.(0)
+      setLoading(false)
+    }
     setLoading(true)
     try {
       let filteredData: any[] = []
+      const orderSelect = loadOrderRelations ? '*, or_order_items(*), or_order_reviews(*)' : '*'
 
       if (filterByRejectedOverpayRefund) {
         // โหลดบิลที่ปฏิเสธโอนคืน: จาก ac_refunds (status=rejected, reason โอนเกิน) แล้วดึง or_orders
@@ -215,14 +230,12 @@ export default function OrderList({
           .eq('status', 'rejected')
         const orderIds = [...new Set((rejectedData || []).map((r: any) => r.order_id).filter(Boolean))]
         if (orderIds.length === 0) {
-          setOrders([])
-          if (onCountChange) onCountChange(0)
-          setLoading(false)
+          commitEmptyResult()
           return
         }
         let query = supabase
           .from('or_orders')
-          .select('*, or_order_items(*), or_order_reviews(*)')
+          .select(orderSelect)
           .in('id', orderIds)
           .order('created_at', { ascending: false })
         if (searchTerm) {
@@ -238,9 +251,7 @@ export default function OrderList({
         }
         query = applySalesOrderAdminScope(query)
         if (query === null) {
-          setOrders([])
-          if (onCountChange) onCountChange(0)
-          setLoading(false)
+          commitEmptyResult()
           return
         }
         const { data, error } = await query.limit(100)
@@ -249,7 +260,7 @@ export default function OrderList({
       } else {
         let query = supabase
           .from('or_orders')
-          .select('*, or_order_items(*), or_order_reviews(*)')
+          .select(orderSelect)
           .order('created_at', { ascending: false })
 
         const statuses = status == null ? [] : Array.isArray(status) ? status : [status]
@@ -289,9 +300,7 @@ export default function OrderList({
         }
         query = applySalesOrderAdminScope(query)
         if (query === null) {
-          setOrders([])
-          if (onCountChange) onCountChange(0)
-          setLoading(false)
+          commitEmptyResult()
           return
         }
 
@@ -309,7 +318,7 @@ export default function OrderList({
           if (rejectedIds.length > 0) {
             let extraQuery = supabase
               .from('or_orders')
-              .select('*, or_order_items(*), or_order_reviews(*)')
+              .select(orderSelect)
               .in('id', rejectedIds)
               .neq('status', 'ยกเลิก')
               .order('created_at', { ascending: false })
@@ -347,6 +356,12 @@ export default function OrderList({
                  order.or_order_reviews.some((review: any) => review.status === 'approved')
         })
       }
+
+      // แสดงผล query หลักทันที ไม่ต้องรอข้อมูลป้าย/สลิป/วิดีโอประกอบทั้งหมด
+      if (!isLatestRequest()) return
+      setOrders(filteredData)
+      onCountChange?.(filteredData.length)
+      setLoading(false)
       
       // Load verification statuses for each order
       const orderIds = filteredData.map((o: any) => o.id)
@@ -393,6 +408,8 @@ export default function OrderList({
           // ignore video lookup failure
         }
 
+        if (!isLatestRequest()) return
+
         const { data: verifiedSlipsData } = await supabase
           .from('ac_verified_slips')
           .select('order_id, verified_amount, account_name_match, bank_code_match, amount_match, validation_status, validation_errors, easyslip_response')
@@ -430,6 +447,8 @@ export default function OrderList({
           }
         })
 
+        if (!isLatestRequest()) return
+
         // Load refunds (โอนเกิน) to show "ตรวจสอบแล้ว (โอนเกิน)"
         const { data: refundsData } = await supabase
           .from('ac_refunds')
@@ -438,6 +457,8 @@ export default function OrderList({
           .ilike('reason', '%โอนเกิน%')
 
         const orderIdsWithOverpayRefund = new Set((refundsData || []).map((r: any) => r.order_id))
+
+        if (!isLatestRequest()) return
 
         // Load refunds ที่ถูกปฏิเสธ (โอนเกิน) เพื่อแสดงป้าย "ปฏิเสธโอนคืน" + เหตุผลไม่อนุมัติ
         const { data: rejectedRefundsData } = await supabase
@@ -450,6 +471,8 @@ export default function OrderList({
         const rejectedOverpayRefundByOrder = new Map<string, string | null>(
           (rejectedRefundsData || []).map((r: any) => [r.order_id, r.rejected_reason ?? null]),
         )
+
+        if (!isLatestRequest()) return
 
         // Load manual slip check submissions (pending = ส่งตรวจแล้วรอบัญชี, rejected-only = ไม่อนุมัติ)
         const { data: manualSlipData } = await supabase
@@ -487,18 +510,14 @@ export default function OrderList({
           }
         })
       }
-      
-      setOrders(filteredData)
-      
-      // ส่งจำนวนรายการกลับไปให้ parent component
-      if (onCountChange) {
-        onCountChange(filteredData.length)
-      }
+
+      if (isLatestRequest()) setOrders(filteredData)
     } catch (error: any) {
+      if (!isLatestRequest()) return
       console.error('Error loading orders:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
     } finally {
-      setLoading(false)
+      if (isLatestRequest()) setLoading(false)
     }
   }
 

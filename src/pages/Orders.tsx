@@ -840,6 +840,7 @@ export default function Orders() {
             useDetailViewOnClick={true}
             hideActionButtons={true}
             detailReadOnly={true}
+            loadOrderRelations={false}
             {...salesTrOrderListProps}
           />
         ) : activeTab === 'waiting' ? (
@@ -939,6 +940,7 @@ export default function Orders() {
             refreshTrigger={listRefreshKey}
             useDetailViewOnClick={true}
             detailReadOnly={true}
+            loadOrderRelations={false}
             {...salesTrOrderListProps}
           />
         ) : activeTab === 'cancelled' ? (
