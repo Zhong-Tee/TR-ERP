@@ -108,6 +108,18 @@ export async function fetchMachines(): Promise<MachineryMachine[]> {
   return (data || []) as MachineryMachine[]
 }
 
+export async function updateMachineSortOrders(
+  rows: Array<{ id: string; sort_order: number }>,
+): Promise<void> {
+  const results = await Promise.all(
+    rows.map(({ id, sort_order }) =>
+      supabase.from('pr_machinery_machines').update({ sort_order }).eq('id', id),
+    ),
+  )
+  const failed = results.find((result) => result.error)
+  if (failed?.error) throw failed.error
+}
+
 export async function upsertMachine(
   row: Partial<MachineryMachine> & { name: string },
 ): Promise<MachineryMachine> {

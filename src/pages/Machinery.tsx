@@ -10,6 +10,7 @@ import {
   type MachineryProductOption,
   type PrMachineryStatus,
   fetchMachines,
+  updateMachineSortOrders,
   upsertMachine,
   deleteMachine,
   changeMachineStatus,
@@ -360,6 +361,9 @@ export default function Machinery() {
   const [showSelectedProducts, setShowSelectedProducts] = useState(false)
   const [photoRemove, setPhotoRemove] = useState(false)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [isMachineFormOpen, setIsMachineFormOpen] = useState(false)
+  const [draggedMachineId, setDraggedMachineId] = useState<string | null>(null)
+  const [isReorderingMachines, setIsReorderingMachines] = useState(false)
 
   useEffect(() => {
     return () => {
@@ -401,7 +405,9 @@ export default function Machinery() {
         work_start: normalizeTime(form.work_start || '08:00'),
         work_end: normalizeTime(form.work_end || '17:00'),
         capacity_units_per_hour: Number(form.capacity_units_per_hour) || 0,
-        sort_order: Number(form.sort_order) || 0,
+        sort_order: form.id
+          ? Number(form.sort_order) || 0
+          : machines.reduce((highest, machine) => Math.max(highest, Number(machine.sort_order) || 0), -1) + 1,
       }
       if (photoRemove && form.id) {
         await upsertMachine({ ...base, name: base.name, image_url: null })
@@ -413,6 +419,7 @@ export default function Machinery() {
         await upsertMachine({ ...base, name: base.name })
       }
       resetForm()
+      setIsMachineFormOpen(false)
       await load()
     } catch (err: any) {
       setError(err?.message || String(err))
@@ -420,6 +427,7 @@ export default function Machinery() {
   }
 
   const editMachine = (m: MachineryMachine) => {
+    setIsMachineFormOpen(true)
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setPhotoFile(null)
     setPhotoRemove(false)
@@ -447,6 +455,32 @@ export default function Machinery() {
       await load()
     } catch (err: any) {
       setError(err?.message || String(err))
+    }
+  }
+
+  const reorderMachines = async (sourceMachineId: string, targetMachineId: string) => {
+    if (!sourceMachineId || sourceMachineId === targetMachineId || isReorderingMachines) return
+    const fromIndex = machines.findIndex((machine) => machine.id === sourceMachineId)
+    const toIndex = machines.findIndex((machine) => machine.id === targetMachineId)
+    if (fromIndex < 0 || toIndex < 0) return
+
+    const previous = machines
+    const reordered = [...machines]
+    const [moved] = reordered.splice(fromIndex, 1)
+    reordered.splice(toIndex, 0, moved)
+    const normalized = reordered.map((machine, index) => ({ ...machine, sort_order: index }))
+
+    setMachines(normalized)
+    setDraggedMachineId(null)
+    setIsReorderingMachines(true)
+    setError(null)
+    try {
+      await updateMachineSortOrders(normalized.map(({ id, sort_order }) => ({ id, sort_order })))
+    } catch (err: any) {
+      setMachines(previous)
+      setError(err?.message || String(err))
+    } finally {
+      setIsReorderingMachines(false)
     }
   }
 
@@ -949,7 +983,17 @@ export default function Machinery() {
 
       {tab === 'machineSettings' && showSettingsTab && (
         <section className="space-y-6">
-          <form
+          {!isMachineFormOpen && <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIsMachineFormOpen(true)}
+              className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+              aria-expanded="false"
+            >
+              เพิ่มเครื่อง
+            </button>
+          </div>}
+          {isMachineFormOpen && <form
             onSubmit={saveMachine}
             className={`rounded-xl border p-5 sm:p-6 shadow-sm space-y-4 ${
               isMobileRole
@@ -1042,17 +1086,6 @@ export default function Machinery() {
                   onChange={(e) => setForm((f) => ({ ...f, capacity_unit: e.target.value }))}
                   placeholder="เช่น ชิ้น, แผ่น, เมตร, กก."
                   required
-                />
-              </label>
-              <label className="block">
-                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>ลำดับแสดง</span>
-                <input
-                  type="number"
-                  className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base ${
-                    isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
-                  }`}
-                  value={form.sort_order ?? 0}
-                  onChange={(e) => setForm((f) => ({ ...f, sort_order: parseInt(e.target.value, 10) }))}
                 />
               </label>
               <div className="sm:col-span-2 xl:order-2 xl:col-span-12 rounded-xl border border-gray-200 p-4">
@@ -1180,21 +1213,20 @@ export default function Machinery() {
               >
                 บันทึก
               </button>
-              {form.id && (
-                <button
-                  type="button"
-                  className={`px-4 py-2 rounded-lg ${
-                    isMobileRole ? 'bg-slate-700 text-slate-100 hover:bg-slate-600' : 'bg-gray-200 text-gray-800'
-                  }`}
-                  onClick={() => {
-                    resetForm()
-                  }}
-                >
-                  ยกเลิกการแก้ไข
-                </button>
-              )}
+              <button
+                type="button"
+                className={`px-4 py-2 rounded-lg ${
+                  isMobileRole ? 'bg-slate-700 text-slate-100 hover:bg-slate-600' : 'bg-gray-200 text-gray-800'
+                }`}
+                onClick={() => {
+                  resetForm()
+                  setIsMachineFormOpen(false)
+                }}
+              >
+                ยกเลิก
+              </button>
             </div>
-          </form>
+          </form>}
 
           <div
             className={`overflow-x-auto rounded-xl border shadow-sm ${
@@ -1206,7 +1238,7 @@ export default function Machinery() {
                 className={`text-left ${isMobileRole ? 'bg-slate-800/90 text-gray-300' : 'bg-gray-50 text-gray-600'}`}
               >
                 <tr>
-                  <th className="px-3 py-3 whitespace-nowrap">ลำดับ</th>
+                  <th className="w-20 px-3 py-3 whitespace-nowrap text-center">ลากลำดับ</th>
                   <th className="px-3 py-3 whitespace-nowrap w-16">รูป</th>
                   <th className="px-3 py-3 whitespace-nowrap">เครื่อง</th>
                   <th className="px-3 py-3 whitespace-nowrap">ประเภท</th>
@@ -1219,9 +1251,31 @@ export default function Machinery() {
               </thead>
               <tbody>
                 {machines.map((m) => (
-                  <tr key={m.id} className={`border-t ${isMobileRole ? 'border-slate-700' : 'border-gray-100'}`}>
-                    <td className={`px-3 py-3 tabular-nums text-center ${isMobileRole ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {m.sort_order}
+                  <tr
+                    key={m.id}
+                    draggable={!isReorderingMachines}
+                    onDragStart={(event) => {
+                      setDraggedMachineId(m.id)
+                      event.dataTransfer.effectAllowed = 'move'
+                      event.dataTransfer.setData('text/plain', m.id)
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      void reorderMachines(event.dataTransfer.getData('text/plain'), m.id)
+                    }}
+                    onDragEnd={() => setDraggedMachineId(null)}
+                    className={`border-t transition ${
+                      draggedMachineId === m.id ? 'opacity-40' : ''
+                    } ${isReorderingMachines ? 'cursor-wait' : 'cursor-grab active:cursor-grabbing'} ${
+                      isMobileRole ? 'border-slate-700' : 'border-gray-100 hover:bg-emerald-50/40'
+                    }`}
+                  >
+                    <td className={`px-3 py-3 text-center ${isMobileRole ? 'text-gray-300' : 'text-gray-500'}`}>
+                      <span className="inline-flex select-none items-center text-2xl leading-none" title="ลากเพื่อจัดลำดับ" aria-label="ลากเพื่อจัดลำดับ">≡</span>
                     </td>
                     <td className="px-3 py-2">
                       {m.image_url ? (

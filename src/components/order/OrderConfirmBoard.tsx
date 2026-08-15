@@ -85,7 +85,7 @@ const DEFAULT_COLUMNS: ConfirmColumn[] = [
     key: 'confirmed',
     title: 'คอนเฟิร์มแล้ว',
     status: 'คอนเฟิร์มแล้ว',
-    actionLabel: 'เสร็จสิ้น',
+    actionLabel: 'ส่งผลิต',
     actionTargetStatus: 'เสร็จสิ้น',
     headerGradient: 'bg-gradient-to-r from-emerald-500 to-green-600',
     countBadge: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200',
@@ -120,10 +120,10 @@ const NO_DESIGN_COLUMN: ConfirmColumn = {
     'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white shadow-sm',
 }
 
-/** คอลัมน์ "เสร็จสิ้น" (completed view) — ไม่มีปุ่มเปลี่ยนสถานะ */
+/** คอลัมน์ "ส่งผลิต" (สถานะภายในยังเป็น "เสร็จสิ้น") — ไม่มีปุ่มเปลี่ยนสถานะ */
 const COMPLETED_COLUMN: ConfirmColumn = {
   key: 'completed',
-  title: 'เสร็จสิ้น',
+  title: 'ส่งผลิต',
   status: 'เสร็จสิ้น',
   headerGradient: 'bg-gradient-to-r from-teal-500 to-cyan-600',
   countBadge: 'bg-teal-50 text-teal-700 ring-1 ring-teal-200',
@@ -152,7 +152,7 @@ const STATUS_OPTIONS: Array<{ label: string; value: OrderStatus }> = [
   { label: 'ออกแบบแล้ว', value: 'ออกแบบแล้ว' },
   { label: 'รอคอนเฟิร์มแบบ', value: 'รอคอนเฟิร์ม' },
   { label: 'คอนเฟิร์มแล้ว', value: 'คอนเฟิร์มแล้ว' },
-  { label: 'เสร็จสิ้น', value: 'เสร็จสิ้น' },
+  { label: 'ส่งผลิต', value: 'เสร็จสิ้น' },
 ]
 
 const PRODUCTION_ALLOWED_CONFIRM_STATUSES: OrderStatus[] = [
@@ -523,22 +523,6 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
-  async function autoCompleteShippedOrders(shippedOrders: Order[]): Promise<Order[]> {
-    if (shippedOrders.length === 0) return []
-    const ids = shippedOrders.map((o) => o.id)
-    try {
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ status: 'เสร็จสิ้น' })
-        .in('id', ids)
-      if (error) throw error
-      return shippedOrders.map((o) => ({ ...o, status: 'เสร็จสิ้น' as any }))
-    } catch (err) {
-      console.error('Error auto-completing shipped orders:', err)
-      return []
-    }
-  }
-
   async function loadAll() {
     setLoading(true)
     try {
@@ -549,7 +533,6 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         designedOrders,
         waitingOrders,
         confirmedOrders,
-        shippedOrders,
         completedOrders,
       ] =
         await Promise.all([
@@ -559,12 +542,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
           loadOrdersByStatus('ออกแบบแล้ว'),
           loadOrdersByStatus('รอคอนเฟิร์ม'),
           loadOrdersByStatus('คอนเฟิร์มแล้ว'),
-          loadOrdersByStatus('จัดส่งแล้ว'),
           loadOrdersByStatus('เสร็จสิ้น'),
         ])
-
-      const movedToComplete = await autoCompleteShippedOrders(shippedOrders)
-      const actualCompleted = [...movedToComplete, ...completedOrders]
 
       setOrdersByKey({
         new: newOrders,
@@ -573,7 +552,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         designed: designedOrders,
         waiting: waitingOrders,
         confirmed: confirmedOrders,
-        completed: actualCompleted,
+        completed: completedOrders,
       })
       const { startIso: tabDayStart, endIso: tabDayEnd } = getBangkokCalendarDayUtcBoundsISO()
       const t0 = new Date(tabDayStart).getTime()
@@ -793,7 +772,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, 'รายการบิล')
       const stamp = new Date().toISOString().slice(0, 10)
-      XLSX.writeFile(wb, `Confirm_เสร็จสิ้น_รายการสินค้า_${stamp}.xlsx`)
+      XLSX.writeFile(wb, `Confirm_ส่งผลิต_รายการสินค้า_${stamp}.xlsx`)
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error('Export completed:', error)
@@ -1119,7 +1098,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 }`}
               >
                 <ColumnIcon columnKey="completed" />
-                เสร็จสิ้น
+                ส่งผลิต
                 <span
                   className={`inline-flex min-h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-bold ${
                     'bg-teal-100 text-teal-600'
@@ -1207,7 +1186,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
               className="inline-flex h-10 box-border items-center justify-center gap-2 border-2 border-teal-300 bg-white px-4 rounded-xl font-semibold text-sm text-teal-600 shadow-sm transition-all hover:bg-teal-50"
             >
               <ColumnIcon columnKey="completed" />
-              เสร็จสิ้น
+              ส่งผลิต
               <span className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full bg-teal-100 px-2 text-xs font-bold text-teal-600">
                 {ordersByKey.completed.length}
               </span>
