@@ -923,7 +923,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                         <div>
                           <div className="font-semibold">พบลิงก์ไฟล์แนบในรายการที่ไม่ได้เลือกออกแบบ</div>
                           <p className="mt-1 text-sm text-amber-800">
-                            รายการนี้ไม่ได้ระบุให้ออกแบบ แต่มีลิงก์ไฟล์แนบ กรุณาตรวจสอบและย้ายไปออกแบบหากต้องดำเนินงานออกแบบ
+                            รายการนี้ไม่ได้ระบุให้ออกแบบ แต่มีลิงก์ไฟล์แนบ
+                            <br />
+                            กดปุ่มย้ายไปออกแบบหากต้องดำเนินงานออกแบบ
                           </p>
                         </div>
                       </div>

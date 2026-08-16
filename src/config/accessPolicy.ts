@@ -60,6 +60,7 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
   { key: 'kpi', path: '/kpi', roles: ['superadmin', 'admin', 'sales-tr'] },
   { key: 'hr', path: '/hr', roles: ['superadmin', 'admin', 'hr', 'account'] },
   { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'sales-tr'] },
+  { key: 'knowledge-hub', path: '/knowledge-hub', roles: ['superadmin'] },
 ]
 
 const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
@@ -255,6 +256,7 @@ export function resolveMenuKeyFromPath(pathname: string): string | null {
   if (pathname.startsWith('/kpi')) return 'kpi'
   if (pathname.startsWith('/hr')) return 'hr'
   if (pathname.startsWith('/settings')) return 'settings'
+  if (pathname.startsWith('/knowledge-hub')) return 'knowledge-hub'
   return null
 }
 

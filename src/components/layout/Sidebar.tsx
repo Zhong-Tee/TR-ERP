@@ -22,6 +22,7 @@ import {
   FiGlobe,
   FiShoppingCart,
   FiBarChart2,
+  FiBookOpen,
   FiSettings,
   FiUsers,
   FiUser,
@@ -175,6 +176,13 @@ const menuItems: MenuItem[] = [
     icon: <FiSettings className="w-6 h-6" />,
     path: '/settings',
     roles: ['superadmin', 'admin', 'sales-tr'],
+  },
+  {
+    key: 'knowledge-hub',
+    label: 'Knowledge Hub',
+    icon: <FiBookOpen className="w-6 h-6" />,
+    path: '/knowledge-hub',
+    roles: ['superadmin'],
   },
 ]
 
@@ -437,6 +445,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (!user?.role) return false
+    if (item.key === 'knowledge-hub' && user.role !== 'superadmin') return false
     return hasAccess(item.key)
   })
 

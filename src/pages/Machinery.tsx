@@ -17,6 +17,7 @@ import {
   fetchEventsOverlappingRange,
   fetchMachineryProductOptions,
   fetchTodayWorkOrderQuantityByProduct,
+  fetchWorkOrderQuantityByProductByDay,
   computeWorkingTimeInShiftMsToday,
   computeShiftDurationMsForDay,
   formatMsAsHms,
@@ -27,11 +28,13 @@ import {
   computeEventDurationMs,
   formatDurationHoursMinutes,
   type DailySummaryRow,
+  type WorkOrderQuantityByDay,
 } from '../lib/machineryApi'
 import { isSuperadmin } from '../config/accessPolicy'
 import { getActiveMobileMode } from '../lib/mobileMode'
 import ModeSwitchButton from '../components/ModeSwitchButton'
 import { MachineryPurchaseRequest, MachineryPurchaseSettings, MachineryStock } from '../components/MachineryPurchase'
+import { useWmsModal } from '../components/wms/useWmsModal'
 
 type TabKey = 'monitor' | 'machineSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
 
@@ -99,9 +102,28 @@ function monitorPickerButtonClass(status: PrMachineryStatus, selected: boolean):
   return `rounded-xl border px-3 py-2.5 text-left transition-all active:scale-[0.98] ${byStatus[status]} ${ring}`
 }
 
+function machineAllocatedQuantity(
+  machine: MachineryMachine,
+  allMachines: MachineryMachine[],
+  quantityByProduct: Map<string, number> | undefined,
+): number {
+  if (!quantityByProduct) return 0
+  const machineType = machine.machine_type || 'ทั่วไป'
+  return (machine.product_ids || []).reduce((total, productId) => {
+    const eligibleMachineCount = allMachines.filter(
+      (candidate) =>
+        (candidate.machine_type || 'ทั่วไป') === machineType &&
+        (candidate.product_ids || []).includes(productId),
+    ).length
+    if (eligibleMachineCount === 0) return total
+    return total + (quantityByProduct.get(productId) || 0) / eligibleMachineCount
+  }, 0)
+}
+
 export default function Machinery() {
   const { user, signOut } = useAuthContext()
   const { hasAccess } = useMenuAccess()
+  const { showConfirm, ConfirmModal } = useWmsModal()
   const [tab, setTab] = useState<TabKey>('monitor')
   const [machines, setMachines] = useState<MachineryMachine[]>([])
   const [events, setEvents] = useState<MachineryEvent[]>([])
@@ -308,6 +330,13 @@ export default function Machinery() {
     const productIds = new Set(monitorMachines.flatMap((m) => m.product_ids || []))
     return [...productIds].reduce((sum, productId) => sum + (todayQuantityByProduct.get(productId) || 0), 0)
   }, [monitorMachines, todayQuantityByProduct])
+  const machineProductionToday = useMemo(() => {
+    const result = new Map<string, number>()
+    for (const machine of machines) {
+      result.set(machine.id, machineAllocatedQuantity(machine, machines, todayQuantityByProduct))
+    }
+    return result
+  }, [machines, todayQuantityByProduct])
 
   const statusCounts = useMemo(() => {
     const c: Record<PrMachineryStatus, number> = {
@@ -449,7 +478,16 @@ export default function Machinery() {
   }
 
   const removeMachine = async (id: string) => {
-    if (!confirm('ลบเครื่องนี้?')) return
+    const machine = machines.find((item) => item.id === id)
+    const confirmed = await showConfirm({
+      title: 'ยืนยันการลบเครื่องจักร',
+      message: machine?.name
+        ? `ต้องการลบเครื่องจักร “${machine.name}” หรือไม่?\nการลบนี้ไม่สามารถย้อนกลับได้`
+        : 'ต้องการลบเครื่องจักรนี้หรือไม่?\nการลบนี้ไม่สามารถย้อนกลับได้',
+      confirmText: 'ลบเครื่องจักร',
+      cancelText: 'ยกเลิก',
+    })
+    if (!confirmed) return
     try {
       await deleteMachine(id)
       await load()
@@ -486,6 +524,7 @@ export default function Machinery() {
 
   const [histLoading, setHistLoading] = useState(false)
   const [histEvents, setHistEvents] = useState<MachineryEvent[]>([])
+  const [histQuantityByDay, setHistQuantityByDay] = useState<WorkOrderQuantityByDay>(new Map())
 
   useEffect(() => {
     let cancelled = false
@@ -497,10 +536,19 @@ export default function Machinery() {
         const [ty, tm, td] = histTo.split('-').map(Number)
         const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0).toISOString()
         const toEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999).toISOString()
-        const ev = await fetchEventsOverlappingRange(from, toEnd, histMachineId || null)
-        if (!cancelled) setHistEvents(ev)
+        const [ev, quantities] = await Promise.all([
+          fetchEventsOverlappingRange(from, toEnd, histMachineId || null),
+          fetchWorkOrderQuantityByProductByDay(new Date(from), new Date(toEnd)),
+        ])
+        if (!cancelled) {
+          setHistEvents(ev)
+          setHistQuantityByDay(quantities)
+        }
       } catch {
-        if (!cancelled) setHistEvents([])
+        if (!cancelled) {
+          setHistEvents([])
+          setHistQuantityByDay(new Map())
+        }
       } finally {
         if (!cancelled) setHistLoading(false)
       }
@@ -519,11 +567,18 @@ export default function Machinery() {
       const day = new Date(t)
       const ms = machines.filter((m) => !histMachineId || m.id === histMachineId)
       for (const m of ms) {
-        rows.push(summarizeDayForMachine(m, day, histEvents))
+        const row = summarizeDayForMachine(m, day, histEvents)
+        const dayTotals = histQuantityByDay.get(row.date)
+        row.production_units = machineAllocatedQuantity(m, machines, dayTotals)
+        const dailyCapacity = totalProductionCapacityPerShift(m)
+        row.utilization_percent = dailyCapacity > 0
+          ? (row.production_units / dailyCapacity) * 100
+          : 0
+        rows.push(row)
       }
     }
     return rows
-  }, [histFrom, histTo, histMachineId, machines, histEvents])
+  }, [histFrom, histTo, histMachineId, machines, histEvents, histQuantityByDay])
 
   const repairRoundsFiltered = useMemo(() => {
     const ms = machines.filter((m) => !histMachineId || m.id === histMachineId)
@@ -574,6 +629,7 @@ export default function Machinery() {
     const workingMs = computeWorkingTimeInShiftMsToday(m, events, now)
     const shiftTotalMs = computeShiftDurationMsForDay(m, now)
     const groupStats = machineTypeStats.get(m.machine_type || 'ทั่วไป')
+    const machineProduction = machineProductionToday.get(m.id) || 0
     const st = m.current_status
     const isPowerOff = st === 'power_off'
     const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
@@ -613,8 +669,8 @@ export default function Machinery() {
             <dd className="text-right font-mono tabular-nums">{fmtInt(Number(m.capacity_units_per_hour))} {m.capacity_unit || 'หน่วย'}</dd>
             <dt>กำลังผลิตรวม/วัน</dt>
             <dd className="text-right font-mono tabular-nums">{fmtInt(totalProductionCapacityPerShift(m))} {m.capacity_unit || 'หน่วย'}</dd>
-            <dt>ภาระงานร่วมของกลุ่ม</dt>
-            <dd className="text-right font-mono tabular-nums font-semibold">{fmtInt(groupStats?.productionToday || 0)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}</dd>
+            <dt>ภาระงานของเครื่อง (เฉลี่ย)</dt>
+            <dd className="text-right font-mono tabular-nums font-semibold">{fmtQuantity(machineProduction)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}</dd>
             <dt>ใช้กำลังผลิตรวมของกลุ่ม</dt>
             <dd className="text-right font-mono tabular-nums font-semibold">{(groupStats?.utilizationPercent || 0).toFixed(1)}%</dd>
           </dl>
@@ -944,7 +1000,7 @@ export default function Machinery() {
                                   {MACHINERY_STATUS_LABELS[st]}
                                 </span>
                                 <span className="mt-1 block text-[11px] sm:text-xs tabular-nums font-medium text-emerald-700">
-                                  งานร่วม {fmtInt(groupStats?.productionToday || 0)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}
+                                  งานเครื่อง {fmtQuantity(machineProductionToday.get(m.id) || 0)} {groupStats?.capacityUnit || m.capacity_unit || 'หน่วย'}
                                 </span>
                               </span>
                             </div>
@@ -1399,7 +1455,7 @@ export default function Machinery() {
             สรุปผลการผลิตรายวัน (วันต่อวัน)
           </h3>
           <p className={`text-xs ${isMobileRole ? 'text-gray-500' : 'text-gray-600'}`}>
-            ตัวเลขต่อวันคำนวณจากกะและสถานะจริงในวันนั้น (เทียบกับการตั้งค่าเครื่อง)
+            จำนวนผลิตดึงจากสินค้าในใบงานของแต่ละวัน โดยอ้างอิงสินค้าที่ผูกไว้ในหน้าตั้งค่าเครื่อง
           </p>
           <div
             className={`rounded-xl border shadow-sm ${
@@ -1449,6 +1505,12 @@ export default function Machinery() {
                   >
                     หน่วย
                   </th>
+                  <th
+                    className={`whitespace-nowrap ${isMobileRole ? 'px-3 py-2' : 'px-4 py-3.5 text-right text-xs font-bold uppercase tracking-wide'}`}
+                    title="จำนวนงานที่จัดสรรให้เครื่อง ÷ กำลังผลิตรวมต่อกะ"
+                  >
+                    ใช้งาน
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1489,7 +1551,16 @@ export default function Machinery() {
                     <td
                       className={`font-semibold tabular-nums whitespace-nowrap ${isMobileRole ? 'px-3 py-2 text-emerald-300' : 'px-4 py-3 text-right text-base text-emerald-700'}`}
                     >
-                      {fmtInt(r.effective_units)}
+                      {fmtQuantity(r.production_units)}
+                    </td>
+                    <td
+                      className={`font-semibold tabular-nums whitespace-nowrap ${
+                        isMobileRole
+                          ? `px-3 py-2 ${r.utilization_percent > 100 ? 'text-red-500' : 'text-emerald-700'}`
+                          : `px-4 py-3 text-right text-base ${r.utilization_percent > 100 ? 'text-red-600' : 'text-emerald-700'}`
+                      }`}
+                    >
+                      {r.utilization_percent.toFixed(1)}%
                     </td>
                   </tr>
                 ))}
@@ -1681,6 +1752,7 @@ export default function Machinery() {
           </div>
         </section>
       )}
+      {ConfirmModal}
       </div>
     </div>
   )
@@ -1697,6 +1769,11 @@ function normalizeTime(t: string): string {
 function fmtInt(n: number): string {
   if (!Number.isFinite(n)) return '0'
   return Math.round(n).toLocaleString('th-TH')
+}
+
+function fmtQuantity(n: number): string {
+  if (!Number.isFinite(n)) return '0'
+  return n.toLocaleString('th-TH', { maximumFractionDigits: 2 })
 }
 
 const HOURS_TO_MS = 3600000

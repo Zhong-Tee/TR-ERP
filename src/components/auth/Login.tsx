@@ -52,6 +52,17 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
     }
   }
 
+  const handleMfaCancel = () => {
+    setOtpCode('')
+    setMfaError('')
+
+    // signOut clears the auth/MFA state synchronously before contacting Supabase,
+    // so the login form can be shown without reloading and restoring a stale session.
+    void signOut().catch((err) => {
+      console.error('Unable to complete MFA sign out:', err)
+    })
+  }
+
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault()
     setForgotMessage('')
@@ -107,10 +118,7 @@ export default function Login({ onLoginSuccess: _onLoginSuccess }: LoginProps) {
           <div className="text-center mt-4">
             <button
               type="button"
-              onClick={async () => {
-                await signOut().catch(() => {})
-                window.location.href = '/'
-              }}
+              onClick={handleMfaCancel}
               className="text-sm text-gray-400 hover:text-gray-600 hover:underline"
             >
               ยกเลิก / กลับหน้า Login

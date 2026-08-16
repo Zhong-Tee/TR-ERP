@@ -40,6 +40,7 @@ import PurchaseSample from './pages/PurchaseSample'
 import DashboardPage from './pages/Dashboard'
 import Marketplace from './pages/Marketplace'
 import Machinery from './pages/Machinery'
+import KnowledgeHub from './pages/KnowledgeHub'
 import TechnicianHome from './components/wms/technician/TechnicianHome'
 import { lazy, Suspense } from 'react'
 import EmployeePortal from './pages/EmployeePortal'
@@ -606,6 +607,26 @@ function AppRoutes() {
             </Layout>
           </ProtectedRoute>
         }
+      />
+      <Route
+        path="/knowledge-hub"
+        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/new"
+        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/categories"
+        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/:id"
+        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/:id/edit"
+        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/hr"

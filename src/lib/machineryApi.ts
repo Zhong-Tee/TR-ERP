@@ -89,6 +89,71 @@ export async function fetchTodayWorkOrderQuantityByProduct(): Promise<Map<string
   return totals
 }
 
+export type WorkOrderQuantityByDay = Map<string, Map<string, number>>
+
+function localDateKey(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+/**
+ * Sum work-order item quantities by local creation day and product.
+ * The report maps these product totals to each machine through its configured product_ids.
+ */
+export async function fetchWorkOrderQuantityByProductByDay(
+  from: Date,
+  to: Date,
+): Promise<WorkOrderQuantityByDay> {
+  const { data: workOrders, error: workOrderError } = await supabase
+    .from('or_work_orders')
+    .select('id, created_at')
+    .gte('created_at', from.toISOString())
+    .lte('created_at', to.toISOString())
+    .neq('status', 'ยกเลิก')
+  if (workOrderError) throw workOrderError
+
+  const workOrderDay = new Map<string, string>()
+  for (const row of workOrders || []) {
+    workOrderDay.set(String(row.id), localDateKey(row.created_at))
+  }
+  const ids = [...workOrderDay.keys()]
+  if (ids.length === 0) return new Map()
+
+  const totals: WorkOrderQuantityByDay = new Map()
+  const batchSize = 200
+  for (let offset = 0; offset < ids.length; offset += batchSize) {
+    const batch = ids.slice(offset, offset + batchSize)
+    const { data: orders, error: orderError } = await supabase
+      .from('or_orders')
+      .select('work_order_id, or_order_items(product_id, quantity)')
+      .in('work_order_id', batch)
+    if (orderError) throw orderError
+
+    for (const order of orders || []) {
+      const date = workOrderDay.get(String(order.work_order_id || ''))
+      if (!date) continue
+      let dayTotals = totals.get(date)
+      if (!dayTotals) {
+        dayTotals = new Map<string, number>()
+        totals.set(date, dayTotals)
+      }
+      for (const item of (order as any).or_order_items || []) {
+        const productId = String(item.product_id || '')
+        if (!productId) continue
+        const quantity = Number(item.quantity)
+        dayTotals.set(
+          productId,
+          (dayTotals.get(productId) || 0) + (Number.isFinite(quantity) ? quantity : 0),
+        )
+      }
+    }
+  }
+  return totals
+}
+
 export const MACHINERY_STATUS_LABELS: Record<PrMachineryStatus, string> = {
   working: 'ทำงาน',
   broken: 'เครื่องเสีย',
@@ -377,6 +442,8 @@ export interface DailySummaryRow {
   shift_hours: number
   working_hours: number
   effective_units: number
+  production_units: number
+  utilization_percent: number
   downtime_hours: number
 }
 
@@ -435,6 +502,8 @@ export function getMachineDayMetrics(
     shift_hours: shiftHours,
     working_hours,
     effective_units,
+    production_units: 0,
+    utilization_percent: 0,
     downtime_hours,
     winStart,
     winEnd,
