@@ -144,6 +144,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (path.startsWith('/sales-reports')) return 'รายงานยอดขาย'
     if (path.startsWith('/kpi')) return 'KPI'
     if (path.startsWith('/hr')) return 'HR'
+    if (path.startsWith('/knowledge-hub')) return 'Knowledge Hub'
     if (path.startsWith('/settings')) return 'ตั้งค่า'
     return 'เมนู'
   })()

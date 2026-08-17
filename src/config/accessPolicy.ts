@@ -60,7 +60,7 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
   { key: 'kpi', path: '/kpi', roles: ['superadmin', 'admin', 'sales-tr'] },
   { key: 'hr', path: '/hr', roles: ['superadmin', 'admin', 'hr', 'account'] },
   { key: 'settings', path: '/settings', roles: ['superadmin', 'admin', 'sales-tr'] },
-  { key: 'knowledge-hub', path: '/knowledge-hub', roles: ['superadmin'] },
+  { key: 'knowledge-hub', path: '/knowledge-hub', roles: ['superadmin', 'admin', 'sales-tr', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'store', 'production', 'hr'] },
 ]
 
 const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [

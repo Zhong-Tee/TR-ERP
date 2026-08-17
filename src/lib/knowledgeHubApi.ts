@@ -51,6 +51,7 @@ export interface KnowledgeItem {
   updated_by: string
   created_at: string
   updated_at: string
+  active_version_id: string | null
   category: Pick<KnowledgeCategory, 'id' | 'name'> | null
   machine: KnowledgeMachine | null
   department: KnowledgeDepartment | null
@@ -70,7 +71,15 @@ export interface KnowledgeItemInput {
   allowed_roles: string[]
 }
 
-const ITEM_COLUMNS = 'id,knowledge_code,title,description,content,category_id,machine_id,department_id,access_level,tags,created_by,updated_by,created_at,updated_at'
+export interface KnowledgeItemVersion extends KnowledgeItemInput {
+  id: string
+  item_id: string
+  version_no: number
+  saved_at: string
+}
+
+const ITEM_COLUMNS = 'id,knowledge_code,title,description,content,category_id,machine_id,department_id,access_level,tags,created_by,updated_by,created_at,updated_at,active_version_id'
+const LEGACY_ITEM_COLUMNS = 'id,knowledge_code,title,description,content,category_id,machine_id,department_id,access_level,tags,created_by,updated_by,created_at,updated_at'
 const FILE_COLUMNS = 'id,item_id,display_name,original_name,storage_path,mime_type,file_extension,file_size,description,searchable_text,created_at'
 
 async function hydrateItems(rows: any[]): Promise<KnowledgeItem[]> {
@@ -112,17 +121,27 @@ async function hydrateItems(rows: any[]): Promise<KnowledgeItem[]> {
 }
 
 export async function fetchKnowledgeItems(): Promise<KnowledgeItem[]> {
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('kb_items')
     .select(ITEM_COLUMNS)
     .order('updated_at', { ascending: false })
     .limit(2000)
+  if (error?.code === '42703') {
+    const fallback = await supabase.from('kb_items').select(LEGACY_ITEM_COLUMNS).order('updated_at', { ascending: false }).limit(2000)
+    data = fallback.data?.map((row) => ({ ...row, active_version_id: null })) as typeof data
+    error = fallback.error
+  }
   if (error) throw error
   return hydrateItems(data || [])
 }
 
 export async function fetchKnowledgeItem(id: string): Promise<KnowledgeItem> {
-  const { data, error } = await supabase.from('kb_items').select(ITEM_COLUMNS).eq('id', id).single()
+  let { data, error } = await supabase.from('kb_items').select(ITEM_COLUMNS).eq('id', id).single()
+  if (error?.code === '42703') {
+    const fallback = await supabase.from('kb_items').select(LEGACY_ITEM_COLUMNS).eq('id', id).single()
+    data = fallback.data ? { ...fallback.data, active_version_id: null } as typeof data : null
+    error = fallback.error
+  }
   if (error) throw error
   const [item] = await hydrateItems([data])
   return item
@@ -168,6 +187,8 @@ export async function createKnowledgeItem(input: KnowledgeItemInput): Promise<st
     .single()
   if (error) throw error
   await replaceAllowedRoles(data.id, input.access_level === 'restricted' ? allowed_roles : [])
+  const { error: versionError } = await supabase.rpc('kb_create_item_version', { p_item_id: data.id })
+  if (versionError) throw versionError
   return data.id
 }
 
@@ -176,6 +197,25 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeItemInput)
   const { error } = await supabase.from('kb_items').update(item).eq('id', id)
   if (error) throw error
   await replaceAllowedRoles(id, input.access_level === 'restricted' ? allowed_roles : [])
+  const { error: versionError } = await supabase.rpc('kb_create_item_version', { p_item_id: id })
+  if (versionError) throw versionError
+}
+
+export async function fetchKnowledgeItemVersions(itemId: string): Promise<KnowledgeItemVersion[]> {
+  const { data, error } = await supabase
+    .from('kb_item_versions')
+    .select('id,item_id,version_no,title,description,content,category_id,machine_id,department_id,access_level,tags,allowed_roles,saved_at')
+    .eq('item_id', itemId)
+    .order('version_no', { ascending: false })
+  if (error) throw error
+  return (data || []) as KnowledgeItemVersion[]
+}
+
+export async function selectKnowledgeItemVersion(itemId: string, version: KnowledgeItemVersion): Promise<void> {
+  const { id: _id, item_id: _itemId, version_no: _versionNo, saved_at: _savedAt, allowed_roles, ...item } = version
+  const { error } = await supabase.from('kb_items').update({ ...item, active_version_id: version.id }).eq('id', itemId)
+  if (error) throw error
+  await replaceAllowedRoles(itemId, item.access_level === 'restricted' ? allowed_roles : [])
 }
 
 const SEARCHABLE_EXTENSIONS = new Set(['json', 'txt', 'csv', 'xml', 'yaml', 'yml', 'js', 'ts', 'md', 'sql', 'ini', 'cfg', 'conf'])
@@ -259,4 +299,14 @@ export async function saveKnowledgeCategory(category: Partial<KnowledgeCategory>
     is_active: category.is_active ?? true,
   })
   if (error) throw error
+}
+
+export async function updateKnowledgeCategorySortOrders(categories: Pick<KnowledgeCategory, 'id' | 'sort_order'>[]): Promise<void> {
+  const results = await Promise.all(
+    categories.map(({ id, sort_order }) => (
+      supabase.from('kb_categories').update({ sort_order }).eq('id', id)
+    )),
+  )
+  const failed = results.find(({ error }) => error)
+  if (failed?.error) throw failed.error
 }

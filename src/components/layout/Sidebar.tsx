@@ -445,7 +445,6 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (!user?.role) return false
-    if (item.key === 'knowledge-hub' && user.role !== 'superadmin') return false
     return hasAccess(item.key)
   })
 

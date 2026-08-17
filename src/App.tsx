@@ -610,23 +610,27 @@ function AppRoutes() {
       />
       <Route
         path="/knowledge-hub"
-        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'store', 'production', 'hr']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/knowledge-hub/new"
-        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/knowledge-hub/categories"
-        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+      />
+      <Route
+        path="/knowledge-hub/tasks"
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/knowledge-hub/:id"
-        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'qc_order', 'sales-pump', 'qc_staff', 'packing_staff', 'account', 'store', 'production', 'hr']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/knowledge-hub/:id/edit"
-        element={<ProtectedRoute allowedRoles={['superadmin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
+        element={<ProtectedRoute allowedRoles={['superadmin', 'admin']}><Layout><KnowledgeHub /></Layout></ProtectedRoute>}
       />
       <Route
         path="/hr"
