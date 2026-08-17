@@ -6,6 +6,8 @@ import type { HRSalaryHistory } from '../../types'
 
 interface SalaryHistoryPanelProps {
   employeeId: string
+  /** ประเภทค่าจ้างตั้งต้นจากข้อมูลพนักงาน */
+  initialPayType?: 'permanent' | 'daily'
   /** แสดงฟอร์มเพิ่ม/ปุ่มลบ (เฉพาะผู้ดูแล) */
   editable?: boolean
   /** แจ้งเงินเดือนล่าสุดเมื่อมีการเพิ่ม/ลบ เพื่อให้ตัวแม่ sync ค่า */
@@ -21,6 +23,7 @@ function formatBaht(n: number): string {
 
 export default function SalaryHistoryPanel({
   employeeId,
+  initialPayType = 'permanent',
   editable = false,
   onLatestSalaryChange,
 }: SalaryHistoryPanelProps) {
@@ -28,6 +31,7 @@ export default function SalaryHistoryPanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [salaryInput, setSalaryInput] = useState('')
+  const [payType, setPayType] = useState<'permanent' | 'daily'>(initialPayType)
   const [allowanceInput, setAllowanceInput] = useState('')
   const [effectiveDate, setEffectiveDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [note, setNote] = useState('')
@@ -48,6 +52,10 @@ export default function SalaryHistoryPanel({
     load()
   }, [load])
 
+  useEffect(() => {
+    setPayType(initialPayType)
+  }, [initialPayType])
+
   const handleAdd = async () => {
     const digits = salaryInput.replace(/\D/g, '')
     const allowanceDigits = allowanceInput.replace(/\D/g, '')
@@ -58,7 +66,8 @@ export default function SalaryHistoryPanel({
       const latest = await addSalaryHistory({
         employee_id: employeeId,
         salary: Number(digits),
-        position_allowance: allowanceDigits ? Number(allowanceDigits) : undefined,
+        pay_type: payType,
+        position_allowance: payType === 'permanent' && allowanceDigits ? Number(allowanceDigits) : undefined,
         effective_date: effectiveDate,
         note: note.trim() || undefined,
       })
@@ -92,29 +101,39 @@ export default function SalaryHistoryPanel({
       )}
 
       {editable && (
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_1.5fr_auto] gap-3 items-end rounded-xl border border-gray-200 bg-gray-50 p-3">
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${payType === 'daily' ? 'xl:grid-cols-[0.8fr_1fr_1fr_1.5fr_auto]' : 'xl:grid-cols-[0.8fr_1fr_1fr_1fr_1.5fr_auto]'} gap-3 items-end rounded-xl border border-gray-200 bg-gray-50 p-3`}>
           <label>
-            <span className="block text-sm font-medium text-gray-700 mb-1">ฐานเงินเดือน</span>
+            <span className="block text-sm font-medium text-gray-700 mb-1">ประเภทค่าจ้าง</span>
+            <div className={`${fieldClass} bg-gray-100 text-gray-700 cursor-default`}>
+              {payType === 'daily' ? 'รายวัน' : 'รายเดือน'}
+            </div>
+          </label>
+          <label>
+            <span className="block text-sm font-medium text-gray-700 mb-1">
+              {payType === 'daily' ? 'ค่าแรงรายวัน' : 'ฐานเงินเดือน'}
+            </span>
             <input
               type="text"
               inputMode="numeric"
               value={salaryInput === '' ? '' : Number(salaryInput.replace(/\D/g, '') || 0).toLocaleString('en-US')}
               onChange={(e) => setSalaryInput(e.target.value.replace(/\D/g, ''))}
-              placeholder="เช่น 15,000"
+              placeholder={payType === 'daily' ? 'เช่น 500' : 'เช่น 15,000'}
               className={fieldClass}
             />
           </label>
-          <label>
-            <span className="block text-sm font-medium text-gray-700 mb-1">เงินพิเศษ/ประจำตำแหน่ง</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={allowanceInput === '' ? '' : Number(allowanceInput.replace(/\D/g, '') || 0).toLocaleString('en-US')}
-              onChange={(e) => setAllowanceInput(e.target.value.replace(/\D/g, ''))}
-              placeholder="เช่น 2,000"
-              className={fieldClass}
-            />
-          </label>
+          {payType === 'permanent' && (
+            <label>
+              <span className="block text-sm font-medium text-gray-700 mb-1">เงินพิเศษ/ประจำตำแหน่ง</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={allowanceInput === '' ? '' : Number(allowanceInput.replace(/\D/g, '') || 0).toLocaleString('en-US')}
+                onChange={(e) => setAllowanceInput(e.target.value.replace(/\D/g, ''))}
+                placeholder="เช่น 2,000"
+                className={fieldClass}
+              />
+            </label>
+          )}
           <label>
             <span className="block text-sm font-medium text-gray-700 mb-1">วันที่มีผล</span>
             <input
@@ -138,7 +157,7 @@ export default function SalaryHistoryPanel({
             type="button"
             onClick={handleAdd}
             disabled={saving || !salaryInput.replace(/\D/g, '') || !effectiveDate}
-            className="inline-flex items-center justify-center gap-1 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50 h-[42px]"
+            className="inline-flex h-[42px] w-20 shrink-0 items-center justify-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             <FiPlus /> เพิ่ม
           </button>
@@ -159,7 +178,8 @@ export default function SalaryHistoryPanel({
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="text-left py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">วันที่มีผล</th>
-                <th className="text-right py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ฐานเงินเดือน (บาท)</th>
+                <th className="text-left py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">ประเภทค่าจ้าง</th>
+                <th className="text-right py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อัตราค่าจ้าง (บาท)</th>
                 <th className="text-right py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">เงินพิเศษ/ประจำตำแหน่ง (บาท)</th>
                 <th className="text-right py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">รวม (บาท)</th>
                 <th className="text-left py-2.5 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">หมายเหตุ</th>
@@ -177,14 +197,17 @@ export default function SalaryHistoryPanel({
                       </span>
                     )}
                   </td>
+                  <td className="py-2.5 px-3 text-sm text-gray-700 whitespace-nowrap">
+                    {item.pay_type === 'daily' ? 'รายวัน' : 'รายเดือน'}
+                  </td>
                   <td className="py-2.5 px-3 text-sm text-gray-900 text-right tabular-nums">
                     {formatBaht(Number(item.salary))}
                   </td>
                   <td className="py-2.5 px-3 text-sm text-gray-900 text-right tabular-nums">
-                    {item.position_allowance != null ? formatBaht(Number(item.position_allowance)) : '-'}
+                    {item.pay_type === 'permanent' && item.position_allowance != null ? formatBaht(Number(item.position_allowance)) : '-'}
                   </td>
                   <td className="py-2.5 px-3 text-sm text-gray-900 text-right font-medium tabular-nums">
-                    {formatBaht(Number(item.salary) + Number(item.position_allowance ?? 0))}
+                    {formatBaht(Number(item.salary) + (item.pay_type === 'permanent' ? Number(item.position_allowance ?? 0) : 0))}
                   </td>
                   <td className="py-2.5 px-3 text-sm text-gray-600">{item.note || '-'}</td>
                   {editable && (

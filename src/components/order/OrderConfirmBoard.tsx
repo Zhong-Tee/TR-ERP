@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { FiMessageCircle } from 'react-icons/fi'
+import { FiMessageCircle, FiX } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
@@ -1948,8 +1948,14 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 </h3>
                 <p className="text-sm text-emerald-100">บิล {chatOrder.bill_no}</p>
               </div>
-              <button type="button" onClick={() => setChatOrder(null)} className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors">
-                ปิดหน้าต่าง
+              <button
+                type="button"
+                onClick={() => setChatOrder(null)}
+                title="ปิดหน้าต่าง"
+                aria-label="ปิดหน้าต่าง"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-2 focus:ring-offset-emerald-600"
+              >
+                <FiX className="h-5 w-5" aria-hidden="true" />
               </button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">

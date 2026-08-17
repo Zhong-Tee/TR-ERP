@@ -893,7 +893,7 @@ export default function EmployeeRegistry() {
       <Modal
         open={modalOpen}
         onClose={handleCloseModal}
-        contentClassName="max-w-4xl overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+        contentClassName="max-w-6xl overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
       >
         <EmployeeForm
           employee={editingEmployee}

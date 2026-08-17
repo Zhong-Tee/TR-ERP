@@ -811,7 +811,9 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 />
               </label>
               <label>
-                <span className="block text-sm font-medium text-gray-700 mb-1">ฐานเงินเดือน</span>
+                <span className="block text-sm font-medium text-gray-700 mb-1">
+                  {contract_type === 'daily' ? 'ค่าแรงรายวัน' : 'ฐานเงินเดือน'}
+                </span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -938,10 +940,14 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
             {employee?.id ? (
               <SalaryHistoryPanel
                 employeeId={employee.id}
+                initialPayType={contract_type === 'daily' ? 'daily' : 'permanent'}
                 editable
                 onLatestSalaryChange={(latest) => {
-                  setSalary(latest?.salary ?? '')
-                  setPositionAllowance(latest?.position_allowance ?? '')
+                  if (latest) {
+                    setSalary(latest.salary)
+                    setPositionAllowance(latest.position_allowance ?? '')
+                    setContractType(latest.pay_type)
+                  }
                 }}
               />
             ) : (

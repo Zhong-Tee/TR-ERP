@@ -1615,6 +1615,8 @@ export interface HRSalaryHistory {
   employee_id: string
   /** ฐานเงินเดือน */
   salary: number
+  /** ประเภทค่าจ้าง ณ วันที่มีผล */
+  pay_type: 'permanent' | 'daily'
   /** เงินพิเศษ/ประจำตำแหน่ง */
   position_allowance?: number
   effective_date: string

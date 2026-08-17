@@ -5,14 +5,17 @@ import {
   getEmployeeLeaveSummary,
   createLeaveRequest,
   fetchLeaveTypes,
+  fetchCompanyHolidays,
+  fetchWorkCalendar,
   fetchWorkSchedules,
+  resolveEmployeeDayType,
   updateLeaveRequest,
   uploadHRFile,
 } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
 import AttachmentViewer from './AttachmentViewer'
-import type { HREmployee, HRLeaveType, HRWorkSchedule } from '../../../types'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveType, HRWorkSchedule } from '../../../types'
 
 const BUCKET_MEDICAL = 'hr-medical-certs'
 const CURRENT_YEAR = new Date().getFullYear()
@@ -118,6 +121,10 @@ export default function EmployeeLeave() {
   const { user } = useAuthContext()
   const [employee, setEmployee] = useState<HREmployee | null>(null)
   const [workSchedule, setWorkSchedule] = useState<HRWorkSchedule | undefined>()
+  const [calendarDays, setCalendarDays] = useState<HREmployeeWorkCalendar[]>([])
+  const [companyHolidays, setCompanyHolidays] = useState<HRCompanyHoliday[]>([])
+  const [loadedCalendarRange, setLoadedCalendarRange] = useState('')
+  const [calendarLoading, setCalendarLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [summary, setSummary] = useState<{
     balances: LeaveSummaryBalance[]
@@ -153,12 +160,30 @@ export default function EmployeeLeave() {
     return mins > 0 ? Math.round((mins / 60) * 100) / 100 : 0
   })()
 
+  const calendarEndDate = form.leave_mode === 'hourly' ? form.start_date : form.end_date
+  const requestedCalendarDays =
+    form.start_date && calendarEndDate ? diffDays(form.start_date, calendarEndDate) : 0
+  const requestedCalendarRange = `${employee?.id ?? ''}|${form.start_date}|${calendarEndDate}`
+  const workCalendarReady = requestedCalendarDays > 0 && loadedCalendarRange === requestedCalendarRange
+  const fullDayBreakdown = (() => {
+    if (!workCalendarReady || !workSchedule) return { working: 0, excluded: 0 }
+    const overrideMap = new Map(calendarDays.map((day) => [day.work_date, day]))
+    const holidayMap = new Map(companyHolidays.map((holiday) => [holiday.holiday_date, holiday]))
+    let working = 0
+    const cursor = new Date(`${form.start_date}T12:00:00`)
+    const end = new Date(`${calendarEndDate}T12:00:00`)
+    while (cursor <= end) {
+      const date = toLocalDateInput(cursor)
+      if (resolveEmployeeDayType(date, workSchedule, overrideMap.get(date), holidayMap.get(date)) === 'work') working += 1
+      cursor.setDate(cursor.getDate() + 1)
+    }
+    return { working, excluded: requestedCalendarDays - working }
+  })()
+
   const totalDays =
     form.leave_mode === 'hourly'
       ? Math.round((totalHours / (scheduleWorkingMinutes(workSchedule) / 60)) * 100) / 100
-      : form.start_date && form.end_date
-        ? diffDays(form.start_date, form.end_date)
-        : 0
+      : fullDayBreakdown.working
 
   const selectedType = leaveTypes.find((t) => t.id === form.leave_type_id)
   const isPersonalLeave = (selectedType?.name || '').includes('กิจ')
@@ -191,7 +216,7 @@ export default function EmployeeLeave() {
           ?? schedules.find((schedule) => schedule.is_default)
           ?? schedules[0],
       )
-      if (types.length && !form.leave_type_id) setForm((f) => ({ ...f, leave_type_id: types[0].id }))
+      if (types.length) setForm((f) => f.leave_type_id ? f : ({ ...f, leave_type_id: types[0].id }))
     } catch (e) {
       console.error(e)
     } finally {
@@ -203,11 +228,53 @@ export default function EmployeeLeave() {
     load()
   }, [load])
 
+  useEffect(() => {
+    if (!employee?.id || !form.start_date || !calendarEndDate || calendarEndDate < form.start_date) {
+      setCalendarDays([])
+      setCompanyHolidays([])
+      setLoadedCalendarRange('')
+      return
+    }
+    let cancelled = false
+    const range = `${employee.id}|${form.start_date}|${calendarEndDate}`
+    setCalendarLoading(true)
+    setLoadedCalendarRange('')
+    void Promise.all([
+      fetchWorkCalendar(form.start_date, calendarEndDate, [employee.id]),
+      fetchCompanyHolidays(form.start_date, calendarEndDate),
+    ]).then(([days, holidays]) => {
+      if (cancelled) return
+      setCalendarDays(days)
+      setCompanyHolidays(holidays)
+      setLoadedCalendarRange(range)
+    }).catch((error) => {
+      if (!cancelled) {
+        console.error(error)
+        setDocError('โหลดตารางวันทำงานไม่สำเร็จ กรุณาลองใหม่')
+      }
+    }).finally(() => {
+      if (!cancelled) setCalendarLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [calendarEndDate, employee?.id, form.start_date])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!employee || !form.leave_type_id || !form.start_date) return
     const isHourly = form.leave_mode === 'hourly'
     if (!isHourly && !form.end_date) return
+    if (!workCalendarReady || calendarLoading) {
+      setDocError('กรุณารอระบบตรวจสอบตารางวันทำงาน')
+      return
+    }
+    if (isHourly && fullDayBreakdown.working === 0) {
+      setDocError('วันที่เลือกเป็นวันหยุด จึงไม่สามารถส่งคำขอลาเป็นชั่วโมงได้')
+      return
+    }
+    if (!isHourly && totalDays <= 0) {
+      setDocError('ช่วงวันที่เลือกไม่มีวันทำงาน จึงไม่สามารถส่งคำขอลาได้')
+      return
+    }
     if (startDateTooEarly) {
       setDocError(`ประเภท${selectedType?.name || 'การลานี้'}ต้องแจ้งล่วงหน้า ${advanceNoticeDays} วัน เลือกได้ตั้งแต่วันที่ ${formatThaiDate(minLeaveDate)}`)
       return
@@ -266,6 +333,7 @@ export default function EmployeeLeave() {
       await load()
     } catch (err) {
       console.error(err)
+      setDocError(err instanceof Error ? err.message : 'ส่งคำขอลาไม่สำเร็จ กรุณาลองใหม่')
     } finally {
       setSubmitting(false)
     }
@@ -460,7 +528,11 @@ export default function EmployeeLeave() {
                       />
                     </div>
                   </div>
-                  <p className="text-sm text-gray-600">รวม {totalDays} วัน</p>
+                  <p className="text-sm text-gray-600">
+                    {calendarLoading || !workCalendarReady
+                      ? 'กำลังตรวจสอบตารางวันทำงาน...'
+                      : <>หักสิทธิ์ {totalDays} วัน จาก {requestedCalendarDays} วันปฏิทิน{fullDayBreakdown.excluded > 0 ? ` · ไม่นับวันหยุด ${fullDayBreakdown.excluded} วัน` : ''}</>}
+                  </p>
                 </>
               ) : (
                 <>

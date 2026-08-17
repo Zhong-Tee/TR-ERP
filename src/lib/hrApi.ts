@@ -1042,13 +1042,16 @@ export interface LatestSalary {
   salary: number
   /** เงินพิเศษ/ประจำตำแหน่ง */
   position_allowance: number | null
+  /** ประเภทค่าจ้างของรายการล่าสุดที่มีผลแล้ว */
+  pay_type: 'permanent' | 'daily'
 }
 
-/** sync hr_employees.salary/position_allowance ให้เท่ากับรายการล่าสุด (effective_date มากสุด) — คืนค่าล่าสุด */
+/** sync ข้อมูลค่าจ้างจากรายการล่าสุดที่ถึงวันที่มีผลแล้ว — รายการอนาคตต้องยังไม่เปลี่ยนค่าปัจจุบัน */
 async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalary | null> {
   const { data, error } = await supabase.from('hr_salary_history')
-    .select('salary, position_allowance')
+    .select('salary, position_allowance, pay_type')
     .eq('employee_id', employeeId)
+    .lte('effective_date', new Date().toISOString().slice(0, 10))
     .order('effective_date', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
@@ -1056,13 +1059,16 @@ async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalar
   const latest: LatestSalary | null = data && data.length
     ? {
         salary: Number(data[0].salary),
+        pay_type: data[0].pay_type === 'daily' ? 'daily' : 'permanent',
         position_allowance:
-          data[0].position_allowance != null ? Number(data[0].position_allowance) : null,
+          data[0].pay_type !== 'daily' && data[0].position_allowance != null
+            ? Number(data[0].position_allowance)
+            : null,
       }
     : null
   if (latest != null) {
     const { error: updErr } = await supabase.from('hr_employees')
-      .update({ salary: latest.salary, position_allowance: latest.position_allowance })
+      .update({ salary: latest.salary, position_allowance: latest.position_allowance, contract_type: latest.pay_type })
       .eq('id', employeeId)
     if (updErr) pgError(updErr)
   }
@@ -1072,6 +1078,7 @@ async function syncEmployeeLatestSalary(employeeId: string): Promise<LatestSalar
 export async function addSalaryHistory(entry: {
   employee_id: string
   salary: number
+  pay_type: 'permanent' | 'daily'
   position_allowance?: number
   effective_date: string
   note?: string
