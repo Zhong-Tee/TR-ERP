@@ -14,6 +14,17 @@ interface ReqItem {
   qty: number
   requisition_topic: string
   item_note?: string
+  damage_files?: File[]
+  damage_previews?: string[]
+}
+
+const PHOTO_REQUIRED_TOPICS = new Set(['ผลิตเสีย', 'สินค้าชำรุด'])
+const requiresDamageEvidence = (topic: string) => PHOTO_REQUIRED_TOPICS.has(topic)
+const DAMAGE_BUCKET = 'wms-damage-evidence'
+
+const compactProductLabel = (product: { product_code: string; product_name: string }, maxLength = 38) => {
+  const label = `${product.product_code} - ${product.product_name}`
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label
 }
 
 export default function CreateRequisition() {
@@ -28,7 +39,8 @@ export default function CreateRequisition() {
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
-  const [selectedProductCode, setSelectedProductCode] = useState('')
+  const [showProductMenu, setShowProductMenu] = useState(false)
+  const [productMenuRect, setProductMenuRect] = useState({ top: 0, left: 0, width: 0 })
   const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
   const [submitting, setSubmitting] = useState(false)
   const [reqList, setReqList] = useState<any[]>([])
@@ -48,7 +60,7 @@ export default function CreateRequisition() {
     loadAllProducts()
     setProducts([])
     setSearchTerm('')
-    setSelectedProductCode('')
+    setShowProductMenu(false)
   }, [productTypeFilter])
 
   useEffect(() => {
@@ -171,16 +183,42 @@ export default function CreateRequisition() {
     if (existing) {
       setSelectedItems(selectedItems.map((i) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '' }])
+      setSelectedItems([...selectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '', damage_files: [], damage_previews: [] }])
     }
   }
 
   const updateItemTopic = (code: string, topic: string) => {
-    setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
+    setSelectedItems(selectedItems.map((i) => {
+      if (i.product_code !== code) return i
+      if (!requiresDamageEvidence(topic)) (i.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...i, requisition_topic: topic,
+        damage_files: requiresDamageEvidence(topic) ? i.damage_files : [],
+        damage_previews: requiresDamageEvidence(topic) ? i.damage_previews : [] }
+    }))
   }
 
   const updateItemNote = (code: string, item_note: string) => {
     setSelectedItems(selectedItems.map((i) => i.product_code === code ? { ...i, item_note } : i))
+  }
+
+  const addDamagePhotos = (code: string, files: FileList | null) => {
+    if (!files) return
+    setSelectedItems((current) => current.map((item) => {
+      if (item.product_code !== code) return item
+      const accepted = Array.from(files).filter((file) => file.type.startsWith('image/') && file.size <= 10 * 1024 * 1024)
+      const nextFiles = [...(item.damage_files || []), ...accepted].slice(0, 5)
+      ;(item.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...item, damage_files: nextFiles, damage_previews: nextFiles.map(URL.createObjectURL) }
+    }))
+  }
+
+  const removeDamagePhoto = (code: string, index: number) => {
+    setSelectedItems((current) => current.map((item) => {
+      if (item.product_code !== code) return item
+      const nextFiles = (item.damage_files || []).filter((_, fileIndex) => fileIndex !== index)
+      ;(item.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...item, damage_files: nextFiles, damage_previews: nextFiles.map(URL.createObjectURL) }
+    }))
   }
 
   const removeItem = (code: string) => setSelectedItems(selectedItems.filter((i) => i.product_code !== code))
@@ -193,6 +231,12 @@ export default function CreateRequisition() {
   const submitRequisition = async () => {
     if (selectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (selectedItems.some((i) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
+    if (selectedItems.some((i) => requiresDamageEvidence(i.requisition_topic) && !i.item_note?.trim())) {
+      showMessage({ message: 'หัวข้อผลิตเสียและสินค้าชำรุดต้องกรอกหมายเหตุให้ครบทุกรายการ' }); return
+    }
+    if (selectedItems.some((i) => requiresDamageEvidence(i.requisition_topic) && !(i.damage_files || []).length)) {
+      showMessage({ message: 'หัวข้อผลิตเสียและสินค้าชำรุดต้องถ่ายหรือแนบรูปอย่างน้อย 1 รูปต่อรายการ' }); return
+    }
 
     const ok = await showConfirm({
       title: 'ยืนยันการสร้างใบเบิก',
@@ -201,6 +245,7 @@ export default function CreateRequisition() {
     if (!ok) return
 
     setSubmitting(true)
+    const uploadedPaths: string[] = []
     try {
       const { error: reqError } = await supabase
         .from('wms_requisitions')
@@ -215,15 +260,20 @@ export default function CreateRequisition() {
         .single()
       if (reqError) throw reqError
 
-      const items = selectedItems.map((item) => ({
-        requisition_id: requisitionId,
-        product_code: item.product_code,
-        product_name: item.product_name,
-        location: item.storage_location || null,
-        qty: item.qty,
-        requisition_topic: item.requisition_topic || null,
-        item_note: item.item_note?.trim() || null,
-      }))
+      const items = []
+      for (const item of selectedItems) {
+        const damagePaths: string[] = []
+        for (const file of item.damage_files || []) {
+          const ext = file.name.split('.').pop() || 'jpg'
+          const path = `${user?.id}/${requisitionId}/${item.product_code}/${crypto.randomUUID()}.${ext}`
+          const { error } = await supabase.storage.from(DAMAGE_BUCKET).upload(path, file, { contentType: file.type, upsert: false })
+          if (error) throw error
+          uploadedPaths.push(path); damagePaths.push(path)
+        }
+        items.push({ requisition_id: requisitionId, product_code: item.product_code, product_name: item.product_name,
+          location: item.storage_location || null, qty: item.qty, requisition_topic: item.requisition_topic || null,
+          item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths })
+      }
       const { error: itemsError } = await supabase.from('wms_requisition_items').insert(items)
       if (itemsError) throw itemsError
 
@@ -231,9 +281,11 @@ export default function CreateRequisition() {
       setSelectedItems([])
       setSearchTerm('')
       setProducts([])
-      setSelectedProductCode('')
+      setShowProductMenu(false)
       generateRequisitionId()
     } catch (e: any) {
+      if (uploadedPaths.length) await supabase.storage.from(DAMAGE_BUCKET).remove(uploadedPaths)
+      await supabase.from('wms_requisitions').delete().eq('requisition_id', requisitionId)
       showMessage({ message: `สร้างใบเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setSubmitting(false)
@@ -319,30 +371,48 @@ export default function CreateRequisition() {
               ค้นหา
             </button>
             <button type="button" onClick={() => setShowScanner(true)} className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm">
-              <i className="fas fa-camera" />
+              <i className="fas fa-barcode" aria-hidden />
             </button>
           </div>
 
-          {/* Dropdown select */}
+          {/* Custom dropdown: keeps its scrollbar inside the mobile viewport. */}
           {!loadingAllProducts && allProducts.length > 0 && (
-            <select
-              value={selectedProductCode}
-              onChange={(e) => {
-                if (e.target.value) {
-                  const p = allProducts.find((x) => x.product_code === e.target.value)
-                  if (p) addItem(p)
-                  setSelectedProductCode('')
-                }
-              }}
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-            >
-              <option value="">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</option>
-              {allProducts.map((p) => (
-                <option key={p.product_code} value={p.product_code}>
-                  {p.product_code} - {p.product_name}
-                </option>
-              ))}
-            </select>
+            <div className="relative w-full min-w-0 max-w-full">
+              <button
+                type="button"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  setProductMenuRect({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+                  setShowProductMenu((open) => !open)
+                }}
+                aria-expanded={showProductMenu}
+                className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900"
+              >
+                <span className="min-w-0 flex-1 truncate">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</span>
+                <i className={`fas fa-chevron-${showProductMenu ? 'up' : 'down'} shrink-0 text-xs`} />
+              </button>
+              {showProductMenu && (
+                <div
+                  className="fixed bottom-2 z-50 overflow-y-auto overflow-x-hidden rounded-lg border border-gray-300 bg-white shadow-xl [scrollbar-gutter:stable]"
+                  style={{ top: productMenuRect.top, left: productMenuRect.left, width: productMenuRect.width }}
+                >
+                  {allProducts.map((p) => (
+                    <button
+                      key={p.product_code}
+                      type="button"
+                      title={`${p.product_code} - ${p.product_name}`}
+                      onClick={() => {
+                        addItem(p)
+                        setShowProductMenu(false)
+                      }}
+                      className="block w-full min-w-0 truncate border-b border-gray-100 px-3 py-2 text-left text-sm text-gray-900 last:border-b-0 hover:bg-blue-50 active:bg-blue-100"
+                    >
+                      {compactProductLabel(p)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Search results */}
@@ -409,10 +479,29 @@ export default function CreateRequisition() {
                   <textarea
                     value={item.item_note || ''}
                     onChange={(e) => updateItemNote(item.product_code, e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 ${
+                      requiresDamageEvidence(item.requisition_topic) && !item.item_note?.trim() ? 'border-red-500' : 'border-gray-300'
+                    }`}
                     rows={2}
-                    placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
+                    placeholder={requiresDamageEvidence(item.requisition_topic) ? 'กรุณาระบุรายละเอียดความเสียหาย (จำเป็น)' : 'หมายเหตุรายการ (ไม่บังคับกรอก)'}
                   />
+                  {requiresDamageEvidence(item.requisition_topic) && <div className="rounded-lg border border-red-200 bg-red-50 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-red-700">รูปหลักฐานความเสียหาย * (สูงสุด 5 รูป)</span>
+                      <label className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg bg-red-600 text-white" title="ถ่ายรูปจุดผลิตเสีย">
+                        <i className="fas fa-camera" aria-hidden />
+                        <input type="file" accept="image/*" capture="environment" multiple className="hidden"
+                          onChange={(e) => { addDamagePhotos(item.product_code, e.target.files); e.target.value = '' }} />
+                      </label>
+                    </div>
+                    {!!item.damage_previews?.length && <div className="mt-2 grid grid-cols-4 gap-2">
+                      {item.damage_previews.map((src, index) => <div key={src} className="relative aspect-square">
+                        <img src={src} alt="รูปจุดผลิตเสีย" className="h-full w-full rounded-lg object-cover" />
+                        <button type="button" onClick={() => removeDamagePhoto(item.product_code, index)}
+                          className="absolute -right-1 -top-1 h-5 w-5 rounded-full bg-red-600 text-xs text-white">×</button>
+                      </div>)}
+                    </div>}
+                  </div>}
                   <div className="flex items-center gap-1">
                     <button type="button" onClick={() => updateQty(item.product_code, item.qty - 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">-</button>
                     <input
@@ -433,7 +522,8 @@ export default function CreateRequisition() {
           <button
             type="button"
             onClick={submitRequisition}
-            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.requisition_topic)}
+            disabled={submitting || selectedItems.length === 0 || selectedItems.some((i) => !i.requisition_topic ||
+              (requiresDamageEvidence(i.requisition_topic) && (!i.item_note?.trim() || !(i.damage_files || []).length)))}
             className="w-full py-3 rounded-xl bg-green-600 text-white font-bold text-base hover:bg-green-700 active:bg-green-800 disabled:opacity-50"
           >
             {submitting ? 'กำลังบันทึก...' : `ยืนยันเบิกของ (${selectedItems.length} รายการ)`}

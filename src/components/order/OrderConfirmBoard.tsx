@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { FiMessageCircle, FiX } from 'react-icons/fi'
+import { FiEdit3, FiLink, FiMessageCircle, FiPlus, FiTrash2, FiX } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
@@ -143,6 +143,29 @@ function orderBillingPhone(o: Order): string {
   const b = o.billing_details
   const p = (b?.mobile_phone || b?.tax_customer_phone || '').trim()
   return p || '—'
+}
+
+function normalizeChatLink(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/\s/.test(trimmed)) return null
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    if (url.username || url.password) return null
+    const hostname = url.hostname.toLowerCase()
+    const isLocalhost = hostname === 'localhost'
+    const isIpv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname)
+      && hostname.split('.').every((part) => Number(part) <= 255)
+    const isDomain = hostname.includes('.')
+      && hostname.split('.').every((part) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(part))
+      && hostname.split('.').at(-1)!.length >= 2
+    if (!isLocalhost && !isIpv4 && !isDomain) return null
+    return url.toString()
+  } catch {
+    return null
+  }
 }
 
 function OrderCreatedDateTime({ value }: { value: string }) {
@@ -307,7 +330,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [chatLogs, setChatLogs] = useState<OrderChatLog[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [chatMessage, setChatMessage] = useState('')
+  const [chatLink, setChatLink] = useState('')
   const [chatSending, setChatSending] = useState(false)
+  const [linkEditor, setLinkEditor] = useState<{ logId: string; value: string } | null>(null)
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [linkContextMenu, setLinkContextMenu] = useState<{ logId: string; url: string; x: number; y: number } | null>(null)
+  const [deleteLinkTarget, setDeleteLinkTarget] = useState<string | null>(null)
+  const [linkDeleting, setLinkDeleting] = useState(false)
   const chatEndRef = useRef<HTMLDivElement | null>(null)
   const [fromDate, setFromDate] = useState(() => {
     const now = new Date()
@@ -318,6 +347,17 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
   const [deliveryByOrder, setDeliveryByOrder] = useState<Record<string, ChatDeliveryStatus>>({})
+
+  useEffect(() => {
+    if (!linkContextMenu) return
+    const closeMenu = () => setLinkContextMenu(null)
+    window.addEventListener('click', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    return () => {
+      window.removeEventListener('click', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
+    }
+  }, [linkContextMenu])
 
   useEffect(() => {
     if (!user?.id) {
@@ -511,6 +551,10 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
           }
           setUnreadByOrder((prev) => ({ ...prev, [row.order_id]: (prev[row.order_id] || 0) + 1 }))
         })()
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
+        const row = payload.new as OrderChatLog
+        setChatLogs((prev) => prev.map((log) => (log.id === row.id ? { ...log, ...row } : log)))
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_chat_reads' }, (payload) => {
         void (async () => {
@@ -895,6 +939,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     async (order: Order) => {
       setChatOrder(order)
       setChatMessage('')
+      setChatLink('')
       setChatLogs([])
       setChatLoading(true)
       try {
@@ -952,6 +997,11 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     if (!chatOrder || !user) return
     const message = chatMessage.trim()
     if (!message) return
+    const linkUrl = chatLink.trim() ? normalizeChatLink(chatLink) : null
+    if (chatLink.trim() && !linkUrl) {
+      alert('กรุณากรอกลิงก์ http:// หรือ https:// ที่ถูกต้อง')
+      return
+    }
     setChatSending(true)
     try {
       const payload = {
@@ -960,6 +1010,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
         sender_id: user.id,
         sender_name: user.username || user.email || 'ผู้ใช้',
         message,
+        link_url: linkUrl,
       }
       const { data, error } = await supabase
         .from('or_order_chat_logs')
@@ -970,6 +1021,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       if (data) setChatLogs((prev) => [...prev, data as OrderChatLog])
       setDeliveryByOrder((prev) => ({ ...prev, [chatOrder.id]: 'sent' }))
       setChatMessage('')
+      setChatLink('')
       await supabase.from('or_order_chat_reads').upsert({
         order_id: chatOrder.id,
         user_id: user.id,
@@ -995,6 +1047,57 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     } catch (error: any) {
       console.error('Error hiding chat:', error)
       alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+    }
+  }
+
+  async function handleSaveChatLink() {
+    if (!linkEditor) return
+    const linkUrl = normalizeChatLink(linkEditor.value)
+    if (!linkUrl) {
+      alert('กรุณากรอกลิงก์ http:// หรือ https:// ที่ถูกต้อง')
+      return
+    }
+    setLinkSaving(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_chat_logs')
+        .update({ link_url: linkUrl })
+        .eq('id', linkEditor.logId)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) {
+        setChatLogs((prev) => prev.map((log) => (log.id === data.id ? data as OrderChatLog : log)))
+      }
+      setLinkEditor(null)
+    } catch (error: any) {
+      console.error('Error saving chat link:', error)
+      alert('บันทึกลิงก์ไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
+  async function handleDeleteChatLink() {
+    if (!deleteLinkTarget) return
+    setLinkDeleting(true)
+    try {
+      const { data, error } = await supabase
+        .from('or_order_chat_logs')
+        .update({ link_url: null })
+        .eq('id', deleteLinkTarget)
+        .select('*')
+        .single()
+      if (error) throw error
+      if (data) {
+        setChatLogs((prev) => prev.map((log) => (log.id === data.id ? data as OrderChatLog : log)))
+      }
+      setDeleteLinkTarget(null)
+    } catch (error: any) {
+      console.error('Error deleting chat link:', error)
+      alert('ลบลิงก์ไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setLinkDeleting(false)
     }
   }
 
@@ -2006,7 +2109,39 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                               </svg>
                             </button>
                           </div>
-                          <div className="text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
+                          <div className="flex items-end gap-2">
+                            <div className="min-w-0 flex-1 text-sm whitespace-pre-wrap leading-relaxed">{log.message}</div>
+                            {log.link_url ? (
+                              <a
+                                href={log.link_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="เปิดลิงก์ในแท็บใหม่ (คลิกขวาเพื่อแก้ไข)"
+                                aria-label="เปิดลิงก์"
+                                onContextMenu={(e) => {
+                                  e.preventDefault()
+                                  setLinkContextMenu({ logId: log.id, url: log.link_url!, x: e.clientX, y: e.clientY })
+                                }}
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+                                  isMe ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                                }`}
+                              >
+                                <FiLink className="h-4 w-4" aria-hidden="true" />
+                              </a>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setLinkEditor({ logId: log.id, value: '' })}
+                                title="เพิ่มลิงก์"
+                                aria-label="เพิ่มลิงก์"
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors ${
+                                  isMe ? 'bg-white/15 text-white hover:bg-white/30' : 'bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-700'
+                                }`}
+                              >
+                                <FiPlus className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )
@@ -2045,6 +2180,29 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 placeholder={sendOnEnter ? 'พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)' : 'พิมพ์ข้อความ...'}
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm outline-none transition-all"
               />
+              <div>
+                <label htmlFor="order-chat-link" className="mb-1 block text-xs font-semibold text-gray-600">ลิงก์</label>
+                <div className="relative">
+                  <FiLink className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+                  <input
+                    id="order-chat-link"
+                    type="url"
+                    inputMode="url"
+                    value={chatLink}
+                    onChange={(e) => setChatLink(e.target.value)}
+                    placeholder="https://example.com (ไม่บังคับ)"
+                    aria-invalid={chatLink.trim() !== '' && !normalizeChatLink(chatLink)}
+                    className={`w-full rounded-xl border py-2.5 pl-9 pr-3 text-sm outline-none transition-all focus:ring-2 ${
+                      chatLink.trim() !== '' && !normalizeChatLink(chatLink)
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-100'
+                        : 'border-gray-300 focus:border-blue-400 focus:ring-blue-200'
+                    }`}
+                  />
+                </div>
+                {chatLink.trim() !== '' && !normalizeChatLink(chatLink) && (
+                  <p className="mt-1 text-xs text-red-600">รูปแบบลิงก์ไม่ถูกต้อง เช่น https://example.com</p>
+                )}
+              </div>
               <div className="flex items-center justify-between">
                 <label className="inline-flex items-center gap-2 cursor-pointer select-none group">
                   <input
@@ -2065,7 +2223,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 <button
                   type="button"
                   onClick={handleSendChat}
-                  disabled={chatSending || chatMessage.trim() === ''}
+                  disabled={chatSending || chatMessage.trim() === '' || (chatLink.trim() !== '' && !normalizeChatLink(chatLink))}
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 font-semibold transition-colors"
                 >
                   <FiMessageCircle className="w-4 h-4" />
@@ -2073,8 +2231,110 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 </button>
               </div>
             </div>
+
+            {linkContextMenu && (
+              <div
+                role="menu"
+                onClick={(e) => e.stopPropagation()}
+                className="fixed z-[100] min-w-40 rounded-lg border border-gray-200 bg-white p-1 shadow-xl"
+                style={{ left: Math.min(linkContextMenu.x, window.innerWidth - 180), top: Math.min(linkContextMenu.y, window.innerHeight - 100) }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setLinkEditor({ logId: linkContextMenu.logId, value: linkContextMenu.url })
+                    setLinkContextMenu(null)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                >
+                  <FiEdit3 className="h-4 w-4" aria-hidden="true" />
+                  แก้ไขลิงก์
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setDeleteLinkTarget(linkContextMenu.logId)
+                    setLinkContextMenu(null)
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 hover:text-red-700"
+                >
+                  <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+                  ลบลิงก์
+                </button>
+              </div>
+            )}
+
+            {linkEditor && (
+              <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/30 p-4" onMouseDown={() => { if (!linkSaving) setLinkEditor(null) }}>
+                <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <h4 className="flex items-center gap-2 font-bold text-gray-900"><FiLink className="h-5 w-5 text-blue-600" /> เพิ่มหรือแก้ไขลิงก์</h4>
+                    <button type="button" onClick={() => setLinkEditor(null)} disabled={linkSaving} className="rounded-full p-1.5 text-gray-500 hover:bg-gray-100" aria-label="ปิด"><FiX /></button>
+                  </div>
+                  <label htmlFor="chat-link-editor" className="mb-1 block text-sm font-medium text-gray-700">ลิงก์</label>
+                  <input
+                    id="chat-link-editor"
+                    type="url"
+                    inputMode="url"
+                    autoFocus
+                    value={linkEditor.value}
+                    onChange={(e) => setLinkEditor((current) => current ? { ...current, value: e.target.value } : current)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !linkSaving) void handleSaveChatLink() }}
+                    placeholder="https://example.com"
+                    aria-invalid={linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value)}
+                    className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none focus:ring-2 ${
+                      linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value)
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-100'
+                        : 'border-gray-300 focus:border-blue-400 focus:ring-blue-200'
+                    }`}
+                  />
+                  {linkEditor.value.trim() !== '' && !normalizeChatLink(linkEditor.value) && (
+                    <p className="mt-1 text-xs text-red-600">กรุณากรอก URL ที่ถูกต้อง เช่น https://example.com</p>
+                  )}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button type="button" onClick={() => setLinkEditor(null)} disabled={linkSaving} className="rounded-lg border px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">ยกเลิก</button>
+                    <button type="button" onClick={() => void handleSaveChatLink()} disabled={linkSaving || !linkEditor.value.trim() || !normalizeChatLink(linkEditor.value)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{linkSaving ? 'กำลังบันทึก...' : 'บันทึกลิงก์'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={!!deleteLinkTarget}
+        onClose={() => { if (!linkDeleting) setDeleteLinkTarget(null) }}
+        contentClassName="max-w-sm w-full"
+      >
+        <div className="p-6">
+          <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-red-100 text-red-600">
+            <FiTrash2 className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <h4 className="text-lg font-bold text-gray-900">ลบลิงก์</h4>
+          <p className="mt-2 text-sm text-gray-600">ยืนยันลบลิงก์ออกจากข้อความนี้หรือไม่?</p>
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDeleteLinkTarget(null)}
+              disabled={linkDeleting}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteChatLink()}
+              disabled={linkDeleting}
+              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              <FiTrash2 className="h-4 w-4" aria-hidden="true" />
+              {linkDeleting ? 'กำลังลบ...' : 'ลบลิงก์'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       <Modal

@@ -329,7 +329,7 @@ const PRODUCT_TYPE_OPTIONS: { value: ProductType; label: string }[] = [
 ]
 const ADD_PRODUCT_TYPE_OPTIONS = PRODUCT_TYPE_OPTIONS.filter((opt) => opt.value !== 'PP')
 
-const UNIT_PRESETS = ['ชิ้น', 'คู่', 'แพ็ค', 'กล่อง', 'ชุด', 'ม้วน']
+const UNIT_PRESETS = ['ชิ้น', 'คู่', 'แพ็ค', 'กล่อง', 'ชุด', 'ม้วน', 'แท่ง', 'เส้น']
 
 const emptyForm = () => ({
   product_code: '',
@@ -1932,6 +1932,7 @@ export default function Products() {
               )}
               <p className="text-xs text-surface-500 mt-1">เว้นว่างได้ หากไม่กำหนดราคาช่องทางนั้น</p>
             </div>
+            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] gap-x-4 gap-y-3">
             {/* รหัสหน้ายาง */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">รหัสหน้ายาง</label>
@@ -1948,7 +1949,7 @@ export default function Products() {
             {/* ─── หน่วยสินค้า (2 ช่องบรรทัดเดียวกัน) ─── */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">หน่วย</label>
-              <div className="flex gap-2">
+              <div className="flex min-w-0 gap-2">
                 <select
                   value={UNIT_PRESETS.includes(form.unit_name) ? form.unit_name : '__custom__'}
                   onChange={(e) => {
@@ -1958,7 +1959,7 @@ export default function Products() {
                       setForm((f) => ({ ...f, unit_name: e.target.value }))
                     }
                   }}
-                  className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+                  className={`${UNIT_PRESETS.includes(form.unit_name) ? 'w-full' : 'w-20 shrink-0'} px-3 py-2 border border-surface-300 rounded-xl text-base`}
                 >
                   {UNIT_PRESETS.map((u) => (
                     <option key={u} value={u}>{u}</option>
@@ -1971,10 +1972,11 @@ export default function Products() {
                     value={form.unit_name}
                     onChange={(e) => setForm((f) => ({ ...f, unit_name: e.target.value }))}
                     placeholder="พิมพ์ชื่อหน่วย"
-                    className="flex-1 px-3 py-2 border border-surface-300 rounded-xl text-base"
+                    className="min-w-0 flex-1 px-3 py-2 border border-surface-300 rounded-xl text-base"
                   />
                 )}
               </div>
+            </div>
             </div>
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">ชิ้น/หน่วย</label>

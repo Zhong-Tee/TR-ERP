@@ -196,7 +196,7 @@ export default function ProductionParcelReturn() {
           onClick={() => setShowScanner(true)}
           className="w-full py-4 rounded-xl bg-green-600 text-white font-bold text-lg hover:bg-green-700 active:bg-green-800 flex items-center justify-center gap-2"
         >
-          <i className="fas fa-camera text-xl" />
+          <i className="fas fa-barcode text-xl" aria-hidden />
           เปิดกล้องสแกน
         </button>
         <div className="flex gap-2">

@@ -61,6 +61,32 @@ export async function loadStockBalances(): Promise<Record<string, number>> {
   return map
 }
 
+export interface PendingPOProductInfo {
+  pending_qty: number
+  po_details: Array<{
+    po_id: string
+    po_no: string
+    status: string
+    pending_qty: number
+    expected_arrival_date?: string | null
+  }>
+}
+
+export async function loadPendingPOByProduct(): Promise<Record<string, PendingPOProductInfo>> {
+  const { data, error } = await supabase.rpc('rpc_get_pending_po_details_by_product')
+  if (error) throw error
+  const map: Record<string, PendingPOProductInfo> = {}
+  for (const row of (data || []) as any[]) {
+    map[row.product_id] = {
+      pending_qty: Number(row.pending_qty) || 0,
+      po_details: Array.isArray(row.po_details)
+        ? row.po_details.map((detail: any) => ({ ...detail, pending_qty: Number(detail.pending_qty) || 0 }))
+        : [],
+    }
+  }
+  return map
+}
+
 /* ──────────────── PR (Purchase Requisition) ──────────────── */
 
 export interface PRListFilters {

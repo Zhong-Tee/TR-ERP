@@ -25,6 +25,7 @@ export default function ProductionWorkQueue() {
   const [loading, setLoading] = useState(true)
   const [depDate, setDepDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [depFilter, setDepFilter] = useState('ALL')
+  const [showDeptMenu, setShowDeptMenu] = useState(false)
   const [hideCompleted, setHideCompleted] = useState(true)
   const [expandedJob, setExpandedJob] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalState>(null)
@@ -212,38 +213,42 @@ export default function ProductionWorkQueue() {
   return (
     <div className="p-3 space-y-3">
       {/* Filters */}
-      <div className="flex flex-wrap gap-3 items-end">
-        <div className="flex-1 min-w-[130px]">
-          <label className="block text-xs text-gray-500 mb-1">วันที่</label>
-          <input
-            type="date"
-            value={depDate}
-            onChange={(e) => setDepDate(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-          />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="w-full min-w-0">
+          <div className="mb-1 flex items-center justify-between gap-3">
+            <label htmlFor="production-queue-date" className="text-xs text-gray-500">วันที่</label>
+            <span className="text-xs text-gray-600">ซ่อนงานเสร็จ</span>
+          </div>
+          <div className="flex min-w-0 items-center gap-3">
+            <input
+              id="production-queue-date"
+              type="date"
+              value={depDate}
+              onChange={(e) => setDepDate(e.target.value)}
+              className="block min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+            />
+            <label className="relative inline-flex shrink-0 cursor-pointer items-center" title="ซ่อนงานเสร็จ">
+              <input type="checkbox" checked={hideCompleted} onChange={(e) => setHideCompleted(e.target.checked)} className="peer sr-only" />
+              <span className="h-7 w-12 rounded-full bg-gray-300 transition-colors peer-checked:bg-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-400 peer-focus-visible:ring-offset-2" />
+              <span className="absolute left-1 h-5 w-5 rounded-full bg-white shadow transition-transform peer-checked:translate-x-5" />
+            </label>
+          </div>
         </div>
-        <div className="flex-1 min-w-[150px]">
+        <div className="relative w-full min-w-0">
           <label className="block text-xs text-gray-500 mb-1">แผนก</label>
-          <select
-            value={depFilter}
-            onChange={(e) => setDepFilter(e.target.value)}
-            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-          >
-            <option value="ALL">-- เลือกแผนก --</option>
-            {selectableDepts.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
+          <button type="button" aria-expanded={showDeptMenu} onClick={() => setShowDeptMenu((open) => !open)}
+            className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900">
+            <span className="min-w-0 flex-1 truncate">{depFilter === 'ALL' ? '-- เลือกแผนก --' : depFilter}</span>
+            <i className={`fas fa-chevron-${showDeptMenu ? 'up' : 'down'} shrink-0 text-xs`} />
+          </button>
+          {showDeptMenu && <div className="absolute inset-x-0 top-full z-50 mt-1 max-h-60 overflow-y-auto overflow-x-hidden rounded-lg border border-gray-300 bg-white shadow-xl [scrollbar-gutter:stable]">
+            <button type="button" onClick={() => { setDepFilter('ALL'); setShowDeptMenu(false) }}
+              className="block w-full truncate border-b px-3 py-2 text-left text-sm hover:bg-blue-50">-- เลือกแผนก --</button>
+            {selectableDepts.map((deptName) => <button key={deptName} type="button"
+              onClick={() => { setDepFilter(deptName); setShowDeptMenu(false) }} title={deptName}
+              className="block w-full truncate border-b border-gray-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-blue-50 active:bg-blue-100">{deptName}</button>)}
+          </div>}
         </div>
-        <label className="flex items-center gap-2 cursor-pointer py-2">
-          <input
-            type="checkbox"
-            checked={hideCompleted}
-            onChange={(e) => setHideCompleted(e.target.checked)}
-            className="rounded border-gray-300 bg-white text-blue-600"
-          />
-          <span className="text-xs text-gray-600">ซ่อนงานเสร็จ</span>
-        </label>
       </div>
 
       {(!dept || dept === 'ALL') ? (

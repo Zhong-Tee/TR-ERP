@@ -16,6 +16,11 @@ interface BorrowItem {
   item_note?: string
 }
 
+const compactProductLabel = (product: { product_code: string; product_name: string }, maxLength = 38) => {
+  const label = `${product.product_code} - ${product.product_name}`
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label
+}
+
 export default function ProductionBorrow() {
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<'create' | 'list'>('create')
@@ -29,7 +34,8 @@ export default function ProductionBorrow() {
   const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
-  const [selectedProductCode, setSelectedProductCode] = useState('')
+  const [showProductMenu, setShowProductMenu] = useState(false)
+  const [productMenuRect, setProductMenuRect] = useState({ top: 0, left: 0, width: 0 })
   const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
   const [submitting, setSubmitting] = useState(false)
   const [borrowList, setBorrowList] = useState<any[]>([])
@@ -47,7 +53,7 @@ export default function ProductionBorrow() {
     loadAllProducts()
     setProducts([])
     setSearchTerm('')
-    setSelectedProductCode('')
+    setShowProductMenu(false)
   }, [productTypeFilter])
 
   useEffect(() => {
@@ -354,30 +360,34 @@ export default function ProductionBorrow() {
               ค้นหา
             </button>
             <button type="button" onClick={() => setShowScanner(true)} className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm">
-              <i className="fas fa-camera" />
+              <i className="fas fa-barcode" aria-hidden />
             </button>
           </div>
 
-          {/* Dropdown select */}
+          {/* Custom dropdown matches the requisition menu on mobile. */}
           {!loadingAllProducts && allProducts.length > 0 && (
-            <select
-              value={selectedProductCode}
-              onChange={(e) => {
-                if (e.target.value) {
-                  const p = allProducts.find((x) => x.product_code === e.target.value)
-                  if (p) addItem(p)
-                  setSelectedProductCode('')
-                }
-              }}
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
-            >
-              <option value="">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</option>
-              {allProducts.map((p) => (
-                <option key={p.product_code} value={p.product_code}>
-                  {p.product_code} - {p.product_name}
-                </option>
-              ))}
-            </select>
+            <div className="relative w-full min-w-0 max-w-full">
+              <button type="button" aria-expanded={showProductMenu}
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  setProductMenuRect({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+                  setShowProductMenu((open) => !open)
+                }}
+                className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900">
+                <span className="min-w-0 flex-1 truncate">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</span>
+                <i className={`fas fa-chevron-${showProductMenu ? 'up' : 'down'} shrink-0 text-xs`} />
+              </button>
+              {showProductMenu && <div
+                className="fixed bottom-2 z-50 overflow-y-auto overflow-x-hidden rounded-lg border border-gray-300 bg-white shadow-xl [scrollbar-gutter:stable]"
+                style={{ top: productMenuRect.top, left: productMenuRect.left, width: productMenuRect.width }}>
+                {allProducts.map((p) => <button key={p.product_code} type="button"
+                  title={`${p.product_code} - ${p.product_name}`}
+                  onClick={() => { addItem(p); setShowProductMenu(false) }}
+                  className="block w-full min-w-0 truncate border-b border-gray-100 px-3 py-2 text-left text-sm text-gray-900 last:border-b-0 hover:bg-cyan-50 active:bg-cyan-100">
+                  {compactProductLabel(p)}
+                </button>)}
+              </div>}
+            </div>
           )}
 
           {/* Search results */}

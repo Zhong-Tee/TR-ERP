@@ -13,6 +13,8 @@ import {
   cancelPR,
   loadProductsWithLastPrice,
   loadStockBalances,
+  loadPendingPOByProduct,
+  type PendingPOProductInfo,
   loadUserDisplayNames,
   loadSellers,
 } from '../lib/purchaseApi'
@@ -26,8 +28,8 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   cancelled: { label: 'ยกเลิก', color: 'bg-gray-200 text-gray-600' },
 }
 
-const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'account']
-const APPROVE_ROLES = PR_ALLOWED_ROLES
+const PR_ALLOWED_ROLES = ['superadmin', 'admin', 'account', 'store']
+const APPROVE_ROLES = ['superadmin', 'admin', 'account']
 const PRICE_VISIBLE_ROLES = ['superadmin', 'account']
 
 interface DraftItem {
@@ -54,6 +56,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
   const [prs, setPrs] = useState<(InventoryPR & { _itemCount?: number })[]>([])
   const [products, setProducts] = useState<(Product & { last_price?: number | null })[]>([])
   const [stockBalances, setStockBalances] = useState<Record<string, number>>({})
+  const [pendingPOByProduct, setPendingPOByProduct] = useState<Record<string, PendingPOProductInfo>>({})
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
@@ -134,11 +137,12 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
   async function loadAll() {
     setLoading(true)
     try {
-      const [prData, prodData, stockData, sellerData] = await Promise.all([
+      const [prData, prodData, stockData, sellerData, pendingPOData] = await Promise.all([
         loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: fixedPrType || (typeFilter !== 'all' ? typeFilter : undefined), excludePrType: fixedPrType ? undefined : 'machinery' }, canSeePrice),
         products.length ? Promise.resolve(products) : loadProductsWithLastPrice(canSeePrice),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
+        loadPendingPOByProduct(),
       ])
       const mappedPrs = prData.map((pr: any) => ({
         ...pr,
@@ -148,6 +152,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
       if (!products.length) setProducts((prodData as any[]).filter((p: any) => p.product_type === 'FG' || p.product_type === 'RM'))
       if (!Object.keys(stockBalances).length) setStockBalances(stockData as Record<string, number>)
       if (!sellers.length) setSellers(sellerData as { id: string; name: string; name_cn?: string | null; seller_type?: string | null }[])
+      setPendingPOByProduct(pendingPOData)
 
       const uids = mappedPrs.map((pr: any) => pr.requested_by).filter(Boolean)
       if (uids.length) {
@@ -483,6 +488,23 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
     if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
     const ids = valid.map((i) => i.product_id)
     if (new Set(ids).size !== ids.length) { showMessage({ message: 'พบรายการสินค้าซ้ำ กรุณาตรวจสอบอีกครั้ง' }); return }
+    const pendingSelections = valid
+      .map((item) => ({ item, product: productMap.get(item.product_id), pending: pendingPOByProduct[item.product_id] }))
+      .filter((entry) => entry.pending?.pending_qty > 0)
+    if (pendingSelections.length > 0) {
+      const warningLines = pendingSelections.slice(0, 10).map(({ product, pending }) => {
+        const poNumbers = pending!.po_details.map((detail) => detail.po_no).join(', ')
+        return `• ${product?.product_code || '-'} - ${product?.product_name || 'สินค้า'}: ค้างรับ ${pending!.pending_qty.toLocaleString()} (${poNumbers})`
+      })
+      if (pendingSelections.length > 10) warningLines.push(`• และอีก ${pendingSelections.length - 10} รายการ`)
+      const proceed = await showConfirm({
+        title: 'พบสินค้าที่มี PO รอรับเข้า',
+        message: `${warningLines.join('\n')}\n\nกรุณาตรวจสอบก่อนสั่งซื้อซ้ำ ต้องการบันทึก PR ต่อหรือไม่?`,
+        confirmText: 'บันทึก PR ต่อ',
+        cancelText: 'กลับไปตรวจสอบ',
+      })
+      if (!proceed) return
+    }
     setSaving(true)
     try {
       const itemPayload = valid.map((i) => {
@@ -964,6 +986,26 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                               </span>
                             </div>
                           )}
+                          {prod && pendingPOByProduct[prod.id]?.pending_qty > 0 && (() => {
+                            const pending = pendingPOByProduct[prod.id]
+                            return (
+                              <div className="rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-xs text-orange-800">
+                                <div className="flex items-center gap-1.5 font-bold">
+                                  <i className="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                  สินค้านี้มี PO รอรับเข้า {pending.pending_qty.toLocaleString()} {getProductUnit(prod)}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                  {pending.po_details.map((detail) => (
+                                    <span key={detail.po_id} title={detail.expected_arrival_date ? `คาดว่าจะถึง ${detail.expected_arrival_date}` : undefined}>
+                                      {detail.po_no}: {detail.pending_qty.toLocaleString()}
+                                      {detail.status === 'open' ? ' (เปิด)' : detail.status === 'ordered' ? ' (สั่งซื้อแล้ว)' : ' (รับบางส่วน)'}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="mt-1 text-orange-700">กรุณาตรวจสอบก่อนทำ PR สั่งซื้อซ้ำ</div>
+                              </div>
+                            )
+                          })()}
 
                           {/* qty / unit / price */}
                           <div className={`grid gap-2 ${canSeePrice ? 'grid-cols-4' : 'grid-cols-3'}`}>
@@ -1327,7 +1369,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                     </button>
                   </div>
                 )}
-                {viewing.status === 'pending' && !rejectOpen && (
+                {canApprove && viewing.status === 'pending' && !rejectOpen && (
                   <button
                     onClick={handleCancel}
                     disabled={updating}

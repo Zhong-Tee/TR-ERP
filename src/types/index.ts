@@ -202,6 +202,7 @@ export interface OrderChatLog {
   sender_id: string
   sender_name: string
   message: string
+  link_url?: string | null
   created_at: string
 }
 

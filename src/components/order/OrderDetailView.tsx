@@ -82,25 +82,32 @@ export default function OrderDetailView({
     setEditLinkError('')
     setEditLinkSaving(true)
     try {
-      const { error } = await supabase
-        .from('or_order_items')
-        .update({
-          file_attachment: linkValue || null,
-          attachment_name: editLinkItem.name.trim() || null,
-        })
-        .eq('id', item.id)
+      const attachmentName = editLinkItem.name.trim() || null
+      const { error } = user?.role === 'production'
+        ? await supabase.rpc('rpc_update_order_item_attachment', {
+            p_item_id: item.id,
+            p_file_attachment: linkValue || null,
+            p_attachment_name: attachmentName,
+          })
+        : await supabase
+            .from('or_order_items')
+            .update({
+              file_attachment: linkValue || null,
+              attachment_name: attachmentName,
+            })
+            .eq('id', item.id)
       if (error) throw error
       // Update local state
       if (loadedItems) {
         setLoadedItems(prev => prev!.map((it) => {
-          if (it.id === item.id) return { ...it, file_attachment: linkValue || null, attachment_name: editLinkItem.name.trim() || null } as OrderItem
+          if (it.id === item.id) return { ...it, file_attachment: linkValue || null, attachment_name: attachmentName } as OrderItem
           return it
         }))
       }
       // Also update inline if present
       const inl = ((order as any).or_order_items || []) as OrderItem[]
       if (inl.length > 0) {
-        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: linkValue || null, attachment_name: editLinkItem.name.trim() || null } : it)
+        const updated = inl.map(it => it.id === item.id ? { ...it, file_attachment: linkValue || null, attachment_name: attachmentName } : it)
         ;(order as any).or_order_items = updated
       }
       setEditLinkItem(null)

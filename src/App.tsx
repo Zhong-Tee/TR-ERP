@@ -33,6 +33,7 @@ import WarehouseReturns from './pages/WarehouseReturns'
 import InternalProduction from './pages/InternalProduction'
 import RollMaterialCalc from './pages/RollMaterialCalc'
 import ProductSalesList from './pages/ProductSalesList'
+import ApprovalList from './components/wms/manager/ApprovalList'
 import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
 import PurchaseGR from './pages/PurchaseGR'
@@ -604,6 +605,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
             <Layout>
               <Settings />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/requisition-approval"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'production']}>
+            <Layout>
+              <ApprovalList />
             </Layout>
           </ProtectedRoute>
         }

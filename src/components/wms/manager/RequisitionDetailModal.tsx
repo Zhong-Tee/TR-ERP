@@ -12,7 +12,9 @@ interface RequisitionDetailModalProps {
 
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
   const { user } = useAuthContext()
+  const canApprove = ['superadmin', 'admin', 'production'].includes(user?.role || '')
   const [items, setItems] = useState<any[]>([])
+  const [damagePhotoUrls, setDamagePhotoUrls] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [approving, setApproving] = useState(false)
   const [selectedPicker, setSelectedPicker] = useState('')
@@ -36,6 +38,13 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
       const sortedItems = sortOrderItems(data || [])
       setItems(sortedItems)
+      const paths = sortedItems.flatMap((item: any) => item.damage_image_paths || [])
+      if (paths.length) {
+        const { data: signed } = await supabase.storage.from('wms-damage-evidence').createSignedUrls(paths, 3600)
+        const urls: Record<string, string> = {}
+        ;(signed || []).forEach((row: any, index: number) => { if (row.signedUrl) urls[paths[index]] = row.signedUrl })
+        setDamagePhotoUrls(urls)
+      } else setDamagePhotoUrls({})
     } catch (error: any) {
       showMessage({ message: `เกิดข้อผิดพลาด: ${error.message}` })
     } finally {
@@ -54,6 +63,10 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   }
 
   const handleApprove = async () => {
+    if (!canApprove) {
+      showMessage({ message: 'ไม่มีสิทธิ์อนุมัติใบเบิก' })
+      return
+    }
     if (!selectedPicker) {
       showMessage({ message: 'กรุณาเลือกพนักงาน Picker' })
       return
@@ -103,6 +116,10 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   }
 
   const handleReject = async () => {
+    if (!canApprove) {
+      showMessage({ message: 'ไม่มีสิทธิ์ปฏิเสธใบเบิก' })
+      return
+    }
     const ok = await showConfirm({ title: 'ยืนยันการปฏิเสธ', message: `ยืนยันการปฏิเสธใบเบิก ${requisition.requisition_id}?` })
     if (!ok) return
 
@@ -147,6 +164,14 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
     })
   }
 
+  const DamagePhotos = ({ item }: { item: any }) => !(item.damage_image_paths || []).length ? null :
+    <div className="mt-2 grid grid-cols-3 gap-2">
+      {item.damage_image_paths.map((path: string) => damagePhotoUrls[path] &&
+        <a key={path} href={damagePhotoUrls[path]} target="_blank" rel="noreferrer" className="aspect-square">
+          <img src={damagePhotoUrls[path]} alt="รูปจุดผลิตเสีย" className="h-full w-full rounded-lg border border-red-200 object-cover" />
+        </a>)}
+    </div>
+
   if (requisition.status !== 'pending') {
     return (
       <>
@@ -171,7 +196,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
               ) : (
                 <div className="space-y-2">
                   {items.map((item) => (
-                    <div key={item.id} className="flex items-center gap-3 p-3 bg-gray-100 rounded-xl">
+                    <div key={item.id} className="p-3 bg-gray-100 rounded-xl"><div className="flex items-center gap-3">
                       <img
                         src={imgUrl(item.product_code)}
                         className="w-16 h-16 object-cover rounded-lg"
@@ -187,6 +212,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
                       <div className="text-gray-900 font-bold">x{item.qty}</div>
+                      </div><DamagePhotos item={item} />
                     </div>
                   ))}
                 </div>
@@ -231,7 +257,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
               ) : (
                 <div className="space-y-2">
                   {items.map((item, idx) => (
-                    <div key={item.id} className="flex items-center gap-3 p-3 bg-gray-100 rounded-xl">
+                    <div key={item.id} className="p-3 bg-gray-100 rounded-xl"><div className="flex items-center gap-3">
                       <div className="text-lg font-black text-gray-500 w-8 text-center">{idx + 1}</div>
                       <img
                         src={imgUrl(item.product_code)}
@@ -248,6 +274,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
                       <div className="text-gray-900 font-bold text-lg">x{item.qty}</div>
+                      </div><DamagePhotos item={item} />
                     </div>
                   ))}
                 </div>
@@ -271,7 +298,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
             </div>
           </div>
 
-          <div className="p-4 border-t border-gray-200 flex gap-3">
+          {canApprove && <div className="p-4 border-t border-gray-200 flex gap-3">
             <button
               onClick={handleReject}
               disabled={approving}
@@ -297,7 +324,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                 </>
               )}
             </button>
-          </div>
+          </div>}
         </div>
       </Modal>
       {MessageModal}
