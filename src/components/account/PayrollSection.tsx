@@ -12,6 +12,8 @@ import PayrollSlipPDF, { type PayrollYtd } from './pdf/PayrollSlipPDF'
 const currentMonth = () => new Date().toISOString().slice(0, 7)
 const fmt = (value: number) => Number(value || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const monthLabel = (month: string) => new Date(`${month}-01T00:00:00`).toLocaleDateString('th-TH', { month: 'long', year: 'numeric' })
+const employeeFullName = (employee: { prefix?: string; first_name: string; last_name: string }) =>
+  `${employee.prefix || ''}${employee.first_name} ${employee.last_name}`.replace(/\s+/g, ' ').trim()
 const calc = (item: PayrollItem) => {
   const gross = item.base_salary + item.position_allowance + item.other_income
   const deduction = item.personal_tax + item.social_security + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
@@ -30,6 +32,10 @@ export default function PayrollSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [activeView, setActiveView] = useState<'payroll' | 'history'>('payroll')
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyDateFrom, setHistoryDateFrom] = useState('')
+  const [historyDateTo, setHistoryDateTo] = useState('')
   const company = companies.find((c) => c.id === companyId)
   const locked = run?.status === 'confirmed'
 
@@ -47,10 +53,16 @@ export default function PayrollSection() {
       setHistory(historyRows)
       setRun(savedRun)
       setPaymentDate(savedRun?.payment_date || `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()}`)
-      if (savedRun?.items?.length) setItems(savedRun.items.map((item) => ({ ...item, base_salary: Number(item.base_salary), position_allowance: Number(item.position_allowance), personal_tax: Number(item.personal_tax), social_security: Number(item.social_security), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) })))
+      if (savedRun?.items?.length) {
+        const employeesById = new Map(employees.map((employee) => [employee.id, employee]))
+        setItems(savedRun.items.map((item) => {
+          const employee = employeesById.get(item.employee_id)
+          return { ...item, employee_name: employee ? employeeFullName(employee) : '', base_salary: Number(item.base_salary), position_allowance: Number(item.position_allowance), personal_tax: Number(item.personal_tax), social_security: Number(item.social_security), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) }
+        }))
+      }
       else setItems(employees.map((employee) => ({
         employee_id: employee.id, employee_code: employee.employee_code,
-        employee_name: `${employee.prefix || ''}${employee.first_name} ${employee.last_name}`.trim(),
+        employee_name: employeeFullName(employee),
         department_position: [employee.department?.name, employee.position?.name].filter(Boolean).join(' / '),
         base_salary: Number(employee.salary) || 0, position_allowance: Number(employee.position_allowance) || 0,
         personal_tax: Number(employee.monthly_personal_tax) || 0, social_security: Number(employee.monthly_social_security) || 0,
@@ -123,11 +135,34 @@ export default function PayrollSection() {
   }
 
   const cards = [['ยอดเงินเดือน', totals.salary, 'text-blue-700'], ['ภาษีส่วนบุคคล', totals.tax, 'text-amber-700'], ['ประกันสังคม', totals.social, 'text-purple-700'], ['เงินสะสม', totals.savings, 'text-indigo-700'], ['กยศ.', totals.student, 'text-cyan-700'], ['เงินกู้บริษัทฯ', totals.companyLoan, 'text-orange-700'], ['ลาเกินสิทธิ์', totals.leave, 'text-red-700'], ['ยอดสุทธิ', totals.net, 'text-emerald-700']] as const
+  const filteredHistory = history.filter((row) => {
+    const reportMonth = row.payroll_month.slice(0, 7)
+    if (historyDateFrom && reportMonth < historyDateFrom) return false
+    if (historyDateTo && reportMonth > historyDateTo) return false
+    const query = historySearch.trim().toLocaleLowerCase('th-TH')
+    if (!query) return true
+    const searchable = [row.company?.name_th, row.company?.name_en, monthLabel(row.payroll_month.slice(0, 7)), ...(row.items || []).flatMap((item) => [item.employee_code, item.employee_name])].filter(Boolean).join(' ').toLocaleLowerCase('th-TH')
+    return searchable.includes(query)
+  })
   return <div className="space-y-5">
+    <div className="flex gap-2 border-b border-gray-200">
+      <button type="button" onClick={() => setActiveView('payroll')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'payroll' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>จัดทำเงินเดือน</button>
+      <button type="button" onClick={() => setActiveView('history')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'history' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>รายงานย้อนหลัง</button>
+    </div>
+    {activeView === 'history' ? <>
+      <div className="rounded-xl border bg-white p-4 flex flex-wrap gap-3 items-end">
+        <label className="text-sm">บริษัท<select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2 min-w-64">{companies.map((c) => <option key={c.id} value={c.id}>{c.name_th}</option>)}</select></label>
+        <label className="text-sm">เดือนเริ่มต้น<input type="month" value={historyDateFrom} onChange={(e) => setHistoryDateFrom(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2" /></label>
+        <label className="text-sm">เดือนสิ้นสุด<input type="month" value={historyDateTo} onChange={(e) => setHistoryDateTo(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2" /></label>
+        <label className="text-sm flex-1 min-w-64">ค้นหา<input type="search" value={historySearch} onChange={(e) => setHistorySearch(e.target.value)} placeholder="เดือน บริษัท รหัส หรือชื่อพนักงาน" className="block mt-1 w-full rounded-lg border px-3 py-2" /></label>
+      </div>
+      {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
+      <div className="rounded-xl border bg-white overflow-x-auto"><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="p-3 text-left">เดือน</th><th className="p-3 text-left">บริษัท</th><th className="p-3 text-right">พนักงาน</th><th className="p-3 text-right">ยอดสุทธิ</th><th className="p-3 text-right">รายงาน</th></tr></thead><tbody>{filteredHistory.map((h) => <tr key={h.id} className="border-t"><td className="p-3">{monthLabel(h.payroll_month.slice(0, 7))}</td><td className="p-3">{h.company?.name_th}</td><td className="p-3 text-right">{h.items?.length || 0}</td><td className="p-3 text-right font-semibold">{fmt((h.items || []).reduce((sum, item) => sum + calc(item).net, 0))}</td><td className="p-3 text-right"><button onClick={() => exportExcel(h)} className="text-emerald-700">ดาวน์โหลด Excel</button></td></tr>)}{!loading && !filteredHistory.length && <tr><td colSpan={5} className="p-10 text-center text-gray-500">ไม่พบรายงาน</td></tr>}</tbody></table></div>
+    </> : <>
     <div className="rounded-xl border bg-white p-4 flex flex-wrap gap-3 items-end"><label className="text-sm">บริษัท<select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2 min-w-72">{companies.map((c) => <option key={c.id} value={c.id}>{c.name_th}</option>)}</select></label><label className="text-sm">เดือน<input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2" /></label><label className="text-sm">วันที่จ่าย<input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} disabled={locked} className="block mt-1 rounded-lg border px-3 py-2 disabled:bg-gray-100" /></label><span className={`rounded-full px-3 py-2 text-sm font-semibold ${locked ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{locked ? 'ยืนยันยอดแล้ว' : 'รอตรวจสอบ'}</span><div className="ml-auto flex gap-2"><button onClick={() => exportExcel()} disabled={!items.length} className="rounded-lg border border-emerald-600 px-4 py-2 text-emerald-700">ดาวน์โหลด Excel</button>{!locked && <><button onClick={() => save(false)} disabled={saving} className="rounded-lg border px-4 py-2">บันทึกร่าง</button><button onClick={() => save(true)} disabled={saving || !items.length} className="rounded-lg bg-emerald-600 px-4 py-2 text-white">ยืนยันยอด</button></>}</div></div>
     {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">{cards.map(([label, value, color]) => <div key={label} className="rounded-xl border bg-white p-4"><div className="text-xs text-gray-500">{label}</div><div className={`mt-1 text-xl font-bold ${color}`}>{fmt(value)}</div></div>)}</div>
     <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','ภาษี','ประกันสังคม','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่น','หักอื่น','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{items.map((item, index) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><b>{item.employee_code}</b><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td>{(['personal_tax','social_security','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="number" min="0" value={item[key]} onChange={(e) => update(index, key, Number(e.target.value) || 0)} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></td></tr> })}</tbody></table>}</div>
-    <div className="rounded-xl border bg-white overflow-hidden"><div className="p-4 border-b font-semibold">รายงานย้อนหลัง</div><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="p-3 text-left">เดือน</th><th className="p-3 text-left">บริษัท</th><th className="p-3 text-right">พนักงาน</th><th className="p-3 text-right">ยอดสุทธิ</th><th className="p-3 text-right">รายงาน</th></tr></thead><tbody>{history.map((h) => <tr key={h.id} className="border-t"><td className="p-3">{monthLabel(h.payroll_month.slice(0, 7))}</td><td className="p-3">{h.company?.name_th}</td><td className="p-3 text-right">{h.items?.length || 0}</td><td className="p-3 text-right font-semibold">{fmt((h.items || []).reduce((sum, item) => sum + calc(item).net, 0))}</td><td className="p-3 text-right"><button onClick={() => exportExcel(h)} className="text-emerald-700">ดาวน์โหลด Excel</button></td></tr>)}</tbody></table></div>
+    </>}
   </div>
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { HRCompany } from '../../types'
-import { fetchHRCompanies, uploadHRCompanyPng, upsertHRCompany } from '../../lib/payrollApi'
+import { deleteHRCompanyAsset, fetchHRCompanies, uploadHRCompanyPng, upsertHRCompany } from '../../lib/payrollApi'
 
 const emptyCompany = (): Partial<HRCompany> => ({
   company_key: '', name_th: '', name_en: '', address: '', tax_id: '', branch: 'สำนักงานใหญ่',
@@ -52,6 +52,31 @@ export default function CompanySettings() {
     setLogoFile(null)
     setSignatureFile(null)
   }
+  const removeAsset = async (kind: 'logo' | 'signature') => {
+    const isLogo = kind === 'logo'
+    const selectedFile = isLogo ? logoFile : signatureFile
+    if (selectedFile) {
+      if (isLogo) setLogoFile(null)
+      else setSignatureFile(null)
+      return
+    }
+    const field = isLogo ? 'logo_url' : 'signature_url'
+    const currentUrl = form[field]
+    if (!currentUrl) return
+    setSaving(true)
+    setMessage('')
+    try {
+      await deleteHRCompanyAsset(currentUrl)
+      if (form.id) await upsertHRCompany({ id: form.id, [field]: null })
+      setForm((current) => ({ ...current, [field]: null }))
+      setMessage(isLogo ? 'ลบโลโก้เรียบร้อย' : 'ลบลายเซ็นเรียบร้อย')
+      await load()
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'ลบรูปไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_460px]">
       <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
@@ -82,7 +107,7 @@ export default function CompanySettings() {
           <div className="mt-1 flex items-center gap-3 rounded-xl border border-dashed border-surface-300 p-3">
             {logoPreview ? <img src={logoPreview} alt="ตัวอย่างโลโก้" className="h-16 w-24 rounded border bg-white object-contain" /> : <div className="h-16 w-24 rounded bg-surface-100 flex items-center justify-center text-xs text-gray-400">LOGO</div>}
             <label className="cursor-pointer rounded-lg bg-blue-50 px-3 py-2 text-blue-700 font-medium hover:bg-blue-100">เลือกไฟล์ PNG<input type="file" accept="image/png,.png" className="hidden" onChange={(e) => setLogoFile(e.target.files?.[0] || null)} /></label>
-            {(logoFile || form.logo_url) && <button type="button" onClick={() => { setLogoFile(null); setForm({ ...form, logo_url: null }) }} className="text-red-600">นำออก</button>}
+            {(logoFile || form.logo_url) && <button type="button" disabled={saving} onClick={() => removeAsset('logo')} className="text-red-600 disabled:opacity-50">นำออก</button>}
           </div>
           <div className="mt-1 text-xs text-gray-500">แนะนำพื้นหลังโปร่งใส ขนาดไม่เกิน 5 MB</div>
         </div>
@@ -92,7 +117,7 @@ export default function CompanySettings() {
           <div className="mt-1 flex items-center gap-3 rounded-xl border border-dashed border-surface-300 p-3">
             {signaturePreview ? <img src={signaturePreview} alt="ตัวอย่างลายเซ็น" className="h-16 w-24 rounded border bg-white object-contain" /> : <div className="h-16 w-24 rounded bg-surface-100 flex items-center justify-center text-xs text-gray-400">SIGN</div>}
             <label className="cursor-pointer rounded-lg bg-blue-50 px-3 py-2 text-blue-700 font-medium hover:bg-blue-100">เลือกไฟล์ PNG<input type="file" accept="image/png,.png" className="hidden" onChange={(e) => setSignatureFile(e.target.files?.[0] || null)} /></label>
-            {(signatureFile || form.signature_url) && <button type="button" onClick={() => { setSignatureFile(null); setForm({ ...form, signature_url: null }) }} className="text-red-600">นำออก</button>}
+            {(signatureFile || form.signature_url) && <button type="button" disabled={saving} onClick={() => removeAsset('signature')} className="text-red-600 disabled:opacity-50">นำออก</button>}
           </div>
           <div className="mt-1 text-xs text-gray-500">แนะนำพื้นหลังโปร่งใส ขนาดไม่เกิน 5 MB</div>
         </div>

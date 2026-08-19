@@ -70,6 +70,18 @@ export async function uploadHRCompanyPng(companyKey: string, kind: 'logo' | 'sig
   return supabase.storage.from('hr-company-assets').getPublicUrl(path).data.publicUrl
 }
 
+export async function deleteHRCompanyAsset(publicUrl: string): Promise<void> {
+  const marker = '/storage/v1/object/public/hr-company-assets/'
+  const pathname = new URL(publicUrl).pathname
+  const markerIndex = pathname.indexOf(marker)
+  // URLs outside the managed bucket have no Storage object that this app can delete.
+  if (markerIndex < 0) return
+  const objectPath = decodeURIComponent(pathname.slice(markerIndex + marker.length))
+  if (!objectPath) return
+  const { error } = await supabase.storage.from('hr-company-assets').remove([objectPath])
+  throwIfError(error)
+}
+
 export async function fetchPayrollEmployees(companyId: string): Promise<HREmployee[]> {
   const { data, error } = await supabase
     .from('hr_employees')
