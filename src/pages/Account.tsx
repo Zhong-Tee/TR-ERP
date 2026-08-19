@@ -14,12 +14,13 @@ import ManualSlipCheckSection from '../components/account/ManualSlipCheckSection
 import TaxInvoiceModal from '../components/account/TaxInvoiceModal'
 import TrialBalanceSection from '../components/account/TrialBalanceSection'
 import EcommerceSection from '../components/account/EcommerceSection'
+import PayrollSection from '../components/account/PayrollSection'
 import AmendmentSection from '../components/account/AmendmentSection'
 import ClaimApprovalSection from '../components/account/ClaimApprovalSection'
 import { SLIP_BANK_APPS_30D, SLIP_BANK_APPS_7D, bankLogoUrl } from '../config/thaiBanks'
 import * as XLSX from 'xlsx'
 
-type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'trial-balance'
+type AccountSection = 'dashboard' | 'slip-verification' | 'manual-slip-check' | 'bill-edit' | 'amendment' | 'claim-approval' | 'slip-age' | 'ecommerce' | 'payroll' | 'trial-balance'
 type AccountTab = 'refunds' | 'claim-approval' | 'tax-invoice' | 'approvals'
 type ApprovalFilter = 'refund' | 'claim' | 'tax-invoice'
 
@@ -171,7 +172,7 @@ async function fetchSlipImageUrlsForOrder(orderId: string): Promise<string[]> {
 
 const ALL_ACCOUNT_SECTIONS: AccountSection[] = [
   'dashboard', 'slip-verification', 'manual-slip-check',
-  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'trial-balance',
+  'bill-edit', 'amendment', 'claim-approval', 'slip-age', 'ecommerce', 'payroll', 'trial-balance',
 ]
 
 /** แถบเมนูหลักบัญชี — รวมลิงก์เข้า Dashboard แยกแท็บโอนคืน / ใบกำกับภาษี */
@@ -191,6 +192,7 @@ const ACCOUNT_TOP_NAV_ITEMS: Array<{
   { id: 'nav-amendment', section: 'amendment', label: 'ขอยกเลิกบิล', count: 'amendment' },
   { id: 'nav-slip-age', section: 'slip-age', label: 'อายุสลิป' },
   { id: 'nav-ecommerce', section: 'ecommerce', label: 'Ecommerce', accessKey: 'account-ecommerce' },
+  { id: 'nav-payroll', section: 'payroll', label: 'เงินเดือน', accessKey: 'account-payroll' },
   { id: 'nav-trial', section: 'trial-balance', label: 'งบต้นทุนขาย' },
 ]
 
@@ -1299,6 +1301,8 @@ export default function Account() {
         </section>
       ) : accountSection === 'ecommerce' ? (
         <EcommerceSection />
+      ) : accountSection === 'payroll' ? (
+        <PayrollSection />
       ) : accountSection === 'trial-balance' ? (
         <TrialBalanceSection />
       ) : (

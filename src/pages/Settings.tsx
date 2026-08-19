@@ -750,6 +750,7 @@ export default function Settings() {
     { key: 'account-tax-invoice', label: 'ขอใบกำกับภาษี', group: 'account' },
     { key: 'account-approvals', label: 'รายการอนุมัติ', group: 'account' },
     { key: 'account-ecommerce', label: 'Ecommerce', group: 'account' },
+    { key: 'account-payroll', label: 'เงินเดือน', group: 'account' },
     { key: 'account-trial-balance', label: 'งบต้นทุนขาย', group: 'account' },
     // ── สินค้า ──
     { key: 'products', label: 'สินค้า', group: '' },

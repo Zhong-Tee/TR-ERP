@@ -72,6 +72,45 @@ export interface PendingPOProductInfo {
   }>
 }
 
+export interface ActivePRProductInfo {
+  requested_qty: number
+  pr_details: Array<{
+    pr_id: string
+    pr_no: string
+    status: string
+    qty: number
+  }>
+}
+
+/** PRs that still need attention before purchasing: pending, or approved without a PO. */
+export async function loadActivePRByProduct(): Promise<Record<string, ActivePRProductInfo>> {
+  const { data, error } = await supabase
+    .from('inv_pr')
+    .select('id, pr_no, status, inv_po(id), inv_pr_items(product_id, qty)')
+    .in('status', ['pending', 'approved'])
+  if (error) throw error
+
+  const map: Record<string, ActivePRProductInfo> = {}
+  for (const pr of (data || []) as any[]) {
+    // Approved PRs already converted to a PO are covered by the pending-PO warning.
+    if (Array.isArray(pr.inv_po) && pr.inv_po.length > 0) continue
+    for (const item of (pr.inv_pr_items || []) as any[]) {
+      if (!item.product_id) continue
+      const qty = Number(item.qty) || 0
+      const current = map[item.product_id] || { requested_qty: 0, pr_details: [] }
+      current.requested_qty += qty
+      current.pr_details.push({
+        pr_id: pr.id,
+        pr_no: pr.pr_no,
+        status: pr.status,
+        qty,
+      })
+      map[item.product_id] = current
+    }
+  }
+  return map
+}
+
 export async function loadPendingPOByProduct(): Promise<Record<string, PendingPOProductInfo>> {
   const { data, error } = await supabase.rpc('rpc_get_pending_po_details_by_product')
   if (error) throw error

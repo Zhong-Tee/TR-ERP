@@ -1,7 +1,7 @@
 {
   "name": "tr-erp",
   "private": true,
-  "version": "1.7.8-3",
+  "version": "1.7.9",
   "type": "module",
   "scripts": {
     "dev": "vite",

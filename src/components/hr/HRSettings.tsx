@@ -49,23 +49,26 @@ import type {
 } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import ScoreSettings from './ScoreSettings'
+import CompanySettings from './CompanySettings'
 
 const TABS = [
-  'แผนก', 'ตำแหน่ง', 'ประเภทการลา', 'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram',
-  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'คะแนนปฏิบัติงาน', 'ผู้สัมภาษณ์', 'เกณฑ์การให้คะแนนสัมภาษณ์',
+  'รายละเอียดบริษัท', 'ชื่อแผนก', 'ชื่อตำแหน่งงาน', 'ประเภทการลา', 'คะแนนปฏิบัติงาน',
+  'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'ผู้สัมภาษณ์งาน', 'เกณฑ์คะแนนสัมภาษณ์งาน',
+  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config',
 ] as const
 
 /** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */
-const SCORE_TAB_INDEX = 8
+const SCORE_TAB_INDEX = 4
 
 /** แท็บผู้อนุมัติประกาศ — ตั้งค่าได้เฉพาะ superadmin */
-const APPROVER_TAB_INDEX = 7
+const APPROVER_TAB_INDEX = 6
 
 /** แท็บผู้สัมภาษณ์ — ตั้งค่าได้เฉพาะ superadmin (เหมือนผู้อนุมัติประกาศ) */
-const INTERVIEWER_TAB_INDEX = 9
+const INTERVIEWER_TAB_INDEX = 7
 
 /** แท็บหัวข้อเกณฑ์การให้คะแนนสัมภาษณ์ (ผูกกับตำแหน่ง) — HR/admin ตั้งค่าได้ */
-const INTERVIEW_CRITERIA_TAB_INDEX = 10
+const INTERVIEW_CRITERIA_TAB_INDEX = 8
+const COMPANY_TAB_INDEX = 0
 
 type LevelForm = {
   id?: string
@@ -771,7 +774,7 @@ export default function HRSettings() {
       </div>
 
       {/* แผนก */}
-      {activeTab === 0 && (
+      {activeTab === 1 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <table className="w-full text-sm">
@@ -852,7 +855,7 @@ export default function HRSettings() {
       )}
 
       {/* ตำแหน่ง */}
-      {activeTab === 1 && (
+      {activeTab === 2 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <div className="mb-4">
@@ -934,7 +937,7 @@ export default function HRSettings() {
       )}
 
       {/* ประเภทการลา */}
-      {activeTab === 2 && (
+      {activeTab === 3 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <table className="w-full text-sm">
@@ -1027,7 +1030,7 @@ export default function HRSettings() {
       )}
 
       {/* เส้นทางเงินเดือน */}
-      {activeTab === 3 && (
+      {activeTab === 9 && (
         <div className="space-y-4">
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
             ขั้นตอน: 1) เลือกแผนก 2) เลือก/สร้างสายงาน 3) เลือกตำแหน่งงาน และกำหนดช่วงเงินเดือนของแต่ละระดับ
@@ -1270,7 +1273,7 @@ export default function HRSettings() {
       )}
 
       {/* Onboarding Templates */}
-      {activeTab === 4 && (
+      {activeTab === 10 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_420px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <ul className="space-y-2">
@@ -1349,7 +1352,7 @@ export default function HRSettings() {
       )}
 
       {/* Telegram */}
-      {activeTab === 5 && (
+      {activeTab === 11 && (
         <div className="rounded-xl border border-surface-200 bg-white p-4 max-w-lg space-y-3">
           <p className="text-xs text-gray-500">
             {notifSettings ? 'แก้ไขการตั้งค่า Telegram' : 'ตั้งค่า Telegram ครั้งแรก'}
@@ -1417,7 +1420,7 @@ export default function HRSettings() {
       )}
 
       {/* ประเภทประกาศ */}
-      {activeTab === 6 && (
+      {activeTab === 5 && (
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <div className="rounded-xl shadow-soft border border-surface-200 bg-surface-50 p-4">
             <table className="w-full text-sm">
@@ -1762,6 +1765,7 @@ export default function HRSettings() {
           </div>
         </div>
       )}
+      {activeTab === COMPANY_TAB_INDEX && <CompanySettings />}
     </div>
   )
 }

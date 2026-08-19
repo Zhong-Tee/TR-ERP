@@ -12,10 +12,11 @@ import {
   previewNextEmployeeCode,
 } from '../../lib/hrApi'
 import { supabase } from '../../lib/supabase'
+import { fetchHRCompanies } from '../../lib/payrollApi'
 import SalaryHistoryPanel from './SalaryHistoryPanel'
 import PhotoLightbox from './PhotoLightbox'
 import EmployeeOpeningBalances from './EmployeeOpeningBalances'
-import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule } from '../../types'
+import type { HREmployee, HRDepartment, HRPosition, HRClockLocation, HRWorkSchedule, HRCompany } from '../../types'
 
 const BUCKET_PHOTOS = 'hr-photos'
 const BUCKET_DOCUMENTS = 'hr-documents'
@@ -79,6 +80,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [positions, setPositions] = useState<HRPosition[]>([])
   const [clockLocations, setClockLocations] = useState<HRClockLocation[]>([])
   const [workSchedules, setWorkSchedules] = useState<HRWorkSchedule[]>([])
+  const [companies, setCompanies] = useState<HRCompany[]>([])
 
   const [prefix, setPrefix] = useState('')
   const [first_name, setFirstName] = useState('')
@@ -107,11 +109,20 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
   const [employee_code, setEmployeeCode] = useState('')
   const [department_id, setDepartmentId] = useState('')
+  const [company_id, setCompanyId] = useState('')
   const [position_id, setPositionId] = useState('')
   const [hire_date, setHireDate] = useState('')
   const [probation_end_date, setProbationEndDate] = useState('')
   const [salary, setSalary] = useState<number | ''>('')
   const [position_allowance, setPositionAllowance] = useState<number | ''>('')
+  const [monthly_personal_tax, setMonthlyPersonalTax] = useState<number | ''>('')
+  const [monthly_social_security, setMonthlySocialSecurity] = useState<number | ''>('')
+  const [monthly_savings, setMonthlySavings] = useState<number | ''>('')
+  const [monthly_student_loan, setMonthlyStudentLoan] = useState<number | ''>('')
+  const [monthly_company_loan, setMonthlyCompanyLoan] = useState<number | ''>('')
+  const [savings_opening_balance, setSavingsOpeningBalance] = useState<number | ''>('')
+  const [company_loan_opening_balance, setCompanyLoanOpeningBalance] = useState<number | ''>('')
+  const [company_loan_opening_installments, setCompanyLoanOpeningInstallments] = useState<number | ''>('')
   const [employment_status, setEmploymentStatus] = useState<HREmployee['employment_status']>('active')
   const [contract_type, setContractType] = useState<HREmployee['contract_type']>('permanent')
   const [work_mode, setWorkMode] = useState<NonNullable<HREmployee['work_mode']>>('office')
@@ -129,14 +140,16 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const loadOptions = useCallback(async () => {
     try {
       // หมายเหตุ: ตำแหน่งโหลดแยกตามแผนกที่เลือกใน effect ด้านล่าง (ไม่โหลดทั้งหมดที่นี่ กัน race ทับรายการที่กรองแล้ว)
-      const [deptRes, clockLocRes, schedRes] = await Promise.all([
+      const [deptRes, clockLocRes, schedRes, companyRes] = await Promise.all([
         fetchDepartments(),
         fetchClockLocations(true).catch(() => [] as HRClockLocation[]),
         fetchWorkSchedules(true).catch(() => [] as HRWorkSchedule[]),
+        fetchHRCompanies().catch(() => [] as HRCompany[]),
       ])
       setDepartments(deptRes)
       setClockLocations(clockLocRes)
       setWorkSchedules(schedRes)
+      setCompanies(companyRes)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'โหลดตัวเลือกไม่สำเร็จ')
     }
@@ -209,6 +222,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
       setEmployeeCode(employee.employee_code ?? '')
       setDepartmentId(employee.department_id ?? '')
+      setCompanyId(employee.company_id ?? '')
       setPositionId(employee.position_id ?? '')
       setHireDate(employee.hire_date ? employee.hire_date.slice(0, 10) : '')
       setProbationEndDate(
@@ -216,6 +230,14 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       )
       setSalary(employee.salary ?? '')
       setPositionAllowance(employee.position_allowance ?? '')
+      setMonthlyPersonalTax(employee.monthly_personal_tax ?? '')
+      setMonthlySocialSecurity(employee.monthly_social_security ?? '')
+      setMonthlySavings(employee.monthly_savings ?? '')
+      setMonthlyStudentLoan(employee.monthly_student_loan ?? '')
+      setMonthlyCompanyLoan(employee.monthly_company_loan ?? '')
+      setSavingsOpeningBalance(employee.savings_opening_balance ?? '')
+      setCompanyLoanOpeningBalance(employee.company_loan_opening_balance ?? '')
+      setCompanyLoanOpeningInstallments(employee.company_loan_opening_installments ?? '')
       setEmploymentStatus(employee.employment_status)
       setContractType(employee.contract_type === 'daily' ? 'daily' : 'permanent')
       setWorkMode(employee.work_mode ?? 'office')
@@ -369,11 +391,20 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
           ? current_address
           : undefined,
         department_id: department_id || undefined,
+        company_id: company_id || undefined,
         position_id: position_id || undefined,
         hire_date: hire_date || undefined,
         probation_end_date: probation_end_date || undefined,
         salary: typeof salary === 'number' ? salary : undefined,
         position_allowance: typeof position_allowance === 'number' ? position_allowance : undefined,
+        monthly_personal_tax: typeof monthly_personal_tax === 'number' ? monthly_personal_tax : 0,
+        monthly_social_security: typeof monthly_social_security === 'number' ? monthly_social_security : 0,
+        monthly_savings: typeof monthly_savings === 'number' ? monthly_savings : 0,
+        monthly_student_loan: typeof monthly_student_loan === 'number' ? monthly_student_loan : 0,
+        monthly_company_loan: typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
+        savings_opening_balance: typeof savings_opening_balance === 'number' ? savings_opening_balance : 0,
+        company_loan_opening_balance: typeof company_loan_opening_balance === 'number' ? company_loan_opening_balance : 0,
+        company_loan_opening_installments: typeof company_loan_opening_installments === 'number' ? Math.max(0, Math.floor(company_loan_opening_installments)) : 0,
         employment_status,
         contract_type,
         work_mode,
@@ -419,7 +450,8 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
     { label: 'ข้อมูลการทำงาน', index: 1 },
     { label: 'ประวัติเงินเดือน', index: 2 },
     { label: 'เอกสาร', index: 3 },
-    { label: 'ยอดยกมา', index: 4 },
+    { label: 'ยอดยกมา (วันลา)', index: 4 },
+    { label: 'ยอดยกมา (เงินสะสม/กู้ยืม)', index: 5 },
   ]
 
   return (
@@ -756,6 +788,15 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 )}
               </label>
               <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">บริษัทที่สังกัด</span>
+                <select value={company_id} onChange={(e) => setCompanyId(e.target.value)} className={fieldClass}>
+                  <option value="">-- เลือกบริษัท --</option>
+                  {companies.map((company) => (
+                    <option key={company.id} value={company.id}>{company.name_th}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">แผนก</span>
                 <select
                   value={department_id}
@@ -840,6 +881,28 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                   className={fieldClass}
                 />
               </label>
+              {([
+                ['ภาษีส่วนบุคคล/เดือน', monthly_personal_tax, setMonthlyPersonalTax],
+                ['ประกันสังคม/เดือน', monthly_social_security, setMonthlySocialSecurity],
+                ['เงินสะสม/เดือน', monthly_savings, setMonthlySavings],
+                ['เงินกู้ยืม กยศ./เดือน', monthly_student_loan, setMonthlyStudentLoan],
+                ['เงินกู้บริษัทฯ/เดือน', monthly_company_loan, setMonthlyCompanyLoan],
+              ] as const).map(([label, value, setter]) => (
+                <label key={label}>
+                  <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={value === '' ? '' : Number(value).toLocaleString('en-US')}
+                    onChange={(e) => {
+                      const normalized = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, '')
+                      setter(normalized === '' ? '' : Number(normalized))
+                    }}
+                    placeholder="0.00"
+                    className={fieldClass}
+                  />
+                </label>
+              ))}
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">สถานะการจ้าง</span>
                 <select
@@ -1020,6 +1083,23 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
           employee?.id
             ? <EmployeeOpeningBalances employeeId={employee.id} />
             : <p className="text-sm text-gray-600">บันทึกพนักงานก่อน จึงจะกรอกยอดยกมาได้</p>
+        )}
+
+        {activeTab === 5 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <label>
+              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาเงินสะสม</span>
+              <input type="number" min="0" step="0.01" value={savings_opening_balance} onChange={(e) => setSavingsOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
+            </label>
+            <label>
+              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาเงินกู้บริษัทฯ</span>
+              <input type="number" min="0" step="0.01" value={company_loan_opening_balance} onChange={(e) => setCompanyLoanOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
+            </label>
+            <label>
+              <span className="block text-sm font-medium text-gray-700 mb-1">จำนวนงวดเงินกู้ยกมา</span>
+              <input type="number" min="0" step="1" value={company_loan_opening_installments} onChange={(e) => setCompanyLoanOpeningInstallments(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
+            </label>
+          </div>
         )}
       </div>
 

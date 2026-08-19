@@ -1043,10 +1043,21 @@ export interface HREmployee {
   photo_url?: string
   department_id?: string
   position_id?: string
+  company_id?: string
   /** ฐานเงินเดือน */
   salary?: number
   /** เงินพิเศษ/ประจำตำแหน่ง */
   position_allowance?: number
+  /** รายการหักประจำเดือนสำหรับจัดทำเงินเดือน */
+  monthly_personal_tax?: number
+  monthly_social_security?: number
+  monthly_savings?: number
+  monthly_student_loan?: number
+  monthly_company_loan?: number
+  /** ยอดตั้งต้นก่อนเริ่มใช้ระบบเงินเดือน */
+  savings_opening_balance?: number
+  company_loan_opening_balance?: number
+  company_loan_opening_installments?: number
   hire_date?: string
   probation_end_date?: string
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
@@ -1067,6 +1078,25 @@ export interface HREmployee {
   updated_at: string
   department?: HRDepartment
   position?: HRPosition
+  company?: HRCompany
+}
+
+export interface HRCompany {
+  id: string
+  company_key: string
+  name_th: string
+  name_en?: string | null
+  address?: string | null
+  tax_id?: string | null
+  branch?: string | null
+  phone?: string | null
+  logo_url?: string | null
+  signatory_name?: string | null
+  signatory_title?: string | null
+  signature_url?: string | null
+  is_active: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 export interface HRLeaveType {
