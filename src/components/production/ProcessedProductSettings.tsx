@@ -31,6 +31,7 @@ interface PPProduct extends Product {
   on_hand: number
   min_stock: number | null
   max_stock: number | null
+  has_recipe: boolean
 }
 
 export default function ProcessedProductSettings() {
@@ -46,6 +47,7 @@ export default function ProcessedProductSettings() {
   const [removes, setRemoves] = useState<RemoveRow[]>([])
   const [saving, setSaving] = useState(false)
   const [searchPP, setSearchPP] = useState('')
+  const [recipeFilter, setRecipeFilter] = useState<'all' | 'configured' | 'unconfigured'>('all')
   const [minStock, setMinStock] = useState('')
   const [maxStock, setMaxStock] = useState('')
 
@@ -67,11 +69,15 @@ export default function ProcessedProductSettings() {
 
   useEffect(() => { loadData() }, [loadData])
 
-  const filteredPP = ppProducts.filter(
-    (p) =>
+  const filteredPP = ppProducts.filter((p) => {
+    const matchesSearch =
       p.product_code.toLowerCase().includes(searchPP.toLowerCase()) ||
       p.product_name.toLowerCase().includes(searchPP.toLowerCase())
-  )
+    const matchesRecipe = recipeFilter === 'all'
+      || (recipeFilter === 'configured' && p.has_recipe)
+      || (recipeFilter === 'unconfigured' && !p.has_recipe)
+    return matchesSearch && matchesRecipe
+  })
 
   // Load recipe when product selected
   const selectProduct = async (product: PPProduct) => {
@@ -185,6 +191,11 @@ export default function ProcessedProductSettings() {
         minValue,
         maxValue
       )
+      setPpProducts((prev) => prev.map((product) => (
+        product.id === selectedProduct.id
+          ? { ...product, min_stock: minValue, max_stock: maxValue, has_recipe: includes.length > 0 || removes.length > 0 }
+          : product
+      )))
       setNotify({ type: 'success', message: 'บันทึกสูตรแปรรูปเรียบร้อย' })
       setTimeout(() => setNotify(null), 3000)
     } catch (err: unknown) {
@@ -201,7 +212,7 @@ export default function ProcessedProductSettings() {
   return (
     <div className="flex gap-6">
       {/* Left: PP product list */}
-      <div className="w-96 shrink-0 bg-white rounded-lg shadow p-5 space-y-4 max-h-[calc(100vh-14rem)] overflow-y-auto">
+      <div className="w-96 shrink-0 bg-white rounded-lg shadow p-5 space-y-4 h-[calc(100vh-4rem)] overflow-y-auto">
         <h3 className="text-base font-bold text-gray-700">รายการสินค้า PP</h3>
         <input
           type="text"
@@ -210,6 +221,15 @@ export default function ProcessedProductSettings() {
           placeholder="ค้นหา..."
           className="w-full px-4 py-2.5 border rounded-lg text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
         />
+        <select
+          value={recipeFilter}
+          onChange={(e) => setRecipeFilter(e.target.value as 'all' | 'configured' | 'unconfigured')}
+          className="w-full px-4 py-2.5 border rounded-lg bg-white text-base text-gray-700 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+        >
+          <option value="all">สูตรสินค้า: ทั้งหมด</option>
+          <option value="configured">ผูกสูตรแล้ว</option>
+          <option value="unconfigured">ยังไม่ผูกสูตร</option>
+        </select>
         {loading ? (
           <div className="text-center py-8 text-gray-400 text-base">กำลังโหลด...</div>
         ) : filteredPP.length === 0 ? (
@@ -228,7 +248,12 @@ export default function ProcessedProductSettings() {
               >
                 <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
                 <div className="min-w-0 flex-1">
-                  <div className="font-mono text-sm truncate">{p.product_code}</div>
+                  <div className="font-mono text-sm truncate flex items-center gap-1.5">
+                    <span>{p.product_code}</span>
+                    {p.has_recipe && (
+                      <i className="fas fa-check-circle text-green-500" title="ผูกสูตรสินค้าแล้ว"></i>
+                    )}
+                  </div>
                   <div className="text-sm text-gray-600 truncate">{p.product_name}</div>
                 </div>
               </button>
@@ -493,7 +518,6 @@ function ProductSelector({
   placeholder: string
 }) {
   const [search, setSearch] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
 
   const filtered = products
     .filter((p) => !excludeIds.includes(p.id))
@@ -502,41 +526,32 @@ function ProductSelector({
         p.product_code.toLowerCase().includes(search.toLowerCase()) ||
         p.product_name.toLowerCase().includes(search.toLowerCase())
     )
-    .slice(0, 20)
 
   return (
-    <div className="relative">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       <input
         type="text"
         value={search}
-        onChange={(e) => { setSearch(e.target.value); setIsOpen(true) }}
-        onFocus={() => setIsOpen(true)}
+        onChange={(e) => setSearch(e.target.value)}
         placeholder={placeholder}
         className="w-full px-4 py-2.5 border rounded-lg text-base focus:ring-2 focus:ring-blue-500 focus:outline-none"
       />
-      {isOpen && search && filtered.length > 0 && (
-        <div className="absolute z-40 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-72 overflow-y-auto">
-          {filtered.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => { onSelect(p.id); setSearch(''); setIsOpen(false) }}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-blue-50 text-left text-base border-b last:border-b-0"
-            >
-              <ProductImageHover productCode={p.product_code} productName={p.product_name} size="sm" />
-              <div className="min-w-0 flex-1">
-                <span className="font-mono text-sm text-gray-500">{p.product_code}</span>
-                <span className="ml-2">{p.product_name}</span>
-                <span className="ml-2 text-sm text-gray-400">({p.product_type})</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-      {isOpen && search && filtered.length === 0 && (
-        <div className="absolute z-40 mt-1 w-full bg-white border rounded-lg shadow-lg p-4 text-base text-gray-400 text-center">
-          ไม่พบสินค้า
-        </div>
-      )}
+      <select
+        value=""
+        onChange={(e) => {
+          if (!e.target.value) return
+          onSelect(e.target.value)
+          setSearch('')
+        }}
+        className="w-full px-4 py-2.5 border rounded-lg bg-white text-base text-gray-700 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+      >
+        <option value="">-- เลือกสินค้า ({filtered.length} รายการ) --</option>
+        {filtered.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.product_code} — {p.product_name} ({p.product_type})
+          </option>
+        ))}
+      </select>
     </div>
   )
 }

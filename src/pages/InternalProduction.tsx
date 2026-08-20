@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useAuthContext } from '../contexts/AuthContext'
 import ProductionCreate from '../components/production/ProductionCreate'
 import ProcessedProductSettings from '../components/production/ProcessedProductSettings'
 
 type ActiveMenu = 'create' | 'settings'
 
 export default function InternalProduction() {
+  const { user } = useAuthContext()
+  const canAccessSettings = !['store', 'production'].includes(user?.role || '')
   const [activeMenu, setActiveMenu] = useState<ActiveMenu>(() => {
     const saved = sessionStorage.getItem('internal-production-active-menu')
     return saved === 'settings' ? 'settings' : 'create'
@@ -17,8 +20,17 @@ export default function InternalProduction() {
 
   const menus: { key: ActiveMenu; label: string }[] = [
     { key: 'create', label: 'สร้างผลิตภายใน' },
-    { key: 'settings', label: 'ตั้งค่าสินค้าแปรรูป' },
+    ...(canAccessSettings
+      ? [{ key: 'settings' as ActiveMenu, label: 'ตั้งค่าสินค้าแปรรูป' }]
+      : []),
   ]
+
+  useEffect(() => {
+    if (!canAccessSettings && activeMenu === 'settings') {
+      setActiveMenu('create')
+      sessionStorage.setItem('internal-production-active-menu', 'create')
+    }
+  }, [activeMenu, canAccessSettings])
 
   return (
     <div className="space-y-5 mt-4">
@@ -40,7 +52,7 @@ export default function InternalProduction() {
       </div>
 
       {activeMenu === 'create' && <ProductionCreate />}
-      {activeMenu === 'settings' && <ProcessedProductSettings />}
+      {activeMenu === 'settings' && canAccessSettings && <ProcessedProductSettings />}
     </div>
   )
 }

@@ -33,10 +33,27 @@ export async function fetchPPProducts() {
 
   const { data: recipes } = await supabase
     .from('pp_recipes')
-    .select('product_id, min_stock, max_stock')
+    .select('id, product_id, min_stock, max_stock')
     .in('product_id', ids)
   const thresholdMap = new Map(
-    (recipes ?? []).map((r: { product_id: string; min_stock: number | null; max_stock: number | null }) => [r.product_id, r])
+    (recipes ?? []).map((r: { id: string; product_id: string; min_stock: number | null; max_stock: number | null }) => [r.product_id, r])
+  )
+
+  const recipeIds = (recipes ?? []).map((r: { id: string }) => r.id)
+  const [includesResult, removesResult] = recipeIds.length > 0
+    ? await Promise.all([
+        supabase.from('pp_recipe_includes').select('recipe_id').in('recipe_id', recipeIds),
+        supabase.from('pp_recipe_removes').select('recipe_id').in('recipe_id', recipeIds),
+      ])
+    : [{ data: [] }, { data: [] }]
+  const configuredRecipeIds = new Set([
+    ...(includesResult.data ?? []).map((row: { recipe_id: string }) => row.recipe_id),
+    ...(removesResult.data ?? []).map((row: { recipe_id: string }) => row.recipe_id),
+  ])
+  const configuredProductIds = new Set(
+    (recipes ?? [])
+      .filter((r: { id: string }) => configuredRecipeIds.has(r.id))
+      .map((r: { product_id: string }) => r.product_id)
   )
 
   return (products ?? []).map((p: Product) => ({
@@ -44,6 +61,7 @@ export async function fetchPPProducts() {
     on_hand: (balMap.get(p.id) as number) ?? 0,
     min_stock: thresholdMap.get(p.id)?.min_stock ?? null,
     max_stock: thresholdMap.get(p.id)?.max_stock ?? null,
+    has_recipe: configuredProductIds.has(p.id),
   }))
 }
 

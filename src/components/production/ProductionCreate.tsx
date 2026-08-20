@@ -41,6 +41,14 @@ interface DraftItem {
   requirements: { product_code: string; product_name: string; qty_per_unit: number; needed: number; on_hand: number }[]
 }
 
+interface ViewRmItem {
+  product_id: string
+  product_code: string
+  product_name: string
+  qty_per_unit: number
+  total_qty: number
+}
+
 const formatQty = (value: number) => value.toLocaleString('en-US', { maximumFractionDigits: 2 })
 
 export default function ProductionCreate() {
@@ -74,6 +82,7 @@ export default function ProductionCreate() {
   // View detail modal
   const [viewingOrder, setViewingOrder] = useState<PpProductionOrder | null>(null)
   const [viewItems, setViewItems] = useState<PpProductionOrderItem[]>([])
+  const [viewRmItems, setViewRmItems] = useState<ViewRmItem[]>([])
 
   // Reject modal
   const [rejectModal, setRejectModal] = useState<PpProductionOrder | null>(null)
@@ -87,6 +96,7 @@ export default function ProductionCreate() {
   const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const canCreate = ['superadmin', 'admin', 'store', 'production'].includes(user?.role || '')
   const canProcess = ['superadmin', 'admin', 'production'].includes(user?.role || '')
+  const canViewCosts = !['store', 'production'].includes(user?.role || '')
 
   const tabs: { key: TabKey; label: string; color: string; activeColor: string }[] = [
     { key: 'pp', label: 'สินค้าPP', color: 'bg-white text-gray-600 border border-gray-200', activeColor: 'bg-indigo-600 text-white' },
@@ -376,9 +386,31 @@ export default function ProductionCreate() {
 
   const viewDetail = async (order: PpProductionOrder) => {
     setViewingOrder(order)
+    setViewRmItems([])
     try {
       const items = await fetchProductionOrderItems(order.id)
       setViewItems(items)
+      const recipes = await Promise.all(items.map((item) => fetchRecipe(item.product_id)))
+      const rmMap = new Map<string, ViewRmItem>()
+      recipes.forEach((recipe, index) => {
+        if (!recipe) return
+        const ppQty = items[index].qty
+        recipe.includes
+          .filter((inc) => inc.product?.product_type === 'RM')
+          .forEach((inc) => {
+            const existing = rmMap.get(inc.product_id)
+            const totalQty = inc.qty * ppQty
+            if (existing) existing.total_qty += totalQty
+            else rmMap.set(inc.product_id, {
+              product_id: inc.product_id,
+              product_code: inc.product?.product_code || inc.product_id,
+              product_name: inc.product?.product_name || '-',
+              qty_per_unit: inc.qty,
+              total_qty: totalQty,
+            })
+          })
+      })
+      setViewRmItems([...rmMap.values()])
     } catch { setViewItems([]) }
   }
 
@@ -732,9 +764,9 @@ export default function ProductionCreate() {
                     <th className="px-5 py-3 text-left rounded-tl-xl">รูป</th>
                     <th className="px-5 py-3 text-left">รหัส</th>
                     <th className="px-5 py-3 text-left">ชื่อสินค้า</th>
-                    <th className="px-5 py-3 text-right">จำนวน</th>
-                    <th className="px-5 py-3 text-right">ต้นทุน/หน่วย</th>
-                    <th className="px-5 py-3 text-right rounded-tr-xl">ต้นทุนรวม</th>
+                    <th className={`px-5 py-3 text-right ${canViewCosts ? '' : 'rounded-tr-xl'}`}>จำนวน</th>
+                    {canViewCosts && <th className="px-5 py-3 text-right">ต้นทุน/หน่วย</th>}
+                    {canViewCosts && <th className="px-5 py-3 text-right rounded-tr-xl">ต้นทุนรวม</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -746,12 +778,50 @@ export default function ProductionCreate() {
                       <td className="px-5 py-3 font-mono text-sm">{it.product?.product_code || '-'}</td>
                       <td className="px-5 py-3">{it.product?.product_name || '-'}</td>
                       <td className="px-5 py-3 text-right font-medium">{it.qty}</td>
-                      <td className="px-5 py-3 text-right">{it.unit_cost != null ? it.unit_cost.toFixed(2) : '-'}</td>
-                      <td className="px-5 py-3 text-right font-semibold">{it.total_cost != null ? it.total_cost.toFixed(2) : '-'}</td>
+                      {canViewCosts && <td className="px-5 py-3 text-right">{it.unit_cost != null ? it.unit_cost.toFixed(2) : '-'}</td>}
+                      {canViewCosts && <td className="px-5 py-3 text-right font-semibold">{it.total_cost != null ? it.total_cost.toFixed(2) : '-'}</td>}
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-base font-bold text-gray-700">
+                รายการสินค้า RM ที่ใช้
+              </h3>
+              <div className="overflow-x-auto rounded-xl border border-orange-200">
+                <table className="w-full text-base">
+                  <thead>
+                    <tr className="bg-orange-500 text-white">
+                      <th className="px-5 py-3 text-left rounded-tl-xl">รูป</th>
+                      <th className="px-5 py-3 text-left">รหัส RM</th>
+                      <th className="px-5 py-3 text-left">ชื่อสินค้า</th>
+                      <th className="px-5 py-3 text-right">จำนวนต่อ PP</th>
+                      <th className="px-5 py-3 text-right rounded-tr-xl">จำนวนรวม</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewRmItems.length > 0 ? viewRmItems.map((rm, i) => (
+                      <tr key={rm.product_id} className={i % 2 === 0 ? 'bg-white' : 'bg-orange-50'}>
+                        <td className="px-5 py-3">
+                          <ProductImageHover productCode={rm.product_code} productName={rm.product_name} size="sm" />
+                        </td>
+                        <td className="px-5 py-3 font-mono text-sm">{rm.product_code}</td>
+                        <td className="px-5 py-3">{rm.product_name}</td>
+                        <td className="px-5 py-3 text-right font-medium">{formatQty(rm.qty_per_unit)}</td>
+                        <td className="px-5 py-3 text-right font-bold text-orange-700">{formatQty(rm.total_qty)}</td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={5} className="px-5 py-6 text-center text-gray-400">
+                          ไม่พบสินค้า RM ในสูตรแปรรูป
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             {canApprove && viewingOrder.status === 'pending' && (
