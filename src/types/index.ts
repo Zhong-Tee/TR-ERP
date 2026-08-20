@@ -877,6 +877,8 @@ export interface PpRecipe {
   created_by: string | null
   created_at: string
   updated_at: string
+  min_stock: number | null
+  max_stock: number | null
 }
 
 export interface PpRecipeInclude {
@@ -898,7 +900,7 @@ export interface PpRecipeRemove {
   product?: Product
 }
 
-export type ProductionOrderStatus = 'open' | 'pending' | 'approved' | 'rejected'
+export type ProductionOrderStatus = 'open' | 'pending' | 'approved' | 'processing' | 'completed' | 'rejected'
 
 export interface PpProductionOrder {
   id: string
@@ -912,6 +914,10 @@ export interface PpProductionOrder {
   rejected_by: string | null
   rejected_at: string | null
   rejection_reason: string | null
+  started_by: string | null
+  started_at: string | null
+  completed_by: string | null
+  completed_at: string | null
   created_at: string
   creator?: { display_name: string }
   approver?: { display_name: string }

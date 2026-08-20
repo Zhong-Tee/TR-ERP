@@ -10,7 +10,7 @@ interface RequisitionDetailModalProps {
   onClose: () => void
 }
 
-const CAN_APPROVE_ROLES = ['superadmin', 'admin']
+const CAN_APPROVE_ROLES = ['superadmin', 'admin', 'store']
 
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
   const { user } = useAuthContext()
@@ -74,6 +74,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   }
 
   const handleApprove = async () => {
+    if (!canApprove) return
     if (!selectedPicker) {
       showMessage({ message: 'กรุณาเลือกพนักงาน Picker' })
       return
@@ -123,6 +124,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   }
 
   const handleReject = async () => {
+    if (!canApprove) return
     const ok = await showConfirm({ title: 'ยืนยันการปฏิเสธ', message: `ยืนยันการปฏิเสธใบเบิก ${requisition.requisition_id}?` })
     if (!ok) return
 

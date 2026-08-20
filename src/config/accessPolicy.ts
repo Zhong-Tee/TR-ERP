@@ -55,7 +55,7 @@ export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRo
   { key: 'transport', path: '/transport', roles: ['superadmin', 'admin', 'sales-tr', 'packing_staff'] },
   { key: 'account', path: '/account', roles: ['superadmin', 'admin', 'sales-tr', 'account'] },
   { key: 'products', path: '/products', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'] },
-  { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production'] },
+  { key: 'warehouse', path: '/warehouse', roles: ['superadmin', 'admin', 'sales-tr', 'store', 'production', 'account'] },
   { key: 'sales-reports', path: '/sales-reports', roles: ['superadmin', 'admin', 'sales-tr'] },
   { key: 'kpi', path: '/kpi', roles: ['superadmin', 'admin', 'sales-tr'] },
   { key: 'hr', path: '/hr', roles: ['superadmin', 'admin', 'hr', 'account'] },

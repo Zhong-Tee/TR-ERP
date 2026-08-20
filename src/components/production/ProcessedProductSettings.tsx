@@ -29,10 +29,13 @@ interface RemoveRow {
 
 interface PPProduct extends Product {
   on_hand: number
+  min_stock: number | null
+  max_stock: number | null
 }
 
 export default function ProcessedProductSettings() {
   const { user } = useAuthContext()
+  const canEdit = ['superadmin', 'admin'].includes(user?.role || '')
   const [ppProducts, setPpProducts] = useState<PPProduct[]>([])
   const [fgRmProducts, setFgRmProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(false)
@@ -43,6 +46,8 @@ export default function ProcessedProductSettings() {
   const [removes, setRemoves] = useState<RemoveRow[]>([])
   const [saving, setSaving] = useState(false)
   const [searchPP, setSearchPP] = useState('')
+  const [minStock, setMinStock] = useState('')
+  const [maxStock, setMaxStock] = useState('')
 
   // Notification
   const [notify, setNotify] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
@@ -73,6 +78,8 @@ export default function ProcessedProductSettings() {
     setSelectedProduct(product)
     setIncludes([])
     setRemoves([])
+    setMinStock(product.min_stock == null ? '' : String(product.min_stock))
+    setMaxStock(product.max_stock == null ? '' : String(product.max_stock))
     try {
       const data = await fetchRecipe(product.id)
       if (data) {
@@ -161,14 +168,22 @@ export default function ProcessedProductSettings() {
 
   // Save
   const handleSave = async () => {
-    if (!selectedProduct || !user) return
+    if (!selectedProduct || !user || !canEdit) return
+    const minValue = minStock === '' ? null : Number(minStock)
+    const maxValue = maxStock === '' ? null : Number(maxStock)
+    if (minValue != null && maxValue != null && minValue > maxValue) {
+      setNotify({ type: 'error', message: 'ค่า Min ต้องไม่มากกว่าค่า Max' })
+      return
+    }
     setSaving(true)
     try {
       await saveRecipe(
         selectedProduct.id,
         user.id,
         includes.map((r) => ({ product_id: r.product_id, qty: r.qty })),
-        removes.map((r) => ({ product_id: r.product_id, qty: r.qty, unit_cost: r.unit_cost }))
+        removes.map((r) => ({ product_id: r.product_id, qty: r.qty, unit_cost: r.unit_cost })),
+        minValue,
+        maxValue
       )
       setNotify({ type: 'success', message: 'บันทึกสูตรแปรรูปเรียบร้อย' })
       setTimeout(() => setNotify(null), 3000)
@@ -241,6 +256,27 @@ export default function ProcessedProductSettings() {
               </div>
             </div>
 
+            <div className="bg-white rounded-lg shadow p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="font-bold text-gray-700">จุดแจ้งเตือนจำนวนสินค้า PP</h4>
+                {!canEdit && <span className="text-sm text-amber-600">ดูได้อย่างเดียว</span>}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="text-sm font-semibold text-gray-600">
+                  Min — แจ้งเตือนเมื่อคงเหลือต่ำกว่า
+                  <input type="number" min={0} value={minStock} disabled={!canEdit}
+                    onChange={(e) => setMinStock(e.target.value)}
+                    className="mt-2 w-full px-4 py-2.5 border rounded-lg disabled:bg-gray-100" placeholder="ไม่กำหนด" />
+                </label>
+                <label className="text-sm font-semibold text-gray-600">
+                  Max — ห้ามผลิตให้คงเหลือเกิน
+                  <input type="number" min={0} value={maxStock} disabled={!canEdit}
+                    onChange={(e) => setMaxStock(e.target.value)}
+                    className="mt-2 w-full px-4 py-2.5 border rounded-lg disabled:bg-gray-100" placeholder="ไม่กำหนด" />
+                </label>
+              </div>
+            </div>
+
             {/* Notification */}
             {notify && (
               <div className={`px-5 py-3 rounded-lg text-base font-semibold ${
@@ -250,6 +286,8 @@ export default function ProcessedProductSettings() {
                 {notify.message}
               </div>
             )}
+
+            <fieldset disabled={!canEdit} className={!canEdit ? 'space-y-5 opacity-60' : 'space-y-5'}>
 
             {/* Include Card */}
             <div className="bg-white rounded-lg shadow">
@@ -419,7 +457,7 @@ export default function ProcessedProductSettings() {
                 </div>
                 <button
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={saving || !canEdit}
                   className="px-7 py-3 bg-blue-600 text-white rounded-lg text-base font-semibold hover:bg-blue-700 transition disabled:opacity-50"
                 >
                   {saving ? (
@@ -430,6 +468,7 @@ export default function ProcessedProductSettings() {
                 </button>
               </div>
             </div>
+            </fieldset>
           </>
         )}
       </div>

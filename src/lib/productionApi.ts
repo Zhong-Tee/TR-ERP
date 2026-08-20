@@ -31,9 +31,19 @@ export async function fetchPPProducts() {
 
   const balMap = new Map((balances ?? []).map((b: { product_id: string; on_hand: number }) => [b.product_id, b.on_hand]))
 
+  const { data: recipes } = await supabase
+    .from('pp_recipes')
+    .select('product_id, min_stock, max_stock')
+    .in('product_id', ids)
+  const thresholdMap = new Map(
+    (recipes ?? []).map((r: { product_id: string; min_stock: number | null; max_stock: number | null }) => [r.product_id, r])
+  )
+
   return (products ?? []).map((p: Product) => ({
     ...p,
     on_hand: (balMap.get(p.id) as number) ?? 0,
+    min_stock: thresholdMap.get(p.id)?.min_stock ?? null,
+    max_stock: thresholdMap.get(p.id)?.max_stock ?? null,
   }))
 }
 
@@ -94,7 +104,9 @@ export async function saveRecipe(
   productId: string,
   userId: string,
   includes: { product_id: string; qty: number }[],
-  removes: { product_id: string; qty: number; unit_cost: number }[]
+  removes: { product_id: string; qty: number; unit_cost: number }[],
+  minStock: number | null,
+  maxStock: number | null
 ) {
   let recipeId: string
 
@@ -108,12 +120,12 @@ export async function saveRecipe(
     recipeId = existing.id
     await supabase
       .from('pp_recipes')
-      .update({ updated_at: new Date().toISOString() })
+      .update({ min_stock: minStock, max_stock: maxStock, updated_at: new Date().toISOString() })
       .eq('id', recipeId)
   } else {
     const { data: newRecipe, error } = await supabase
       .from('pp_recipes')
-      .insert({ product_id: productId, created_by: userId })
+      .insert({ product_id: productId, created_by: userId, min_stock: minStock, max_stock: maxStock })
       .select('id')
       .single()
     if (error) throw error
@@ -168,7 +180,19 @@ export async function fetchFgRmProducts() {
     .eq('is_active', true)
     .order('product_code')
   if (error) throw error
-  return (data ?? []) as Product[]
+  const products = (data ?? []) as Product[]
+  if (products.length === 0) return []
+
+  const { data: balances, error: balanceError } = await supabase
+    .from('inv_stock_balances')
+    .select('product_id, on_hand')
+    .in('product_id', products.map((p) => p.id))
+  if (balanceError) throw balanceError
+
+  const balanceMap = new Map(
+    (balances ?? []).map((b: { product_id: string; on_hand: number }) => [b.product_id, Number(b.on_hand) || 0])
+  )
+  return products.map((p) => ({ ...p, on_hand: balanceMap.get(p.id) ?? 0 }))
 }
 
 // ── Recipe product IDs (PP products that have a recipe) ─────
@@ -265,6 +289,16 @@ export async function rejectOrder(orderId: string, userId: string, reason: strin
     p_user_id: userId,
     p_reason: reason,
   })
+  if (error) throw error
+}
+
+export async function startProductionOrder(orderId: string) {
+  const { error } = await supabase.rpc('rpc_start_production_order', { p_order_id: orderId })
+  if (error) throw error
+}
+
+export async function completeProductionOrder(orderId: string) {
+  const { error } = await supabase.rpc('rpc_complete_production_order', { p_order_id: orderId })
   if (error) throw error
 }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import Modal from '../components/ui/Modal'
 import ProductImageHover from '../components/ui/ProductImageHover'
+import { useAuthContext } from '../contexts/AuthContext'
 import {
   fetchRollCalcDashboard,
   upsertRollConfig,
@@ -12,6 +13,8 @@ import {
 import type { RollCalcDashboardRow, Product } from '../types'
 
 export default function RollMaterialCalc() {
+  const { user } = useAuthContext()
+  const canManagePairing = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   // ── Data ─────────────────────────────────────────────
   const [rows, setRows] = useState<RollCalcDashboardRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -248,12 +251,12 @@ export default function RollMaterialCalc() {
           </div>
 
           {/* Pair button */}
-          <button
+          {canManagePairing && <button
             onClick={openPairModal}
             className="px-4 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-medium shadow-sm"
           >
             <i className="fas fa-link mr-2"></i>จับคู่สินค้า
-          </button>
+          </button>}
 
           {/* Refresh */}
           <button
@@ -369,7 +372,8 @@ export default function RollMaterialCalc() {
                           step="1"
                           value={getEditValue(r.config_id)}
                           onChange={(e) => handleInlineChange(r.config_id, e.target.value)}
-                          className="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-center text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none"
+                          disabled={!canManagePairing}
+                          className="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-center text-sm focus:ring-2 focus:ring-blue-400 focus:border-blue-400 outline-none disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed"
                           placeholder="-"
                         />
                         {isSaving && <i className="fas fa-spinner fa-spin text-blue-400 text-xs"></i>}
@@ -378,7 +382,7 @@ export default function RollMaterialCalc() {
 
                     {/* Actions */}
                     <td className="p-3 text-center">
-                      <div className="flex items-center justify-center gap-1">
+                      {canManagePairing && <div className="flex items-center justify-center gap-1">
                         <button
                           onClick={() => handleDeleteConfig(r.config_id)}
                           className="p-2 text-red-400 bg-red-50 hover:text-white hover:bg-red-500 rounded-lg transition"
@@ -386,7 +390,7 @@ export default function RollMaterialCalc() {
                         >
                           <i className="fas fa-trash-alt text-base"></i>
                         </button>
-                      </div>
+                      </div>}
                     </td>
                   </tr>
                 )

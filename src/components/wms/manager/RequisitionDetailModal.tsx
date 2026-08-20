@@ -12,7 +12,7 @@ interface RequisitionDetailModalProps {
 
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
   const { user } = useAuthContext()
-  const canApprove = ['superadmin', 'admin', 'production'].includes(user?.role || '')
+  const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const [items, setItems] = useState<any[]>([])
   const [damagePhotoUrls, setDamagePhotoUrls] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -281,7 +281,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
               )}
             </div>
 
-            <div className="bg-gray-100 p-4 rounded-xl mb-4">
+            {canApprove && <div className="bg-gray-100 p-4 rounded-xl mb-4">
               <label className="block text-sm font-bold text-gray-600 mb-2">มอบหมายให้ Picker *</label>
               <select
                 value={selectedPicker}
@@ -295,7 +295,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
           </div>
 
           {canApprove && <div className="p-4 border-t border-gray-200 flex gap-3">
