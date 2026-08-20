@@ -72,6 +72,7 @@ const PATH_MENU_PREFIX_MAP: Array<{ prefix: string; key: string }> = [
   { prefix: '/warehouse/production', key: 'warehouse-production' },
   { prefix: '/warehouse/roll-calc', key: 'warehouse-roll-calc' },
   { prefix: '/warehouse/sales-list', key: 'warehouse-sales-list' },
+  { prefix: '/warehouse/inventory-history', key: 'warehouse-inventory-history' },
   { prefix: '/purchase/requests', key: 'purchase-requests' },
   { prefix: '/purchase/pr', key: 'purchase-pr' },
   { prefix: '/purchase/po', key: 'purchase-po' },
@@ -108,6 +109,7 @@ export const PARENT_SUB_PAGES: Record<string, { path: string; key: string }[]> =
     { path: '/warehouse/production', key: 'warehouse-production' },
     { path: '/warehouse/roll-calc', key: 'warehouse-roll-calc' },
     { path: '/warehouse/sales-list', key: 'warehouse-sales-list' },
+    { path: '/warehouse/inventory-history', key: 'warehouse-inventory-history' },
   ],
   '/hr': [
     { path: '/hr', key: 'hr' },
@@ -167,6 +169,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'warehouse-production': 'warehouse',
   'warehouse-roll-calc': 'warehouse',
   'warehouse-sales-list': 'warehouse',
+  'warehouse-inventory-history': 'warehouse',
   'hr-employees': 'hr',
   'hr-leave': 'hr',
   'hr-interview': 'hr',

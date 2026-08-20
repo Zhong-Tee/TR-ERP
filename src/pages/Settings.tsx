@@ -769,6 +769,7 @@ export default function Settings() {
     { key: 'warehouse-production', label: 'ผลิตภายใน', group: 'warehouse' },
     { key: 'warehouse-roll-calc', label: 'Roll Material Calculator', group: 'warehouse' },
     { key: 'warehouse-sales-list', label: 'รายการขายสินค้า', group: 'warehouse' },
+    { key: 'warehouse-inventory-history', label: 'รายการสินค้าคงเหลือ', group: 'warehouse' },
     // ── สั่งซื้อ ──
     { key: 'purchase', label: 'สั่งซื้อ', group: '' },
     { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },

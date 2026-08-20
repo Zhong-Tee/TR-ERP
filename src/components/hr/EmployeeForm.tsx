@@ -882,10 +882,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
                 />
               </label>
               {([
-                ['ภาษีส่วนบุคคล/เดือน', monthly_personal_tax, setMonthlyPersonalTax],
-                ['ประกันสังคม/เดือน', monthly_social_security, setMonthlySocialSecurity],
                 ['เงินสะสม/เดือน', monthly_savings, setMonthlySavings],
-                ['เงินกู้ยืม กยศ./เดือน', monthly_student_loan, setMonthlyStudentLoan],
                 ['เงินกู้บริษัทฯ/เดือน', monthly_company_loan, setMonthlyCompanyLoan],
               ] as const).map(([label, value, setter]) => (
                 <label key={label}>

@@ -33,6 +33,7 @@ import WarehouseReturns from './pages/WarehouseReturns'
 import InternalProduction from './pages/InternalProduction'
 import RollMaterialCalc from './pages/RollMaterialCalc'
 import ProductSalesList from './pages/ProductSalesList'
+import InventoryBalanceHistory from './pages/InventoryBalanceHistory'
 import ApprovalList from './components/wms/manager/ApprovalList'
 import PurchasePR from './pages/PurchasePR'
 import PurchasePO from './pages/PurchasePO'
@@ -605,6 +606,16 @@ function AppRoutes() {
           <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
             <Layout>
               <Settings />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/warehouse/inventory-history"
+        element={
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'store']}>
+            <Layout>
+              <InventoryBalanceHistory />
             </Layout>
           </ProtectedRoute>
         }

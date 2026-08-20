@@ -50,11 +50,12 @@ import type {
 import { useAuthContext } from '../../contexts/AuthContext'
 import ScoreSettings from './ScoreSettings'
 import CompanySettings from './CompanySettings'
+import SocialSecuritySettings from './SocialSecuritySettings'
 
 const TABS = [
   'รายละเอียดบริษัท', 'ชื่อแผนก', 'ชื่อตำแหน่งงาน', 'ประเภทการลา', 'คะแนนปฏิบัติงาน',
   'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'ผู้สัมภาษณ์งาน', 'เกณฑ์คะแนนสัมภาษณ์งาน',
-  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config',
+  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config', 'การหัก สปส',
 ] as const
 
 /** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */
@@ -1765,6 +1766,8 @@ export default function HRSettings() {
           </div>
         </div>
       )}
+
+      {activeTab === 12 && <SocialSecuritySettings />}
       {activeTab === COMPANY_TAB_INDEX && <CompanySettings />}
     </div>
   )

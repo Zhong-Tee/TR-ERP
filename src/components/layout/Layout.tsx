@@ -29,6 +29,7 @@ export default function Layout({ children }: LayoutProps) {
       >
         <TopBar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
         <main
+          data-app-scroll-container
           className="flex-1 min-h-0 overflow-auto flex flex-col px-6 pb-6 bg-transparent relative z-0"
         >
           {children}

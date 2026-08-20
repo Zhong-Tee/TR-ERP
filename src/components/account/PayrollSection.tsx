@@ -5,7 +5,8 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import type { HRCompany } from '../../types'
 import {
   fetchConfirmedLeaveDeductions, fetchHRCompanies, fetchPayrollEmployees, fetchPayrollHistory,
-  fetchPayrollRun, savePayrollRun, type PayrollItem, type PayrollRun,
+  fetchPayrollRun, fetchSocialSecuritySettings, calculateSocialSecurity, savePayrollRun,
+  type PayrollItem, type PayrollRun,
 } from '../../lib/payrollApi'
 import PayrollSlipPDF, { type PayrollYtd } from './pdf/PayrollSlipPDF'
 
@@ -47,8 +48,8 @@ export default function PayrollSection() {
     if (!companyId) return
     setLoading(true); setMessage('')
     try {
-      const [employees, leaveMap, savedRun, historyRows] = await Promise.all([
-        fetchPayrollEmployees(companyId), fetchConfirmedLeaveDeductions(month), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId),
+      const [employees, leaveMap, savedRun, historyRows, socialSecuritySettings] = await Promise.all([
+        fetchPayrollEmployees(companyId), fetchConfirmedLeaveDeductions(month), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId), fetchSocialSecuritySettings(),
       ])
       setHistory(historyRows)
       setRun(savedRun)
@@ -57,7 +58,9 @@ export default function PayrollSection() {
         const employeesById = new Map(employees.map((employee) => [employee.id, employee]))
         setItems(savedRun.items.map((item) => {
           const employee = employeesById.get(item.employee_id)
-          return { ...item, employee_name: employee ? employeeFullName(employee) : '', base_salary: Number(item.base_salary), position_allowance: Number(item.position_allowance), personal_tax: Number(item.personal_tax), social_security: Number(item.social_security), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) }
+          const baseSalary = Number(item.base_salary)
+          const positionAllowance = Number(item.position_allowance)
+          return { ...item, employee_name: employee ? employeeFullName(employee) : '', base_salary: baseSalary, position_allowance: positionAllowance, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : calculateSocialSecurity(baseSalary + positionAllowance, socialSecuritySettings), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) }
         }))
       }
       else setItems(employees.map((employee) => ({
@@ -65,7 +68,8 @@ export default function PayrollSection() {
         employee_name: employeeFullName(employee),
         department_position: [employee.department?.name, employee.position?.name].filter(Boolean).join(' / '),
         base_salary: Number(employee.salary) || 0, position_allowance: Number(employee.position_allowance) || 0,
-        personal_tax: Number(employee.monthly_personal_tax) || 0, social_security: Number(employee.monthly_social_security) || 0,
+        personal_tax: Number(employee.monthly_personal_tax) || 0,
+        social_security: calculateSocialSecurity((Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0), socialSecuritySettings),
         savings: Number(employee.monthly_savings) || 0,
         student_loan: Number(employee.monthly_student_loan) || 0, company_loan: Number(employee.monthly_company_loan) || 0,
         leave_deduction: leaveMap[employee.id] || 0, other_income: 0, other_deduction: 0,
@@ -162,7 +166,7 @@ export default function PayrollSection() {
     <div className="rounded-xl border bg-white p-4 flex flex-wrap gap-3 items-end"><label className="text-sm">บริษัท<select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2 min-w-72">{companies.map((c) => <option key={c.id} value={c.id}>{c.name_th}</option>)}</select></label><label className="text-sm">เดือน<input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2" /></label><label className="text-sm">วันที่จ่าย<input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} disabled={locked} className="block mt-1 rounded-lg border px-3 py-2 disabled:bg-gray-100" /></label><span className={`rounded-full px-3 py-2 text-sm font-semibold ${locked ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{locked ? 'ยืนยันยอดแล้ว' : 'รอตรวจสอบ'}</span><div className="ml-auto flex gap-2"><button onClick={() => exportExcel()} disabled={!items.length} className="rounded-lg border border-emerald-600 px-4 py-2 text-emerald-700">ดาวน์โหลด Excel</button>{!locked && <><button onClick={() => save(false)} disabled={saving} className="rounded-lg border px-4 py-2">บันทึกร่าง</button><button onClick={() => save(true)} disabled={saving || !items.length} className="rounded-lg bg-emerald-600 px-4 py-2 text-white">ยืนยันยอด</button></>}</div></div>
     {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">{cards.map(([label, value, color]) => <div key={label} className="rounded-xl border bg-white p-4"><div className="text-xs text-gray-500">{label}</div><div className={`mt-1 text-xl font-bold ${color}`}>{fmt(value)}</div></div>)}</div>
-    <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','ภาษี','ประกันสังคม','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่น','หักอื่น','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{items.map((item, index) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><b>{item.employee_code}</b><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td>{(['personal_tax','social_security','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="number" min="0" value={item[key]} onChange={(e) => update(index, key, Number(e.target.value) || 0)} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></td></tr> })}</tbody></table>}</div>
+    <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','ภาษี','ประกันสังคม','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่นๆ','หักอื่นๆ','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{items.map((item, index) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><b>{item.employee_code}</b><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td>{(['personal_tax','social_security','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['personal_tax','student_loan','other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="text" inputMode="decimal" value={item[key]} onChange={(e) => { const value = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, ''); update(index, key, Number(value) || 0) }} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></td></tr> })}</tbody></table>}</div>
     </>}
   </div>
 }

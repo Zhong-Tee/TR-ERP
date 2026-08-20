@@ -337,6 +337,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     { path: '/warehouse/production', label: 'ผลิตภายใน' },
     { path: '/warehouse/roll-calc', label: 'Roll Material Calculator' },
     { path: '/warehouse/sales-list', label: 'รายการขายสินค้า' },
+    { path: '/warehouse/inventory-history', label: 'รายการสินค้าคงเหลือ' },
   ].filter((tab) => {
     const menuKey = resolveMenuKeyFromPath(tab.path)
     return menuKey ? hasAccess(menuKey) : false
@@ -638,6 +639,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       {activeSubTabs.length > 0 && (
         <div
           ref={subnavRef}
+          data-app-subnav
           className="relative z-30 shrink-0 border-b border-surface-200 bg-white shadow-soft"
         >
           <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">

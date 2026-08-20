@@ -39,6 +39,20 @@ export interface PayrollRun {
   items?: PayrollItem[]
 }
 
+export interface SocialSecuritySettings {
+  id: boolean
+  contribution_rate: number
+  maximum_wage_base: number
+  updated_at?: string
+  updated_by?: string | null
+}
+
+export const DEFAULT_SOCIAL_SECURITY_SETTINGS: SocialSecuritySettings = {
+  id: true,
+  contribution_rate: 5,
+  maximum_wage_base: 17500,
+}
+
 function throwIfError(error: { message: string } | null) {
   if (error) throw new Error(error.message)
 }
@@ -49,6 +63,51 @@ export async function fetchHRCompanies(includeInactive = false): Promise<HRCompa
   const { data, error } = await query
   throwIfError(error)
   return (data || []) as HRCompany[]
+}
+
+export async function fetchSocialSecuritySettings(): Promise<SocialSecuritySettings> {
+  const { data, error } = await supabase
+    .from('hr_social_security_settings')
+    .select('*')
+    .eq('id', true)
+    .maybeSingle()
+  throwIfError(error)
+  if (!data) return DEFAULT_SOCIAL_SECURITY_SETTINGS
+  return {
+    ...data,
+    contribution_rate: Number(data.contribution_rate),
+    maximum_wage_base: Number(data.maximum_wage_base),
+  } as SocialSecuritySettings
+}
+
+export async function upsertSocialSecuritySettings(
+  settings: Pick<SocialSecuritySettings, 'contribution_rate' | 'maximum_wage_base'>,
+  userId?: string,
+): Promise<SocialSecuritySettings> {
+  const { data, error } = await supabase
+    .from('hr_social_security_settings')
+    .upsert({
+      id: true,
+      ...settings,
+      updated_at: new Date().toISOString(),
+      updated_by: userId || null,
+    })
+    .select()
+    .single()
+  throwIfError(error)
+  return {
+    ...data,
+    contribution_rate: Number(data.contribution_rate),
+    maximum_wage_base: Number(data.maximum_wage_base),
+  } as SocialSecuritySettings
+}
+
+export function calculateSocialSecurity(
+  wage: number,
+  settings: Pick<SocialSecuritySettings, 'contribution_rate' | 'maximum_wage_base'>,
+): number {
+  const contributionWage = Math.min(Math.max(0, Number(wage) || 0), settings.maximum_wage_base)
+  return Math.round(contributionWage * settings.contribution_rate) / 100
 }
 
 export async function upsertHRCompany(company: Partial<HRCompany>): Promise<HRCompany> {
