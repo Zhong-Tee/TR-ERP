@@ -129,12 +129,43 @@ Deno.serve(async (req) => {
         sched = data
       }
       if (sched) {
+        // An approved WFH request may define a different working time range.
+        // Use that range for Telegram timing alerts, consistent with
+        // hr_attendance_facts. Older WFH requests without a range continue to
+        // use the employee's normal schedule.
+        let effectiveWorkStart = sched.work_start
+        let effectiveWorkEnd = sched.work_end
+        if (entry.work_location_type === 'wfh_approved') {
+          const workDate = entry.work_date || bangkokDateText(entry.entry_time)
+          let wfhQuery = supabase
+            .from('hr_wfh_requests')
+            .select('id, start_time, end_time')
+            .eq('employee_id', entry.employee_id)
+            .eq('status', 'approved')
+
+          if (entry.wfh_request_id) {
+            wfhQuery = wfhQuery.eq('id', entry.wfh_request_id)
+          } else {
+            wfhQuery = wfhQuery.lte('start_date', workDate).gte('end_date', workDate)
+          }
+
+          const { data: approvedWfh } = await wfhQuery
+            .order('approved_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+
+          if (approvedWfh?.start_time && approvedWfh?.end_time) {
+            effectiveWorkStart = approvedWfh.start_time
+            effectiveWorkEnd = approvedWfh.end_time
+          }
+        }
+
         if (entry.entry_type === 'clock_in') {
           const grace = sched.late_grace_min ?? 0
-          const lateBeyond = bangkokMinutes(entry.entry_time) - (toMinutes(sched.work_start) + grace)
+          const lateBeyond = bangkokMinutes(entry.entry_time) - (toMinutes(effectiveWorkStart) + grace)
           if (lateBeyond > 0) {
             const workDate = bangkokDateText(entry.entry_time)
-            const expectedStart = toMinutes(sched.work_start)
+            const expectedStart = toMinutes(effectiveWorkStart)
             const { data: hourlyLeaves } = await supabase.from('hr_leave_requests')
               .select('start_time, end_time, leave_type:hr_leave_types(name)')
               .eq('employee_id', entry.employee_id)
@@ -157,7 +188,7 @@ Deno.serve(async (req) => {
             }
           }
         } else {
-          const earlyBy = toMinutes(sched.work_end) - bangkokMinutes(entry.entry_time)
+          const earlyBy = toMinutes(effectiveWorkEnd) - bangkokMinutes(entry.entry_time)
           if (earlyBy > 0) {
             timingAlertText = `⚠️ <b>ออกก่อน:</b> ${minutesToHHMM(earlyBy)}`
           }

@@ -246,7 +246,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const mpCountQuery = isAdminOrSuperadmin(user?.role)
         ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
         : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, mpCountRes] =
+      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
@@ -264,6 +264,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
           .eq('current_status', 'working'),
         supabase.from('hr_leave_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         supabase.from('hr_ot_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabase.from('hr_wfh_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
         mpCountQuery,
       ])
 
@@ -290,7 +291,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         packing: c.packing || 0,
         warehouse: c.warehouse || 0,
         purchase: purchaseTotal,
-        hr: (hrLeavePendingRes.count || 0) + (hrOtPendingRes.count || 0),
+        hr: (hrLeavePendingRes.count || 0) + (hrOtPendingRes.count || 0) + (hrWfhPendingRes.count || 0),
       })
 
       window.dispatchEvent(new CustomEvent('sidebar-purchase-badge', { detail: purchaseBadge }))
@@ -338,6 +339,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pr_machinery_machines' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => debouncedLoadCounts())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, () => debouncedLoadCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, () => debouncedLoadCounts())
       .subscribe()
     return () => {
       supabase.removeChannel(channel)

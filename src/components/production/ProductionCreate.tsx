@@ -83,6 +83,7 @@ export default function ProductionCreate() {
   const [viewingOrder, setViewingOrder] = useState<PpProductionOrder | null>(null)
   const [viewItems, setViewItems] = useState<PpProductionOrderItem[]>([])
   const [viewRmItems, setViewRmItems] = useState<ViewRmItem[]>([])
+  const [viewReturnedItems, setViewReturnedItems] = useState<ViewRmItem[]>([])
 
   // Reject modal
   const [rejectModal, setRejectModal] = useState<PpProductionOrder | null>(null)
@@ -387,11 +388,13 @@ export default function ProductionCreate() {
   const viewDetail = async (order: PpProductionOrder) => {
     setViewingOrder(order)
     setViewRmItems([])
+    setViewReturnedItems([])
     try {
       const items = await fetchProductionOrderItems(order.id)
       setViewItems(items)
       const recipes = await Promise.all(items.map((item) => fetchRecipe(item.product_id)))
       const rmMap = new Map<string, ViewRmItem>()
+      const returnedMap = new Map<string, ViewRmItem>()
       recipes.forEach((recipe, index) => {
         if (!recipe) return
         const ppQty = items[index].qty
@@ -409,9 +412,26 @@ export default function ProductionCreate() {
               total_qty: totalQty,
             })
           })
+        recipe.removes.forEach((removed) => {
+          const existing = returnedMap.get(removed.product_id)
+          const totalQty = removed.qty * ppQty
+          if (existing) existing.total_qty += totalQty
+          else returnedMap.set(removed.product_id, {
+            product_id: removed.product_id,
+            product_code: removed.product?.product_code || removed.product_id,
+            product_name: removed.product?.product_name || '-',
+            qty_per_unit: removed.qty,
+            total_qty: totalQty,
+          })
+        })
       })
       setViewRmItems([...rmMap.values()])
-    } catch { setViewItems([]) }
+      setViewReturnedItems([...returnedMap.values()])
+    } catch {
+      setViewItems([])
+      setViewRmItems([])
+      setViewReturnedItems([])
+    }
   }
 
   const formatDate = (d: string) => {
@@ -816,6 +836,44 @@ export default function ProductionCreate() {
                       <tr>
                         <td colSpan={5} className="px-5 py-6 text-center text-gray-400">
                           ไม่พบสินค้า RM ในสูตรแปรรูป
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-base font-bold text-gray-700">
+                รายการสินค้าที่คืนเพิ่ม (รับเข้าสต๊อก)
+              </h3>
+              <div className="overflow-x-auto rounded-xl border border-emerald-200">
+                <table className="w-full text-base">
+                  <thead>
+                    <tr className="bg-emerald-600 text-white">
+                      <th className="px-5 py-3 text-left rounded-tl-xl">รูป</th>
+                      <th className="px-5 py-3 text-left">รหัสสินค้า</th>
+                      <th className="px-5 py-3 text-left">ชื่อสินค้า</th>
+                      <th className="px-5 py-3 text-right">จำนวนต่อ PP</th>
+                      <th className="px-5 py-3 text-right rounded-tr-xl">จำนวนรวม</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewReturnedItems.length > 0 ? viewReturnedItems.map((item, i) => (
+                      <tr key={item.product_id} className={i % 2 === 0 ? 'bg-white' : 'bg-emerald-50'}>
+                        <td className="px-5 py-3">
+                          <ProductImageHover productCode={item.product_code} productName={item.product_name} size="sm" />
+                        </td>
+                        <td className="px-5 py-3 font-mono text-sm">{item.product_code}</td>
+                        <td className="px-5 py-3">{item.product_name}</td>
+                        <td className="px-5 py-3 text-right font-medium">{formatQty(item.qty_per_unit)}</td>
+                        <td className="px-5 py-3 text-right font-bold text-emerald-700">{formatQty(item.total_qty)}</td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={5} className="px-5 py-6 text-center text-gray-400">
+                          ไม่มีสินค้าที่คืนเพิ่มในสูตรแปรรูป
                         </td>
                       </tr>
                     )}

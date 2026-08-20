@@ -27,9 +27,10 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number; machinery_pending?: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0, machinery_pending: 0 })
-  // Badge เมนู HR: จำนวนใบลา + คำขอ OT ที่รออนุมัติ (เรียลไทม์)
+  // Badge เมนู HR: จำนวนใบลา + คำขอ OT + คำขอ WFH ที่รออนุมัติ (เรียลไทม์)
   const [hrLeavePending, setHrLeavePending] = useState(0)
   const [hrOtPending, setHrOtPending] = useState(0)
+  const [hrWfhPending, setHrWfhPending] = useState(0)
   /** ประกาศที่ต้องดำเนินการ: รออนุมัติ + เผยแพร่แล้วแต่พนักงานรับทราบไม่ครบ */
   const [hrAnnouncementAttention, setHrAnnouncementAttention] = useState(0)
   /** คำร้องใหม่ที่ HR ยังไม่ได้กดรับเรื่อง */
@@ -456,12 +457,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     if (!canSeeHrLeave) return
     const loadHrPending = async () => {
       try {
-        const [leaveRes, otRes] = await Promise.all([
+        const [leaveRes, otRes, wfhRes] = await Promise.all([
           supabase.from('hr_leave_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
           supabase.from('hr_ot_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+          supabase.from('hr_wfh_requests').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
         ])
         setHrLeavePending(leaveRes.count || 0)
         setHrOtPending(otRes.count || 0)
+        setHrWfhPending(wfhRes.count || 0)
       } catch (error) {
         console.error('Error loading HR pending count:', error)
       }
@@ -474,6 +477,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
       .channel('topbar-hr-pending-count')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, loadHrPending)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_ot_requests' }, loadHrPending)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, loadHrPending)
       .subscribe()
 
     return () => {
@@ -659,8 +663,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                           ? purchaseBadge.pr_approved_no_po
                           : tab.path === '/purchase/gr' && purchaseBadge.po_waiting_gr > 0
                             ? purchaseBadge.po_waiting_gr
-                            : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending) > 0
-                              ? hrLeavePending + hrOtPending
+                            : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending + hrWfhPending) > 0
+                              ? hrLeavePending + hrOtPending + hrWfhPending
                               : tab.path === '/hr/announcements' && hrAnnouncementAttention > 0
                                 ? hrAnnouncementAttention
                                 : tab.path === '/hr/requests' && hrRequestPending > 0
