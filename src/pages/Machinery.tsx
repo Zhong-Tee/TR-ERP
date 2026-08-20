@@ -47,6 +47,7 @@ const STATUS_ORDER: PrMachineryStatus[] = [
   'decommissioned',
   'power_off',
 ]
+
 const STATUS_SUMMARY_ORDER: PrMachineryStatus[] = ['working', 'broken', 'repairing', 'idle', 'decommissioned']
 
 /** พื้นหลังการ์ดมอนิเตอร์ — เข้ม ตามสถานะ: เขียว / แดง / เหลือง / ฟ้า / เทา */
@@ -170,9 +171,6 @@ export default function Machinery() {
   const [monitorTick, setMonitorTick] = useState(() => Date.now())
   /** มือถือ: เลือกเครื่องแล้วค่อยแสดงรายละเอียด + เปลี่ยนสถานะ */
   const [selectedMonitorMachineId, setSelectedMonitorMachineId] = useState<string | null>(null)
-  /** มือถือ: ดรอปดาวน์เปลี่ยนสถานะ (เปิดขึ้นด้านบน) */
-  const [openStatusDropdownMachineId, setOpenStatusDropdownMachineId] = useState<string | null>(null)
-
   const load = useCallback(async () => {
     setError(null)
     try {
@@ -298,10 +296,6 @@ export default function Machinery() {
     if (tab !== 'monitor') setSelectedMonitorMachineId(null)
   }, [tab])
 
-  useEffect(() => {
-    setOpenStatusDropdownMachineId(null)
-  }, [selectedMonitorMachineId])
-
   const machineTypes = useMemo(
     () => [...new Set(machines.map((m) => m.machine_type || 'ทั่วไป'))].sort((a, b) => a.localeCompare(b, 'th')),
     [machines],
@@ -386,7 +380,6 @@ export default function Machinery() {
   }, [monitorMachines])
 
   const onStatusChange = async (machineId: string, status: PrMachineryStatus) => {
-    setOpenStatusDropdownMachineId(null)
     setSavingId(machineId)
     setError(null)
     try {
@@ -680,6 +673,8 @@ export default function Machinery() {
     const machineProduction = machineProductionToday.get(m.id) || 0
     const st = m.current_status
     const isPowerOff = st === 'power_off'
+    const canTogglePower = st === 'power_off' || st === 'working' || st === 'idle'
+    const isPowerOn = st === 'working' || st === 'idle'
     const textColor = isPowerOff ? 'text-slate-900' : 'text-white'
     const subTextColor = isPowerOff ? 'text-slate-700' : 'text-white'
     return (
@@ -700,7 +695,24 @@ export default function Machinery() {
         </div>
         <div className={`flex flex-1 flex-col gap-2.5 p-3 ${textColor}`}>
           <div>
-            <h3 className="text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
+            <div className="flex items-start justify-between gap-3">
+              <h3 className="min-w-0 text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
+              <label
+                className={`inline-flex shrink-0 items-center gap-1.5 ${canTogglePower ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                title={canTogglePower ? (isPowerOn ? 'ปิดเครื่อง' : 'เปิดเครื่อง') : 'สถานะนี้ต้องจัดการผ่านกระบวนการแจ้งซ่อม'}
+              >
+                <span className="text-[10px] font-bold uppercase">{isPowerOn ? 'เปิด' : 'ปิด'}</span>
+                <input
+                  type="checkbox"
+                  className="peer sr-only"
+                  checked={isPowerOn}
+                  disabled={!canTogglePower || savingId === m.id}
+                  onChange={() => void onStatusChange(m.id, isPowerOn ? 'power_off' : (machineProduction > 0 ? 'working' : 'idle'))}
+                  aria-label={`${isPowerOn ? 'ปิด' : 'เปิด'}เครื่อง ${m.name}`}
+                />
+                <span className="relative h-6 w-11 rounded-full bg-slate-400 transition-colors peer-checked:bg-emerald-500 peer-disabled:opacity-60 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition-transform peer-checked:after:translate-x-5" />
+              </label>
+            </div>
             <p className={`mt-1 text-[11px] font-semibold uppercase tracking-wide ${subTextColor}`}>
               {m.machine_type || 'ทั่วไป'}
             </p>
@@ -722,84 +734,16 @@ export default function Machinery() {
             <dt>ใช้กำลังผลิตรวมของกลุ่ม</dt>
             <dd className="text-right font-mono tabular-nums font-semibold">{(groupStats?.utilizationPercent || 0).toFixed(1)}%</dd>
           </dl>
-          {isMobileRole ? (
-            <div className="relative z-20 mt-auto">
-              <span className="mb-0.5 block text-xs font-medium">เปลี่ยนสถานะ</span>
-              <button
-                type="button"
-                disabled={savingId === m.id}
-                onClick={() =>
-                  setOpenStatusDropdownMachineId((prev) => (prev === m.id ? null : m.id))
-                }
-                className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-2.5 text-left text-sm font-semibold ${
-                  isPowerOff
-                    ? 'border-slate-300 bg-white text-slate-900'
-                    : 'border-gray-300 bg-white text-gray-900'
-                } disabled:opacity-50`}
-              >
-                <span className="min-w-0 truncate">{MACHINERY_STATUS_LABELS[m.current_status]}</span>
-                <i className="fas fa-chevron-up shrink-0 text-xs opacity-70" aria-hidden />
-              </button>
-              {openStatusDropdownMachineId === m.id && (
-                <>
-                  <button
-                    type="button"
-                    className="fixed inset-0 z-[150] cursor-default bg-black/20"
-                    aria-label="ปิดเมนู"
-                    onClick={() => setOpenStatusDropdownMachineId(null)}
-                  />
-                  <ul
-                    role="listbox"
-                    className="absolute bottom-full left-0 right-0 z-[200] mb-1 max-h-[min(50vh,16rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg touch-manipulation"
-                    onPointerDown={(e) => e.stopPropagation()}
-                  >
-                    {STATUS_ORDER.map((s) => (
-                      <li key={s}>
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={s === m.current_status}
-                          className={`w-full px-3 py-2.5 text-left text-sm ${
-                            s === m.current_status
-                              ? 'bg-emerald-50 font-semibold text-emerald-700'
-                              : 'text-gray-900 hover:bg-gray-100 active:bg-gray-200'
-                          }`}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (s !== m.current_status) void onStatusChange(m.id, s)
-                            else setOpenStatusDropdownMachineId(null)
-                          }}
-                        >
-                          {MACHINERY_STATUS_LABELS[s]}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
+          <div className="mt-auto text-xs">
+            <span className="mb-0.5 block font-medium">สถานะเครื่อง</span>
+            <div className={`w-full rounded-lg border px-2.5 py-2 text-sm font-semibold ${
+              isPowerOff
+                ? 'border-slate-300 bg-white text-slate-900'
+                : 'border-white/30 bg-white/95 text-gray-900'
+            }`}>
+              {MACHINERY_STATUS_LABELS[m.current_status]}
             </div>
-          ) : (
-            <label className="mt-auto block text-xs">
-              <span className="mb-0.5 block font-medium">เปลี่ยนสถานะ</span>
-              <select
-                className={`w-full rounded-lg border px-2.5 py-2 text-sm ${
-                  isPowerOff
-                    ? 'border-slate-300 bg-white text-slate-900'
-                    : 'border-gray-300 bg-white text-gray-900'
-                }`}
-                value={m.current_status}
-                disabled={savingId === m.id}
-                onChange={(e) => onStatusChange(m.id, e.target.value as PrMachineryStatus)}
-              >
-                {STATUS_ORDER.map((s) => (
-                  <option key={s} value={s}>
-                    {MACHINERY_STATUS_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          </div>
         </div>
       </article>
     )
