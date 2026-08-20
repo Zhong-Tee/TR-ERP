@@ -5,7 +5,15 @@ import ProcessedProductSettings from '../components/production/ProcessedProductS
 type ActiveMenu = 'create' | 'settings'
 
 export default function InternalProduction() {
-  const [activeMenu, setActiveMenu] = useState<ActiveMenu>('create')
+  const [activeMenu, setActiveMenu] = useState<ActiveMenu>(() => {
+    const saved = sessionStorage.getItem('internal-production-active-menu')
+    return saved === 'settings' ? 'settings' : 'create'
+  })
+
+  const changeMenu = (menu: ActiveMenu) => {
+    setActiveMenu(menu)
+    sessionStorage.setItem('internal-production-active-menu', menu)
+  }
 
   const menus: { key: ActiveMenu; label: string }[] = [
     { key: 'create', label: 'สร้างผลิตภายใน' },
@@ -18,7 +26,8 @@ export default function InternalProduction() {
         {menus.map((m) => (
           <button
             key={m.key}
-            onClick={() => setActiveMenu(m.key)}
+            type="button"
+            onClick={() => changeMenu(m.key)}
             className={`px-6 py-3 text-base font-semibold border-b-2 transition-colors ${
               activeMenu === m.key
                 ? 'border-blue-600 text-blue-600'

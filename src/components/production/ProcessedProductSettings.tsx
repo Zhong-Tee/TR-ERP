@@ -456,6 +456,7 @@ export default function ProcessedProductSettings() {
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={handleSave}
                   disabled={saving || !canEdit}
                   className="px-7 py-3 bg-blue-600 text-white rounded-lg text-base font-semibold hover:bg-blue-700 transition disabled:opacity-50"
