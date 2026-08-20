@@ -19,6 +19,10 @@ export interface MachineryMachine {
   work_start: string
   work_end: string
   capacity_units_per_hour: number
+  department_name: string | null
+  line_index: number | null
+  is_primary_machine: boolean
+  can_substitute: boolean
   current_status: PrMachineryStatus
   status_changed_at: string
   sort_order: number
@@ -197,6 +201,10 @@ export async function upsertMachine(
     work_start: row.work_start ?? '08:00:00',
     work_end: row.work_end ?? '17:00:00',
     capacity_units_per_hour: row.capacity_units_per_hour ?? 0,
+    department_name: row.department_name?.trim() || null,
+    line_index: row.line_index ?? null,
+    is_primary_machine: row.is_primary_machine ?? true,
+    can_substitute: row.can_substitute ?? false,
     sort_order: row.sort_order ?? 0,
   }
   if ('image_url' in row) {

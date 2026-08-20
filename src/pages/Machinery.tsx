@@ -34,9 +34,10 @@ import { isSuperadmin } from '../config/accessPolicy'
 import { getActiveMobileMode } from '../lib/mobileMode'
 import ModeSwitchButton from '../components/ModeSwitchButton'
 import { MachineryPurchaseRequest, MachineryPurchaseSettings, MachineryStock } from '../components/MachineryPurchase'
+import { ChecklistSettings, MachineryChecklist, MachineryMaintenance } from '../components/MachineryOperations'
 import { useWmsModal } from '../components/wms/useWmsModal'
 
-type TabKey = 'monitor' | 'machineSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
+type TabKey = 'monitor' | 'inspection' | 'maintenance' | 'machineSettings' | 'checklistSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
 
 const STATUS_ORDER: PrMachineryStatus[] = [
   'working',
@@ -128,6 +129,7 @@ export default function Machinery() {
   const [machines, setMachines] = useState<MachineryMachine[]>([])
   const [events, setEvents] = useState<MachineryEvent[]>([])
   const [productOptions, setProductOptions] = useState<MachineryProductOption[]>([])
+  const [planLineSettings, setPlanLineSettings] = useState<{ departments: string[]; linesPerDept: Record<string, number> }>({ departments: [], linesPerDept: {} })
   const [todayQuantityByProduct, setTodayQuantityByProduct] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -142,7 +144,7 @@ export default function Machinery() {
   const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin'
 
   useEffect(() => {
-    if ((!showSettingsTab && tab === 'machineSettings') || (!showPurchaseSettingsTab && tab === 'purchaseSettings')) setTab('monitor')
+    if ((!showSettingsTab && (tab === 'machineSettings' || tab === 'checklistSettings')) || (!showPurchaseSettingsTab && tab === 'purchaseSettings')) setTab('monitor')
   }, [showSettingsTab, showPurchaseSettingsTab, tab])
 
   const isMobileRole =
@@ -195,6 +197,31 @@ export default function Machinery() {
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    supabase
+      .from('plan_settings')
+      .select('data')
+      .eq('id', 1)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!active || error) return
+        const settings = (data?.data || {}) as { departments?: unknown; linesPerDept?: unknown }
+        const departments = Array.isArray(settings.departments)
+          ? settings.departments.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : []
+        const rawLines = settings.linesPerDept && typeof settings.linesPerDept === 'object'
+          ? settings.linesPerDept as Record<string, unknown>
+          : {}
+        const linesPerDept = Object.fromEntries(departments.map((department) => [
+          department,
+          Math.max(1, Math.floor(Number(rawLines[department]) || 1)),
+        ]))
+        setPlanLineSettings({ departments, linesPerDept })
+      })
+    return () => { active = false }
   }, [])
 
   useEffect(() => {
@@ -382,6 +409,10 @@ export default function Machinery() {
     work_start: '08:00',
     work_end: '17:00',
     capacity_units_per_hour: 0,
+    department_name: null,
+    line_index: null,
+    is_primary_machine: true,
+    can_substitute: false,
     sort_order: 0,
     image_url: null,
   })
@@ -411,6 +442,10 @@ export default function Machinery() {
       work_start: '08:00',
       work_end: '17:00',
       capacity_units_per_hour: 0,
+      department_name: null,
+      line_index: null,
+      is_primary_machine: true,
+      can_substitute: false,
       sort_order: 0,
       image_url: null,
     })
@@ -434,6 +469,10 @@ export default function Machinery() {
         work_start: normalizeTime(form.work_start || '08:00'),
         work_end: normalizeTime(form.work_end || '17:00'),
         capacity_units_per_hour: Number(form.capacity_units_per_hour) || 0,
+        department_name: form.department_name || null,
+        line_index: form.line_index ?? null,
+        is_primary_machine: form.is_primary_machine ?? true,
+        can_substitute: form.can_substitute ?? false,
         sort_order: form.id
           ? Number(form.sort_order) || 0
           : machines.reduce((highest, machine) => Math.max(highest, Number(machine.sort_order) || 0), -1) + 1,
@@ -461,6 +500,7 @@ export default function Machinery() {
     setPhotoFile(null)
     setPhotoRemove(false)
     setPhotoPreview(m.image_url || null)
+    const configuredLineCount = m.department_name ? planLineSettings.linesPerDept[m.department_name] : 0
     setForm({
       id: m.id,
       name: m.name,
@@ -471,6 +511,14 @@ export default function Machinery() {
       work_start: m.work_start.slice(0, 5),
       work_end: m.work_end.slice(0, 5),
       capacity_units_per_hour: m.capacity_units_per_hour,
+      department_name: m.department_name,
+      line_index: m.line_index == null
+        ? null
+        : configuredLineCount > 0
+          ? Math.min(Math.max(0, m.line_index), configuredLineCount - 1)
+          : m.line_index,
+      is_primary_machine: m.is_primary_machine,
+      can_substitute: m.can_substitute,
       sort_order: m.sort_order,
       image_url: m.image_url ?? null,
     })
@@ -800,12 +848,15 @@ export default function Machinery() {
       )}
 
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
-        {(['monitor', 'machineSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
-          if (k === 'machineSettings' && !showSettingsTab) return null
+        {(['monitor', 'inspection', 'maintenance', 'machineSettings', 'checklistSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
+          if ((k === 'machineSettings' || k === 'checklistSettings') && !showSettingsTab) return null
           if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null
           const labels: Record<TabKey, string> = {
             monitor: 'สถานะ / มอนิเตอร์',
+            inspection: 'ตรวจความพร้อม',
+            maintenance: 'แจ้งเสีย / ซ่อม',
             machineSettings: 'ตั้งค่าเครื่อง',
+            checklistSettings: 'ตั้งค่า Checklist',
             history: 'ประวัติ / รายงาน',
             purchaseRequest: 'คำขอซื้อ',
             stock: 'สต๊อคคงเหลือ',
@@ -834,6 +885,10 @@ export default function Machinery() {
           )
         })}
       </nav>
+
+      {tab === 'inspection' && <MachineryChecklist machines={machines} onChanged={load} />}
+      {tab === 'maintenance' && <MachineryMaintenance machines={machines} onChanged={load} />}
+      {tab === 'checklistSettings' && showSettingsTab && <ChecklistSettings machines={machines} />}
 
       {tab === 'monitor' && (
         <section className="space-y-5">
@@ -1144,6 +1199,43 @@ export default function Machinery() {
                   required
                 />
               </label>
+              <label className="block">
+                <span className="text-sm text-gray-500">แผนกใน Master Plan</span>
+                <select
+                  className="mt-1 w-full rounded-lg border px-3 py-2.5 text-base"
+                  value={form.department_name || ''}
+                  onChange={(e) => setForm((current) => ({
+                    ...current,
+                    department_name: e.target.value || null,
+                    line_index: e.target.value ? 0 : null,
+                  }))}
+                >
+                  <option value="">— ไม่ผูกกับแผนก —</option>
+                  {form.department_name && !planLineSettings.departments.includes(form.department_name) && (
+                    <option value={form.department_name}>{form.department_name} (ไม่พบในการตั้งค่า Plan)</option>
+                  )}
+                  {planLineSettings.departments.map((department) => (
+                    <option key={department} value={department}>{department}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm text-gray-500">ไลน์ผลิต</span>
+                <select
+                  className="mt-1 w-full rounded-lg border px-3 py-2.5 text-base disabled:bg-gray-100 disabled:text-gray-400"
+                  value={form.line_index == null ? '' : String(form.line_index)}
+                  disabled={!form.department_name}
+                  onChange={(e) => setForm((current) => ({ ...current, line_index: e.target.value === '' ? null : Number(e.target.value) }))}
+                >
+                  {!form.department_name && <option value="">— เลือกแผนกก่อน —</option>}
+                  {form.department_name && Array.from(
+                    { length: planLineSettings.linesPerDept[form.department_name] || 1 },
+                    (_, index) => <option key={index} value={index}>Line {index + 1}</option>,
+                  )}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 pt-6"><input type="checkbox" checked={form.is_primary_machine ?? true} onChange={(e) => setForm((f) => ({ ...f, is_primary_machine: e.target.checked }))} /> เครื่องหลักของไลน์</label>
+              <label className="flex items-center gap-2 pt-6"><input type="checkbox" checked={form.can_substitute ?? false} onChange={(e) => setForm((f) => ({ ...f, can_substitute: e.target.checked }))} /> ใช้เป็นเครื่องสำรองได้</label>
               <div className="sm:col-span-2 xl:order-2 xl:col-span-12 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>

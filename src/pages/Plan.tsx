@@ -22,6 +22,8 @@ import OrderDetailView from '../components/order/OrderDetailView'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../lib/issueTypeSlugs'
 import ManpowerPanel from '../components/plan/ManpowerPanel'
 import EmployeeSkillsPanel from '../components/plan/EmployeeSkillsPanel'
+import { fetchMachines, type MachineryMachine } from '../lib/machineryApi'
+import { buildReadiness, fetchChecklistItems, fetchIncidents, fetchTodayInspections, overlapHours, type MachineryIncident, type MachineReadiness } from '../lib/machineryOperationsApi'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'manpower' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'manpower-set' | 'employee-skills' | 'issue'
@@ -214,7 +216,7 @@ function getEffectiveQty(
   return getBaseQty(job, dept)
 }
 
-function getJobStatusForDept(
+function getRawJobStatusForDept(
   job: PlanJob,
   dept: string,
   settings: PlanSettingsData,
@@ -258,6 +260,33 @@ function getJobStatusForDept(
   }
 
   return { text: 'รอดำเนินการ', key: 'pending' }
+}
+
+/**
+ * QC/PACK สามารถเริ่มทำงานคู่ขนานได้ แต่ยังไม่ถือว่า "เสร็จทั้งใบงาน"
+ * จนกว่าแผนกก่อนหน้าที่มีจำนวนงานจริงจะเสร็จครบทั้งหมด
+ * สถานะดิบยังคงเวลาเริ่ม/จบเดิมไว้ เมื่อแผนกก่อนหน้าครบแล้วสถานะจะเปลี่ยนเป็นเสร็จอัตโนมัติ
+ */
+function getJobStatusForDept(
+  job: PlanJob,
+  dept: string,
+  settings: PlanSettingsData,
+  deptQtyByWorkOrderId?: DeptQtyByWorkOrderId
+): { text: string; key: 'pending' | 'progress' | 'done' } {
+  const ownStatus = getRawJobStatusForDept(job, dept, settings, deptQtyByWorkOrderId)
+  if (ownStatus.key !== 'done' || (dept !== 'QC' && dept !== 'PACK')) return ownStatus
+
+  const blockedBy = settings.departments.filter((candidate) => {
+    if (candidate === dept || candidate === 'PACK') return false
+    if (dept === 'QC' && candidate === 'QC') return false
+    if (getEffectiveQty(job, candidate, settings, deptQtyByWorkOrderId) <= 0) return false
+    return getRawJobStatusForDept(job, candidate, settings, deptQtyByWorkOrderId).key !== 'done'
+  })
+
+  if (blockedBy.length > 0) {
+    return { text: `รอ ${blockedBy.join(', ')}`, key: 'progress' }
+  }
+  return ownStatus
 }
 
 function calcPlanFor(
@@ -770,6 +799,26 @@ export default function Plan({ tvMode = false }: PlanProps) {
   }, [noteMenu])
   /** นาฬิกาเดินทุก 30 วิ เพื่อให้สถานะ "เลยกำหนด" ในการ์ดขยับตามเวลาจริง */
   const [nowTick, setNowTick] = useState(() => Date.now())
+  const [planMachines, setPlanMachines] = useState<MachineryMachine[]>([])
+  const [planReadiness, setPlanReadiness] = useState<MachineReadiness[]>([])
+  const [planIncidents, setPlanIncidents] = useState<MachineryIncident[]>([])
+  const loadMachineryPlanStatus = useCallback(async () => {
+    try {
+      const [machines, items, inspections, incidents] = await Promise.all([
+        fetchMachines(), fetchChecklistItems(), fetchTodayInspections(dDate), fetchIncidents(),
+      ])
+      setPlanMachines(machines)
+      setPlanReadiness(buildReadiness(machines.map((machine) => machine.id), items, inspections.inspections, inspections.results))
+      setPlanIncidents(incidents)
+    } catch (error) {
+      console.warn('Machinery readiness is not available yet', error)
+    }
+  }, [dDate])
+  useEffect(() => { loadMachineryPlanStatus() }, [loadMachineryPlanStatus])
+  useEffect(() => {
+    const id = window.setInterval(loadMachineryPlanStatus, 60_000)
+    return () => window.clearInterval(id)
+  }, [loadMachineryPlanStatus])
   useEffect(() => {
     if (!(currentView === 'dash' && dashViewMode === 'card')) return
     setNowTick(Date.now())
@@ -2920,6 +2969,36 @@ export default function Plan({ tvMode = false }: PlanProps) {
           })
         }
         const dashIsToday = dDate === dashTodayISO
+        const dayStart = new Date(`${dDate}T00:00:00`)
+        const dayEnd = new Date(`${dDate}T23:59:59.999`)
+        const readinessByMachine = new Map(planReadiness.map((row) => [row.machine_id, row]))
+        const activeIncidents = planIncidents.filter((incident) => {
+          if (incident.status === 'cancelled') return false
+          const start = new Date(incident.reported_at)
+          const end = incident.ready_at ? new Date(incident.ready_at) : new Date(nowTick)
+          return start <= dayEnd && end >= dayStart
+        })
+        const lineMachineStatus = (dept: string, line: number) => {
+          const machines = planMachines.filter((machine) => machine.department_name === dept && machine.line_index === line)
+          const broken = machines.filter((machine) => activeIncidents.some((incident) => incident.machine_id === machine.id && !['ready','closed'].includes(incident.status)))
+          const failed = machines.filter((machine) => readinessByMachine.get(machine.id)?.status === 'failed')
+          const pending = machines.filter((machine) => ['pending','no_checklist'].includes(readinessByMachine.get(machine.id)?.status || 'no_checklist'))
+          const ready = machines.filter((machine) => readinessByMachine.get(machine.id)?.status === 'ready' && !broken.some((row) => row.id === machine.id))
+          const status = machines.length === 0 ? 'unmapped' : broken.length || failed.length ? (ready.length ? 'partial' : 'blocked') : pending.length ? 'pending' : 'ready'
+          return { machines, broken, failed, pending, ready, status }
+        }
+        const lineRows = settings.departments.flatMap((dept) => {
+          const lines = Math.max(1, settings.linesPerDept?.[dept] || 1)
+          return Array.from({length: lines}, (_, line) => ({dept, line, ...lineMachineStatus(dept,line)}))
+        }).filter((row) => row.machines.length > 0)
+        const plannedCapacity = lineRows.reduce((sum,row) => {
+          const seconds=(dashTimelines[row.dept]||[]).filter(item=>item.line===row.line).reduce((value,item)=>value+item.dur,0)
+          return sum + seconds/3600 * row.machines.filter(machine=>machine.is_primary_machine).reduce((value,machine)=>value+Number(machine.capacity_units_per_hour||0),0)
+        },0)
+        const dateAtPlanSecond=(seconds:number)=>new Date(dayStart.getTime()+seconds*1000)
+        const lostCapacity = activeIncidents.reduce((sum,incident)=>{const machine=planMachines.find(row=>row.id===incident.machine_id);if(!machine||!machine.department_name||machine.line_index==null)return sum;const end=incident.ready_at?new Date(incident.ready_at):new Date(Math.min(Date.now(),dayEnd.getTime()));const plannedItems=(dashTimelines[machine.department_name]||[]).filter(item=>item.line===machine.line_index);const downtimeInPlan=plannedItems.reduce((hours,item)=>hours+overlapHours(new Date(incident.reported_at),end,dateAtPlanSecond(item.start),dateAtPlanSecond(item.end)),0);return sum+downtimeInPlan*Number(machine.capacity_units_per_hour||0)},0)
+        const expectedCapacity=Math.max(0,plannedCapacity-lostCapacity)
+        const affectedJobs=visibleDayJobs.filter(job=>settings.departments.some(dept=>{const qty=getEffectiveQty(job,dept,settings,deptQtyByWorkOrderId);if(qty<=0)return false;const line=job.line_assignments?.[dept]??0;return ['blocked','partial','pending'].includes(lineMachineStatus(dept,line).status)}))
         return (
           <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="p-4 space-y-4">
@@ -2996,6 +3075,14 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   </button>
                 )}
               </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="rounded-xl border bg-emerald-50 p-3"><div className="text-xs text-emerald-700">ไลน์พร้อมใช้งาน</div><b className="text-xl text-emerald-800">{lineRows.filter(row=>row.status==='ready').length}/{lineRows.length}</b></div>
+                <div className="rounded-xl border bg-amber-50 p-3"><div className="text-xs text-amber-700">รอตรวจ / พร้อมบางส่วน</div><b className="text-xl text-amber-800">{lineRows.filter(row=>row.status==='pending'||row.status==='partial').length}</b></div>
+                <div className="rounded-xl border bg-red-50 p-3"><div className="text-xs text-red-700">เครื่องเสีย / ไลน์ไม่พร้อม</div><b className="text-xl text-red-800">{activeIncidents.filter(row=>!['ready','closed'].includes(row.status)).length} / {lineRows.filter(row=>row.status==='blocked').length}</b></div>
+                <div className="rounded-xl border bg-orange-50 p-3"><div className="text-xs text-orange-700">งานที่มีความเสี่ยง</div><b className="text-xl text-orange-800">{affectedJobs.length}</b></div>
+                <div className="rounded-xl border bg-blue-50 p-3"><div className="text-xs text-blue-700">กำลังผลิต ตามแผน → คาดการณ์</div><b className="text-lg text-blue-800">{Math.round(plannedCapacity).toLocaleString()} → {Math.round(expectedCapacity).toLocaleString()}</b><div className="text-xs text-red-600">สูญเสีย {Math.round(lostCapacity).toLocaleString()}</div></div>
+              </div>
+              {lineRows.some(row=>row.status!=='ready')&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-3"><b className="text-amber-900">แจ้งเตือนความพร้อมเครื่องจักร</b><div className="mt-2 flex flex-wrap gap-2">{lineRows.filter(row=>row.status!=='ready').map(row=><span key={`${row.dept}-${row.line}`} className={`rounded-full px-3 py-1 text-xs font-semibold ${row.status==='blocked'?'bg-red-100 text-red-800':'bg-amber-100 text-amber-800'}`}>{row.dept} L{row.line+1}: {row.status==='blocked'?'ไม่พร้อม':row.status==='partial'?'พร้อมบางส่วน':'รอตรวจ'} ({row.machines.map(machine=>machine.name).join(', ')})</span>)}</div></div>}
               {dashViewMode === 'table' && (
                 <>
                   <p className="text-xs text-gray-500">
@@ -3044,7 +3131,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   })
                   return (
                     <span key={d} className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium">
-                      <b>{d}</b> · {lineSummaries.join(' | ')}
+                      <b>{d}</b> · {lineSummaries.map((summary,index)=>{const state=lineMachineStatus(d,activeLines[index]);return `${summary} ${state.status==='ready'?'🟢':state.status==='blocked'?'🔴':state.status==='partial'?'🟠':'🟡'}`}).join(' | ')}
                     </span>
                   )
                 })}

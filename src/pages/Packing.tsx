@@ -813,7 +813,8 @@ export default function Packing() {
   const completedIndices = useMemo(() => {
     const set = new Set<number>()
     aggregatedData.forEach((group, index) => {
-      if (group.every((item) => item.scanned)) set.add(index)
+      // พร้อมจัดส่งเป็นรายบิล: QC ต้องผ่าน/ข้ามครบทุกชิ้น และแพ็คสแกนครบทั้งบิล
+      if (isQcPassGroup(group) && group.every((item) => item.scanned)) set.add(index)
     })
     return set
   }, [aggregatedData])
@@ -1637,6 +1638,13 @@ export default function Packing() {
 
   async function shipAllAndFinalize() {
     if (!currentWorkOrderName) return
+    const incompleteGroups = aggregatedData.filter(
+      (group) => !group[0].isOrderComplete && (!isQcPassGroup(group) || !group.every((item) => item.scanned))
+    )
+    if (incompleteGroups.length > 0) {
+      openAlert(`ยังปิดใบงานไม่ได้: มี ${incompleteGroups.length} บิลที่ QC หรือแพ็คยังไม่ครบ`)
+      return
+    }
     setIsLoadingOrders(true)
     try {
       const ids: string[] = []
