@@ -46,6 +46,7 @@ type WmsMapGroupUi = {
   id: string
   name: string
   sub_warehouse_id: string | null
+  sort_order: number
   spares: WmsMapLineUi[]
   sources: WmsMapLineUi[]
 }
@@ -123,7 +124,8 @@ export default function WarehouseSub() {
 
   /** วันที่นับสต๊อครายวัน (เขตเวลาไทย — ฝั่ง RPC) */
   const [countDate, setCountDate] = useState(() => toLocalYmd(new Date()))
-  const [productViewMode, setProductViewMode] = useState<'daily' | 'range'>('daily')
+  const [productViewMode, setProductViewMode] = useState<'daily' | 'history' | 'range'>('daily')
+  const [warehouseProductSearch, setWarehouseProductSearch] = useState('')
   const [dailyRows, setDailyRows] = useState<DailySheetRow[]>([])
   const [loadingDaily, setLoadingDaily] = useState(false)
 
@@ -155,11 +157,36 @@ export default function WarehouseSub() {
   const [mapNewGroupName, setMapNewGroupName] = useState('กลุ่มจับคู่ใหม่')
   const [mapNewGroupScope, setMapNewGroupScope] = useState<'current' | 'all'>('current')
   const [mapLineDraft, setMapLineDraft] = useState<Record<string, { spare: string; source: string }>>({})
+  const [mapGroupSearch, setMapGroupSearch] = useState('')
+  const [expandedMapGroups, setExpandedMapGroups] = useState<Record<string, boolean>>({})
+  const [mapProductOptions, setMapProductOptions] = useState<Record<string, ProductLookupRow[]>>({})
+  const [mapSelectedProducts, setMapSelectedProducts] = useState<Record<string, ProductLookupRow | null>>({})
+  const [mapProductSearchLoading, setMapProductSearchLoading] = useState<Record<string, boolean>>({})
+  const [draggingMapGroupId, setDraggingMapGroupId] = useState<string | null>(null)
 
   const selectedSub = useMemo(
     () => subWarehouses.find((s) => s.id === selectedSubId) || null,
     [subWarehouses, selectedSubId],
   )
+  const filteredMapUiGroups = useMemo(() => {
+    const term = mapGroupSearch.trim().toLocaleLowerCase('th')
+    if (!term) return mapUiGroups
+    return mapUiGroups.filter((group) => group.name.toLocaleLowerCase('th').includes(term))
+  }, [mapGroupSearch, mapUiGroups])
+  const filteredWarehouseProducts = useMemo(() => {
+    const term = warehouseProductSearch.trim().toLocaleLowerCase('th')
+    if (!term) return products
+    return products.filter((product) =>
+      `${product.product_code} ${product.product_name}`.toLocaleLowerCase('th').includes(term),
+    )
+  }, [products, warehouseProductSearch])
+  const filteredDailyRows = useMemo(() => {
+    const term = warehouseProductSearch.trim().toLocaleLowerCase('th')
+    if (!term) return dailyRows
+    return dailyRows.filter((product) =>
+      `${product.product_code} ${product.product_name}`.toLocaleLowerCase('th').includes(term),
+    )
+  }, [dailyRows, warehouseProductSearch])
 
   async function applyDynamicWmsMapsToCorrectMap(map: Record<string, number>, subId: string) {
     if (!subId) return
@@ -217,8 +244,9 @@ export default function WarehouseSub() {
     try {
       const { data: groups, error: ge } = await supabase
         .from('wh_sub_wms_map_groups')
-        .select('id, name, sub_warehouse_id, created_at')
+        .select('id, name, sub_warehouse_id, sort_order, created_at')
         .or(`sub_warehouse_id.is.null,sub_warehouse_id.eq.${selectedSubId}`)
+        .order('sort_order', { ascending: true })
         .order('created_at', { ascending: true })
       if (ge) throw ge
       const gids = (groups || []).map((g: { id: string }) => String(g.id))
@@ -247,7 +275,7 @@ export default function WarehouseSub() {
           }
         })
       }
-      const next: WmsMapGroupUi[] = (groups || []).map((g: { id: string; name: string; sub_warehouse_id: string | null }) => {
+      const next: WmsMapGroupUi[] = (groups || []).map((g: { id: string; name: string; sub_warehouse_id: string | null; sort_order: number | null }) => {
         const gid = String(g.id)
         const spares = (spareRows || [])
           .filter((r: { group_id: string }) => String(r.group_id) === gid)
@@ -275,6 +303,7 @@ export default function WarehouseSub() {
           id: gid,
           name: String(g.name || ''),
           sub_warehouse_id: g.sub_warehouse_id != null ? String(g.sub_warehouse_id) : null,
+          sort_order: Number(g.sort_order || 0),
           spares,
           sources,
         }
@@ -300,6 +329,7 @@ export default function WarehouseSub() {
       const { error } = await supabase.from('wh_sub_wms_map_groups').insert({
         name,
         sub_warehouse_id: subVal,
+        sort_order: mapUiGroups.length ? Math.max(...mapUiGroups.map((group) => group.sort_order)) + 1 : 1,
       })
       if (error) throw error
       setMapNewGroupName('กลุ่มจับคู่ใหม่')
@@ -310,6 +340,72 @@ export default function WarehouseSub() {
       console.error(e)
       showMessage({ title: 'ผิดพลาด', message: e?.message || String(e) })
     }
+  }
+
+  async function reorderWmsMapGroups(targetGroupId: string) {
+    const sourceGroupId = draggingMapGroupId
+    setDraggingMapGroupId(null)
+    if (!sourceGroupId || sourceGroupId === targetGroupId || mapGroupSearch.trim()) return
+    const fromIndex = mapUiGroups.findIndex((group) => group.id === sourceGroupId)
+    const toIndex = mapUiGroups.findIndex((group) => group.id === targetGroupId)
+    if (fromIndex < 0 || toIndex < 0) return
+    const reordered = [...mapUiGroups]
+    const [moved] = reordered.splice(fromIndex, 1)
+    reordered.splice(toIndex, 0, moved)
+    const next = reordered.map((group, index) => ({ ...group, sort_order: index + 1 }))
+    setMapUiGroups(next)
+    try {
+      const results = await Promise.all(
+        next.map((group) =>
+          supabase.from('wh_sub_wms_map_groups').update({ sort_order: group.sort_order }).eq('id', group.id),
+        ),
+      )
+      const failed = results.find((result) => result.error)
+      if (failed?.error) throw failed.error
+    } catch (e: any) {
+      await loadRubberMapData()
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกลำดับกลุ่มไม่สำเร็จ: ' + (e?.message || String(e)) })
+    }
+  }
+
+  async function searchWmsMapProducts(groupId: string, kind: 'spare' | 'source', rawTerm: string) {
+    const key = `${groupId}:${kind}`
+    const term = rawTerm.trim()
+    setMapSelectedProducts((prev) => ({ ...prev, [key]: null }))
+    if (!term) {
+      setMapProductOptions((prev) => ({ ...prev, [key]: [] }))
+      return
+    }
+    setMapProductSearchLoading((prev) => ({ ...prev, [key]: true }))
+    try {
+      const { data, error } = await supabase
+        .from('pr_products')
+        .select('id, product_code, product_name, unit_name')
+        .eq('is_active', true)
+        .or(buildIlikeOr(term, ['product_code', 'product_name']))
+        .order('product_code', { ascending: true })
+        .limit(12)
+      if (error) throw error
+      setMapProductOptions((prev) => ({ ...prev, [key]: (data || []) as ProductLookupRow[] }))
+    } catch (e) {
+      console.error('Search WMS map products failed:', e)
+      setMapProductOptions((prev) => ({ ...prev, [key]: [] }))
+    } finally {
+      setMapProductSearchLoading((prev) => ({ ...prev, [key]: false }))
+    }
+  }
+
+  function selectWmsMapProduct(groupId: string, kind: 'spare' | 'source', product: ProductLookupRow) {
+    const key = `${groupId}:${kind}`
+    setMapSelectedProducts((prev) => ({ ...prev, [key]: product }))
+    setMapProductOptions((prev) => ({ ...prev, [key]: [] }))
+    setMapLineDraft((prev) => ({
+      ...prev,
+      [groupId]: {
+        spare: kind === 'spare' ? product.product_code : prev[groupId]?.spare ?? '',
+        source: kind === 'source' ? product.product_code : prev[groupId]?.source ?? '',
+      },
+    }))
   }
 
   async function deleteWmsMapGroup(groupId: string) {
@@ -342,28 +438,18 @@ export default function WarehouseSub() {
     }
   }
 
-  async function addWmsMapLine(groupId: string, kind: 'spare' | 'source', rawCode: string) {
-    const code = rawCode.trim()
-    if (!code) {
-      showMessage({ message: 'กรอกรหัสสินค้า' })
+  async function addWmsMapLine(groupId: string, kind: 'spare' | 'source') {
+    const key = `${groupId}:${kind}`
+    const selected = mapSelectedProducts[key]
+    if (!selected) {
+      showMessage({ message: 'กรุณาค้นหาและเลือกรายการสินค้าก่อน' })
       return
     }
     try {
-      const { data: prod, error: pe } = await supabase
-        .from('pr_products')
-        .select('id')
-        .eq('product_code', code)
-        .eq('is_active', true)
-        .maybeSingle()
-      if (pe) throw pe
-      if (!prod?.id) {
-        showMessage({ message: 'ไม่พบรหัสสินค้าในระบบ (ต้อง is_active)' })
-        return
-      }
       const table = kind === 'spare' ? 'wh_sub_wms_map_spares' : 'wh_sub_wms_map_sources'
       const { error } = await supabase.from(table).insert({
         group_id: groupId,
-        product_id: String(prod.id),
+        product_id: selected.id,
       })
       if (error) throw error
       setMapLineDraft((d) => ({
@@ -373,6 +459,7 @@ export default function WarehouseSub() {
           source: kind === 'source' ? '' : d[groupId]?.source ?? '',
         },
       }))
+      setMapSelectedProducts((prev) => ({ ...prev, [key]: null }))
       await loadRubberMapData()
       await refreshAllForSelected()
     } catch (e: any) {
@@ -674,7 +761,16 @@ export default function WarehouseSub() {
       showMessage({ title: 'สำเร็จ', message: 'เพิ่มสินค้าเข้าคลังย่อยแล้ว' })
     } catch (e: any) {
       console.error('Add product failed:', e)
-      showMessage({ title: 'ผิดพลาด', message: 'เพิ่มสินค้าไม่สำเร็จ: ' + (e?.message || String(e)) })
+      const errorMessage = e?.message || String(e)
+      const isDuplicateProduct =
+        e?.code === '23505' ||
+        errorMessage.includes('wh_sub_warehouse_products_sub_warehouse_id_product_id_key')
+      showMessage({
+        title: 'ไม่สามารถเพิ่มสินค้าได้',
+        message: isDuplicateProduct
+          ? 'สินค้านี้มีอยู่ในคลังย่อยที่เลือกแล้ว กรุณาเลือกสินค้าอื่น'
+          : 'เพิ่มสินค้าไม่สำเร็จ: ' + errorMessage,
+      })
     } finally {
       setAddingProduct(false)
     }
@@ -738,6 +834,7 @@ export default function WarehouseSub() {
   const headerTitle = selectedSub ? `คลังย่อย: ${selectedSub.name}` : 'คลังย่อย'
 
   const canSaveProductTableImage =
+    productViewMode !== 'history' &&
     products.length > 0 &&
     !(productViewMode === 'daily' && !loadingDaily && dailyRows.length === 0)
 
@@ -786,6 +883,33 @@ export default function WarehouseSub() {
     dateTo,
     showMessage,
   ])
+
+  const moveHistoryContent = loadingMoves ? (
+    <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
+  ) : moves.length === 0 ? (
+    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
+      <div className="text-base font-black text-slate-800">ไม่มีประวัติในช่วงวันที่ที่เลือก</div>
+      <div className="text-sm text-slate-600 mt-2">ลองขยายช่วงวันที่ หรือกดรีเฟรชข้อมูลหลังมีการบันทึกสต๊อค</div>
+    </div>
+  ) : (
+    <div className="overflow-x-auto"><table className="w-full text-sm">
+      <thead><tr className="bg-slate-900 text-white">
+        <th className="p-3 text-left rounded-tl-xl">เวลา</th><th className="p-3 text-left">รหัส</th>
+        <th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">+/-</th>
+        <th className="p-3 text-right">คงเหลือหลังรายการ</th><th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
+      </tr></thead>
+      <tbody className="divide-y">{moves.map((move) => {
+        const delta = Number(move.qty_delta || 0)
+        return <tr key={move.id} className="hover:bg-slate-50">
+          <td className="p-3 whitespace-nowrap text-slate-600">{new Date(move.created_at).toLocaleString('th-TH')}</td>
+          <td className="p-3 font-semibold">{move.product_code}</td><td className="p-3">{move.product_name}</td>
+          <td className={`p-3 text-right font-bold tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-red-700'}`}>{delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString()}</td>
+          <td className="p-3 text-right font-bold tabular-nums">{Number(move.balance_after || 0).toLocaleString()}</td>
+          <td className="p-3 text-slate-600"><div className="font-semibold text-slate-700">{move.reason || '-'}</div>{move.note && <div className="text-xs text-slate-500">{move.note}</div>}</td>
+        </tr>
+      })}</tbody>
+    </table></div>
+  )
 
   return (
     <div className="space-y-6 mt-4">
@@ -922,6 +1046,17 @@ export default function WarehouseSub() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setProductViewMode('history')}
+                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
+                          productViewMode === 'history'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        ประวัติการเติม/ลด
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setProductViewMode('range')}
                         className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
                           productViewMode === 'range'
@@ -949,14 +1084,14 @@ export default function WarehouseSub() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
-                  <button
+                  {productViewMode !== 'history' && <button
                     type="button"
                     onClick={() => void saveProductTableImage()}
                     disabled={!canSaveProductTableImage || savingTableImage || loadingProducts}
                     className="px-4 py-2.5 rounded-xl text-sm font-bold bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50 disabled:pointer-events-none shadow-sm whitespace-nowrap min-h-[44px]"
                   >
                     {savingTableImage ? 'กำลังบันทึก…' : 'บันทึกภาพ'}
-                  </button>
+                  </button>}
                   <div className="text-sm text-slate-500 bg-white/70 border border-slate-200 rounded-2xl px-4 py-2.5">
                     คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span>
                   </div>
@@ -965,18 +1100,38 @@ export default function WarehouseSub() {
             </div>
 
             <div className="p-6">
+            {productViewMode !== 'history' && (
+              <div className="mb-4">
+                <label className="text-sm font-semibold text-slate-700">ค้นหาสินค้าในคลังย่อย</label>
+                <input
+                  type="search"
+                  value={warehouseProductSearch}
+                  onChange={(e) => setWarehouseProductSearch(e.target.value)}
+                  placeholder="ค้นหาด้วยรหัสหรือชื่อสินค้า"
+                  className="w-full mt-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                />
+              </div>
+            )}
             <div
               ref={productStockExportRef}
               className="rounded-xl border border-slate-100 bg-white p-3 sm:p-4 shadow-sm"
             >
               <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="text-sm font-black text-slate-800">สินค้าในคลังย่อย</div>
+                <div className="text-sm font-black text-slate-800">
+                  {productViewMode === 'history' ? 'ประวัติการเติม/ลดสต๊อค' : 'สินค้าในคลังย่อย'}
+                </div>
                 <div className="text-xs text-slate-500">
                   {selectedSub?.name || '-'}
-                  {productViewMode === 'daily' ? ` · รายวัน ${countDate}` : ` · รวมช่วง ${dateFrom} – ${dateTo}`}
+                  {productViewMode === 'daily'
+                    ? ` · รายวัน ${countDate}`
+                    : productViewMode === 'history'
+                      ? ` · ประวัติ ${dateFrom} – ${dateTo}`
+                      : ` · รวมช่วง ${dateFrom} – ${dateTo}`}
                 </div>
               </div>
-            {loadingProducts ? (
+            {productViewMode === 'history' ? (
+              moveHistoryContent
+            ) : loadingProducts ? (
               <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
             ) : products.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
@@ -992,6 +1147,8 @@ export default function WarehouseSub() {
                 <div className="py-14 text-center text-slate-500 text-sm">
                   ไม่มีรายการสินค้า หรือโหลดสรุปรายวันไม่สำเร็จ — ลองกด <span className="font-bold text-slate-800">รีเฟรชข้อมูล</span>
                 </div>
+              ) : filteredDailyRows.length === 0 ? (
+                <div className="py-14 text-center text-slate-500 text-sm">ไม่พบสินค้าที่ตรงกับคำค้นหา</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm min-w-[920px]">
@@ -1010,7 +1167,7 @@ export default function WarehouseSub() {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {dailyRows.map((p) => {
+                      {filteredDailyRows.map((p) => {
                         const dash = loadingDaily
                         return (
                           <tr key={p.product_id} className="hover:bg-emerald-50">
@@ -1073,6 +1230,8 @@ export default function WarehouseSub() {
                   </table>
                 </div>
               )
+            ) : filteredWarehouseProducts.length === 0 ? (
+              <div className="py-14 text-center text-slate-500 text-sm">ไม่พบสินค้าที่ตรงกับคำค้นหา</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -1089,7 +1248,7 @@ export default function WarehouseSub() {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {products.map((p) => {
+                    {filteredWarehouseProducts.map((p) => {
                       const receivedIn = Number(p.qty_on_hand || 0)
                       const wmsQty = wmsCorrectMap[p.product_code] ?? 0
                       const onHand = receivedIn - Number(wmsQty || 0)
@@ -1148,73 +1307,6 @@ export default function WarehouseSub() {
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden w-full">
-            <div className="px-6 py-4 bg-gradient-to-r from-slate-50 via-white to-white border-b border-slate-200">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div>
-                  <div className="text-lg font-black text-slate-900">ประวัติการเติม/ลดสต๊อค</div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    ช่วงวันที่: <span className="font-bold text-slate-800">{dateFrom}</span> ถึง{' '}
-                    <span className="font-bold text-slate-800">{dateTo}</span>
-                  </div>
-                </div>
-                <div className="text-xs text-slate-500 bg-white/70 border border-slate-200 rounded-xl px-3 py-2">
-                  กรองรหัสสินค้าได้จากกล่องซ้าย (เฉพาะประวัติ)
-                </div>
-              </div>
-            </div>
-
-            <div className="p-6">
-            {loadingMoves ? (
-              <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
-            ) : moves.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
-                <div className="text-base font-black text-slate-800">ไม่มีประวัติในช่วงวันที่ที่เลือก</div>
-                <div className="text-sm text-slate-600 mt-2 max-w-xl mx-auto">
-                  ลองขยายช่วงวันที่ หรือกด <span className="font-bold text-slate-900">รีเฟรชข้อมูล</span> หลังมีการบันทึกสต๊อค
-                </div>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-slate-900 text-white">
-                      <th className="p-3 text-left rounded-tl-xl">เวลา</th>
-                      <th className="p-3 text-left">รหัส</th>
-                      <th className="p-3 text-left">สินค้า</th>
-                      <th className="p-3 text-right">+/-</th>
-                      <th className="p-3 text-right">คงเหลือหลังรายการ</th>
-                      <th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {moves.map((m) => {
-                      const dt = new Date(m.created_at).toLocaleString('th-TH')
-                      const delta = Number(m.qty_delta || 0)
-                      const deltaText = delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString()
-                      const deltaClass = delta > 0 ? 'text-emerald-700' : 'text-red-700'
-                      return (
-                        <tr key={m.id} className="hover:bg-slate-50">
-                          <td className="p-3 whitespace-nowrap text-slate-600">{dt}</td>
-                          <td className="p-3 font-semibold">{m.product_code}</td>
-                          <td className="p-3">{m.product_name}</td>
-                          <td className={`p-3 text-right font-bold tabular-nums ${deltaClass}`}>{deltaText}</td>
-                          <td className="p-3 text-right font-bold tabular-nums">
-                            {Number(m.balance_after || 0).toLocaleString()}
-                          </td>
-                          <td className="p-3 text-slate-600">
-                            <div className="font-semibold text-slate-700">{m.reason || '-'}</div>
-                            {m.note && <div className="text-xs text-slate-500">{m.note}</div>}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1314,10 +1406,8 @@ export default function WarehouseSub() {
             )}
           </div>
 
-          <div className="max-h-72 overflow-auto border border-slate-200 rounded-2xl bg-white">
-            {productOptions.length === 0 ? (
-              <div className="p-4 text-sm text-slate-500">พิมพ์เพื่อค้นหา</div>
-            ) : (
+          {productOptions.length > 0 && (
+            <div className="max-h-72 overflow-auto border border-slate-200 rounded-2xl bg-white">
               <div className="divide-y">
                 {productOptions.map((p) => {
                   const active = p.id === selectedProductId
@@ -1343,8 +1433,8 @@ export default function WarehouseSub() {
                   )
                 })}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="flex justify-end gap-2">
             <button
@@ -1485,9 +1575,9 @@ export default function WarehouseSub() {
               <div className="text-xl font-black text-slate-900">ตั้งค่าหน้ายาง</div>
               <div className="text-sm text-slate-500 mt-1">
                 จับคู่ <span className="font-semibold">สินค้าอะไหล่</span> ในคลังย่อย กับ{' '}
-                <span className="font-semibold">สินค้าผลิต</span> — ยอดผลิต WMS (correct) ของสินค้าผลิตจะถูกรวมแล้วแสดงแทนที่รหัสอะไหล่แต่ละรายการ
+                <span className="font-semibold">สินค้าผลิต</span>
               </div>
-              <div className="text-xs text-slate-500 mt-1">
+              <div className="text-sm text-slate-500 mt-1">
                 คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span> · แสดงกลุ่มที่ใช้กับคลังนี้หรือกลุ่ม “ทุกคลังย่อย”
               </div>
             </div>
@@ -1535,15 +1625,71 @@ export default function WarehouseSub() {
             </button>
           </div>
 
+          <div>
+            <label className="text-xs font-bold text-slate-600">ค้นหาชื่อกลุ่ม</label>
+            <input
+              type="search"
+              value={mapGroupSearch}
+              onChange={(e) => setMapGroupSearch(e.target.value)}
+              placeholder="พิมพ์ชื่อกลุ่มที่ต้องการค้นหา"
+              className="w-full mt-1 px-4 py-2.5 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+
           {mapModalLoading ? (
             <div className="py-12 text-center text-slate-400 font-semibold">กำลังโหลด...</div>
           ) : mapUiGroups.length === 0 ? (
             <div className="py-8 text-center text-slate-500 text-sm">ยังไม่มีกลุ่ม — สร้างกลุ่มแล้วเพิ่มรหัสอะไหล่และสินค้าผลิตได้เลย</div>
+          ) : filteredMapUiGroups.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-sm">ไม่พบกลุ่มที่ตรงกับคำค้นหา</div>
           ) : (
-            <div className="space-y-6">
-              {mapUiGroups.map((g) => (
-                <div key={g.id} className="rounded-2xl border border-slate-200 p-4 space-y-4 bg-white">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="space-y-3">
+              {filteredMapUiGroups.map((g) => {
+                const isExpanded = Boolean(expandedMapGroups[g.id])
+                return (
+                <div
+                  key={g.id}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => void reorderWmsMapGroups(g.id)}
+                  className={`relative rounded-2xl border bg-white transition-colors ${
+                    isExpanded ? 'z-30 overflow-visible' : 'z-0 overflow-hidden'
+                  } ${
+                    draggingMapGroupId === g.id ? 'border-emerald-400 bg-emerald-50/40' : 'border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-stretch">
+                    <div
+                      draggable={!mapGroupSearch.trim()}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = 'move'
+                        setDraggingMapGroupId(g.id)
+                      }}
+                      onDragEnd={() => setDraggingMapGroupId(null)}
+                      title={mapGroupSearch.trim() ? 'ล้างคำค้นหาก่อนปรับลำดับ' : 'ลากเพื่อปรับลำดับ'}
+                      className={`px-3 flex items-center justify-center text-slate-400 select-none ${
+                        mapGroupSearch.trim() ? 'cursor-not-allowed opacity-40' : 'cursor-grab active:cursor-grabbing hover:text-emerald-600'
+                      }`}
+                      aria-label="ลากเพื่อปรับลำดับกลุ่ม"
+                    >
+                      ⋮⋮
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedMapGroups((prev) => ({ ...prev, [g.id]: !prev[g.id] }))}
+                      className="flex-1 p-4 pl-1 flex items-center justify-between gap-3 text-left hover:bg-slate-50"
+                      aria-expanded={isExpanded}
+                    >
+                      <div className="min-w-0">
+                        <div className="font-black text-slate-900 truncate">{g.name}</div>
+                        <div className="text-xs text-slate-500 mt-1">
+                          อะไหล่ {g.spares.length} รายการ · สินค้าผลิต {g.sources.length} รายการ
+                        </div>
+                      </div>
+                      <span className="text-xl text-slate-500 shrink-0" aria-hidden="true">{isExpanded ? '⌃' : '⌄'}</span>
+                    </button>
+                  </div>
+                  {isExpanded && <div className="p-4 pt-0 space-y-4 border-t border-slate-100">
+                  <div className="flex flex-wrap items-start justify-between gap-2 pt-4">
                     <div className="min-w-0 flex-1">
                       <label className="text-xs font-bold text-slate-600">ชื่อกลุ่ม</label>
                       <input
@@ -1565,7 +1711,7 @@ export default function WarehouseSub() {
                     <button
                       type="button"
                       onClick={() => void deleteWmsMapGroup(g.id)}
-                      className="px-3 py-2 rounded-xl text-sm font-bold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 shrink-0"
+                      className="mt-7 px-3 py-2 rounded-xl text-sm font-bold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 shrink-0"
                     >
                       ลบกลุ่ม
                     </button>
@@ -1601,23 +1747,39 @@ export default function WarehouseSub() {
                         </tbody>
                       </table>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 flex items-start gap-2">
+                      <div className="relative min-w-[10rem] flex-1">
                       <input
-                        type="text"
-                        placeholder="รหัสสินค้าอะไหล่"
+                        type="search"
+                        placeholder="ค้นหารหัสหรือชื่อสินค้าอะไหล่"
                         value={mapLineDraft[g.id]?.spare ?? ''}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const value = e.target.value
                           setMapLineDraft((prev) => ({
                             ...prev,
-                            [g.id]: { spare: e.target.value, source: prev[g.id]?.source ?? '' },
+                            [g.id]: { spare: value, source: prev[g.id]?.source ?? '' },
                           }))
-                        }
-                        className="min-w-[10rem] flex-1 px-3 py-2 rounded-xl border border-slate-200"
+                          void searchWmsMapProducts(g.id, 'spare', value)
+                        }}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200"
                       />
+                      {mapProductSearchLoading[`${g.id}:spare`] && <div className="text-xs text-slate-400 mt-1">กำลังค้นหา...</div>}
+                      {(mapProductOptions[`${g.id}:spare`] || []).length > 0 && (
+                        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                          {mapProductOptions[`${g.id}:spare`].map((product) => (
+                            <button key={product.id} type="button" onClick={() => selectWmsMapProduct(g.id, 'spare', product)} className="w-full px-3 py-2 text-left hover:bg-emerald-50 border-b border-slate-100 last:border-0">
+                              <div className="font-mono text-sm font-bold">{product.product_code}</div>
+                              <div className="text-xs text-slate-600">{product.product_name}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      </div>
                       <button
                         type="button"
-                        onClick={() => void addWmsMapLine(g.id, 'spare', mapLineDraft[g.id]?.spare ?? '')}
-                        className="px-3 py-2 rounded-xl font-bold text-sm bg-slate-800 text-white hover:bg-slate-900"
+                        disabled={!mapSelectedProducts[`${g.id}:spare`]}
+                        onClick={() => void addWmsMapLine(g.id, 'spare')}
+                        className="px-3 py-2 rounded-xl font-bold text-sm bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         เพิ่มอะไหล่
                       </button>
@@ -1654,30 +1816,47 @@ export default function WarehouseSub() {
                         </tbody>
                       </table>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 flex items-start gap-2">
+                      <div className="relative min-w-[10rem] flex-1">
                       <input
-                        type="text"
-                        placeholder="รหัสสินค้าผลิต"
+                        type="search"
+                        placeholder="ค้นหารหัสหรือชื่อสินค้าผลิต"
                         value={mapLineDraft[g.id]?.source ?? ''}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const value = e.target.value
                           setMapLineDraft((prev) => ({
                             ...prev,
-                            [g.id]: { spare: prev[g.id]?.spare ?? '', source: e.target.value },
+                            [g.id]: { spare: prev[g.id]?.spare ?? '', source: value },
                           }))
-                        }
-                        className="min-w-[10rem] flex-1 px-3 py-2 rounded-xl border border-slate-200"
+                          void searchWmsMapProducts(g.id, 'source', value)
+                        }}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200"
                       />
+                      {mapProductSearchLoading[`${g.id}:source`] && <div className="text-xs text-slate-400 mt-1">กำลังค้นหา...</div>}
+                      {(mapProductOptions[`${g.id}:source`] || []).length > 0 && (
+                        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+                          {mapProductOptions[`${g.id}:source`].map((product) => (
+                            <button key={product.id} type="button" onClick={() => selectWmsMapProduct(g.id, 'source', product)} className="w-full px-3 py-2 text-left hover:bg-emerald-50 border-b border-slate-100 last:border-0">
+                              <div className="font-mono text-sm font-bold">{product.product_code}</div>
+                              <div className="text-xs text-slate-600">{product.product_name}</div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      </div>
                       <button
                         type="button"
-                        onClick={() => void addWmsMapLine(g.id, 'source', mapLineDraft[g.id]?.source ?? '')}
-                        className="px-3 py-2 rounded-xl font-bold text-sm bg-emerald-700 text-white hover:bg-emerald-800"
+                        disabled={!mapSelectedProducts[`${g.id}:source`]}
+                        onClick={() => void addWmsMapLine(g.id, 'source')}
+                        className="px-3 py-2 rounded-xl font-bold text-sm bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         เพิ่มสินค้าผลิต
                       </button>
                     </div>
                   </div>
+                  </div>}
                 </div>
-              ))}
+              )})}
             </div>
           )}
 
