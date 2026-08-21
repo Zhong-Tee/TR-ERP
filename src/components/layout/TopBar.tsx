@@ -27,6 +27,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [belowOrderPointCount, setBelowOrderPointCount] = useState(0)
   const [warehousePendingReturnCount, setWarehousePendingReturnCount] = useState(0)
   const [purchaseBadge, setPurchaseBadge] = useState<{ pr_pending: number; pr_approved_no_po: number; po_waiting_gr: number; machinery_pending?: number }>({ pr_pending: 0, pr_approved_no_po: 0, po_waiting_gr: 0, machinery_pending: 0 })
+  const [sampleAttentionCount, setSampleAttentionCount] = useState(0)
   // Badge เมนู HR: จำนวนใบลา + คำขอ OT + คำขอ WFH ที่รออนุมัติ (เรียลไทม์)
   const [hrLeavePending, setHrLeavePending] = useState(0)
   const [hrOtPending, setHrOtPending] = useState(0)
@@ -404,6 +405,32 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           : []
   const showProductsSubBarCount = location.pathname.startsWith('/products') && menuCount !== null
 
+  // จำนวน Sample ที่ยังอยู่ในขั้นตอนรับเข้า/รับแล้ว/กำลังทดสอบ แสดงข้างเมนูสินค้าตัวอย่าง
+  useEffect(() => {
+    const loadSampleAttentionCount = async () => {
+      const { count, error } = await supabase
+        .from('inv_samples')
+        .select('*', { count: 'exact', head: true })
+        .in('status', ['pending_receipt', 'received', 'testing'])
+      if (error) {
+        console.error('Error loading sample badge count:', error)
+        return
+      }
+      setSampleAttentionCount(count || 0)
+    }
+
+    void loadSampleAttentionCount()
+    window.addEventListener('purchase-samples-changed', loadSampleAttentionCount)
+    const channel = supabase
+      .channel('topbar-sample-attention-count')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inv_samples' }, loadSampleAttentionCount)
+      .subscribe()
+    return () => {
+      window.removeEventListener('purchase-samples-changed', loadSampleAttentionCount)
+      void supabase.removeChannel(channel)
+    }
+  }, [])
+
   // จองพื้นที่เท่าความสูงจริงของแถบเมนูย่อย — เมนูยาวจนมี scrollbar แนวนอน (เช่น HR) จะสูงกว่า 4.5rem
   const subnavRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -663,6 +690,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                           ? purchaseBadge.pr_approved_no_po
                           : tab.path === '/purchase/gr' && purchaseBadge.po_waiting_gr > 0
                             ? purchaseBadge.po_waiting_gr
+                            : tab.path === '/purchase/sample' && sampleAttentionCount > 0
+                              ? sampleAttentionCount
                             : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending + hrWfhPending) > 0
                               ? hrLeavePending + hrOtPending + hrWfhPending
                               : tab.path === '/hr/announcements' && hrAnnouncementAttention > 0

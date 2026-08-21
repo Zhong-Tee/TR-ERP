@@ -5,8 +5,10 @@ import { useAuthContext } from '../contexts/AuthContext'
 import type { InventorySample, InventorySampleItem } from '../types'
 import {
   loadSamples,
+  loadSampleStatusCounts,
   loadSampleDetail,
   createSample,
+  receivePendingSample,
   updateSampleTest,
   convertSampleToProduct,
   getNextProductCode,
@@ -22,6 +24,7 @@ const SAMPLE_IMAGES_BUCKET = 'sample-images'
 const PRODUCT_IMAGES_BUCKET = 'product-images'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
+  pending_receipt: { label: 'รอรับเข้า', color: 'bg-orange-100 text-orange-800' },
   received: { label: 'รับแล้ว', color: 'bg-blue-100 text-blue-800' },
   testing: { label: 'กำลังทดสอบ', color: 'bg-yellow-100 text-yellow-800' },
   approved: { label: 'ผ่านการทดสอบ', color: 'bg-emerald-100 text-emerald-800' },
@@ -65,6 +68,7 @@ export default function PurchaseSample() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [statusCounts, setStatusCounts] = useState({ pending_receipt: 0, received: 0, testing: 0 })
 
   const [debouncedSearch, setDebouncedSearch] = useState(search)
   useEffect(() => {
@@ -76,8 +80,10 @@ export default function PurchaseSample() {
   const [saving, setSaving] = useState(false)
   const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_name_manual: '', qty: 1, note: '', image_file: null, image_preview: '' }])
   const [note, setNote] = useState('')
+  const [receiptStatus, setReceiptStatus] = useState<'pending_receipt' | 'received'>('received')
 
   const [viewing, setViewing] = useState<InventorySample | null>(null)
+  const [enlargedImage, setEnlargedImage] = useState('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [actionSaving, setActionSaving] = useState(false)
   const [startTestOpen, setStartTestOpen] = useState(false)
@@ -119,14 +125,16 @@ export default function PurchaseSample() {
   async function loadAll() {
     setLoading(true)
     try {
-      const [sampleData, sellerData, categories] = await Promise.all([
+      const [sampleData, sellerData, categories, counts] = await Promise.all([
         loadSamples({ status: statusFilter, search: debouncedSearch }),
         loadSellers(),
         loadProductCategoryOptions(),
+        loadSampleStatusCounts(),
       ])
       setSamples(sampleData.map((s: any) => ({ ...s, _itemCount: s.inv_sample_items?.length ?? 0 })))
       setSellers(sellerData as any)
       setCategoryOptions(categories)
+      setStatusCounts(counts)
 
       const userIds = sampleData
         .flatMap((s) => [s.received_by, s.testing_started_by, s.tested_by, s.approved_by])
@@ -180,11 +188,14 @@ export default function PurchaseSample() {
         sampleLabel: derivedSampleLabel,
         note: note.trim() || undefined,
         userId: user?.id,
+        receiptStatus,
       })
       setDraftItems([{ product_name_manual: '', qty: 1, note: '', image_file: null, image_preview: '' }])
       setNote('')
+      setReceiptStatus('received')
       setCreateOpen(false)
       await loadAll()
+      window.dispatchEvent(new CustomEvent('purchase-samples-changed'))
     } catch (e: any) {
       showMessage({ title: 'เกิดข้อผิดพลาด', message: 'สร้างไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
@@ -212,6 +223,21 @@ export default function PurchaseSample() {
       setViewing(detail)
     } catch (e) {
       console.error(e)
+    }
+  }
+
+  async function handleReceivePending() {
+    if (!viewing) return
+    setActionSaving(true)
+    try {
+      await receivePendingSample(viewing.id, user?.id)
+      await refreshDetail()
+      await loadAll()
+      window.dispatchEvent(new CustomEvent('purchase-samples-changed'))
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'รับสินค้าไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setActionSaving(false)
     }
   }
 
@@ -389,8 +415,9 @@ export default function PurchaseSample() {
 
   const statusTabs = [
     { key: 'all', label: 'ทั้งหมด' },
-    { key: 'received', label: 'รับแล้ว' },
-    { key: 'testing', label: 'กำลังทดสอบ' },
+    { key: 'pending_receipt', label: 'รอรับเข้า', count: statusCounts.pending_receipt },
+    { key: 'received', label: 'รับแล้ว', count: statusCounts.received },
+    { key: 'testing', label: 'กำลังทดสอบ', count: statusCounts.testing },
     { key: 'approved', label: 'ผ่านการทดสอบ' },
     { key: 'rejected', label: 'ไม่ผ่าน' },
     { key: 'converted', label: 'นำเข้าระบบแล้ว' },
@@ -410,7 +437,12 @@ export default function PurchaseSample() {
                   statusFilter === t.key ? 'bg-white shadow text-emerald-700' : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
-                {t.label}
+                <span>{t.label}</span>
+                {'count' in t && (
+                  <span className={`ml-1.5 inline-flex min-w-5 h-5 items-center justify-center rounded-full px-1.5 text-xs font-bold ${statusFilter === t.key ? 'bg-emerald-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
+                    {(t.count ?? 0) > 99 ? '99+' : (t.count ?? 0)}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -490,6 +522,20 @@ export default function PurchaseSample() {
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-3xl">
         <div className="p-6 space-y-5">
           <h2 className="text-xl font-bold text-gray-900">รับสินค้าตัวอย่าง</h2>
+          <fieldset>
+            <legend className="block text-sm font-medium text-gray-700 mb-2">สถานะการรับสินค้า</legend>
+            <div className="flex flex-wrap gap-3">
+              {([
+                { value: 'pending_receipt', label: 'รอรับเข้า' },
+                { value: 'received', label: 'รับเข้า' },
+              ] as const).map((option) => (
+                <label key={option.value} className={`flex items-center gap-2 px-4 py-2.5 border rounded-lg cursor-pointer transition-colors ${receiptStatus === option.value ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-gray-200 hover:bg-gray-50'}`}>
+                  <input type="radio" name="receipt-status" value={option.value} checked={receiptStatus === option.value} onChange={() => setReceiptStatus(option.value)} className="w-4 h-4 accent-emerald-600" />
+                  <span className="text-sm font-medium">{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <div className="space-y-3 max-h-[45vh] overflow-y-auto pr-1">
             {draftItems.map((item, index) => (
               <div key={`draft-${index}`} className="border rounded-lg p-3 bg-gray-50/50 space-y-2">
@@ -555,7 +601,7 @@ export default function PurchaseSample() {
             </div>
           ) : viewing ? (
             <>
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between gap-4 pr-10">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียดสินค้าตัวอย่าง</h2>
                   <p className="text-sm text-gray-500 mt-1">
@@ -565,6 +611,7 @@ export default function PurchaseSample() {
                 <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
                   {(STATUS_MAP[viewing.status] || { label: viewing.status }).label}
                 </span>
+                <button type="button" onClick={() => setViewing(null)} aria-label="ปิดหน้าต่าง" title="ปิด" className="absolute right-4 top-4 w-9 h-9 flex items-center justify-center rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100 text-2xl leading-none">×</button>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -643,7 +690,9 @@ export default function PurchaseSample() {
                           <td className="px-3 py-2">
                             <div className="w-10 h-10 rounded bg-gray-200 overflow-hidden">
                               {imgUrl ? (
-                                <img src={imgUrl} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                <button type="button" onClick={() => setEnlargedImage(imgUrl)} className="w-full h-full cursor-zoom-in" title="คลิกเพื่อขยายรูป">
+                                  <img src={imgUrl} alt={displayName} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                </button>
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center text-gray-400 text-[10px]">-</div>
                               )}
@@ -685,6 +734,11 @@ export default function PurchaseSample() {
 
               {/* Action buttons */}
               <div className="flex justify-end gap-3 pt-3 border-t">
+                {viewing.status === 'pending_receipt' && (
+                  <button onClick={handleReceivePending} disabled={actionSaving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-semibold disabled:opacity-50">
+                    {actionSaving ? 'กำลังรับเข้า...' : 'รับเข้า'}
+                  </button>
+                )}
                 {viewing.status === 'received' && (
                   <button
                     onClick={async () => {
@@ -712,6 +766,13 @@ export default function PurchaseSample() {
               </div>
             </>
           ) : null}
+        </div>
+      </Modal>
+
+      <Modal open={!!enlargedImage} onClose={() => setEnlargedImage('')} closeOnBackdropClick contentClassName="max-w-5xl bg-black/90 border-0" stackClassName="z-[70]">
+        <div className="relative p-4 flex items-center justify-center min-h-[50vh]">
+          <button type="button" onClick={() => setEnlargedImage('')} aria-label="ปิดรูปขยาย" className="absolute right-3 top-3 z-10 w-10 h-10 rounded-full bg-white/90 text-gray-900 text-2xl hover:bg-white">×</button>
+          {enlargedImage && <img src={enlargedImage} alt="รูปสินค้าตัวอย่างขนาดใหญ่" className="max-w-full max-h-[75vh] object-contain rounded-lg" />}
         </div>
       </Modal>
 

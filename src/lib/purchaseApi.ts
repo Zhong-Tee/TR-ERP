@@ -577,6 +577,26 @@ export async function loadSamples(filters: SampleListFilters = {}): Promise<Inve
   return (data || []) as unknown as InventorySample[]
 }
 
+export type SampleActiveStatus = 'pending_receipt' | 'received' | 'testing'
+
+export async function loadSampleStatusCounts(): Promise<Record<SampleActiveStatus, number>> {
+  const { data, error } = await supabase
+    .from('inv_samples')
+    .select('status')
+    .in('status', ['pending_receipt', 'received', 'testing'])
+  if (error) throw error
+
+  const counts: Record<SampleActiveStatus, number> = {
+    pending_receipt: 0,
+    received: 0,
+    testing: 0,
+  }
+  for (const row of data || []) {
+    if (row.status in counts) counts[row.status as SampleActiveStatus] += 1
+  }
+  return counts
+}
+
 export async function loadSampleDetail(sampleId: string) {
   const { data, error } = await supabase
     .from('inv_samples')
@@ -603,6 +623,7 @@ export interface CreateSampleInput {
   sampleLabel: string
   note?: string
   userId?: string
+  receiptStatus: 'pending_receipt' | 'received'
 }
 
 export async function createSample(input: CreateSampleInput) {
@@ -611,9 +632,19 @@ export async function createSample(input: CreateSampleInput) {
     p_sample_label: input.sampleLabel,
     p_note: input.note || null,
     p_user_id: input.userId || null,
+    p_receipt_status: input.receiptStatus,
   })
   if (error) throw error
   return data as { id: string; sample_no: string }
+}
+
+export async function receivePendingSample(sampleId: string, userId?: string) {
+  const { error } = await supabase
+    .from('inv_samples')
+    .update({ status: 'received', received_at: new Date().toISOString(), received_by: userId || null })
+    .eq('id', sampleId)
+    .eq('status', 'pending_receipt')
+  if (error) throw error
 }
 
 export async function updateSampleTest(

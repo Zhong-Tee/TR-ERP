@@ -137,16 +137,22 @@ export default function Machinery() {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [myPendingPurchaseCount, setMyPendingPurchaseCount] = useState(0)
 
-  const showSettingsTab =
+  const showMachineSettingsTab =
     user?.role !== 'production_mb' &&
     user?.role !== 'manager' &&
     user?.role !== 'technician' &&
     (isSuperadmin(user?.role) || hasAccess('machinery-settings'))
+  const showChecklistSettingsTab =
+    user?.role === 'technician' || showMachineSettingsTab
   const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin'
 
   useEffect(() => {
-    if ((!showSettingsTab && (tab === 'machineSettings' || tab === 'checklistSettings')) || (!showPurchaseSettingsTab && tab === 'purchaseSettings')) setTab('monitor')
-  }, [showSettingsTab, showPurchaseSettingsTab, tab])
+    if (
+      (!showMachineSettingsTab && tab === 'machineSettings') ||
+      (!showChecklistSettingsTab && tab === 'checklistSettings') ||
+      (!showPurchaseSettingsTab && tab === 'purchaseSettings')
+    ) setTab('monitor')
+  }, [showMachineSettingsTab, showChecklistSettingsTab, showPurchaseSettingsTab, tab])
 
   const isMobileRole =
     user?.role === 'production_mb' || user?.role === 'manager' || user?.role === 'technician'
@@ -793,7 +799,8 @@ export default function Machinery() {
 
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
         {(['monitor', 'inspection', 'maintenance', 'machineSettings', 'checklistSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
-          if ((k === 'machineSettings' || k === 'checklistSettings') && !showSettingsTab) return null
+          if (k === 'machineSettings' && !showMachineSettingsTab) return null
+          if (k === 'checklistSettings' && !showChecklistSettingsTab) return null
           if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null
           const labels: Record<TabKey, string> = {
             monitor: 'สถานะ / มอนิเตอร์',
@@ -832,7 +839,7 @@ export default function Machinery() {
 
       {tab === 'inspection' && <MachineryChecklist machines={machines} onChanged={load} />}
       {tab === 'maintenance' && <MachineryMaintenance machines={machines} onChanged={load} />}
-      {tab === 'checklistSettings' && showSettingsTab && <ChecklistSettings machines={machines} />}
+      {tab === 'checklistSettings' && showChecklistSettingsTab && <ChecklistSettings machines={machines} />}
 
       {tab === 'monitor' && (
         <section className="space-y-5">
@@ -1036,7 +1043,7 @@ export default function Machinery() {
         </section>
       )}
 
-      {tab === 'machineSettings' && showSettingsTab && (
+      {tab === 'machineSettings' && showMachineSettingsTab && (
         <section className="space-y-6">
           {!isMachineFormOpen && <div className="flex justify-end">
             <button

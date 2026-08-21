@@ -1841,12 +1841,12 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     >
                       {/* Order Info */}
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <div className="min-w-0">
-                          <div className="font-semibold text-blue-600 text-base truncate">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-blue-600 text-base leading-6 truncate">
                             {order.bill_no}
                             <UrgencyBadge order={order} className="ml-1.5" />
                           </div>
-                          <div className="text-sm text-gray-500 truncate">{order.customer_name}</div>
+                          <div className="mt-1 min-h-7 text-sm leading-7 text-gray-500 truncate">{order.customer_name}</div>
                         </div>
                         <div className="text-right shrink-0">
                           <div className="font-bold text-emerald-600 text-sm">
