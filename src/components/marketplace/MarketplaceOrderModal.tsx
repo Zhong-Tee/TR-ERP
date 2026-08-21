@@ -318,6 +318,10 @@ export default function MarketplaceOrderModal({
   function applySplit(itemId: string, qtys: number[]) {
     const orig = items.find((it) => it.id === itemId)
     if (!orig) return
+    const displayName = productSearch[orig.id]
+      || (orig.product_id ? productById.get(orig.product_id)?.product_name : '')
+      || orig.product_name_raw
+      || ''
     const groupId = crypto.randomUUID()
     const rows: MpOrderItem[] = qtys.map((q, i) => ({
       ...orig,
@@ -337,6 +341,11 @@ export default function MarketplaceOrderModal({
       rows.forEach((r) => {
         next[r.id] = groupId
       })
+      return next
+    })
+    setProductSearch((prev) => {
+      const next = { ...prev }
+      rows.forEach((row) => { next[row.id] = displayName })
       return next
     })
     closeSplit()
@@ -876,7 +885,10 @@ export default function MarketplaceOrderModal({
                             <input
                               type="text"
                               list={`mp-product-list-${it.id}`}
-                              value={productSearch[it.id] ?? ''}
+                              value={productSearch[it.id]
+                                ?? (it.product_id ? productById.get(it.product_id)?.product_name : undefined)
+                                ?? it.product_name_raw
+                                ?? ''}
                               disabled={readOnly}
                               onChange={(e) => {
                                 const v = e.target.value
