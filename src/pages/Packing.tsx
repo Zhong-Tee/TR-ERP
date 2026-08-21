@@ -1091,6 +1091,7 @@ export default function Packing() {
 
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
+        const workOrderIds = orders.map((wo) => wo.id)
         const [
           { data: allProductionOrders },
           { data: finishedSessions },
@@ -1098,8 +1099,8 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, bill_no, channel_code, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity)')
-            .in('work_order_name', names)
+            .select('id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity)')
+            .in('work_order_id', workOrderIds)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
             .from('qc_sessions')
@@ -1138,7 +1139,7 @@ export default function Packing() {
 
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
-          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_name === wo.work_order_name)
+          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
           const hasTracking = ordersInWo.some((o: any) => o.tracking_number)
           const isPartiallyPacked = ordersInWo.some((o: any) => {
             if (o.packing_meta?.parcelScanned) return true
@@ -1227,7 +1228,7 @@ export default function Packing() {
         for (const wo of orders) {
           const st = statusMap[wo.work_order_name]
           if (!st || !(st.qcCompleted || st.qcSkipped)) continue
-          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_name === wo.work_order_name)
+          const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
           const allOffice = ordersInWo.length > 0 && ordersInWo.every((o: any) => o.channel_code === 'OFFICE')
           if (!allOffice) continue
           const officeIds = ordersInWo.map((o: any) => o.id as string)
@@ -1271,12 +1272,20 @@ export default function Packing() {
     setIsLoadingOrders(true)
     setCurrentWorkOrderName(workOrderName)
     try {
-      const { data, error } = await supabase
+      const { data: workOrderHeader } = await supabase
+        .from('or_work_orders')
+        .select('id')
+        .eq('work_order_name', workOrderName)
+        .maybeSingle()
+      let ordersQuery = supabase
         .from('or_orders')
         .select('*, or_order_items(*, pr_products(product_code))')
-        .eq('work_order_name', workOrderName)
         .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
         .order('bill_no', { ascending: true })
+      ordersQuery = workOrderHeader?.id
+        ? ordersQuery.eq('work_order_id', workOrderHeader.id)
+        : ordersQuery.eq('work_order_name', workOrderName)
+      const { data, error } = await ordersQuery
 
       if (error) throw error
       const orders = (data || []) as OrderWithItems[]
@@ -1339,16 +1348,20 @@ export default function Packing() {
     })
 
     const grouped: Record<string, PackingItem[]> = {}
-    const trackingOrder: string[] = []
+    const groupOrder: string[] = []
     flatData.forEach((item) => {
-      if (!grouped[item.tracking_number]) {
-        grouped[item.tracking_number] = []
-        trackingOrder.push(item.tracking_number)
+      // One packing group must represent exactly one bill. Legacy data may contain
+      // the same tracking number on several bills; grouping by tracking merged them
+      // and only the first order_id was shipped, leaving the other bills stuck.
+      const groupKey = item.order_id || `tracking:${item.tracking_number}`
+      if (!grouped[groupKey]) {
+        grouped[groupKey] = []
+        groupOrder.push(groupKey)
       }
-      grouped[item.tracking_number].push(item)
+      grouped[groupKey].push(item)
     })
 
-    const aggregated = trackingOrder.map((tracking) => grouped[tracking])
+    const aggregated = groupOrder.map((groupKey) => grouped[groupKey])
     const needTagCount = aggregated.filter((group) => group[0].packingTag == null).length
     const reservedTags = reserveDailyPackingTags(needTagCount)
     let tagIdx = 0

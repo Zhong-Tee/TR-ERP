@@ -9,6 +9,10 @@ import * as ExcelJS from 'exceljs'
 import { useWmsModal } from '../useWmsModal'
 import type { ProductType } from '../../../types'
 
+const PHOTO_REQUIRED_TOPICS = new Set(['ผลิตเสีย', 'สินค้าชำรุด'])
+const requiresDamageEvidence = (topic: string) => PHOTO_REQUIRED_TOPICS.has(topic)
+const DAMAGE_BUCKET = 'wms-damage-evidence'
+
 export default function RequisitionDashboard() {
   const { user } = useAuthContext()
   const [requisitions, setRequisitions] = useState<any[]>([])
@@ -303,12 +307,18 @@ export default function RequisitionDashboard() {
     }
   }
 
+  useEffect(() => {
+    if (!showCreate) return
+    const timer = window.setTimeout(() => { void cSearchProducts() }, 250)
+    return () => window.clearTimeout(timer)
+  }, [cSearchTerm, cProductType, showCreate])
+
   const cAddItem = (product: any) => {
     const existing = cSelectedItems.find((i: any) => i.product_code === product.product_code)
     if (existing) {
       setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === product.product_code ? { ...i, qty: i.qty + 1 } : i))
     } else {
-      setCSelectedItems([...cSelectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '' }])
+      setCSelectedItems([...cSelectedItems, { ...product, qty: 1, requisition_topic: '', item_note: '', damage_files: [], damage_previews: [] }])
     }
   }
 
@@ -320,21 +330,54 @@ export default function RequisitionDashboard() {
   }
 
   const cUpdateTopic = (code: string, topic: string) => {
-    setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, requisition_topic: topic } : i))
+    setCSelectedItems(cSelectedItems.map((i: any) => {
+      if (i.product_code !== code) return i
+      if (!requiresDamageEvidence(topic)) (i.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...i, requisition_topic: topic,
+        damage_files: requiresDamageEvidence(topic) ? i.damage_files : [],
+        damage_previews: requiresDamageEvidence(topic) ? i.damage_previews : [] }
+    }))
   }
 
   const cUpdateNote = (code: string, item_note: string) => {
     setCSelectedItems(cSelectedItems.map((i: any) => i.product_code === code ? { ...i, item_note } : i))
   }
 
+  const cAddDamagePhotos = (code: string, files: FileList | null) => {
+    if (!files) return
+    setCSelectedItems((current) => current.map((item: any) => {
+      if (item.product_code !== code) return item
+      const accepted = Array.from(files).filter((file) => file.type.startsWith('image/') && file.size <= 10 * 1024 * 1024)
+      const nextFiles = [...(item.damage_files || []), ...accepted].slice(0, 5)
+      ;(item.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...item, damage_files: nextFiles, damage_previews: nextFiles.map(URL.createObjectURL) }
+    }))
+  }
+
+  const cRemoveDamagePhoto = (code: string, index: number) => {
+    setCSelectedItems((current) => current.map((item: any) => {
+      if (item.product_code !== code) return item
+      const nextFiles = (item.damage_files || []).filter((_: File, fileIndex: number) => fileIndex !== index)
+      ;(item.damage_previews || []).forEach(URL.revokeObjectURL)
+      return { ...item, damage_files: nextFiles, damage_previews: nextFiles.map(URL.createObjectURL) }
+    }))
+  }
+
   const cSubmit = async () => {
     if (cSelectedItems.length === 0) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้า' }); return }
     if (cSelectedItems.some((i: any) => !i.requisition_topic)) { showMessage({ message: 'กรุณาเลือกหัวข้อการเบิกให้ครบทุกรายการ' }); return }
+    if (cSelectedItems.some((i: any) => requiresDamageEvidence(i.requisition_topic) && !i.item_note?.trim())) {
+      showMessage({ message: 'หัวข้อผลิตเสียและสินค้าชำรุดต้องกรอกเหตุผล/หมายเหตุให้ครบทุกรายการ' }); return
+    }
+    if (cSelectedItems.some((i: any) => requiresDamageEvidence(i.requisition_topic) && !(i.damage_files || []).length)) {
+      showMessage({ message: 'หัวข้อผลิตเสียและสินค้าชำรุดต้องแนบรูปอย่างน้อย 1 รูปต่อรายการ' }); return
+    }
 
     const ok = await showConfirm({ title: 'ยืนยันสร้างใบเบิก', message: `สร้างใบเบิก ${cRequisitionId}?\nจำนวน ${cSelectedItems.length} รายการ` })
     if (!ok) return
 
     setCSubmitting(true)
+    const uploadedPaths: string[] = []
     try {
       const { error: reqErr } = await supabase.from('wms_requisitions').insert({
         requisition_id: cRequisitionId,
@@ -345,15 +388,20 @@ export default function RequisitionDashboard() {
       })
       if (reqErr) throw reqErr
 
-      const items = cSelectedItems.map((item: any) => ({
-        requisition_id: cRequisitionId,
-        product_code: item.product_code,
-        product_name: item.product_name,
-        location: item.storage_location || null,
-        qty: item.qty,
-        requisition_topic: item.requisition_topic || null,
-        item_note: item.item_note?.trim() || null,
-      }))
+      const items = []
+      for (const item of cSelectedItems) {
+        const damagePaths: string[] = []
+        for (const file of item.damage_files || []) {
+          const ext = file.name.split('.').pop() || 'jpg'
+          const path = `${user?.id}/${cRequisitionId}/${item.product_code}/${crypto.randomUUID()}.${ext}`
+          const { error } = await supabase.storage.from(DAMAGE_BUCKET).upload(path, file, { contentType: file.type, upsert: false })
+          if (error) throw error
+          uploadedPaths.push(path); damagePaths.push(path)
+        }
+        items.push({ requisition_id: cRequisitionId, product_code: item.product_code, product_name: item.product_name,
+          location: item.storage_location || null, qty: item.qty, requisition_topic: item.requisition_topic || null,
+          item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths })
+      }
       const { error: itemErr } = await supabase.from('wms_requisition_items').insert(items)
       if (itemErr) throw itemErr
 
@@ -362,7 +410,9 @@ export default function RequisitionDashboard() {
       loadRequisitions()
       window.dispatchEvent(new Event('wms-data-changed'))
     } catch (e: any) {
-      showMessage({ message: `เกิดข้อผิดพลาด: ${e.message}` })
+      if (uploadedPaths.length) await supabase.storage.from(DAMAGE_BUCKET).remove(uploadedPaths)
+      await supabase.from('wms_requisitions').delete().eq('requisition_id', cRequisitionId)
+      showMessage({ message: `สร้างใบเบิกไม่สำเร็จ: ${e.message}` })
     } finally {
       setCSubmitting(false)
     }
@@ -543,14 +593,11 @@ export default function RequisitionDashboard() {
                     <option value="">{cLoadingProducts ? 'กำลังโหลด...' : `-- เลือกสินค้าจากรายการ (${cAllProducts.length}) --`}</option>
                     {cAllProducts.map((p: any) => <option key={p.product_code} value={p.product_code}>{p.product_code} — {p.product_name}</option>)}
                   </select>
-                  <div className="flex gap-2">
-                    <input type="text" value={cSearchTerm} onChange={(e) => setCSearchTerm(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && cSearchProducts()}
+                  <div>
+                    <input type="search" value={cSearchTerm} onChange={(e) => setCSearchTerm(e.target.value)}
                       placeholder="รหัสหรือชื่อสินค้า..."
-                      className="flex-1 border p-2.5 rounded-lg text-sm" />
-                    <button onClick={cSearchProducts} disabled={cSearching} className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm hover:bg-blue-700 disabled:opacity-50">
-                      {cSearching ? '...' : 'ค้นหา'}
-                    </button>
+                      className="w-full border p-2.5 rounded-lg text-sm" />
+                    {cSearching && <div className="mt-1 text-xs text-gray-400">กำลังกรองรายการ...</div>}
                   </div>
                 </div>
 
@@ -615,10 +662,25 @@ export default function RequisitionDashboard() {
                           <textarea
                             value={item.item_note || ''}
                             onChange={(e) => cUpdateNote(item.product_code, e.target.value)}
-                            placeholder="หมายเหตุรายการ (ไม่บังคับกรอก)"
-                            className="w-full border border-gray-300 p-2.5 rounded-lg text-sm resize-none"
+                            placeholder={requiresDamageEvidence(item.requisition_topic) ? 'กรุณาระบุเหตุผล/รายละเอียดความเสียหาย *' : 'หมายเหตุรายการ (ไม่บังคับกรอก)'}
+                            className={`w-full border p-2.5 rounded-lg text-sm resize-none ${requiresDamageEvidence(item.requisition_topic) && !item.item_note?.trim() ? 'border-red-400' : 'border-gray-300'}`}
                             rows={2}
                           />
+                          {requiresDamageEvidence(item.requisition_topic) && <div className="rounded-lg border border-red-200 bg-red-50 p-3">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-red-700">รูปหลักฐานอย่างน้อย 1 รูป *</span>
+                              <label className="cursor-pointer rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white">
+                                <i className="fas fa-camera mr-1" />แนบรูป
+                                <input type="file" accept="image/*" multiple className="hidden" onChange={(e) => { cAddDamagePhotos(item.product_code, e.target.files); e.currentTarget.value = '' }} />
+                              </label>
+                            </div>
+                            {!!item.damage_previews?.length ? <div className="grid grid-cols-4 gap-2">
+                              {item.damage_previews.map((src: string, index: number) => <div key={src} className="relative aspect-square">
+                                <img src={src} alt="รูปหลักฐาน" className="h-full w-full rounded-lg object-cover" />
+                                <button type="button" onClick={() => cRemoveDamagePhoto(item.product_code, index)} className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-red-600 text-xs font-bold text-white">×</button>
+                              </div>)}
+                            </div> : <div className="text-xs text-red-500">ยังไม่ได้แนบรูปหลักฐาน</div>}
+                          </div>}
                         </div>
                       ))}
                     </div>

@@ -47,6 +47,7 @@ export default function ReturnRequisitionDashboard() {
   const [processing, setProcessing] = useState<string | null>(null)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canManageReturnDecision = ['superadmin', 'admin', 'manager'].includes(user?.role || '')
+  const canApproveReturn = ['superadmin', 'admin', 'manager', 'store'].includes(user?.role || '')
 
   // --- Create return state ---
   const [showCreate, setShowCreate] = useState(false)
@@ -116,7 +117,7 @@ export default function ReturnRequisitionDashboard() {
   }
 
   const handleApprove = async (ret: ReturnRequisition) => {
-    if (!canManageReturnDecision) {
+    if (!canApproveReturn) {
       showMessage({ message: 'ไม่มีสิทธิ์อนุมัติรายการคืน' })
       return
     }
@@ -660,9 +661,9 @@ export default function ReturnRequisitionDashboard() {
           </div>
 
           {/* Footer actions */}
-          {detailModal.ret?.status === 'pending' && canManageReturnDecision && (
+          {detailModal.ret?.status === 'pending' && canApproveReturn && (
             <div className="p-4 border-t border-gray-200 flex gap-3 bg-white">
-              <button
+              {canManageReturnDecision && <button
                 type="button"
                 onClick={() => detailModal.ret && handleReject(detailModal.ret)}
                 disabled={processing === detailModal.ret?.id}
@@ -670,7 +671,7 @@ export default function ReturnRequisitionDashboard() {
               >
                 <i className="fas fa-times mr-2"></i>
                 ไม่อนุมัติ
-              </button>
+              </button>}
               <button
                 type="button"
                 onClick={() => detailModal.ret && handleApprove(detailModal.ret)}

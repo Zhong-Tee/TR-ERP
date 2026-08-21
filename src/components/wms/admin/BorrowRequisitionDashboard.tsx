@@ -111,6 +111,7 @@ export default function BorrowRequisitionDashboard() {
   const [actionQtys, setActionQtys] = useState<Record<string, number>>({})
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canManage = ['superadmin', 'admin'].includes(user?.role || '')
+  const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const canCreate = ['superadmin', 'admin', 'store', 'production'].includes(user?.role || '')
 
   // --- Create borrow state ---
@@ -544,21 +545,21 @@ export default function BorrowRequisitionDashboard() {
             </div>
 
             {/* Action buttons */}
-            {canManage && (
+            {(canManage || canApprove) && (
               <div className="p-4 border-t bg-white flex flex-wrap gap-2">
                 {detailModal.bor.status === 'pending' && (
                   <>
-                    <button type="button" onClick={() => handleApprove(detailModal.bor!.id)} disabled={!!processing}
+                    {canApprove && <button type="button" onClick={() => handleApprove(detailModal.bor!.id)} disabled={!!processing}
                       className="px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 disabled:opacity-50">
                       <i className="fas fa-check mr-1" /> อนุมัติ
-                    </button>
-                    <button type="button" onClick={() => handleReject(detailModal.bor!.id)} disabled={!!processing}
+                    </button>}
+                    {canManage && <button type="button" onClick={() => handleReject(detailModal.bor!.id)} disabled={!!processing}
                       className="px-5 py-2.5 bg-red-600 text-white rounded-lg text-sm font-bold hover:bg-red-700 disabled:opacity-50">
                       <i className="fas fa-times mr-1" /> ปฏิเสธ
-                    </button>
+                    </button>}
                   </>
                 )}
-                {['approved', 'partial_returned', 'overdue'].includes(detailModal.bor.status) && (
+                {canManage && ['approved', 'partial_returned', 'overdue'].includes(detailModal.bor.status) && (
                   <>
                     {actionMode === 'view' && (
                       <>

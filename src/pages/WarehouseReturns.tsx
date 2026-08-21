@@ -3,11 +3,11 @@ import { supabase } from '../lib/supabase'
 import Modal from '../components/ui/Modal'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryReturn, InventoryReturnItem } from '../types'
-import { adjustStockBalancesBulkRPC } from '../lib/inventory'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useWmsModal } from '../components/wms/useWmsModal'
 
 type StatusFilter = 'all' | 'pending' | 'return_to_stock' | 'waste'
+type ItemDisposition = 'return_to_stock' | 'waste' | 'lost'
 
 interface MatchedOrder {
   bill_no: string
@@ -60,6 +60,7 @@ export default function WarehouseReturns() {
   const [lightboxImg, setLightboxImg] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [wasteCostMap, setWasteCostMap] = useState<Record<string, number>>({})
+  const [itemDispositions, setItemDispositions] = useState<Record<string, ItemDisposition>>({})
 
   const canSeeCost = ['superadmin', 'account'].includes(user?.role || '')
 
@@ -121,13 +122,24 @@ export default function WarehouseReturns() {
     setNotFound(false)
 
     try {
-      const { data: orders, error } = await supabase
+      let { data: orders, error } = await supabase
         .from('or_orders')
         .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
         .eq('tracking_number', trimmed)
         .eq('status', 'จัดส่งแล้ว')
         .limit(1)
       if (error) throw error
+
+      if (!orders || orders.length === 0) {
+        const byBill = await supabase
+          .from('or_orders')
+          .select('bill_no, tracking_number, recipient_name, status, or_order_items(product_id, quantity)')
+          .eq('bill_no', trimmed)
+          .eq('status', 'จัดส่งแล้ว')
+          .limit(1)
+        if (byBill.error) throw byBill.error
+        orders = byBill.data
+      }
 
       if (!orders || orders.length === 0) {
         setNotFound(true)
@@ -230,59 +242,28 @@ export default function WarehouseReturns() {
     setNote('')
   }
 
-  async function processReturn(ret: InventoryReturn, disposition: 'return_to_stock' | 'waste') {
-    const label = disposition === 'return_to_stock' ? 'คืนกลับสต๊อค' : 'ตีเป็นของเสีย'
+  async function processReturn(ret: InventoryReturn) {
+    const missing = viewItems.filter((item) => !itemDispositions[item.id])
+    if (missing.length > 0) {
+      showMessage({ message: `กรุณาเลือกผลตรวจให้ครบทุกสินค้า (ยังไม่ได้เลือก ${missing.length} รายการ)` })
+      return
+    }
     const ok = await showConfirm({
-      title: label,
-      message: `ยืนยัน "${label}" สำหรับ ${ret.return_no}?`,
+      title: 'บันทึกผลตรวจสินค้าตีกลับ',
+      message: `ยืนยันผลตรวจสินค้า ${viewItems.length} รายการ สำหรับ ${ret.return_no}?`,
     })
     if (!ok) return
 
     setUpdating(ret.id)
     try {
-      const { data: items, error: itemsError } = await supabase
-        .from('inv_return_items')
-        .select('product_id, qty')
-        .eq('return_id', ret.id)
-      if (itemsError) throw itemsError
-
-      const { error } = await supabase
-        .from('inv_returns')
-        .update({
-          status: 'received',
-          disposition,
-          received_by: user?.id || null,
-          received_at: new Date().toISOString(),
-        })
-        .eq('id', ret.id)
+      const { error } = await supabase.rpc('rpc_process_inventory_return_items', {
+        p_return_id: ret.id,
+        p_items: viewItems.map((item) => ({ item_id: item.id, disposition: itemDispositions[item.id] })),
+      })
       if (error) throw error
 
-      if (disposition === 'return_to_stock') {
-        await adjustStockBalancesBulkRPC(
-          (items || []).map((item) => ({
-            productId: item.product_id,
-            qtyDelta: Number(item.qty),
-            movementType: 'return',
-            refType: 'inv_returns',
-            refId: ret.id,
-            note: `รับสินค้าตีกลับ ${ret.return_no} (คืนกลับสต๊อค)`,
-          }))
-        )
-      } else if (disposition === 'waste') {
-        const wasteItems = (items || []).map((item) => ({
-          product_id: item.product_id,
-          qty: Number(item.qty),
-        }))
-        const { error: wasteErr } = await supabase.rpc('rpc_record_waste_cost', {
-          p_items: wasteItems,
-          p_ref_id: ret.id,
-          p_user_id: user?.id || null,
-        })
-        if (wasteErr) throw wasteErr
-      }
-
       await loadAll()
-      showMessage({ message: `${label} — ${ret.return_no} เรียบร้อย` })
+      showMessage({ message: `บันทึกผลตรวจ ${ret.return_no} เรียบร้อย` })
       setViewing(null)
     } catch (e: any) {
       showMessage({ message: `ดำเนินการไม่สำเร็จ: ${e.message}` })
@@ -295,10 +276,11 @@ export default function WarehouseReturns() {
     setViewing(ret)
     const { data, error } = await supabase
       .from('inv_return_items')
-      .select('id, return_id, product_id, qty, pr_products(product_code, product_name, unit_cost)')
+      .select('id, return_id, product_id, qty, disposition, pr_products(product_code, product_name, unit_cost)')
       .eq('return_id', ret.id)
     if (!error) {
       setViewItems((data || []) as unknown as InventoryReturnItem[])
+      setItemDispositions(Object.fromEntries((data || []).filter((item: any) => item.disposition).map((item: any) => [item.id, item.disposition])))
     }
   }
 
@@ -320,12 +302,16 @@ export default function WarehouseReturns() {
   const statusLabel = (ret: InventoryReturn) => {
     if (ret.status === 'received' && ret.disposition === 'return_to_stock') return 'คืนกลับสต๊อค'
     if (ret.status === 'received' && ret.disposition === 'waste') return 'ตีเป็นของเสีย'
+    if (ret.status === 'received' && ret.disposition === 'lost') return 'สูญหาย'
+    if (ret.status === 'received' && ret.disposition === 'mixed') return 'แยกผลรายสินค้าแล้ว'
     if (ret.status === 'received') return 'รับแล้ว'
     return 'รอดำเนินการ'
   }
 
   const statusColor = (ret: InventoryReturn) => {
     if (ret.status === 'received' && ret.disposition === 'waste') return 'bg-red-500 text-white'
+    if (ret.status === 'received' && ret.disposition === 'lost') return 'bg-gray-600 text-white'
+    if (ret.status === 'received' && ret.disposition === 'mixed') return 'bg-blue-500 text-white'
     if (ret.status === 'received') return 'bg-green-500 text-white'
     return 'bg-amber-500 text-white'
   }
@@ -439,7 +425,7 @@ export default function WarehouseReturns() {
 
       {/* Create modal - tracking lookup */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={true} contentClassName="max-w-4xl">
-        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+        <div className="bg-white rounded-2xl w-full shadow-2xl">
           <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <h2 className="text-2xl font-black text-white">เปิดใบรับสินค้าตีกลับ</h2>
             <button
@@ -450,17 +436,17 @@ export default function WarehouseReturns() {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50 space-y-4">
+          <div className="p-6 bg-gray-50 space-y-4">
             {/* Tracking input */}
             <div className="bg-white p-6 rounded-xl border shadow-sm space-y-3">
-              <div className="text-sm font-bold text-gray-700 uppercase">ค้นหาด้วยเลขพัสดุ</div>
+              <div className="text-sm font-bold text-gray-700 uppercase">ค้นหาด้วยเลขพัสดุหรือเลขบิล</div>
               <div className="flex gap-3">
                 <input
                   type="text"
                   value={trackingInput}
                   onChange={(e) => setTrackingInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && lookupTracking(trackingInput)}
-                  placeholder="พิมพ์เลขพัสดุ..."
+                  placeholder="พิมพ์เลขพัสดุหรือเลขบิล..."
                   className="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 transition"
                 />
                 <button
@@ -482,7 +468,7 @@ export default function WarehouseReturns() {
             {notFound && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
                 <i className="fas fa-exclamation-triangle text-red-400 text-2xl mb-2"></i>
-                <div className="text-red-600 font-bold">ไม่พบเลขพัสดุนี้ในบิลที่จัดส่งแล้ว</div>
+                <div className="text-red-600 font-bold">ไม่พบเลขพัสดุหรือเลขบิลนี้ในรายการที่จัดส่งแล้ว</div>
                 <div className="text-sm text-red-400 mt-1">ค้นหาเฉพาะบิลสถานะ "จัดส่งแล้ว" เท่านั้น</div>
               </div>
             )}
@@ -605,8 +591,8 @@ export default function WarehouseReturns() {
 
       {/* View detail modal */}
       <Modal open={!!viewing} onClose={() => setViewing(null)} closeOnBackdropClick={true} contentClassName="max-w-4xl">
-        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+        <div className="bg-white rounded-2xl w-full shadow-2xl">
+          <div className="sticky top-0 z-10 p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">ใบรับคืน: {viewing?.return_no}</h2>
               {viewing && (
@@ -625,7 +611,7 @@ export default function WarehouseReturns() {
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 bg-gray-50 space-y-4">
+          <div className="p-6 bg-gray-50 space-y-4">
             {viewing && (
               <div className="bg-white p-6 rounded-xl border shadow-sm">
                 <div className="grid grid-cols-2 gap-4 mb-4">
@@ -727,6 +713,22 @@ export default function WarehouseReturns() {
                                   </div>
                                 )}
                               </div>
+                              {viewing?.status === 'pending' ? (
+                                <select
+                                  value={itemDispositions[item.id] || ''}
+                                  onChange={(e) => setItemDispositions((current) => ({ ...current, [item.id]: e.target.value as ItemDisposition }))}
+                                  className={`w-36 shrink-0 rounded-lg border px-3 py-2 text-sm font-bold ${itemDispositions[item.id] ? 'border-gray-300 bg-white' : 'border-amber-400 bg-amber-50'}`}
+                                >
+                                  <option value="">-- เลือกผลตรวจ --</option>
+                                  <option value="return_to_stock">คืนได้</option>
+                                  <option value="waste">ของเสีย</option>
+                                  <option value="lost">หาย</option>
+                                </select>
+                              ) : (item as any).disposition ? (
+                                <span className={`w-28 shrink-0 rounded-lg px-3 py-2 text-center text-xs font-bold ${(item as any).disposition === 'return_to_stock' ? 'bg-green-100 text-green-700' : (item as any).disposition === 'waste' ? 'bg-red-100 text-red-700' : 'bg-gray-200 text-gray-700'}`}>
+                                  {(item as any).disposition === 'return_to_stock' ? 'คืนได้' : (item as any).disposition === 'waste' ? 'ของเสีย' : 'หาย'}
+                                </span>
+                              ) : null}
                             </div>
                           )
                         })}
@@ -739,26 +741,17 @@ export default function WarehouseReturns() {
           </div>
 
           {viewing?.status === 'pending' && (
-            <div className="p-4 border-t border-gray-200 flex gap-3 bg-white">
+            <div className="sticky bottom-0 z-10 p-4 border-t border-gray-200 bg-white">
               <button
                 type="button"
-                onClick={() => viewing && processReturn(viewing, 'waste')}
-                disabled={updating === viewing?.id}
-                className="flex-1 bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 disabled:opacity-50 transition"
-              >
-                <i className="fas fa-trash mr-2"></i>
-                ตีเป็นของเสีย
-              </button>
-              <button
-                type="button"
-                onClick={() => viewing && processReturn(viewing, 'return_to_stock')}
-                disabled={updating === viewing?.id}
-                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition"
+                onClick={() => viewing && processReturn(viewing)}
+                disabled={updating === viewing?.id || viewItems.length === 0 || viewItems.some((item) => !itemDispositions[item.id])}
+                className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition"
               >
                 {updating === viewing?.id ? (
                   <><i className="fas fa-spinner fa-spin mr-2"></i>กำลังดำเนินการ...</>
                 ) : (
-                  <><i className="fas fa-undo mr-2"></i>คืนกลับสต๊อค</>
+                  <><i className="fas fa-save mr-2"></i>บันทึกผลตรวจสินค้า</>
                 )}
               </button>
             </div>

@@ -1100,16 +1100,15 @@ export default function Plan({ tvMode = false }: PlanProps) {
         ? allWorkOrdersFilteredByDateFrom.lte('created_at', `${manageDateTo}T23:59:59.999Z`)
         : allWorkOrdersFilteredByDateFrom
 
-      const [{ count: workQueueCount }, { count: manageNew }, { count: manageAll }] = await Promise.all([
+      const [{ count: workQueueCount }, { data: manageNew }, { count: manageAll }] = await Promise.all([
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
           .in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
           .is('work_order_id', null),
-        supabase.from('or_work_orders').select('id', { count: 'exact', head: true })
-          .eq('status', 'กำลังผลิต'),
+        supabase.rpc('rpc_plan_active_work_order_count'),
         allWorkOrdersFiltered,
       ])
       setWorkOrdersCount(workQueueCount ?? 0)
-      setManageNewCount(manageNew ?? 0)
+      setManageNewCount(Number(manageNew) || 0)
       setWorkOrdersManageCount(manageAll ?? 0)
     } catch (e) {
       console.error('Error loading menu counts:', e)

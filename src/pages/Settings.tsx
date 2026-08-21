@@ -35,6 +35,47 @@ const SETTINGS_TABS = [
 
 type SettingsTabKey = (typeof SETTINGS_TABS)[number]['key']
 
+type RoleSettingsView = 'desktop' | 'mobile'
+type DesktopRole = 'admin' | 'sales-tr' | 'qc_order' | 'sales-pump' | 'qc_staff' | 'packing_staff' | 'account' | 'store' | 'production' | 'hr'
+
+const PARTIALLY_RESTRICTED_GROUPS = new Set([
+  'marketplace', 'orders', 'plan', 'machinery', 'wms', 'qc', 'packing', 'account',
+  'warehouse', 'purchase', 'hr', 'settings', 'knowledge-hub',
+])
+
+const MOBILE_ROLE_ACCESS = [
+  {
+    role: 'production_mb', label: 'ฝ่ายผลิต (Mobile)', path: '/wms', tone: 'emerald',
+    menus: ['บันทึกคิวงาน', 'เบิกของ', 'คืนของ', 'ยืมของ', 'รับสินค้าตีกลับ', 'Machinery: มอนิเตอร์/ตรวจความพร้อม/แจ้งซ่อม/ประวัติ/คำขอซื้อ/สต๊อค'],
+    note: 'เข้า WMS และ Machinery ได้ สิทธิ์บันทึกข้อมูลขึ้นกับ RLS ของฝ่ายผลิต',
+  },
+  {
+    role: 'manager', label: 'ผู้จัดการ (Mobile)', path: '/wms', tone: 'blue',
+    menus: ['อนุมัติเบิก', 'รับ GR', 'รับสินค้าตีกลับ', 'Machinery: มอนิเตอร์/ตรวจความพร้อม/แจ้งซ่อม/ประวัติ/คำขอซื้อ/สต๊อค'],
+    note: 'เข้า WMS และ Machinery ได้ ใช้สำหรับอนุมัติและตรวจรับในหน้ามือถือ',
+  },
+  {
+    role: 'technician', label: 'ช่างเทคนิค', path: '/technician', tone: 'amber',
+    menus: ['Machinery: สถานะ/มอนิเตอร์', 'ตรวจความพร้อม', 'แจ้งเสีย/ซ่อม', 'ตั้งค่า Checklist', 'ประวัติ/รายงาน', 'คำขอซื้อ', 'สต๊อคคงเหลือ'],
+    note: 'ไม่เห็นตั้งค่าเครื่องและตั้งค่าสินค้า แต่จัดการ Checklist และงานซ่อมได้',
+  },
+  {
+    role: 'picker', label: 'พนักงานหยิบสินค้า', path: '/wms', tone: 'violet',
+    menus: ['หยิบของ', 'รับ GR', 'รับสินค้าตีกลับ'],
+    note: 'เข้าเฉพาะ WMS สำหรับงานหยิบและรับสินค้า ไม่สามารถเข้า Machinery',
+  },
+  {
+    role: 'auditor', label: 'ผู้ตรวจนับสต๊อก', path: '/warehouse/audit', tone: 'cyan',
+    menus: ['รายการ Audit', 'สร้างรอบตรวจนับ', 'บันทึกผลนับ', 'ตรวจสอบผล'],
+    note: 'เข้าได้เฉพาะเส้นทาง Audit ของคลัง',
+  },
+  {
+    role: 'employee', label: 'พนักงาน', path: '/employee', tone: 'slate',
+    menus: ['หน้าหลัก', 'งาน', 'ลงเวลา', 'ขอลา', 'ตารางงาน', 'คะแนน', 'ขอ WFH (Hybrid)', 'เตือน/รับรอง', 'ทรัพย์สิน', 'คำร้อง', 'เอกสาร', 'เส้นทางเงินเดือน', 'Onboarding'],
+    note: 'เห็นข้อมูลของตนเองตาม Employee Portal; WFH แสดงเฉพาะพนักงาน Hybrid',
+  },
+] as const
+
 /** เรียงโปรโมชั่นตามลำดับที่จัดไว้ แล้วค่อยตามชื่อ — รองรับแถวที่ยังไม่มี sort_order */
 function sortPromotions<T extends { name: string; sort_order?: number | null }>(rows: T[]): T[] {
   return [...rows].sort(
@@ -64,6 +105,7 @@ export default function Settings() {
   const [prefixInput, setPrefixInput] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<SettingsTabKey>('users')
+  const [roleSettingsView, setRoleSettingsView] = useState<RoleSettingsView>('desktop')
 
   // ตั้งค่า activeTab ให้เป็นแท็บแรกที่ user มีสิทธิ์เข้าถึง
   useEffect(() => {
@@ -772,6 +814,7 @@ export default function Settings() {
     { key: 'warehouse-inventory-history', label: 'รายการสินค้าคงเหลือ', group: 'warehouse' },
     // ── สั่งซื้อ ──
     { key: 'purchase', label: 'สั่งซื้อ', group: '' },
+    { key: 'purchase-requests', label: 'คำขอซื้อ', group: 'purchase' },
     { key: 'purchase-pr', label: 'PR (ใบขอซื้อ)', group: 'purchase' },
     { key: 'purchase-po', label: 'PO (ใบสั่งซื้อ)', group: 'purchase' },
     { key: 'purchase-gr', label: 'GR (ใบรับสินค้า)', group: 'purchase' },
@@ -785,6 +828,7 @@ export default function Settings() {
     { key: 'hr-employees', label: 'ทะเบียนพนักงาน', group: 'hr' },
     { key: 'hr-tasks', label: 'งาน', group: 'hr' },
     { key: 'hr-requests', label: 'คำร้อง', group: 'hr' },
+    { key: 'hr-announcements', label: 'ประกาศ', group: 'hr' },
     { key: 'hr-leave', label: 'ลางาน/OT/WFH', group: 'hr' },
     { key: 'hr-work-calendar', label: 'ตารางวันทำงานและวันหยุด', group: 'hr' },
     { key: 'hr-interview', label: 'นัดสัมภาษณ์', group: 'hr' },
@@ -798,6 +842,8 @@ export default function Settings() {
     { key: 'hr-certificates', label: 'ใบรับรอง', group: 'hr' },
     { key: 'hr-assets', label: 'ทะเบียนทรัพย์สิน', group: 'hr' },
     { key: 'hr-settings', label: 'ตั้งค่า HR', group: 'hr' },
+    // ── Knowledge Hub ──
+    { key: 'knowledge-hub', label: 'Knowledge Hub', group: '' },
     // ── ตั้งค่า ──
     { key: 'settings', label: 'ตั้งค่า', group: '' },
     { key: 'settings-users', label: 'จัดการสิทธิ์ผู้ใช้', group: 'settings' },
@@ -813,6 +859,7 @@ export default function Settings() {
     { key: 'settings-chat-history', label: 'ประวัติแชท', group: 'settings' },
     { key: 'settings-easyslip', label: 'API EasySlip', group: 'settings' },
     { key: 'settings-backup-clear', label: 'สำลองข้อมูล/ล้างข้อมูล', group: 'settings' },
+    { key: 'settings-security', label: 'ความปลอดภัย', group: 'settings' },
   ] as const
 
   const buildChildrenByParent = () => {
@@ -1329,6 +1376,8 @@ export default function Settings() {
   }
 
   async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
+    const targetMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)
+    if (!targetMenu) return
     setRoleMenus((prev) => {
       const childrenByParent = buildChildrenByParent()
       const parentOfMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)?.group || ''
@@ -1343,13 +1392,19 @@ export default function Settings() {
       // ถ้าติ๊กเมนูหลัก -> ติ๊กเมนูย่อยทั้งหมด, ถ้าเอาติ๊กออก -> เอาออกทั้งหมด
       if (isParentMenu) {
         childrenByParent[menuKey].forEach((childKey) => {
-          updated[role][childKey] = checked
+          const child = MENU_ROLE_OPTIONS.find((m) => m.key === childKey)
+          if (child) {
+            updated[role][childKey] = checked
+          }
         })
       }
       // ถ้าติ๊กเมนูย่อย -> เปิดเมนูหลัก, ถ้าเอาติ๊กออก -> ปิดเมนูหลักเมื่อไม่มีลูกเหลือ
       if (!isParentMenu && parentOfMenu) {
         const siblingKeys = childrenByParent[parentOfMenu] || []
-        const hasAnyChecked = siblingKeys.some((key) => updated[role][key] === true)
+        const hasAnyChecked = siblingKeys.some((key) => {
+          const sibling = MENU_ROLE_OPTIONS.find((m) => m.key === key)
+          return !!sibling && updated[role][key] === true
+        })
         updated[role][parentOfMenu] = hasAnyChecked
       }
       roleMenusRef.current = updated
@@ -2525,7 +2580,6 @@ export default function Settings() {
     'employee',
   ]
   const settingsRoles = [
-    'superadmin',
     'admin',
     'sales-tr',
     'qc_order',
@@ -2536,9 +2590,25 @@ export default function Settings() {
     'store',
     'production',
     'hr',
-  ]
+  ] as const satisfies readonly DesktopRole[]
   const roleLabel = (role: string) => {
     return normalizeRole(role)
+  }
+
+  const getRoleMenuCompatibility = (menuKey: string, group: string, role: string) => {
+    const permissionGroup = group || menuKey
+    if (role !== 'admin' && PARTIALLY_RESTRICTED_GROUPS.has(permissionGroup)) {
+      return {
+        level: 'partial' as const,
+        label: 'จำกัดบางส่วน',
+        detail: 'เข้าเมนูได้ แต่การอ่าน แก้ไข อนุมัติ หรือข้อมูลที่เห็นอาจถูกจำกัดด้วย RLS/RPC และเงื่อนไขของปุ่ม',
+      }
+    }
+    return {
+      level: 'supported' as const,
+      label: 'Route รองรับ',
+      detail: 'สิทธิ์การแสดงเมนูและเข้า Route ตรงกับ checkbox; การทำรายการสำคัญยังอยู่ภายใต้ RLS/RPC',
+    }
   }
 
   return (
@@ -3007,15 +3077,35 @@ export default function Settings() {
 
       {activeTab === 'role-settings' && hasAccess('settings-role-settings') && (
         <div className="bg-white p-6 rounded-lg shadow space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
-            <button
-              onClick={saveRoleMenus}
-              disabled={savingRoleMenus || roleMenusLoading}
-              className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
-            >
-              {savingRoleMenus ? 'กำลังบันทึก...' : roleMenusLoading ? 'กำลังโหลด...' : 'บันทึก'}
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold">ตั้งค่า Role</h2>
+              <p className="mt-1 text-sm text-gray-500">Superadmin ไม่แสดงในตาราง เนื่องจากระบบอนุญาตให้เข้าถึงทุกเมนูเสมอ</p>
+            </div>
+            {roleSettingsView === 'desktop' && (
+              <button
+                onClick={saveRoleMenus}
+                disabled={savingRoleMenus || roleMenusLoading}
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+              >
+                {savingRoleMenus ? 'กำลังบันทึก...' : roleMenusLoading ? 'กำลังโหลด...' : 'บันทึก'}
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-1 rounded-xl bg-gray-100 p-1 w-fit">
+            <button type="button" onClick={() => setRoleSettingsView('desktop')} className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${roleSettingsView === 'desktop' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>ตั้งค่า Desktop</button>
+            <button type="button" onClick={() => setRoleSettingsView('mobile')} className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${roleSettingsView === 'mobile' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>ตั้งค่า Mobile</button>
+          </div>
+
+          {roleSettingsView === 'desktop' ? <>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <div className="font-semibold">Checkbox ควบคุมการเห็นเมนูและการเข้า Route ของ role Desktop</div>
+            <div className="mt-1 text-amber-800">RLS, RPC และสิทธิ์ของแต่ละปุ่มยังสามารถจำกัดการอ่าน แก้ไข หรืออนุมัติข้อมูลเพิ่มเติมได้</div>
+          </div>
+          <div className="flex flex-wrap gap-3 text-xs">
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-semibold text-emerald-700">● Route รองรับ</span>
+            <span className="rounded-full bg-amber-100 px-2.5 py-1 font-semibold text-amber-700">● จำกัดบางส่วนโดย RLS/RPC/ปุ่ม</span>
           </div>
           <div className="overflow-x-auto" style={{ maxHeight: '75vh' }}>
             <table className="w-full border-collapse text-sm">
@@ -3051,14 +3141,20 @@ export default function Settings() {
                         {menu.label}
                       </td>
                       {settingsRoles.map((role) => (
-                        <td key={role} className="p-2 text-center" style={{ backgroundColor: 'inherit' }}>
+                        (() => {
+                          const compatibility = getRoleMenuCompatibility(menu.key, menu.group, role)
+                          return <td key={role} className="p-2 text-center" title={compatibility.detail}>
+                          <div className="flex items-center justify-center gap-1.5">
                           <input
                             type="checkbox"
-                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                             checked={roleMenus?.[role]?.[menu.key] ?? false}
                             onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
                           />
+                          <span aria-label={compatibility.label} className={`inline-block h-2 w-2 rounded-full ${compatibility.level === 'supported' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          </div>
                         </td>
+                        })()
                       ))}
                     </tr>
                   )
@@ -3066,6 +3162,31 @@ export default function Settings() {
               </tbody>
             </table>
           </div>
+          </> : (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                สิทธิ์ Mobile กำหนดจาก role และ route เฉพาะของระบบ จึงแสดงเพื่ออ้างอิงเท่านั้นและไม่สามารถเปิด–ปิดจากตารางนี้ได้
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {MOBILE_ROLE_ACCESS.map((item) => (
+                  <article key={item.role} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold text-gray-900">{item.label}</h3>
+                        <code className="mt-1 inline-block rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600">{item.role}</code>
+                      </div>
+                      <span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700">{item.path}</span>
+                    </div>
+                    <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">เมนูที่เข้าถึงได้</div>
+                    <ul className="mt-2 space-y-1.5">
+                      {item.menus.map((menu) => <li key={menu} className="flex gap-2 text-sm text-gray-700"><span className="text-emerald-500">✓</span><span>{menu}</span></li>)}
+                    </ul>
+                    <p className="mt-4 border-t pt-3 text-xs leading-5 text-gray-500">{item.note}</p>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

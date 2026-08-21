@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { supabase } from '../../../lib/supabase'
-import { buildIlikeOr } from '../../../lib/searchFilter'
 import BarcodeScanner from './BarcodeScanner'
+import MobileProductPicker from './MobileProductPicker'
 import { getProductImageUrl, sortOrderItems } from '../wmsUtils'
 import { useWmsModal } from '../useWmsModal'
 import type { ProductType } from '../../../types'
@@ -22,25 +22,16 @@ const PHOTO_REQUIRED_TOPICS = new Set(['ผลิตเสีย', 'สินค
 const requiresDamageEvidence = (topic: string) => PHOTO_REQUIRED_TOPICS.has(topic)
 const DAMAGE_BUCKET = 'wms-damage-evidence'
 
-const compactProductLabel = (product: { product_code: string; product_name: string }, maxLength = 38) => {
-  const label = `${product.product_code} - ${product.product_name}`
-  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}…` : label
-}
-
 export default function CreateRequisition() {
   const { user } = useAuthContext()
   const [activeTab, setActiveTab] = useState<'create' | 'list'>('create')
   const [searchTerm, setSearchTerm] = useState('')
-  const [products, setProducts] = useState<any[]>([])
   const [allProducts, setAllProducts] = useState<any[]>([])
   const [selectedItems, setSelectedItems] = useState<ReqItem[]>([])
   const [requisitionId, setRequisitionId] = useState('')
   const [requisitionTopics, setRequisitionTopics] = useState<any[]>([])
-  const [loading, setLoading] = useState(false)
   const [loadingAllProducts, setLoadingAllProducts] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
-  const [showProductMenu, setShowProductMenu] = useState(false)
-  const [productMenuRect, setProductMenuRect] = useState({ top: 0, left: 0, width: 0 })
   const [productTypeFilter, setProductTypeFilter] = useState<ProductType>('FG')
   const [submitting, setSubmitting] = useState(false)
   const [reqList, setReqList] = useState<any[]>([])
@@ -58,9 +49,7 @@ export default function CreateRequisition() {
 
   useEffect(() => {
     loadAllProducts()
-    setProducts([])
     setSearchTerm('')
-    setShowProductMenu(false)
   }, [productTypeFilter])
 
   useEffect(() => {
@@ -152,30 +141,9 @@ export default function CreateRequisition() {
     }
   }
 
-  const searchProducts = async () => {
-    if (!searchTerm.trim()) { setProducts([]); return }
-    setLoading(true)
-    try {
-      const { data, error } = await supabase
-        .from('pr_products')
-        .select('product_code, product_name, storage_location')
-        .eq('is_active', true)
-        .eq('product_type', productTypeFilter)
-        .or(buildIlikeOr(searchTerm, ['product_code', 'product_name']))
-        .limit(20)
-      if (error) throw error
-      setProducts(data || [])
-    } catch (e: any) {
-      showMessage({ message: `ค้นหาไม่สำเร็จ: ${e.message}` })
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const handleBarcodeScan = (barcode: string) => {
     setShowScanner(false)
     setSearchTerm(barcode)
-    setTimeout(() => searchProducts(), 100)
   }
 
   const addItem = (product: any) => {
@@ -280,8 +248,6 @@ export default function CreateRequisition() {
       showMessage({ message: `สร้างใบเบิก ${requisitionId} สำเร็จ` })
       setSelectedItems([])
       setSearchTerm('')
-      setProducts([])
-      setShowProductMenu(false)
       generateRequisitionId()
     } catch (e: any) {
       if (uploadedPaths.length) await supabase.storage.from(DAMAGE_BUCKET).remove(uploadedPaths)
@@ -357,89 +323,15 @@ export default function CreateRequisition() {
             ))}
           </div>
 
-          {/* Search & scan */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && searchProducts()}
-              placeholder="ค้นหาสินค้า..."
-              className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400"
-            />
-            <button type="button" onClick={searchProducts} className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold">
-              ค้นหา
-            </button>
-            <button type="button" onClick={() => setShowScanner(true)} className="px-3 py-2 bg-green-600 text-white rounded-lg text-sm">
-              <i className="fas fa-barcode" aria-hidden />
-            </button>
-          </div>
-
-          {/* Custom dropdown: keeps its scrollbar inside the mobile viewport. */}
-          {!loadingAllProducts && allProducts.length > 0 && (
-            <div className="relative w-full min-w-0 max-w-full">
-              <button
-                type="button"
-                onClick={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect()
-                  setProductMenuRect({ top: rect.bottom + 4, left: rect.left, width: rect.width })
-                  setShowProductMenu((open) => !open)
-                }}
-                aria-expanded={showProductMenu}
-                className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900"
-              >
-                <span className="min-w-0 flex-1 truncate">-- เลือกสินค้าจากรายการ ({allProducts.length}) --</span>
-                <i className={`fas fa-chevron-${showProductMenu ? 'up' : 'down'} shrink-0 text-xs`} />
-              </button>
-              {showProductMenu && (
-                <div
-                  className="fixed bottom-2 z-50 overflow-y-auto overflow-x-hidden rounded-lg border border-gray-300 bg-white shadow-xl [scrollbar-gutter:stable]"
-                  style={{ top: productMenuRect.top, left: productMenuRect.left, width: productMenuRect.width }}
-                >
-                  {allProducts.map((p) => (
-                    <button
-                      key={p.product_code}
-                      type="button"
-                      title={`${p.product_code} - ${p.product_name}`}
-                      onClick={() => {
-                        addItem(p)
-                        setShowProductMenu(false)
-                      }}
-                      className="block w-full min-w-0 truncate border-b border-gray-100 px-3 py-2 text-left text-sm text-gray-900 last:border-b-0 hover:bg-blue-50 active:bg-blue-100"
-                    >
-                      {compactProductLabel(p)}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Search results */}
-          {loading && <div className="text-center text-gray-500 text-xs py-2">กำลังค้นหา...</div>}
-          {products.length > 0 && (
-            <div className="space-y-1 max-h-40 overflow-y-auto">
-              {products.map((p) => (
-                <button
-                  key={p.product_code}
-                  type="button"
-                  onClick={() => addItem(p)}
-                  className="w-full flex items-center gap-2 p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-100 text-left"
-                >
-                  <img
-                    src={getProductImageUrl(p.product_code)}
-                    alt=""
-                    className="w-10 h-10 rounded-lg object-cover bg-gray-100"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-bold text-gray-900 truncate">{p.product_code}</div>
-                    <div className="text-[10px] text-gray-500 truncate">{p.product_name}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          <MobileProductPicker
+            products={allProducts}
+            query={searchTerm}
+            onQueryChange={setSearchTerm}
+            onSelect={addItem}
+            onOpenScanner={() => setShowScanner(true)}
+            loading={loadingAllProducts}
+            selectedCodes={selectedItems.map((item) => item.product_code)}
+          />
 
           {/* Selected items */}
           {selectedItems.length > 0 && (

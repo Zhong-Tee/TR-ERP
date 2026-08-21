@@ -164,6 +164,9 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
     })
   }
 
+  const itemTopic = (item: any) => String(item.requisition_topic || item.topic || '').trim() || '-'
+  const itemReason = (item: any) => String(item.item_note || item.reason || '').trim() || '-'
+
   const DamagePhotos = ({ item }: { item: any }) => !(item.damage_image_paths || []).length ? null :
     <div className="mt-2 grid grid-cols-3 gap-2">
       {item.damage_image_paths.map((path: string) => damagePhotoUrls[path] &&
@@ -209,6 +212,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                       <div className="flex-1">
                         <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
                         <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                        <div className="mt-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
+                        <div className="mt-1 text-xs text-gray-700 break-words"><span className="font-bold">เหตุผล/หมายเหตุ:</span> {itemReason(item)}</div>
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
                       <div className="text-gray-900 font-bold">x{item.qty}</div>
@@ -271,6 +276,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                       <div className="flex-1">
                         <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
                         <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
+                        <div className="mt-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
+                        <div className="mt-1 text-xs text-gray-700 break-words"><span className="font-bold">เหตุผล/หมายเหตุ:</span> {itemReason(item)}</div>
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
                       <div className="text-gray-900 font-bold text-lg">x{item.qty}</div>

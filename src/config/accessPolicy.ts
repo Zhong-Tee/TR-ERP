@@ -240,6 +240,8 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
 }
 
 export function resolveMenuKeyFromPath(pathname: string): string | null {
+  // หน้า stock หลักต้องใช้สิทธิ์เมนูย่อย warehouse-stock ไม่ใช่สิทธิ์ parent warehouse
+  if (pathname === '/warehouse') return 'warehouse-stock'
   const matchedPrefix = PATH_MENU_PREFIX_MAP.find((item) => pathname.startsWith(item.prefix))
   if (matchedPrefix) return matchedPrefix.key
   if (pathname.startsWith('/dashboard')) return 'dashboard'

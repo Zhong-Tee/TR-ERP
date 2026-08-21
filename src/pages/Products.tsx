@@ -378,6 +378,7 @@ function productToFormState(product: Product) {
 export default function Products() {
   const { user } = useAuthContext()
   const canSeeCost = COST_VISIBLE_ROLES.includes(user?.role || '')
+  const canSeeChannelPrices = user?.role !== 'store'
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [searchInput, setSearchInput] = useState('')
@@ -617,7 +618,7 @@ export default function Products() {
     setUploadFile(null)
     setUploadPreview(null)
     setModalMode('edit')
-    void loadProductChannelPrices(product.id)
+    if (canSeeChannelPrices) void loadProductChannelPrices(product.id)
 
     try {
       const { data, error } = await supabase.from('pr_products').select((canSeeCost ? '*' : PRODUCT_SAFE_COLUMNS) as '*').eq('id', product.id).single()
@@ -661,6 +662,8 @@ export default function Products() {
   }
 
   async function saveProductChannelPrices(productId: string) {
+    // Store users must not read or overwrite channel-sale prices while editing product metadata.
+    if (!canSeeChannelPrices) return
     const rows = channels
       .map((ch) => {
         const raw = String(channelPrices[ch.channel_code] ?? '').trim()
@@ -1904,7 +1907,7 @@ export default function Products() {
               )}
             </div>
             {/* ราคาขายรายช่องทาง */}
-            <div className="sm:col-span-2">
+            {canSeeChannelPrices && <div className="sm:col-span-2">
               <label className="block text-sm font-semibold text-surface-700 mb-1">ราคาขายรายช่องทาง</label>
               {channels.length === 0 ? (
                 <div className="text-sm text-surface-500 border border-surface-200 rounded-xl px-3 py-2">
@@ -1931,7 +1934,7 @@ export default function Products() {
                 </div>
               )}
               <p className="text-xs text-surface-500 mt-1">เว้นว่างได้ หากไม่กำหนดราคาช่องทางนั้น</p>
-            </div>
+            </div>}
             <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] gap-x-4 gap-y-3">
             {/* รหัสหน้ายาง */}
             <div>

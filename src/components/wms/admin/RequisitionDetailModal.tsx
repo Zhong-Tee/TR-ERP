@@ -22,6 +22,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   const [selectedPicker, setSelectedPicker] = useState('')
   const [pickers, setPickers] = useState<any[]>([])
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const itemTopic = (item: any) => String(item.requisition_topic || item.topic || '').trim() || '-'
 
   const canApprove = CAN_APPROVE_ROLES.includes(user?.role || '') && requisition.status === 'pending'
 
@@ -260,6 +261,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-slate-800 text-base mb-1">{item.product_name}</div>
                         <div className="text-xs text-gray-500 mb-1">รหัส: {item.product_code}</div>
+                        <div className="mb-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
                         <div className="text-xs text-red-600 font-bold">จุดเก็บ: {item.location || '-'}</div>
                         <div className="md:hidden mt-2">
                           <div className="text-xs text-gray-500 font-bold uppercase mb-1">หมายเหตุ</div>

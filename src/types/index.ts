@@ -614,11 +614,12 @@ export interface InventoryReturn {
   note?: string | null
 }
 
-export interface InventoryReturnItem {
+  export interface InventoryReturnItem {
   id: string
   return_id: string
   product_id: string
-  qty: number
+    qty: number
+    disposition?: 'return_to_stock' | 'waste' | 'lost' | null
   created_at: string
 }
 
