@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
@@ -53,6 +54,7 @@ interface DraftItem {
 }
 
 export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedPrType?: string; hideCreate?: boolean } = {}) {
+  const navigate = useNavigate()
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
@@ -151,14 +153,19 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
     setLoading(true)
     try {
       const [prData, prodData, stockData, sellerData, pendingPOData, activePRData] = await Promise.all([
-        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: fixedPrType || (typeFilter !== 'all' ? typeFilter : undefined), excludePrType: fixedPrType ? undefined : 'machinery' }, canSeePrice),
+        loadPRList({ status: statusFilter, search: debouncedSearch, dateFrom: dateFrom || undefined, dateTo: dateTo || undefined, prType: fixedPrType || (typeFilter !== 'all' ? typeFilter : undefined) }, canSeePrice),
         products.length ? Promise.resolve(products) : loadProductsWithLastPrice(canSeePrice),
         Object.keys(stockBalances).length ? Promise.resolve(stockBalances) : loadStockBalances(),
         sellers.length ? Promise.resolve(sellers) : loadSellers(),
         loadPendingPOByProduct(),
         loadActivePRByProduct(),
       ])
-      const mappedPrs = prData.map((pr: any) => ({
+      // Machinery requests stay on their request page while pending. Once approved,
+      // expose the same PR in the normal PR workflow so purchasing can create its PO.
+      const visiblePrData = fixedPrType
+        ? prData
+        : prData.filter((pr: any) => pr.pr_type !== 'machinery' || pr.status === 'approved')
+      const mappedPrs = visiblePrData.map((pr: any) => ({
         ...pr,
         _itemCount: pr.inv_pr_items?.length ?? 0,
       }))
@@ -676,6 +683,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
               { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+              { key: 'machinery', label: 'ช่าง', color: 'text-violet-700' },
             ].map((t) => (
               <button
                 key={t.key}
@@ -737,7 +745,12 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
               </thead>
               <tbody className="divide-y">
                 {prs.map((pr) => {
-                  const st = STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
+                  const linkedPO = pr.inv_po?.[0]
+                  const st = linkedPO
+                    ? { label: `สร้าง PO แล้ว: ${linkedPO.po_no}`, color: 'bg-blue-100 text-blue-800' }
+                    : pr.status === 'approved'
+                      ? { label: 'รอสร้าง PO', color: 'bg-amber-100 text-amber-800' }
+                      : STATUS_MAP[pr.status] || { label: pr.status, color: 'bg-gray-100 text-gray-700' }
                   const isUrgent = pr.pr_type === 'urgent'
                   const items = ((pr as any).inv_pr_items || []) as Array<{
                     qty?: number | null
@@ -789,12 +802,30 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => openDetail(pr)}
-                          className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold transition-colors"
-                        >
-                          ดูรายละเอียด
-                        </button>
+                        <div className="flex items-center justify-end gap-2">
+                          {!fixedPrType && pr.status === 'approved' && !linkedPO && (
+                            <button
+                              onClick={() => navigate(`/purchase/po?pr=${encodeURIComponent(pr.id)}`)}
+                              className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-semibold transition-colors"
+                            >
+                              สร้าง PO
+                            </button>
+                          )}
+                          {linkedPO && (
+                            <button
+                              onClick={() => navigate(`/purchase/po?search=${encodeURIComponent(linkedPO.po_no)}`)}
+                              className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold transition-colors"
+                            >
+                              ดู {linkedPO.po_no}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => openDetail(pr)}
+                            className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold transition-colors"
+                          >
+                            ดูรายละเอียด
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )

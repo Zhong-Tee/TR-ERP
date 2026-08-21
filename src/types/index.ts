@@ -332,6 +332,7 @@ export interface InventoryPR {
   updated_at: string
   /** joined */
   inv_pr_items?: InventoryPRItem[]
+  inv_po?: Array<Pick<InventoryPO, 'id' | 'po_no' | 'status'>>
 }
 
 export interface InventoryPRItem {

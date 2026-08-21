@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import html2canvas from 'html2canvas'
 import Modal from '../components/ui/Modal'
 import { useWmsModal } from '../components/wms/useWmsModal'
@@ -48,6 +49,7 @@ interface PriceEdit {
 }
 
 export default function PurchasePO() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuthContext()
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
@@ -58,13 +60,14 @@ export default function PurchasePO() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
   const [search, setSearch] = useState('')
-  const [dateFrom, setDateFrom] = useState(() => localISODate())
-  const [dateTo, setDateTo] = useState(() => localISODate())
+  const [dateFrom, setDateFrom] = useState(() => searchParams.has('search') ? '' : localISODate())
+  const [dateTo, setDateTo] = useState(() => searchParams.has('search') ? '' : localISODate())
 
   // create from PR
   const [availablePRs, setAvailablePRs] = useState<InventoryPR[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedPR, setSelectedPR] = useState<InventoryPR | null>(null)
+  const requestedPrId = searchParams.get('pr')
   const [sellers, setSellers] = useState<{ id: string; name: string; name_cn: string | null; seller_type?: string | null }[]>([])
   const [selectedSellerId, setSelectedSellerId] = useState('')
   const [selectedSellerName, setSelectedSellerName] = useState('')
@@ -220,6 +223,21 @@ export default function PurchasePO() {
     setExpectedArrival('')
     setCreateOpen(true)
   }
+
+  useEffect(() => {
+    const requestedSearch = searchParams.get('search')
+    if (requestedSearch && search !== requestedSearch) setSearch(requestedSearch)
+  }, [searchParams, search])
+
+  useEffect(() => {
+    if (!requestedPrId || createOpen || loading) return
+    const requestedPR = availablePRs.find((pr) => pr.id === requestedPrId)
+    if (!requestedPR) return
+    openCreateFromPR(requestedPR)
+    const next = new URLSearchParams(searchParams)
+    next.delete('pr')
+    setSearchParams(next, { replace: true })
+  }, [requestedPrId, availablePRs, createOpen, loading, searchParams, setSearchParams])
 
   function onSellerChange(sellerId: string) {
     setSelectedSellerId(sellerId)
@@ -592,6 +610,7 @@ export default function PurchasePO() {
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
               { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+              { key: 'machinery', label: 'ช่าง', color: 'text-violet-700' },
             ].map((t) => (
               <button
                 key={t.key}

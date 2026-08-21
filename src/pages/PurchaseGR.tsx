@@ -901,6 +901,7 @@ export default function PurchaseGR() {
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
               { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+              { key: 'machinery', label: 'ช่าง', color: 'text-violet-700' },
             ].map((t) => (
               <button
                 key={t.key}
@@ -980,6 +981,7 @@ export default function PurchaseGR() {
               { key: 'all', label: 'ทุกประเภท' },
               { key: 'normal', label: 'ปกติ', color: 'text-blue-700' },
               { key: 'urgent', label: 'ด่วน', color: 'text-red-700' },
+              { key: 'machinery', label: 'ช่าง', color: 'text-violet-700' },
             ].map((t) => (
               <button
                 key={t.key}

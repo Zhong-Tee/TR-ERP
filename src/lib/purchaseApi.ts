@@ -140,7 +140,7 @@ export interface PRListFilters {
 export async function loadPRList(filters: PRListFilters = {}, includeCost = false): Promise<InventoryPR[]> {
   let q = supabase
     .from('inv_pr')
-    .select(includeCost ? '*, inv_pr_items(id, qty, estimated_price, last_purchase_price)' : '*, inv_pr_items(id, qty)')
+    .select(includeCost ? '*, inv_pr_items(id, qty, estimated_price, last_purchase_price), inv_po(id, po_no, status)' : '*, inv_pr_items(id, qty), inv_po(id, po_no, status)')
     .order('created_at', { ascending: false })
 
   if (filters.status && filters.status !== 'all') {
@@ -175,13 +175,15 @@ export async function loadPRDetail(prId: string, includeCost = false) {
       inv_pr_items(
         *,
         pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category, product_type, unit_cost, storage_location, order_point)
-      )
+      ),
+      inv_po(id, po_no, status)
     ` : `
       *,
       inv_pr_items(
         id, pr_id, product_id, qty, unit, note, created_at,
         pr_products(id, product_code, product_name, product_name_cn, seller_name, product_category, product_type, storage_location, order_point)
-      )
+      ),
+      inv_po(id, po_no, status)
     `)
     .eq('id', prId)
     .single()
