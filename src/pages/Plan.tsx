@@ -689,8 +689,11 @@ type PlanProps = { tvMode?: boolean }
 export default function Plan({ tvMode = false }: PlanProps) {
   const { user } = useAuthContext()
   const { hasAccess, menuAccessLoading } = useMenuAccess()
+  const isTechnician = user?.role === 'technician'
+  const canAccessPlanView = (view: ViewKey) =>
+    isTechnician ? view === 'dash' : hasAccess(PLAN_MENU_KEY_MAP[view] || view)
   const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
-  const canSelectPlanDate = unlocked || user?.role === 'production' || tvMode
+  const canSelectPlanDate = unlocked || user?.role === 'production' || isTechnician || tvMode
   const canEditProductionLine = unlocked || (user?.role === 'production' && !tvMode)
   const isSuperadmin = user?.role === 'superadmin'
   const [settings, setSettings] = useState<PlanSettingsData>(defaultSettings)
@@ -742,8 +745,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
   useEffect(() => {
     if (tvMode) return
     if (menuAccessLoading) return
-    if (!hasAccess(PLAN_MENU_KEY_MAP[currentView] || currentView)) {
-      const first = ALL_PLAN_VIEWS.find((v) => hasAccess(PLAN_MENU_KEY_MAP[v] || v))
+    if (!canAccessPlanView(currentView)) {
+      const first = ALL_PLAN_VIEWS.find(canAccessPlanView)
       if (first) setCurrentView(first)
     }
   }, [menuAccessLoading, tvMode])
@@ -2071,7 +2074,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     ['employee-skills', 'ทักษะพนักงาน'],
                     ['issue', `Issue (${issueOpenCount})`],
                   ] as [ViewKey, string][]
-                ).filter(([key]) => hasAccess(PLAN_MENU_KEY_MAP[key] || key)).map(([key, label]) => (
+                ).filter(([key]) => canAccessPlanView(key)).map(([key, label]) => (
                   <button
                     key={key}
                     type="button"
@@ -2108,7 +2111,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
             ['assignment', 'มอบหมายงาน'],
             ['analytics', 'วิเคราะห์กำลังคน'],
             ['report', 'รายงาน'],
-          ] as [DashboardSubView, string][]).map(([key, label]) => (
+          ] as [DashboardSubView, string][]).filter(([key]) => !isTechnician || key === 'schedule').map(([key, label]) => (
             <button
               key={key}
               type="button"
@@ -2990,6 +2993,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
           const lines = Math.max(1, settings.linesPerDept?.[dept] || 1)
           return Array.from({length: lines}, (_, line) => ({dept, line, ...lineMachineStatus(dept,line)}))
         }).filter((row) => row.machines.length > 0)
+        const readyLineRows = lineRows.filter((row) => row.status === 'ready')
         const plannedCapacity = lineRows.reduce((sum,row) => {
           const seconds=(dashTimelines[row.dept]||[]).filter(item=>item.line===row.line).reduce((value,item)=>value+item.dur,0)
           return sum + seconds/3600 * row.machines.filter(machine=>machine.is_primary_machine).reduce((value,machine)=>value+Number(machine.capacity_units_per_hour||0),0)
@@ -3075,7 +3079,15 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 )}
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                <div className="rounded-xl border bg-emerald-50 p-3"><div className="text-xs text-emerald-700">ไลน์พร้อมใช้งาน</div><b className="text-xl text-emerald-800">{lineRows.filter(row=>row.status==='ready').length}/{lineRows.length}</b></div>
+                <div className="rounded-xl border bg-emerald-50 p-3">
+                  <div className="text-xs text-emerald-700">ไลน์พร้อมใช้งาน</div>
+                  <b className="text-xl text-emerald-800">{readyLineRows.length}/{lineRows.length}</b>
+                  <div className="mt-1 min-h-4 text-xs font-medium text-emerald-700">
+                    {readyLineRows.length > 0
+                      ? `พร้อม: ${readyLineRows.map((row) => `${row.dept} L${row.line + 1}`).join(', ')}`
+                      : 'ยังไม่มีไลน์ที่ผ่านครบ'}
+                  </div>
+                </div>
                 <div className="rounded-xl border bg-amber-50 p-3"><div className="text-xs text-amber-700">รอตรวจ / พร้อมบางส่วน</div><b className="text-xl text-amber-800">{lineRows.filter(row=>row.status==='pending'||row.status==='partial').length}</b></div>
                 <div className="rounded-xl border bg-red-50 p-3"><div className="text-xs text-red-700">เครื่องเสีย / ไลน์ไม่พร้อม</div><b className="text-xl text-red-800">{activeIncidents.filter(row=>!['ready','closed'].includes(row.status)).length} / {lineRows.filter(row=>row.status==='blocked').length}</b></div>
                 <div className="rounded-xl border bg-orange-50 p-3"><div className="text-xs text-orange-700">งานที่มีความเสี่ยง</div><b className="text-xl text-orange-800">{affectedJobs.length}</b></div>

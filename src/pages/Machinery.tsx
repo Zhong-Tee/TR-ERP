@@ -31,13 +31,28 @@ import {
   type WorkOrderQuantityByDay,
 } from '../lib/machineryApi'
 import { isSuperadmin } from '../config/accessPolicy'
-import { getActiveMobileMode } from '../lib/mobileMode'
+import { getActiveMobileMode, hasDesktopOverride } from '../lib/mobileMode'
+import {
+  buildReadiness,
+  fetchChecklistItems,
+  fetchTodayInspections,
+  type MachineReadiness,
+} from '../lib/machineryOperationsApi'
 import ModeSwitchButton from '../components/ModeSwitchButton'
 import { MachineryPurchaseRequest, MachineryPurchaseSettings, MachineryStock } from '../components/MachineryPurchase'
 import { ChecklistSettings, MachineryChecklist, MachineryMaintenance } from '../components/MachineryOperations'
 import { useWmsModal } from '../components/wms/useWmsModal'
 
 type TabKey = 'monitor' | 'inspection' | 'maintenance' | 'machineSettings' | 'checklistSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
+
+const PRODUCTION_HIDDEN_TABS = new Set<TabKey>([
+  'inspection',
+  'machineSettings',
+  'checklistSettings',
+  'history',
+  'purchaseRequest',
+  'stock',
+])
 
 const STATUS_ORDER: PrMachineryStatus[] = [
   'working',
@@ -129,6 +144,7 @@ export default function Machinery() {
   const [tab, setTab] = useState<TabKey>('monitor')
   const [machines, setMachines] = useState<MachineryMachine[]>([])
   const [events, setEvents] = useState<MachineryEvent[]>([])
+  const [readiness, setReadiness] = useState<MachineReadiness[]>([])
   const [productOptions, setProductOptions] = useState<MachineryProductOption[]>([])
   const [planLineSettings, setPlanLineSettings] = useState<{ departments: string[]; linesPerDept: Record<string, number> }>({ departments: [], linesPerDept: {} })
   const [todayQuantityByProduct, setTodayQuantityByProduct] = useState<Map<string, number>>(new Map())
@@ -137,25 +153,30 @@ export default function Machinery() {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [myPendingPurchaseCount, setMyPendingPurchaseCount] = useState(0)
 
+  const isProductionRole = user?.role === 'production'
+
   const showMachineSettingsTab =
+    !isProductionRole &&
     user?.role !== 'production_mb' &&
     user?.role !== 'manager' &&
-    user?.role !== 'technician' &&
-    (isSuperadmin(user?.role) || hasAccess('machinery-settings'))
+    (user?.role === 'technician' || isSuperadmin(user?.role) || hasAccess('machinery-settings'))
   const showChecklistSettingsTab =
-    user?.role === 'technician' || showMachineSettingsTab
-  const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin'
+    !isProductionRole && (user?.role === 'technician' || showMachineSettingsTab)
+  const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin' || user?.role === 'technician'
 
   useEffect(() => {
     if (
       (!showMachineSettingsTab && tab === 'machineSettings') ||
       (!showChecklistSettingsTab && tab === 'checklistSettings') ||
-      (!showPurchaseSettingsTab && tab === 'purchaseSettings')
+      (!showPurchaseSettingsTab && tab === 'purchaseSettings') ||
+      (isProductionRole && PRODUCTION_HIDDEN_TABS.has(tab))
     ) setTab('monitor')
-  }, [showMachineSettingsTab, showChecklistSettingsTab, showPurchaseSettingsTab, tab])
+  }, [showMachineSettingsTab, showChecklistSettingsTab, showPurchaseSettingsTab, isProductionRole, tab])
 
+  const isTechnicianMobile =
+    user?.role === 'technician' && window.innerWidth <= 768 && !hasDesktopOverride()
   const isMobileRole =
-    user?.role === 'production_mb' || user?.role === 'manager' || user?.role === 'technician'
+    user?.role === 'production_mb' || user?.role === 'manager' || isTechnicianMobile
   /** โหมดมือถือที่สวมอยู่ (superadmin/admin เลือกจากหน้า /mode) */
   const activeMobileMode = getActiveMobileMode(user)
   /** แสดงแบบมือถือเต็มจอ (ไม่มี desktop Layout) — role มือถือจริง หรือสวมโหมด machinery */
@@ -180,12 +201,17 @@ export default function Machinery() {
   const load = useCallback(async () => {
     setError(null)
     try {
-      const [m, products, quantities] = await Promise.all([
+      const currentDate = new Date()
+      const inspectionDate = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`
+      const [m, products, quantities, checklistItems, inspections] = await Promise.all([
         fetchMachines(),
         fetchMachineryProductOptions(),
         fetchTodayWorkOrderQuantityByProduct(),
+        fetchChecklistItems(),
+        fetchTodayInspections(inspectionDate),
       ])
       setMachines(m)
+      setReadiness(buildReadiness(m.map((machine) => machine.id), checklistItems, inspections.inspections, inspections.results))
       setProductOptions(products)
       setTodayQuantityByProduct(quantities)
       const from = new Date()
@@ -278,6 +304,16 @@ export default function Machinery() {
         () => {
           load()
         },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pr_machinery_inspections' },
+        () => { load() },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pr_machinery_inspection_results' },
+        () => { load() },
       )
       .subscribe()
     return () => {
@@ -678,6 +714,10 @@ export default function Machinery() {
     const groupStats = machineTypeStats.get(m.machine_type || 'ทั่วไป')
     const machineProduction = machineProductionToday.get(m.id) || 0
     const st = m.current_status
+    const isReady = readiness.find((item) => item.machine_id === m.id)?.status === 'ready'
+    const displayedStatusLabel = st === 'idle' && isReady
+      ? 'พร้อมทำงาน'
+      : MACHINERY_STATUS_LABELS[st]
     const isPowerOff = st === 'power_off'
     const canTogglePower = st === 'power_off' || st === 'working' || st === 'idle'
     const isPowerOn = st === 'working' || st === 'idle'
@@ -697,7 +737,7 @@ export default function Machinery() {
               <span className="text-xs font-medium">ยังไม่มีรูป</span>
             </div>
           )}
-          <div className={monitorStatusBarClass(st, isMobileRole)}>{MACHINERY_STATUS_LABELS[st]}</div>
+          <div className={monitorStatusBarClass(st, isMobileRole)}>{displayedStatusLabel}</div>
         </div>
         <div className={`flex flex-1 flex-col gap-2.5 p-3 ${textColor}`}>
           <div>
@@ -747,7 +787,7 @@ export default function Machinery() {
                 ? 'border-slate-300 bg-white text-slate-900'
                 : 'border-white/30 bg-white/95 text-gray-900'
             }`}>
-              {MACHINERY_STATUS_LABELS[m.current_status]}
+              {displayedStatusLabel}
             </div>
           </div>
         </div>
@@ -799,6 +839,7 @@ export default function Machinery() {
 
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
         {(['monitor', 'inspection', 'maintenance', 'machineSettings', 'checklistSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
+          if (isProductionRole && PRODUCTION_HIDDEN_TABS.has(k)) return null
           if (k === 'machineSettings' && !showMachineSettingsTab) return null
           if (k === 'checklistSettings' && !showChecklistSettingsTab) return null
           if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null

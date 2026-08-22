@@ -41,7 +41,7 @@ export function getActiveMobileMode(user: User | null | undefined): MobileMode |
   try {
     const m = localStorage.getItem(MODE_KEY) as MobileMode | null
     if (!m) return null
-    return getMobileAccess(user).includes(m) ? m : null
+    return getSelectableMobileModes(user).includes(m) ? m : null
   } catch {
     return null
   }

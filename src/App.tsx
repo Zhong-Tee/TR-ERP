@@ -93,7 +93,10 @@ function SmartRedirect() {
 
   // เข้าจากมือถือ + มีสิทธิ์โหมดมือถือ → พาไปหน้าเลือกโหมด (เว้นแต่กด "โหมด PC Desktop" ไว้)
   if (window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) {
-    const mobileChoiceCount = getSelectableMobileModes(user).length + (user.employee_access === true ? 1 : 0)
+    const mobileChoiceCount =
+      getSelectableMobileModes(user).length +
+      (user.employee_access === true ? 1 : 0) +
+      (user.role === TECHNICIAN_ROLE ? 1 : 0) // PC Desktop
     if (mobileChoiceCount > 1) {
       return <Navigate to="/mode" replace />
     }
@@ -109,7 +112,10 @@ function SmartRedirect() {
   // Special roles: redirect immediately without waiting for menuAccess
   if (user.role === 'auditor') return <Navigate to="/warehouse/audit" replace />
 
-  if (user.role === TECHNICIAN_ROLE) return <Navigate to="/technician" replace />
+  if (user.role === TECHNICIAN_ROLE) {
+    const useDesktopMode = window.innerWidth > MOBILE_MAX_WIDTH || hasDesktopOverride()
+    return <Navigate to={useDesktopMode ? '/plan' : '/technician'} replace />
+  }
 
   if (WMS_MOBILE_SPECIAL_ROLES.includes(user.role)) return <Navigate to="/wms" replace />
 
@@ -192,7 +198,8 @@ function AppRoutes() {
       (activeMobileMode != null && WMS_MOBILE_SPECIAL_ROLES.includes(activeMobileMode))
     : false
   const isMachineryMobileLayout = user
-    ? MACHINERY_MOBILE_ROLES.includes(user.role) ||
+    ? (MACHINERY_MOBILE_ROLES.includes(user.role) && user.role !== TECHNICIAN_ROLE) ||
+      (user.role === TECHNICIAN_ROLE && window.innerWidth <= MOBILE_MAX_WIDTH && !hasDesktopOverride()) ||
       (activeMobileMode != null && MACHINERY_MOBILE_ROLES.includes(activeMobileMode))
     : false
 
@@ -208,11 +215,22 @@ function AppRoutes() {
     )) ||
     (activeMobileMode != null && modeAllowsPath(activeMobileMode, location.pathname))
 
+  // Technician บนจอ PC ใช้ desktop Layout เป็นค่าเริ่มต้น เว้นแต่เลือกโหมด Mobile ไว้ชัดเจน
+  if (
+    user?.role === TECHNICIAN_ROLE &&
+    location.pathname === '/technician' &&
+    activeMobileMode !== 'technician' &&
+    (window.innerWidth > MOBILE_MAX_WIDTH || hasDesktopOverride())
+  ) {
+    return <Navigate to="/plan" replace />
+  }
+
   if (
     user &&
     user.role === TECHNICIAN_ROLE &&
     !onEmployeePortalWithAccess &&
     !mobileModeExempt &&
+    location.pathname !== '/plan' &&
     location.pathname !== '/machinery' &&
     location.pathname !== '/technician'
   ) {
@@ -303,7 +321,7 @@ function AppRoutes() {
       <Route
         path="/plan"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'technician']}>
             <Layout>
               <Plan />
             </Layout>

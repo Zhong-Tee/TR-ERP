@@ -13,7 +13,8 @@ export default function ModeSwitchButton({ className }: { className?: string }) 
   const navigate = useNavigate()
 
   const choiceCount = getSelectableMobileModes(user).length + (user?.employee_access === true ? 1 : 0)
-  if (choiceCount < 2) return null
+  const hasDesktopChoice = user?.role === 'technician'
+  if (choiceCount < 2 && !hasDesktopChoice) return null
 
   return (
     <button

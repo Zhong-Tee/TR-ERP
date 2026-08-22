@@ -30,7 +30,7 @@ export default function ModeLauncher() {
   const modes = getSelectableMobileModes(user)
 
   const enterMode = (mode: MobileMode) => {
-    setActiveMobileMode(user.role === mode ? null : mode)
+    setActiveMobileMode(mode)
     navigate(mode === 'technician' ? '/machinery' : MOBILE_MODE_INFO[mode].path)
   }
 

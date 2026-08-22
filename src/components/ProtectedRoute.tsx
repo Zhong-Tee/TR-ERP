@@ -115,10 +115,12 @@ export default function ProtectedRoute({
     return <>{children}</>
   }
 
-  // Technician: mobile — หน้า home /technician และ /machinery
+  // Technician: mobile home และ desktop เฉพาะ Plan/Machinery
   if (user.role === TECHNICIAN_ROLE) {
     const ok =
-      location.pathname.startsWith('/machinery') || location.pathname.startsWith('/technician')
+      location.pathname.startsWith('/plan') ||
+      location.pathname.startsWith('/machinery') ||
+      location.pathname.startsWith('/technician')
     if (ok && (!allowedRoles || isRoleInAllowedList(user.role, allowedRoles))) {
       return <>{children}</>
     }

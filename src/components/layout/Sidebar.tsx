@@ -447,6 +447,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
   const filteredMenuItems = menuItems.filter((item) => {
     if (!user?.role) return false
+    if (user.role === 'technician') return item.key === 'plan' || item.key === 'machinery'
     return hasAccess(item.key)
   })
 
