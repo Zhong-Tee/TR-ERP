@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ChangeEvent } from 'react'
-import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload, FiX } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload, FiX, FiSend } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import {
   fetchEmployees,
@@ -443,6 +443,8 @@ export default function EmployeeRegistry() {
   const [photoView, setPhotoView] = useState<{ url: string; name: string } | null>(null)
   const [importing, setImporting] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [telegramTestingId, setTelegramTestingId] = useState<string | null>(null)
+  const [telegramTestingAll, setTelegramTestingAll] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
 
@@ -510,6 +512,49 @@ export default function EmployeeRegistry() {
 
   const handleDeleteClick = (emp: HREmployee) => setDeleteConfirm(emp)
   const handleDeleteCancel = () => setDeleteConfirm(null)
+
+  const testTelegram = async (employeeIds: string[], bulk = false) => {
+    if (!employeeIds.length) {
+      showMessage({ title: 'ไม่มีรายการทดสอบ', message: 'ยังไม่มีพนักงานที่กรอก Telegram ID' })
+      return
+    }
+    if (bulk) {
+      const confirmed = await showConfirm({
+        title: 'ทดสอบ Telegram ทั้งหมด',
+        message: `ต้องการส่งข้อความทดสอบให้พนักงาน ${employeeIds.length} คนใช่หรือไม่?`,
+        confirmText: 'ส่งข้อความทดสอบ',
+      })
+      if (!confirmed) return
+      setTelegramTestingAll(true)
+    } else {
+      setTelegramTestingId(employeeIds[0])
+    }
+    try {
+      const { data, error: invokeError } = await supabase.functions.invoke('hr-telegram-test', {
+        body: { employee_ids: employeeIds },
+      })
+      if (invokeError) throw invokeError
+      const results = (data?.results || []) as Array<{ employee_code: string; name: string; ok: boolean; error?: string | null }>
+      const passed = results.filter((row) => row.ok)
+      const failed = results.filter((row) => !row.ok)
+      const failedText = failed.slice(0, 10).map((row) => `${row.employee_code} ${row.name}: ${row.error || 'ส่งไม่สำเร็จ'}`).join('\n')
+      showMessage({
+        title: failed.length ? 'ผลทดสอบ Telegram' : 'ทดสอบ Telegram สำเร็จ',
+        message: `ส่งสำเร็จ ${passed.length} คน\nส่งไม่สำเร็จ ${failed.length} คน${failedText ? `\n\n${failedText}${failed.length > 10 ? `\n...และอีก ${failed.length - 10} คน` : ''}` : ''}`,
+      })
+    } catch (e) {
+      showMessage({ title: 'ทดสอบ Telegram ไม่สำเร็จ', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setTelegramTestingId(null)
+      setTelegramTestingAll(false)
+    }
+  }
+
+  const handleTestAllTelegram = async () => {
+    const allEmployees = await fetchEmployees()
+    const ids = allEmployees.filter((employee) => employee.telegram_chat_id?.trim()).map((employee) => employee.id)
+    await testTelegram(ids, true)
+  }
 
   const handleDeleteConfirm = async () => {
     if (!deleteConfirm) return
@@ -734,6 +779,15 @@ export default function EmployeeRegistry() {
           </button>
           <button
             type="button"
+            onClick={handleTestAllTelegram}
+            disabled={telegramTestingAll}
+            className="inline-flex items-center gap-2 px-4 py-2 border border-sky-300 bg-sky-50 text-sky-700 rounded-lg font-medium hover:bg-sky-100 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <FiSend />
+            {telegramTestingAll ? 'กำลังทดสอบ...' : 'ทดสอบ Telegram ทั้งหมด'}
+          </button>
+          <button
+            type="button"
             onClick={handleAdd}
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition"
           >
@@ -785,7 +839,23 @@ export default function EmployeeRegistry() {
                       key={emp.id}
                       className="border-b border-gray-100 hover:bg-emerald-50/50 transition"
                     >
-                      <td className="py-3 px-3 text-sm text-gray-900">{emp.employee_code}</td>
+                      <td className="py-3 px-3 text-sm text-gray-900">
+                        <div className="flex items-center gap-1.5 whitespace-nowrap">
+                          {emp.telegram_chat_id?.trim() && (
+                            <button
+                              type="button"
+                              onClick={() => testTelegram([emp.id])}
+                              disabled={telegramTestingId === emp.id || telegramTestingAll}
+                              title="เชื่อม Telegram แล้ว — คลิกเพื่อส่งข้อความทดสอบ"
+                              aria-label={`ทดสอบ Telegram ${emp.employee_code}`}
+                              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-[11px] font-bold text-white hover:bg-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-300 disabled:opacity-50"
+                            >
+                              {telegramTestingId === emp.id ? '…' : 'T'}
+                            </button>
+                          )}
+                          <span>{emp.employee_code}</span>
+                        </div>
+                      </td>
                       <td className="py-3 px-3">
                         <div className="flex items-center gap-2">
                           {photoDisplayUrl(emp.photo_url) ? (
