@@ -1063,6 +1063,9 @@ export interface HREmployee {
   monthly_student_loan?: number
   monthly_company_loan?: number
   /** ยอดตั้งต้นก่อนเริ่มใช้ระบบเงินเดือน */
+  income_opening_balance?: number
+  personal_tax_opening_balance?: number
+  student_loan_opening_balance?: number
   savings_opening_balance?: number
   company_loan_opening_balance?: number
   company_loan_opening_installments?: number

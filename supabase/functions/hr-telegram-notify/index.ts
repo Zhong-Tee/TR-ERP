@@ -15,6 +15,7 @@ interface LeaveRequest {
   start_time: string | null
   end_time: string | null
   total_hours: number | null
+  is_emergency: boolean
   leave_type: { name: string } | null
   employee: {
     first_name: string
@@ -56,7 +57,8 @@ function empBlock(l: LeaveRequest): string {
   const name = `${emp?.first_name ?? ''} ${emp?.last_name ?? ''}`.trim() || '-'
   const nickname = emp?.nickname || '-'
   const dept = emp?.department?.name || '-'
-  const leaveType = l.leave_type?.name || '-'
+  const leaveTypeName = l.leave_type?.name || '-'
+  const leaveType = l.is_emergency ? `${leaveTypeName} (ฉุกเฉิน)` : leaveTypeName
   const amount = l.leave_mode === 'hourly'
     ? `${Number(l.total_hours ?? 0)} ชั่วโมง`
     : `${Number(l.total_days)} วัน`

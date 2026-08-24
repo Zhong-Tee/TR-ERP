@@ -1,7 +1,7 @@
 {
   "name": "tr-erp",
   "private": true,
-  "version": "1.8.3-1",
+  "version": "1.8.4-1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.14.0",
     "html5-qrcode": "^2.3.8",
+    "jszip": "^3.10.1",
     "papaparse": "^5.5.3",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.0.379",

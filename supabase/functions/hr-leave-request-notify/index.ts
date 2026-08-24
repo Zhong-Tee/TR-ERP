@@ -59,7 +59,8 @@ Deno.serve(async (req) => {
     const approverName = `${approver?.first_name ?? ''} ${approver?.last_name ?? ''}`.trim()
       || approver?.nickname
       || '-'
-    const leaveType = leave.leave_type?.name ?? '-'
+    const leaveTypeName = leave.leave_type?.name ?? '-'
+    const leaveType = leave.is_emergency ? `${leaveTypeName} (ฉุกเฉิน)` : leaveTypeName
     const leaveDateText = leave.start_date === leave.end_date
       ? thaiDate(leave.start_date)
       : `${thaiDate(leave.start_date)} – ${thaiDate(leave.end_date)}`

@@ -10,7 +10,7 @@ const red = '#aa3d3d'
 const fmt = (value: number) => Number(value || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 // React PDF can clip the final Thai glyph because its advance width is calculated too narrowly.
 // A non-breaking space keeps the final glyph inside the text layout box without changing the visible value.
-const pdfText = (value: string) => `${value}\u00a0`
+const pdfText = (value: string) => `${value}\u00a0\u00a0\u00a0`
 
 const s = StyleSheet.create({
   page: { fontFamily: 'Sarabun', fontSize: 10, padding: 28, color: '#20252d' },
@@ -70,18 +70,26 @@ export default function PayrollSlipPDF({ company, item, monthLabel, paymentDate,
   const gross = item.gross_income ?? item.base_salary + item.position_allowance + item.other_income
   const totalDeduction = item.total_deduction ?? item.personal_tax + item.social_security + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
   const net = item.net_pay ?? gross - totalDeduction
+  const ytdRows = [
+    ['รวมรายรับทั้งหมดต่อปี', ytd.income],
+    ['ภาษีสะสมรวม', ytd.personalTax],
+    ['ประกันสังคมสะสมรวม', ytd.socialSecurity],
+    ['เงินสะสมรวม', ytd.accumulatedSavings],
+    ['กยศ. สะสมรวม', ytd.studentLoan],
+    ['เงินกู้บริษัทฯ คงเหลือ', ytd.companyLoanBalance],
+  ].filter(([, value]) => Number(value) !== 0) as [string, number][]
   return <Document><Page size={[595.28, 841.89]} style={s.page} wrap={false}>
     <View style={s.header}>
-      <View style={s.companyWrap}>{company.logo_url && <Image src={company.logo_url} style={s.logo} />}<View><Text style={s.companyName}>{company.name_th}</Text>{company.name_en && <Text style={s.companyLine}>{company.name_en}</Text>}<Text style={s.companyLine}>{company.address || '-'}</Text><Text style={s.companyLine}>โทร {company.phone || '-'} · เลขผู้เสียภาษี {company.tax_id || '-'}</Text></View></View>
+      <View style={s.companyWrap}>{company.logo_url && <Image src={company.logo_url} style={s.logo} />}<View><Text style={s.companyName}>{pdfText(company.name_th)}</Text>{company.name_en && <Text style={s.companyLine}>{pdfText(company.name_en)}</Text>}<Text style={s.companyLine}>{pdfText(company.address || '-')}</Text><Text style={s.companyLine}>{pdfText(`โทร ${company.phone || '-'} · เลขผู้เสียภาษี ${company.tax_id || '-'}`)}</Text></View></View>
       <View><Text style={s.title}>สลิปเงินเดือน</Text><Text style={s.subtitle}>PAYSLIP / SALARY SLIP</Text></View>
     </View>
     <View style={s.info}><View style={[s.infoRow, s.infoRowDivider]}><Text style={s.infoLabel}>{pdfText('ชื่อ-สกุล')}</Text><Text style={s.infoValue}>{pdfText(item.employee_name || '-')}</Text><Text style={s.infoLabel}>{pdfText('ตำแหน่ง')}</Text><Text style={s.infoValue}>{pdfText(positionOnly)}</Text></View><View style={s.infoRow}><Text style={s.infoLabel}>{pdfText('ประจำเดือน')}</Text><Text style={s.infoValue}>{pdfText(monthLabel)}</Text><Text style={s.infoLabel}>{pdfText('วันที่จ่าย')}</Text><Text style={s.infoValue}>{pdfText(paymentDate || '-')}</Text></View></View>
     <View style={s.columns}>
-      <View style={s.column}><Text style={s.sectionTitleIncome}>รายการได้</Text>{incomes.map(([label, value]) => <View key={label} style={s.row}><Text>{label}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalIncome]}><Text>รวมเงินได้</Text><Text>{fmt(gross)}</Text></View></View>
-      <View style={s.column}><Text style={s.sectionTitleDeduction}>รายการหัก</Text>{deductions.map(([label, value], index) => <View key={label} style={[s.row, index % 2 ? s.alt : {}]}><Text>{label}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalDeduction]}><Text>รวมเงินหัก</Text><Text>{fmt(totalDeduction)}</Text></View></View>
+      <View style={s.column}><Text style={s.sectionTitleIncome}>{pdfText('รายการได้')}</Text>{incomes.map(([label, value]) => <View key={label} style={s.row}><Text>{pdfText(label)}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalIncome]}><Text>{pdfText('รวมเงินได้')}</Text><Text>{fmt(gross)}</Text></View></View>
+      <View style={s.column}><Text style={s.sectionTitleDeduction}>{pdfText('รายการหัก')}</Text>{deductions.map(([label, value], index) => <View key={label} style={[s.row, index % 2 ? s.alt : {}]}><Text>{pdfText(label)}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalDeduction]}><Text>{pdfText('รวมเงินหัก')}</Text><Text>{fmt(totalDeduction)}</Text></View></View>
     </View>
-    <View style={s.net}><Text style={s.netLabel}>เงินเดือนสุทธิ (NET PAY)</Text><Text style={s.netValue}>{fmt(net)} บาท</Text></View>
-    <View style={s.ytd}><Text style={s.ytdTitle}>ข้อมูลสะสมต่อปี</Text><View style={s.row}><Text>รวมรายรับทั้งหมดต่อปี</Text><Text>{fmt(ytd.income)}</Text></View><View style={s.row}><Text>ภาษีสะสมรวม</Text><Text>{fmt(ytd.personalTax)}</Text></View><View style={s.row}><Text>ประกันสังคมสะสมรวม</Text><Text>{fmt(ytd.socialSecurity)}</Text></View><View style={s.row}><Text>เงินสะสมรวม</Text><Text>{fmt(ytd.accumulatedSavings)}</Text></View><View style={s.row}><Text>กยศ. สะสมรวม</Text><Text>{fmt(ytd.studentLoan)}</Text></View><View style={s.row}><Text>เงินกู้บริษัทฯ คงเหลือ</Text><Text>{fmt(ytd.companyLoanBalance)} ({ytd.companyLoanInstallments} งวด)</Text></View></View>
+    <View style={s.net}><Text style={s.netLabel}>{pdfText('เงินเดือนสุทธิ (NET PAY)')}</Text><Text style={s.netValue}>{pdfText(`${fmt(net)} บาท`)}</Text></View>
+    {ytdRows.length > 0 && <View style={s.ytd}><Text style={s.ytdTitle}>{pdfText('ข้อมูลสะสมต่อปี')}</Text>{ytdRows.map(([label, value]) => <View key={label} style={s.row}><Text>{pdfText(label)}</Text><Text>{pdfText(label === 'เงินกู้บริษัทฯ คงเหลือ' ? `${fmt(value)} (${ytd.companyLoanInstallments} งวด)` : fmt(value))}</Text></View>)}</View>}
     <View style={s.sign}>{company.signature_url && <Image src={company.signature_url} style={s.signature} />}<Text style={s.signText}>({company.signatory_name || 'ผู้มีอำนาจลงนาม'})</Text><Text style={s.signText}>{company.signatory_title || 'ผู้จ่ายเงิน'}</Text></View>
     <Text style={s.footer}>เอกสารนี้จัดทำโดยระบบ ไม่ต้องลงลายมือชื่อกำกับหากส่งในรูปแบบอิเล็กทรอนิกส์</Text>
   </Page></Document>

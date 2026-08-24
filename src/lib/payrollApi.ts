@@ -7,6 +7,7 @@ export interface PayrollItem {
   employee_id: string
   employee_code: string
   employee_name: string
+  employee_nickname?: string | null
   department_position?: string | null
   base_salary: number
   position_allowance: number
@@ -18,9 +19,14 @@ export interface PayrollItem {
   leave_deduction: number
   other_income: number
   other_deduction: number
+  income_opening_balance: number
+  personal_tax_opening_balance: number
+  student_loan_opening_balance: number
   savings_opening_balance: number
   company_loan_opening_balance: number
   company_loan_opening_installments: number
+  reviewed_at?: string | null
+  reviewed_by?: string | null
   gross_income?: number
   total_deduction?: number
   net_pay?: number
@@ -197,20 +203,40 @@ export async function savePayrollRun(input: {
     .single()
   throwIfError(runError)
 
-  const { error: deleteError } = await supabase.from('hr_payroll_items').delete().eq('payroll_run_id', run.id)
-  throwIfError(deleteError)
   if (input.items.length) {
-    const rows = input.items.map((item) => ({
-      ...item,
-      id: undefined,
-      payroll_run_id: run.id,
-      company_snapshot: input.company,
-      gross_income: undefined,
-      total_deduction: undefined,
-      net_pay: undefined,
-    }))
-    const { error: itemError } = await supabase.from('hr_payroll_items').insert(rows)
+    const rows = input.items.map((item) => {
+      // Generated and server-managed columns must be absent from the INSERT
+      // payload. Sending them as undefined can still become a non-DEFAULT
+      // value after PostgREST serialization.
+      const {
+        id: _id,
+        payroll_run_id: _payrollRunId,
+        gross_income: _grossIncome,
+        total_deduction: _totalDeduction,
+        net_pay: _netPay,
+        created_at: _createdAt,
+        updated_at: _updatedAt,
+        ...editable
+      } = item as PayrollItem & { created_at?: string; updated_at?: string }
+      return {
+        ...editable,
+        payroll_run_id: run.id,
+        company_snapshot: input.company,
+      }
+    })
+    // Write first so an INSERT/UPDATE failure never destroys the last saved
+    // draft. The unique key keeps one row per employee in a payroll run.
+    const { error: itemError } = await supabase.from('hr_payroll_items')
+      .upsert(rows, { onConflict: 'payroll_run_id,employee_id' })
     throwIfError(itemError)
+
+    // Remove employees no longer present only after every new row is safe.
+    const employeeIds = input.items.map((item) => item.employee_id)
+    const { error: deleteError } = await supabase.from('hr_payroll_items')
+      .delete()
+      .eq('payroll_run_id', run.id)
+      .not('employee_id', 'in', `(${employeeIds.join(',')})`)
+    throwIfError(deleteError)
   }
   return (await fetchPayrollRun(input.month, input.company.id)) as PayrollRun
 }
