@@ -56,6 +56,8 @@ interface OrderListProps {
   excludeClaimBills?: boolean
   /** โหลดสินค้า/รีวิวพร้อมรายการหรือไม่; ปิดได้เมื่อหน้ารายละเอียดรองรับ lazy-load */
   loadOrderRelations?: boolean
+  /** เปิดเครื่องมือเลือกบิลและ Export CSV เลขพัสดุ (ใช้ในแท็บจัดส่งแล้ว) */
+  enableTrackingExport?: boolean
 }
 
 export default function OrderList({
@@ -84,6 +86,7 @@ export default function OrderList({
   detailReadOnly = false,
   excludeClaimBills = false,
   loadOrderRelations = true,
+  enableTrackingExport = false,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -95,6 +98,37 @@ export default function OrderList({
   const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
   /** ป้องกัน request เก่าที่ตอบช้ากว่าเขียนทับผลจากตัวกรองล่าสุด */
   const loadRequestRef = useRef(0)
+
+  const exportTrackingCsv = async () => {
+    if (orders.length === 0) return
+
+    const { data: channelRows, error: channelError } = await supabase
+      .from('channels')
+      .select('channel_code, default_carrier')
+    if (channelError) console.warn('Unable to load default carriers for tracking export:', channelError)
+    const carrierByChannel = new Map(
+      (channelRows || []).map((row: any) => [String(row.channel_code || '').toUpperCase(), String(row.default_carrier || '')]),
+    )
+    const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+    const rows = [
+      ['เลขบิล', 'Trackno', 'ชื่อขนส่ง'],
+      ...orders.map((order) => [
+        order.bill_no,
+        order.tracking_number || '',
+        order.transport_meta?.carrier || carrierByChannel.get((order.channel_code || '').toUpperCase()) || '',
+      ]),
+    ]
+    const csv = '\uFEFF' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `tracking-export-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
 
   // ส่งตรวจสลิป modal
   const [slipCheckOrder, setSlipCheckOrder] = useState<Order | null>(null)
@@ -539,6 +573,18 @@ export default function OrderList({
 
   return (
     <div className="space-y-2.5">
+      {enableTrackingExport && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
+          <span className="text-sm text-gray-600">Export ตามผลการกรองปัจจุบัน {orders.length} รายการ</span>
+          <button
+            type="button"
+            onClick={exportTrackingCsv}
+            className="ml-auto rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+          >
+            Export CSV เลขพัสดุ
+          </button>
+        </div>
+      )}
       {orders.map((order, orderIdx) => {
         const channelCode = (order.channel_code || '').toUpperCase()
         const channelColor =

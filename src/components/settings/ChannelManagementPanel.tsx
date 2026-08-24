@@ -22,6 +22,7 @@ interface ManagedChannel {
   id: string
   channel_code: string
   channel_name: string
+  default_carrier: string | null
   receive_transfer: boolean
   is_active: boolean
   sort_order: number
@@ -31,6 +32,7 @@ interface ManagedChannel {
 interface ChannelFormState {
   channel_code: string
   channel_name: string
+  default_carrier: string
   receive_transfer: boolean
   is_active: boolean
   roles: string[]
@@ -39,6 +41,7 @@ interface ChannelFormState {
 const EMPTY_FORM: ChannelFormState = {
   channel_code: '',
   channel_name: '',
+  default_carrier: '',
   receive_transfer: true,
   is_active: true,
   roles: [],
@@ -63,7 +66,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
     try {
       const { data, error } = await supabase
         .from('channels')
-        .select('id, channel_code, channel_name, receive_transfer, is_active, sort_order, channel_role_visibility(role)')
+        .select('id, channel_code, channel_name, default_carrier, receive_transfer, is_active, sort_order, channel_role_visibility(role)')
         .order('sort_order', { ascending: true })
         .order('channel_code', { ascending: true })
       if (error) throw error
@@ -71,6 +74,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
         id: c.id,
         channel_code: c.channel_code,
         channel_name: c.channel_name,
+        default_carrier: c.default_carrier || null,
         receive_transfer: c.receive_transfer !== false,
         is_active: c.is_active !== false,
         sort_order: Number(c.sort_order || 0),
@@ -102,6 +106,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
     setForm({
       channel_code: ch.channel_code,
       channel_name: ch.channel_name,
+      default_carrier: ch.default_carrier || '',
       receive_transfer: ch.receive_transfer,
       is_active: ch.is_active,
       roles: [...ch.roles],
@@ -137,6 +142,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
   async function handleSave() {
     const code = form.channel_code.trim().toUpperCase()
     const name = form.channel_name.trim()
+    const defaultCarrier = form.default_carrier.trim().toUpperCase() || null
     if (!editing && !code) {
       setMessage({ title: 'แจ้งเตือน', body: 'กรุณากรอกรหัสช่องทาง' })
       return
@@ -157,6 +163,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
           .from('channels')
           .update({
             channel_name: name,
+            default_carrier: defaultCarrier,
             receive_transfer: form.receive_transfer,
             is_active: form.is_active,
           })
@@ -175,6 +182,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
         const { error } = await supabase.from('channels').insert({
           channel_code: code,
           channel_name: name,
+          default_carrier: defaultCarrier,
           receive_transfer: form.receive_transfer,
           is_active: form.is_active,
           sort_order: nextSort,
@@ -288,6 +296,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
             <tr className="bg-gray-50 border-b border-gray-200 text-left">
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">รหัส</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ชื่อช่องทาง</th>
+              <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ขนส่งเริ่มต้น</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ประเภทการรับเงิน</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">role ที่มองเห็น</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
@@ -297,17 +306,24 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="px-3 py-10 text-center text-gray-400">กำลังโหลด...</td>
+                <td colSpan={7} className="px-3 py-10 text-center text-gray-400">กำลังโหลด...</td>
               </tr>
             ) : channels.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-3 py-10 text-center text-gray-400">ยังไม่มีช่องทาง</td>
+                <td colSpan={7} className="px-3 py-10 text-center text-gray-400">ยังไม่มีช่องทาง</td>
               </tr>
             ) : (
               channels.map((ch) => (
                 <tr key={ch.channel_code} className={`border-b border-gray-100 ${ch.is_active ? '' : 'bg-gray-50/60'}`}>
                   <td className="px-3 py-2.5 font-semibold text-gray-800 tabular-nums">{ch.channel_code}</td>
                   <td className="px-3 py-2.5 text-gray-700">{ch.channel_name}</td>
+                  <td className="px-3 py-2.5 text-gray-700">
+                    {ch.default_carrier ? (
+                      <span className="inline-flex rounded-lg bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">{ch.default_carrier}</span>
+                    ) : (
+                      <span className="text-xs italic text-gray-400">ไม่ระบุ</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2.5">
                     {ch.receive_transfer ? (
                       <span className="inline-flex px-2 py-0.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700">
@@ -403,6 +419,18 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
                 className="w-full px-3 py-2 border rounded-lg"
                 placeholder="เช่น Facebook TR, Pump"
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">ขนส่งเริ่มต้น</label>
+              <input
+                type="text"
+                value={form.default_carrier}
+                onChange={(e) => setForm({ ...form, default_carrier: e.target.value })}
+                className="w-full px-3 py-2 border rounded-lg"
+                placeholder="เช่น FLASH, J&T, SPX"
+              />
+              <p className="mt-1 text-xs text-gray-500">ใช้เป็นชื่อขนส่งในหน้าทวนสอบและไฟล์ Export CSV หากบิลยังไม่มีข้อมูลขนส่งเฉพาะรายการ</p>
             </div>
 
             <div>

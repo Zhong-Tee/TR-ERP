@@ -941,6 +941,7 @@ export default function Orders() {
             useDetailViewOnClick={true}
             detailReadOnly={true}
             loadOrderRelations={false}
+            enableTrackingExport={true}
             {...salesTrOrderListProps}
           />
         ) : activeTab === 'cancelled' ? (

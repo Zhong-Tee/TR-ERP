@@ -107,7 +107,7 @@ export default function AttachmentViewer({ items, startIndex = 0, onClose }: {
 
   // render ที่ body — กัน margin/overflow/stacking context ของหน้าที่เรียกใช้มากวนตำแหน่ง
   return createPortal(
-    <div className="fixed inset-0 z-[60] flex flex-col bg-black">
+    <div className="fixed inset-0 z-[80] flex flex-col bg-black">
       <div className="flex items-center gap-2 px-3 py-3 text-white">
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{fileNameOf(att)}</span>
         {url && (
