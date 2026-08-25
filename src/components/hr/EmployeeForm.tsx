@@ -122,6 +122,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
   const [monthly_company_loan, setMonthlyCompanyLoan] = useState<number | ''>('')
   const [income_opening_balance, setIncomeOpeningBalance] = useState<number | ''>('')
   const [personal_tax_opening_balance, setPersonalTaxOpeningBalance] = useState<number | ''>('')
+  const [social_security_opening_balance, setSocialSecurityOpeningBalance] = useState<number | ''>('')
   const [student_loan_opening_balance, setStudentLoanOpeningBalance] = useState<number | ''>('')
   const [savings_opening_balance, setSavingsOpeningBalance] = useState<number | ''>('')
   const [company_loan_opening_balance, setCompanyLoanOpeningBalance] = useState<number | ''>('')
@@ -240,6 +241,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       setMonthlyCompanyLoan(employee.monthly_company_loan ?? '')
       setIncomeOpeningBalance(employee.income_opening_balance ?? '')
       setPersonalTaxOpeningBalance(employee.personal_tax_opening_balance ?? '')
+      setSocialSecurityOpeningBalance(employee.social_security_opening_balance ?? '')
       setStudentLoanOpeningBalance(employee.student_loan_opening_balance ?? '')
       setSavingsOpeningBalance(employee.savings_opening_balance ?? '')
       setCompanyLoanOpeningBalance(employee.company_loan_opening_balance ?? '')
@@ -410,6 +412,7 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
         monthly_company_loan: typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
         income_opening_balance: typeof income_opening_balance === 'number' ? income_opening_balance : 0,
         personal_tax_opening_balance: typeof personal_tax_opening_balance === 'number' ? personal_tax_opening_balance : 0,
+        social_security_opening_balance: typeof social_security_opening_balance === 'number' ? social_security_opening_balance : 0,
         student_loan_opening_balance: typeof student_loan_opening_balance === 'number' ? student_loan_opening_balance : 0,
         savings_opening_balance: typeof savings_opening_balance === 'number' ? savings_opening_balance : 0,
         company_loan_opening_balance: typeof company_loan_opening_balance === 'number' ? company_loan_opening_balance : 0,
@@ -1100,6 +1103,10 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
             <label>
               <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาภาษีสะสม</span>
               <input type="number" min="0" step="0.01" value={personal_tax_opening_balance} onChange={(e) => setPersonalTaxOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
+            </label>
+            <label>
+              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมา สปส.</span>
+              <input type="number" min="0" step="0.01" value={social_security_opening_balance} onChange={(e) => setSocialSecurityOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
             </label>
             <label>
               <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมา กยศ. สะสม</span>

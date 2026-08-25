@@ -107,6 +107,8 @@ export default function WarehouseSub() {
 
   const [products, setProducts] = useState<AssignedProductRow[]>([])
   const [loadingProducts, setLoadingProducts] = useState(false)
+  const [draggingProductId, setDraggingProductId] = useState<string | null>(null)
+  const [savingProductOrder, setSavingProductOrder] = useState(false)
 
   const [moves, setMoves] = useState<MoveRow[]>([])
   const [loadingMoves, setLoadingMoves] = useState(false)
@@ -182,11 +184,12 @@ export default function WarehouseSub() {
   }, [products, warehouseProductSearch])
   const filteredDailyRows = useMemo(() => {
     const term = warehouseProductSearch.trim().toLocaleLowerCase('th')
-    if (!term) return dailyRows
-    return dailyRows.filter((product) =>
+    const filtered = term ? dailyRows.filter((product) =>
       `${product.product_code} ${product.product_name}`.toLocaleLowerCase('th').includes(term),
-    )
-  }, [dailyRows, warehouseProductSearch])
+    ) : dailyRows
+    const order = new Map(products.map((product, index) => [product.product_id, index]))
+    return [...filtered].sort((a, b) => (order.get(a.product_id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.product_id) ?? Number.MAX_SAFE_INTEGER))
+  }, [dailyRows, products, warehouseProductSearch])
 
   async function applyDynamicWmsMapsToCorrectMap(map: Record<string, number>, subId: string) {
     if (!subId) return
@@ -535,6 +538,38 @@ export default function WarehouseSub() {
       setProducts([])
     } finally {
       setLoadingProducts(false)
+    }
+  }
+
+  async function reorderAssignedProducts(targetProductId: string) {
+    const sourceProductId = draggingProductId
+    setDraggingProductId(null)
+    if (!selectedSubId || !sourceProductId || sourceProductId === targetProductId || warehouseProductSearch.trim() || savingProductOrder) return
+    const fromIndex = products.findIndex((product) => product.product_id === sourceProductId)
+    const toIndex = products.findIndex((product) => product.product_id === targetProductId)
+    if (fromIndex < 0 || toIndex < 0) return
+
+    const previousProducts = products
+    const previousDailyRows = dailyRows
+    const reordered = [...products]
+    const [moved] = reordered.splice(fromIndex, 1)
+    reordered.splice(toIndex, 0, moved)
+    const order = new Map(reordered.map((product, index) => [product.product_id, index]))
+    setProducts(reordered)
+    setDailyRows((rows) => [...rows].sort((a, b) => (order.get(a.product_id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.product_id) ?? Number.MAX_SAFE_INTEGER)))
+    setSavingProductOrder(true)
+    try {
+      const { error } = await supabase.rpc('rpc_reorder_sub_warehouse_products', {
+        p_sub_warehouse_id: selectedSubId,
+        p_product_ids: reordered.map((product) => product.product_id),
+      })
+      if (error) throw error
+    } catch (e: any) {
+      setProducts(previousProducts)
+      setDailyRows(previousDailyRows)
+      showMessage({ title: 'ผิดพลาด', message: 'บันทึกลำดับสินค้าไม่สำเร็จ: ' + (e?.message || String(e)) })
+    } finally {
+      setSavingProductOrder(false)
     }
   }
 
@@ -1129,6 +1164,11 @@ export default function WarehouseSub() {
                       : ` · รวมช่วง ${dateFrom} – ${dateTo}`}
                 </div>
               </div>
+              {productViewMode !== 'history' && products.length > 1 && (
+                <div className="mb-3 text-xs text-slate-500">
+                  {warehouseProductSearch.trim() ? 'ล้างคำค้นหาเพื่อจัดลำดับสินค้า' : savingProductOrder ? 'กำลังบันทึกลำดับ…' : 'ลากไอคอน ≡ เพื่อเปลี่ยนลำดับสินค้า'}
+                </div>
+              )}
             {productViewMode === 'history' ? (
               moveHistoryContent
             ) : loadingProducts ? (
@@ -1154,7 +1194,8 @@ export default function WarehouseSub() {
                   <table className="w-full text-sm min-w-[920px]">
                     <thead>
                       <tr className="bg-emerald-600 text-white">
-                        <th className="p-3 text-left rounded-tl-xl">รูป</th>
+                        <th className="p-3 text-center rounded-tl-xl w-12" aria-label="จัดลำดับ" />
+                        <th className="p-3 text-left">รูป</th>
                         <th className="p-3 text-left">รหัสสินค้า</th>
                         <th className="p-3 text-left">ชื่อสินค้า</th>
                         <th className="p-3 text-center">หน่วย</th>
@@ -1170,7 +1211,15 @@ export default function WarehouseSub() {
                       {filteredDailyRows.map((p) => {
                         const dash = loadingDaily
                         return (
-                          <tr key={p.product_id} className="hover:bg-emerald-50">
+                          <tr
+                            key={p.product_id}
+                            onDragOver={(event) => { if (draggingProductId && !warehouseProductSearch.trim()) event.preventDefault() }}
+                            onDrop={(event) => { event.preventDefault(); void reorderAssignedProducts(p.product_id) }}
+                            className={`hover:bg-emerald-50 transition ${draggingProductId === p.product_id ? 'opacity-40' : ''}`}
+                          >
+                            <td className="p-2 text-center">
+                              <button type="button" draggable={!savingProductOrder && !warehouseProductSearch.trim()} onDragStart={(event) => { setDraggingProductId(p.product_id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', p.product_id) }} onDragEnd={() => setDraggingProductId(null)} disabled={savingProductOrder || !!warehouseProductSearch.trim()} aria-label={`ลากจัดลำดับ ${p.product_name}`} title="ลากเพื่อเปลี่ยนลำดับ" className="cursor-grab rounded-lg px-2 py-1 text-xl leading-none text-slate-400 hover:bg-slate-100 hover:text-emerald-600 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-30">≡</button>
+                            </td>
                             <td className="p-3">
                               <ProductImage code={p.product_code} name={p.product_name} />
                             </td>
@@ -1237,7 +1286,8 @@ export default function WarehouseSub() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-emerald-600 text-white">
-                      <th className="p-3 text-left rounded-tl-xl">รูป</th>
+                      <th className="p-3 text-center rounded-tl-xl w-12" aria-label="จัดลำดับ" />
+                      <th className="p-3 text-left">รูป</th>
                       <th className="p-3 text-left">รหัสสินค้า</th>
                       <th className="p-3 text-left">ชื่อสินค้า</th>
                       <th className="p-3 text-center">หน่วย</th>
@@ -1253,7 +1303,15 @@ export default function WarehouseSub() {
                       const wmsQty = wmsCorrectMap[p.product_code] ?? 0
                       const onHand = receivedIn - Number(wmsQty || 0)
                       return (
-                        <tr key={p.product_id} className="hover:bg-emerald-50">
+                        <tr
+                          key={p.product_id}
+                          onDragOver={(event) => { if (draggingProductId && !warehouseProductSearch.trim()) event.preventDefault() }}
+                          onDrop={(event) => { event.preventDefault(); void reorderAssignedProducts(p.product_id) }}
+                          className={`hover:bg-emerald-50 transition ${draggingProductId === p.product_id ? 'opacity-40' : ''}`}
+                        >
+                          <td className="p-2 text-center">
+                            <button type="button" draggable={!savingProductOrder && !warehouseProductSearch.trim()} onDragStart={(event) => { setDraggingProductId(p.product_id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', p.product_id) }} onDragEnd={() => setDraggingProductId(null)} disabled={savingProductOrder || !!warehouseProductSearch.trim()} aria-label={`ลากจัดลำดับ ${p.product_name}`} title="ลากเพื่อเปลี่ยนลำดับ" className="cursor-grab rounded-lg px-2 py-1 text-xl leading-none text-slate-400 hover:bg-slate-100 hover:text-emerald-600 active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-30">≡</button>
+                          </td>
                           <td className="p-3">
                             <ProductImage code={p.product_code} name={p.product_name} />
                           </td>

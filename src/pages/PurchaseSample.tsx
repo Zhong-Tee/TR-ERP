@@ -8,6 +8,7 @@ import {
   loadSampleStatusCounts,
   loadSampleDetail,
   createSample,
+  updateSample,
   receivePendingSample,
   updateSampleTest,
   convertSampleToProduct,
@@ -33,6 +34,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 }
 
 interface DraftItem {
+  id?: string
   product_name_manual: string
   qty: number
   note: string
@@ -81,6 +83,11 @@ export default function PurchaseSample() {
   const [draftItems, setDraftItems] = useState<DraftItem[]>([{ product_name_manual: '', qty: 1, note: '', image_file: null, image_preview: '' }])
   const [note, setNote] = useState('')
   const [receiptStatus, setReceiptStatus] = useState<'pending_receipt' | 'received'>('received')
+  const [editing, setEditing] = useState<InventorySample | null>(null)
+  const [editItems, setEditItems] = useState<DraftItem[]>([])
+  const [editNote, setEditNote] = useState('')
+  const [editReceiptStatus, setEditReceiptStatus] = useState<'pending_receipt' | 'received'>('received')
+  const canEdit = ['superadmin', 'admin', 'store', 'account'].includes(user?.role || '')
 
   const [viewing, setViewing] = useState<InventorySample | null>(null)
   const [enlargedImage, setEnlargedImage] = useState('')
@@ -150,9 +157,6 @@ export default function PurchaseSample() {
     }
   }
 
-  function addDraftItem() {
-    setDraftItems((prev) => [...prev, { product_name_manual: '', qty: 1, note: '', image_file: null, image_preview: '' }])
-  }
   function updateDraftItem(i: number, patch: Partial<DraftItem>) {
     setDraftItems((prev) => prev.map((item, idx) => (idx === i ? { ...item, ...patch } : item)))
   }
@@ -162,7 +166,7 @@ export default function PurchaseSample() {
 
   async function handleCreate() {
     const valid = draftItems.filter((i) => i.product_name_manual.trim() && i.qty > 0)
-    if (!valid.length) { showMessage({ message: 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ' }); return }
+    if (valid.length !== 1) { showMessage({ message: 'กรุณาระบุสินค้าตัวอย่าง 1 รายการ' }); return }
     setSaving(true)
     try {
       const derivedSampleLabel = valid[0].product_name_manual.trim()
@@ -223,6 +227,64 @@ export default function PurchaseSample() {
       setViewing(detail)
     } catch (e) {
       console.error(e)
+    }
+  }
+
+  async function openEdit(sample: InventorySample) {
+    if (!canEdit) return
+    setSaving(true)
+    try {
+      const detail = await loadSampleDetail(sample.id)
+      setEditing(detail)
+      setEditItems((detail.inv_sample_items || []).map((item) => ({
+        id: item.id,
+        product_name_manual: item.product_name_manual || item.pr_products?.product_name || '',
+        qty: Number(item.qty) || 1,
+        note: item.note || '',
+        image_file: null,
+        image_preview: item.image_url || '',
+      })))
+      setEditNote(detail.note || '')
+      setEditReceiptStatus(detail.status === 'pending_receipt' ? 'pending_receipt' : 'received')
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'เปิดรายการเพื่อแก้ไขไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleUpdate() {
+    if (!editing || !canEdit) return
+    const valid = editItems.filter((item) => item.product_name_manual.trim() && item.qty > 0)
+    if (!valid.length) { showMessage({ message: 'กรุณาระบุสินค้าตัวอย่างอย่างน้อย 1 รายการ' }); return }
+    setSaving(true)
+    try {
+      const items = await Promise.all(valid.map(async (item) => {
+        let imageUrl = item.image_preview || undefined
+        if (item.image_file) {
+          const ext = item.image_file.name.split('.').pop() || 'jpg'
+          const fileName = `sample-${Date.now()}-${crypto.randomUUID()}.${ext}`
+          const { error } = await supabase.storage.from(SAMPLE_IMAGES_BUCKET).upload(fileName, item.image_file, { upsert: false })
+          if (error) throw error
+          imageUrl = supabase.storage.from(SAMPLE_IMAGES_BUCKET).getPublicUrl(fileName).data.publicUrl
+        }
+        return { id: item.id, product_name_manual: item.product_name_manual.trim(), image_url: imageUrl, qty: item.qty, note: item.note.trim() || undefined }
+      }))
+      await updateSample({
+        sampleId: editing.id,
+        items,
+        sampleLabel: valid[0].product_name_manual.trim(),
+        note: editNote.trim() || undefined,
+        receiptStatus: editReceiptStatus,
+      })
+      setEditing(null)
+      await loadAll()
+      window.dispatchEvent(new CustomEvent('purchase-samples-changed'))
+      showMessage({ message: 'แก้ไขสินค้าตัวอย่างเรียบร้อยแล้ว' })
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'แก้ไขไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -478,7 +540,7 @@ export default function PurchaseSample() {
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">ผู้อนุมัติ</th>
                   <th className="px-4 py-3 text-center font-semibold text-gray-600">รายการ</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-600">วันที่รับ</th>
-                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                  <th className="px-4 py-3 text-left font-semibold text-gray-600">หมายเหตุตอนรับสินค้า</th>
                   <th className="px-4 py-3 text-right font-semibold text-gray-600">การจัดการ</th>
                 </tr>
               </thead>
@@ -502,12 +564,19 @@ export default function PurchaseSample() {
                       </td>
                       <td className="px-4 py-3 text-gray-500 max-w-[200px] truncate">{s.note || '-'}</td>
                       <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                        {canEdit && (
+                          <button onClick={() => openEdit(s)} className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-semibold">
+                            แก้ไข
+                          </button>
+                        )}
                         <button
                           onClick={() => openDetail(s)}
                           className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100 text-xs font-semibold"
                         >
                           ดูรายละเอียด
                         </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -552,8 +621,8 @@ export default function PurchaseSample() {
                     <input type="number" min={1} value={item.qty} onChange={(e) => updateDraftItem(index, { qty: Number(e.target.value) || 1 })} className="w-full px-2 py-1.5 border rounded-lg text-sm" />
                   </div>
                   <div>
-                    <label className="block text-xs text-gray-500 mb-0.5">หมายเหตุ</label>
-                    <input type="text" value={item.note} onChange={(e) => updateDraftItem(index, { note: e.target.value })} className="w-full px-2 py-1.5 border rounded-lg text-sm" placeholder="ถ้ามี" />
+                    <label className="block text-xs text-gray-500 mb-0.5">หมายเหตุสินค้าก่อนทดสอบ</label>
+                    <input type="text" value={item.note} onChange={(e) => updateDraftItem(index, { note: e.target.value })} className="w-full px-2 py-1.5 border rounded-lg text-sm" placeholder="รายละเอียดสินค้าตอนรับเข้า (ถ้ามี)" />
                   </div>
                   <div className="flex items-end">
                     <button onClick={() => removeDraftItem(index)} disabled={draftItems.length === 1} className="w-full px-2 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm disabled:opacity-30">ลบ</button>
@@ -580,16 +649,53 @@ export default function PurchaseSample() {
               </div>
             ))}
           </div>
-          <button onClick={addDraftItem} className="px-4 py-2 border-2 border-dashed border-gray-300 rounded-lg hover:border-emerald-400 hover:text-emerald-600 text-sm text-gray-500 w-full">+ เพิ่มรายการ</button>
+          <p className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">รับสินค้าตัวอย่างได้ครั้งละ 1 รายการ</p>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุทั่วไป</label>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="หมายเหตุเพิ่มเติม (ถ้ามี)" />
+            <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุภาพรวมตอนรับสินค้า</label>
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="ข้อมูลภาพรวมก่อนเริ่มทดสอบ (ถ้ามี)" />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t">
             <button onClick={() => setCreateOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button onClick={handleCreate} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
           </div>
         </div>
+      </Modal>
+
+      {/* Edit Modal */}
+      <Modal open={!!editing} onClose={() => setEditing(null)} closeOnBackdropClick={false} contentClassName="max-w-3xl">
+        {editing && <div className="p-6 space-y-5">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">แก้ไขสินค้าตัวอย่าง</h2>
+            <p className="text-sm text-gray-500 mt-1">เลขที่: {editing.sample_no}</p>
+          </div>
+          {['pending_receipt', 'received'].includes(editing.status) && <fieldset>
+            <legend className="block text-sm font-medium text-gray-700 mb-2">สถานะการรับสินค้า</legend>
+            <div className="flex gap-3">
+              {([{ value: 'pending_receipt', label: 'รอรับเข้า' }, { value: 'received', label: 'รับเข้า' }] as const).map((option) => (
+                <label key={option.value} className={`flex items-center gap-2 px-4 py-2.5 border rounded-lg cursor-pointer ${editReceiptStatus === option.value ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200'}`}>
+                  <input type="radio" name="edit-receipt-status" checked={editReceiptStatus === option.value} onChange={() => setEditReceiptStatus(option.value)} className="accent-blue-600" />
+                  <span className="text-sm font-medium">{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>}
+          <div className="space-y-3 max-h-[45vh] overflow-y-auto pr-1">
+            {editItems.map((item, index) => (
+              <div key={item.id || `edit-new-${index}`} className="border rounded-lg p-3 bg-gray-50/50 space-y-2">
+                <input type="text" value={item.product_name_manual} onChange={(e) => setEditItems((prev) => prev.map((v, i) => i === index ? { ...v, product_name_manual: e.target.value } : v))} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="ชื่อสินค้าตัวอย่าง" />
+                <div className="grid grid-cols-3 gap-2">
+                  <div><label className="block text-xs text-gray-500 mb-0.5">จำนวน</label><input type="number" min={1} value={item.qty} onChange={(e) => setEditItems((prev) => prev.map((v, i) => i === index ? { ...v, qty: Number(e.target.value) || 1 } : v))} className="w-full px-2 py-1.5 border rounded-lg text-sm" /></div>
+                  <div><label className="block text-xs text-gray-500 mb-0.5">หมายเหตุสินค้าก่อนทดสอบ</label><input type="text" value={item.note} onChange={(e) => setEditItems((prev) => prev.map((v, i) => i === index ? { ...v, note: e.target.value } : v))} className="w-full px-2 py-1.5 border rounded-lg text-sm" placeholder="รายละเอียดสินค้าตอนรับเข้า (ถ้ามี)" /></div>
+                  <div className="flex items-end"><button type="button" onClick={() => setEditItems((prev) => prev.filter((_, i) => i !== index))} disabled={editItems.length === 1 || !!item.id && !!(editing.inv_sample_items || []).find((v) => v.id === item.id)?.converted_product_id} className="w-full px-2 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 text-sm disabled:opacity-30">ลบ</button></div>
+                </div>
+                <div><label className="block text-xs text-gray-500 mb-0.5">รูปถ่าย</label><input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (!file) return; setEditItems((prev) => prev.map((v, i) => i === index ? { ...v, image_file: file, image_preview: URL.createObjectURL(file) } : v)); e.target.value = '' }} className="w-full text-xs" />{item.image_preview && <img src={item.image_preview} alt="" className="mt-2 w-20 h-20 object-cover rounded border" />}</div>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">สินค้าตัวอย่างหนึ่งใบรับมีได้ 1 รายการ</p>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุภาพรวมตอนรับสินค้า</label><textarea value={editNote} onChange={(e) => setEditNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="ข้อมูลภาพรวมก่อนเริ่มทดสอบ (ถ้ามี)" /></div>
+          <div className="flex justify-end gap-3 pt-2 border-t"><button onClick={() => setEditing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button><button onClick={handleUpdate} disabled={saving} className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-semibold">{saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}</button></div>
+        </div>}
       </Modal>
 
       {/* Detail Modal */}
@@ -645,13 +751,13 @@ export default function PurchaseSample() {
 
               {viewing.note && (
                 <div className="bg-blue-50 rounded-lg p-3 text-sm">
-                  <span className="text-blue-600 font-medium">หมายเหตุ:</span> {viewing.note}
+                  <span className="text-blue-600 font-medium">หมายเหตุภาพรวมตอนรับสินค้า:</span> {viewing.note}
                 </div>
               )}
 
               {viewing.test_note && (
                 <div className="bg-amber-50 rounded-lg p-3 text-sm">
-                  <span className="text-amber-600 font-medium">ผลทดสอบ:</span> {viewing.test_note}
+                  <span className="text-amber-600 font-medium">หมายเหตุผลทดสอบภาพรวม:</span> {viewing.test_note}
                 </div>
               )}
 
@@ -670,7 +776,8 @@ export default function PurchaseSample() {
                       <th className="px-3 py-2.5 text-left font-semibold text-gray-600">สินค้า</th>
                       <th className="px-3 py-2.5 text-right font-semibold text-gray-600">จำนวน</th>
                       <th className="px-3 py-2.5 text-center font-semibold text-gray-600">ผลทดสอบ</th>
-                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุก่อนทดสอบ</th>
+                      <th className="px-3 py-2.5 text-left font-semibold text-gray-600">หมายเหตุหลังทดสอบ</th>
                       {viewing.status === 'approved' && (
                         <th className="px-3 py-2.5 text-center font-semibold text-gray-600">นำเข้าระบบ</th>
                       )}
@@ -709,7 +816,8 @@ export default function PurchaseSample() {
                               <span className="text-gray-400 text-xs">-</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-gray-500 text-xs">{item.item_test_note || item.note || '-'}</td>
+                          <td className="px-3 py-2 text-gray-500 text-xs">{item.note || '-'}</td>
+                          <td className="px-3 py-2 text-gray-500 text-xs">{item.item_test_note || '-'}</td>
                           {viewing.status === 'approved' && (
                             <td className="px-3 py-2 text-center">
                               {item.converted_product_id ? (
@@ -800,15 +908,15 @@ export default function PurchaseSample() {
                   value={item.note}
                   onChange={(e) => setTestItemResults((prev) => prev.map((r, i) => i === idx ? { ...r, note: e.target.value } : r))}
                   className="w-full px-3 py-1.5 border rounded-lg text-sm"
-                  placeholder="หมายเหตุ (ถ้ามี)"
+                  placeholder="บันทึกผลหรือข้อสังเกตหลังทดสอบ (ถ้ามี)"
                 />
               </div>
             ))}
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุภาพรวม</label>
-            <textarea value={testNote} onChange={(e) => setTestNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="ผลการทดสอบโดยรวม..." />
+            <label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุผลทดสอบภาพรวม</label>
+            <textarea value={testNote} onChange={(e) => setTestNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="สรุปผลหรือข้อสังเกตหลังทดสอบ (ถ้ามี)" />
           </div>
 
           {testDecision === 'rejected' && (

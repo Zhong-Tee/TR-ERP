@@ -27,6 +27,7 @@ export default function WorkOrderSelectionList({
   onCreateWorkOrder,
 }: WorkOrderSelectionListProps) {
   const [orders, setOrders] = useState<Order[]>([])
+  const [orderLinks, setOrderLinks] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectQty, setSelectQty] = useState<string>('')
@@ -46,7 +47,7 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at, urgency_label, urgency_color')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at, urgency_label, urgency_color, requires_confirm_design')
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
@@ -69,7 +70,37 @@ export default function WorkOrderSelectionList({
         if (!bn.startsWith('REQ')) return true
         return !!(o as Order & { claim_shipping_confirmed_at?: string | null }).claim_shipping_confirmed_at
       })
+      const nextOrderLinks: Record<string, string[]> = {}
+      if (list.length > 0) {
+        const orderIds = list.map((order) => order.id)
+        const idChunks = Array.from({ length: Math.ceil(orderIds.length / 100) }, (_, index) =>
+          orderIds.slice(index * 100, (index + 1) * 100)
+        )
+        const linkResults = await Promise.all(idChunks.map((ids) =>
+          supabase
+            .from('or_order_chat_logs')
+            .select('order_id, link_url, created_at')
+            .in('order_id', ids)
+            .not('link_url', 'is', null)
+            .order('created_at', { ascending: true })
+        ))
+        for (const { data: linkRows, error: linkError } of linkResults) {
+          if (linkError) {
+            console.warn('Error loading order links:', linkError)
+            continue
+          }
+          for (const row of linkRows || []) {
+            const orderId = String(row.order_id || '')
+            const url = String(row.link_url || '').trim()
+            if (!orderId || !url) continue
+            const links = nextOrderLinks[orderId] || []
+            if (!links.includes(url)) links.push(url)
+            nextOrderLinks[orderId] = links
+          }
+        }
+      }
       setOrders(list)
+      setOrderLinks(nextOrderLinks)
       setSelectedIds(new Set())
       setSelectQty('')
       setPillChannel(null)
@@ -402,7 +433,7 @@ export default function WorkOrderSelectionList({
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] text-sm table-auto">
+            <table className="w-full min-w-[1100px] text-sm table-auto">
               <thead>
                 <tr className="bg-gray-100 border-b">
                   <th className="w-10 p-2 text-left whitespace-nowrap">
@@ -420,6 +451,7 @@ export default function WorkOrderSelectionList({
                   <th className="p-2 text-left font-medium min-w-[140px] whitespace-nowrap">ผู้สร้างบิล</th>
                   <th className="p-2 text-left font-medium min-w-[170px] whitespace-nowrap">เลขพัสดุ</th>
                   <th className="p-2 text-left font-medium min-w-[160px] whitespace-nowrap">วันที่ เวลา นัดรับ</th>
+                  <th className="p-2 text-left font-medium min-w-[120px] whitespace-nowrap">ลิงก์</th>
                 </tr>
               </thead>
               <tbody>
@@ -441,6 +473,11 @@ export default function WorkOrderSelectionList({
                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                         {order.bill_no}
                       </button>
+                      {order.requires_confirm_design === true && (
+                        <span className="ml-1.5 inline-flex rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-semibold text-purple-700">
+                          ออกแบบ
+                        </span>
+                      )}
                       <UrgencyBadge order={order} className="ml-1.5" />
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.recipient_name ?? ''}>
@@ -471,6 +508,27 @@ export default function WorkOrderSelectionList({
                         const m = String(d.getMinutes()).padStart(2, '0')
                         return `${day}/${month}/${year} ${h}:${m} น.`
                       })()}
+                    </td>
+                    <td className="p-2 align-middle">
+                      {(orderLinks[order.id] || []).length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {(orderLinks[order.id] || []).map((url, index) => (
+                            <a
+                              key={url}
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                              className="inline-flex rounded-lg bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 hover:underline"
+                              title={url}
+                            >
+                              {index === 0 ? 'เปิดลิงก์' : `ลิงก์ ${index + 1}`}
+                            </a>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </td>
                   </tr>
                 ))}

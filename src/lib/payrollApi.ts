@@ -21,6 +21,7 @@ export interface PayrollItem {
   other_deduction: number
   income_opening_balance: number
   personal_tax_opening_balance: number
+  social_security_opening_balance: number
   student_loan_opening_balance: number
   savings_opening_balance: number
   company_loan_opening_balance: number

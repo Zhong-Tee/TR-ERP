@@ -613,12 +613,14 @@ const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'IN
 /** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
 const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่ให้กรอกราคาเอง (ล็อคราคา/หน่วย ใช้ราคาที่ข้อมูลชำระเงินแทน) */
-const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
+// WY bill totals come from its export and must not be rebuilt from configured
+// product-channel prices when the imported order is opened for editing.
+const CHANNELS_MANUAL_PRICE = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'WY']
 const CHANNEL_PRICE_PAGE_SIZE = 1000
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" */
 const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
 /** ช่องทางที่เมื่อบันทึก "ข้อมูลครบ" ให้เคลื่อนสถานะไปที่ "ตรวจสอบแล้ว" โดยตรง (ไม่ต้องรอตรวจสลิป) */
-const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP', 'OFFICE']
+const CHANNELS_COMPLETE_TO_VERIFIED = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP', 'OFFICE', 'WY']
 /** ช่องทางที่เปิดปุ่มอัพโหลดสลิป (นอกจากช่องทางที่อยู่ใน bank_settings_channels) */
 const CHANNELS_SHOW_SLIP_UPLOAD = ['SHOPP', 'SHOP']
 /** ช่องทาง OFFICE — ไม่ต้องกรอก: ชื่อ, ที่อยู่, เลขพัสดุ, ชื่อช่องทาง, โปรโมชั่น, สลิป */
@@ -3313,6 +3315,12 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     json.forEach((r) => {
       const billNo = String(r['เลขบิล'] || '').trim()
       if (!billNo) return
+      const hasValue = (value: unknown) => value != null && String(value).trim() !== ''
+      const rowDiscount = parseNumber(r['ส่วนลด'])
+      const rowShipping = parseNumber(r['ค่าส่ง'])
+      const rowTotal = parseNumber(r['ยอดสุทธิ'])
+      const rowPriceBeforeDiscount = parseNumber(r['ราคาก่อนลด'])
+      const rowPriceAfterDiscount = parseNumber(r['ราคาหลังลด'])
       if (!map.has(billNo)) {
         let pDate: string | null = null
         let pTime: string | null = null
@@ -3331,10 +3339,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           channel_order_no: billNo,
           customer_name: String(r['ชื่อลูกค้า'] || ''),
           customer_address: String(r['ชื่อที่อยู่-เบอร์โทรผู้รับ'] || r['ที่อยู่'] || r['เลขพัสดุ'] || ''),
-          price: parseNumber(r['ราคา']),
-          shipping_cost: parseNumber(r['ค่าส่ง']),
-          discount: parseNumber(r['ส่วนลด']),
-          total_amount: parseNumber(r['ยอดสุทธิ']),
+          // `ราคา` is an item unit price, not the order subtotal.
+          price: hasValue(r['ราคาก่อนลด'])
+            ? rowPriceBeforeDiscount
+            : hasValue(r['ราคาหลังลด'])
+              ? rowPriceAfterDiscount + rowDiscount
+              : Math.max(0, rowTotal - rowShipping + rowDiscount),
+          shipping_cost: rowShipping,
+          discount: rowDiscount,
+          total_amount: rowTotal,
           payment_method: 'โอน',
           payment_date: pDate,
           payment_time: pTime,
@@ -3343,6 +3356,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
       const curr = map.get(billNo)
       if (!curr) return
+      // WY normally puts bill totals on only one item row. Accept that row
+      // wherever it occurs and do not let later blank cells erase the totals.
+      if (hasValue(r['ส่วนลด'])) curr.discount = rowDiscount
+      if (hasValue(r['ค่าส่ง'])) curr.shipping_cost = rowShipping
+      if (hasValue(r['ยอดสุทธิ'])) curr.total_amount = rowTotal
+      if (hasValue(r['ราคาก่อนลด'])) curr.price = rowPriceBeforeDiscount
+      else if (hasValue(r['ราคาหลังลด'])) curr.price = rowPriceAfterDiscount + curr.discount
       const normalizeLookup = (value: unknown) =>
         String(value || '')
           .trim()
@@ -3376,7 +3396,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         notes: String(r['หมายเหตุ'] || ''),
       })
     })
-    return Array.from(map.values())
+    return Array.from(map.values()).map((order) => {
+      // Fallback for older exports without a subtotal column.
+      if (order.price <= 0 && order.total_amount > 0) {
+        order.price = Math.max(0, order.total_amount - order.shipping_cost + order.discount)
+      }
+      return order
+    })
   }
 
   async function processAndSaveImportedOrders(ordersToImport: ImportedOrder[], useProvidedBillNo = false) {
@@ -3458,7 +3484,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         // กันบิลค้างสถานะ "ลงข้อมูลเสร็จสิ้น" จากการ import ซึ่งไม่มีแท็บแสดงในหน้า Orders
         // Import ที่ข้อมูลครบจะไป "ตรวจสอบแล้ว" เฉพาะช่องทางที่อนุญาต auto-verified เท่านั้น
         const importedStatus: 'รอลงข้อมูล' | 'ตรวจสอบแล้ว' =
-          isComplete && CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode) ? 'ตรวจสอบแล้ว' : 'รอลงข้อมูล'
+          channelCode === 'WY' || (isComplete && CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode))
+            ? 'ตรวจสอบแล้ว'
+            : 'รอลงข้อมูล'
           let importedBillingDetails: Record<string, string | null> | null = null
           try {
             const parsedAddress = await parseAddressText(order.customer_address || '', supabase)
@@ -5771,7 +5799,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               <label className="block text-sm font-medium mb-1">ค่าส่ง</label>
               <input
                 type="number"
-                value={formData.shipping_cost || ''}
+                value={formData.shipping_cost ?? ''}
                 onChange={(e) => setFormData({ ...formData, shipping_cost: parseFloat(e.target.value) || 0 })}
                 onWheel={(e) => (e.target as HTMLInputElement).blur()}
                 onFocus={(e) => {
@@ -5829,7 +5857,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               </label>
               <input
                 type="number"
-                value={formData.discount || ''}
+                value={formData.discount ?? ''}
                 onChange={(e) => {
                   let val = parseFloat(e.target.value) || 0
                   // จำกัดค่า % ไม่เกิน 100

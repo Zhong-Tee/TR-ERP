@@ -121,7 +121,7 @@ const defaultSettings: PlanSettingsData = {
       { name: 'แพ็ค', type: 'per_piece', value: 60 },
     ],
   },
-  prepPerJob: { เบิก: 10, STAMP: 10, STK: 10, CTT: 10, LASER: 10, TUBE: 10, QC: 10, PACK: 10 },
+  prepPerJob: { เบิก: 10, STAMP: 10, STK: 10, CTT: 10, LASER: 10, TUBE: 10, QC: 10, PACK: 5 },
   deptBreaks: {
     เบิก: [{ start: '13:00', end: '14:00' }],
     STAMP: [{ start: '13:00', end: '14:00' }],
@@ -406,17 +406,6 @@ function getEffectiveFinishSec(
   return getPlannedEndSecForDept(dept, job, precomputed)
 }
 
-function getEffectiveStartSec(
-  dept: string,
-  job: PlanJob,
-  precomputed: Record<string, { id: string; start: number; end: number; line: number }[]>
-): number {
-  const actualStart = getEarliestActualStartSecForDept(job, dept)
-  if (actualStart > 0) return actualStart
-  const timeline = precomputed[dept]
-  return timeline?.find((item) => item.id === job.id)?.start ?? 0
-}
-
 function adjustForBreaks(
   startSec: number,
   durationSec: number,
@@ -508,7 +497,6 @@ function computePlanTimeline(
     const cutSec = j.cut ? parseTimeToMin(j.cut) * 60 : -Infinity
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
-    let followsQcWindow = false
 
     const delayDepts = ['เบิก', 'TUBE']
     if (delayDepts.includes(dept) && cutSec !== -Infinity) {
@@ -536,20 +524,17 @@ function computePlanTimeline(
         }
       }
       if (dept === 'PACK') {
-        const qcStartSec = getEffectiveStartSec('QC', j, precomputed)
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)
-        if (qcStartSec > 0 && qcFinishSec > 0) {
-          // PACK follows the QC window directly; PACK's configured duration/minimum is not used.
-          base = qcStartSec + 300
-          finalDur = Math.max(0, qcFinishSec - qcStartSec)
-          followsQcWindow = true
+        if (qcFinishSec > 0) {
+          // PACK starts after QC finishes (or when its line becomes available) and
+          // uses the configurable per-job duration from Plan settings.
+          base = Math.max(base, qcFinishSec)
+          finalDur = Math.max(0, (settings.prepPerJob?.PACK ?? 5) * 60)
         }
       }
     }
 
-    const { start, end } = followsQcWindow
-      ? { start: base, end: base + finalDur }
-      : adjustForBreaks(base, finalDur, breakPeriodsSec)
+    const { start, end } = adjustForBreaks(base, finalDur, breakPeriodsSec)
     results.push({ id: j.id, start, end, dur: finalDur, line: li })
     lineLastEnd[li] = end
   }
@@ -1561,7 +1546,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
     s.departments.forEach((d) => {
       s.processes[d] = s.processes[d] || []
-      if (s.prepPerJob[d] == null) s.prepPerJob[d] = 10
+      if (s.prepPerJob[d] == null) s.prepPerJob[d] = d === 'PACK' ? 5 : 10
       s.deptBreaks[d] = s.deptBreaks[d] || []
       if (s.linesPerDept[d] == null) s.linesPerDept[d] = 1
       if (s.departmentProductCategories[d] == null) s.departmentProductCategories[d] = []
@@ -4061,23 +4046,27 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 <hr className="border-gray-200 border-dashed" />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <h4 className="font-medium mb-1">เวลาผลิตขั้นต่ำต่อบิล (นาที)</h4>
+                    <h4 className="font-medium mb-1">
+                      {currentDept === 'PACK' ? 'ระยะเวลาแพ็คต่อใบงาน (นาที)' : 'เวลาผลิตขั้นต่ำต่อบิล (นาที)'}
+                    </h4>
                     <input
                       type="number"
                       min={0}
                       step={1}
-                      value={settings.prepPerJob?.[currentDept] ?? 10}
+                      value={settings.prepPerJob?.[currentDept] ?? (currentDept === 'PACK' ? 5 : 10)}
                       disabled={!unlocked}
                       onChange={(e) => {
                         const next = { ...settings, prepPerJob: { ...settings.prepPerJob } }
-                        next.prepPerJob[currentDept] = parseFloat(e.target.value) || 10
+                        const fallback = currentDept === 'PACK' ? 5 : 10
+                        const value = Number(e.target.value)
+                        next.prepPerJob[currentDept] = Number.isFinite(value) && value >= 0 ? value : fallback
                         setSettings(next)
                         saveSettings(next)
                       }}
                       className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
                     />
                     {currentDept === 'PACK' && (
-                      <p className="mt-1 text-xs text-gray-500">ไม่ได้ใช้คำนวน</p>
+                      <p className="mt-1 text-xs text-gray-500">เริ่มนับหลัง QC เสร็จ และคำนวณรวมเวลาพัก</p>
                     )}
                   </div>
                   <div>

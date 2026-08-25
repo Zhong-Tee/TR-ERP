@@ -130,6 +130,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const totalByWo: Record<string, number> = {}
   const flatUidsByWo: Record<string, string[]> = {}
+  const sourceUidByFlatUid: Record<string, string> = {}
   woNames.forEach((name) => {
     const oids = orderIdsByWo[name] || []
     const ords = (orders || [])
@@ -150,7 +151,9 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
         for (let i = 0; i < n; i++) {
           seq++
           unitSum++
-          flatList.push(flatBillUnitUid(bill, seq))
+          const flatUid = flatBillUnitUid(bill, seq)
+          flatList.push(flatUid)
+          if (r.item_uid) sourceUidByFlatUid[flatUid] = r.item_uid
         }
       })
     })
@@ -172,59 +175,30 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   woNames.forEach((n) => {
     sessionIdsByWo[n] = []
   })
-  /** end_time ของ qc_session ล่าสุดต่อใบงาน — กันค้างจาก session เก่าเปิดค้าง + session ใหม่ปิดแล้ว */
-  const latestSessionEndByWoName: Record<string, string | null> = {}
-  const sessionsByWoKey: Record<string, { end_time: string | null; created_at: string }[]> = {}
+  const hasOpenSessionByWoName: Record<string, boolean> = {}
   ;(allSessions || []).forEach((s) => {
     const match = s.filename?.match(/^WO-(.+)$/)
     if (!match || !woNames.includes(match[1])) return
     const woKey = match[1]
     sessionIdsByWo[woKey].push(s.id)
-    if (!sessionsByWoKey[woKey]) sessionsByWoKey[woKey] = []
-    const row = s as { end_time: string | null; created_at?: string | null; start_time?: string }
-    const ts = row.created_at ?? row.start_time ?? ''
-    sessionsByWoKey[woKey].push({ end_time: row.end_time, created_at: ts })
-  })
-  Object.keys(sessionsByWoKey).forEach((woKey) => {
-    const sorted = [...sessionsByWoKey[woKey]].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    )
-    latestSessionEndByWoName[woKey] = sorted[0]?.end_time ?? null
+    if (s.end_time == null) hasOpenSessionByWoName[woKey] = true
   })
 
-  // ดึง qc_records พร้อม item_uid + status เพื่อคำนวณ pass/fail ทั้ง item level และ bill level
-  const allSessionIds = (allSessions || []).map((s) => s.id)
-  // mapping: item_uid → status (ล่าสุด), item_uid → is_rejected
-  const itemStatusMap: Record<string, string> = {}
-  const itemRejectedMap: Record<string, boolean> = {}
-  let qcPassBySession: Record<string, number> = {}
-  if (allSessionIds.length > 0) {
-    const { data: records, error: recErr } = await supabase
-      .from('qc_records')
-      .select('session_id, item_uid, status, is_rejected, created_at')
-      .in('session_id', allSessionIds)
-      .order('created_at', { ascending: true })
-    if (!recErr && records?.length) {
-      records.forEach((r) => {
-        itemStatusMap[r.item_uid] = r.status
-        if (r.is_rejected) itemRejectedMap[r.item_uid] = true
-        if (r.status === 'pass') {
-          qcPassBySession[r.session_id] = (qcPassBySession[r.session_id] || 0) + 1
-        }
-      })
-    }
-  }
-
-  const qcDoneByWo: Record<string, number> = {}
-  woNames.forEach((name) => {
-    const sids = sessionIdsByWo[name] || []
-    qcDoneByWo[name] = sids.reduce((sum, sid) => sum + (qcPassBySession[sid] || 0), 0)
-  })
+  // แยกโหลดต่อใบงานเพื่อให้ผลตรงกับหน้ารายละเอียด และไม่ถูกตัด/ปะปนเมื่อมีหลาย session
+  const latestRecordsByWo: Record<string, Awaited<ReturnType<typeof fetchLatestRecordsForWorkOrder>>> = {}
+  await Promise.all(woNames.map(async (name) => {
+    latestRecordsByWo[name] = await fetchLatestRecordsForWorkOrder(name)
+  }))
 
   const result: WorkOrderWithProgress[] = woList.map((wo) => {
     const woName = wo.work_order_name
     const total_items = totalByWo[woName] ?? 0
-    const qc_done = qcDoneByWo[woName] ?? 0
+    const itemStatusMap: Record<string, string> = {}
+    const itemRejectedMap: Record<string, boolean> = {}
+    ;(latestRecordsByWo[woName] || []).forEach((record) => {
+      itemStatusMap[record.item_uid] = record.status
+      if (record.is_rejected) itemRejectedMap[record.item_uid] = true
+    })
     const orderIds = orderIdsByWo[woName] || []
     const total_bills = orderIds.length
 
@@ -233,12 +207,14 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     let reject_items = 0
     const woFlat = flatUidsByWo[woName] || []
     woFlat.forEach((uid) => {
-      const st = itemStatusMap[uid]
+      const sourceUid = sourceUidByFlatUid[uid]
+      const st = itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined)
       if (st === 'pass') pass_items++
       else if (st === 'fail') fail_items++
-      if (itemRejectedMap[uid]) reject_items++
+      if (itemRejectedMap[uid] || (sourceUid ? itemRejectedMap[sourceUid] : false)) reject_items++
     })
     const remaining = Math.max(0, total_items - pass_items - fail_items)
+    const qc_done = pass_items
 
     let pass_bills = 0
     let fail_bills = 0
@@ -253,11 +229,16 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
         const n = normalizedLineQuantity(r.quantity)
         for (let i = 0; i < n; i++) {
           seq++
-          uids.push(flatBillUnitUid(bill, seq))
+          const flatUid = flatBillUnitUid(bill, seq)
+          uids.push(flatUid)
+          if (r.item_uid) sourceUidByFlatUid[flatUid] = r.item_uid
         }
       })
       if (uids.length === 0) return
-      const statuses = uids.map((uid) => itemStatusMap[uid] || 'pending')
+      const statuses = uids.map((uid) => {
+        const sourceUid = sourceUidByFlatUid[uid]
+        return itemStatusMap[uid] ?? (sourceUid ? itemStatusMap[sourceUid] : undefined) ?? 'pending'
+      })
       if (statuses.every((s) => s === 'pass')) pass_bills++
       else if (statuses.some((s) => s === 'fail')) fail_bills++
     })
@@ -289,15 +270,14 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return result.filter((r) => {
       if (r.remaining > 0) return true
       const wo = r.work_order_name
-      if (!Object.prototype.hasOwnProperty.call(latestSessionEndByWoName, wo)) {
+      const sessionIds = sessionIdsByWo[wo] || []
+      if (sessionIds.length === 0) {
         const planTracks = latestPlanTracksByName[wo]
         if (planTracks && !isPlanQcDoneFromTracks(planTracks)) return true
         return false
       }
-      const latestEnd = latestSessionEndByWoName[wo]
-      if (latestEnd == null) return true
-      // ปิด session แล้ว = จบ QC ในระบบ — ซ่อนแม้ Plan ยังไม่ sync ขั้น QC (ไม่ให้ค้างแบบ LZTR)
-      return false
+      // ถ้ายังมี session ใดเปิดอยู่ แสดงไว้เพื่อให้ผู้ตรวจกลับมาปิดงานได้
+      return hasOpenSessionByWoName[wo] === true
     })
   }
   return result
@@ -425,8 +405,10 @@ export async function fetchRecordsForSession(sessionId: string) {
 export async function saveQcRecord(
   sessionId: string,
   item: { uid: string; status: 'pass' | 'fail' | 'pending'; fail_reason?: string | null; product_code?: string; product_name?: string; bill_no?: string; ink_color?: string | null; font?: string | null; floor?: string; cartoon_name?: string; line1?: string; line2?: string; line3?: string; qty?: number; remark?: string },
-  qcBy: string
+  qcBy: string,
+  attemptStartedAt?: string
 ) {
+  const now = new Date().toISOString()
   const row = {
     session_id: sessionId,
     item_uid: item.uid,
@@ -435,6 +417,10 @@ export async function saveQcRecord(
     fail_reason: item.fail_reason ?? null,
     is_rejected: item.status === 'fail',
     retry_count: 1,
+    workflow_status: item.status === 'pass' ? 'passed' : item.status === 'fail' ? 'waiting_recheck' : 'pending',
+    attempt_started_at: item.status === 'fail' ? now : null,
+    resolved_at: item.status === 'pass' ? now : null,
+    last_result_at: now,
     product_code: item.product_code ?? '',
     product_name: item.product_name ?? '',
     bill_no: item.bill_no ?? '',
@@ -448,10 +434,77 @@ export async function saveQcRecord(
     qty: item.qty ?? 1,
     remark: item.remark ?? null,
   }
-  const { error } = await supabase.from('qc_records').upsert(row, {
+  const { data, error } = await supabase.from('qc_records').upsert(row, {
     onConflict: 'session_id,item_uid',
+  }).select('*').single()
+  if (error) throw error
+  if (item.status === 'pass' || item.status === 'fail') {
+    const { data: session } = await supabase.from('qc_sessions').select('start_time').eq('id', sessionId).maybeSingle()
+    const startedAt = attemptStartedAt || session?.start_time || now
+    const durationSeconds = Math.max(0, Math.floor((new Date(now).getTime() - new Date(startedAt).getTime()) / 1000))
+    const { error: attemptError } = await supabase.from('qc_record_attempts').upsert({
+      qc_record_id: data.id,
+      session_id: sessionId,
+      item_uid: item.uid,
+      attempt_no: 1,
+      attempt_type: 'initial',
+      result: item.status,
+      fail_reason: item.status === 'fail' ? item.fail_reason ?? null : null,
+      qc_by: qcBy,
+      started_at: startedAt,
+      completed_at: now,
+      duration_seconds: durationSeconds,
+    }, { onConflict: 'qc_record_id,attempt_no' })
+    if (attemptError) throw attemptError
+  }
+  return data
+}
+
+export async function submitQcRecheck(recordId: string, result: 'pass' | 'fail', failReason: string | null, qcBy: string) {
+  const { data, error } = await supabase.rpc('qc_submit_recheck', {
+    p_record_id: recordId,
+    p_result: result,
+    p_fail_reason: failReason,
+    p_qc_by: qcBy,
   })
   if (error) throw error
+  return data
+}
+
+export async function resolveQcEscalation(
+  recordId: string,
+  decision: 'special_recheck' | 'produce_new' | 'scrap' | 'return_source',
+  reason: string,
+  decidedBy: string
+) {
+  const { data, error } = await supabase.rpc('qc_resolve_escalation', {
+    p_record_id: recordId,
+    p_decision: decision,
+    p_reason: reason,
+    p_decided_by: decidedBy,
+  })
+  if (error) throw error
+  return data
+}
+
+export async function fetchQcAttemptsByItemUid(itemUid: string) {
+  const { data, error } = await supabase
+    .from('qc_record_attempts')
+    .select('*')
+    .ilike('item_uid', itemUid)
+    .order('completed_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function fetchQcAttemptsBySession(sessionId: string) {
+  const { data, error } = await supabase
+    .from('qc_record_attempts')
+    .select('*')
+    .eq('session_id', sessionId)
+    .order('completed_at', { ascending: true })
+  if (error) throw error
+  return data || []
 }
 
 /** Load settings_reasons for FAIL dropdown (tree: top-level + children). */
@@ -1023,6 +1076,28 @@ export async function fetchQcCategoryGroups(): Promise<QCCategoryGroup[]> {
     ...g,
     categories: (byGroup[g.id] || []).sort((a, b) => a.localeCompare(b, 'th')),
   }))
+}
+
+/** ผลตรวจล่าสุดต่อ UID จากทุก session ของใบงานเดียวกัน */
+export async function fetchLatestRecordsForWorkOrder(workOrderName: string) {
+  const { data: sessions, error: sessionError } = await supabase
+    .from('qc_sessions')
+    .select('id')
+    .eq('filename', `WO-${workOrderName}`)
+  if (sessionError) throw sessionError
+  const sessionIds = (sessions || []).map((session) => session.id)
+  if (sessionIds.length === 0) return []
+
+  const { data: records, error: recordError } = await supabase
+    .from('qc_records')
+    .select('*')
+    .in('session_id', sessionIds)
+    .order('last_result_at', { ascending: true })
+  if (recordError) throw recordError
+
+  const latestByUid = new Map<string, (typeof records)[number]>()
+  ;(records || []).forEach((record) => latestByUid.set(record.item_uid, record))
+  return Array.from(latestByUid.values())
 }
 
 export async function createQcCategoryGroup(name: string, sortOrder = 0): Promise<QCCategoryGroup> {

@@ -629,6 +629,7 @@ export interface CreateSampleInput {
 }
 
 export async function createSample(input: CreateSampleInput) {
+  if (input.items.length !== 1) throw new Error('รับสินค้าตัวอย่างได้ครั้งละ 1 รายการเท่านั้น')
   const { data, error } = await supabase.rpc('rpc_create_sample', {
     p_items: input.items,
     p_sample_label: input.sampleLabel,
@@ -638,6 +639,22 @@ export async function createSample(input: CreateSampleInput) {
   })
   if (error) throw error
   return data as { id: string; sample_no: string }
+}
+
+export interface UpdateSampleInput extends CreateSampleInput {
+  sampleId: string
+  items: (CreateSampleInput['items'][number] & { id?: string })[]
+}
+
+export async function updateSample(input: UpdateSampleInput) {
+  const { error } = await supabase.rpc('rpc_update_sample', {
+    p_sample_id: input.sampleId,
+    p_items: input.items,
+    p_sample_label: input.sampleLabel,
+    p_note: input.note || null,
+    p_receipt_status: input.receiptStatus,
+  })
+  if (error) throw error
 }
 
 export async function receivePendingSample(sampleId: string, userId?: string) {

@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
-import type { QCItem, QCRecord, QCSession, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
+import type { QCItem, QCRecord, QCSession, QCAttempt, SettingsReason, InkType, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import {
   fetchWorkOrdersWithProgress,
   fetchItemsByWorkOrder,
   fetchOpenSessionForWo,
-  fetchRecordsForSession,
+  fetchLatestRecordsForWorkOrder,
   saveQcRecord,
   fetchSettingsReasons,
   fetchInkTypes,
@@ -46,6 +46,10 @@ import {
   addQcCategoriesToGroup,
   removeQcCategoryFromGroup,
   fetchQcProductCategories,
+  submitQcRecheck,
+  resolveQcEscalation,
+  fetchQcAttemptsByItemUid,
+  fetchQcAttemptsBySession,
 } from '../lib/qcApi'
 import type { BulkImportResult } from '../lib/qcApi'
 import type { WorkOrderWithProgress } from '../lib/qcApi'
@@ -159,16 +163,22 @@ export default function QC() {
   const [cartoonExt, setCartoonExt] = useState('.jpg')
   const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
   const barcodeInputRef = useRef<HTMLInputElement>(null)
+  const currentItemStartedAtRef = useRef<string>(new Date().toISOString())
+
+  useEffect(() => {
+    if (currentItem?.uid) currentItemStartedAtRef.current = new Date().toISOString()
+  }, [currentItem?.uid])
 
   // Reject
   const [rejectData, setRejectData] = useState<QCRecord[]>([])
-  const [activeRejectTab, setActiveRejectTab] = useState<'queue' | 1 | 2 | 3 | 4>('queue')
+  const [activeRejectTab, setActiveRejectTab] = useState<'queue' | 1 | 2 | 'escalated'>('queue')
   const [currentRejectItem, setCurrentRejectItem] = useState<QCRecord | null>(null)
   const [rejectSearchQuery, setRejectSearchQuery] = useState('')
   const [currentTime, setCurrentTime] = useState(() => new Date())
 
   // Reports
   const [reports, setReports] = useState<QCSession[]>([])
+  const [reportAttempts, setReportAttempts] = useState<QCAttempt[]>([])
   const [reportUsers, setReportUsers] = useState<{ id: string; username: string | null }[]>([])
   const [reportFilter, setReportFilter] = useState({
     startDate: new Date().toISOString().split('T')[0],
@@ -207,10 +217,12 @@ export default function QC() {
   }, [])
   const [switchJobConfirmOpen, setSwitchJobConfirmOpen] = useState(false)
   const [sessionItems, setSessionItems] = useState<QCRecord[]>([])
+  const [sessionAttempts, setSessionAttempts] = useState<QCAttempt[]>([])
 
   // History
   const [historySearch, setHistorySearch] = useState('')
   const [historyResults, setHistoryResults] = useState<QCRecord[]>([])
+  const [historyAttempts, setHistoryAttempts] = useState<QCAttempt[]>([])
   const [historySearched, setHistorySearched] = useState(false)
   const [currentHistoryRecord, setCurrentHistoryRecord] = useState<QCRecord | null>(null)
 
@@ -704,18 +716,6 @@ export default function QC() {
       if (openSession) {
         sessionId = openSession.id
         startTime = new Date(openSession.start_time)
-        const records = await fetchRecordsForSession(openSession.id)
-        const recordByUid: Record<string, (typeof records)[0]> = {}
-        records.forEach((r) => { recordByUid[r.item_uid] = r })
-        items.forEach((it) => {
-          const rec =
-            recordByUid[it.uid] ?? (it.source_line_uid ? recordByUid[it.source_line_uid] : undefined)
-          if (rec) {
-            it.status = rec.status as 'pass' | 'fail' | 'pending'
-            it.fail_reason = rec.fail_reason ?? undefined
-            it.check_time = rec.created_at ? new Date(rec.created_at) : undefined
-          }
-        })
       } else {
         if (!skipTrack) {
           const { data: newSession, error: sessErr } = await supabase
@@ -739,6 +739,20 @@ export default function QC() {
           if (!planStart) startTime = new Date()
         }
       }
+
+      // ใบงานหนึ่งอาจมีหลาย session: ต้องคืนสถานะล่าสุดของ UID จากทุก session
+      // ให้ตรงกับตัวเลข Pass/คงเหลือบนการ์ดคิว
+      const records = await fetchLatestRecordsForWorkOrder(woName)
+      const recordByUid: Record<string, (typeof records)[number]> = {}
+      records.forEach((record) => { recordByUid[record.item_uid] = record })
+      items.forEach((item) => {
+        const record = recordByUid[item.uid] ?? (item.source_line_uid ? recordByUid[item.source_line_uid] : undefined)
+        if (record) {
+          item.status = record.status as 'pass' | 'fail' | 'pending'
+          item.fail_reason = record.fail_reason ?? undefined
+          item.check_time = record.created_at ? new Date(record.created_at) : undefined
+        }
+      })
 
       setQcData({ items })
       setActiveSessionItemUids(new Set(items.map((item) => item.uid)))
@@ -823,7 +837,7 @@ export default function QC() {
     if (!currentItem || !qcState.sessionId) return
     const updated = { ...currentItem, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() }
     try {
-      await saveQcRecord(qcState.sessionId, updated, qcUsername)
+      await saveQcRecord(qcState.sessionId, updated, qcUsername, currentItemStartedAtRef.current)
     } catch (e: any) {
       alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
       return
@@ -842,25 +856,23 @@ export default function QC() {
   async function applyFailReasonReject(reason: string) {
     if (isViewOnly) { alert('บัญชี superadmin/admin ไม่อนุญาตให้ทำงาน QC สามารถดูข้อมูลได้อย่างเดียว'); return }
     if (!currentRejectItem) return
-    const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
-    const updates: Partial<QCRecord> = {
-      status: 'fail',
-      qc_by: qcUsername,
-      created_at: new Date().toISOString(),
-      reject_duration: durationSec,
-      fail_reason: reason,
-      retry_count: Math.min((currentRejectItem.retry_count || 1) + 1, 4),
-    }
     setLoading(true)
     try {
-      await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
+      await submitQcRecheck(currentRejectItem.id, 'fail', reason, qcUsername)
       const updatedList = await fetchRejectItems()
       setRejectData(updatedList)
-      const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === updates.retry_count)
+      const changed = updatedList.find((r) => r.id === currentRejectItem.id)
+      const nextTab: 1 | 2 | 'escalated' = changed?.workflow_status === 'escalated'
+        ? 'escalated'
+        : (Math.min(changed?.retry_count || 1, 2) as 1 | 2)
+      const next = updatedList.find((r) => r.id !== currentRejectItem.id && (
+        nextTab === 'escalated' ? r.workflow_status === 'escalated' : r.workflow_status !== 'escalated' && r.retry_count === nextTab
+      ))
       const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
-      setCurrentRejectItem(next || nextAny || null)
-      if (next) setActiveRejectTab((next.retry_count || 1) as 1 | 2 | 3 | 4)
-      else if (nextAny) setActiveRejectTab((nextAny.retry_count || 1) as 1 | 2 | 3 | 4)
+      setCurrentRejectItem(changed || next || nextAny || null)
+      if (changed) setActiveRejectTab(nextTab)
+      else if (next) setActiveRejectTab(nextTab)
+      else if (nextAny) setActiveRejectTab(nextAny.workflow_status === 'escalated' ? 'escalated' : Math.min(nextAny.retry_count || 1, 2) as 1 | 2)
       else setActiveRejectTab('queue')
     } catch (e: any) {
       alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
@@ -883,7 +895,7 @@ export default function QC() {
     if (status === 'pass') {
       if (qcState.sessionId) {
         try {
-          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass' }, qcUsername)
+          await saveQcRecord(qcState.sessionId, { ...currentItem, status: 'pass' }, qcUsername, currentItemStartedAtRef.current)
         } catch (e: any) {
           alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
           return
@@ -910,6 +922,18 @@ export default function QC() {
     }
     setLoading(true)
     try {
+      // ยืนยันผลจากฐานข้อมูลจริงก่อนปิด session ป้องกัน UI แสดงครบแต่บาง record บันทึกไม่สำเร็จ
+      const workOrderName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
+      const persistedRecords = await fetchLatestRecordsForWorkOrder(workOrderName)
+      const persistedStatusByUid = new Map(persistedRecords.map((record) => [record.item_uid, record.status]))
+      const missingPassCount = activeSessionItems.filter((item) => {
+        const status = persistedStatusByUid.get(item.uid)
+          ?? (item.source_line_uid ? persistedStatusByUid.get(item.source_line_uid) : undefined)
+        return status !== 'pass'
+      }).length
+      if (missingPassCount > 0) {
+        throw new Error(`ผลตรวจในฐานข้อมูลยังไม่ครบ ${missingPassCount} รายการ กรุณาตรวจรายการอีกครั้ง`)
+      }
       const endTime = new Date()
       const durationSeconds = (endTime.getTime() - (qcState.startTime?.getTime() || endTime.getTime())) / 1000
       const kpi = totalItems > 0 ? durationSeconds / totalItems : 0
@@ -924,6 +948,14 @@ export default function QC() {
         })
         .eq('id', qcState.sessionId)
       if (updateErr) throw updateErr
+      // Finish Job เป็น idempotent: แม้ session ปัจจุบันถูกปิดไปแล้วจากการกดครั้งก่อน
+      // ให้ปิด session อื่นที่ยังค้างและดำเนินการล้างหน้าจอต่อได้
+      const { error: staleSessionError } = await supabase
+        .from('qc_sessions')
+        .update({ end_time: endTime.toISOString() })
+        .eq('filename', qcState.filename)
+        .is('end_time', null)
+      if (staleSessionError) throw staleSessionError
       if (activeTotalItems > 0 && activePassedItems === activeTotalItems && activeFailedItems === 0) {
         const woName = qcState.filename?.startsWith('WO-') ? qcState.filename.slice(3) : ''
         if (woName) {
@@ -936,8 +968,11 @@ export default function QC() {
       setActiveSessionItemUids(new Set())
       setCurrentItem(null)
       setQcCategoryFilter('')
-      loadRejectItems()
-      loadWorkOrders()
+      const finishedWoName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
+      if (finishedWoName) {
+        setWorkOrdersWithProgress((previous) => previous.filter((workOrder) => workOrder.work_order_name !== finishedWoName))
+      }
+      await Promise.all([loadRejectItems(), loadWorkOrders()])
     } catch (e: any) {
       alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
     } finally {
@@ -950,12 +985,14 @@ export default function QC() {
     await finishSession()
   }
 
-  const filteredRejectItems =
-    activeRejectTab === 'queue'
-      ? []
-      : rejectData.filter((i) => i.retry_count === activeRejectTab).filter((i) => !rejectSearchQuery.trim() || i.item_uid.toUpperCase().includes(rejectSearchQuery.trim().toUpperCase()))
+  const filteredRejectItems = activeRejectTab === 'queue'
+    ? []
+    : rejectData.filter((i) => activeRejectTab === 'escalated'
+      ? i.workflow_status === 'escalated'
+      : i.workflow_status !== 'escalated' && i.retry_count === activeRejectTab
+    ).filter((i) => !rejectSearchQuery.trim() || i.item_uid.toUpperCase().includes(rejectSearchQuery.trim().toUpperCase()))
 
-  const sortedRejectQueue = [...rejectData].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+  const sortedRejectQueue = [...rejectData].sort((a, b) => new Date(a.attempt_started_at || a.created_at).getTime() - new Date(b.attempt_started_at || b.created_at).getTime())
 
   function getRejectDuration(createdAt: string) {
     return formatDuration(Math.floor((currentTime.getTime() - new Date(createdAt).getTime()) / 1000))
@@ -965,7 +1002,7 @@ export default function QC() {
     const q = rejectSearchQuery.trim().toUpperCase()
     const found = rejectData.find((i) => i.item_uid === q)
     if (found) {
-      setActiveRejectTab((found.retry_count || 1) as 1 | 2 | 3 | 4)
+      setActiveRejectTab(found.workflow_status === 'escalated' ? 'escalated' : Math.min(found.retry_count || 1, 2) as 1 | 2)
       setCurrentRejectItem(found)
       setRejectSearchQuery('')
     } else if (q) alert('ไม่พบใน Reject')
@@ -986,22 +1023,13 @@ export default function QC() {
       return
     }
     if (status === 'pass') {
-      const durationSec = Math.floor((new Date().getTime() - new Date(currentRejectItem.created_at).getTime()) / 1000)
-      const updates: Partial<QCRecord> = {
-        status: 'pass',
-        is_rejected: false,
-        qc_by: qcUsername,
-        created_at: new Date().toISOString(),
-        reject_duration: durationSec,
-      }
       setLoading(true)
       try {
-        const { error: passError } = await supabase.from('qc_records').update(updates).eq('id', currentRejectItem.id)
-        if (passError) throw passError
+        await submitQcRecheck(currentRejectItem.id, 'pass', null, qcUsername)
 
         // Sync สถานะกลับไปที่ qcData.items เพื่อให้ QC Operation แสดงผลถูกต้อง
         const updatedItems = qcData.items.map((i) =>
-          i.uid === currentRejectItem.item_uid
+          i.uid === currentRejectItem.item_uid || i.source_line_uid === currentRejectItem.item_uid
             ? { ...i, status: 'pass' as const, fail_reason: undefined, check_time: new Date() }
             : i
         )
@@ -1012,8 +1040,8 @@ export default function QC() {
         const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (currentRejectItem.retry_count || 1))
         const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
         setCurrentRejectItem(next || nextAny || null)
-        if (next) setActiveRejectTab((next.retry_count || 1) as 1 | 2 | 3 | 4)
-        else if (nextAny) setActiveRejectTab((nextAny.retry_count || 1) as 1 | 2 | 3 | 4)
+        if (next) setActiveRejectTab(next.workflow_status === 'escalated' ? 'escalated' : Math.min(next.retry_count || 1, 2) as 1 | 2)
+        else if (nextAny) setActiveRejectTab(nextAny.workflow_status === 'escalated' ? 'escalated' : Math.min(nextAny.retry_count || 1, 2) as 1 | 2)
         else setActiveRejectTab('queue')
       } catch (e: any) {
         alert('อัปเดตไม่สำเร็จ: ' + (e?.message || e))
@@ -1022,6 +1050,26 @@ export default function QC() {
       }
     } else {
       openFailReasonModal('reject')
+    }
+  }
+
+  async function handleEscalationDecision(decision: 'special_recheck' | 'produce_new' | 'scrap' | 'return_source') {
+    if (!currentRejectItem || !isAdminOrSuperadmin(user?.role)) return
+    const labels = { special_recheck: 'อนุมัติตรวจใหม่กรณีพิเศษ', produce_new: 'สั่งผลิตใหม่', scrap: 'คัดทิ้ง', return_source: 'ส่งคืนต้นทาง' }
+    const reason = window.prompt(`กรุณาระบุเหตุผล: ${labels[decision]}`)?.trim()
+    if (!reason) return
+    setLoading(true)
+    try {
+      await resolveQcEscalation(currentRejectItem.id, decision, reason, qcUsername)
+      const updatedList = await fetchRejectItems()
+      setRejectData(updatedList)
+      const next = updatedList.find((r) => r.workflow_status === 'escalated') || updatedList[0] || null
+      setCurrentRejectItem(next)
+      setActiveRejectTab(next ? (next.workflow_status === 'escalated' ? 'escalated' : Math.min(next.retry_count || 1, 2) as 1 | 2) : 'queue')
+    } catch (e: any) {
+      alert('บันทึกการตัดสินใจไม่สำเร็จ: ' + (e?.message || e))
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -1049,6 +1097,8 @@ export default function QC() {
           })
 
       setReports(woFiltered)
+      const attempts = await Promise.all(woFiltered.map((session) => fetchQcAttemptsBySession(session.id)))
+      setReportAttempts(attempts.flat() as QCAttempt[])
     } catch (e: any) {
       alert('โหลดรายงานไม่สำเร็จ: ' + (e?.message || e))
     } finally {
@@ -1059,8 +1109,9 @@ export default function QC() {
   async function showSessionDetails(session: QCSession) {
     setLoading(true)
     try {
-      const data = await fetchSessionRecords(session.id)
+      const [data, attempts] = await Promise.all([fetchSessionRecords(session.id), fetchQcAttemptsBySession(session.id)])
       setSessionItems(data)
+      setSessionAttempts(attempts as QCAttempt[])
       setShowSessionModal(true)
     } catch (e: any) {
       alert('โหลดไม่สำเร็จ: ' + (e?.message || e))
@@ -1072,20 +1123,30 @@ export default function QC() {
   async function downloadReportCsv(session: QCSession) {
     setLoading(true)
     try {
-      const data = await fetchSessionRecords(session.id)
+      const [data, attempts] = await Promise.all([fetchSessionRecords(session.id), fetchQcAttemptsBySession(session.id)])
       if (!data.length) {
         alert('ไม่มีรายการ')
         return
       }
-      const rows = data.map((r) => ({
-        Date: new Date(r.created_at).toLocaleDateString('th-TH'),
-        Time: new Date(r.created_at).toLocaleTimeString('th-TH'),
-        Reject_Duration: r.reject_duration ? formatDuration(r.reject_duration) : '0s',
-        Item_UID: r.item_uid,
-        Status: r.status,
-        Retry: r.retry_count || 1,
-        Fail_Reason: r.fail_reason || '-',
-        QC_By: r.qc_by,
+      const recordById = new Map(data.map((record) => [record.id, record]))
+      const auditRows = attempts.length ? attempts : data.map((r) => ({
+        qc_record_id: r.id, item_uid: r.item_uid, result: r.status, attempt_no: r.retry_count || 1,
+        attempt_type: (r.retry_count || 1) === 1 ? 'initial' : 'recheck', fail_reason: r.fail_reason,
+        qc_by: r.qc_by, started_at: r.created_at, completed_at: r.created_at, duration_seconds: r.reject_duration || 0,
+      }))
+      const rows = auditRows.map((a: any) => {
+        const r = recordById.get(a.qc_record_id) || data.find((record) => record.item_uid === a.item_uid)!
+        return {
+        Date: new Date(a.completed_at).toLocaleDateString('th-TH'),
+        Start_Time: new Date(a.started_at).toLocaleTimeString('th-TH'),
+        End_Time: new Date(a.completed_at).toLocaleTimeString('th-TH'),
+        Duration: formatDuration(a.duration_seconds),
+        Item_UID: a.item_uid,
+        Status: a.result,
+        Attempt: a.attempt_no,
+        Attempt_Type: a.attempt_type,
+        Fail_Reason: a.fail_reason || '-',
+        QC_By: a.qc_by,
         product_name: r.product_name || '-',
         product_code: r.product_code || '-',
         Bill_No: r.bill_no || '-',
@@ -1097,7 +1158,7 @@ export default function QC() {
         line2: r.line2 || '-',
         line3: r.line3 || '-',
         remark: r.remark || '-',
-      }))
+      }})
       const csv = '\uFEFF' + Papa.unparse(rows)
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
       const link = document.createElement('a')
@@ -1118,8 +1179,12 @@ export default function QC() {
     setHistorySearched(true)
     setCurrentHistoryRecord(null)
     try {
-      const data = await searchHistoryByUid(historySearch.trim())
+      const [data, attempts] = await Promise.all([
+        searchHistoryByUid(historySearch.trim()),
+        fetchQcAttemptsByItemUid(historySearch.trim()),
+      ])
       setHistoryResults(data)
+      setHistoryAttempts(attempts as QCAttempt[])
       if (data.length > 0) setCurrentHistoryRecord(data[0])
       if (data.length === 0) alert('ไม่พบประวัติการตรวจสำหรับ UID นี้')
     } catch (e: any) {
@@ -2106,7 +2171,7 @@ export default function QC() {
                 <span className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 text-red-600 font-bold">
                   งานไม่ผ่านที่รอดำเนินการ: {rejectData.length}
                 </span>
-                {(['queue', 1, 2, 3, 4] as const).map((tab) => (
+                {(['queue', 1, 2, 'escalated'] as const).map((tab) => (
                   <button
                     key={String(tab)}
                     onClick={() => setActiveRejectTab(tab)}
@@ -2114,9 +2179,9 @@ export default function QC() {
                       activeRejectTab === tab ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                     }`}
                   >
-                    {tab === 'queue' ? 'คิวงาน' : `ไม่ผ่านครั้งที่ ${tab}`}
+                    {tab === 'queue' ? 'คิวงาน' : tab === 'escalated' ? 'รอหัวหน้าตัดสินใจ' : `ตรวจซ้ำครั้งที่ ${tab}`}
                     {tab !== 'queue' && (
-                      <span className="ml-1 opacity-80">({rejectData.filter((i) => i.retry_count === tab).length})</span>
+                      <span className="ml-1 opacity-80">({rejectData.filter((i) => tab === 'escalated' ? i.workflow_status === 'escalated' : i.workflow_status !== 'escalated' && i.retry_count === tab).length})</span>
                     )}
                   </button>
                 ))}
@@ -2160,7 +2225,7 @@ export default function QC() {
                       <tr
                         key={item.id}
                         onClick={() => {
-                          setActiveRejectTab((item.retry_count || 1) as 1 | 2 | 3 | 4)
+                          setActiveRejectTab(item.workflow_status === 'escalated' ? 'escalated' : Math.min(item.retry_count || 1, 2) as 1 | 2)
                           setCurrentRejectItem(item)
                         }}
                         className="border-b hover:bg-blue-50 cursor-pointer"
@@ -2182,10 +2247,12 @@ export default function QC() {
                         </td>
                         <td className="px-3 py-3 italic text-red-500 font-bold">{item.fail_reason || '-'}</td>
                         <td className="px-3 py-3 text-center">
-                          <span className="bg-gray-100 px-2 py-1 rounded font-bold">STEP {item.retry_count || 1}</span>
+                          <span className="bg-gray-100 px-2 py-1 rounded font-bold">
+                            {item.workflow_status === 'escalated' ? 'เกินกำหนด' : `ตรวจซ้ำ ${item.retry_count || 1}`}
+                          </span>
                         </td>
-                        <td className="px-3 py-3 text-center whitespace-nowrap">{formatTime(item.created_at)}</td>
-                        <td className="px-3 py-3 text-right font-mono font-bold">{getRejectDuration(item.created_at)}</td>
+                        <td className="px-3 py-3 text-center whitespace-nowrap">{formatTime(item.attempt_started_at || item.created_at)}</td>
+                        <td className="px-3 py-3 text-right font-mono font-bold">{getRejectDuration(item.attempt_started_at || item.created_at)}</td>
                       </tr>
                     ))}
                     {sortedRejectQueue.length === 0 && (
@@ -2301,12 +2368,21 @@ export default function QC() {
                         </div>
                       </div>
                       <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
-                        {isViewOnly && (
+                        {isViewOnly && activeRejectTab !== 'escalated' && (
                           <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
                             โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถทำ QC ได้)
                           </div>
                         )}
-                        <div className="flex gap-4">
+                        {activeRejectTab === 'escalated' && isAdminOrSuperadmin(user?.role) ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => handleEscalationDecision('special_recheck')} className="py-3 rounded-xl bg-blue-600 text-white font-bold">อนุมัติตรวจใหม่</button>
+                            <button onClick={() => handleEscalationDecision('produce_new')} className="py-3 rounded-xl bg-orange-500 text-white font-bold">สั่งผลิตใหม่</button>
+                            <button onClick={() => handleEscalationDecision('return_source')} className="py-3 rounded-xl bg-amber-500 text-white font-bold">ส่งคืนต้นทาง</button>
+                            <button onClick={() => handleEscalationDecision('scrap')} className="py-3 rounded-xl bg-red-600 text-white font-bold">คัดทิ้ง</button>
+                          </div>
+                        ) : activeRejectTab === 'escalated' ? (
+                          <div className="text-center py-3 text-sm text-orange-700 bg-orange-50 rounded-xl">เกินจำนวนตรวจซ้ำ กรุณารอ superadmin/admin ตัดสินใจ</div>
+                        ) : <div className="flex gap-4">
                           <button
                             onClick={() => markRejectStatus('fail')}
                             disabled={isViewOnly}
@@ -2316,7 +2392,7 @@ export default function QC() {
                                 : 'border-red-500 text-red-500 hover:bg-red-50'
                             }`}
                           >
-                            FAIL (NEXT REJECT) (0)
+                            ไม่ผ่าน
                           </button>
                           <button
                             onClick={() => markRejectStatus('pass')}
@@ -2330,7 +2406,7 @@ export default function QC() {
                           >
                             QC PASS (Space)
                           </button>
-                        </div>
+                        </div>}
                         <div className="flex gap-4">
                           <button onClick={() => navigateRejectItem(-1)} className="flex-1 py-2 bg-gray-100 rounded-xl hover:bg-gray-200 font-bold">
                             ก่อนหน้า
@@ -2491,6 +2567,15 @@ export default function QC() {
                 Filter
               </button>
             </div>
+            {reports.length > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+                <div className="rounded-xl bg-blue-50 p-3"><div className="text-xs text-gray-500">รอบตรวจทั้งหมด</div><div className="text-2xl font-bold text-blue-700">{reportAttempts.length}</div></div>
+                <div className="rounded-xl bg-red-50 p-3"><div className="text-xs text-gray-500">ไม่ผ่านครั้งแรก</div><div className="text-2xl font-bold text-red-600">{reportAttempts.filter((a) => a.attempt_no === 1 && a.result === 'fail').length}</div></div>
+                <div className="rounded-xl bg-orange-50 p-3"><div className="text-xs text-gray-500">รอบตรวจซ้ำ</div><div className="text-2xl font-bold text-orange-600">{reportAttempts.filter((a) => a.attempt_no > 1).length}</div></div>
+                <div className="rounded-xl bg-green-50 p-3"><div className="text-xs text-gray-500">ผ่านหลังแก้ไข</div><div className="text-2xl font-bold text-green-600">{reportAttempts.filter((a) => a.attempt_no > 1 && a.result === 'pass').length}</div></div>
+                <div className="rounded-xl bg-purple-50 p-3"><div className="text-xs text-gray-500">เวลาเฉลี่ยต่อรอบ</div><div className="text-lg font-bold text-purple-700">{formatDuration(reportAttempts.length ? reportAttempts.reduce((sum, a) => sum + a.duration_seconds, 0) / reportAttempts.length : 0)}</div></div>
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
                 <thead className="bg-gray-50 text-gray-700 font-bold uppercase text-xs">
@@ -2711,6 +2796,22 @@ export default function QC() {
                             {currentHistoryRecord.status === 'fail' && currentHistoryRecord.fail_reason && (
                               <span className="text-red-600 font-medium">เหตุผล: {currentHistoryRecord.fail_reason}</span>
                             )}
+                          </div>
+                        </div>
+                        <div className="mt-4 pt-4 border-t">
+                          <h3 className="font-bold text-gray-800 mb-2">ลำดับการตรวจทั้งหมด</h3>
+                          <div className="space-y-2">
+                            {historyAttempts.filter((a) => a.item_uid.toUpperCase() === currentHistoryRecord.item_uid.toUpperCase()).map((attempt) => (
+                              <div key={attempt.id} className="rounded-lg border bg-white p-3 text-sm">
+                                <div className="flex flex-wrap justify-between gap-2">
+                                  <span className="font-bold">ครั้งที่ {attempt.attempt_no} · {attempt.attempt_type === 'initial' ? 'ตรวจครั้งแรก' : attempt.attempt_type === 'special_recheck' ? 'ตรวจกรณีพิเศษ' : 'ตรวจซ้ำ'}</span>
+                                  <span className={attempt.result === 'pass' ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>{attempt.result === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}</span>
+                                </div>
+                                <div className="text-gray-500 mt-1">เริ่ม {formatDate(attempt.started_at)} · เสร็จ {formatDate(attempt.completed_at)} · ใช้เวลา {formatDuration(attempt.duration_seconds)}</div>
+                                <div className="text-gray-600">ผู้ตรวจ: {attempt.qc_by}{attempt.fail_reason ? ` · เหตุผล: ${attempt.fail_reason}` : ''}</div>
+                              </div>
+                            ))}
+                            {historyAttempts.length === 0 && <div className="text-gray-400">ข้อมูลเดิมอาจมีเฉพาะผลล่าสุด</div>}
                           </div>
                         </div>
                       </div>
@@ -3736,8 +3837,8 @@ export default function QC() {
             <thead className="bg-gray-100 text-gray-700 font-bold uppercase text-xs sticky top-0">
               <tr>
                 <th className="px-3 py-2 text-center">#</th>
-                <th className="px-3 py-2 text-center">เวลาตรวจ</th>
-                <th className="px-3 py-2">ระยะเวลาที่ไม่ผ่าน</th>
+                <th className="px-3 py-2 text-center">เริ่ม / เสร็จ</th>
+                <th className="px-3 py-2">ระยะเวลา</th>
                 <th className="px-3 py-2">รหัสรายการ</th>
                 <th className="px-3 py-2 text-center">ผลตรวจ</th>
                 <th className="px-3 py-2 text-center">ครั้งที่ตรวจ</th>
@@ -3748,33 +3849,34 @@ export default function QC() {
               </tr>
             </thead>
             <tbody>
-              {sessionItems.map((item, idx) => (
-                <tr key={item.id} className="border-b hover:bg-gray-50">
+              {sessionAttempts.map((attempt, idx) => {
+                const item = sessionItems.find((record) => record.id === attempt.qc_record_id)
+                return <tr key={attempt.id} className="border-b hover:bg-gray-50">
                   <td className="px-3 py-2 text-center font-bold text-gray-400">{idx + 1}</td>
-                  <td className="px-3 py-2 text-center whitespace-nowrap">{formatTime(item.created_at)}</td>
-                  <td className="px-3 py-2 text-center font-bold">{item.reject_duration ? formatDuration(item.reject_duration) : '-'}</td>
-                  <td className="px-3 py-2 font-mono font-bold text-blue-600">{item.item_uid}</td>
+                  <td className="px-3 py-2 text-center whitespace-nowrap">{formatTime(attempt.started_at)} → {formatTime(attempt.completed_at)}</td>
+                  <td className="px-3 py-2 text-center font-bold">{formatDuration(attempt.duration_seconds)}</td>
+                  <td className="px-3 py-2 font-mono font-bold text-blue-600">{attempt.item_uid}</td>
                   <td className="px-3 py-2 text-center">
-                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${item.status === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
-                      {item.status === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${attempt.result === 'pass' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
+                      {attempt.result === 'pass' ? 'ผ่าน' : 'ไม่ผ่าน'}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-center font-bold">{item.retry_count || 1}</td>
+                  <td className="px-3 py-2 text-center font-bold">{attempt.attempt_no}</td>
                   <td className="px-3 py-2">
-                    <div className="font-bold">{item.product_name || '-'}</div>
-                    <div className="text-xs text-blue-600">ใบงาน: {item.bill_no || '-'}</div>
+                    <div className="font-bold">{item?.product_name || '-'}</div>
+                    <div className="text-xs text-blue-600">ใบงาน: {item?.bill_no || '-'}</div>
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    {item.line1 && <div>1: {item.line1}</div>}
-                    {item.line2 && <div>2: {item.line2}</div>}
-                    {item.line3 && <div>3: {item.line3}</div>}
+                    {item?.line1 && <div>1: {item.line1}</div>}
+                    {item?.line2 && <div>2: {item.line2}</div>}
+                    {item?.line3 && <div>3: {item.line3}</div>}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    สีหมึก: {item.ink_color || '-'} / ฟอนต์: {item.font || '-'} / ชั้น: {item.floor || '-'}
+                    สีหมึก: {item?.ink_color || '-'} / ฟอนต์: {item?.font || '-'} / ชั้น: {item?.floor || '-'}
                   </td>
-                  <td className="px-3 py-2 italic font-bold text-red-500">{item.fail_reason || '-'}</td>
+                  <td className="px-3 py-2 italic font-bold text-red-500">{attempt.fail_reason || '-'}</td>
                 </tr>
-              ))}
+              })}
             </tbody>
           </table>
         </div>

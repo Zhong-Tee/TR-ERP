@@ -358,12 +358,13 @@ export default function Packing() {
 
   const checkAndMarkPackEnd = async (workOrderName: string) => {
     if (!workOrderName) return
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from('or_orders')
       .select('id', { count: 'exact', head: true })
       .eq('work_order_name', workOrderName)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .neq('status', 'จัดส่งแล้ว')
+    if (countError) throw countError
     if ((count || 0) !== 0) return
     const now = new Date().toISOString()
     const procNames = ['เริ่มแพ็ค', 'เสร็จแล้ว']
@@ -376,7 +377,18 @@ export default function Packing() {
       p_dept: 'PACK',
       p_patch: patch,
     })
-    if (error) console.error('PACK checkAndMarkPackEnd error:', error.message)
+    if (error) throw error
+  }
+
+  const finalizePackingWorkOrder = async (workOrderName: string, orderIds: string[]) => {
+    const shippedBy = user?.username || user?.email || 'unknown'
+    const { data, error } = await supabase.rpc('pk_finalize_work_order', {
+      p_work_order_name: workOrderName,
+      p_order_ids: orderIds,
+      p_shipped_by: shippedBy,
+    })
+    if (error) throw error
+    return data as { success: boolean; shipped_count: number; closed_at: string }
   }
 
   const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean) => {
@@ -1224,18 +1236,15 @@ export default function Packing() {
         })
         setWorkOrderStatus(statusMap)
 
-        // OFFICE: auto-ship เมื่อ QC เสร็จ (ไม่ต้องจัดส่งจริง)
-        for (const wo of orders) {
+        // OFFICE: auto-ship เมื่อ QC เสร็จ (ไม่ต้องจัดส่งจริง). View-only users must not mutate data while loading.
+        for (const wo of isViewOnly ? [] : orders) {
           const st = statusMap[wo.work_order_name]
           if (!st || !(st.qcCompleted || st.qcSkipped)) continue
           const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
           const allOffice = ordersInWo.length > 0 && ordersInWo.every((o: any) => o.channel_code === 'OFFICE')
           if (!allOffice) continue
           const officeIds = ordersInWo.map((o: any) => o.id as string)
-          const shippedBy = user?.username || user?.email || 'system'
-          await supabase.from('or_orders').update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() }).in('id', officeIds)
-          await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', wo.work_order_name)
-          await checkAndMarkPackEnd(wo.work_order_name)
+          await finalizePackingWorkOrder(wo.work_order_name, officeIds)
         }
 
         const { data: planJobs } = await supabase
@@ -1317,9 +1326,9 @@ export default function Packing() {
     if (uniqueUids.length === 0) return {}
     const { data, error } = await supabase
       .from('qc_records')
-      .select('item_uid, status, remark, created_at')
+      .select('item_uid, status, remark, created_at, last_result_at')
       .in('item_uid', uniqueUids)
-      .order('created_at', { ascending: false })
+      .order('last_result_at', { ascending: false })
     if (error) {
       console.error('QC status load error:', error)
       return {}
@@ -1415,26 +1424,23 @@ export default function Packing() {
     const group = aggregatedDataRef.current[index]
     if (!group) return
 
-    const orderId = group[0].order_id
-    const { error: scanErr } = await supabase
-      .from('pk_packing_unit_scans')
-      .delete()
-      .eq('order_id', orderId)
-
-    const { error: orderError } = await supabase
-      .from('or_orders')
-      .update({
-        status: 'ใบงานกำลังผลิต',
-        packing_meta: null,
-        shipped_by: null,
-        shipped_time: null
+    const isShipped = group[0].isOrderComplete
+    const reason = isShipped
+      ? window.prompt('กรุณาระบุเหตุผลที่ยกเลิกการจัดส่งและแพ็คใหม่')?.trim()
+      : 'ผู้ใช้เลือกเริ่มแพ็คใหม่'
+    if (isShipped && !reason) return
+    try {
+      const { error } = await supabase.rpc('pk_reset_order_packing', {
+        p_order_id: group[0].order_id,
+        p_reason: reason || 'ผู้ใช้เลือกเริ่มแพ็คใหม่',
+        p_reset_by: user?.username || user?.email || 'unknown',
       })
-      .eq('id', group[0].order_id)
-
-    if (!scanErr && !orderError) {
+      if (error) throw error
       await loadPackingData(currentWorkOrderName)
-    } else {
-      console.error('Reset Error:', scanErr || orderError)
+      setStatusMessage({ text: isShipped ? '✅ ยกเลิกการจัดส่งและเปิดแพ็คใหม่แล้ว' : '✅ ล้างรายการสแกนแล้ว พร้อมเริ่มแพ็คใหม่', type: 'success' })
+    } catch (error: any) {
+      console.error('Reset Error:', error)
+      openAlert('แพ็คใหม่ไม่สำเร็จ: ' + (error?.message || error))
     }
   }
 
@@ -1642,10 +1648,16 @@ export default function Packing() {
   async function finalizeWorkOrder() {
     if (!currentWorkOrderName) return
     openConfirm('ปิดใบงานนี้?', async () => {
-      await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', currentWorkOrderName)
-      await checkAndMarkPackEnd(currentWorkOrderName)
-      openAlert('ปิดใบงานเรียบร้อย')
-      await loadWorkOrdersForPacking()
+      setIsLoadingOrders(true)
+      try {
+        await finalizePackingWorkOrder(currentWorkOrderName, [])
+        openAlert('ปิดใบงานเรียบร้อย')
+        await loadWorkOrdersForPacking()
+      } catch (error: any) {
+        openAlert('ปิดใบงานไม่สำเร็จ: ' + (error?.message || error))
+      } finally {
+        setIsLoadingOrders(false)
+      }
     })
   }
 
@@ -1666,17 +1678,7 @@ export default function Packing() {
         if (group && !group[0].isOrderComplete) ids.push(group[0].order_id)
       })
 
-      if (ids.length > 0) {
-        const shippedBy = user?.username || user?.email || 'unknown'
-        const { error } = await supabase
-          .from('or_orders')
-          .update({ status: 'จัดส่งแล้ว', shipped_by: shippedBy, shipped_time: new Date().toISOString() })
-          .in('id', ids)
-        if (error) throw error
-      }
-
-      await supabase.from('or_work_orders').update({ status: 'จัดส่งแล้ว' }).eq('work_order_name', currentWorkOrderName)
-      await checkAndMarkPackEnd(currentWorkOrderName)
+      await finalizePackingWorkOrder(currentWorkOrderName, ids)
       playSuccessSound()
       openAlert(`จัดส่งสำเร็จทั้งหมด ${ids.length || aggregatedData.length} รายการ!`)
       await loadWorkOrdersForPacking()
@@ -2600,17 +2602,19 @@ export default function Packing() {
                     จัดส่งออร์เดอร์ที่สำเร็จ
                   </button>
                 )}
-                {!isViewOnly && (
+                {(!isViewOnly || (isAdminOrSuperadmin(user?.role) && currentGroup?.[0]?.isOrderComplete)) && (
                 <button
                   className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600"
                   onClick={async () => {
                     if (!currentGroup) return
-                    openConfirm('ยืนยัน "แพ็คใหม่"? (ข้อมูลที่แสกนไปแล้วในบิลนี้จะถูกล้างทั้งหมด)', async () => {
+                    openConfirm(currentGroup[0].isOrderComplete
+                      ? 'ยืนยันยกเลิกการจัดส่งและแพ็คใหม่? ระบบจะเปิดใบงานและเวลา PACK ใน Plan กลับมา'
+                      : 'ยืนยัน "แพ็คใหม่"? (ข้อมูลที่สแกนไปแล้วในบิลนี้จะถูกล้าง แต่ Tag เดิมจะยังคงอยู่)', async () => {
                       await performResetAction(currentIndex)
                     })
                   }}
                 >
-                  แพ็คใหม่
+                  {currentGroup?.[0]?.isOrderComplete ? 'ยกเลิกจัดส่งและแพ็คใหม่' : 'แพ็คใหม่'}
                 </button>
                 )}
                 {!isViewOnly && allGroupsShipped && (

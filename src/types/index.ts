@@ -721,6 +721,10 @@ export interface QCRecord {
   qty: number
   remark: string | null
   reject_duration?: number | null
+  workflow_status?: 'pending' | 'passed' | 'waiting_recheck' | 'escalated' | 'closed'
+  attempt_started_at?: string | null
+  resolved_at?: string | null
+  last_result_at?: string | null
   created_at: string
   /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล (or_orders) — enrich ตอน fetchRejectItems ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
   ship_due_at?: string | null
@@ -881,6 +885,22 @@ export interface PpRecipe {
   updated_at: string
   min_stock: number | null
   max_stock: number | null
+}
+
+export interface QCAttempt {
+  id: string
+  qc_record_id: string
+  session_id: string
+  item_uid: string
+  attempt_no: number
+  attempt_type: 'initial' | 'recheck' | 'special_recheck'
+  result: 'pass' | 'fail'
+  fail_reason: string | null
+  qc_by: string
+  started_at: string
+  completed_at: string
+  duration_seconds: number
+  created_at: string
 }
 
 export interface PpRecipeInclude {
@@ -1065,6 +1085,7 @@ export interface HREmployee {
   /** ยอดตั้งต้นก่อนเริ่มใช้ระบบเงินเดือน */
   income_opening_balance?: number
   personal_tax_opening_balance?: number
+  social_security_opening_balance?: number
   student_loan_opening_balance?: number
   savings_opening_balance?: number
   company_loan_opening_balance?: number

@@ -75,7 +75,7 @@ export default function PayrollSection() {
           const employee = employeesById.get(item.employee_id)
           const baseSalary = Number(item.base_salary)
           const positionAllowance = Number(item.position_allowance)
-          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary + positionAllowance, socialSecuritySettings), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), income_opening_balance: Number(item.income_opening_balance), personal_tax_opening_balance: Number(item.personal_tax_opening_balance), student_loan_opening_balance: Number(item.student_loan_opening_balance), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) }
+          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary + positionAllowance, socialSecuritySettings), savings: Number(item.savings), student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), income_opening_balance: Number(item.income_opening_balance), personal_tax_opening_balance: Number(item.personal_tax_opening_balance), social_security_opening_balance: Number(item.social_security_opening_balance), student_loan_opening_balance: Number(item.student_loan_opening_balance), savings_opening_balance: Number(item.savings_opening_balance), company_loan_opening_balance: Number(item.company_loan_opening_balance), company_loan_opening_installments: Number(item.company_loan_opening_installments) }
         })))
       }
       else if ((!savedRun || savedRun.status === 'draft') && month === currentMonth()) setItems(sortPayrollItems(employees.map((employee) => ({
@@ -91,6 +91,7 @@ export default function PayrollSection() {
         leave_deduction: leaveMap[employee.id] || 0, other_income: 0, other_deduction: 0,
         income_opening_balance: Number(employee.income_opening_balance) || 0,
         personal_tax_opening_balance: Number(employee.personal_tax_opening_balance) || 0,
+        social_security_opening_balance: Number(employee.social_security_opening_balance) || 0,
         student_loan_opening_balance: Number(employee.student_loan_opening_balance) || 0,
         savings_opening_balance: Number(employee.savings_opening_balance) || 0,
         company_loan_opening_balance: Number(employee.company_loan_opening_balance) || 0,
@@ -146,6 +147,7 @@ export default function PayrollSection() {
       ...yearly,
       income: Number(item.income_opening_balance || 0) + yearly.income,
       personalTax: Number(item.personal_tax_opening_balance || 0) + yearly.personalTax,
+      socialSecurity: Number(item.social_security_opening_balance || 0) + yearly.socialSecurity,
       studentLoan: Number(item.student_loan_opening_balance || 0) + yearly.studentLoan,
       ...financialProgress(item),
     }
