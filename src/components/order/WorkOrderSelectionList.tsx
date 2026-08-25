@@ -78,10 +78,10 @@ export default function WorkOrderSelectionList({
         )
         const linkResults = await Promise.all(idChunks.map((ids) =>
           supabase
-            .from('or_order_chat_logs')
-            .select('order_id, link_url, created_at')
+            .from('or_order_items')
+            .select('order_id, file_attachment, created_at')
             .in('order_id', ids)
-            .not('link_url', 'is', null)
+            .not('file_attachment', 'is', null)
             .order('created_at', { ascending: true })
         ))
         for (const { data: linkRows, error: linkError } of linkResults) {
@@ -91,7 +91,7 @@ export default function WorkOrderSelectionList({
           }
           for (const row of linkRows || []) {
             const orderId = String(row.order_id || '')
-            const url = String(row.link_url || '').trim()
+            const url = String(row.file_attachment || '').trim()
             if (!orderId || !url) continue
             const links = nextOrderLinks[orderId] || []
             if (!links.includes(url)) links.push(url)
