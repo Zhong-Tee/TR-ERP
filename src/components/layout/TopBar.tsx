@@ -600,13 +600,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   return (
     <>
       <header
-        className="relative z-40 flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6 text-slate-900 shadow-sm"
+        className="relative z-40 flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-2 text-slate-900 shadow-sm sm:px-4 md:h-16 md:px-6"
       >
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-1 sm:gap-3">
           {onToggleSidebar && (
             <button
               onClick={onToggleSidebar}
-              className="p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-700"
+              className="shrink-0 p-2 hover:bg-slate-100 rounded-lg transition-colors text-slate-700"
               title={sidebarOpen ? 'ปิดเมนู' : 'เปิดเมนู'}
               aria-label={sidebarOpen ? 'ปิดเมนู' : 'เปิดเมนู'}
             >
@@ -615,13 +615,13 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
               </svg>
             </button>
           )}
-          <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
+          <h2 className="min-w-0 truncate text-lg font-semibold tracking-tight text-slate-900 sm:text-xl md:text-2xl">
             {menuTitle}
             {menuCount !== null && !location.pathname.startsWith('/products') && (
-              <span className="ml-2 text-xl font-semibold text-slate-500 tabular-nums">({menuCount})</span>
+              <span className="ml-1 text-base font-semibold text-slate-500 tabular-nums md:ml-2 md:text-xl">({menuCount})</span>
             )}
           </h2>
-          <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-2 sm:flex">
             {canSeeChat && issueTabs.map((tab) => (
               <button
                 key={tab.key}
@@ -650,9 +650,9 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2 lg:gap-4">
         {user && (
-          <div className="text-sm text-slate-600">
+          <div className="hidden text-sm text-slate-600 lg:block">
             <span className="mr-4">{user.username || user.email}</span>
             <span className="text-slate-400">({user.role})</span>
           </div>
@@ -661,7 +661,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
         <button
           onClick={handleLogout}
           disabled={loggingOut}
-          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-semibold disabled:opacity-50"
+          className="hidden px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors font-semibold disabled:opacity-50 sm:block"
         >
           {loggingOut ? 'กำลังออก...' : 'ออกจากระบบ'}
         </button>
@@ -673,7 +673,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           data-app-subnav
           className="relative z-30 shrink-0 border-b border-surface-200 bg-white shadow-soft"
         >
-          <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+          <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
             <div className="flex items-center justify-between gap-4">
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {activeSubTabs.map((tab) => {

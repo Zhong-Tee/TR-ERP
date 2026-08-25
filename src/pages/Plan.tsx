@@ -16,6 +16,7 @@ import WorkOrderManageList from '../components/order/WorkOrderManageList'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
+import { getCutReadySec, getQcReadySec } from '../lib/planScheduling'
 import { ISSUE_ON_COUNT_EVENT } from '../lib/issueOnCountBroadcast'
 import type { Order } from '../types'
 import OrderDetailView from '../components/order/OrderDetailView'
@@ -498,10 +499,8 @@ function computePlanTimeline(
     let base = Math.max(prevEnd, Number.isFinite(cutSec) ? cutSec : 0)
     let finalDur = stdDuration
 
-    const delayDepts = ['เบิก', 'TUBE']
-    if (delayDepts.includes(dept) && cutSec !== -Infinity) {
-      base = Math.max(base, cutSec + 300)
-    }
+    const cutReadySec = getCutReadySec(dept, cutSec)
+    if (cutReadySec != null) base = Math.max(base, cutReadySec)
     if (j.manual_plan_starts?.[dept]) {
       base = parseTimeToMin(j.manual_plan_starts[dept]) * 60
     } else {
@@ -518,10 +517,8 @@ function computePlanTimeline(
             if (finishSec > 0) finishTimes.push(finishSec)
           }
         })
-        if (finishTimes.length > 0) {
-          const firstFinish = Math.min(...finishTimes)
-          base = Math.max(base, firstFinish + 300)
-        }
+        const qcReadySec = getQcReadySec(finishTimes)
+        if (qcReadySec != null) base = Math.max(base, qcReadySec)
       }
       if (dept === 'PACK') {
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)

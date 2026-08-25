@@ -1005,9 +1005,9 @@ export default function Account() {
   }
 
   return (
-    <div className="space-y-8">
-      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
-        <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 overflow-x-auto">
+    <div className="space-y-4 md:space-y-8">
+      <div className="sticky top-0 z-10 -mx-3 border-b border-surface-200 bg-white px-3 shadow-soft sm:-mx-4 sm:px-4 md:-mx-6 md:px-6">
+        <nav className="flex min-w-max flex-nowrap gap-1 overflow-x-auto py-2 sm:gap-3 md:py-3">
           {ACCOUNT_TOP_NAV_ITEMS.filter((item) => hasAccess(item.accessKey ?? `account-${item.section}`)).map((item) => {
             const pill = accountTopNavCountPill(item)
             return (
@@ -1022,7 +1022,7 @@ export default function Account() {
                     setActiveTab(item.dashboardTab)
                   }
                 }}
-                className={`py-3 px-3 sm:px-4 rounded-t-xl border-b-2 font-semibold text-base whitespace-nowrap transition-colors inline-flex items-center gap-2 ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-t-xl border-b-2 px-2 py-2 text-sm font-semibold transition-colors sm:gap-2 sm:px-4 sm:py-3 sm:text-base ${accountTopNavActive(item) ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-blue-600'}`}
               >
                 {item.label}
                 {pill && (
