@@ -82,6 +82,74 @@ interface CreateAuditInput {
   showSystemQty?: boolean
 }
 
+type AuditStockSnapshot = { systemQty: number; systemSafetyStock: number | null }
+
+/** Build the Audit snapshot. ST uses the Warehouse aggregate of linked production SKUs. */
+async function loadAuditStockSnapshots(productIds: string[]): Promise<Record<string, AuditStockSnapshot>> {
+  if (productIds.length === 0) return {}
+
+  const { data: spareRows, error: spareError } = await supabase
+    .from('wh_sub_wms_map_spares')
+    .select('group_id, product_id')
+    .in('product_id', productIds)
+  if (spareError) throw spareError
+
+  const groupIds = [...new Set((spareRows || []).map((row) => row.group_id))]
+  let sourceRows: { group_id: string; product_id: string }[] = []
+  if (groupIds.length > 0) {
+    const { data, error } = await supabase
+      .from('wh_sub_wms_map_sources')
+      .select('group_id, product_id')
+      .in('group_id', groupIds)
+    if (error) throw error
+    sourceRows = data || []
+  }
+
+  const sourceIds = [...new Set(sourceRows.map((row) => row.product_id))]
+  const balanceProductIds = [...new Set([...productIds, ...sourceIds])]
+  const { data: balances, error: balanceError } = await supabase
+    .from('inv_stock_balances')
+    .select('product_id, on_hand, safety_stock')
+    .in('product_id', balanceProductIds)
+  if (balanceError) throw balanceError
+
+  const balanceMap = new Map<string, { onHand: number; safetyStock: number }>()
+  ;(balances || []).forEach((balance) => {
+    balanceMap.set(balance.product_id, {
+      onHand: Number(balance.on_hand || 0),
+      safetyStock: Number(balance.safety_stock || 0),
+    })
+  })
+
+  const sourceIdsByGroup = new Map<string, Set<string>>()
+  sourceRows.forEach((row) => {
+    const ids = sourceIdsByGroup.get(row.group_id) || new Set<string>()
+    ids.add(row.product_id)
+    sourceIdsByGroup.set(row.group_id, ids)
+  })
+  const groupBySpareId = new Map((spareRows || []).map((row) => [row.product_id, row.group_id]))
+
+  const snapshots: Record<string, AuditStockSnapshot> = {}
+  productIds.forEach((productId) => {
+    const groupId = groupBySpareId.get(productId)
+    if (groupId) {
+      const systemQty = [...(sourceIdsByGroup.get(groupId) || [])].reduce((sum, sourceId) => {
+        const balance = balanceMap.get(sourceId)
+        return sum + (balance?.onHand || 0) + (balance?.safetyStock || 0)
+      }, 0)
+      snapshots[productId] = { systemQty, systemSafetyStock: null }
+      return
+    }
+
+    const balance = balanceMap.get(productId)
+    snapshots[productId] = {
+      systemQty: balance?.onHand || 0,
+      systemSafetyStock: balance?.safetyStock ?? 0,
+    }
+  })
+  return snapshots
+}
+
 export async function createAudit(input: CreateAuditInput) {
   const auditNo = await generateAuditNo()
 
@@ -126,33 +194,22 @@ export async function createAudit(input: CreateAuditInput) {
 
   // 3. ดึง stock balance + safety stock
   const productIds = products.map((p) => p.id)
-  const { data: balances } = await supabase
-    .from('inv_stock_balances')
-    .select('product_id, on_hand, safety_stock')
-    .in('product_id', productIds)
-
-  const balanceMap: Record<string, { on_hand: number; safety_stock: number }> = {}
-  ;(balances || []).forEach((b: any) => {
-    balanceMap[b.product_id] = {
-      on_hand: Number(b.on_hand || 0),
-      safety_stock: Number(b.safety_stock || 0),
-    }
-  })
+  const stockSnapshots = await loadAuditStockSnapshots(productIds)
 
   // 4. สร้าง audit items พร้อม snapshot
   const items = products.map((p) => {
-    const bal = balanceMap[p.id] || { on_hand: 0, safety_stock: 0 }
+    const snapshot = stockSnapshots[p.id] || { systemQty: 0, systemSafetyStock: 0 }
     return {
       audit_id: audit.id,
       product_id: p.id,
-      system_qty: bal.on_hand,
+      system_qty: snapshot.systemQty,
       counted_qty: 0,
       variance: 0,
       is_counted: false,
       storage_location: p.storage_location || null,
       product_category: p.product_category || null,
       system_location: p.storage_location || null,
-      system_safety_stock: bal.safety_stock,
+      system_safety_stock: snapshot.systemSafetyStock,
     }
   })
 

@@ -10,6 +10,7 @@ import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
 import { isAdminOrSuperadmin, resolveOwnerScopeAdminName } from '../../config/accessPolicy'
 import { ISSUE_ON_COUNT_EVENT } from '../../lib/issueOnCountBroadcast'
+import { HR_MY_OPEN_TASK_COUNT_EVENT, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import {
   FiCheckCircle,
   FiDollarSign,
@@ -226,6 +227,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
   })
   /** นับ Issue สถานะ On (จาก TopBar broadcast — ไม่ query เพิ่ม) */
   const [planIssueOnCount, setPlanIssueOnCount] = useState(0)
+  const [hrMyOpenTaskCount, setHrMyOpenTaskCount] = useState(0)
   const { hasAccess } = useMenuAccess()
 
   useEffect(() => {
@@ -236,6 +238,33 @@ export default function Sidebar({ isOpen }: SidebarProps) {
     window.addEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
     return () => window.removeEventListener(ISSUE_ON_COUNT_EVENT, onIssueOn)
   }, [])
+
+  useEffect(() => {
+    if (!hasAccess('hr-tasks') || !user?.id) {
+      setHrMyOpenTaskCount(0)
+      return
+    }
+
+    const loadCount = async () => {
+      try {
+        setHrMyOpenTaskCount(await loadHrMyOpenTaskCount(user.id))
+      } catch (error) {
+        console.error('Sidebar HR task count:', error)
+      }
+    }
+    const onCount = (event: Event) => {
+      const count = (event as CustomEvent<{ count?: number }>).detail?.count
+      if (typeof count === 'number') setHrMyOpenTaskCount(count)
+    }
+
+    void loadCount()
+    window.addEventListener(HR_MY_OPEN_TASK_COUNT_EVENT, onCount)
+    window.addEventListener('hr-tasks-changed', loadCount)
+    return () => {
+      window.removeEventListener(HR_MY_OPEN_TASK_COUNT_EVENT, onCount)
+      window.removeEventListener('hr-tasks-changed', loadCount)
+    }
+  }, [hasAccess, user?.id])
 
   const loadCounts = useCallback(async () => {
     try {
@@ -487,8 +516,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
             const displayCount = baseCount
             const withCount = MENU_KEYS_WITH_COUNT.includes(item.key as (typeof MENU_KEYS_WITH_COUNT)[number])
             const isPlan = item.key === 'plan'
+            const isHr = item.key === 'hr'
             const planShowBadges = isPlan && (baseCount > 0 || planIssueOnCount > 0)
-            const showDefaultBadge = withCount && displayCount > 0 && !isPlan
+            const hrShowBadges = isHr && (baseCount > 0 || hrMyOpenTaskCount > 0)
+            const showDefaultBadge = withCount && displayCount > 0 && !isPlan && !isHr
             return (
               <li key={item.key}>
                 <Link
@@ -525,6 +556,19 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                             </span>
                           )}
                         </>
+                      ) : isHr ? (
+                        <>
+                          {baseCount > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-amber-400 text-amber-950" title="รายการ HR รออนุมัติ">
+                              {baseCount > 99 ? '99+' : baseCount}
+                            </span>
+                          )}
+                          {hrMyOpenTaskCount > 0 && (
+                            <span className="min-w-[1.4rem] h-5 px-1.5 flex items-center justify-center rounded-full text-xs font-bold shadow-sm bg-red-500 text-white" title="งานของฉันที่ยังไม่เสร็จ">
+                              {hrMyOpenTaskCount > 99 ? '99+' : hrMyOpenTaskCount}
+                            </span>
+                          )}
+                        </>
                       ) : (
                         showDefaultBadge && (
                           <span
@@ -542,6 +586,19 @@ export default function Sidebar({ isOpen }: SidebarProps) {
                       {planIssueOnCount > 0 && (
                         <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-red-500 text-white">
                           {planIssueOnCount > 99 ? '99+' : planIssueOnCount}
+                        </span>
+                      )}
+                      {baseCount > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-amber-400 text-amber-950">
+                          {baseCount > 99 ? '99+' : baseCount}
+                        </span>
+                      )}
+                    </span>
+                  ) : hrShowBadges ? (
+                    <span className="absolute -top-1 -right-1 flex flex-row-reverse items-center gap-0.5 pointer-events-none">
+                      {hrMyOpenTaskCount > 0 && (
+                        <span className="min-w-[1.2rem] h-[1.2rem] px-1 flex items-center justify-center rounded-full text-[10px] font-bold shadow-sm bg-red-500 text-white">
+                          {hrMyOpenTaskCount > 99 ? '99+' : hrMyOpenTaskCount}
                         </span>
                       )}
                       {baseCount > 0 && (

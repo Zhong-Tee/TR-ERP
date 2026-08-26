@@ -6,6 +6,7 @@ import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
 import { canClearAllChats, canUseIssueChat, resolveMenuKeyFromPath } from '../../config/accessPolicy'
 import { dispatchIssueOnCount } from '../../lib/issueOnCountBroadcast'
+import { broadcastHrMyOpenTaskCount, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import ModeSwitchButton from '../ModeSwitchButton'
 
 interface TopBarProps {
@@ -545,28 +546,14 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   useEffect(() => {
     if (!canSeeHrTasks || !user?.id) {
       setHrMyOpenTaskCount(0)
+      broadcastHrMyOpenTaskCount(0)
       return
     }
     const loadMyOpenTasks = async () => {
       try {
-        const { data: employee, error: employeeError } = await supabase
-          .from('hr_employees').select('id').eq('user_id', user.id).maybeSingle()
-        if (employeeError) throw employeeError
-        if (!employee?.id) { setHrMyOpenTaskCount(0); return }
-
-        const { data: participants, error: participantError } = await supabase
-          .from('hr_task_participants').select('task_id')
-          .eq('employee_id', employee.id).eq('role', 'assignee')
-        if (participantError) throw participantError
-        const taskIds = [...new Set((participants ?? []).map((row) => row.task_id))]
-        if (taskIds.length === 0) { setHrMyOpenTaskCount(0); return }
-
-        const { count, error: taskError } = await supabase
-          .from('hr_tasks').select('*', { count: 'exact', head: true })
-          .in('id', taskIds)
-          .in('status', ['new', 'acknowledged', 'in_progress', 'review', 'revision', 'paused'])
-        if (taskError) throw taskError
-        setHrMyOpenTaskCount(count || 0)
+        const count = await loadHrMyOpenTaskCount(user.id)
+        setHrMyOpenTaskCount(count)
+        broadcastHrMyOpenTaskCount(count)
       } catch (error) {
         console.error('Error loading my task badge count:', error)
       }
