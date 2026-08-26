@@ -145,6 +145,11 @@ function orderBillingPhone(o: Order): string {
   return p || '—'
 }
 
+function hasNoDesignAttachmentAlert(order: Order): boolean {
+  const items = ((order as any).or_order_items || []) as Array<{ file_attachment?: string | null }>
+  return items.some((item) => Boolean(item.file_attachment?.trim()))
+}
+
 function normalizeChatLink(value: string): string | null {
   const trimmed = value.trim()
   if (!trimmed) return null
@@ -347,6 +352,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [sendOnEnter, setSendOnEnter] = useState(false)
   const [unreadByOrder, setUnreadByOrder] = useState<Record<string, number>>({})
   const [deliveryByOrder, setDeliveryByOrder] = useState<Record<string, ChatDeliveryStatus>>({})
+  const [draggedOrderId, setDraggedOrderId] = useState<string | null>(null)
+  const [dragOverColumn, setDragOverColumn] = useState<ConfirmColumnKey | null>(null)
+  const [dragUpdatingOrderId, setDragUpdatingOrderId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!linkContextMenu) return
@@ -377,6 +385,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const [bulkCompletedTargetStatus, setBulkCompletedTargetStatus] = useState<OrderStatus>('คอนเฟิร์มแล้ว')
   const [bulkUpdatingCompleted, setBulkUpdatingCompleted] = useState(false)
   const [confirmTableSearch, setConfirmTableSearch] = useState('')
+  const [noDesignAlertOnly, setNoDesignAlertOnly] = useState(false)
   const [exportingNoDesign, setExportingNoDesign] = useState(false)
   const [exportingCompleted, setExportingCompleted] = useState(false)
   const [copyingAllNew, setCopyingAllNew] = useState(false)
@@ -437,15 +446,18 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
   const filteredTableOrders = useMemo(() => {
     const raw =
       viewMode === 'noDesign' ? ordersByKey.noDesign : viewMode === 'completed' ? ordersByKey.completed : []
+    const alertFiltered = viewMode === 'noDesign' && noDesignAlertOnly
+      ? raw.filter(hasNoDesignAttachmentAlert)
+      : raw
     const q = confirmTableSearch.trim().toLowerCase()
-    if (!q) return raw
-    return raw.filter((o) => {
+    if (!q) return alertFiltered
+    return alertFiltered.filter((o) => {
       const bill = (o.bill_no || '').toLowerCase()
       const cn = (o.customer_name || '').toLowerCase()
       const rn = (o.recipient_name || '').toLowerCase()
       return bill.includes(q) || cn.includes(q) || rn.includes(q)
     })
-  }, [viewMode, ordersByKey.noDesign, ordersByKey.completed, confirmTableSearch])
+  }, [viewMode, ordersByKey.noDesign, ordersByKey.completed, confirmTableSearch, noDesignAlertOnly])
 
   useEffect(() => {
     setSelectedNoDesignIds(new Set())
@@ -1146,6 +1158,50 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
     }
   }
 
+  /** Drag & drop is intentionally limited to the four design workflow columns. */
+  async function moveOrderByDrag(orderId: string, targetColumn: ConfirmColumn) {
+    const sourceColumn = DEFAULT_COLUMNS.find((column) =>
+      ordersByKeyRef.current[column.key].some((order) => order.id === orderId),
+    )
+    if (!sourceColumn || sourceColumn.key === targetColumn.key || dragUpdatingOrderId) return
+
+    const order = ordersByKeyRef.current[sourceColumn.key].find((item) => item.id === orderId)
+    if (!order) return
+    if (isProduction && (
+      !canProductionChangeStatus(order.status as OrderStatus)
+      || !canProductionChangeStatus(targetColumn.status)
+    )) {
+      alert('สิทธิ์ production ไม่สามารถเปลี่ยนเป็นสถานะนี้ได้')
+      return
+    }
+
+    const snapshot = ordersByKeyRef.current
+    const movedOrder = { ...order, status: targetColumn.status }
+    setDragUpdatingOrderId(orderId)
+    setOrdersByKey((prev) => ({
+      ...prev,
+      [sourceColumn.key]: prev[sourceColumn.key].filter((item) => item.id !== orderId),
+      [targetColumn.key]: [...prev[targetColumn.key], movedOrder],
+    }))
+
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({ status: targetColumn.status })
+        .eq('id', orderId)
+      if (error) throw error
+    } catch (error: unknown) {
+      setOrdersByKey(snapshot)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('Error updating status by drag and drop:', error)
+      alert(`เปลี่ยนสถานะไม่สำเร็จ รายการถูกย้ายกลับตำแหน่งเดิม\n${message}`)
+    } finally {
+      setDraggedOrderId(null)
+      setDragOverColumn(null)
+      setDragUpdatingOrderId(null)
+    }
+  }
+
   /* ── Derived ── */
 
   let visibleColumns: ConfirmColumn[]
@@ -1219,6 +1275,7 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                 type="button"
                 onClick={() => {
                   setConfirmTableSearch('')
+                  setNoDesignAlertOnly(false)
                   const now = new Date()
                   setFromDate(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
                   setToDate(new Date().toISOString().split('T')[0])
@@ -1663,6 +1720,23 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     {copyingNoDesign ? 'กำลังคัดลอก...' : 'คัดลอกข้อมูลใบงาน'}
                   </button>
                 )}
+                {viewMode === 'noDesign' && (
+                  <button
+                    type="button"
+                    onClick={() => setNoDesignAlertOnly((current) => !current)}
+                    aria-pressed={noDesignAlertOnly}
+                    className={`ml-auto inline-flex items-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold shadow-sm transition-colors ${
+                      noDesignAlertOnly
+                        ? 'border-yellow-500 bg-yellow-400 text-yellow-950 hover:bg-yellow-500'
+                        : 'border-yellow-300 bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
+                    }`}
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86l-8.82 15.28A1 1 0 002.34 20h19.32a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
+                    </svg>
+                    มีลิงค์ ({ordersByKey.noDesign.filter(hasNoDesignAttachmentAlert).length})
+                  </button>
+                )}
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -1808,7 +1882,28 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
           return (
             <div
               key={column.key}
-              className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col min-h-0 w-full min-w-0"
+              onDragOver={(event) => {
+                if (!draggedOrderId) return
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+                setDragOverColumn(column.key)
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDragOverColumn((current) => current === column.key ? null : current)
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault()
+                const orderId = event.dataTransfer.getData('text/plain') || draggedOrderId
+                setDragOverColumn(null)
+                if (orderId) void moveOrderByDrag(orderId, column)
+              }}
+              className={`bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col min-h-0 w-full min-w-0 transition-all ${
+                dragOverColumn === column.key
+                  ? 'border-blue-500 ring-2 ring-blue-200 shadow-md'
+                  : 'border-gray-200'
+              }`}
             >
               {/* Column Header */}
               <div className={`p-4 ${column.headerGradient} text-white shrink-0`}>
@@ -1821,7 +1916,6 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                     {orders.length}
                   </span>
                 </div>
-                <p className="text-sm font-medium text-white/80 mt-1">ช่องทาง: PUMP + ช่องอื่นที่ติ๊กออกแบบ</p>
               </div>
 
               {/* Column Body */}
@@ -1837,7 +1931,24 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                   orders.map((order) => (
                     <div
                       key={order.id}
-                      className="bg-white rounded-lg p-3 border border-gray-100 hover:border-gray-300 hover:shadow-sm transition-all"
+                      draggable={dragUpdatingOrderId === null}
+                      onDragStart={(event) => {
+                        setDraggedOrderId(order.id)
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('text/plain', order.id)
+                      }}
+                      onDragEnd={() => {
+                        setDraggedOrderId(null)
+                        setDragOverColumn(null)
+                      }}
+                      title="ลากการ์ดไปยังคอลัมน์อื่นเพื่อเปลี่ยนสถานะ"
+                      className={`bg-white rounded-lg p-3 border hover:border-gray-300 hover:shadow-sm transition-all select-none ${
+                        draggedOrderId === order.id
+                          ? 'border-blue-300 opacity-50 cursor-grabbing'
+                          : dragUpdatingOrderId === order.id
+                            ? 'border-blue-200 opacity-70 cursor-wait'
+                            : 'border-gray-100 cursor-grab active:cursor-grabbing'
+                      }`}
                     >
                       {/* Order Info */}
                       <div className="flex items-start justify-between gap-2 mb-1">
@@ -1917,13 +2028,13 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         {column.key === 'confirmed' && !isProduction && (
                           <button
                             type="button"
-                            onClick={() => openStatusModal(order, 'รอคอนเฟิร์ม', 'เปลี่ยนสถานะ')}
-                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-white rounded-md text-xs font-medium shadow-sm transition-all"
+                            onClick={() => openStatusModal(order, 'เสร็จสิ้น', 'ส่งผลิต')}
+                            className="inline-flex items-center gap-0.5 px-2.5 py-1.5 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-600 hover:to-cyan-700 text-white rounded-md text-xs font-medium shadow-sm transition-all"
                           >
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                             </svg>
-                            ย้อนสถานะ
+                            ส่งผลิต
                           </button>
                         )}
 
