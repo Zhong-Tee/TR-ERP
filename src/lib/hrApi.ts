@@ -9,7 +9,7 @@ import type {
   HROnboardingProgress, HRCareerTrack, HRCareerLevel, HREmployeeCareer,
   HRSalaryHistory,
   HRNotification, HRNotificationSettings,
-  HRWarning, HRCertificate, HRAsset, HRAssetLog,
+  HRWarning, HRWarningOffenseType, HRWarningPolicy, HRWarningDecision, HRCertificate, HRAsset, HRAssetLog,
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule, HRWFHRequest,
   HREmployeeWorkCalendar, HRCompanyHoliday,
   HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
@@ -1344,7 +1344,32 @@ function parseThaiDate(thai: string): string | undefined {
 // Warning Letters (ใบเตือน)
 // =============================================================================
 
-const WARNING_SELECT = `*, employee:hr_employees!hr_warnings_employee_id_fkey(id,employee_code,first_name,last_name,nickname,department_id,position_id), issuer:hr_employees!hr_warnings_issued_by_fkey(id,first_name,last_name), witness:hr_employees!hr_warnings_witness_id_fkey(id,first_name,last_name)`
+const WARNING_SELECT = `*, employee:hr_employees!hr_warnings_employee_id_fkey(id,employee_code,first_name,last_name,nickname,department_id,position_id), issuer:hr_employees!hr_warnings_issued_by_fkey(id,first_name,last_name), witness:hr_employees!hr_warnings_witness_id_fkey(id,first_name,last_name), reviewer:hr_employees!hr_warnings_reviewer_id_fkey(id,first_name,last_name), approver:hr_employees!hr_warnings_approver_id_fkey(id,first_name,last_name), offense_type:hr_warning_offense_types(*), policy_links:hr_warning_policy_links(*,policy:hr_warning_policies(*)), approvals:hr_warning_approvals(*,actor:hr_employees!hr_warning_approvals_actor_id_fkey(id,first_name,last_name)), responses:hr_warning_employee_responses(*), acknowledgements:hr_warning_acknowledgements(*,witness:hr_employees!hr_warning_acknowledgements_witness_id_fkey(id,first_name,last_name)), decisions:hr_warning_decisions(*,approver:hr_employees!hr_warning_decisions_approved_by_fkey(id,first_name,last_name)), audit_logs:hr_warning_audit_logs(*,actor:hr_employees!hr_warning_audit_logs_actor_employee_id_fkey(id,first_name,last_name))`
+
+export async function fetchWarningOffenseTypes() {
+  const { data, error } = await supabase.from('hr_warning_offense_types').select('*').eq('is_active', true).order('name')
+  if (error) pgError(error)
+  return (data ?? []) as HRWarningOffenseType[]
+}
+
+export async function fetchWarningPolicies() {
+  const { data, error } = await supabase.from('hr_warning_policies').select('*').eq('is_active', true).order('title')
+  if (error) pgError(error)
+  return (data ?? []) as HRWarningPolicy[]
+}
+
+export async function fetchWarningAuthorizedEmployees() {
+  const { data, error } = await supabase.rpc('hr_warning_authorized_employees')
+  if (error) pgError(error)
+  return (data ?? []) as HREmployee[]
+}
+
+export async function recommendWarningLevel(employeeId: string, offenseTypeId: string) {
+  const { data, error } = await supabase.rpc('hr_warning_recommend_level', { p_employee: employeeId, p_offense: offenseTypeId })
+  if (error) pgError(error)
+  const row = Array.isArray(data) ? data[0] : data
+  return { recommendedLevel: row?.recommended_level as HRWarning['warning_level'] ?? 'verbal', basis: (row?.basis ?? []) as Record<string, unknown>[] }
+}
 
 export async function fetchWarnings(filters?: { employeeId?: string; status?: string; level?: string }) {
   let q = supabase.from('hr_warnings').select(WARNING_SELECT).order('created_at', { ascending: false })
@@ -1367,6 +1392,15 @@ export async function upsertWarning(w: Partial<HRWarning>) {
   delete payload.employee
   delete payload.issuer
   delete payload.witness
+  delete payload.reviewer
+  delete payload.approver
+  delete payload.offense_type
+  delete payload.policy_links
+  delete payload.approvals
+  delete payload.responses
+  delete payload.acknowledgements
+  delete payload.decisions
+  delete payload.audit_logs
   if (payload.id) {
     const { data, error } = await supabase.from('hr_warnings').update(payload).eq('id', payload.id).select(WARNING_SELECT).single()
     if (error) pgError(error)
@@ -1386,9 +1420,39 @@ export async function fetchEmployeeWarningCount(employeeId: string) {
   const { count, error } = await supabase.from('hr_warnings')
     .select('id', { count: 'exact', head: true })
     .eq('employee_id', employeeId)
-    .in('status', ['issued', 'acknowledged'])
+    .in('status', ['issued', 'pending_acknowledgement', 'acknowledged', 'acknowledgement_refused', 'closed'])
   if (error) pgError(error)
   return count ?? 0
+}
+
+export async function saveWarningPolicyLinks(warningId: string, policyIds: string[]) {
+  const { error: deleteError } = await supabase.from('hr_warning_policy_links').delete().eq('warning_id', warningId)
+  if (deleteError) pgError(deleteError)
+  if (!policyIds.length) return
+  const { error } = await supabase.from('hr_warning_policy_links').insert(policyIds.map((policy_id) => ({ warning_id: warningId, policy_id })))
+  if (error) pgError(error)
+}
+
+export async function transitionWarning(warningId: string, action: 'submit_review'|'send_approval'|'return'|'approve'|'cancel'|'close', note?: string) {
+  const { data, error } = await supabase.rpc('hr_warning_workflow', { p_warning: warningId, p_action: action, p_note: note ?? null })
+  if (error) pgError(error)
+  return data as HRWarning
+}
+
+export async function respondToWarning(warningId: string, outcome: 'acknowledged'|'refused', response?: string, method = 'employee_portal', attachments: string[] = []) {
+  const { error } = await supabase.rpc('hr_warning_employee_response', { p_warning: warningId, p_outcome: outcome, p_response: response ?? null, p_method: method, p_attachments: attachments })
+  if (error) pgError(error)
+}
+
+export async function recordWarningAcknowledgement(warningId: string, outcome: 'acknowledged'|'refused', method: string, note?: string, witnessId?: string) {
+  const { error } = await supabase.rpc('hr_warning_record_acknowledgement', { p_warning: warningId, p_outcome: outcome, p_method: method, p_note: note ?? null, p_witness: witnessId ?? null })
+  if (error) pgError(error)
+}
+
+export async function saveWarningDecision(input: Omit<HRWarningDecision,'id'|'created_at'|'approver'>) {
+  const { data, error } = await supabase.from('hr_warning_decisions').insert(input).select().single()
+  if (error) pgError(error)
+  return data as HRWarningDecision
 }
 
 export async function fetchEmployeeOpeningData(employeeId: string, year: number) {

@@ -1,489 +1,99 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { FiPlus, FiSearch, FiEdit2, FiTrash2, FiEye, FiAlertTriangle, FiCheck, FiX } from 'react-icons/fi'
-import { fetchWarnings, upsertWarning, deleteWarning, fetchEmployees, HR_WARNING_CERT_BUCKET } from '../../lib/hrApi'
-import type { HRWarning, HREmployee } from '../../types'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { FiEye, FiPlus, FiSearch, FiX } from 'react-icons/fi'
+import { useAuthContext } from '../../contexts/AuthContext'
+import {
+  deleteWarning, fetchEmployees, fetchWarningAuthorizedEmployees, fetchWarningOffenseTypes, fetchWarningPolicies, fetchWarnings,
+  HR_WARNING_CERT_BUCKET, recommendWarningLevel, recordWarningAcknowledgement, saveWarningDecision, saveWarningPolicyLinks,
+  transitionWarning, upsertWarning,
+} from '../../lib/hrApi'
+import type { HREmployee, HRWarning, HRWarningDecision, HRWarningOffenseType, HRWarningPolicy } from '../../types'
 import Modal from '../ui/Modal'
 import { useWmsModal } from '../wms/useWmsModal'
 import HRDocumentAttachments from './HRDocumentAttachments'
 import { AttachmentStrip } from './employee/AttachmentViewer'
 
-const LEVEL_LABELS: Record<string, { label: string; color: string; bg: string }> = {
-  verbal: { label: 'ตักเตือนด้วยวาจา ครั้งที่ 1', color: 'text-yellow-700', bg: 'bg-yellow-50 border-yellow-200' },
-  verbal_2: { label: 'ตักเตือนด้วยวาจา ครั้งที่ 2', color: 'text-amber-700', bg: 'bg-amber-50 border-amber-200' },
-  written_1: { label: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 1', color: 'text-orange-700', bg: 'bg-orange-50 border-orange-200' },
-  written_2: { label: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 2', color: 'text-red-600', bg: 'bg-red-50 border-red-200' },
-  final: { label: 'เตือนครั้งสุดท้าย', color: 'text-red-800', bg: 'bg-red-100 border-red-300' },
+const LEVELS: Record<string,{label:string;cls:string}> = {
+  verbal:{label:'ตักเตือนด้วยวาจา',cls:'bg-yellow-50 text-yellow-800 border-yellow-200'},
+  verbal_2:{label:'ตักเตือนด้วยวาจา ครั้งที่ 2 (เดิม)',cls:'bg-amber-50 text-amber-800 border-amber-200'},
+  written_1:{label:'หนังสือเตือน ครั้งที่ 1',cls:'bg-orange-50 text-orange-800 border-orange-200'},
+  written_2:{label:'หนังสือเตือน ครั้งที่ 2 (เดิม)',cls:'bg-red-50 text-red-700 border-red-200'},
+  final:{label:'หนังสือเตือนครั้งสุดท้าย',cls:'bg-red-100 text-red-900 border-red-300'},
+  termination_review:{label:'พิจารณาเลิกจ้าง',cls:'bg-slate-900 text-white border-slate-900'},
 }
-
-const LEVEL_SEQUENCE: HRWarning['warning_level'][] = ['verbal', 'verbal_2', 'written_1', 'written_2', 'final']
-
-function nextWarningLevel(level: HRWarning['warning_level']): HRWarning['warning_level'] {
-  const index = LEVEL_SEQUENCE.indexOf(level)
-  return LEVEL_SEQUENCE[Math.min(Math.max(index, 0) + 1, LEVEL_SEQUENCE.length - 1)]
+const SELECTABLE_LEVELS: HRWarning['warning_level'][] = ['verbal','written_1','final','termination_review']
+const STATUSES: Record<string,{label:string;cls:string}> = {
+  draft:{label:'Draft',cls:'bg-gray-100 text-gray-700'}, pending_review:{label:'รอตรวจสอบ',cls:'bg-sky-100 text-sky-800'},
+  changes_requested:{label:'ส่งกลับแก้ไข',cls:'bg-amber-100 text-amber-800'}, pending_approval:{label:'รออนุมัติ',cls:'bg-violet-100 text-violet-800'},
+  approved:{label:'อนุมัติแล้ว',cls:'bg-blue-100 text-blue-800'}, pending_acknowledgement:{label:'รอพนักงานรับทราบ',cls:'bg-orange-100 text-orange-800'},
+  acknowledged:{label:'รับทราบแล้ว',cls:'bg-emerald-100 text-emerald-800'}, acknowledgement_refused:{label:'ปฏิเสธรับทราบ',cls:'bg-red-100 text-red-800'},
+  termination_review:{label:'พิจารณาเลิกจ้าง',cls:'bg-slate-900 text-white'}, closed:{label:'ปิดเคส',cls:'bg-gray-200 text-gray-700'},
+  cancelled:{label:'ยกเลิก',cls:'bg-gray-100 text-gray-500'}, issued:{label:'ออกใบเตือน (เดิม)',cls:'bg-blue-100 text-blue-800'},
+  appealed:{label:'อุทธรณ์ (เดิม)',cls:'bg-indigo-100 text-indigo-800'}, resolved:{label:'ยุติ (เดิม)',cls:'bg-gray-200 text-gray-700'},
 }
+const ROLE_ACCESS = ['superadmin','admin','account','hr']
+const empName=(e?:HREmployee|null)=>e?`${e.first_name} ${e.last_name}${e.nickname?` (${e.nickname})`:''}`:'-'
+const dateText=(d?:string|null)=>d?new Date(d.length===10?`${d}T00:00:00`:d).toLocaleString('th-TH',{dateStyle:'medium',...(d.length===10?{}:{timeStyle:'short'})}):'-'
+const emptyForm=():Partial<HRWarning>=>({employee_id:'',offense_type_id:'',warning_level:'verbal',recommended_level:'verbal',subject:'',description:'',corrective_action:'',incident_date:new Date().toISOString().slice(0,10),issued_date:new Date().toISOString().slice(0,10),status:'draft',attachment_urls:[],recommendation_basis:[]})
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  draft: { label: 'แบบร่าง', color: 'bg-gray-100 text-gray-600' },
-  issued: { label: 'อนุมัติ', color: 'bg-blue-100 text-blue-700' },
-  acknowledged: { label: 'รับทราบแล้ว', color: 'bg-green-100 text-green-700' },
-  appealed: { label: 'อุทธรณ์', color: 'bg-amber-100 text-amber-700' },
-  resolved: { label: 'ยุติแล้ว', color: 'bg-gray-200 text-gray-700' },
+export default function WarningLetters(){
+  const {user}=useAuthContext(); const canManage=ROLE_ACCESS.includes(user?.role??'')
+  const [warnings,setWarnings]=useState<HRWarning[]>([]),[employees,setEmployees]=useState<HREmployee[]>([])
+  const [offenses,setOffenses]=useState<HRWarningOffenseType[]>([]),[policies,setPolicies]=useState<HRWarningPolicy[]>([])
+  const [authorizedEmployees,setAuthorizedEmployees]=useState<HREmployee[]>([])
+  const [loading,setLoading]=useState(true),[error,setError]=useState(''),[search,setSearch]=useState(''),[filterStatus,setFilterStatus]=useState(''),[filterOffense,setFilterOffense]=useState('')
+  const [formOpen,setFormOpen]=useState(false),[form,setForm]=useState<Partial<HRWarning>>(emptyForm()),[policyIds,setPolicyIds]=useState<string[]>([]),[saving,setSaving]=useState(false)
+  const [view,setView]=useState<HRWarning|null>(null),[decisionTarget,setDecisionTarget]=useState<HRWarning|null>(null)
+  const [ackTarget,setAckTarget]=useState<HRWarning|null>(null),[ackForm,setAckForm]=useState({outcome:'acknowledged' as 'acknowledged'|'refused',method:'in_person',note:'',witness_id:''})
+  const [actionTarget,setActionTarget]=useState<{warning:HRWarning;action:'return'|'cancel'|'close'}|null>(null),[actionNote,setActionNote]=useState('')
+  const [decision,setDecision]=useState<{outcome:HRWarningDecision['outcome'];reason:string;conditions:string;effective_date:string}>({outcome:'continued_employment',reason:'',conditions:'',effective_date:new Date().toISOString().slice(0,10)})
+  const {showConfirm,showMessage,ConfirmModal,MessageModal}=useWmsModal()
+  const load=useCallback(async()=>{setLoading(true);setError('');try{const [w,e,o,p,a]=await Promise.all([fetchWarnings(),fetchEmployees(),fetchWarningOffenseTypes(),fetchWarningPolicies(),fetchWarningAuthorizedEmployees()]);setWarnings(w);setEmployees(e);setOffenses(o);setPolicies(p);setAuthorizedEmployees(a)}catch(e){setError(e instanceof Error?e.message:'โหลดข้อมูลไม่สำเร็จ')}finally{setLoading(false)}},[])
+  useEffect(()=>{load()},[load])
+  const related=useMemo(()=>warnings.filter(w=>w.employee_id===form.employee_id&&(!form.offense_type_id||w.offense_type_id===form.offense_type_id)&&w.id!==form.id&& !['draft','cancelled'].includes(w.status)),[warnings,form.employee_id,form.offense_type_id,form.id])
+  const filtered=useMemo(()=>warnings.filter(w=>(!filterStatus||w.status===filterStatus)&&(!filterOffense||w.offense_type_id===filterOffense)&&(!search.trim()||`${w.case_number??''} ${w.warning_number??''} ${w.subject} ${empName(w.employee)}`.toLowerCase().includes(search.trim().toLowerCase()))),[warnings,filterStatus,filterOffense,search])
+  const refreshRecommendation=async(employeeId:string,offenseId:string)=>{if(!employeeId||!offenseId)return;try{const r=await recommendWarningLevel(employeeId,offenseId);setForm(f=>({...f,recommended_level:r.recommendedLevel,warning_level:r.recommendedLevel,recommendation_basis:r.basis,level_override_reason:''}))}catch(e){setError(e instanceof Error?e.message:'คำนวณระดับแนะนำไม่สำเร็จ')}}
+  const openCreate=()=>{setForm(emptyForm());setPolicyIds([]);setFormOpen(true)}
+  const openEdit=(w:HRWarning)=>{setForm({...w});setPolicyIds(w.policy_links?.map(x=>x.policy_id)??[]);setFormOpen(true)}
+  const validate=(submit:boolean)=>{if(!form.employee_id)return'กรุณาเลือกพนักงาน';if(!form.subject?.trim())return'กรุณาระบุเรื่อง';if(!submit)return'';if(!form.offense_type_id)return'กรุณาเลือกประเภทความผิด';if(!form.incident_date)return'กรุณาระบุวันที่เกิดเหตุ';if(!form.corrective_action?.trim())return'กรุณาระบุสิ่งที่ต้องปรับปรุง / คำสั่งให้แก้ไข';if(!form.approver_id)return'กรุณาเลือกผู้อนุมัติ';if(form.warning_level!==form.recommended_level&&!form.level_override_reason?.trim())return'กรุณาระบุเหตุผลในการเปลี่ยนระดับการเตือน';return''}
+  const save=async(submit=false)=>{const problem=validate(submit);if(problem){showMessage({message:problem});return}setSaving(true);try{const saved=await upsertWarning({...form,offense_type_id:form.offense_type_id||null,approver_id:form.approver_id||null,status:form.status??'draft',created_by_user:form.created_by_user??user?.id});await saveWarningPolicyLinks(saved.id,policyIds);if(submit)await transitionWarning(saved.id,'submit_review');setFormOpen(false);await load();showMessage({message:submit?'ส่งตรวจสอบแล้ว':'บันทึกร่างแล้ว'})}catch(e){showMessage({message:e instanceof Error?e.message:'บันทึกไม่สำเร็จ'})}finally{setSaving(false)}}
+  const act=async(w:HRWarning,action:'send_approval'|'return'|'approve'|'cancel'|'close',note?:string)=>{if(['return','cancel','close'].includes(action)&&note===undefined){setActionNote('');setActionTarget({warning:w,action:action as 'return'|'cancel'|'close'});return}try{await transitionWarning(w.id,action,note||undefined);setView(null);setActionTarget(null);await load()}catch(e){showMessage({message:e instanceof Error?e.message:'ดำเนินการไม่สำเร็จ'})}}
+  const confirmAction=async()=>{if(!actionTarget)return;if(actionTarget.action!=='close'&&!actionNote.trim()){showMessage({message:actionTarget.action==='return'?'กรุณาระบุเหตุผลที่ส่งกลับแก้ไข':'กรุณาระบุเหตุผลที่ยกเลิกเคส'});return}await act(actionTarget.warning,actionTarget.action,actionTarget.action==='close'?'confirmed':actionNote.trim())}
+  const saveDecision=async()=>{if(!decisionTarget)return;if(!decision.reason.trim()){showMessage({message:'กรุณาระบุเหตุผลผลการพิจารณา'});return}try{await saveWarningDecision({warning_id:decisionTarget.id,...decision,approved_by:decisionTarget.approver_id});setDecisionTarget(null);await transitionWarning(decisionTarget.id,'close');await load()}catch(e){showMessage({message:e instanceof Error?e.message:'บันทึกผลไม่สำเร็จ'})}}
+  const saveAcknowledgement=async()=>{if(!ackTarget)return;if(ackForm.outcome==='refused'&&!ackForm.witness_id){showMessage({message:'กรุณาระบุพยานเมื่อพนักงานปฏิเสธรับทราบ'});return}try{await recordWarningAcknowledgement(ackTarget.id,ackForm.outcome,ackForm.method,ackForm.note||undefined,ackForm.witness_id||undefined);setAckTarget(null);setView(null);await load()}catch(e){showMessage({message:e instanceof Error?e.message:'บันทึกการรับทราบไม่สำเร็จ'})}}
+  if(loading)return <div className="py-20 text-center">กำลังโหลด...</div>
+  return <div className="mt-4 space-y-5">
+    {error&&<div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">{[
+      ['ทั้งหมด',warnings.length],['รอตรวจ',warnings.filter(w=>w.status==='pending_review').length],['รออนุมัติ',warnings.filter(w=>w.status==='pending_approval').length],['รอรับทราบ',warnings.filter(w=>w.status==='pending_acknowledgement').length],['ปฏิเสธรับทราบ',warnings.filter(w=>w.status==='acknowledgement_refused').length],['พิจารณาเลิกจ้าง',warnings.filter(w=>w.status==='termination_review').length],
+    ].map(([label,count])=><div key={label} className="rounded-xl border bg-white p-4"><div className="text-2xl font-bold">{count}</div><div className="text-xs text-gray-500">{label}</div></div>)}</div>
+    <div className="flex flex-wrap gap-3"><label className="relative min-w-56 flex-1"><FiSearch className="absolute left-3 top-3 text-gray-400"/><input className="w-full rounded-xl border py-2.5 pl-9 pr-3" value={search} onChange={e=>setSearch(e.target.value)} placeholder="ค้นหาเลขเคส เลขใบเตือน พนักงาน หรือเรื่อง..."/></label><select className="rounded-xl border px-3" value={filterOffense} onChange={e=>setFilterOffense(e.target.value)}><option value="">ประเภทความผิดทั้งหมด</option>{offenses.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select><select className="rounded-xl border px-3" value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}><option value="">สถานะทั้งหมด</option>{Object.entries(STATUSES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}</select>{canManage&&<button onClick={openCreate} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-white"><FiPlus/>สร้างเคสใบเตือน</button>}</div>
+    <div className="overflow-x-auto rounded-xl border bg-white"><table className="w-full text-sm"><thead className="bg-gray-50"><tr>{['เลขเคส / เลขใบเตือน','พนักงาน','ประเภทความผิด','ระดับ','เรื่อง','วันที่เกิดเหตุ','สถานะ','จัดการ'].map(x=><th key={x} className="whitespace-nowrap p-3 text-left">{x}</th>)}</tr></thead><tbody>{filtered.map(w=><tr key={w.id} className="border-t"><td className="p-3 text-xs"><div className="font-mono">{w.case_number??'-'}</div><div className="font-mono text-blue-600">{w.warning_number??'ยังไม่ออกเลข'}</div></td><td className="p-3">{empName(w.employee)}</td><td className="p-3">{w.offense_type?.name??'-'}</td><td className="p-3"><span className={`rounded-full border px-2 py-1 text-xs ${LEVELS[w.warning_level]?.cls}`}>{LEVELS[w.warning_level]?.label??w.warning_level}</span></td><td className="max-w-56 p-3"><div className="truncate">{w.subject}</div></td><td className="p-3">{dateText(w.incident_date)}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-xs ${STATUSES[w.status]?.cls}`}>{STATUSES[w.status]?.label??w.status}</span></td><td className="p-3"><div className="flex gap-2"><button onClick={()=>setView(w)} title="ดูรายละเอียด"><FiEye/></button>{canManage&&['draft','changes_requested'].includes(w.status)&&<button onClick={()=>openEdit(w)} className="text-blue-600">แก้ไข</button>}{canManage&&w.status==='draft'&&<button onClick={async()=>{if(await showConfirm({message:'ลบแบบร่างนี้หรือไม่?'})){await deleteWarning(w.id);await load()}}} className="text-red-600">ลบ</button>}</div></td></tr>)}{!filtered.length&&<tr><td colSpan={8} className="p-12 text-center text-gray-400">ไม่พบรายการ</td></tr>}</tbody></table></div>
+    <Modal open={formOpen} onClose={()=>setFormOpen(false)} contentClassName="max-w-4xl"><div className="space-y-5 p-6"><h2 className="text-xl font-bold">{form.id?'แก้ไขเคสใบเตือน':'สร้างเคสใบเตือนใหม่'}</h2>
+      <div className="grid gap-4 md:grid-cols-2"><Field label="พนักงาน *"><select className="input" value={form.employee_id??''} onChange={e=>{const employee_id=e.target.value;setForm(f=>({...f,employee_id}));void refreshRecommendation(employee_id,form.offense_type_id??'')}}><option value="">เลือกพนักงาน</option>{employees.filter(e=>e.employment_status==='active').map(e=><option key={e.id} value={e.id}>{e.employee_code} - {empName(e)}</option>)}</select></Field><Field label="ประเภทความผิด *"><select className="input" value={form.offense_type_id??''} onChange={e=>{const offense_type_id=e.target.value;setForm(f=>({...f,offense_type_id}));void refreshRecommendation(form.employee_id??'',offense_type_id)}}><option value="">เลือกประเภทความผิด</option>{offenses.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select></Field></div>
+      {form.employee_id&&form.offense_type_id&&<div className="rounded-xl border border-blue-200 bg-blue-50 p-4"><div className="font-semibold text-blue-900">ประวัติที่เกี่ยวข้อง ({related.length})</div>{related.length?<div className="mt-2 grid gap-2">{related.slice(0,8).map(w=><button key={w.id} onClick={()=>setView(w)} className="text-left text-sm text-blue-800 hover:underline">{dateText(w.incident_date)} — {LEVELS[w.warning_level]?.label} — {w.subject}</button>)}</div>:<p className="mt-1 text-sm text-blue-700">ไม่พบประวัติที่ยังมีผล</p>}</div>}
+      <div className="grid gap-4 md:grid-cols-2"><Field label="ระดับการเตือน *"><select className="input" value={form.warning_level} onChange={e=>setForm(f=>({...f,warning_level:e.target.value as HRWarning['warning_level']}))}>{SELECTABLE_LEVELS.map(k=><option key={k} value={k}>{LEVELS[k].label}</option>)}</select><p className="mt-1 text-xs text-emerald-700">ระบบแนะนำ: {LEVELS[form.recommended_level??'verbal']?.label}</p></Field><Field label="ผู้อนุมัติ *"><select className="input" value={form.approver_id??''} onChange={e=>setForm(f=>({...f,approver_id:e.target.value||null}))}><option value="">เลือกผู้อนุมัติ</option>{authorizedEmployees.map(e=><option key={e.id} value={e.id}>{empName(e)}</option>)}</select></Field></div>
+      {form.warning_level!==form.recommended_level&&<Field label="เหตุผลในการเปลี่ยนระดับการเตือน *"><textarea className="input" rows={2} value={form.level_override_reason??''} onChange={e=>setForm(f=>({...f,level_override_reason:e.target.value}))}/></Field>}
+      <Field label="เรื่อง *"><input className="input" value={form.subject??''} onChange={e=>setForm(f=>({...f,subject:e.target.value}))}/></Field><Field label="รายละเอียดเหตุการณ์"><textarea className="input" rows={4} value={form.description??''} onChange={e=>setForm(f=>({...f,description:e.target.value}))}/></Field>
+      <div className="grid gap-4 md:grid-cols-2"><Field label="วันที่เกิดเหตุ *"><input type="date" className="input" value={form.incident_date??''} onChange={e=>setForm(f=>({...f,incident_date:e.target.value}))}/></Field><Field label="วันที่ออกใบเตือน"><input type="date" className="input" value={form.issued_date??''} onChange={e=>setForm(f=>({...f,issued_date:e.target.value}))}/></Field><Field label="ผู้ออกใบเตือน"><select className="input" value={form.issued_by??''} onChange={e=>setForm(f=>({...f,issued_by:e.target.value||undefined}))}><option value="">เลือก</option>{authorizedEmployees.map(e=><option key={e.id} value={e.id}>{empName(e)}</option>)}</select></Field><Field label="พยาน (ไม่บังคับ)"><select className="input" value={form.witness_id??''} onChange={e=>setForm(f=>({...f,witness_id:e.target.value||undefined}))}><option value="">ไม่มี</option>{employees.map(e=><option key={e.id} value={e.id}>{empName(e)}</option>)}</select></Field></div>
+      <Field label="ระเบียบ / ข้อบังคับที่เกี่ยวข้อง"><div className="grid gap-2 sm:grid-cols-2">{policies.length?policies.map(p=><label key={p.id} className="flex gap-2 rounded-lg border p-2"><input type="checkbox" checked={policyIds.includes(p.id)} onChange={e=>setPolicyIds(e.target.checked?[...policyIds,p.id]:policyIds.filter(id=>id!==p.id))}/><span>{p.code?`${p.code} — `:''}{p.title}</span></label>):<p className="text-sm text-gray-400">ยังไม่มีระเบียบในฐานข้อมูล สามารถเพิ่มภายหลังและเชื่อมกับเอกสารบริษัทได้</p>}</div></Field>
+      <Field label="สิ่งที่ต้องปรับปรุง / คำสั่งให้แก้ไข *"><textarea className="input" rows={4} value={form.corrective_action??''} onChange={e=>setForm(f=>({...f,corrective_action:e.target.value}))}/></Field>
+      <HRDocumentAttachments employeeId={form.employee_id} category="warnings" paths={form.attachment_urls??[]} onChange={paths=>setForm(f=>({...f,attachment_urls:paths}))} onError={message=>showMessage({message})}/>
+      <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">คำชี้แจงของพนักงานจะเพิ่มภายหลังในขั้นตอนรับทราบ ไม่ต้องกรอกตอนสร้างเคส</p><div className="flex justify-end gap-3"><button onClick={()=>setFormOpen(false)} className="rounded-xl border px-4 py-2">ยกเลิก</button><button disabled={saving} onClick={()=>save(false)} className="rounded-xl border border-emerald-600 px-4 py-2 text-emerald-700">บันทึกร่าง</button><button disabled={saving} onClick={()=>save(true)} className="rounded-xl bg-emerald-600 px-5 py-2 text-white">ส่งตรวจสอบ</button></div>
+    </div></Modal>
+    <Modal open={!!view} onClose={()=>setView(null)} contentClassName="max-w-4xl">{view&&<div className="relative space-y-5 p-6"><button type="button" onClick={()=>setView(null)} aria-label="ปิดหน้าต่าง" title="ปิด" className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-white shadow-md transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-300"><FiX className="h-5 w-5"/></button><div className="flex flex-wrap justify-between gap-3 pr-12"><div><h2 className="text-xl font-bold">{view.subject}</h2><p className="text-sm text-gray-500">{view.case_number} · {view.warning_number??'ยังไม่ออกเลขใบเตือน'}</p></div><span className={`h-fit rounded-full px-3 py-1 text-sm ${STATUSES[view.status]?.cls}`}>{STATUSES[view.status]?.label}</span></div><div className="grid gap-3 sm:grid-cols-3"><Info label="พนักงาน" value={empName(view.employee)}/><Info label="ประเภทความผิด" value={view.offense_type?.name??'-'}/><Info label="ระดับ" value={LEVELS[view.warning_level]?.label??view.warning_level}/><Info label="วันที่เกิดเหตุ" value={dateText(view.incident_date)}/><Info label="ผู้ออก" value={empName(view.issuer)}/><Info label="ผู้อนุมัติ" value={empName(view.approver)}/></div><Section title="รายละเอียด" text={view.description}/><Section title="สิ่งที่ต้องปรับปรุง / คำสั่งให้แก้ไข" text={view.corrective_action}/>{view.policy_links?.length?<div><h3 className="font-semibold">ระเบียบที่เกี่ยวข้อง</h3><ul className="mt-2 list-disc pl-5 text-sm">{view.policy_links.map(x=><li key={x.policy_id}>{x.policy?.title}</li>)}</ul></div>:null}{view.attachment_urls?.length?<AttachmentStrip label="หลักฐาน" items={view.attachment_urls.map(path=>({bucket:HR_WARNING_CERT_BUCKET,path}))}/>:null}
+      {!!view.approvals?.length&&<Timeline title="ประวัติการตรวจ/อนุมัติ" rows={view.approvals.map(x=>`${dateText(x.acted_at)} — ${empName(x.actor)} — ${x.step==='review'?'ตรวจสอบ':'อนุมัติ'}: ${x.action}${x.note?` — ${x.note}`:''}`)}/>}
+      {!!view.responses?.length&&<Timeline title="คำชี้แจงของพนักงาน" rows={view.responses.map(x=>`${dateText(x.created_at)} — ${x.response_text}`)}/>}
+      {!!view.acknowledgements?.length&&<Timeline title="การรับทราบ" rows={view.acknowledgements.map(x=>`${dateText(x.acknowledged_at)} — ${x.outcome==='acknowledged'?'รับทราบ':'ปฏิเสธรับทราบ'} (${x.method})${x.witness?` — พยาน ${empName(x.witness)}`:''}`)}/>}
+      {!!view.decisions?.length&&<Timeline title="ผลพิจารณา" rows={view.decisions.map(x=>`${dateText(x.created_at)} — ${x.outcome}: ${x.reason??'-'}`)}/>}
+      {!!view.audit_logs?.length&&<Timeline title="Audit Log" rows={view.audit_logs.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)).map(x=>{const oldLevel=x.old_data?.warning_level as string|undefined,newLevel=x.new_data?.warning_level as string|undefined;return `${dateText(x.created_at)} — ${empName(x.actor)} — ${x.action}${oldLevel&&newLevel&&oldLevel!==newLevel?` ระดับ ${LEVELS[oldLevel]?.label??oldLevel} → ${LEVELS[newLevel]?.label??newLevel}`:''}${x.reason?` — ${x.reason}`:''}`})}/>}
+      {canManage&&<div className="flex flex-wrap justify-end gap-2 border-t pt-4">{view.status==='pending_review'&&<><button onClick={()=>act(view,'return')} className="rounded-xl border px-4 py-2">ส่งกลับแก้ไข</button><button onClick={()=>act(view,'send_approval')} className="rounded-xl bg-blue-600 px-4 py-2 text-white">ส่งอนุมัติ</button></>}{view.status==='pending_approval'&&<><button onClick={()=>act(view,'return')} className="rounded-xl border px-4 py-2">ส่งกลับแก้ไข</button><button onClick={()=>act(view,'approve')} className="rounded-xl bg-emerald-600 px-4 py-2 text-white">อนุมัติและออกเลข</button></>}{view.status==='pending_acknowledgement'&&<button onClick={()=>setAckTarget(view)} className="rounded-xl bg-orange-600 px-4 py-2 text-white">บันทึกการรับทราบแทนพนักงาน</button>}{view.status==='termination_review'&&<button onClick={()=>setDecisionTarget(view)} className="rounded-xl bg-slate-900 px-4 py-2 text-white">บันทึกผลพิจารณา</button>}{['acknowledged','acknowledgement_refused'].includes(view.status)&&<button onClick={()=>act(view,'close')} className="rounded-xl bg-gray-700 px-4 py-2 text-white">ปิดเคส</button>}{!['closed','cancelled'].includes(view.status)&&<button onClick={()=>act(view,'cancel')} className="rounded-xl border border-red-300 px-4 py-2 text-red-600">ยกเลิกเคส</button>}</div>}</div>}</Modal>
+    <Modal open={!!ackTarget} onClose={()=>setAckTarget(null)} contentClassName="max-w-xl"><div className="space-y-4 p-6"><h2 className="text-xl font-bold">บันทึกการรับทราบ</h2><Field label="ผล"><select className="input" value={ackForm.outcome} onChange={e=>setAckForm(f=>({...f,outcome:e.target.value as typeof f.outcome}))}><option value="acknowledged">พนักงานรับทราบ</option><option value="refused">พนักงานปฏิเสธการลงนามรับทราบ</option></select></Field><Field label="วิธีรับทราบ"><select className="input" value={ackForm.method} onChange={e=>setAckForm(f=>({...f,method:e.target.value}))}><option value="in_person">ต่อหน้า</option><option value="video_call">วิดีโอคอล</option><option value="registered_mail">ไปรษณีย์ลงทะเบียน</option><option value="other">อื่น ๆ</option></select></Field>{ackForm.outcome==='refused'&&<Field label="พยาน *"><select className="input" value={ackForm.witness_id} onChange={e=>setAckForm(f=>({...f,witness_id:e.target.value}))}><option value="">เลือกพยาน</option>{employees.map(e=><option key={e.id} value={e.id}>{empName(e)}</option>)}</select></Field>}<Field label="คำชี้แจง / บันทึกเหตุการณ์"><textarea className="input" rows={3} value={ackForm.note} onChange={e=>setAckForm(f=>({...f,note:e.target.value}))}/></Field><button onClick={saveAcknowledgement} className="w-full rounded-xl bg-orange-600 py-3 text-white">บันทึก</button></div></Modal>
+    <Modal open={!!actionTarget} onClose={()=>setActionTarget(null)} contentClassName="max-w-lg"><div className="space-y-5 p-6"><div><h2 className="text-xl font-bold">{actionTarget?.action==='return'?'ส่งกลับแก้ไข':actionTarget?.action==='close'?'ยืนยันปิดเคส':'ยกเลิกเคส'}</h2><p className="mt-1 text-sm text-gray-500">{actionTarget?.warning.case_number} · {actionTarget?.warning.subject}</p></div>{actionTarget?.action==='close'?<p className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">เมื่อปิดเคสแล้ว รายการจะถูกบันทึกเป็นประวัติที่เสร็จสิ้น ต้องการปิดเคสนี้หรือไม่?</p>:<Field label={actionTarget?.action==='return'?'เหตุผลที่ส่งกลับแก้ไข *':'เหตุผลที่ยกเลิกเคส *'}><textarea autoFocus className="input" rows={4} value={actionNote} onChange={e=>setActionNote(e.target.value)} placeholder="กรุณาระบุเหตุผล..."/></Field>}<div className="grid grid-cols-2 gap-3"><button type="button" onClick={()=>setActionTarget(null)} className="rounded-xl border py-3 font-semibold">ยกเลิก</button><button type="button" onClick={confirmAction} disabled={actionTarget?.action!=='close'&&!actionNote.trim()} className={`rounded-xl py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${actionTarget?.action==='return'?'bg-blue-600':actionTarget?.action==='close'?'bg-gray-700':'bg-red-600'}`}>{actionTarget?.action==='close'?'ยืนยันปิดเคส':'ยืนยัน'}</button></div></div></Modal>
+    <Modal open={!!decisionTarget} onClose={()=>setDecisionTarget(null)} contentClassName="max-w-xl"><div className="space-y-4 p-6"><h2 className="text-xl font-bold">ผลพิจารณาเลิกจ้าง</h2><Field label="ผลการพิจารณา"><select className="input" value={decision.outcome} onChange={e=>setDecision(d=>({...d,outcome:e.target.value as HRWarningDecision['outcome']}))}><option value="terminated">เลิกจ้าง</option><option value="continued_employment">ให้โอกาสปฏิบัติงานต่อ</option><option value="other_discipline">ลงโทษทางวินัยอื่น</option><option value="cancelled">ยกเลิกการดำเนินการ</option><option value="other">อื่น ๆ</option></select></Field><Field label="เหตุผล *"><textarea className="input" rows={3} value={decision.reason} onChange={e=>setDecision(d=>({...d,reason:e.target.value}))}/></Field>{decision.outcome==='continued_employment'&&<Field label="เงื่อนไขที่ต้องปฏิบัติ"><textarea className="input" rows={3} value={decision.conditions} onChange={e=>setDecision(d=>({...d,conditions:e.target.value}))}/></Field>}<Field label="วันที่มีผล"><input type="date" className="input" value={decision.effective_date} onChange={e=>setDecision(d=>({...d,effective_date:e.target.value}))}/></Field><button onClick={saveDecision} className="w-full rounded-xl bg-slate-900 py-3 text-white">บันทึกผลและปิดเคส</button></div></Modal>
+    <style>{`.input{width:100%;border:1px solid #d1d5db;border-radius:.75rem;padding:.625rem .75rem;background:white}.input:focus{outline:none;border-color:#059669;box-shadow:0 0 0 3px #d1fae5}`}</style>{ConfirmModal}{MessageModal}
+  </div>
 }
-
-const empName = (e?: HREmployee | null) => e ? `${e.first_name} ${e.last_name}` : '-'
-
-const EMPTY_FORM: Partial<HRWarning> = {
-  employee_id: '',
-  warning_level: 'verbal',
-  subject: '',
-  description: '',
-  incident_date: new Date().toISOString().split('T')[0],
-  issued_date: new Date().toISOString().split('T')[0],
-  issued_by: undefined,
-  witness_id: undefined,
-  employee_response: '',
-  status: 'draft',
-  resolution_note: '',
-  attachment_urls: [],
-}
-
-export default function WarningLetters() {
-  const [warnings, setWarnings] = useState<HRWarning[]>([])
-  const [employees, setEmployees] = useState<HREmployee[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [filterLevel, setFilterLevel] = useState('')
-  const [filterStatus, setFilterStatus] = useState('')
-
-  const [formOpen, setFormOpen] = useState(false)
-  const [form, setForm] = useState<Partial<HRWarning>>({ ...EMPTY_FORM })
-  const [saving, setSaving] = useState(false)
-
-  const [viewItem, setViewItem] = useState<HRWarning | null>(null)
-  const [referenceItem, setReferenceItem] = useState<HRWarning | null>(null)
-
-  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
-
-  const loadAll = useCallback(async () => {
-    try {
-      setError(null)
-      const [w, e] = await Promise.all([fetchWarnings(), fetchEmployees()])
-      setWarnings(w)
-      setEmployees(e)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'โหลดข้อมูลไม่สำเร็จ')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { loadAll() }, [loadAll])
-
-  const filtered = useMemo(() => {
-    let list = warnings
-    if (filterLevel) list = list.filter(w => w.warning_level === filterLevel)
-    if (filterStatus) list = list.filter(w => w.status === filterStatus)
-    if (search.trim()) {
-      const q = search.trim().toLowerCase()
-      list = list.filter(w => {
-        const name = empName(w.employee).toLowerCase()
-        return name.includes(q) || w.warning_number.toLowerCase().includes(q) || w.subject.toLowerCase().includes(q)
-      })
-    }
-    return list
-  }, [warnings, filterLevel, filterStatus, search])
-
-  const openCreate = () => {
-    setReferenceItem(null)
-    setForm({ ...EMPTY_FORM })
-    setFormOpen(true)
-  }
-
-  const openEdit = (w: HRWarning) => {
-    setReferenceItem(null)
-    setForm({ ...w })
-    setFormOpen(true)
-  }
-
-  const openFollowUp = (source: HRWarning) => {
-    setReferenceItem(source)
-    setForm({
-      ...EMPTY_FORM,
-      employee_id: source.employee_id,
-      warning_level: nextWarningLevel(source.warning_level),
-      subject: source.subject,
-      description: source.description || '',
-      issued_by: source.issued_by,
-      witness_id: source.witness_id,
-      reference_warning_id: source.id,
-      incident_date: new Date().toISOString().split('T')[0],
-      issued_date: new Date().toISOString().split('T')[0],
-      employee_response: '',
-      status: 'draft',
-      attachment_urls: [],
-    })
-    setFormOpen(true)
-  }
-
-  const handleSave = async () => {
-    if (!form.employee_id) { showMessage({ message: 'กรุณาเลือกพนักงาน' }); return }
-    if (!form.subject?.trim()) { showMessage({ message: 'กรุณาระบุเรื่อง' }); return }
-    if (!form.incident_date) { showMessage({ message: 'กรุณาระบุวันที่เกิดเหตุ' }); return }
-    setSaving(true)
-    try {
-      await upsertWarning(form)
-      await loadAll()
-      setFormOpen(false)
-      showMessage({ message: form.id ? 'บันทึกใบเตือนสำเร็จ' : 'สร้างใบเตือนสำเร็จ' })
-    } catch (err) {
-      showMessage({ message: err instanceof Error ? err.message : 'บันทึกไม่สำเร็จ' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleDelete = async (w: HRWarning) => {
-    const yes = await showConfirm({ message: `ต้องการลบใบเตือน ${w.warning_number} หรือไม่?` })
-    if (!yes) return
-    try {
-      await deleteWarning(w.id)
-      await loadAll()
-      showMessage({ message: 'ลบใบเตือนสำเร็จ' })
-    } catch (err) {
-      showMessage({ message: err instanceof Error ? err.message : 'ลบไม่สำเร็จ' })
-    }
-  }
-
-  const handleIssue = async (w: HRWarning) => {
-    const yes = await showConfirm({ title: 'ออกใบเตือน', message: `ยืนยันออกใบเตือน ${w.warning_number} ให้ ${empName(w.employee)}?`, confirmText: 'ออกใบเตือน' })
-    if (!yes) return
-    try {
-      await upsertWarning({ id: w.id, status: 'issued' })
-      await loadAll()
-      showMessage({ message: 'ออกใบเตือนสำเร็จ' })
-    } catch (err) {
-      showMessage({ message: err instanceof Error ? err.message : 'ดำเนินการไม่สำเร็จ' })
-    }
-  }
-
-  const handleAcknowledge = async (w: HRWarning) => {
-    const yes = await showConfirm({ message: `บันทึกว่าพนักงานรับทราบใบเตือน ${w.warning_number} แล้ว?` })
-    if (!yes) return
-    try {
-      await upsertWarning({ id: w.id, status: 'acknowledged' })
-      await loadAll()
-    } catch (err) {
-      showMessage({ message: err instanceof Error ? err.message : 'ดำเนินการไม่สำเร็จ' })
-    }
-  }
-
-  const handleResolve = async (w: HRWarning) => {
-    const yes = await showConfirm({ message: `ยืนยันยุติใบเตือน ${w.warning_number}?` })
-    if (!yes) return
-    try {
-      await upsertWarning({ id: w.id, status: 'resolved', resolved_at: new Date().toISOString() })
-      await loadAll()
-    } catch (err) {
-      showMessage({ message: err instanceof Error ? err.message : 'ดำเนินการไม่สำเร็จ' })
-    }
-  }
-
-  if (loading) return <div className="mt-4 flex justify-center py-20"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600" /></div>
-
-  return (
-    <div className="mt-4 space-y-6">
-      {error && <div className="rounded-xl bg-red-50 border border-red-200 text-red-800 px-4 py-3 text-sm">{error}</div>}
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-        {[
-          { label: 'ทั้งหมด', value: warnings.length, color: 'bg-surface-50 border-surface-200' },
-          { label: 'แบบร่าง', value: warnings.filter(w => w.status === 'draft').length, color: 'bg-gray-50 border-gray-200' },
-          { label: 'อนุมัติ', value: warnings.filter(w => w.status === 'issued').length, color: 'bg-blue-50 border-blue-200' },
-          { label: 'รับทราบแล้ว', value: warnings.filter(w => w.status === 'acknowledged').length, color: 'bg-green-50 border-green-200' },
-          { label: 'อุทธรณ์', value: warnings.filter(w => w.status === 'appealed').length, color: 'bg-amber-50 border-amber-200' },
-        ].map(s => (
-          <div key={s.label} className={`rounded-xl border p-4 ${s.color}`}>
-            <div className="text-2xl font-bold">{s.value}</div>
-            <div className="text-xs text-gray-500 mt-1">{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="ค้นหาชื่อ / เลขที่ / เรื่อง..." className="w-full pl-9 pr-3 py-2 rounded-xl border border-surface-200 text-sm focus:ring-2 focus:ring-emerald-300" />
-        </div>
-        <select value={filterLevel} onChange={e => setFilterLevel(e.target.value)} className="rounded-xl border border-surface-200 px-3 py-2 text-sm">
-          <option value="">ระดับทั้งหมด</option>
-          {Object.entries(LEVEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="rounded-xl border border-surface-200 px-3 py-2 text-sm">
-          <option value="">สถานะทั้งหมด</option>
-          {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <button onClick={openCreate} className="ml-auto flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">
-          <FiPlus className="w-4 h-4" /> สร้างใบเตือน
-        </button>
-      </div>
-
-      {/* Table */}
-      <div className="rounded-xl shadow-soft border border-surface-200 bg-white overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-surface-50 border-b border-surface-200">
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">เลขที่</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">พนักงาน</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">ระดับ (คลิกเพื่อเตือนซ้ำ)</th>
-                <th className="px-4 py-3 text-left font-semibold text-gray-700">เรื่อง</th>
-                <th className="px-4 py-3 text-center font-semibold text-gray-700">วันที่เกิดเหตุ</th>
-                <th className="px-4 py-3 text-center font-semibold text-gray-700">สถานะ</th>
-                <th className="px-4 py-3 text-center font-semibold text-gray-700">จัดการ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-10 text-gray-400">ไม่พบใบเตือน</td></tr>
-              ) : filtered.map(w => {
-                const lvl = LEVEL_LABELS[w.warning_level] || LEVEL_LABELS.verbal
-                const st = STATUS_LABELS[w.status] || STATUS_LABELS.draft
-                return (
-                  <tr key={w.id} className="border-b border-surface-100 hover:bg-surface-50 transition-colors">
-                    <td className="px-4 py-3 font-mono text-xs">{w.warning_number}</td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{empName(w.employee)}</div>
-                      <div className="text-xs text-gray-400">{w.employee?.employee_code}</div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <button type="button" onClick={() => openFollowUp(w)} title="สร้างใบเตือนครั้งถัดไปโดยอ้างอิงฉบับนี้" className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium hover:ring-2 hover:ring-offset-1 hover:ring-red-200 transition ${lvl.bg} ${lvl.color}`}>
-                        <FiAlertTriangle className="w-3 h-3" />{lvl.label}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 max-w-[240px]">
-                      <div className="truncate">{w.subject}</div>
-                      {w.reference_warning_id && (
-                        <div className="mt-0.5 text-[11px] text-blue-600">
-                          อ้างอิง {warnings.find(item => item.id === w.reference_warning_id)?.warning_number || 'ใบเตือนเดิม'}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center text-xs">{w.incident_date}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${st.color}`}>{st.label}</span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <button onClick={() => setViewItem(w)} className="p-1.5 rounded-lg hover:bg-surface-100 text-gray-500" title="ดูรายละเอียด"><FiEye className="w-4 h-4" /></button>
-                        {w.status === 'draft' && (
-                          <>
-                            <button onClick={() => openEdit(w)} className="p-1.5 rounded-lg hover:bg-surface-100 text-blue-600" title="แก้ไข"><FiEdit2 className="w-4 h-4" /></button>
-                            <button onClick={() => handleIssue(w)} className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-700" title="ออกใบเตือน"><FiCheck className="w-4 h-4" /></button>
-                            <button onClick={() => handleDelete(w)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500" title="ลบ"><FiTrash2 className="w-4 h-4" /></button>
-                          </>
-                        )}
-                        {w.status === 'issued' && (
-                          <button onClick={() => handleAcknowledge(w)} className="p-1.5 rounded-lg hover:bg-green-50 text-green-700" title="บันทึกรับทราบ"><FiCheck className="w-4 h-4" /></button>
-                        )}
-                        {(w.status === 'acknowledged' || w.status === 'appealed') && (
-                          <button onClick={() => handleResolve(w)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600" title="ยุติ"><FiX className="w-4 h-4" /></button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Create / Edit Modal */}
-      <Modal open={formOpen} onClose={() => setFormOpen(false)} contentClassName="max-w-2xl">
-        <div className="p-6 space-y-5">
-          <h2 className="text-lg font-bold text-gray-800">{form.id ? 'แก้ไขใบเตือน' : 'สร้างใบเตือนใหม่'}</h2>
-
-          {referenceItem && (
-            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-              <div className="font-semibold">สร้างครั้งถัดไปโดยอ้างอิง {referenceItem.warning_number}</div>
-              <div className="mt-1 text-xs text-blue-700">{LEVEL_LABELS[referenceItem.warning_level]?.label} · {referenceItem.subject}</div>
-              <div className="mt-1 text-xs text-blue-600">ระบบคัดลอกเรื่องและรายละเอียดเดิมให้แล้ว สามารถแก้ไขได้ก่อนบันทึก</div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">พนักงาน *</label>
-              <select value={form.employee_id || ''} onChange={e => setForm(f => ({ ...f, employee_id: e.target.value }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm">
-                <option value="">-- เลือกพนักงาน --</option>
-                {employees.filter(e => e.employment_status === 'active').map(e => (
-                  <option key={e.id} value={e.id}>{e.employee_code} - {e.first_name} {e.last_name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ระดับการเตือน</label>
-              <select value={form.warning_level || 'verbal'} onChange={e => setForm(f => ({ ...f, warning_level: e.target.value as HRWarning['warning_level'] }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm">
-                {Object.entries(LEVEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">เรื่อง *</label>
-            <input type="text" value={form.subject || ''} onChange={e => setForm(f => ({ ...f, subject: e.target.value }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" placeholder="ระบุเรื่องที่เตือน" />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">รายละเอียดเหตุการณ์</label>
-            <textarea value={form.description || ''} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} rows={3} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" placeholder="อธิบายรายละเอียดของเหตุการณ์ที่เกิดขึ้น..." />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">วันที่เกิดเหตุ *</label>
-              <input type="date" value={form.incident_date || ''} onChange={e => setForm(f => ({ ...f, incident_date: e.target.value }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">วันที่ออกใบเตือน</label>
-              <input type="date" value={form.issued_date || ''} onChange={e => setForm(f => ({ ...f, issued_date: e.target.value }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ผู้ออกใบเตือน</label>
-              <select value={form.issued_by || ''} onChange={e => setForm(f => ({ ...f, issued_by: e.target.value || undefined }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm">
-                <option value="">-- เลือก --</option>
-                {employees.filter(e => e.employment_status === 'active').map(e => (
-                  <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">พยาน</label>
-              <select value={form.witness_id || ''} onChange={e => setForm(f => ({ ...f, witness_id: e.target.value || undefined }))} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm">
-                <option value="">-- เลือก --</option>
-                {employees.filter(e => e.employment_status === 'active').map(e => (
-                  <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">คำชี้แจงของพนักงาน</label>
-            <textarea value={form.employee_response || ''} onChange={e => setForm(f => ({ ...f, employee_response: e.target.value }))} rows={2} className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm" placeholder="คำชี้แจงหรือข้อเท็จจริงจากพนักงาน (ถ้ามี)" />
-          </div>
-
-          <HRDocumentAttachments
-            employeeId={form.employee_id}
-            category="warnings"
-            paths={form.attachment_urls || []}
-            onChange={(paths) => setForm((current) => ({ ...current, attachment_urls: paths }))}
-            onError={(message) => showMessage({ message })}
-          />
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ยกเลิก</button>
-            <button onClick={handleSave} disabled={saving} className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 transition-colors">
-              {saving ? 'กำลังบันทึก...' : form.id ? 'บันทึก' : 'สร้างใบเตือน'}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* View Detail Modal */}
-      <Modal open={!!viewItem} onClose={() => setViewItem(null)} contentClassName="max-w-2xl" closeOnBackdropClick>
-        {viewItem && (() => {
-          const lvl = LEVEL_LABELS[viewItem.warning_level] || LEVEL_LABELS.verbal
-          const st = STATUS_LABELS[viewItem.status] || STATUS_LABELS.draft
-          return (
-            <div className="p-6 space-y-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-gray-800">ใบเตือน {viewItem.warning_number}</h2>
-                  <span className={`mt-1 inline-block px-2 py-1 rounded-full text-xs font-medium ${st.color}`}>{st.label}</span>
-                </div>
-                <span className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border text-sm font-medium ${lvl.bg} ${lvl.color}`}>
-                  <FiAlertTriangle className="w-4 h-4" />{lvl.label}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <div className="text-gray-500 text-xs">พนักงาน</div>
-                  <div className="font-medium">{empName(viewItem.employee)}</div>
-                  <div className="text-xs text-gray-400">{viewItem.employee?.employee_code}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500 text-xs">วันที่เกิดเหตุ</div>
-                  <div className="font-medium">{viewItem.incident_date}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500 text-xs">วันที่ออกใบเตือน</div>
-                  <div className="font-medium">{viewItem.issued_date}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500 text-xs">ผู้ออกใบเตือน</div>
-                  <div className="font-medium">{empName(viewItem.issuer)}</div>
-                </div>
-                {viewItem.witness && (
-                  <div>
-                    <div className="text-gray-500 text-xs">พยาน</div>
-                    <div className="font-medium">{empName(viewItem.witness)}</div>
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="text-gray-500 text-xs mb-1">เรื่อง</div>
-                <div className="font-medium text-gray-800">{viewItem.subject}</div>
-                {viewItem.reference_warning_id && (
-                  <div className="mt-1 text-xs text-blue-600">
-                    อ้างอิงจาก {warnings.find(item => item.id === viewItem.reference_warning_id)?.warning_number || 'ใบเตือนเดิม'}
-                  </div>
-                )}
-              </div>
-
-              {viewItem.description && (
-                <div>
-                  <div className="text-gray-500 text-xs mb-1">รายละเอียดเหตุการณ์</div>
-                  <div className="text-sm text-gray-700 whitespace-pre-wrap bg-surface-50 border border-surface-200 rounded-xl p-3">{viewItem.description}</div>
-                </div>
-              )}
-
-              {viewItem.employee_response && (
-                <div>
-                  <div className="text-gray-500 text-xs mb-1">คำชี้แจงของพนักงาน</div>
-                  <div className="text-sm text-gray-700 whitespace-pre-wrap bg-blue-50 border border-blue-200 rounded-xl p-3">{viewItem.employee_response}</div>
-                </div>
-              )}
-
-              {viewItem.resolution_note && (
-                <div>
-                  <div className="text-gray-500 text-xs mb-1">หมายเหตุการยุติ</div>
-                  <div className="text-sm text-gray-700 whitespace-pre-wrap bg-green-50 border border-green-200 rounded-xl p-3">{viewItem.resolution_note}</div>
-                </div>
-              )}
-
-              {viewItem.attachment_urls?.length > 0 && (
-                <AttachmentStrip label="รูปภาพ / ไฟล์แนบ" items={viewItem.attachment_urls.map((path) => ({ bucket: HR_WARNING_CERT_BUCKET, path }))} />
-              )}
-
-              <div className="flex justify-end">
-                <button onClick={() => setViewItem(null)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ปิด</button>
-              </div>
-            </div>
-          )
-        })()}
-      </Modal>
-
-      {ConfirmModal}
-      {MessageModal}
-    </div>
-  )
-}
+function Field({label,children}:{label:string;children:React.ReactNode}){return <label className="block"><span className="mb-1 block text-sm font-medium">{label}</span>{children}</label>}
+function Info({label,value}:{label:string;value:string}){return <div className="rounded-xl border p-3"><div className="text-xs text-gray-500">{label}</div><div className="mt-1 font-medium">{value}</div></div>}
+function Section({title,text}:{title:string;text?:string|null}){return <div><h3 className="font-semibold">{title}</h3><div className="mt-2 whitespace-pre-wrap rounded-xl bg-gray-50 p-3 text-sm">{text||'-'}</div></div>}
+function Timeline({title,rows}:{title:string;rows:string[]}){return <div><h3 className="font-semibold">{title}</h3><div className="mt-2 space-y-2 border-l-2 border-slate-200 pl-4">{rows.map((x,i)=><div key={i} className="text-sm text-gray-700">{x}</div>)}</div></div>}

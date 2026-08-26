@@ -56,6 +56,7 @@ export default function WarehouseAdjust() {
   const [adjustments, setAdjustments] = useState<InventoryAdjustment[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
+  const [nonAdjustableProductIds, setNonAdjustableProductIds] = useState<Set<string>>(new Set())
   const [userMap, setUserMap] = useState<Record<string, string>>({})
   const [itemCountMap, setItemCountMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
@@ -88,17 +89,20 @@ export default function WarehouseAdjust() {
   async function loadAll() {
     setLoading(true)
     try {
-      const [adjustRes, productRes, balanceRes, usersRes, itemCountRes] = await Promise.all([
+      const [adjustRes, productRes, balanceRes, usersRes, itemCountRes, specialTrackedRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
         supabase.from('pr_products').select('id, product_code, product_name, order_point').eq('is_active', true).order('product_code', { ascending: true }),
         supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
         supabase.from('us_users').select('id, username'),
         supabase.from('inv_adjustment_items').select('adjustment_id'),
+        supabase.from('wh_sub_wms_map_spares').select('product_id'),
       ])
       if (adjustRes.error) throw adjustRes.error
       if (productRes.error) throw productRes.error
       setAdjustments((adjustRes.data || []) as InventoryAdjustment[])
       setProducts((productRes.data || []) as Product[])
+      if (specialTrackedRes.error) throw specialTrackedRes.error
+      setNonAdjustableProductIds(new Set((specialTrackedRes.data || []).map((row: { product_id: string }) => row.product_id)))
 
       // stock balances map
       const bMap: Record<string, StockBalance> = {}
@@ -127,11 +131,11 @@ export default function WarehouseAdjust() {
 
   const productOptions = useMemo(
     () =>
-      products.map((p) => ({
+      products.filter((p) => !nonAdjustableProductIds.has(p.id)).map((p) => ({
         value: p.id,
         label: `${p.product_code} - ${p.product_name}`,
       })),
-    [products]
+    [products, nonAdjustableProductIds]
   )
 
   const filteredProductOptions = useMemo(() => {
@@ -181,7 +185,7 @@ export default function WarehouseAdjust() {
 
   function downloadCurrentProducts() {
     const headers = ['product_code', 'product_name', 'on_hand', 'safety_stock', 'order_point']
-    const rows = products.map((p) => {
+    const rows = products.filter((p) => !nonAdjustableProductIds.has(p.id)).map((p) => {
       const b = balances[p.id]
       const op = p.order_point != null ? Number(p.order_point) : 0
       return [
@@ -227,16 +231,24 @@ export default function WarehouseAdjust() {
       const qtyKey = hasQty ? 'qty' : 'on_hand'
 
       const nextItems: DraftItem[] = []
+      const blockedCodes: string[] = []
       rows.forEach((row) => {
         const code = String(row.product_code ?? '').trim()
         const qty = Number(row[qtyKey] ?? 0)
         const product = productCodeMap[code]
         if (!product) return
+        if (nonAdjustableProductIds.has(product.id)) {
+          blockedCodes.push(code)
+          return
+        }
         const ss = row.safety_stock != null && String(row.safety_stock).trim() !== '' ? Number(row.safety_stock) : null
         const opRaw = row.order_point != null && String(row.order_point).trim() !== '' ? Number(row.order_point) : null
         const op = opRaw != null && Number.isFinite(opRaw) ? opRaw : (product.order_point != null ? Number(product.order_point) || null : null)
         nextItems.push({ product_id: product.id, qty, safety_stock: ss, order_point: op })
       })
+      if (blockedCodes.length) {
+        throw new Error(`ไม่สามารถปรับสินค้า ST ได้ กรุณาปรับ SKU สินค้าผลิตที่ผูกไว้แทน: ${blockedCodes.join(', ')}`)
+      }
       if (!nextItems.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี product_code)')
       setDraftItems(nextItems)
       setCreateOpen(true)
@@ -251,6 +263,11 @@ export default function WarehouseAdjust() {
   async function createAdjustment() {
     if (!note.trim()) {
       showNotify('warning', 'กรุณากรอกหัวข้อการปรับ')
+      return
+    }
+    const blockedDraft = draftItems.find((item) => item.product_id && nonAdjustableProductIds.has(item.product_id))
+    if (blockedDraft) {
+      showNotify('warning', 'ไม่สามารถปรับสินค้า ST ได้', 'กรุณาปรับ SKU สินค้าผลิตที่ผูกไว้ในหน้าตั้งค่าหน้ายางแทน')
       return
     }
     // กรองรายการที่มีสินค้า และมีการเปลี่ยนแปลงตามประเภทเอกสาร
@@ -553,6 +570,7 @@ export default function WarehouseAdjust() {
         <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
           <h2 className="text-xl font-bold">สร้างใบปรับสต๊อค</h2>
           <p className="text-sm text-gray-500 mt-1">กรอกเป้าหมายสต๊อคปัจจุบัน (เคลื่อนไหว + Safety Stock) ระบบคำนวณผลรวมและส่วนต่างให้อัตโนมัติ — รายการทั้งหมด {draftItems.length} รายการ</p>
+          <p className="mt-2 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-700">สินค้า ST ไม่สามารถสร้างใบปรับสต๊อคได้ กรุณาปรับที่ SKU สินค้าผลิตซึ่งผูกไว้ใน “ตั้งค่าหน้ายาง”</p>
           {/* หัวข้อการปรับ (บังคับกรอก) */}
           <div className="mt-3 grid grid-cols-12 gap-2">
             <div className="col-span-4">

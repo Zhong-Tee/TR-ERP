@@ -1805,9 +1805,15 @@ export interface HRTaskEvaluation {
 
 export interface HRWarning {
   id: string
-  warning_number: string
+  warning_number?: string | null
+  case_number?: string | null
   employee_id: string
-  warning_level: 'verbal' | 'verbal_2' | 'written_1' | 'written_2' | 'final'
+  warning_level: 'verbal' | 'verbal_2' | 'written_1' | 'written_2' | 'final' | 'termination_review'
+  recommended_level?: HRWarning['warning_level'] | null
+  level_override_reason?: string | null
+  recommendation_basis?: Record<string, unknown>[]
+  offense_type_id?: string | null
+  corrective_action?: string | null
   reference_warning_id?: string
   subject: string
   description?: string
@@ -1816,17 +1822,40 @@ export interface HRWarning {
   issued_by?: string
   witness_id?: string
   employee_response?: string
-  status: 'draft' | 'issued' | 'acknowledged' | 'appealed' | 'resolved'
+  status: 'draft' | 'pending_review' | 'changes_requested' | 'pending_approval' | 'approved' | 'pending_acknowledgement' | 'acknowledged' | 'acknowledgement_refused' | 'termination_review' | 'closed' | 'cancelled' | 'issued' | 'appealed' | 'resolved'
   acknowledged_at?: string
   resolution_note?: string
   resolved_at?: string
   attachment_urls: string[]
   created_at: string
   updated_at: string
+  reviewer_id?: string | null
+  approver_id?: string | null
+  reviewed_at?: string | null
+  approved_at?: string | null
+  effective_until?: string | null
+  created_by_user?: string | null
   employee?: HREmployee
   issuer?: HREmployee
   witness?: HREmployee
+  reviewer?: HREmployee
+  approver?: HREmployee
+  offense_type?: HRWarningOffenseType
+  policy_links?: { policy_id: string; policy?: HRWarningPolicy }[]
+  approvals?: HRWarningApproval[]
+  responses?: HRWarningResponse[]
+  acknowledgements?: HRWarningAcknowledgement[]
+  decisions?: HRWarningDecision[]
+  audit_logs?: HRWarningAuditLog[]
 }
+
+export interface HRWarningOffenseType { id:string; code:string; name:string; lookback_days?:number|null; is_active:boolean }
+export interface HRWarningPolicy { id:string; code?:string|null; title:string; description?:string|null; source_document_id?:string|null; is_active:boolean }
+export interface HRWarningApproval { id:string; warning_id:string; step:'review'|'approval'; actor_id?:string|null; action:'submitted'|'approved'|'returned'|'cancelled'; note?:string|null; acted_at:string; actor?:HREmployee }
+export interface HRWarningResponse { id:string; warning_id:string; response_text:string; recorded_by?:string|null; attachment_urls:string[]; created_at:string }
+export interface HRWarningAcknowledgement { id:string; warning_id:string; outcome:'acknowledged'|'refused'; method:string; handled_by?:string|null; witness_id?:string|null; note?:string|null; acknowledged_at:string; witness?:HREmployee }
+export interface HRWarningDecision { id:string; warning_id:string; outcome:'terminated'|'continued_employment'|'other_discipline'|'cancelled'|'other'; reason?:string|null; conditions?:string|null; approved_by?:string|null; effective_date?:string|null; created_at:string; approver?:HREmployee }
+export interface HRWarningAuditLog { id:number; warning_id:string; actor_user_id?:string|null; actor_employee_id?:string|null; actor?:HREmployee; action:string; old_data?:Record<string,unknown>|null; new_data?:Record<string,unknown>|null; reason?:string|null; created_at:string }
 
 export interface HRCertificate {
   id: string

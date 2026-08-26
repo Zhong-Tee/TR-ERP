@@ -38,6 +38,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const [hrRequestPending, setHrRequestPending] = useState(0)
   /** คำทักท้วงคะแนนที่ HR ยังไม่ได้ตัดสิน */
   const [hrScoreAppealPending, setHrScoreAppealPending] = useState(0)
+  /** งานที่ผู้ใช้ปัจจุบันเป็นผู้รับผิดชอบและยังไม่เสร็จ */
+  const [hrMyOpenTaskCount, setHrMyOpenTaskCount] = useState(0)
   const [notifyCollapsed, setNotifyCollapsed] = useState(true)
   const [notifyBlinking, setNotifyBlinking] = useState(false)
   /** ตำแหน่งแนวตั้งของป้ายแจ้งเตือน (px จากขอบล่าง) — ลากขึ้น/ลงได้ จำค่าไว้ใน localStorage */
@@ -538,6 +540,49 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     }
   }, [canSeeHrWorkScore])
 
+  // Badge เมนู HR "งาน": งานของฉันที่ยังดำเนินการอยู่ (ใช้ได้ทั้งหน้า HR และหน้าอื่น)
+  const canSeeHrTasks = hasAccess('hr-tasks')
+  useEffect(() => {
+    if (!canSeeHrTasks || !user?.id) {
+      setHrMyOpenTaskCount(0)
+      return
+    }
+    const loadMyOpenTasks = async () => {
+      try {
+        const { data: employee, error: employeeError } = await supabase
+          .from('hr_employees').select('id').eq('user_id', user.id).maybeSingle()
+        if (employeeError) throw employeeError
+        if (!employee?.id) { setHrMyOpenTaskCount(0); return }
+
+        const { data: participants, error: participantError } = await supabase
+          .from('hr_task_participants').select('task_id')
+          .eq('employee_id', employee.id).eq('role', 'assignee')
+        if (participantError) throw participantError
+        const taskIds = [...new Set((participants ?? []).map((row) => row.task_id))]
+        if (taskIds.length === 0) { setHrMyOpenTaskCount(0); return }
+
+        const { count, error: taskError } = await supabase
+          .from('hr_tasks').select('*', { count: 'exact', head: true })
+          .in('id', taskIds)
+          .in('status', ['new', 'acknowledged', 'in_progress', 'review', 'revision', 'paused'])
+        if (taskError) throw taskError
+        setHrMyOpenTaskCount(count || 0)
+      } catch (error) {
+        console.error('Error loading my task badge count:', error)
+      }
+    }
+    void loadMyOpenTasks()
+    window.addEventListener('hr-tasks-changed', loadMyOpenTasks)
+    const channel = supabase.channel(`topbar-my-task-count-${user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_tasks' }, loadMyOpenTasks)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_notifications' }, loadMyOpenTasks)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-tasks-changed', loadMyOpenTasks)
+      void supabase.removeChannel(channel)
+    }
+  }, [canSeeHrTasks, user?.id])
+
   // Badge เมนู HR "ประกาศ": ประกาศรออนุมัติ + ประกาศที่เผยแพร่แล้วแต่รับทราบไม่ครบ (เรียลไทม์)
   const canSeeHrAnnouncements = hasAccess('hr-announcements')
   useEffect(() => {
@@ -694,6 +739,8 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
                               ? sampleAttentionCount
                             : tab.path === '/hr/leave' && (hrLeavePending + hrOtPending + hrWfhPending) > 0
                               ? hrLeavePending + hrOtPending + hrWfhPending
+                              : tab.path === '/hr/tasks' && hrMyOpenTaskCount > 0
+                                ? hrMyOpenTaskCount
                               : tab.path === '/hr/announcements' && hrAnnouncementAttention > 0
                                 ? hrAnnouncementAttention
                                 : tab.path === '/hr/requests' && hrRequestPending > 0

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { FiAlertTriangle, FiBarChart2, FiCheckCircle, FiClock, FiExternalLink, FiList, FiMenu, FiPlus, FiSearch, FiTrash2, FiX } from 'react-icons/fi'
 import { useAuthContext } from '../../contexts/AuthContext'
 import TaskDashboard, { Avatar } from './TaskDashboard'
-import { createHRTask, createTaskTeam, deleteHRTask, fetchCompanyHolidays, fetchEmployeeByUserId, fetchEmployees, fetchLeaveRequests, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, fetchWorkCalendar, fetchWorkSchedules, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
+import { createHRTask, createTaskTeam, deleteHRTask, fetchCompanyHolidays, fetchEmployeeByUserId, fetchEmployees, fetchLeaveRequests, fetchTask, fetchTaskCategories, fetchTaskEvaluations, fetchTaskTeams, fetchTasks, fetchWorkCalendar, fetchWorkSchedules, saveTaskCategory, saveTaskCategoryOrder, saveTaskEvaluation, toggleTaskChecklist, updateTaskStatus, updateTaskTeam } from '../../lib/hrApi'
 import { addWorkingHours, localDateKey, recommendAssignees, type WorkingTimeData } from '../../lib/hrTaskMetrics'
 import type { HREmployee, HRTask, HRTaskCategory, HRTaskEvaluation, HRTaskStatus } from '../../types'
 
@@ -21,9 +21,23 @@ const workLink = (value?: string) => {
   if (!link) return ''
   return /^https?:\/\//i.test(link) ? link : `https://${link}`
 }
+const taskTime = (value?: string) => value
+  ? new Date(value).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })
+  : 'ยังไม่มี'
+const minutesBetween = (start?: string, end?: string) => {
+  if (!start || !end) return 'ยังไม่มี'
+  const milliseconds = new Date(end).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return 'ข้อมูลเวลาไม่ถูกต้อง'
+  return `${Math.floor(milliseconds / 60000)} นาที`
+}
 const elapsedText = (t: HRTask) => {
   const start = new Date(t.started_at || t.acknowledged_at || t.created_at).getTime()
-  const end = t.completed_at ? new Date(t.completed_at).getTime() : Date.now()
+  // เวลาทำงานของพนักงานหยุดทันทีเมื่อส่งตรวจ ไม่รวมช่วงที่หัวหน้ากำลังตรวจงาน
+  const end = t.submitted_at
+    ? new Date(t.submitted_at).getTime()
+    : t.completed_at
+      ? new Date(t.completed_at).getTime()
+      : Date.now()
   const minutes = Math.max(0, Math.floor((end - start) / 60000))
   const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = minutes % 60
   return `${days ? `${days} วัน ` : ''}${hours ? `${hours} ชม. ` : ''}${mins} นาที`
@@ -37,6 +51,7 @@ export default function TaskManagement() {
   const [categories, setCategories] = useState<HRTaskCategory[]>([])
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
+  const [dueSort, setDueSort] = useState<'' | 'asc' | 'desc'>('')
   const [scope, setScope] = useState<'managed' | 'mine' | 'all'>('managed')
   const [view, setView] = useState<'list' | 'dashboard'>('list')
   const [showCreate, setShowCreate] = useState(false)
@@ -76,7 +91,14 @@ export default function TaskManagement() {
     const q = search.trim().toLowerCase()
     const people = t.participants?.map((p) => nameOf(p.employee)).join(' ') ?? ''
     return (!status || t.status === status) && (!q || `${t.task_no} ${t.title} ${t.description ?? ''} ${people}`.toLowerCase().includes(q))
-  }), [scopedTasks, search, status])
+  }).sort((a, b) => {
+    if (!dueSort) return 0
+    if (!a.due_at && !b.due_at) return 0
+    if (!a.due_at) return 1
+    if (!b.due_at) return -1
+    const difference = new Date(a.due_at).getTime() - new Date(b.due_at).getTime()
+    return dueSort === 'asc' ? difference : -difference
+  }), [scopedTasks, search, status, dueSort])
   const cards = [
     ['ทั้งหมด', scopedTasks.length, 'text-slate-700', FiClock],
     ['กำลังดำเนินการ', scopedTasks.filter((t) => ACTIVE.includes(t.status)).length, 'text-blue-600', FiClock],
@@ -103,7 +125,7 @@ export default function TaskManagement() {
       <div className="p-4 pb-0 flex flex-wrap gap-2">
         {([['managed','งานที่ฉันติดตาม',tasks.filter(isManaged).length],['mine','งานที่ฉันต้องทำ',tasks.filter(isMine).length],['all','ทั้งหมดที่เกี่ยวข้อง',tasks.length]] as const).map(([key,label,count])=><button key={key} onClick={()=>setScope(key)} className={`px-4 py-2 rounded-xl text-sm font-medium border ${scope===key?'bg-emerald-600 border-emerald-600 text-white':'bg-white text-gray-600 hover:bg-gray-50'}`}>{label} ({count})</button>)}
       </div>
-      <div className="p-4 flex flex-col md:flex-row gap-3"><label className="relative flex-1"><FiSearch className="absolute left-3 top-3 text-gray-400"/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหารหัส ชื่องาน หรือพนักงาน..." className="w-full border rounded-xl py-2.5 pl-10 pr-3"/></label><select value={status} onChange={(e) => setStatus(e.target.value)} className="border rounded-xl px-3"><option value="">ทุกสถานะ</option>{Object.entries(STATUS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select></div>
+      <div className="p-4 flex flex-col md:flex-row gap-3"><label className="relative flex-1"><FiSearch className="absolute left-3 top-3 text-gray-400"/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหารหัส ชื่องาน หรือพนักงาน..." className="w-full border rounded-xl py-2.5 pl-10 pr-3"/></label><select value={status} onChange={(e) => setStatus(e.target.value)} className="border rounded-xl px-3"><option value="">ทุกสถานะ</option>{Object.entries(STATUS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}</select><select value={dueSort} onChange={(e) => setDueSort(e.target.value as typeof dueSort)} className="border rounded-xl px-3" aria-label="เรียงตามกำหนดส่ง"><option value="">กำหนดส่ง: ค่าเดิม</option><option value="asc">กำหนดส่ง: น้อยไปมาก</option><option value="desc">กำหนดส่ง: มากไปน้อย</option></select></div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-600"><tr><th className="text-left p-3">งาน</th><th className="text-left p-3">ผู้รับผิดชอบ</th><th className="text-left p-3">ผู้ประสานงาน / ที่ปรึกษา</th><th className="text-left p-3">กำหนดส่ง</th><th className="text-left p-3">เวลาที่ใช้</th><th className="text-left p-3">ความคืบหน้า</th><th className="text-left p-3">ลิงก์ผลงาน</th><th className="text-left p-3">สถานะ</th><th className="p-3"></th></tr></thead>
@@ -112,7 +134,7 @@ export default function TaskManagement() {
             <td className="p-3">{t.participants?.filter((p) => p.role === 'assignee').map((p) => nameOf(p.employee)).join(', ') || '-'}</td>
             <td className="p-3 min-w-48"><div className="space-y-1">{t.participants?.filter((p)=>p.role==='coordinator'||p.role==='advisor').map((p)=><div key={p.id} className="flex items-center gap-1.5 text-xs"><span className={`px-1.5 py-0.5 rounded ${p.role==='coordinator'?'bg-blue-50 text-blue-700':'bg-violet-50 text-violet-700'}`}>{p.role==='coordinator'?'ประสานงาน':'ที่ปรึกษา'}</span><span className="text-gray-700">{nameOf(p.employee)}</span></div>)}{!t.participants?.some((p)=>p.role==='coordinator'||p.role==='advisor')&&<span className="text-gray-400">-</span>}</div></td>
             <td className={`p-3 ${overdue(t) ? 'text-red-600 font-semibold' : ''}`}>{t.due_at ? new Date(t.due_at).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : '-'}</td>
-            <td className="p-3 whitespace-nowrap"><div className="font-medium">{elapsedText(t)}</div><div className="text-xs text-gray-400">{t.completed_at?'ใช้เวลารวม':'กำลังนับเวลา'}</div></td>
+            <td className="p-3 min-w-72"><div className="font-medium whitespace-nowrap">{elapsedText(t)}</div><div className="text-xs text-gray-400">{t.submitted_at?'หยุดนับเมื่อส่งงาน':'กำลังนับเวลา'}</div><div className="mt-2 space-y-1 border-t pt-1.5 text-[11px] text-gray-500"><div>รับทราบ: {taskTime(t.acknowledged_at)} <span className="text-blue-600">· ใช้เวลา {minutesBetween(t.created_at, t.acknowledged_at)}</span></div><div>เริ่มงาน: {taskTime(t.started_at)}</div><div>ส่งงาน: {taskTime(t.submitted_at)} <span className="text-emerald-600">· เริ่มถึงส่ง {minutesBetween(t.started_at, t.submitted_at)}</span></div><div className="font-medium text-slate-600">รวมมอบหมายถึงส่ง: {minutesBetween(t.created_at, t.submitted_at)}</div></div></td>
             <td className="p-3 min-w-36"><div className="h-2 bg-gray-100 rounded-full"><div className="h-full bg-emerald-500 rounded-full" style={{width:`${t.progress}%`}}/></div><span className="text-xs">{t.progress}%</span></td>
             <td className="p-3">{workLink(t.completion_link)?<a href={workLink(t.completion_link)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} className="inline-flex items-center gap-1.5 text-blue-600 hover:underline whitespace-nowrap"><FiExternalLink/> เปิดลิงก์</a>:<span className="text-gray-400">-</span>}</td>
             <td className="p-3"><span className={`px-2 py-1 rounded-full text-xs ${overdue(t) ? 'bg-red-100 text-red-700' : 'bg-gray-100'}`}>{overdue(t) ? 'เลยกำหนด' : STATUS[t.status]}</span></td>
@@ -126,7 +148,7 @@ export default function TaskManagement() {
     {showCreate && me && <CreateTaskModal me={me} employees={employees} categories={categories} tasks={tasks} onClose={()=>setShowCreate(false)} onSaved={async()=>{setShowCreate(false); await load()}} />}
     {showCategory && <CategoryModal onClose={()=>setShowCategory(false)} onChanged={async()=>setCategories(await fetchTaskCategories())} />}
     {showTeam && me && <TeamModal me={me} employees={employees} onClose={()=>setShowTeam(false)} />}
-    {detailTask && <TaskDetailModal task={detailTask} employee={me} onClose={()=>setDetailTask(null)} onEvaluate={()=>{setDetailTask(null);setEvaluationTask(detailTask)}} onStatus={async(status)=>{await updateTaskStatus(detailTask.id,status);setDetailTask(null);await load()}} onSubmit={()=>{setSubmitTask(detailTask);setDetailTask(null)}} />}
+    {detailTask && <TaskDetailModal task={detailTask} employee={me} onClose={()=>setDetailTask(null)} onEvaluate={()=>{setDetailTask(null);setEvaluationTask(detailTask)}} onStatus={async(status)=>{await updateTaskStatus(detailTask.id,status);setDetailTask(null);await load()}} onChecklist={async(id,completed)=>{await toggleTaskChecklist(id,completed);setDetailTask(await fetchTask(detailTask.id));await load()}} onSubmit={()=>{setSubmitTask(detailTask);setDetailTask(null)}} />}
     {evaluationTask && me && <EvaluationModal task={evaluationTask} evaluator={me} onClose={()=>setEvaluationTask(null)} onSaved={async()=>{setEvaluationTask(null);await load()}} />}
     {submitTask && <SubmitWorkModal task={submitTask} onClose={()=>setSubmitTask(null)} onSaved={async()=>{setSubmitTask(null);await load()}} />}
     {deleteTarget && <Modal title="ยืนยันลบงาน" onClose={()=>{if(!busy)setDeleteTarget(null)}}><div className="space-y-5">
@@ -168,7 +190,7 @@ function CreateTaskModal({ me, employees, categories, tasks, onClose, onSaved }:
   return <Modal title="มอบหมายงาน" onClose={onClose}><div className="space-y-4"><Field label="ชื่องาน *"><input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></Field><Field label="รายละเอียด"><textarea rows={3} className="input" value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></Field><div className="grid md:grid-cols-2 gap-3"><Field label="ประเภทงาน *"><select required aria-required="true" className={`input ${!form.category_id?'border-red-300 bg-red-50/40':''}`} value={form.category_id} onChange={e=>{setForm({...form,category_id:e.target.value});setError('')}}><option value="">เลือกประเภทงาน</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field><Field label="ความสำคัญ"><select className="input" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as typeof form.priority})}><option value="normal">ปกติ</option><option value="high">สำคัญ</option><option value="urgent">เร่งด่วน</option></select></Field><Field label="ผู้รับผิดชอบ *"><EmployeeSelect required value={form.assignee} employees={employees} onChange={v=>{setForm({...form,assignee:v});setError('')}}/></Field><Field label="หัวหน้างาน"><input className="input bg-gray-50" disabled value={nameOf(me)}/></Field><Field label="ผู้ประสานงาน"><EmployeeSelect value={form.coordinator} employees={employees} onChange={v=>setForm({...form,coordinator:v})}/></Field><Field label="ที่ปรึกษางาน"><EmployeeSelect value={form.advisor} employees={employees} onChange={v=>setForm({...form,advisor:v})}/></Field></div>
   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
     <Field label="วันเริ่ม"><input type="date" className="input" value={form.start_date} onChange={e=>setForm({...form,start_date:e.target.value})}/></Field>
-    <Field label="ให้เวลาทำ (ชม.)"><input type="number" min="0.5" step="0.5" className="input" placeholder="เช่น 4" value={form.duration_hours} onChange={e=>setForm({...form,duration_hours:e.target.value})}/></Field>
+    <Field label="ให้เวลาทำ (ชม.)"><input type="number" min="0.5" step="0.5" className="input" placeholder="เช่น 4" value={form.duration_hours} onWheel={e=>e.currentTarget.blur()} onChange={e=>setForm({...form,duration_hours:e.target.value})}/></Field>
     <Field label="วันและเวลาส่ง *"><input type="datetime-local" className="input" value={form.due_at} onChange={e=>setForm({...form,due_at:e.target.value,duration_hours:''})}/></Field>
   </div>
   <p className="text-xs text-gray-500 -mt-2">กรอกจำนวนชั่วโมงเพื่อคำนวณ “วันและเวลาส่ง” อัตโนมัติ โดยนับเฉพาะเวลางานของผู้รับผิดชอบ — ข้ามนอกเวลางาน วันหยุดประจำสัปดาห์ วันหยุดบริษัทฯ และวันลาที่อนุมัติแล้ว (เลือกผู้รับผิดชอบก่อนเพื่อใช้ตารางเวลาของคนนั้น)</p>
@@ -195,20 +217,24 @@ function CreateTaskModal({ me, employees, categories, tasks, onClose, onSaved }:
   <div><div className="font-medium mb-2">Task ย่อย</div>{items.map((x,i)=><div key={i} className="flex gap-2 mb-2"><input className="input" placeholder={`ข้อที่ ${i+1}`} value={x} onChange={e=>setItems(items.map((v,j)=>j===i?e.target.value:v))}/>{items.length>1&&<button onClick={()=>setItems(items.filter((_,j)=>j!==i))}><FiX/></button>}</div>)}<button onClick={()=>setItems([...items,''])} className="text-sm text-emerald-600">+ เพิ่มข้อ</button></div>{error&&<p className="text-red-600 text-sm">{error}</p>}<button disabled={saving||!form.title.trim()||!form.category_id||!form.assignee||!form.due_at} onClick={save} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:cursor-not-allowed disabled:opacity-50">{saving?'กำลังบันทึก...':'มอบหมายงาน'}</button></div></Modal>
 }
 
-function TaskDetailModal({task,employee,onClose,onEvaluate,onStatus,onSubmit}:{task:HRTask;employee:HREmployee|null;onClose:()=>void;onEvaluate:()=>void;onStatus:(status:HRTaskStatus)=>Promise<void>;onSubmit:()=>void}){
+function TaskDetailModal({task,employee,onClose,onEvaluate,onStatus,onChecklist,onSubmit}:{task:HRTask;employee:HREmployee|null;onClose:()=>void;onEvaluate:()=>void;onStatus:(status:HRTaskStatus)=>Promise<void>;onChecklist:(id:string,completed:boolean)=>Promise<void>;onSubmit:()=>void}){
   const roleLabel={assignee:'ผู้รับผิดชอบ',supervisor:'หัวหน้างาน',coordinator:'ผู้ประสานงาน',advisor:'ที่ปรึกษา'} as const
   const link=task.completion_link?.trim()
   const safeLink=workLink(link)
   const isAssignee=!!employee&&!!task.participants?.some(p=>p.role==='assignee'&&p.employee_id===employee.id)
   const canEvaluate=!!employee&&(task.created_by===employee.id||!!task.participants?.some(p=>p.role==='supervisor'&&p.employee_id===employee.id))
+  const [checkBusy,setCheckBusy]=useState(false)
+  const checklistComplete=!task.checklist?.length||task.checklist.every(item=>item.is_completed)
+  const canCheck=isAssignee&&['in_progress','revision'].includes(task.status)&&!checkBusy
   return <Modal title="รายละเอียดงาน" onClose={onClose}><div className="space-y-5">
     <div><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{task.title}</h3><span className="px-2 py-1 rounded-full bg-gray-100 text-xs">{STATUS[task.status]}</span></div><p className="text-xs text-gray-500 mt-1">{task.task_no} · {task.category?.name??'ไม่ระบุประเภท'}</p></div>
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3"><Info label="เริ่มงาน" value={task.started_at?new Date(task.started_at).toLocaleString('th-TH'):'ยังไม่เริ่ม'}/><Info label="กำหนดส่ง" value={task.due_at?new Date(task.due_at).toLocaleString('th-TH'):'ไม่กำหนด'}/><Info label="เวลาที่ใช้" value={elapsedText(task)}/><Info label="ความคืบหน้า" value={`${task.progress}%`}/></div>
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-3"><Info label="กำหนดส่ง" value={task.due_at?new Date(task.due_at).toLocaleString('th-TH'):'ไม่กำหนด'}/><Info label="เวลาที่ใช้" value={elapsedText(task)}/><Info label="ความคืบหน้า" value={`${task.progress}%`}/></div>
+    <section><h4 className="font-semibold mb-2">ประวัติเวลางาน</h4><div className="grid gap-2 sm:grid-cols-3"><Info label="รับทราบงาน" value={`${taskTime(task.acknowledged_at)} · ใช้เวลา ${minutesBetween(task.created_at, task.acknowledged_at)}`}/><Info label="เริ่มงาน → ส่งงาน" value={`${taskTime(task.started_at)} · ใช้เวลา ${minutesBetween(task.started_at, task.submitted_at)}`}/><Info label="ส่งงาน" value={`${taskTime(task.submitted_at)} · รวม ${minutesBetween(task.created_at, task.submitted_at)}`}/></div></section>
     <section><h4 className="font-semibold mb-2">ผู้เกี่ยวข้อง</h4><div className="grid md:grid-cols-2 gap-2">{task.participants?.map(p=><div key={p.id} className="p-3 border rounded-xl"><div className="text-xs text-gray-500">{roleLabel[p.role]}</div><div className="font-medium">{nameOf(p.employee)}</div>{p.employee?.phone?<a href={`tel:${p.employee.phone.replace(/[^\d+]/g,'')}`} className="inline-flex items-center gap-1 mt-1 text-sm text-blue-600 hover:underline">โทร {p.employee.phone}</a>:<div className="mt-1 text-xs text-gray-400">ไม่มีเบอร์โทร</div>}</div>)}</div></section>
     <section><h4 className="font-semibold mb-2">รายละเอียด</h4><div className="p-3 rounded-xl bg-gray-50 whitespace-pre-wrap text-sm">{task.description||'ไม่มีรายละเอียดเพิ่มเติม'}</div></section>
-    <section><div className="flex items-center justify-between mb-2"><h4 className="font-semibold">Task ย่อย</h4><span className="text-sm text-gray-500">{task.checklist?.filter(i=>i.is_completed).length??0}/{task.checklist?.length??0} ข้อ</span></div><div className="space-y-2">{task.checklist?.sort((a,b)=>a.sort_order-b.sort_order).map(i=><div key={i.id} className="flex gap-2 p-3 rounded-xl bg-gray-50"><FiCheckCircle className={i.is_completed?'text-emerald-600':'text-gray-300'}/><span className={i.is_completed?'line-through text-gray-400':''}>{i.title}</span></div>)}{!task.checklist?.length&&<p className="text-sm text-gray-400">ไม่มี Task ย่อย</p>}</div></section>
+    <section><div className="flex items-center justify-between mb-2"><h4 className="font-semibold">Task ย่อย</h4><span className="text-sm text-gray-500">{task.checklist?.filter(i=>i.is_completed).length??0}/{task.checklist?.length??0} ข้อ</span></div><div className="space-y-2">{task.checklist?.sort((a,b)=>a.sort_order-b.sort_order).map(i=><label key={i.id} className={`flex gap-2 p-3 rounded-xl bg-gray-50 ${canCheck?'cursor-pointer':'cursor-not-allowed opacity-70'}`}><input type="checkbox" checked={i.is_completed} disabled={!canCheck} onChange={async e=>{setCheckBusy(true);try{await onChecklist(i.id,e.target.checked)}finally{setCheckBusy(false)}}}/><span className={i.is_completed?'line-through text-gray-400':''}>{i.title}</span></label>)}{!task.checklist?.length&&<p className="text-sm text-gray-400">ไม่มี Task ย่อย</p>}</div>{isAssignee&&!['in_progress','revision'].includes(task.status)&&task.status!=='review'&&task.status!=='completed'&&<p className="mt-2 text-xs text-amber-600">ต้องเริ่มทำงานก่อนจึงจะเช็กรายการได้</p>}</section>
     {(task.completion_note||link)&&<section className="p-4 rounded-xl bg-blue-50 border border-blue-100"><h4 className="font-semibold text-blue-900">ข้อความส่งงานจากผู้รับผิดชอบ</h4>{task.completion_note&&<p className="mt-2 text-sm whitespace-pre-wrap">{task.completion_note}</p>}{safeLink&&<a href={safeLink} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-2 text-blue-700 font-medium text-sm"><FiExternalLink/> เปิดลิงก์ผลงาน</a>}</section>}
-    <div className="grid gap-2">{isAssignee&&task.status==='new'&&<button onClick={()=>onStatus('acknowledged')} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">รับทราบงาน</button>}{isAssignee&&task.status==='acknowledged'&&<button onClick={()=>onStatus('in_progress')} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">เริ่มทำงาน</button>}{isAssignee&&['in_progress','revision'].includes(task.status)&&<button onClick={onSubmit} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">ส่งงานให้ตรวจ</button>}{isAssignee&&task.status==='review'&&<button onClick={onSubmit} className="w-full py-3 rounded-xl border border-blue-300 text-blue-700 bg-blue-50 font-semibold">แก้ไขการส่งงาน</button>}{canEvaluate&&task.status==='review'&&<button onClick={onEvaluate} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">ประเมิน</button>}</div>
+    <div className="grid gap-2">{isAssignee&&task.status==='new'&&<button onClick={()=>onStatus('acknowledged')} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">รับทราบงาน</button>}{isAssignee&&task.status==='acknowledged'&&<button onClick={()=>onStatus('in_progress')} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">เริ่มทำงาน</button>}{isAssignee&&['in_progress','revision'].includes(task.status)&&<><button disabled={!checklistComplete} onClick={onSubmit} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:cursor-not-allowed disabled:opacity-50">ส่งงานให้ตรวจ</button>{!checklistComplete&&<p className="text-center text-xs text-amber-600">กรุณาเช็กรายการงานให้ครบก่อนส่งตรวจ</p>}</>}{isAssignee&&task.status==='review'&&<button onClick={onSubmit} className="w-full py-3 rounded-xl border border-blue-300 text-blue-700 bg-blue-50 font-semibold">แก้ไขการส่งงาน</button>}{canEvaluate&&task.status==='review'&&<button onClick={onEvaluate} className="w-full py-3 rounded-xl bg-emerald-600 text-white font-semibold">ประเมิน</button>}</div>
   </div></Modal>
 }
 
@@ -217,8 +243,9 @@ function SubmitWorkModal({task,onClose,onSaved}:{task:HRTask;onClose:()=>void;on
   const [link,setLink]=useState(task.completion_link??'')
   const [saving,setSaving]=useState(false)
   const [error,setError]=useState('')
-  const save=async()=>{setSaving(true);setError('');try{await updateTaskStatus(task.id,'review',note.trim()||undefined,link.trim()||undefined);onSaved()}catch(e){setError(e instanceof Error?e.message:'ส่งงานไม่สำเร็จ')}finally{setSaving(false)}}
-  return <Modal title={task.status==='review'?'แก้ไขการส่งงาน':'ส่งงานให้ตรวจ'} onClose={onClose}><div className="space-y-4"><div className="p-3 rounded-xl bg-gray-50"><div className="font-semibold">{task.title}</div><div className="text-xs text-gray-500">{task.task_no}</div></div><Field label="สรุปผลการทำงาน (ถ้ามี)"><textarea autoFocus rows={5} className="input" value={note} onChange={e=>setNote(e.target.value)} placeholder="ระบุผลงานที่ทำเสร็จหรือปัญหาที่พบ..."/></Field><Field label="ลิงก์ผลงาน (ถ้ามี)"><input type="url" className="input" value={link} onChange={e=>setLink(e.target.value)} placeholder="https://..."/></Field>{error&&<p className="text-sm text-red-600">{error}</p>}<div className="grid grid-cols-2 gap-3"><button onClick={onClose} disabled={saving} className="py-3 rounded-xl border">ยกเลิก</button><button onClick={save} disabled={saving} className="py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:opacity-50">{saving?'กำลังบันทึก...':task.status==='review'?'บันทึกการแก้ไข':'ส่งงาน'}</button></div></div></Modal>
+  const hasSubmission=!!note.trim()||!!link.trim()
+  const save=async()=>{if(!hasSubmission){setError('กรุณาแนบลิงก์ผลงาน หรือกรอกข้อความส่งงานอย่างน้อย 1 รายการ');return}setSaving(true);setError('');try{await updateTaskStatus(task.id,'review',note.trim()||undefined,link.trim()||undefined);onSaved()}catch(e){setError(e instanceof Error?e.message:'ส่งงานไม่สำเร็จ')}finally{setSaving(false)}}
+  return <Modal title={task.status==='review'?'แก้ไขการส่งงาน':'ส่งงานให้ตรวจ'} onClose={onClose}><div className="space-y-4"><div className="p-3 rounded-xl bg-gray-50"><div className="font-semibold">{task.title}</div><div className="text-xs text-gray-500">{task.task_no}</div></div><p className="text-sm text-amber-700">กรุณาแนบลิงก์ผลงาน หรือกรอกข้อความส่งงานอย่างน้อย 1 รายการ</p><Field label="ข้อความส่งงาน"><textarea autoFocus rows={5} className="input" value={note} onChange={e=>{setNote(e.target.value);setError('')}} placeholder="สรุปผลงานที่ทำเสร็จ หรือปัญหาที่พบ..."/></Field><Field label="ลิงก์ผลงาน"><input type="url" className="input" value={link} onChange={e=>{setLink(e.target.value);setError('')}} placeholder="https://..."/></Field>{error&&<p className="text-sm text-red-600">{error}</p>}<div className="grid grid-cols-2 gap-3"><button onClick={onClose} disabled={saving} className="py-3 rounded-xl border">ยกเลิก</button><button onClick={save} disabled={saving||!hasSubmission} className="py-3 rounded-xl bg-emerald-600 text-white font-semibold disabled:cursor-not-allowed disabled:opacity-50">{saving?'กำลังบันทึก...':task.status==='review'?'บันทึกการแก้ไข':'ส่งงาน'}</button></div></div></Modal>
 }
 
 function Info({label,value}:{label:string;value:string}){return <div className="p-3 border rounded-xl"><div className="text-xs text-gray-500">{label}</div><div className="font-semibold mt-1">{value}</div></div>}

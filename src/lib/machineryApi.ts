@@ -298,26 +298,12 @@ export async function changeMachineStatus(
   status: PrMachineryStatus,
   note?: string | null,
 ): Promise<void> {
-  const now = new Date().toISOString()
-  await closeOpenEvents(machineId, now)
-  const { data: u } = await supabase.auth.getUser()
-  const { error: upErr } = await supabase
-    .from('pr_machinery_machines')
-    .update({
-      current_status: status,
-      status_changed_at: now,
-    })
-    .eq('id', machineId)
-  if (upErr) throw upErr
-  const { error: insErr } = await supabase.from('pr_machinery_status_events').insert({
-    machine_id: machineId,
-    status,
-    started_at: now,
-    ended_at: null,
-    note: note ?? null,
-    created_by: u?.user?.id ?? null,
+  const { error } = await supabase.rpc('rpc_change_machinery_status', {
+    p_machine_id: machineId,
+    p_status: status,
+    p_note: note ?? null,
   })
-  if (insErr) throw insErr
+  if (error) throw error
 }
 
 /** ดึง events ที่ทับช่วง [fromIso, toIso) — รวมช่วงที่เริ่มก่อน from แต่ยังไม่จบ */
@@ -335,6 +321,25 @@ export async function fetchEventsOverlappingRange(
   if (machineId) {
     q = q.eq('machine_id', machineId)
   }
+  const { data, error } = await q
+  if (error) throw error
+  return (data || []) as MachineryEvent[]
+}
+
+/** Events that start in [fromIso, toIso), used to find the eventual working
+ * event for a breakdown that began inside an older report range. */
+export async function fetchEventsStartingRange(
+  fromIso: string,
+  toIso: string,
+  machineId?: string | null,
+): Promise<MachineryEvent[]> {
+  let q = supabase
+    .from('pr_machinery_status_events')
+    .select('*')
+    .gte('started_at', fromIso)
+    .lt('started_at', toIso)
+    .order('started_at', { ascending: true })
+  if (machineId) q = q.eq('machine_id', machineId)
   const { data, error } = await q
   if (error) throw error
   return (data || []) as MachineryEvent[]
@@ -591,39 +596,43 @@ export function computeRepairRounds(
     (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime(),
   )
 
+  // One machine can have only one active breakdown round. Repeated legacy
+  // `broken` events are ignored until a `working` event closes that round.
+  const activeBrokenByMachine = new Map<string, MachineryEvent>()
   for (const ev of evs) {
-    if (ev.status !== 'broken') continue
-    const brokeAt = new Date(ev.started_at).getTime()
-    let nextWork: MachineryEvent | undefined
-    for (const e2 of evs) {
-      if (e2.machine_id !== ev.machine_id) continue
-      const t2 = new Date(e2.started_at).getTime()
-      if (t2 <= brokeAt) continue
-      if (e2.status === 'working') {
-        nextWork = e2
-        break
-      }
-    }
     const mc = byMachine.get(ev.machine_id)
     if (!mc) continue
-    if (nextWork) {
-      const back = new Date(nextWork.started_at).getTime()
-      rounds.push({
-        machine_id: ev.machine_id,
-        machine_name: mc.name,
-        broken_at: ev.started_at,
-        back_to_work_at: nextWork.started_at,
-        duration_ms: back - brokeAt,
-      })
-    } else {
-      rounds.push({
-        machine_id: ev.machine_id,
-        machine_name: mc.name,
-        broken_at: ev.started_at,
-        back_to_work_at: null,
-        duration_ms: Math.max(0, nowRef.getTime() - brokeAt),
-      })
+    if (ev.status === 'broken') {
+      if (!activeBrokenByMachine.has(ev.machine_id)) activeBrokenByMachine.set(ev.machine_id, ev)
+      continue
     }
+    if (ev.status !== 'working') continue
+    const broken = activeBrokenByMachine.get(ev.machine_id)
+    if (!broken) continue
+    const brokeAt = new Date(broken.started_at).getTime()
+    const backAt = new Date(ev.started_at).getTime()
+    if (backAt >= brokeAt) {
+      rounds.push({
+        machine_id: ev.machine_id,
+        machine_name: mc.name,
+        broken_at: broken.started_at,
+        back_to_work_at: ev.started_at,
+        duration_ms: backAt - brokeAt,
+      })
+      activeBrokenByMachine.delete(ev.machine_id)
+    }
+  }
+
+  for (const [machineId, broken] of activeBrokenByMachine) {
+    const mc = byMachine.get(machineId)
+    if (!mc) continue
+    rounds.push({
+      machine_id: machineId,
+      machine_name: mc.name,
+      broken_at: broken.started_at,
+      back_to_work_at: null,
+      duration_ms: Math.max(0, nowRef.getTime() - new Date(broken.started_at).getTime()),
+    })
   }
 
   return rounds.sort((a, b) => new Date(b.broken_at).getTime() - new Date(a.broken_at).getTime())

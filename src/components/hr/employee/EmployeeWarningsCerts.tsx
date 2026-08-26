@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FiAlertTriangle, FiAward, FiCalendar, FiCheck, FiX } from 'react-icons/fi'
-import { acknowledgeMyCertificate, acknowledgeMyWarning, fetchEmployeeByUserId, fetchWarnings, fetchCertificates, HR_WARNING_CERT_BUCKET } from '../../../lib/hrApi'
+import { acknowledgeMyCertificate, fetchEmployeeByUserId, fetchWarnings, fetchCertificates, HR_WARNING_CERT_BUCKET, respondToWarning } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import type { HRWarning, HRCertificate } from '../../../types'
 import { AttachmentStrip } from './AttachmentViewer'
+import HRDocumentAttachments from '../HRDocumentAttachments'
 
 const WARNING_LEVEL: Record<string, string> = {
   verbal: 'ตักเตือนด้วยวาจา ครั้งที่ 1',
@@ -11,12 +12,18 @@ const WARNING_LEVEL: Record<string, string> = {
   written_1: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 1',
   written_2: 'เตือนเป็นลายลักษณ์อักษร ครั้งที่ 2',
   final: 'เตือนครั้งสุดท้าย',
+  termination_review: 'พิจารณาเลิกจ้าง',
 }
 
 const WARNING_STATUS: Record<string, [string, string]> = {
   draft: ['bg-gray-100 text-gray-600', 'ร่าง'],
   issued: ['bg-red-100 text-red-800', 'อนุมัติ'],
+  pending_acknowledgement: ['bg-orange-100 text-orange-800', 'รอรับทราบ'],
   acknowledged: ['bg-amber-100 text-amber-800', 'รับทราบแล้ว'],
+  acknowledgement_refused: ['bg-red-100 text-red-800', 'ปฏิเสธรับทราบ'],
+  termination_review: ['bg-slate-900 text-white', 'พิจารณาเลิกจ้าง'],
+  closed: ['bg-gray-200 text-gray-700', 'ปิดเคส'],
+  cancelled: ['bg-gray-100 text-gray-500', 'ยกเลิก'],
   appealed: ['bg-indigo-100 text-indigo-800', 'อุทธรณ์'],
   resolved: ['bg-emerald-100 text-emerald-800', 'ยุติแล้ว'],
 }
@@ -46,6 +53,8 @@ export default function EmployeeWarningsCerts() {
   const [selected, setSelected] = useState<{ kind: 'warning'; item: HRWarning } | { kind: 'certificate'; item: HRCertificate } | null>(null)
   const [acknowledging, setAcknowledging] = useState(false)
   const [ackError, setAckError] = useState('')
+  const [employeeResponse, setEmployeeResponse] = useState('')
+  const [responseAttachments, setResponseAttachments] = useState<string[]>([])
 
   const load = useCallback(async () => {
     if (!user?.id) return
@@ -74,14 +83,16 @@ export default function EmployeeWarningsCerts() {
     load()
   }, [load])
 
-  const acknowledgeSelected = async () => {
+  const acknowledgeSelected = async (outcome: 'acknowledged' | 'refused' = 'acknowledged') => {
     if (!selected) return
     setAckError('')
     setAcknowledging(true)
     try {
-      if (selected.kind === 'warning') await acknowledgeMyWarning(selected.item.id)
+      if (selected.kind === 'warning') await respondToWarning(selected.item.id, outcome, employeeResponse.trim() || undefined, 'employee_portal', responseAttachments)
       else await acknowledgeMyCertificate(selected.item.id)
       setSelected(null)
+      setEmployeeResponse('')
+      setResponseAttachments([])
       await load()
       window.dispatchEvent(new Event('hr-documents-changed'))
     } catch (error) {
@@ -187,7 +198,7 @@ export default function EmployeeWarningsCerts() {
       )}
       {selected && (() => {
         const isWarning = selected.kind === 'warning'
-        const pending = selected.item.status === 'issued' && !selected.item.acknowledged_at
+        const pending = (selected.item.status === 'issued' || (isWarning && selected.item.status === 'pending_acknowledgement')) && !selected.item.acknowledged_at
         return (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center pt-4 sm:pt-8 px-0 sm:px-4" onClick={() => !acknowledging && setSelected(null)}>
             <div className="bg-white w-full max-h-[calc(100vh-2rem)] sm:max-w-lg sm:max-h-[calc(100vh-4rem)] rounded-b-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-xl" onClick={(event) => event.stopPropagation()}>
@@ -201,8 +212,10 @@ export default function EmployeeWarningsCerts() {
                 {isWarning ? (
                   <>
                     <p>ระดับ: {WARNING_LEVEL[selected.item.warning_level] || selected.item.warning_level}</p>
+                    {selected.item.offense_type?.name && <p>ประเภทความผิด: {selected.item.offense_type.name}</p>}
                     <p>เหตุเกิด {thaiDate(selected.item.incident_date)} · ออกเมื่อ {thaiDate(selected.item.issued_date)}</p>
                     <p className="whitespace-pre-wrap">{selected.item.description || 'ไม่มีรายละเอียดเพิ่มเติม'}</p>
+                    {selected.item.corrective_action && <div className="rounded-xl bg-amber-50 p-3"><div className="font-semibold text-amber-900">สิ่งที่ต้องปรับปรุง / คำสั่งให้แก้ไข</div><p className="mt-1 whitespace-pre-wrap">{selected.item.corrective_action}</p></div>}
                     {selected.item.employee_response && <p>คำชี้แจง: {selected.item.employee_response}</p>}
                   </>
                 ) : (
@@ -222,9 +235,8 @@ export default function EmployeeWarningsCerts() {
               {pending && (
                 <div className="border-t bg-white p-4 shrink-0">
                   {ackError && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{ackError}</p>}
-                  <button type="button" onClick={acknowledgeSelected} disabled={acknowledging} className={`w-full py-3 rounded-xl text-white font-semibold flex items-center justify-center gap-2 disabled:opacity-60 ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}>
-                    <FiCheck className="w-5 h-5" />{acknowledging ? 'กำลังบันทึก...' : 'รับทราบ'}
-                  </button>
+                  {isWarning && <><textarea rows={3} value={employeeResponse} onChange={e=>setEmployeeResponse(e.target.value)} placeholder="คำชี้แจงของพนักงาน (ถ้ามี)" className="mb-3 w-full rounded-xl border p-3 text-sm"/><div className="mb-3"><HRDocumentAttachments employeeId={selected.item.employee_id} category="warnings" paths={responseAttachments} onChange={setResponseAttachments} onError={setAckError}/></div></>}
+                  <div className={`grid gap-2 ${isWarning?'grid-cols-2':'grid-cols-1'}`}><button type="button" onClick={()=>acknowledgeSelected('acknowledged')} disabled={acknowledging} className={`py-3 rounded-xl text-white font-semibold flex items-center justify-center gap-2 disabled:opacity-60 ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}><FiCheck className="w-5 h-5" />{acknowledging ? 'กำลังบันทึก...' : 'รับทราบ'}</button>{isWarning&&<button type="button" onClick={()=>acknowledgeSelected('refused')} disabled={acknowledging} className="rounded-xl border border-red-300 py-3 font-semibold text-red-700"><FiX className="inline"/> ปฏิเสธรับทราบ</button>}</div>
                 </div>
               )}
             </div>

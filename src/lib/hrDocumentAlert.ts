@@ -13,7 +13,7 @@ export function pickPendingHRDocuments(
 ): PendingHRDocument[] {
   return [
     ...warnings
-      .filter((item) => item.status === 'issued' && !item.acknowledged_at)
+      .filter((item) => ['issued', 'pending_acknowledgement'].includes(item.status) && !item.acknowledged_at)
       .map((item): PendingHRDocument => ({ kind: 'warning', item })),
     ...certificates
       .filter((item) => item.status === 'issued' && !item.acknowledged_at)

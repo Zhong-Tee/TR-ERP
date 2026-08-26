@@ -7,6 +7,7 @@ import LotCostPopover from '../components/ui/LotCostPopover'
 import * as XLSX from 'xlsx'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
+type WarehouseProductTypeFilter = '' | ProductType | 'ST'
 
 function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
   return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
@@ -49,11 +50,12 @@ export default function Warehouse() {
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
   const [pendingPoMap, setPendingPoMap] = useState<Record<string, number>>({})
+  const [specialTrackedSources, setSpecialTrackedSources] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [sellerFilter, setSellerFilter] = useState('')
-  const [productTypeFilter, setProductTypeFilter] = useState<'' | ProductType>('')
+  const [productTypeFilter, setProductTypeFilter] = useState<WarehouseProductTypeFilter>('')
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
@@ -69,6 +71,7 @@ export default function Warehouse() {
     loadProducts()
     loadBalances()
     loadPendingPoMap()
+    loadSpecialTrackedSources()
     loadCategories()
     loadSellers()
   }, [])
@@ -124,6 +127,59 @@ export default function Warehouse() {
       setPendingPoMap({})
     }
   }
+
+  async function loadSpecialTrackedSources() {
+    try {
+      const [{ data: spareRows, error: spareError }, { data: sourceRows, error: sourceError }] = await Promise.all([
+        supabase.from('wh_sub_wms_map_spares').select('group_id, product_id'),
+        supabase.from('wh_sub_wms_map_sources').select('group_id, product_id'),
+      ])
+      if (spareError) throw spareError
+      if (sourceError) throw sourceError
+
+      const sourceIdsByGroup = new Map<string, Set<string>>()
+      ;(sourceRows || []).forEach((row: { group_id: string; product_id: string }) => {
+        const ids = sourceIdsByGroup.get(row.group_id) || new Set<string>()
+        ids.add(row.product_id)
+        sourceIdsByGroup.set(row.group_id, ids)
+      })
+
+      const result: Record<string, string[]> = {}
+      ;(spareRows || []).forEach((row: { group_id: string; product_id: string }) => {
+        result[row.product_id] = [...(sourceIdsByGroup.get(row.group_id) || [])]
+      })
+      setSpecialTrackedSources(result)
+    } catch (e) {
+      console.error('Load special tracked stock mapping failed:', e)
+      setSpecialTrackedSources({})
+    }
+  }
+
+  const isSpecialTracked = useCallback(
+    (productId: string) => Object.prototype.hasOwnProperty.call(specialTrackedSources, productId),
+    [specialTrackedSources],
+  )
+
+  const getStockDisplay = useCallback((productId: string): { onHand: number; safetyStock: number | null; total: number } => {
+    const sourceIds = specialTrackedSources[productId]
+    if (sourceIds) {
+      const aggregated = sourceIds.reduce((result, sourceId) => {
+        const sourceBalance = balances[sourceId]
+        result.onHand += Number(sourceBalance?.on_hand || 0)
+        result.safetyStock += Number(sourceBalance?.safety_stock || 0)
+        return result
+      }, { onHand: 0, safetyStock: 0 })
+      return {
+        onHand: aggregated.onHand,
+        safetyStock: aggregated.safetyStock,
+        total: aggregated.onHand + aggregated.safetyStock,
+      }
+    }
+    const balance = balances[productId]
+    const onHand = Number(balance?.on_hand || 0)
+    const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
+    return { onHand, safetyStock, total: onHand + (safetyStock ?? 0) }
+  }, [balances, specialTrackedSources])
 
   async function loadCategories() {
     try {
@@ -195,6 +251,8 @@ export default function Warehouse() {
   }
 
   function isBelowReorderThreshold(product: Product, onHand: number): boolean {
+    // ST is a display-only aggregate and must not enter reorder/PR workflows.
+    if (isSpecialTracked(product.id)) return false
     if (product.is_hold) return false
     const pendingQty = Number(pendingPoMap[product.id] || 0)
     const availableSoon = onHand + pendingQty
@@ -223,7 +281,7 @@ export default function Warehouse() {
       const onHand = Number(balance?.on_hand || 0)
       return isBelowReorderThreshold(p, onHand)
     }).length
-  }, [products, balances, pendingPoMap, salesFromDate, salesMap])
+  }, [products, balances, pendingPoMap, salesFromDate, salesMap, specialTrackedSources])
 
   // ส่งจำนวนไป Sidebar ทุกครั้งที่เปลี่ยน
   useEffect(() => {
@@ -241,7 +299,8 @@ export default function Warehouse() {
         p.product_name.toLowerCase().includes(term)
       const matchCategory = !categoryFilter || (p.product_category || '') === categoryFilter
       const matchSeller = !sellerFilter || (p.seller_name || '') === sellerFilter
-      const matchProductType = !productTypeFilter || p.product_type === productTypeFilter
+      const displayType = isSpecialTracked(p.id) ? 'ST' : (p.product_type || 'FG')
+      const matchProductType = !productTypeFilter || displayType === productTypeFilter
 
       // ตัวกรองถึงจุดสั่งซื้อ
       let matchOrderPoint = true
@@ -253,32 +312,35 @@ export default function Warehouse() {
 
       return matchTerm && matchCategory && matchSeller && matchProductType && matchOrderPoint
     })
-  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances, pendingPoMap, salesFromDate, salesMap])
+  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances, pendingPoMap, salesFromDate, salesMap, isSpecialTracked])
 
   const handleDownloadExcel = useCallback(() => {
     const rows = filteredProducts.map((p) => {
-      const balance = balances[p.id]
-      const onHand = Number(balance?.on_hand || 0)
-      const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
+      const stockDisplay = getStockDisplay(p.id)
+      const onHand = stockDisplay.onHand
+      const safetyStock = stockDisplay.safetyStock
       const pendingQty = Number(pendingPoMap[p.id] || 0)
       const avg = calcAvgDailySales(p.id)
       const days = calcDaysRemaining(p.id, onHand)
+      const specialTracked = isSpecialTracked(p.id)
       const row: Record<string, unknown> = {
         'รหัสสินค้า': p.product_code,
-        'ประเภท': p.product_type || 'FG',
+        'ประเภท': specialTracked ? 'ST' : (p.product_type || 'FG'),
         'หมวดหมู่': p.product_category || '-',
         'ชื่อสินค้า': p.product_name,
         'ผู้ขาย': p.seller_name || '-',
         'จุดสั่งซื้อ': p.order_point || '-',
-        'จำนวนคงเหลือ': onHand,
-        'รอรับเข้า': pendingQty > 0 ? pendingQty : '-',
-        'Safety stock': safetyStock ?? '-',
-        'รวมในคลัง': onHand + (safetyStock ?? 0),
-        'การใช้ (ชิ้น/วัน)': avg !== null ? avg : '-',
-        'วันขายคงเหลือ': days !== null ? days : '-',
+        'จำนวนคงเหลือ': specialTracked ? 'ไม่มีค่า' : onHand,
+        'รอรับเข้า': specialTracked ? 'ไม่มีค่า' : (pendingQty > 0 ? pendingQty : '-'),
+        'Safety stock': specialTracked ? 'ไม่มีค่า' : (safetyStock ?? '-'),
+        'รวมในคลัง': stockDisplay.total,
+        'การใช้ (ชิ้น/วัน)': !specialTracked && avg !== null ? avg : '-',
+        'วันขายคงเหลือ': !specialTracked && days !== null ? days : '-',
       }
       if (canSeeCost) {
-        row['ต้นทุนสินค้า'] = p.landed_cost != null && Number(p.landed_cost) > 0
+        row['ต้นทุนสินค้า'] = specialTracked
+          ? 'ไม่มีค่า'
+          : p.landed_cost != null && Number(p.landed_cost) > 0
           ? Number(p.landed_cost)
           : '-'
       }
@@ -289,7 +351,7 @@ export default function Warehouse() {
     XLSX.utils.book_append_sheet(wb, ws, 'คลังสินค้า')
     const today = new Date().toISOString().slice(0, 10)
     XLSX.writeFile(wb, `คลังสินค้า_${today}.xlsx`)
-  }, [filteredProducts, balances, pendingPoMap, salesMap, canSeeCost]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filteredProducts, pendingPoMap, salesMap, canSeeCost, getStockDisplay, isSpecialTracked]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-6 mt-4">
@@ -312,13 +374,14 @@ export default function Warehouse() {
             <select
               id="warehouse-product-type"
               value={productTypeFilter}
-              onChange={(e) => setProductTypeFilter(e.target.value as '' | ProductType)}
+              onChange={(e) => setProductTypeFilter(e.target.value as WarehouseProductTypeFilter)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-base"
             >
               <option value="">ทุกประเภท</option>
               <option value="FG">FG - สินค้าสำเร็จรูป</option>
               <option value="RM">RM - วัตถุดิบ</option>
               <option value="PP">PP - สินค้าแปรรูป</option>
+              <option value="ST">ST - อะไหล่ยอดรวมจากสินค้าผลิต</option>
             </select>
           </div>
           <div className="w-full sm:w-auto sm:min-w-[180px]">
@@ -420,10 +483,12 @@ export default function Warehouse() {
               </thead>
               <tbody>
                 {filteredProducts.map((product, idx) => {
-                  const balance = balances[product.id]
-                  const onHand = Number(balance?.on_hand || 0)
+                  const stockDisplay = getStockDisplay(product.id)
+                  const onHand = stockDisplay.onHand
                   const pendingQty = Number(pendingPoMap[product.id] || 0)
-                  const safetyStock = balance?.safety_stock != null ? Number(balance.safety_stock) : null
+                  const safetyStock = stockDisplay.safetyStock
+                  const specialTracked = isSpecialTracked(product.id)
+                  const totalInStock = stockDisplay.total
                   const isLow = isBelowReorderThreshold(product, onHand)
                   return (
                     <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
@@ -433,13 +498,15 @@ export default function Warehouse() {
                       <td className="p-3 font-medium">{product.product_code}</td>
                       <td className="p-3 text-center">
                         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
-                          product.product_type === 'RM'
+                          specialTracked
+                            ? 'bg-sky-100 text-sky-700'
+                            : product.product_type === 'RM'
                             ? 'bg-amber-100 text-amber-700'
                             : product.product_type === 'PP'
                               ? 'bg-purple-100 text-purple-700'
                               : 'bg-emerald-100 text-emerald-700'
                         }`}>
-                          {product.product_type || 'FG'}
+                          {specialTracked ? 'ST' : (product.product_type || 'FG')}
                         </span>
                       </td>
                       <td className="p-3">{product.product_category || '-'}</td>
@@ -447,15 +514,23 @@ export default function Warehouse() {
                       <td className="p-3 text-sm">{product.seller_name || '-'}</td>
                       <td className="p-3 text-center">{product.order_point || '-'}</td>
                       <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
-                        {onHand.toLocaleString()}
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : onHand.toLocaleString()}
                       </td>
-                      <td className="p-3 text-center">{pendingQty > 0 ? pendingQty.toLocaleString() : '-'}</td>
-                      <td className="p-3 text-center">{safetyStock !== null ? safetyStock.toLocaleString() : '-'}</td>
+                      <td className="p-3 text-center">
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (pendingQty > 0 ? pendingQty.toLocaleString() : '-')}
+                      </td>
+                      <td className="p-3 text-center">
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (safetyStock !== null ? safetyStock.toLocaleString() : '-')}
+                      </td>
                       <td className="p-3 text-center font-medium text-gray-700">
-                        {(onHand + (safetyStock ?? 0)).toLocaleString()}
+                        <span title={specialTracked ? `ยอดรวมจากสินค้าผลิตที่ผูกไว้ ${specialTrackedSources[product.id]?.length || 0} SKU (ไม่กระทบ FIFO)` : undefined}>
+                          {totalInStock.toLocaleString()}
+                        </span>
+                        {specialTracked && <div className="mt-0.5 text-[10px] font-normal text-sky-600">รวม {specialTrackedSources[product.id]?.length || 0} SKU</div>}
                       </td>
                       <td className="p-3 text-center text-sm text-gray-600">
                         {(() => {
+                          if (specialTracked) return <span className="text-gray-400">-</span>
                           const avg = calcAvgDailySales(product.id)
                           if (avg === null) return <span className="text-gray-400">-</span>
                           return <span>{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
@@ -463,6 +538,7 @@ export default function Warehouse() {
                       </td>
                       <td className="p-3 text-center">
                         {(() => {
+                          if (specialTracked) return <span className="text-gray-400">-</span>
                           const days = calcDaysRemaining(product.id, onHand)
                           if (days === null) return <span className="text-gray-400">-</span>
                           const color =
@@ -478,7 +554,9 @@ export default function Warehouse() {
                       </td>
                       {canSeeCost && (
                         <td className="p-3 text-right font-medium">
-                          {product.landed_cost != null && Number(product.landed_cost) > 0 ? (
+                          {specialTracked ? (
+                            <span className="text-xs font-normal text-gray-400">ไม่มีค่า</span>
+                          ) : product.landed_cost != null && Number(product.landed_cost) > 0 ? (
                             <LotCostPopover productId={product.id} landedCost={Number(product.landed_cost)}>
                               {Number(product.landed_cost).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ฿
                             </LotCostPopover>

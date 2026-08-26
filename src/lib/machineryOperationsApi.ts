@@ -36,12 +36,7 @@ export async function fetchInspectionAccessMachineIds(userId:string):Promise<str
   return (data||[]).map((row:{machine_id:string})=>row.machine_id)
 }
 export async function fetchInspectionAccessCandidates():Promise<MachineryInspectionUser[]> {
-  const {data,error}=await supabase
-    .from('us_users')
-    .select('id, username, email, role, is_active')
-    .in('role',['production','production_mb','manager'])
-    .eq('is_active',true)
-    .order('username')
+  const {data,error}=await supabase.rpc('get_machinery_inspection_access_candidates')
   if(error) throw error
   return (data||[]) as MachineryInspectionUser[]
 }

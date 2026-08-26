@@ -15,6 +15,7 @@ import {
   deleteMachine,
   changeMachineStatus,
   fetchEventsOverlappingRange,
+  fetchEventsStartingRange,
   fetchMachineryProductOptions,
   fetchTodayWorkOrderQuantityByProduct,
   fetchWorkOrderQuantityByProductByDay,
@@ -637,7 +638,16 @@ export default function Machinery() {
 
   const [histLoading, setHistLoading] = useState(false)
   const [histEvents, setHistEvents] = useState<MachineryEvent[]>([])
+  const [histRepairEvents, setHistRepairEvents] = useState<MachineryEvent[]>([])
   const [histQuantityByDay, setHistQuantityByDay] = useState<WorkOrderQuantityByDay>(new Map())
+  const [historyNow, setHistoryNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (tab !== 'history') return
+    setHistoryNow(new Date())
+    const timer = window.setInterval(() => setHistoryNow(new Date()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [tab])
 
   useEffect(() => {
     let cancelled = false
@@ -649,17 +659,21 @@ export default function Machinery() {
         const [ty, tm, td] = histTo.split('-').map(Number)
         const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0).toISOString()
         const toEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999).toISOString()
-        const [ev, quantities] = await Promise.all([
+        const repairLookupEnd = new Date(Math.max(Date.now(), new Date(toEnd).getTime()) + 1).toISOString()
+        const [ev, repairEv, quantities] = await Promise.all([
           fetchEventsOverlappingRange(from, toEnd, histMachineId || null),
+          fetchEventsStartingRange(from, repairLookupEnd, histMachineId || null),
           fetchWorkOrderQuantityByProductByDay(new Date(from), new Date(toEnd)),
         ])
         if (!cancelled) {
           setHistEvents(ev)
+          setHistRepairEvents(repairEv)
           setHistQuantityByDay(quantities)
         }
       } catch {
         if (!cancelled) {
           setHistEvents([])
+          setHistRepairEvents([])
           setHistQuantityByDay(new Map())
         }
       } finally {
@@ -699,11 +713,11 @@ export default function Machinery() {
     const [ty, tm, td] = histTo.split('-').map(Number)
     const rangeStart = new Date(fy, fm - 1, fd, 0, 0, 0, 0).getTime()
     const rangeEnd = new Date(ty, tm - 1, td, 23, 59, 59, 999).getTime()
-    return computeRepairRounds(ms, histEvents, new Date()).filter((r) => {
+    return computeRepairRounds(ms, histRepairEvents, historyNow).filter((r) => {
       const bt = new Date(r.broken_at).getTime()
       return bt >= rangeStart && bt <= rangeEnd
     })
-  }, [histFrom, histTo, histMachineId, machines, histEvents])
+  }, [histFrom, histTo, histMachineId, machines, histRepairEvents, historyNow])
 
   const statusSegmentsSorted = useMemo(() => {
     let list = [...histEvents]
@@ -721,9 +735,9 @@ export default function Machinery() {
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .map((ev) => ({
         ev,
-        durationMs: computeEventDurationMs(ev, new Date()),
+        durationMs: computeEventDurationMs(ev, historyNow),
       }))
-  }, [statusSegmentsSorted])
+  }, [statusSegmentsSorted, historyNow])
 
   if (loading) {
     return (

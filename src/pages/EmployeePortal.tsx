@@ -2,7 +2,7 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuthContext } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { fetchAnnouncements, fetchCertificates, fetchEmployeeByUserId, fetchNotifications, fetchMyAnnouncementReads, fetchMyUnreadAnnouncementCount, fetchWarnings } from '../lib/hrApi'
+import { fetchAnnouncements, fetchCertificates, fetchEmployeeByUserId, fetchNotifications, fetchMyAnnouncementReads, fetchMyUnreadAnnouncementCount, fetchTasks, fetchWarnings, markNotificationRead } from '../lib/hrApi'
 import { pickPendingHRDocuments } from '../lib/hrDocumentAlert'
 import { FiHome, FiClock, FiCalendar, FiTrendingUp, FiBookOpen, FiFileText, FiBox, FiAward, FiBell, FiSmartphone, FiMapPin, FiWifi, FiBriefcase, FiMessageSquare, FiTarget } from 'react-icons/fi'
 import type { HRAnnouncement, HRCertificate, HREmployee, HRNotification, HRWarning } from '../types'
@@ -31,6 +31,7 @@ const Loading = () => (
 )
 
 const MOBILE_MAX_WIDTH = 1024
+const MY_OPEN_TASK_STATUSES = ['new', 'acknowledged', 'in_progress', 'review', 'revision', 'paused'] as const
 
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth <= MOBILE_MAX_WIDTH)
@@ -121,6 +122,9 @@ export default function EmployeePortal() {
   /** จำนวนแจ้งเตือนผลอนุมัติ (อนุมัติ/ปฏิเสธ) ที่ยังไม่อ่าน — โชว์บนกระดิ่ง */
   const [resultUnread, setResultUnread] = useState(0)
   const [resultNotifications, setResultNotifications] = useState<HRNotification[]>([])
+  const [taskNotifications, setTaskNotifications] = useState<HRNotification[]>([])
+  /** งานที่มอบหมายให้ฉันและยังไม่เสร็จ — โชว์บนเมนูงาน */
+  const [myOpenTaskCount, setMyOpenTaskCount] = useState(0)
   /** ประกาศที่ยังไม่กดรับทราบ — โชว์เป็นตัวเลขบนแท็บเอกสาร */
   const [announcementUnread, setAnnouncementUnread] = useState(0)
   const [hrDocumentUnread, setHrDocumentUnread] = useState(0)
@@ -163,7 +167,7 @@ export default function EmployeePortal() {
     }
   }, [portalEmployee?.id])
 
-  // นับแจ้งเตือนผลอนุมัติที่ยังไม่อ่าน (เรียลไทม์)
+  // นับแจ้งเตือนผลอนุมัติและงานใหม่ที่ยังไม่อ่าน (เรียลไทม์)
   useEffect(() => {
     if (!user?.id) return
     let channel: ReturnType<typeof supabase.channel> | null = null
@@ -174,8 +178,10 @@ export default function EmployeePortal() {
         fetchNotifications(emp.id, true)
           .then((list) => {
             const results = list.filter((n) => n.type.includes('result'))
+            const newTasks = list.filter((n) => n.type === 'task_new')
             setResultNotifications(results)
             setResultUnread(results.length)
+            setTaskNotifications(newTasks)
           })
           .catch(() => {})
       loadCount()
@@ -193,6 +199,29 @@ export default function EmployeePortal() {
       if (channel) supabase.removeChannel(channel)
     }
   }, [user?.id])
+
+  // badge เมนูงานยึดสถานะงานจริง และลดลงเมื่องานเสร็จหรือถูกยกเลิก
+  useEffect(() => {
+    if (!portalEmployee?.id) return
+    const employeeId = portalEmployee.id
+    const loadCount = () => fetchTasks({ employeeId })
+      .then((tasks) => setMyOpenTaskCount(tasks.filter((task) =>
+        MY_OPEN_TASK_STATUSES.includes(task.status as (typeof MY_OPEN_TASK_STATUSES)[number])
+        && task.participants?.some((participant) => participant.employee_id === employeeId && participant.role === 'assignee'),
+      ).length))
+      .catch(() => {})
+    loadCount()
+    window.addEventListener('hr-tasks-changed', loadCount)
+    const channel = supabase
+      .channel(`employee-portal-new-tasks-${employeeId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_tasks' }, loadCount)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_task_participants', filter: `employee_id=eq.${employeeId}` }, loadCount)
+      .subscribe()
+    return () => {
+      window.removeEventListener('hr-tasks-changed', loadCount)
+      supabase.removeChannel(channel)
+    }
+  }, [portalEmployee?.id])
 
   useEffect(() => {
     if (!portalEmployee?.id) return
@@ -237,13 +266,15 @@ export default function EmployeePortal() {
     setNotificationOpen((open) => !open)
   }
 
-  const totalBellUnread = resultUnread + announcementUnread + hrDocumentUnread
+  const totalBellUnread = resultUnread + taskNotifications.length + announcementUnread + hrDocumentUnread
 
-  const openNotificationTarget = (target: 'result' | 'announcement' | 'hr-document') => {
+  const openNotificationTarget = (target: 'result' | 'task' | 'announcement' | 'hr-document') => {
     setNotificationOpen(false)
     if (target === 'result') {
       setActiveTab('dashboard')
       setSearchParams({ notif: 'result' })
+    } else if (target === 'task') {
+      setActiveTabAndUrl('tasks')
     } else if (target === 'announcement') {
       setActiveTabAndUrl('documents')
     } else {
@@ -320,6 +351,18 @@ export default function EmployeePortal() {
                   <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.training_name}</div>
                 </button>
               ))}
+              {taskNotifications.map((item) => (
+                <button key={`task-${item.id}`} type="button" onClick={async () => {
+                  try {
+                    await markNotificationRead(item.id)
+                    setTaskNotifications((current) => current.filter((notification) => notification.id !== item.id))
+                  } catch { /* ยังคงรายการไว้เพื่อให้ผู้ใช้ลองเปิดใหม่ได้ */ }
+                  openNotificationTarget('task')
+                }} className="w-full px-4 py-3 text-left hover:bg-emerald-50">
+                  <div className="text-xs font-semibold text-emerald-600">งานใหม่</div>
+                  <div className="mt-0.5 text-sm font-medium text-gray-900 line-clamp-2">{item.message || item.title}</div>
+                </button>
+              ))}
               {resultNotifications.map((item) => (
                 <button key={`result-${item.id}`} type="button" onClick={() => openNotificationTarget('result')} className="w-full px-4 py-3 text-left hover:bg-blue-50">
                   <div className="text-xs font-semibold text-blue-600">ผลคำร้อง</div>
@@ -354,6 +397,11 @@ export default function EmployeePortal() {
               }`}
             >
               <Icon className="w-6 h-6" />
+              {tab.id === 'tasks' && myOpenTaskCount > 0 && (
+                <span className="absolute top-1 right-[18%] min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
+                  {myOpenTaskCount > 99 ? '99+' : myOpenTaskCount}
+                </span>
+              )}
               {tab.id === 'documents' && announcementUnread > 0 && (
                 <span className="absolute top-1 right-[18%] min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold">
                   {announcementUnread > 99 ? '99+' : announcementUnread}

@@ -317,6 +317,18 @@ export async function createAdjustmentFromAudit(auditId: string, userId: string)
   const varianceItems = items.filter((i) => i.is_counted && Number(i.variance) !== 0)
   const locationItems = items.filter((i) => i.location_match === false && i.actual_location)
 
+  if (varianceItems.length) {
+    const productIds = [...new Set(varianceItems.map((item) => item.product_id))]
+    const { data: blockedRows, error: blockedError } = await supabase
+      .from('wh_sub_wms_map_spares')
+      .select('product_id')
+      .in('product_id', productIds)
+    if (blockedError) throw blockedError
+    if ((blockedRows || []).length) {
+      throw new Error('ผล Audit มีสินค้า ST ซึ่งไม่สามารถสร้างใบปรับสต๊อคได้ กรุณาปรับ SKU สินค้าผลิตที่ผูกไว้แทน')
+    }
+  }
+
   if (!varianceItems.length && !locationItems.length) {
     throw new Error('ไม่มีรายการที่ต้องปรับ')
   }
