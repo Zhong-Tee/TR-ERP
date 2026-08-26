@@ -35,6 +35,7 @@ import { getActiveMobileMode, hasDesktopOverride } from '../lib/mobileMode'
 import {
   buildReadiness,
   fetchChecklistItems,
+  fetchInspectionAccessMachineIds,
   fetchTodayInspections,
   type MachineReadiness,
 } from '../lib/machineryOperationsApi'
@@ -46,7 +47,6 @@ import { useWmsModal } from '../components/wms/useWmsModal'
 type TabKey = 'monitor' | 'inspection' | 'maintenance' | 'machineSettings' | 'checklistSettings' | 'history' | 'purchaseRequest' | 'stock' | 'purchaseSettings'
 
 const PRODUCTION_HIDDEN_TABS = new Set<TabKey>([
-  'inspection',
   'machineSettings',
   'checklistSettings',
   'history',
@@ -152,6 +152,7 @@ export default function Machinery() {
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [myPendingPurchaseCount, setMyPendingPurchaseCount] = useState(0)
+  const [grantedInspectionMachineIds, setGrantedInspectionMachineIds] = useState<string[]>([])
 
   const isProductionRole = user?.role === 'production'
 
@@ -163,15 +164,37 @@ export default function Machinery() {
   const showChecklistSettingsTab =
     !isProductionRole && (user?.role === 'technician' || showMachineSettingsTab)
   const showPurchaseSettingsTab = user?.role === 'superadmin' || user?.role === 'admin' || user?.role === 'technician'
+  const showInspectionTab =
+    user?.role === 'superadmin' ||
+    user?.role === 'admin' ||
+    user?.role === 'technician' ||
+    grantedInspectionMachineIds.length > 0
+
+  const inspectionMachines = ['superadmin', 'admin', 'technician'].includes(user?.role || '')
+    ? machines
+    : machines.filter((machine) => grantedInspectionMachineIds.includes(machine.id))
+
+  useEffect(() => {
+    if (!user?.id || ['superadmin', 'admin', 'technician'].includes(user.role)) {
+      setGrantedInspectionMachineIds([])
+      return
+    }
+    let active = true
+    fetchInspectionAccessMachineIds(user.id)
+      .then((machineIds) => { if (active) setGrantedInspectionMachineIds(machineIds) })
+      .catch(() => { if (active) setGrantedInspectionMachineIds([]) })
+    return () => { active = false }
+  }, [user?.id, user?.role])
 
   useEffect(() => {
     if (
       (!showMachineSettingsTab && tab === 'machineSettings') ||
       (!showChecklistSettingsTab && tab === 'checklistSettings') ||
+      (!showInspectionTab && tab === 'inspection') ||
       (!showPurchaseSettingsTab && tab === 'purchaseSettings') ||
       (isProductionRole && PRODUCTION_HIDDEN_TABS.has(tab))
     ) setTab('monitor')
-  }, [showMachineSettingsTab, showChecklistSettingsTab, showPurchaseSettingsTab, isProductionRole, tab])
+  }, [showMachineSettingsTab, showChecklistSettingsTab, showInspectionTab, showPurchaseSettingsTab, isProductionRole, tab])
 
   const isTechnicianMobile =
     user?.role === 'technician' && window.innerWidth <= 768 && !hasDesktopOverride()
@@ -450,8 +473,10 @@ export default function Machinery() {
     can_substitute: false,
     sort_order: 0,
     image_url: null,
+    incident_titles: [],
   })
   const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [incidentTitleDraft, setIncidentTitleDraft] = useState('')
   const [productSearch, setProductSearch] = useState('')
   const [showSelectedProducts, setShowSelectedProducts] = useState(false)
   const [photoRemove, setPhotoRemove] = useState(false)
@@ -483,8 +508,10 @@ export default function Machinery() {
       can_substitute: false,
       sort_order: 0,
       image_url: null,
+      incident_titles: [],
     })
     setPhotoFile(null)
+    setIncidentTitleDraft('')
     setPhotoRemove(false)
     setPhotoPreview(null)
   }
@@ -508,6 +535,7 @@ export default function Machinery() {
         line_index: form.line_index ?? null,
         is_primary_machine: form.is_primary_machine ?? true,
         can_substitute: form.can_substitute ?? false,
+        incident_titles: form.incident_titles || [],
         sort_order: form.id
           ? Number(form.sort_order) || 0
           : machines.reduce((highest, machine) => Math.max(highest, Number(machine.sort_order) || 0), -1) + 1,
@@ -533,6 +561,7 @@ export default function Machinery() {
     setIsMachineFormOpen(true)
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setPhotoFile(null)
+    setIncidentTitleDraft('')
     setPhotoRemove(false)
     setPhotoPreview(m.image_url || null)
     const configuredLineCount = m.department_name ? planLineSettings.linesPerDept[m.department_name] : 0
@@ -556,6 +585,7 @@ export default function Machinery() {
       can_substitute: m.can_substitute,
       sort_order: m.sort_order,
       image_url: m.image_url ?? null,
+      incident_titles: m.incident_titles || [],
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -840,6 +870,7 @@ export default function Machinery() {
       <nav className={`flex gap-1 border-b border-gray-200 ${isStandaloneMobile ? 'flex-nowrap overflow-x-auto scrollbar-thin' : 'flex-wrap'}`}>
         {(['monitor', 'inspection', 'maintenance', 'machineSettings', 'checklistSettings', 'history', 'purchaseRequest', 'stock', 'purchaseSettings'] as TabKey[]).map((k) => {
           if (isProductionRole && PRODUCTION_HIDDEN_TABS.has(k)) return null
+          if (k === 'inspection' && !showInspectionTab) return null
           if (k === 'machineSettings' && !showMachineSettingsTab) return null
           if (k === 'checklistSettings' && !showChecklistSettingsTab) return null
           if (k === 'purchaseSettings' && !showPurchaseSettingsTab) return null
@@ -878,7 +909,7 @@ export default function Machinery() {
         })}
       </nav>
 
-      {tab === 'inspection' && <MachineryChecklist machines={machines} onChanged={load} />}
+      {tab === 'inspection' && showInspectionTab && <MachineryChecklist machines={inspectionMachines} onChanged={load} />}
       {tab === 'maintenance' && <MachineryMaintenance machines={machines} onChanged={load} />}
       {tab === 'checklistSettings' && showChecklistSettingsTab && <ChecklistSettings machines={machines} />}
 
@@ -1226,9 +1257,67 @@ export default function Machinery() {
                   )}
                 </select>
               </label>
-              <label className="flex items-center gap-2 pt-6"><input type="checkbox" checked={form.is_primary_machine ?? true} onChange={(e) => setForm((f) => ({ ...f, is_primary_machine: e.target.checked }))} /> เครื่องหลักของไลน์</label>
-              <label className="flex items-center gap-2 pt-6"><input type="checkbox" checked={form.can_substitute ?? false} onChange={(e) => setForm((f) => ({ ...f, can_substitute: e.target.checked }))} /> ใช้เป็นเครื่องสำรองได้</label>
-              <div className="sm:col-span-2 xl:order-2 xl:col-span-12 rounded-xl border border-gray-200 p-4">
+              <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2 xl:[grid-column:1/16] xl:row-start-4">
+                <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                  form.is_primary_machine ?? true
+                    ? 'border-emerald-300 bg-emerald-50'
+                    : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                }`}>
+                  <input type="checkbox" className="h-5 w-5 rounded border-gray-300 accent-emerald-600" checked={form.is_primary_machine ?? true} onChange={(e) => setForm((f) => ({ ...f, is_primary_machine: e.target.checked }))} />
+                  <span><b className="block text-sm text-gray-800">เครื่องหลักของไลน์</b><span className="text-xs text-gray-500">ใช้เป็นเครื่องหลักในการวางแผนผลิต</span></span>
+                </label>
+                <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                  form.can_substitute ?? false
+                    ? 'border-blue-300 bg-blue-50'
+                    : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                }`}>
+                  <input type="checkbox" className="h-5 w-5 rounded border-gray-300 accent-blue-600" checked={form.can_substitute ?? false} onChange={(e) => setForm((f) => ({ ...f, can_substitute: e.target.checked }))} />
+                  <span><b className="block text-sm text-gray-800">ใช้เป็นเครื่องสำรองได้</b><span className="text-xs text-gray-500">อนุญาตให้ใช้ทดแทนเครื่องหลัก</span></span>
+                </label>
+              </div>
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 sm:col-span-2 xl:[grid-column:16/21] xl:row-span-4 xl:row-start-1">
+                <span className="text-sm font-semibold text-gray-700">หัวข้อ/อาการหลักที่พบบ่อย</span>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    value={incidentTitleDraft}
+                    onChange={(e) => setIncidentTitleDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return
+                      e.preventDefault()
+                      const title = incidentTitleDraft.trim()
+                      if (!title) return
+                      setForm((current) => ({ ...current, incident_titles: [...new Set([...(current.incident_titles || []).filter(Boolean), title])] }))
+                      setIncidentTitleDraft('')
+                    }}
+                    placeholder="เช่น กระดาษติด"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const title = incidentTitleDraft.trim()
+                      if (!title) return
+                      setForm((current) => ({ ...current, incident_titles: [...new Set([...(current.incident_titles || []).filter(Boolean), title])] }))
+                      setIncidentTitleDraft('')
+                    }}
+                    disabled={!incidentTitleDraft.trim()}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    เพิ่ม
+                  </button>
+                </div>
+                <div className="mt-3 flex min-h-8 flex-wrap gap-2">
+                  {(form.incident_titles || []).filter(Boolean).map((title) => (
+                    <span key={title} className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-sm text-emerald-800 shadow-sm">
+                      {title}
+                      <button type="button" onClick={() => setForm((current) => ({ ...current, incident_titles: (current.incident_titles || []).filter((item) => item !== title) }))} className="font-bold text-gray-400 hover:text-red-600" aria-label={`ลบ ${title}`}>×</button>
+                    </span>
+                  ))}
+                  {(form.incident_titles || []).filter(Boolean).length === 0 && <span className="text-xs text-gray-400">ยังไม่มีรายการอาการ</span>}
+                </div>
+                <span className="mt-2 block text-xs text-gray-500">กด Enter หรือปุ่มเพิ่ม รายการจะแสดงในหน้าแจ้งเสีย / ซ่อม</span>
+              </div>
+              <div className="sm:col-span-2 xl:order-2 xl:col-span-12 xl:col-start-9 rounded-xl border border-gray-200 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="text-sm font-semibold text-gray-700">สินค้าที่ผลิตด้วยเครื่องนี้</span>
@@ -1252,7 +1341,7 @@ export default function Machinery() {
                   onChange={(e) => setProductSearch(e.target.value)}
                   placeholder="ค้นหารหัสสินค้า ชื่อสินค้า หมวดหมู่ หรือประเภท"
                 />
-                <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                <div className="mt-2 max-h-96 overflow-y-auto rounded-lg border border-gray-200 bg-white">
                   <div className="sticky top-0 z-10 grid grid-cols-[1.15fr_2fr_1fr_0.8fr] gap-3 border-b border-gray-200 bg-gray-50 px-10 py-2 text-xs font-semibold text-gray-500">
                     <span>รหัสสินค้า</span>
                     <span>ชื่อสินค้า</span>
@@ -1294,7 +1383,7 @@ export default function Machinery() {
                     })}
                 </div>
               </div>
-              <div className="sm:col-span-2 xl:order-1 xl:col-span-8 space-y-2 rounded-xl border border-gray-200 p-4">
+              <div className="sm:col-span-2 xl:order-1 xl:col-span-8 xl:col-start-1 space-y-2 rounded-xl border border-gray-200 p-4">
                 <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>รูปเครื่อง (JPEG/PNG/WebP)</span>
                 <input
                   type="file"

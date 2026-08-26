@@ -8,6 +8,7 @@ export interface Inspection { id:string; machine_id:string; inspection_date:stri
 export interface InspectionResult { id?:string; inspection_id:string; checklist_item_id:string; passed:boolean|null; value_text:string|null; value_number:number|null; photo_url:string|null; note:string|null }
 export interface MachineryIncident { id:string; ticket_no:string; machine_id:string; title:string; symptom:string|null; severity:'low'|'medium'|'high'|'critical'; status:IncidentStatus; plan_job_id:string|null; reported_at:string; accepted_at:string|null; repair_started_at:string|null; repair_completed_at:string|null; ready_at:string|null; closed_at:string|null; expected_ready_at:string|null; root_cause:string|null; resolution:string|null; note:string|null }
 export interface MachineReadiness { machine_id:string; status:ReadinessStatus; inspection:Inspection|null; required_count:number; passed_count:number; failed_count:number }
+export interface MachineryInspectionUser { id:string; username:string|null; email:string|null; role:string; is_active:boolean|null }
 
 export const INCIDENT_STATUS_LABELS: Record<IncidentStatus,string> = { reported:'แจ้งเสีย', accepted:'ช่างรับงาน', repairing:'กำลังซ่อม', testing:'รอทดสอบ', ready:'พร้อมใช้งาน', closed:'ปิดใบงาน', cancelled:'ยกเลิก' }
 
@@ -23,6 +24,38 @@ export async function saveChecklistItem(row:Partial<ChecklistItem>&{machine_id:s
   if(error) throw error; return data as ChecklistItem
 }
 export async function disableChecklistItem(id:string){const {error}=await supabase.from('pr_machinery_checklist_items').update({is_active:false}).eq('id',id);if(error)throw error}
+
+export async function fetchInspectionAccessUserIds(machineId:string):Promise<string[]> {
+  const {data,error}=await supabase.from('pr_machinery_inspection_machine_users').select('user_id').eq('machine_id',machineId)
+  if(error) throw error
+  return (data||[]).map((row:{user_id:string})=>row.user_id)
+}
+export async function fetchInspectionAccessMachineIds(userId:string):Promise<string[]> {
+  const {data,error}=await supabase.from('pr_machinery_inspection_machine_users').select('machine_id').eq('user_id',userId)
+  if(error) throw error
+  return (data||[]).map((row:{machine_id:string})=>row.machine_id)
+}
+export async function fetchInspectionAccessCandidates():Promise<MachineryInspectionUser[]> {
+  const {data,error}=await supabase
+    .from('us_users')
+    .select('id, username, email, role, is_active')
+    .in('role',['production','production_mb','manager'])
+    .eq('is_active',true)
+    .order('username')
+  if(error) throw error
+  return (data||[]) as MachineryInspectionUser[]
+}
+export async function saveInspectionAccessUserIds(machineId:string,userIds:string[]):Promise<void> {
+  const {data:{user}}=await supabase.auth.getUser()
+  const currentIds=await fetchInspectionAccessUserIds(machineId)
+  const desiredIds=[...new Set(userIds)]
+  const desiredSet=new Set(desiredIds)
+  const currentSet=new Set(currentIds)
+  const removed=currentIds.filter(id=>!desiredSet.has(id))
+  const added=desiredIds.filter(id=>!currentSet.has(id))
+  if(removed.length){const {error}=await supabase.from('pr_machinery_inspection_machine_users').delete().eq('machine_id',machineId).in('user_id',removed);if(error)throw error}
+  if(added.length){const {error}=await supabase.from('pr_machinery_inspection_machine_users').insert(added.map(user_id=>({machine_id:machineId,user_id,created_by:user?.id||null})));if(error)throw error}
+}
 
 export async function fetchTodayInspections(date:string):Promise<{inspections:Inspection[];results:InspectionResult[]}> {
   const {data:inspections,error}=await supabase.from('pr_machinery_inspections').select('*').eq('inspection_date',date)

@@ -23,6 +23,7 @@ export interface MachineryMachine {
   line_index: number | null
   is_primary_machine: boolean
   can_substitute: boolean
+  incident_titles: string[]
   current_status: PrMachineryStatus
   status_changed_at: string
   sort_order: number
@@ -205,6 +206,7 @@ export async function upsertMachine(
     line_index: row.line_index ?? null,
     is_primary_machine: row.is_primary_machine ?? true,
     can_substitute: row.can_substitute ?? false,
+    incident_titles: [...new Set((row.incident_titles || []).map((title) => title.trim()).filter(Boolean))],
     sort_order: row.sort_order ?? 0,
   }
   if ('image_url' in row) {
