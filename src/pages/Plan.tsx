@@ -45,6 +45,8 @@ interface PlanSettingsData {
   departments: string[]
   processes: Record<string, ProcessStep[]>
   prepPerJob: Record<string, number>
+  /** เวลาหน่วงก่อนเริ่มงานต่อใบงาน (นาที) */
+  startDelayPerJob: Record<string, number>
   deptBreaks: Record<string, { start: string; end: string }[]>
   linesPerDept: Record<string, number>
   /** หมวดสินค้าที่ผูกกับแผนก (metadata — ไม่ใช้ใน timeline) */
@@ -123,6 +125,7 @@ const defaultSettings: PlanSettingsData = {
     ],
   },
   prepPerJob: { เบิก: 10, STAMP: 10, STK: 10, CTT: 10, LASER: 10, TUBE: 10, QC: 10, PACK: 5 },
+  startDelayPerJob: { QC: 5 },
   deptBreaks: {
     เบิก: [{ start: '13:00', end: '14:00' }],
     STAMP: [{ start: '13:00', end: '14:00' }],
@@ -519,14 +522,16 @@ function computePlanTimeline(
         })
         const qcReadySec = getQcReadySec(finishTimes)
         if (qcReadySec != null) base = Math.max(base, qcReadySec)
+        base += Math.max(0, settings.startDelayPerJob?.QC ?? 5) * 60
       }
       if (dept === 'PACK') {
         const qcFinishSec = getEffectiveFinishSec('QC', j, precomputed)
         if (qcFinishSec > 0) {
-          // PACK starts after QC finishes (or when its line becomes available) and
-          // uses the configurable per-job duration from Plan settings.
+          // ใช้ค่าเดียวกันเพิ่มทั้งก่อนเริ่ม PACK และระยะเวลาจนเสร็จ
+          const packStartAndFinishMin = Math.max(0, settings.prepPerJob?.PACK ?? 5)
           base = Math.max(base, qcFinishSec)
-          finalDur = Math.max(0, (settings.prepPerJob?.PACK ?? 5) * 60)
+          base += packStartAndFinishMin * 60
+          finalDur = packStartAndFinishMin * 60
         }
       }
     }
@@ -1537,6 +1542,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       ...nextSettings,
       processes: { ...nextSettings.processes },
       prepPerJob: { ...nextSettings.prepPerJob },
+      startDelayPerJob: { ...(nextSettings.startDelayPerJob || defaultSettings.startDelayPerJob) },
       deptBreaks: { ...nextSettings.deptBreaks },
       linesPerDept: { ...nextSettings.linesPerDept },
       departmentProductCategories: { ...(nextSettings.departmentProductCategories || {}) },
@@ -1548,6 +1554,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       if (s.linesPerDept[d] == null) s.linesPerDept[d] = 1
       if (s.departmentProductCategories[d] == null) s.departmentProductCategories[d] = []
     })
+    if (s.startDelayPerJob.QC == null) s.startDelayPerJob.QC = 5
     return s
   }, [])
 
@@ -3700,7 +3707,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             const next = { ...settings }
                             const idx = next.departments.indexOf(d)
                             if (idx > -1) next.departments[idx] = newName
-                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
+                            ;['processes', 'prepPerJob', 'startDelayPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
                               const key = k as keyof PlanSettingsData
                               const obj = next[key] as Record<string, unknown>
                               if (obj[d] != null) {
@@ -3755,7 +3762,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             if (!window.confirm(`ลบแผนก ${d}?`)) return
                             const next = { ...settings }
                             next.departments = next.departments.filter((x) => x !== d)
-                            ;['processes', 'prepPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
+                            ;['processes', 'prepPerJob', 'startDelayPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
                               const obj = next[k as keyof PlanSettingsData] as Record<string, unknown>
                               delete obj[d]
                             })
@@ -4044,7 +4051,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <h4 className="font-medium mb-1">
-                      {currentDept === 'PACK' ? 'ระยะเวลาแพ็คต่อใบงาน (นาที)' : 'เวลาผลิตขั้นต่ำต่อบิล (นาที)'}
+                      {currentDept === 'PACK' ? 'เวลา+เพิ่มตอนเริ่ม/เสร็จ (นาที)' : 'เวลาผลิตขั้นต่ำต่อบิล (นาที)'}
                     </h4>
                     <input
                       type="number"
@@ -4063,9 +4070,30 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
                     />
                     {currentDept === 'PACK' && (
-                      <p className="mt-1 text-xs text-gray-500">เริ่มนับหลัง QC เสร็จ และคำนวณรวมเวลาพัก</p>
+                      <p className="mt-1 text-xs text-gray-500">เพิ่มค่านี้หลัง QC เสร็จเพื่อหาเวลาเริ่ม และเพิ่มอีกครั้งเพื่อหาเวลาเสร็จ</p>
                     )}
                   </div>
+                  {currentDept === 'QC' && (
+                    <div>
+                      <h4 className="font-medium mb-1">เวลา+เพิ่มตอนเริ่ม (นาที)</h4>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={settings.startDelayPerJob?.QC ?? 5}
+                        disabled={!unlocked}
+                        onChange={(e) => {
+                          const next = { ...settings, startDelayPerJob: { ...(settings.startDelayPerJob || {}) } }
+                          const value = Number(e.target.value)
+                          next.startDelayPerJob.QC = Number.isFinite(value) && value >= 0 ? value : 5
+                          setSettings(next)
+                          saveSettings(next)
+                        }}
+                        className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">เพิ่มจากเวลาที่ QC พร้อมเริ่มงาน</p>
+                    </div>
+                  )}
                   <div>
                     <h4 className="font-medium mb-1">จำนวนไลน์การผลิต</h4>
                     <input
@@ -4171,6 +4199,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       settings.departments.forEach((d) => {
                         const rows: (string | number)[][] = [
                           ['prepPerJob', settings.prepPerJob?.[d] ?? 10],
+                          ['startDelayPerJob', settings.startDelayPerJob?.[d] ?? 0],
                           ['linesPerDept', settings.linesPerDept?.[d] ?? 1],
                           ['step_name', 'step_type', 'step_value'],
                           ...(settings.processes[d] || []).map((p) => [p.name, p.type, p.type === 'fixed' ? p.value / 60 : p.value]),
@@ -4217,6 +4246,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             next.departments = departments
                             next.processes = { ...next.processes }
                             next.prepPerJob = { ...next.prepPerJob }
+                            next.startDelayPerJob = { ...(next.startDelayPerJob || defaultSettings.startDelayPerJob) }
                             next.linesPerDept = { ...next.linesPerDept }
                             next.deptBreaks = { ...next.deptBreaks }
                             departments.forEach((d) => {
@@ -4224,6 +4254,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                               if (!sh) return
                               const rows = XLSX.utils.sheet_to_json<(string | number)[]>(sh, { header: 1, defval: '' })
                               let prep = 10
+                              let startDelay = d === 'QC' ? 5 : 0
                               let lines = 1
                               const steps: ProcessStep[] = []
                               const br: { start: string; end: string }[] = []
@@ -4231,6 +4262,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                               for (; i < rows.length; i++) {
                                 const r = rows[i]
                                 if (r[0] === 'prepPerJob' && r[1] != null) prep = Number(r[1]) || 10
+                                if (r[0] === 'startDelayPerJob' && r[1] != null) startDelay = Math.max(0, Number(r[1]) || 0)
                                 if (r[0] === 'linesPerDept' && r[1] != null) lines = Number(r[1]) || 1
                                 if (r[0] === 'step_name') break
                               }
@@ -4253,6 +4285,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                               }
                               next.processes[d] = steps.length ? steps : (next.processes[d] || [])
                               next.prepPerJob[d] = prep
+                              next.startDelayPerJob[d] = startDelay
                               next.linesPerDept[d] = lines
                               next.deptBreaks[d] = br.length ? br : (next.deptBreaks[d] || [])
                             })
