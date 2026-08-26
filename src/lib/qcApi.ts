@@ -113,6 +113,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     .from('or_order_items')
     .select('order_id, item_uid, quantity, created_at, id')
     .in('order_id', allOrderIds)
+    .is('cancellation_stock_action', null)
   if (itemsErr) throw itemsErr
 
   const itemsByOrderId: Record<string, { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string }[]> = {}
@@ -307,6 +308,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     .from('or_order_items')
     .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
     .in('order_id', orderIds)
+    .is('cancellation_stock_action', null)
   if (itemsErr) throw itemsErr
   if (!items?.length) return []
 
@@ -616,6 +618,7 @@ export async function fetchRejectItems() {
     .from('or_order_items')
     .select('item_uid, order_id')
     .in('item_uid', itemUids)
+    .is('cancellation_stock_action', null)
   if (itemErr) throw itemErr
 
   const orderIds = [...new Set((itemRows || []).map((r) => r.order_id).filter(Boolean))]

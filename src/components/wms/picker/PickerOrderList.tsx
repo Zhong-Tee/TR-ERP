@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
-import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
+import {
+  FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN,
+  isOrderAllowedInFulfillmentFlow,
+  isOrderItemAllowedInFulfillmentFlow,
+} from '../../../lib/orderFlowFilter'
 import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
 
 interface PickerOrderListProps {
@@ -33,7 +37,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
 
     const { data } = await supabase
       .from('wms_orders')
-      .select('id, work_order_id, order_id, created_at, status, product_name, product_code, location, qty')
+      .select('id, work_order_id, order_id, created_at, status, product_name, product_code, location, qty, source_order_id, source_order_item_id')
       .eq('assigned_to', currentUserId)
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
       .in('status', ['pending', 'wrong', 'not_find'])
@@ -44,7 +48,30 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       return
     }
 
-    const woIds = [...new Set((data as any[]).map((r) => r.work_order_id).filter(Boolean))]
+    const sourceOrderIds = [...new Set((data as any[]).map((r) => r.source_order_id).filter(Boolean))]
+    const sourceItemIds = [...new Set((data as any[]).map((r) => r.source_order_item_id).filter(Boolean))]
+    const [orderStateResult, itemStateResult] = await Promise.all([
+      sourceOrderIds.length
+        ? supabase.from('or_orders').select('id, status').in('id', sourceOrderIds)
+        : Promise.resolve({ data: [] as any[] }),
+      sourceItemIds.length
+        ? supabase.from('or_order_items').select('id, cancellation_stock_action').in('id', sourceItemIds)
+        : Promise.resolve({ data: [] as any[] }),
+    ])
+    const orderAllowed = new Map((orderStateResult.data || []).map((r: any) => [r.id, isOrderAllowedInFulfillmentFlow(r.status)]))
+    const itemAllowed = new Map((itemStateResult.data || []).map((r: any) => [r.id, isOrderItemAllowedInFulfillmentFlow(r.cancellation_stock_action)]))
+    const activeRows = (data as any[]).filter((row) =>
+      (!row.source_order_id || orderAllowed.get(row.source_order_id) !== false) &&
+      (!row.source_order_item_id || itemAllowed.get(row.source_order_item_id) !== false)
+    )
+
+    if (activeRows.length === 0) {
+      setOrders([])
+      setLoading(false)
+      return
+    }
+
+    const woIds = [...new Set(activeRows.map((r) => r.work_order_id).filter(Boolean))]
     let woNameById: Record<string, string> = {}
     const dueByScopeId: Record<string, DueBillInfo[]> = {}
     if (woIds.length > 0) {
@@ -66,7 +93,7 @@ export default function PickerOrderList({ onSelectOrder, currentUserId }: Picker
       })
     }
 
-    const grouped = (data as any[]).reduce(
+    const grouped = activeRows.reduce(
       (acc: Record<string, any>, obj) => {
         const workOrderId = String(obj.work_order_id || '')
         const orderId = String(obj.order_id || '')

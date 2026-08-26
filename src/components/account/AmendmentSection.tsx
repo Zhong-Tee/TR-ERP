@@ -4,6 +4,7 @@ import { Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { formatDateTime } from '../../lib/utils'
+import { isCondoTierExportProduct } from '../../lib/orderItemExportSort'
 import Modal from '../ui/Modal'
 
 type Props = {
@@ -35,6 +36,11 @@ const REASON_OPTIONS: { value: string; label: string }[] = [
   { value: 'staff_error', label: 'พนักงานลงผิด' },
   { value: 'customer_change', label: 'ลูกค้าขอเปลี่ยน' },
 ]
+
+const isCondoTableItem = (item: any) =>
+  item?.is_detail_row === true ||
+  isCondoTierExportProduct(item?.product_name) ||
+  /คอนโด|CONDO/i.test(String(item?.product_name || ''))
 
 export default function AmendmentSection({ orderToAmend, onDone }: Props) {
   const { user } = useAuthContext()
@@ -168,11 +174,18 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
       if (error) throw error
       const result = data as any
       const partial = result?.partial === true
+      const rawRemoveIds = detailAmendment.changes_json?.remove_item_ids
+      const removeIds = new Set(Array.isArray(rawRemoveIds) ? rawRemoveIds.map((id) => String(id)) : [])
+      const removedItems = (Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before : [])
+        .filter((item: any) => item?.id && removeIds.has(String(item.id))) as any[]
+      const removedSummary = removedItems.length
+        ? `\nรายการที่นำออก: ${removedItems.map((item) => `${item.product_name || '-'} × ${item.quantity ?? '-'}`).join(', ')}`
+        : ''
       setResultModal({
         open: true,
         success: true,
         message: partial
-          ? `ดำเนินการแก้ไขบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nปรับแถว WMS: ${result?.cancelled_wms_count ?? 0} รายการ`
+          ? `ดำเนินการแก้ไขบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})${removedSummary}\nปรับแถว WMS: ${result?.cancelled_wms_count ?? 0} รายการ`
           : `ยกเลิกบิลสำเร็จ (${result?.bill_no || detailAmendment.bill_no || '-'})\nWMS ที่ยกเลิก: ${result?.cancelled_wms_count ?? 0} รายการ\n\nกรุณาสร้างบิลใหม่ในหน้าออเดอร์`,
       })
       setDetailModalOpen(false)
@@ -457,7 +470,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
       </div>
 
       {/* Detail Modal */}
-      <Modal open={detailModalOpen} onClose={() => { setDetailModalOpen(false); setDetailAmendment(null); setDetailOrder(null) }} contentClassName="max-w-4xl max-h-[90vh] overflow-y-auto">
+      <Modal open={detailModalOpen} onClose={() => { setDetailModalOpen(false); setDetailAmendment(null); setDetailOrder(null) }} contentClassName="max-w-7xl max-h-[90vh] overflow-y-auto">
         {detailAmendment && (
           <div className="p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-gray-200 pb-3">
@@ -593,31 +606,43 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                 Array.isArray(rawRemove) && rawRemove.length > 0
                   ? new Set(rawRemove.map((x) => String(x)))
                   : null
-              const isPendingPartial = detailAmendment.status === 'pending' && removeIds && removeIds.size > 0
+              const isPartialRequest = !!removeIds && removeIds.size > 0
               let items: any[] = []
-              if (isPendingPartial && itemsBefore.length > 0) {
+              if (isPartialRequest && itemsBefore.length > 0) {
                 items = itemsBefore.filter((it: any) => it?.id && removeIds!.has(String(it.id)))
-              } else if (detailOrder?.or_order_items && (detailAmendment.status === 'executed' || !isPendingPartial)) {
-                items = detailOrder.or_order_items
               } else if (itemsBefore.length > 0) {
                 items = itemsBefore as any[]
               } else {
                 items = detailOrder?.or_order_items || []
               }
               if (!items || items.length === 0) return null
+              const changeResult = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+                ? 'นำออกแล้ว'
+                : detailAmendment.status === 'rejected'
+                  ? 'ไม่ได้ดำเนินการ'
+                  : 'รอนำออก'
+              const resultClasses = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+                ? 'border-red-200 bg-red-50 text-red-700'
+                : detailAmendment.status === 'rejected'
+                  ? 'border-gray-200 bg-gray-50 text-gray-600'
+                  : 'border-amber-200 bg-amber-50 text-amber-700'
               return (
                 <div>
                   <h4 className="text-sm font-semibold text-gray-700 mb-2">
                     <i className="fas fa-boxes mr-1 text-gray-500" />
-                    {isPendingPartial ? `รายการที่ขอนำออก (${items.length} รายการ)` : `รายการสินค้าในบิล (${items.length} รายการ)`}
+                    {isPartialRequest
+                      ? `${changeResult === 'นำออกแล้ว' ? 'รายการที่นำออกจากบิล' : 'รายการที่ขอนำออก'} (${items.length} รายการ)`
+                      : `รายการสินค้าในบิลก่อนยกเลิก (${items.length} รายการ)`}
                   </h4>
-                  {isPendingPartial && (
-                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1.5 mb-2">
-                      แสดงเฉพาะบรรทัดที่เลือกในคำขอ (ยกเลิกบางรายการ) — ไม่ใช่ทุกรายการในบิล
+                  {isPartialRequest && changeResult !== 'นำออกแล้ว' && (
+                    <p className={`text-xs border rounded-lg px-2 py-1.5 mb-2 ${resultClasses}`}>
+                      {changeResult === 'ไม่ได้ดำเนินการ'
+                          ? 'คำขอนี้ถูกปฏิเสธ รายการด้านล่างจึงไม่ได้ถูกนำออกจากบิล'
+                          : 'รายการด้านล่างคือรายการที่เลือกขอนำออก และยังรอการอนุมัติ'}
                     </p>
                   )}
                   <div className="border border-gray-200 rounded-lg overflow-x-auto">
-                    <table className="w-full text-sm">
+                    <table className="w-full min-w-[1320px] text-sm">
                       <thead>
                         <tr className="bg-gray-50">
                           <th className="px-3 py-2 text-left font-semibold text-gray-600">#</th>
@@ -625,9 +650,14 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                           <th className="px-3 py-2 text-center font-semibold text-gray-600">จำนวน</th>
                           <th className="px-3 py-2 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
                           <th className="px-3 py-2 text-left font-semibold text-gray-600">สีหมึก</th>
-                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ลายการ์ตูน</th>
-                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ฟอนต์</th>
-                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ข้อความ</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">ลายการ์ตูน</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">เส้น</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">ฟอนต์</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 1</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 2</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 3</th>
+                           <th className="px-3 py-2 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                           {isPartialRequest && <th className="px-3 py-2 text-center font-semibold text-gray-600">ผลการเปลี่ยนแปลง</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -636,16 +666,25 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                             <td className="px-3 py-2 text-gray-400">{i + 1}</td>
                             <td className="px-3 py-2 font-medium text-gray-800 max-w-[200px]">
                               {item?.product_name ?? '-'}
-                              {item?.product_type && <span className="ml-1 text-xs text-gray-400">({item.product_type})</span>}
+                              {item?.product_type && isCondoTableItem(item) && <span className="ml-1 text-xs text-gray-400">({item.product_type})</span>}
                             </td>
                             <td className="px-3 py-2 text-center font-semibold">{item?.quantity ?? '-'}</td>
                             <td className="px-3 py-2 text-right tabular-nums">{item?.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
                             <td className="px-3 py-2 text-gray-700">{item?.ink_color || '-'}</td>
                             <td className="px-3 py-2 text-gray-700">{item?.cartoon_pattern || '-'}</td>
+                            <td className="px-3 py-2 text-gray-700">{item?.line_pattern || '-'}</td>
                             <td className="px-3 py-2 text-gray-700">{item?.font || '-'}</td>
-                            <td className="px-3 py-2 text-gray-700 max-w-[200px]">
-                              {[item?.line_1, item?.line_2, item?.line_3].filter(Boolean).join(' / ') || '-'}
-                            </td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_1 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_2 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_3 || '-'}</td>
+                            <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.notes || '-'}</td>
+                             {isPartialRequest && (
+                               <td className="px-3 py-2 text-center">
+                                 <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${resultClasses}`}>
+                                   {changeResult}
+                                 </span>
+                               </td>
+                             )}
                           </tr>
                         ))}
                       </tbody>
@@ -664,6 +703,86 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                       ))}
                     </div>
                   )}
+                </div>
+              )
+            })()}
+
+            {/* เก็บภาพรวมเดิมทั้งบิลไว้ตรวจสอบย้อนหลัง พร้อมแยกบรรทัดที่ถูกนำออกกับบรรทัดที่คงเดิม */}
+            {(() => {
+              const itemsBefore = Array.isArray(detailAmendment.items_before) ? detailAmendment.items_before as any[] : []
+              const rawRemove = detailAmendment.changes_json?.remove_item_ids
+              const removeIds = new Set(Array.isArray(rawRemove) ? rawRemove.map((id) => String(id)) : [])
+              if (removeIds.size === 0 || itemsBefore.length === 0) return null
+              const wasExecuted = detailAmendment.status === 'executed' || detailAmendment.status === 'approved'
+              return (
+                <div className="border-t border-gray-200 pt-4">
+                  <h4 className="mb-1 text-sm font-semibold text-gray-700">
+                    <i className="fas fa-history mr-1 text-blue-500" />
+                    รายการเดิมก่อนแก้ไข ({itemsBefore.length} รายการ)
+                  </h4>
+                  <p className="mb-2 text-xs text-gray-500">
+                    แสดงรายการทั้งหมดจาก snapshot ตอนสร้างคำขอ เพื่อเปรียบเทียบว่ารายการใดถูกนำออกและรายการใดยังคงอยู่
+                  </p>
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="w-full min-w-[1320px] text-sm">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">#</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ชื่อสินค้า</th>
+                          <th className="px-3 py-2 text-center font-semibold text-gray-600">จำนวน</th>
+                          <th className="px-3 py-2 text-right font-semibold text-gray-600">ราคา/หน่วย</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">สีหมึก</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ลายการ์ตูน</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">เส้น</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">ฟอนต์</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 1</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 2</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">บรรทัด 3</th>
+                          <th className="px-3 py-2 text-left font-semibold text-gray-600">หมายเหตุ</th>
+                          <th className="px-3 py-2 text-center font-semibold text-gray-600">ผล</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {itemsBefore.map((item: any, index: number) => {
+                          const wasRemoved = !!item?.id && removeIds.has(String(item.id))
+                          const resultLabel = wasRemoved
+                            ? (wasExecuted ? 'นำออกแล้ว' : detailAmendment.status === 'rejected' ? 'ไม่ได้ดำเนินการ' : 'รอนำออก')
+                            : 'คงเดิม'
+                          const resultClass = wasRemoved
+                            ? (wasExecuted
+                                ? 'border-red-200 bg-red-50 text-red-700'
+                                : detailAmendment.status === 'rejected'
+                                  ? 'border-gray-200 bg-gray-50 text-gray-600'
+                                  : 'border-amber-200 bg-amber-50 text-amber-700')
+                            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          return (
+                            <tr key={item?.id || index} className={wasRemoved && wasExecuted ? 'bg-red-50/40' : 'hover:bg-gray-50/50'}>
+                              <td className="px-3 py-2 text-gray-400">{index + 1}</td>
+                              <td className="max-w-[200px] px-3 py-2 font-medium text-gray-800">
+                                {item?.product_name ?? '-'}
+                                {item?.product_type && isCondoTableItem(item) && <span className="ml-1 text-xs text-gray-400">({item.product_type})</span>}
+                              </td>
+                              <td className="px-3 py-2 text-center font-semibold">{item?.quantity ?? '-'}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{item?.unit_price != null ? Number(item.unit_price).toLocaleString('th-TH') : '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.ink_color || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.cartoon_pattern || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.line_pattern || '-'}</td>
+                              <td className="px-3 py-2 text-gray-700">{item?.font || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_1 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_2 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.line_3 || '-'}</td>
+                              <td className="max-w-[180px] px-3 py-2 text-gray-700">{item?.notes || '-'}</td>
+                              <td className="px-3 py-2 text-center">
+                                <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${resultClass}`}>
+                                  {resultLabel}
+                                </span>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )
             })()}

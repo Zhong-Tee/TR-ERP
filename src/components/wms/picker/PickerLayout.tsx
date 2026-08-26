@@ -19,6 +19,10 @@ import ModeSwitchButton from '../../ModeSwitchButton'
 import {
   getWmsConsolidatedRowIds,
 } from '../../../lib/wmsCondoStampConsolidation'
+import {
+  isOrderAllowedInFulfillmentFlow,
+  isOrderItemAllowedInFulfillmentFlow,
+} from '../../../lib/orderFlowFilter'
 
 type ViewKey = 'menu' | 'pick' | 'parcel-return' | 'gr-receive'
 
@@ -150,6 +154,7 @@ export default function PickerLayout() {
       .from('wms_orders')
       .select('*')
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+      .neq('status', 'cancelled')
 
     if (scope.type === 'work_order') {
       query = query.eq('work_order_id', scope.id)
@@ -168,13 +173,25 @@ export default function PickerLayout() {
 
     let sortedItems = sortOrderItems(data)
     const srcIds = [...new Set(sortedItems.map((i: any) => i.source_order_id).filter(Boolean))]
+    const srcItemIds = [...new Set(sortedItems.map((i: any) => i.source_order_item_id).filter(Boolean))]
+    const itemStateResult = srcItemIds.length
+      ? await supabase.from('or_order_items').select('id, cancellation_stock_action').in('id', srcItemIds as string[])
+      : { data: [] as any[] }
+    const activeItemById = new Map(
+      (itemStateResult.data || []).map((r: any) => [r.id, isOrderItemAllowedInFulfillmentFlow(r.cancellation_stock_action)])
+    )
     if (srcIds.length > 0) {
       const { data: billRows } = await supabase
         .from('or_orders')
-        .select('id, bill_no, plan_released_from_work_order')
+        .select('id, bill_no, status, plan_released_from_work_order')
         .in('id', srcIds as string[])
       const billMap = Object.fromEntries((billRows || []).map((r: any) => [r.id, r]))
-      sortedItems = sortedItems.map((i: any) => {
+      sortedItems = sortedItems.filter((i: any) => {
+        const bill = i.source_order_id ? billMap[i.source_order_id] : null
+        if (bill && !isOrderAllowedInFulfillmentFlow(bill.status)) return false
+        if (i.source_order_item_id && activeItemById.get(i.source_order_item_id) === false) return false
+        return true
+      }).map((i: any) => {
         const b = i.source_order_id ? billMap[i.source_order_id] : null
         return {
           ...i,

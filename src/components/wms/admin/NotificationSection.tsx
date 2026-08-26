@@ -62,6 +62,7 @@ export default function NotificationSection() {
       .from('or_order_items')
       .select('product_id')
       .eq('order_id', orderId)
+      .not('cancellation_stock_action', 'is', null)
     const productIds = [...new Set((items || []).map((i: any) => i.product_id).filter(Boolean))]
     if (productIds.length === 0) return []
 
@@ -76,12 +77,19 @@ export default function NotificationSection() {
     setCancelledLoading(true)
     setStockModalOrderId(workOrderId)
     try {
-      const { data: cancelledOrders } = await supabase
+      const { data: cancelledItemRows } = await supabase
+        .from('or_order_items')
+        .select('order_id')
+        .not('cancellation_stock_action', 'is', null)
+      const cancellationOrderIds = [...new Set((cancelledItemRows || []).map((r: any) => r.order_id).filter(Boolean))]
+      let cancelledOrderQuery = supabase
         .from('or_orders')
         .select('id, bill_no, customer_name')
         .eq('work_order_name', workOrderId)
-        .eq('status', 'ยกเลิก')
         .order('created_at', { ascending: false })
+      if (cancellationOrderIds.length > 0) cancelledOrderQuery = cancelledOrderQuery.in('id', cancellationOrderIds)
+      else cancelledOrderQuery = cancelledOrderQuery.eq('status', 'ยกเลิก')
+      const { data: cancelledOrders } = await cancelledOrderQuery
       const orders = (cancelledOrders || []) as { id: string; bill_no: string; customer_name: string }[]
       setStockModalCancelledOrders(orders)
 
@@ -94,7 +102,7 @@ export default function NotificationSection() {
 
       const { data: exactData } = await supabase
         .from('wms_orders')
-        .select('id, order_id, product_code, product_name, location, qty, status, stock_action')
+        .select('id, order_id, source_order_id, product_code, product_name, location, qty, status, stock_action')
         .eq('order_id', workOrderId)
         .eq('status', 'cancelled')
 
@@ -104,7 +112,7 @@ export default function NotificationSection() {
       if (rows.length === 0) {
         const { data: fallback } = await supabase
           .from('wms_orders')
-          .select('id, order_id, product_code, product_name, location, qty, status, stock_action')
+          .select('id, order_id, source_order_id, product_code, product_name, location, qty, status, stock_action')
           .eq('status', 'cancelled')
           .limit(5000)
         rows = (fallback || []).filter((r: any) => normalizeOrderKey(r.order_id) === targetNorm)
@@ -114,8 +122,14 @@ export default function NotificationSection() {
       // ให้แสดง cancelled rows ทั้งใบงาน เพื่อให้ WMS เลือกคืนสต๊อก/ของเสียต่อได้
       const codeSet = new Set(targetCodes.map((c) => c.toUpperCase()))
       const filteredRows =
-        codeSet.size > 0
-          ? rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
+        targetOrderId
+          ? rows.filter((r: any) =>
+              r.source_order_id
+                ? r.source_order_id === targetOrderId
+                : codeSet.has(String(r.product_code || '').trim().toUpperCase())
+            )
+          : codeSet.size > 0
+            ? rows.filter((r: any) => codeSet.has(String(r.product_code || '').trim().toUpperCase()))
           : rows
       setCancelledLines(filteredRows)
     } catch (e) {

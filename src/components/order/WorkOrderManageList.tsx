@@ -9,7 +9,11 @@ import * as XLSX from 'xlsx'
 import * as ExcelJS from 'exceljs'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
-import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../lib/orderFlowFilter'
+import {
+  FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN,
+  isOrderAllowedInFulfillmentFlow,
+  isOrderItemAllowedInFulfillmentFlow,
+} from '../../lib/orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from '../../lib/productionUnits'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 import { createWaybillBarcodeReader, readBarcodesFromPdfPage } from '../../lib/waybillBarcode'
@@ -520,7 +524,7 @@ export default function WorkOrderManageList({
         if (!row?.status) return true
         const status = String(row.status)
         if (status === 'จัดส่งแล้ว') return false
-        return !FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN.includes(status as any)
+        return isOrderAllowedInFulfillmentFlow(status)
       })
     }
     return r
@@ -1057,6 +1061,13 @@ export default function WorkOrderManageList({
     if (error) throw error
     const list = (data || []) as OrderWithItems[]
     return list
+      .map((order) => ({
+        ...order,
+        or_order_items: (order.or_order_items || []).filter((item: any) =>
+          isOrderItemAllowedInFulfillmentFlow(item.cancellation_stock_action)
+        ),
+      }))
+      .filter((order) => (order.or_order_items || []).length > 0)
   }
 
   async function buildProductionExportRows(workOrderId: string, workOrderNameForDisplay: string): Promise<unknown[][]> {
@@ -1725,7 +1736,8 @@ export default function WorkOrderManageList({
                     <button
                       type="button"
                       onClick={(e) => onHeaderButtonClick(e, () => copyProduction(wo.id, wo.work_order_name))}
-                      disabled={updating}
+                      disabled={updating || isCancelledWorkOrder}
+                      title={isCancelledWorkOrder ? 'ใบงานนี้ถูกยกเลิกแล้ว ไม่สามารถคัดลอกข้อมูลได้' : undefined}
                       className="px-3 py-1.5 bg-orange-100 text-orange-800 rounded text-xs font-medium hover:bg-orange-200 disabled:opacity-50"
                     >
                       คัดลอก
@@ -1878,6 +1890,11 @@ export default function WorkOrderManageList({
                                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                                         {order.bill_no ?? '-'}
                                       </button>
+                                      {!isOrderAllowedInFulfillmentFlow(order.status) && (
+                                        <div className="mt-1 w-fit rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                                          ยกเลิกบิล
+                                        </div>
+                                      )}
                                       {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                                         <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
                                           เคลม

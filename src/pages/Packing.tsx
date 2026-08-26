@@ -21,7 +21,11 @@ import {
   type UploadQueueItem,
 } from '../lib/packingQueue'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
-import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
+import {
+  FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN,
+  isOrderAllowedInFulfillmentFlow,
+  isOrderItemAllowedInFulfillmentFlow,
+} from '../lib/orderFlowFilter'
 import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
 import UrgencyBadge, { WoUrgencyChips, type DueBillInfo } from '../components/common/UrgencyBadge'
 
@@ -77,6 +81,12 @@ type WorkOrderStatus = {
   dueBills: DueBillInfo[]
 }
 
+function activePackingOrderItems(order: OrderWithItems | any): any[] {
+  return (order?.or_order_items || order?.order_items || []).filter((item: any) =>
+    isOrderItemAllowedInFulfillmentFlow(item?.cancellation_stock_action)
+  )
+}
+
 function buildPackingItemsFromOrder(
   order: OrderWithItems,
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
@@ -86,7 +96,7 @@ function buildPackingItemsFromOrder(
   const isParcelScanned = order.packing_meta?.parcelScanned || false
   const packingTag = order.packing_meta?.dailyPackingTag ?? null
   const rows: PackingItem[] = []
-  const items = order.or_order_items || order.order_items || []
+  const items = activePackingOrderItems(order)
   const sorted = [...items].sort((a: any, b: any) => {
     const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
     if (ta !== 0) return ta
@@ -752,28 +762,32 @@ export default function Packing() {
         if (billNo) {
           const { data: byBill, error: billErr } = await supabase
             .from('or_orders')
-            .select('id')
+            .select('id, status')
             .eq('bill_no', billNo)
             .maybeSingle()
           if (billErr) throw billErr
-          if (byBill?.id) orderId = byBill.id
+          if (byBill?.id && isOrderAllowedInFulfillmentFlow(byBill.status)) orderId = byBill.id
         }
       }
 
       const { data: byUid, error: uidErr } = await supabase
         .from('or_order_items')
-        .select('order_id')
+        .select('order_id, cancellation_stock_action')
         .eq('item_uid', q)
         .maybeSingle()
       if (uidErr) throw uidErr
-      if (byUid?.order_id) orderId = byUid.order_id
+      if (byUid?.order_id && isOrderItemAllowedInFulfillmentFlow(byUid.cancellation_stock_action)) orderId = byUid.order_id
 
       if (!orderId) {
         const { data: prods, error: pErr } = await supabase.from('pr_products').select('id').eq('product_code', q).limit(1)
         if (pErr) throw pErr
         const pid = prods?.[0]?.id
         if (pid) {
-          const { data: oiRows, error: oiErr } = await supabase.from('or_order_items').select('order_id').eq('product_id', pid)
+          const { data: oiRows, error: oiErr } = await supabase
+            .from('or_order_items')
+            .select('order_id')
+            .eq('product_id', pid)
+            .is('cancellation_stock_action', null)
           if (oiErr) throw oiErr
           const unique = [...new Set((oiRows || []).map((r: { order_id: string }) => r.order_id).filter(Boolean))]
           if (unique.length === 1) {
@@ -798,10 +812,13 @@ export default function Packing() {
         .eq('id', orderId)
         .single()
       if (oErr || !order) throw oErr || new Error('ไม่พบออร์เดอร์')
+      if (!isOrderAllowedInFulfillmentFlow(order.status)) {
+        throw new Error('บิลนี้ถูกยกเลิกแล้ว ไม่สามารถนำเข้ากระบวนการ Packing ได้')
+      }
 
       const ord = order as OrderWithItems
       const scannedKeySet = await fetchPackingUnitScanKeySet([ord.id])
-      const totalUnits = (ord.or_order_items || []).reduce(
+      const totalUnits = activePackingOrderItems(ord).reduce(
         (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
         0
       )
@@ -1111,7 +1128,7 @@ export default function Packing() {
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity)')
+            .select('id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity, cancellation_stock_action)')
             .in('work_order_id', workOrderIds)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
@@ -1136,7 +1153,7 @@ export default function Packing() {
         ;(allProductionOrders || []).forEach((o: any) => {
           const bill = String(o.bill_no || '').trim() || '—'
           let seq = 0
-          ;(o.or_order_items || []).forEach((oi: any) => {
+          activePackingOrderItems(o).forEach((oi: any) => {
             const n = normalizedLineQuantity(oi.quantity)
             for (let i = 0; i < n; i += 1) {
               seq += 1
@@ -1157,7 +1174,7 @@ export default function Packing() {
             if (o.packing_meta?.parcelScanned) return true
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
-            const anyScanned = (o.or_order_items || []).some((oi: any) => {
+            const anyScanned = activePackingOrderItems(o).some((oi: any) => {
               const n = normalizedLineQuantity(oi.quantity)
               for (let i = 0; i < n; i += 1) {
                 seq += 1
@@ -1175,7 +1192,7 @@ export default function Packing() {
           let packedBills = 0
           const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
           billsWithTracking.forEach((o: any) => {
-            const items = o.or_order_items || []
+            const items = activePackingOrderItems(o)
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
             let unitTotal = 0
@@ -1208,7 +1225,7 @@ export default function Packing() {
           ordersInWo.forEach((o: any) => {
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
-            ;(o.or_order_items || []).forEach((oi: any) => {
+            activePackingOrderItems(o).forEach((oi: any) => {
               const n = normalizedLineQuantity(oi.quantity)
               for (let i = 0; i < n; i += 1) {
                 seq += 1
@@ -1303,7 +1320,7 @@ export default function Packing() {
       const unitUids: string[] = []
       ordersWithTracking.forEach((order) => {
         const bill = String(order.bill_no || '').trim() || '—'
-        const totalUnits = (order.or_order_items || order.order_items || []).reduce(
+        const totalUnits = activePackingOrderItems(order).reduce(
           (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
           0
         )

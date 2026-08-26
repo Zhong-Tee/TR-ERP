@@ -1196,56 +1196,40 @@ export default function Plan({ tvMode = false }: PlanProps) {
     }
   }, [loadDashboardBillCounts])
 
-  // โหลดบิลที่มี WMS cancelled และยังไม่ตัดสินใจ stock_action (pending) แยกตามใบงาน
+  // โหลดประวัติยกเลิกจากข้อมูลบิล/รายการโดยตรง ไม่ผูกกับสถานะ stock_action ของ WMS
+  // เพื่อให้ป้ายยังอยู่หลังคลังตัดสินใจรับคืน/ของเสียแล้ว
   const loadCancelledOrders = useCallback(async () => {
     try {
-      const { data: pendingCancelledRows } = await supabase
-        .from('wms_orders')
-        .select('work_order_id, source_order_id')
-        .eq('status', 'cancelled')
-        .is('stock_action', null)
-        .not('work_order_id', 'is', null)
-
-      const rows = pendingCancelledRows || []
-      if (rows.length === 0) {
-        setCancelledByWO({})
-        return
-      }
-
-      const woToOrderIds = new Map<string, Set<string>>()
-      rows.forEach((r: any) => {
-        const woId = String(r.work_order_id || '')
-        if (!woId) return
-        if (!woToOrderIds.has(woId)) woToOrderIds.set(woId, new Set<string>())
-        const oid = String(r.source_order_id || '')
-        if (oid) woToOrderIds.get(woId)!.add(oid)
-      })
-
-      const allOrderIds = [...new Set(rows.map((r: any) => String(r.source_order_id || '')).filter(Boolean))]
-      const orderById = new Map<string, { id: string; bill_no: string; customer_name: string }>()
-      if (allOrderIds.length > 0) {
-        const { data: orders } = await supabase
+      const [{ data: cancelledOrders }, { data: cancelledItems }] = await Promise.all([
+        supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name')
-          .in('id', allOrderIds)
-        ;(orders || []).forEach((o: any) => {
-          orderById.set(String(o.id), {
-            id: String(o.id),
-            bill_no: o.bill_no || '-',
-            customer_name: o.customer_name || '-',
-          })
-        })
-      }
+          .select('id, bill_no, customer_name, work_order_id')
+          .eq('status', 'ยกเลิก')
+          .not('work_order_id', 'is', null),
+        supabase
+          .from('or_order_items')
+          .select('order_id')
+          .not('cancellation_stock_action', 'is', null),
+      ])
+      const partialOrderIds = [...new Set((cancelledItems || []).map((r: any) => r.order_id).filter(Boolean))]
+      const { data: partialOrders } = partialOrderIds.length > 0
+        ? await supabase
+            .from('or_orders')
+            .select('id, bill_no, customer_name, work_order_id')
+            .in('id', partialOrderIds)
+            .not('work_order_id', 'is', null)
+        : { data: [] as any[] }
 
+      const allOrders = [...(cancelledOrders || []), ...(partialOrders || [])]
       const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
-      woToOrderIds.forEach((idSet, woId) => {
-        const list = [...idSet]
-          .map((oid) => orderById.get(oid))
-          .filter(Boolean) as { id: string; bill_no: string; customer_name: string }[]
-        map[woId] =
-          list.length > 0
-            ? list
-            : [{ id: `__wo__${woId}`, bill_no: 'WMS pending', customer_name: '-' }]
+      const seen = new Set<string>()
+      allOrders.forEach((o: any) => {
+        const woId = String(o.work_order_id || '')
+        const orderId = String(o.id || '')
+        if (!woId || !orderId || seen.has(`${woId}:${orderId}`)) return
+        seen.add(`${woId}:${orderId}`)
+        if (!map[woId]) map[woId] = []
+        map[woId].push({ id: orderId, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-' })
       })
       setCancelledByWO(map)
     } catch (e) {
@@ -2419,7 +2403,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             }}
                             className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                           >
-                            ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
+                            ยกเลิกบิล {cancelledByWO[String(j.work_order_id || '')].length}
                           </button>
                         )}
                         {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
@@ -2786,7 +2770,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                           }}
                                           className="px-1.5 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200"
                                         >
-                                          ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
+                                          ยกเลิกบิล {cancelledByWO[String(j.work_order_id || '')].length}
                                         </button>
                                       )}
                                       {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
@@ -3271,7 +3255,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                 }}
                                 className="ml-2 px-2 py-0.5 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300 hover:bg-red-200 transition"
                               >
-                                ยกเลิก {cancelledByWO[String(j.work_order_id || '')].length}
+                                ยกเลิกบิล {cancelledByWO[String(j.work_order_id || '')].length}
                               </button>
                             )}
                             {(stopProdByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (

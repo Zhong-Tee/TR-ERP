@@ -51,6 +51,7 @@ export default function OrderDetailView({
     title: '',
     message: '',
   })
+  const [workflowActors, setWorkflowActors] = useState<{ qc: string[]; packing: string[] }>({ qc: [], packing: [] })
 
   /* ── Edit attachment link ── */
   const [editLinkItem, setEditLinkItem] = useState<{ itemId: string; displayIndex: number; productName: string; value: string; name: string } | null>(null)
@@ -207,6 +208,42 @@ export default function OrderDetailView({
     })()
     return () => { cancelled = true }
   }, [order.id, inlineItems.length, isPartial])
+
+  // ผู้ปฏิบัติงานไม่ได้เก็บซ้ำไว้ในบิล: QC ผูกด้วยเลขใบงาน และผู้แพ็คผูกด้วย order_id
+  useEffect(() => {
+    if (!order.id) {
+      setWorkflowActors({ qc: [], packing: [] })
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const qcQuery = order.work_order_name
+        ? supabase
+            .from('qc_sessions')
+            .select('username')
+            .eq('filename', `WO-${order.work_order_name}`)
+            .order('created_at', { ascending: false })
+        : Promise.resolve({ data: [], error: null })
+      const [qcResult, packingResult] = await Promise.all([
+        qcQuery,
+        supabase
+          .from('pk_packing_logs')
+          .select('packed_by')
+          .eq('order_id', order.id)
+          .order('packed_at', { ascending: false }),
+      ])
+      if (cancelled) return
+      if (qcResult.error) console.warn('Unable to load QC users for order detail:', qcResult.error)
+      if (packingResult.error) console.warn('Unable to load packing users for order detail:', packingResult.error)
+      const uniqueNames = (values: Array<string | null | undefined>) =>
+        Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value)))
+      setWorkflowActors({
+        qc: uniqueNames((qcResult.data || []).map((row) => row.username)),
+        packing: uniqueNames((packingResult.data || []).map((row) => row.packed_by)),
+      })
+    })()
+    return () => { cancelled = true }
+  }, [order.id, order.work_order_name])
 
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
   const displayItems = useMemo(() => sortOrderItemsForExport(items as any[]), [items])
@@ -434,6 +471,8 @@ export default function OrderDetailView({
             <InfoRow label="โปรโมชั่น" value={order.promotion} />
             <InfoRow label="ผู้สร้างบิล" value={order.admin_user} />
             <InfoRow label="ผู้แก้ไขล่าสุด" value={order.last_edited_by ?? null} />
+            <InfoRow label="ผู้ QC" value={workflowActors.qc.length ? workflowActors.qc.join(', ') : '-'} />
+            <InfoRow label="ผู้แพ็คสินค้า" value={workflowActors.packing.length ? workflowActors.packing.join(', ') : '-'} />
             <InfoRow label="วันที่สร้าง" value={order.created_at ? formatDateTime(order.created_at) : null} />
           </dl>
         </section>

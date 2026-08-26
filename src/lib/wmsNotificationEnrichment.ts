@@ -24,15 +24,22 @@ export async function enrichWmsNotificationsWithOrderDetails(
   const oids = [...new Set(data.map((n: any) => n.order_id))]
   const { data: oDetails } = await supabase
     .from('wms_orders')
-    .select('id, order_id, product_code, product_name, location, status, stock_action')
+    .select('id, order_id, source_order_id, product_code, product_name, location, status, stock_action')
     .in('order_id', oids)
 
-  const { data: cancelledOrders } = await supabase
-    .from('or_orders')
-    .select('id, bill_no, customer_name, work_order_name, created_at')
-    .in('work_order_name', oids)
-    .eq('status', 'ยกเลิก')
-    .order('created_at', { ascending: false })
+  const { data: cancelledItemRows } = await supabase
+    .from('or_order_items')
+    .select('order_id')
+    .not('cancellation_stock_action', 'is', null)
+  const cancellationOrderIds = [...new Set((cancelledItemRows || []).map((r: any) => r.order_id).filter(Boolean))]
+  const { data: cancelledOrders } = cancellationOrderIds.length > 0
+    ? await supabase
+        .from('or_orders')
+        .select('id, bill_no, customer_name, work_order_name, created_at')
+        .in('work_order_name', oids)
+        .in('id', cancellationOrderIds)
+        .order('created_at', { ascending: false })
+    : { data: [] as any[] }
 
   const cancelledOrderIds = [...new Set((cancelledOrders || []).map((o: any) => o.id).filter(Boolean))]
   let orderCodeSetMap = new Map<string, Set<string>>()
@@ -42,6 +49,7 @@ export async function enrichWmsNotificationsWithOrderDetails(
       .from('or_order_items')
       .select('order_id, product_id')
       .in('order_id', cancelledOrderIds)
+      .not('cancellation_stock_action', 'is', null)
     orderItemCountMap = (orderItems || []).reduce((acc: Map<string, number>, item: any) => {
       const orderId = String(item.order_id || '')
       if (!orderId) return acc
@@ -90,8 +98,12 @@ export async function enrichWmsNotificationsWithOrderDetails(
       : 0
     const primaryCodeSet = primaryCancelledOrderId ? orderCodeSetMap.get(String(primaryCancelledOrderId)) : undefined
     const filteredCancelledRows =
-      n.type === 'ยกเลิกบิล' && primaryCodeSet && primaryCodeSet.size > 0
-        ? cancelledRows.filter((o: any) => primaryCodeSet.has(String(o.product_code || '').trim().toUpperCase()))
+      n.type === 'ยกเลิกบิล' && primaryCancelledOrderId
+        ? cancelledRows.filter((o: any) =>
+            o.source_order_id
+              ? o.source_order_id === primaryCancelledOrderId
+              : primaryCodeSet?.has(String(o.product_code || '').trim().toUpperCase())
+          )
         : cancelledRows
     const pendingCancelled = filteredCancelledRows.filter((o: any) => o.stock_action == null).length
     const first = rows[0] || { product_name: '---', location: '---' }

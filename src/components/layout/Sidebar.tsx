@@ -120,7 +120,7 @@ const menuItems: MenuItem[] = [
     label: 'บัญชี',
     icon: <FiDollarSign className="w-6 h-6" />,
     path: '/account',
-    roles: ['superadmin', 'admin', 'sales-tr', 'account'],
+    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'account'],
   },
   {
     key: 'products',

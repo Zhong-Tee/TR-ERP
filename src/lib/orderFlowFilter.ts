@@ -8,3 +8,13 @@ export function isOrderAllowedInFulfillmentFlow(status: string | null | undefine
   if (!status) return true
   return !FULFILLMENT_EXCLUDED_ORDER_STATUSES.includes(status as FulfillmentExcludedOrderStatus)
 }
+
+/**
+ * รายการที่ถูกยกเลิกยังต้องคงอยู่ใน or_order_items เพื่อประวัติ/Audit
+ * แต่ห้ามนำกลับเข้าสายงาน Plan → Picker → QC → Packing อีก
+ */
+export function isOrderItemAllowedInFulfillmentFlow(
+  cancellationStockAction: string | null | undefined
+): boolean {
+  return !String(cancellationStockAction || '').trim()
+}
