@@ -99,6 +99,7 @@ function endOfDayIso(ymd: string): string {
 
 export default function WarehouseSub() {
   const { user } = useAuthContext()
+  const canManageSubWarehouseSettings = user?.role === 'superadmin' || user?.role === 'admin'
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
   const [subWarehouses, setSubWarehouses] = useState<SubWarehouse[]>([])
@@ -953,13 +954,15 @@ export default function WarehouseSub() {
           <h1 className="text-2xl font-black text-slate-800">{headerTitle}</h1>
         </div>
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setCreateModalOpen(true)}
-            className="px-4 py-2 rounded-xl font-semibold text-sm bg-emerald-600 text-white hover:bg-emerald-700"
-          >
-            + เพิ่มชื่อคลังย่อย
-          </button>
+          {canManageSubWarehouseSettings && (
+            <button
+              type="button"
+              onClick={() => setCreateModalOpen(true)}
+              className="px-4 py-2 rounded-xl font-semibold text-sm bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              + เพิ่มชื่อคลังย่อย
+            </button>
+          )}
           <button
             type="button"
             onClick={openAddProduct}
@@ -967,14 +970,16 @@ export default function WarehouseSub() {
           >
             + เพิ่มสินค้า
           </button>
-          <button
-            type="button"
-            onClick={openRubberMapSettings}
-            disabled={!selectedSubId}
-            className="px-4 py-2 rounded-xl font-semibold text-sm bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
-          >
-            ตั้งค่าหน้ายาง
-          </button>
+          {canManageSubWarehouseSettings && (
+            <button
+              type="button"
+              onClick={openRubberMapSettings}
+              disabled={!selectedSubId}
+              className="px-4 py-2 rounded-xl font-semibold text-sm bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+            >
+              ตั้งค่าหน้ายาง
+            </button>
+          )}
         </div>
       </div>
 
