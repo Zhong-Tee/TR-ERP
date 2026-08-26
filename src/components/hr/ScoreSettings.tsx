@@ -48,7 +48,7 @@ const emptyRuleForm = {
 const inputClass = 'mt-1 w-full rounded-xl border border-surface-200 px-3 py-2 text-sm'
 
 export default function ScoreSettings() {
-  const { showConfirm, ConfirmModal } = useWmsModal()
+  const { showConfirm, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [categories, setCategories] = useState<ScoreCategory[]>([])
   const [categoryId, setCategoryId] = useState('')
   const [rules, setRules] = useState<ScoreRule[]>([])

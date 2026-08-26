@@ -14,6 +14,10 @@ type ConfirmOptions = {
   cancelText?: string
 }
 
+type UseWmsModalOptions = {
+  showCancelButton?: boolean
+}
+
 type InternalMessageState = {
   open: boolean
   title: string
@@ -44,7 +48,7 @@ const defaultConfirmState: InternalConfirmState = {
   cancelText: 'ยกเลิก',
 }
 
-export function useWmsModal() {
+export function useWmsModal({ showCancelButton = true }: UseWmsModalOptions = {}) {
   const [messageState, setMessageState] = useState<InternalMessageState>(defaultMessageState)
   const [confirmState, setConfirmState] = useState<InternalConfirmState>(defaultConfirmState)
   const confirmResolverRef = useRef<((value: boolean) => void) | null>(null)
@@ -106,13 +110,15 @@ export function useWmsModal() {
         <h3 className="text-lg font-bold text-slate-800 mb-3">{confirmState.title}</h3>
         <p className="text-sm text-slate-600 whitespace-pre-line">{confirmState.message}</p>
         <div className="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => handleConfirm(false)}
-            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
-          >
-            {confirmState.cancelText}
-          </button>
+          {showCancelButton && (
+            <button
+              type="button"
+              onClick={() => handleConfirm(false)}
+              className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+            >
+              {confirmState.cancelText}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => handleConfirm(true)}

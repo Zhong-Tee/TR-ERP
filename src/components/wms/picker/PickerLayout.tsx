@@ -50,7 +50,7 @@ export default function PickerLayout() {
   const [timer, setTimer] = useState('00:00:00')
   const [showOrderList, setShowOrderList] = useState(true)
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [loggingOut, setLoggingOut] = useState(false)
   const [showSentAlertsModal, setShowSentAlertsModal] = useState(false)
   const [pendingAlertCount, setPendingAlertCount] = useState(0)

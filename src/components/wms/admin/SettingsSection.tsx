@@ -38,7 +38,7 @@ export default function SettingsSection() {
   const [sectionTopics, setSectionTopics] = useState<Record<string, TopicRow[]>>({})
   const [newTopic, setNewTopic] = useState('')
   const [newSectionInputs, setNewSectionInputs] = useState<Record<string, { name: string; category: Category4M }>>({})
-  const { MessageModal } = useWmsModal()
+  const { MessageModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadSettings()

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiX, FiDownload, FiUploadCloud, FiCheckCircle, FiAlertTriangle } from 'react-icons/fi'
+import { FiDownload, FiUploadCloud, FiCheckCircle, FiAlertTriangle } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import Modal from '../ui/Modal'
 import { fetchEmployees, fetchTimeEntries, bulkInsertTimeEntries } from '../../lib/hrApi'
@@ -263,9 +263,8 @@ export default function TimeEntryImport({
 
   return (
     <Modal open={open} onClose={handleClose} closeOnBackdropClick contentClassName="max-w-3xl">
-      <div className="flex items-center justify-between px-5 py-3.5 bg-emerald-600 text-white flex-shrink-0">
+      <div className="flex items-center px-5 py-3.5 pr-16 bg-emerald-600 text-white flex-shrink-0">
         <span className="font-semibold">นำเข้าข้อมูลเวลาทำงาน (เครื่องสแกนนิ้ว)</span>
-        <button type="button" onClick={handleClose} aria-label="ปิด"><FiX className="w-5 h-5" /></button>
       </div>
 
       <div className="p-5 space-y-4">
@@ -396,9 +395,6 @@ export default function TimeEntryImport({
                 )}
 
                 <div className="flex justify-end gap-2 pt-1">
-                  <button type="button" onClick={handleClose} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-600 text-sm hover:bg-gray-50">
-                    ยกเลิก
-                  </button>
                   <button
                     type="button"
                     onClick={doImport}

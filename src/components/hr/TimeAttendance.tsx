@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { FiRefreshCw, FiMapPin, FiCamera, FiX, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
+import { FiRefreshCw, FiMapPin, FiCamera, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
@@ -1116,13 +1116,10 @@ export default function TimeAttendance() {
       <Modal open={!!certForm} onClose={() => setCertForm(null)} closeOnBackdropClick contentClassName="max-w-md">
         {certForm && (
           <>
-            <div className="flex items-center justify-between px-4 py-3 bg-sky-600 text-white">
+            <div className="flex items-center px-4 py-3 pr-16 bg-sky-600 text-white">
               <span className="text-sm font-medium">
                 รับรอง{certForm.entryType === 'clock_in' ? 'เวลาเข้างาน' : 'เวลาออกงาน'}
               </span>
-              <button type="button" onClick={() => setCertForm(null)} aria-label="ปิด">
-                <FiX className="w-5 h-5" />
-              </button>
             </div>
             <div className="p-4 space-y-3">
               <div className="text-sm">
@@ -1157,8 +1154,6 @@ export default function TimeAttendance() {
                 การรับรองถูกบันทึกแยกจากบันทึกเวลาจริง และมีชื่อผู้รับรองกำกับไว้ตรวจสอบย้อนหลังได้
               </p>
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setCertForm(null)}
-                  className="px-4 py-2 rounded-xl bg-surface-100 hover:bg-surface-200 text-sm">ยกเลิก</button>
                 <button type="button" onClick={saveCertification} disabled={certSaving}
                   className="px-4 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50 text-sm">
                   {certSaving ? 'กำลังบันทึก...' : 'บันทึกการรับรอง'}
@@ -1178,11 +1173,8 @@ export default function TimeAttendance() {
       >
         {photoView && (
           <>
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white flex-shrink-0">
-              <span className="text-sm font-medium truncate pr-2">{photoView.caption}</span>
-              <button type="button" onClick={() => setPhotoView(null)} aria-label="ปิด">
-                <FiX className="w-5 h-5" />
-              </button>
+            <div className="flex items-center px-4 py-3 pr-16 bg-emerald-600 text-white flex-shrink-0">
+              <span className="text-sm font-medium truncate">{photoView.caption}</span>
             </div>
             <img
               src={photoView.url}

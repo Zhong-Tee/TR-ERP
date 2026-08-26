@@ -225,7 +225,6 @@ export default function OnboardingPlan() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 flex justify-end"><button type="button" onClick={() => setDetailPlanId(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button></div>
           </div>
         )}
       </Modal>
@@ -276,7 +275,6 @@ export default function OnboardingPlan() {
             </div>
           </div>
           <div className="flex justify-end gap-2 mt-6">
-            <button type="button" onClick={() => setCreateOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ยกเลิก</button>
             <button type="button" onClick={handleCreate} disabled={createSaving || !createForm.employee_id || !createForm.template_id || !createForm.start_date} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">{createSaving ? 'กำลังสร้าง...' : 'สร้างแผน'}</button>
           </div>
         </div>

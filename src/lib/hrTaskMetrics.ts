@@ -10,7 +10,11 @@ export const evalScore = (ev: HRTaskEvaluation) => {
   return values.reduce((a, b) => a + b, 0) / values.length
 }
 
-export const isTaskOverdue = (t: HRTask) => !!t.due_at && TASK_ACTIVE_STATUSES.includes(t.status) && new Date(t.due_at) < new Date()
+export const isTaskOverdue = (t: HRTask) => !!t.due_at
+  && !t.first_submitted_at
+  && !t.submitted_at
+  && TASK_ACTIVE_STATUSES.includes(t.status)
+  && new Date(t.due_at) < new Date()
 
 const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length
 
@@ -107,7 +111,6 @@ export function recommendAssignees({ employees, tasks, evaluations, categoryId, 
   const history = tasks.filter((t) => !['draft', 'cancelled'].includes(t.status))
   const taskById = new Map(history.map((t) => [t.id, t]))
   const urgent = !!dueAt && new Date(dueAt).getTime() - Date.now() < 48 * 3600000
-  const now = new Date()
   return employees.map((employee): AssigneeSuggestion => {
     const mine = history.filter((t) => t.participants?.some((p) => p.role === 'assignee' && p.employee_id === employee.id))
     const myTaskIds = new Set(mine.map((t) => t.id))
@@ -117,9 +120,9 @@ export function recommendAssignees({ employees, tasks, evaluations, categoryId, 
     const overall = myEvals.length ? avg(myEvals.map(evalScore)) : null
     const catAvg = catEvals.length ? avg(catEvals.map(evalScore)) : null
     const active = mine.filter((t) => TASK_ACTIVE_STATUSES.includes(t.status))
-    const overdueCount = active.filter((t) => t.due_at && new Date(t.due_at) < now).length
-    const finished = mine.filter((t) => t.status === 'completed' && t.due_at && t.completed_at)
-    const onTimeRate = finished.length ? Math.round((finished.filter((t) => new Date(t.completed_at!) <= new Date(t.due_at!)).length / finished.length) * 100) : null
+    const overdueCount = active.filter((t) => isTaskOverdue(t)).length
+    const finished = mine.filter((t) => t.due_at && (t.first_submitted_at || t.submitted_at || (t.status === 'completed' && t.completed_at)))
+    const onTimeRate = finished.length ? Math.round((finished.filter((t) => new Date(t.first_submitted_at || t.submitted_at || t.completed_at!) <= new Date(t.due_at!)).length / finished.length) * 100) : null
     const speeds = myEvals.map((ev) => ev.speed).filter((v): v is number => typeof v === 'number')
     const speedAvg = speeds.length ? avg(speeds) : null
 

@@ -401,14 +401,6 @@ export default function NotificationSection() {
                 </table>
               </div>
             )}
-            <div className="flex justify-end">
-              <button
-                onClick={() => { setStockModalOrderId(null); setStockModalCancelledOrders([]); setSelectedCancelledOrderId(null); setCancelledLines([]) }}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50"
-              >
-                ปิด
-              </button>
-            </div>
           </div>
         )}
       </Modal>

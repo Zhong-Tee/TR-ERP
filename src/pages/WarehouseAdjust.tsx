@@ -655,13 +655,6 @@ export default function WarehouseAdjust() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setCreateOpen(false)}
-                className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
                 onClick={createAdjustment}
                 disabled={saving || !note.trim()}
                 className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
@@ -750,15 +743,6 @@ export default function WarehouseAdjust() {
                 )}
               </tbody>
             </table>
-          </div>
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setViewing(null)}
-              className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-            >
-              ปิด
-            </button>
           </div>
         </div>
       </Modal>

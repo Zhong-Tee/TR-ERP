@@ -30,7 +30,7 @@ export default function ProductionReturn() {
   const [submitting, setSubmitting] = useState(false)
   const [returnList, setReturnList] = useState<any[]>([])
   const [loadingList, setLoadingList] = useState(false)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     generateReturnNo()

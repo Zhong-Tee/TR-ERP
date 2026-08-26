@@ -14,7 +14,7 @@ export default function KPISection() {
   const [kpiData, setKpiData] = useState<any[]>([])
   const [kpiStats, setKpiStats] = useState<any | null>(null)
   const [kpiDataForExport, setKpiDataForExport] = useState<any[]>([])
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]

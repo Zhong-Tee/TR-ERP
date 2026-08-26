@@ -473,7 +473,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
       <Modal open={detailModalOpen} onClose={() => { setDetailModalOpen(false); setDetailAmendment(null); setDetailOrder(null) }} contentClassName="max-w-7xl max-h-[90vh] overflow-y-auto">
         {detailAmendment && (
           <div className="p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+            <div className="flex items-center justify-between gap-3 border-b border-gray-200 pb-3 pr-16">
               <h3 className="text-lg font-bold text-gray-800">
                 <i className="fas fa-ban mr-2 text-red-500" />
                 {detailAmendment.amendment_no}
@@ -787,9 +787,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
               )
             })()}
 
-            <div className="flex gap-2 pt-2 border-t border-gray-200">
-              {canApprove && detailAmendment.status === 'pending' && (
-                <>
+            {canApprove && detailAmendment.status === 'pending' && (
+              <div className="flex gap-2 pt-2 border-t border-gray-200">
                   <button
                     type="button"
                     onClick={handleApprove}
@@ -807,17 +806,8 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   >
                     <i className="fas fa-times mr-1" /> ปฏิเสธ
                   </button>
-                </>
-              )}
-              <div className="flex-1" />
-              <button
-                type="button"
-                onClick={() => { setDetailModalOpen(false); setDetailAmendment(null); setDetailOrder(null) }}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-600 font-semibold hover:bg-gray-50"
-              >
-                ปิด
-              </button>
-            </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>

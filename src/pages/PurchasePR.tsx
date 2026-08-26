@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Modal from '../components/ui/Modal'
+import ModalCloseButton from '../components/ui/ModalCloseButton'
 import { useWmsModal } from '../components/wms/useWmsModal'
 import { useAuthContext } from '../contexts/AuthContext'
 import type { InventoryPR, InventoryPRItem, Product } from '../types'
@@ -56,7 +57,7 @@ interface DraftItem {
 export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedPrType?: string; hideCreate?: boolean } = {}) {
   const navigate = useNavigate()
   const { user } = useAuthContext()
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   function parseOrderPoint(raw: unknown): number | null {
     if (raw == null) return null
@@ -838,7 +839,8 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
 
       {/* ── Create PR Full-Screen ── */}
       {createOpen && (
-        <div className="fixed right-0 bottom-0 z-50 flex flex-col bg-white" style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }}>
+        <div className="fixed right-0 bottom-0 z-50 flex flex-col bg-white" style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }} role="dialog" aria-modal="true">
+          <ModalCloseButton onClick={closeCreate} className="absolute right-4 top-4 z-20" />
           {/* Supplier selector + Search + Filters */}
           <div className="px-6 pt-5 pb-3 border-b bg-gray-50 shrink-0 space-y-2">
             <div className="flex gap-3 items-center">
@@ -871,9 +873,6 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
               >
                 <i className="fas fa-exclamation-triangle"></i>
                 ดึงข้อมูลจากจุดสั่งซื้อ
-              </button>
-              <button onClick={closeCreate} className="w-9 h-9 flex items-center justify-center rounded-lg border border-gray-300 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-colors shrink-0" title="ปิด">
-                <i className="fas fa-times"></i>
               </button>
             </div>
             <div className="flex flex-wrap gap-3 items-center">
@@ -1255,9 +1254,6 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
               รายการทั้งหมด: <span className="font-bold text-gray-800">{draftItems.filter((i) => i.product_id).length}</span> รายการ
             </div>
             <div className="flex gap-3 mr-20">
-              <button onClick={closeCreate} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium transition-colors">
-                ยกเลิก
-              </button>
               <button onClick={handleCreatePR} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold transition-colors">
                 {saving ? 'กำลังบันทึก...' : editingPrId ? 'บันทึกการแก้ไข PR' : 'บันทึก PR'}
               </button>
@@ -1276,7 +1272,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
           ) : viewing ? (
             <>
               {/* header */}
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between pr-14">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียด PR</h2>
                   <p className="text-sm text-gray-500 mt-1">
@@ -1465,12 +1461,6 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
                     ยกเลิก PR
                   </button>
                 )}
-                <button
-                  onClick={() => { setViewing(null); setRejectOpen(false) }}
-                  className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium"
-                >
-                  ปิด
-                </button>
               </div>
             </>
           ) : null}

@@ -2339,7 +2339,7 @@ export default function WorkOrderManageList({
       </Modal>
 
       {/* Modal แสดงสถานะกำลัง Export — ซ้อนเหนือ modal อื่น (z-[70]) และปิดเองเมื่อเสร็จ */}
-      <Modal open={exportLoading.open} onClose={() => {}} stackClassName="z-[70]" contentClassName="max-w-sm w-full">
+      <Modal open={exportLoading.open} onClose={() => {}} showCloseButton={false} stackClassName="z-[70]" contentClassName="max-w-sm w-full">
         <div className="p-6 flex flex-col items-center gap-4">
           <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" aria-hidden />
           <p className="text-gray-800 font-medium text-center">{exportLoading.message}</p>

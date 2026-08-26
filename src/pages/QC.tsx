@@ -3826,11 +3826,8 @@ export default function QC() {
 
       {/* Session detail modal */}
       <Modal open={showSessionModal} onClose={() => setShowSessionModal(false)} contentClassName="max-w-6xl max-h-[90vh] flex flex-col">
-        <div className="p-4 border-b flex justify-between items-center bg-gray-50 font-bold">
+        <div className="p-4 pr-16 border-b flex items-center bg-gray-50 font-bold">
           <h3 className="text-xl">รายการตรวจสอบในเซสชัน</h3>
-          <button onClick={() => setShowSessionModal(false)} className="text-gray-500 hover:text-red-500 text-2xl">
-            ×
-          </button>
         </div>
         <div className="flex-1 overflow-auto">
           <table className="w-full text-sm text-left">

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { FiBell, FiCheck, FiStar, FiChevronRight, FiArrowDown } from 'react-icons/fi'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 import {
   fetchAnnouncements,
   fetchMyAnnouncementReads,
@@ -196,13 +197,13 @@ export default function EmployeeAnnouncements({ onUnreadChange }: { onUnreadChan
         ทำให้เหลือแถบ header โผล่ด้านบนแทนที่จะเต็มจอจริง
       */}
       {reading && createPortal(
-        <div className="fixed inset-0 z-[70] flex flex-col bg-white h-[100dvh]">
+        <div className="fixed inset-0 z-[70] flex flex-col bg-white h-[100dvh]" role="dialog" aria-modal="true" aria-label={reading.title}>
           <div
-            className="flex items-center justify-between gap-2 px-4 py-3 bg-emerald-600 text-white shadow shrink-0"
+            className="relative flex items-center gap-2 px-4 py-3 pr-16 bg-emerald-600 text-white shadow shrink-0"
             style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
           >
             <h3 className="font-semibold truncate">{reading.title}</h3>
-            <button type="button" onClick={() => setReading(null)} className="shrink-0 rounded-lg px-3 py-1.5 text-sm hover:bg-white/20">ปิด</button>
+            <ModalCloseButton onClick={() => setReading(null)} className="absolute right-3 top-1/2 -translate-y-1/2" />
           </div>
 
           <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">

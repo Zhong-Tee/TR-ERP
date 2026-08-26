@@ -31,7 +31,7 @@ export default function ProductionBorrow() {
   const [submitting, setSubmitting] = useState(false)
   const [borrowList, setBorrowList] = useState<any[]>([])
   const [loadingList, setLoadingList] = useState(false)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     generateBorrowNo()

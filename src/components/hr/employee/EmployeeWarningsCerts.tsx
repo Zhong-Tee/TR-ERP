@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiAlertTriangle, FiAward, FiCalendar, FiCheck, FiX } from 'react-icons/fi'
+import { FiAlertTriangle, FiAward, FiCalendar, FiCheck } from 'react-icons/fi'
 import { acknowledgeMyCertificate, fetchEmployeeByUserId, fetchWarnings, fetchCertificates, HR_WARNING_CERT_BUCKET, respondToWarning } from '../../../lib/hrApi'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import type { HRWarning, HRCertificate } from '../../../types'
 import { AttachmentStrip } from './AttachmentViewer'
 import HRDocumentAttachments from '../HRDocumentAttachments'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 
 const WARNING_LEVEL: Record<string, string> = {
   verbal: 'ตักเตือนด้วยวาจา ครั้งที่ 1',
@@ -36,7 +37,7 @@ const PASS_STATUS: Record<string, [string, string]> = {
 
 function badge(map: Record<string, [string, string]>, key: string) {
   const [cls, label] = map[key] ?? ['bg-gray-100 text-gray-600', key]
-  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
+  return <span className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
 }
 
 function thaiDate(d?: string): string {
@@ -142,14 +143,13 @@ export default function EmployeeWarningsCerts() {
             {warnings.map((w) => (
               <button type="button" onClick={() => setSelected({ kind: 'warning', item: w })} key={w.id} className="w-full text-left rounded-2xl bg-white border border-gray-200 p-4 shadow-sm active:bg-gray-50">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-gray-900 flex items-center gap-1.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="flex items-start gap-1.5 break-words font-semibold text-gray-900">
                       <FiAlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
-                      {w.subject}
+                      <span className="min-w-0">{w.subject}</span>
                     </p>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {w.warning_number} • {WARNING_LEVEL[w.warning_level] ?? w.warning_level}
-                    </p>
+                    <p className="mt-0.5 text-xs text-gray-400">{w.warning_number}</p>
+                    <p className="mt-0.5 text-xs text-gray-400">{WARNING_LEVEL[w.warning_level] ?? w.warning_level}</p>
                   </div>
                   {badge(WARNING_STATUS, w.status)}
                 </div>
@@ -200,11 +200,11 @@ export default function EmployeeWarningsCerts() {
         const isWarning = selected.kind === 'warning'
         const pending = (selected.item.status === 'issued' || (isWarning && selected.item.status === 'pending_acknowledgement')) && !selected.item.acknowledged_at
         return (
-          <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center pt-4 sm:pt-8 px-0 sm:px-4" onClick={() => !acknowledging && setSelected(null)}>
-            <div className="bg-white w-full max-h-[calc(100vh-2rem)] sm:max-w-lg sm:max-h-[calc(100vh-4rem)] rounded-b-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-xl" onClick={(event) => event.stopPropagation()}>
-              <div className={`px-4 py-3 text-white flex items-center justify-between ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}>
+          <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center pt-4 sm:pt-8 px-0 sm:px-4" role="dialog" aria-modal="true" onClick={() => !acknowledging && setSelected(null)}>
+            <div className="relative bg-white w-full max-h-[calc(100vh-2rem)] sm:max-w-lg sm:max-h-[calc(100vh-4rem)] rounded-b-2xl sm:rounded-2xl overflow-hidden flex flex-col shadow-xl" onClick={(event) => event.stopPropagation()}>
+              <ModalCloseButton onClick={() => setSelected(null)}/>
+              <div className={`px-4 py-3 pr-16 text-white ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}>
                 <h3 className="font-bold">รายละเอียด{isWarning ? 'ใบเตือน' : 'ใบรับรอง'}</h3>
-                <button type="button" onClick={() => setSelected(null)}><FiX className="w-5 h-5" /></button>
               </div>
               <div className="p-4 overflow-y-auto space-y-3 text-sm text-gray-700">
                 <h2 className="text-lg font-bold text-gray-900">{isWarning ? selected.item.subject : selected.item.training_name}</h2>
@@ -236,7 +236,7 @@ export default function EmployeeWarningsCerts() {
                 <div className="border-t bg-white p-4 shrink-0">
                   {ackError && <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{ackError}</p>}
                   {isWarning && <><textarea rows={3} value={employeeResponse} onChange={e=>setEmployeeResponse(e.target.value)} placeholder="คำชี้แจงของพนักงาน (ถ้ามี)" className="mb-3 w-full rounded-xl border p-3 text-sm"/><div className="mb-3"><HRDocumentAttachments employeeId={selected.item.employee_id} category="warnings" paths={responseAttachments} onChange={setResponseAttachments} onError={setAckError}/></div></>}
-                  <div className={`grid gap-2 ${isWarning?'grid-cols-2':'grid-cols-1'}`}><button type="button" onClick={()=>acknowledgeSelected('acknowledged')} disabled={acknowledging} className={`py-3 rounded-xl text-white font-semibold flex items-center justify-center gap-2 disabled:opacity-60 ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}><FiCheck className="w-5 h-5" />{acknowledging ? 'กำลังบันทึก...' : 'รับทราบ'}</button>{isWarning&&<button type="button" onClick={()=>acknowledgeSelected('refused')} disabled={acknowledging} className="rounded-xl border border-red-300 py-3 font-semibold text-red-700"><FiX className="inline"/> ปฏิเสธรับทราบ</button>}</div>
+                  <button type="button" onClick={()=>acknowledgeSelected('acknowledged')} disabled={acknowledging} className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 font-semibold text-white disabled:opacity-60 ${isWarning ? 'bg-red-600' : 'bg-emerald-600'}`}><FiCheck className="w-5 h-5" />{acknowledging ? 'กำลังบันทึก...' : 'รับทราบ'}</button>
                 </div>
               )}
             </div>

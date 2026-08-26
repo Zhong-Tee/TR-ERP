@@ -104,7 +104,7 @@ export default function AnnouncementManagement() {
   const [ackDetailFilter, setAckDetailFilter] = useState<'all' | 'done' | 'pending'>('all')
   const [ackDetailSearch, setAckDetailSearch] = useState('')
 
-  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
+  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const loadAll = useCallback(async () => {
     try {
@@ -612,7 +612,6 @@ export default function AnnouncementManagement() {
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ยกเลิก</button>
             <button type="button" onClick={handleSave} disabled={saving} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
               {saving ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
@@ -737,9 +736,6 @@ export default function AnnouncementManagement() {
               </div>
             )}
 
-            <div className="flex justify-end">
-              <button type="button" onClick={() => setViewItem(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button>
-            </div>
           </div>
         )}
       </Modal>
@@ -757,7 +753,6 @@ export default function AnnouncementManagement() {
             className="w-full rounded-xl border border-surface-200 px-3 py-2 text-sm"
           />
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => { setRejectTarget(null); setRejectReason('') }} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ยกเลิก</button>
             <button type="button" onClick={confirmReject} disabled={acting} className="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
               {acting ? 'กำลังบันทึก...' : 'ยืนยันไม่อนุมัติ'}
             </button>
@@ -851,9 +846,6 @@ export default function AnnouncementManagement() {
               </>
             )}
 
-            <div className="flex justify-end">
-              <button type="button" onClick={() => setAckDetail(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button>
-            </div>
           </div>
         )}
       </Modal>

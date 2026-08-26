@@ -9,7 +9,7 @@ export default function ApprovalList() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'pending' | 'all'>('pending')
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadRequisitions()

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Html5Qrcode } from 'html5-qrcode'
+import ModalCloseButton from '../ui/ModalCloseButton'
 
 interface BarcodeScannerProps {
   onScan: (code: string) => void
@@ -101,16 +102,11 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
   }
 
   return (
-    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 rounded-2xl max-w-md w-full overflow-hidden flex flex-col">
-        <div className="p-4 border-b border-gray-700 flex justify-between items-center">
+    <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4" role="dialog" aria-modal="true">
+      <div className="relative bg-gray-900 rounded-2xl max-w-md w-full overflow-hidden flex flex-col">
+        <ModalCloseButton onClick={handleClose} className="absolute right-3 top-3 z-10" />
+        <div className="p-4 pr-16 border-b border-gray-700 flex items-center">
           <h2 className="text-lg font-bold text-white">สแกนบาร์โค้ดสินค้า</h2>
-          <button
-            onClick={handleClose}
-            className="text-red-400 hover:text-red-300 text-2xl font-bold w-10 h-10 flex items-center justify-center rounded-full hover:bg-red-900/30 transition-all"
-          >
-            &times;
-          </button>
         </div>
 
         <div className="p-4 flex-1 flex flex-col items-center overflow-hidden">

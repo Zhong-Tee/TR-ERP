@@ -20,6 +20,7 @@ import {
 import type { Product, PpProductionOrder, PpProductionOrderItem } from '../../types'
 import ProductImageHover from '../ui/ProductImageHover'
 import Modal from '../ui/Modal'
+import ModalCloseButton from '../ui/ModalCloseButton'
 
 type TabKey = 'pp' | 'pending' | 'approved' | 'processing' | 'completed' | 'rejected'
 
@@ -572,6 +573,8 @@ export default function ProductionCreate() {
         <div
           className="fixed right-0 bottom-0 z-50 flex flex-col bg-white"
           style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }}
+          role="dialog"
+          aria-modal="true"
         >
           {/* Header */}
           <div className="px-6 pt-5 pb-4 border-b bg-gray-50 shrink-0">
@@ -579,9 +582,7 @@ export default function ProductionCreate() {
               <h2 className="text-2xl font-bold text-gray-800">
                 {editingOrderId ? 'แก้ไขใบแปรรูป' : 'สร้างใบแปรรูป'}
               </h2>
-              <button onClick={() => setCreateOpen(false)} className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-200 hover:bg-red-500 hover:text-white text-gray-500 text-xl transition-colors">
-                <i className="fas fa-times"></i>
-              </button>
+              <ModalCloseButton onClick={() => setCreateOpen(false)} />
             </div>
             <div className="grid grid-cols-2 gap-5">
               <div>
@@ -735,12 +736,6 @@ export default function ProductionCreate() {
             </div>
             <div className="flex gap-3">
               <button
-                onClick={() => setCreateOpen(false)}
-                className="px-6 py-2.5 bg-gray-200 text-gray-700 rounded-lg text-base font-semibold hover:bg-gray-300 transition"
-              >
-                ปิด
-              </button>
-              <button
                 onClick={handleSave}
                 disabled={saving}
                 className="px-6 py-2.5 bg-green-600 text-white rounded-lg text-base font-semibold hover:bg-green-700 transition disabled:opacity-50"
@@ -756,14 +751,8 @@ export default function ProductionCreate() {
       {viewingOrder && (
         <Modal open onClose={() => setViewingOrder(null)} contentClassName="max-w-4xl" closeOnBackdropClick>
           <div className="p-6 space-y-5">
-            <div className="flex justify-between items-start">
+            <div className="flex items-start pr-14">
               <h2 className="text-xl font-bold text-gray-800">รายละเอียด {viewingOrder.doc_no}</h2>
-              <button
-                onClick={() => setViewingOrder(null)}
-                className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-200 hover:bg-red-500 hover:text-white text-gray-500 text-xl transition-colors shrink-0"
-              >
-                <i className="fas fa-times"></i>
-              </button>
             </div>
             <div className="grid grid-cols-2 gap-4 text-base">
               <div><span className="text-gray-500">หัวข้อ:</span> <span className="font-semibold">{viewingOrder.title || '-'}</span></div>
@@ -906,14 +895,8 @@ export default function ProductionCreate() {
       {rejectModal && (
         <Modal open onClose={() => setRejectModal(null)} contentClassName="max-w-lg" closeOnBackdropClick>
           <div className="p-6 space-y-5">
-            <div className="flex justify-between items-start">
+            <div className="flex items-start pr-14">
               <h2 className="text-xl font-bold text-gray-800">ปฏิเสธ {rejectModal.doc_no}</h2>
-              <button
-                onClick={() => setRejectModal(null)}
-                className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-200 hover:bg-red-500 hover:text-white text-gray-500 text-xl transition-colors shrink-0"
-              >
-                <i className="fas fa-times"></i>
-              </button>
             </div>
             <div>
               <label className="text-base text-gray-600 font-semibold">เหตุผลที่ปฏิเสธ</label>
@@ -926,9 +909,6 @@ export default function ProductionCreate() {
               />
             </div>
             <div className="flex justify-end gap-3">
-              <button onClick={() => setRejectModal(null)} className="px-5 py-2.5 bg-gray-200 text-gray-700 rounded-lg text-base font-semibold hover:bg-gray-300">
-                ยกเลิก
-              </button>
               <button onClick={handleReject} className="px-5 py-2.5 bg-red-500 text-white rounded-lg text-base font-semibold hover:bg-red-600">
                 ยืนยันปฏิเสธ
               </button>

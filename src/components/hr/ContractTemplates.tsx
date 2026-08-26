@@ -377,7 +377,7 @@ export default function ContractTemplates() {
         onClose={() => { setEditorOpen(false); setEditingTemplate(null) }}
         contentClassName="max-w-4xl"
       >
-        <div className="border-b border-emerald-200 p-4">
+        <div className="border-b border-emerald-200 p-4 pr-16">
           <h3 className="text-lg font-semibold text-emerald-900">
             {editingTemplate ? 'แก้ไขเทมเพลต' : 'เพิ่มเทมเพลต'}
           </h3>
@@ -461,13 +461,6 @@ export default function ContractTemplates() {
         <div className="flex justify-end gap-2 border-t border-emerald-200 p-4">
           <button
             type="button"
-            onClick={() => { setEditorOpen(false); setEditingTemplate(null) }}
-            className="rounded-xl border border-emerald-200 px-4 py-2 text-emerald-800 hover:bg-emerald-50"
-          >
-            ยกเลิก
-          </button>
-          <button
-            type="button"
             onClick={saveTemplate}
             disabled={savingTemplate || !formName.trim()}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white shadow-soft hover:bg-emerald-700 disabled:opacity-50"
@@ -482,7 +475,7 @@ export default function ContractTemplates() {
         onClose={() => setCreateModalOpen(false)}
         contentClassName="max-w-4xl"
       >
-        <div className="border-b border-emerald-200 p-4">
+        <div className="border-b border-emerald-200 p-4 pr-16">
           <h3 className="text-lg font-semibold text-emerald-900">สร้างสัญญาจากเทมเพลต</h3>
         </div>
         <div className="space-y-4 p-4">

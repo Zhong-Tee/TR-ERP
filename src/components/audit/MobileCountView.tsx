@@ -7,6 +7,7 @@ import type { InventoryAudit, InventoryAuditItem } from '../../types'
 import BarcodeScanner from './BarcodeScanner'
 import CountProgress from './CountProgress'
 import ProductCountCard from './ProductCountCard'
+import ModalCloseButton from '../ui/ModalCloseButton'
 
 type Mode = 'list' | 'scan'
 type ToastType = 'success' | 'error' | 'warning'
@@ -397,9 +398,10 @@ export default function MobileCountView() {
 
       {/* Confirm Modal */}
       {confirmModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
           <div className="absolute inset-0 bg-black/40" onClick={() => setConfirmModal(null)} />
           <div className="relative bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 text-center">
+            <ModalCloseButton onClick={() => setConfirmModal(null)} className="absolute right-3 top-3" />
             <div className="mx-auto w-14 h-14 rounded-full bg-orange-100 flex items-center justify-center mb-4">
               <svg className="w-7 h-7 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -408,14 +410,8 @@ export default function MobileCountView() {
             <p className="text-gray-800 font-semibold">{confirmModal.message}</p>
             <div className="flex gap-3 mt-6">
               <button
-                onClick={() => setConfirmModal(null)}
-                className="flex-1 py-2.5 border-2 rounded-xl font-semibold text-gray-600 hover:bg-gray-50"
-              >
-                ยกเลิก
-              </button>
-              <button
                 onClick={confirmModal.onConfirm}
-                className="flex-1 py-2.5 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600"
+                className="ml-auto px-6 py-2.5 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600"
               >
                 ยืนยัน
               </button>

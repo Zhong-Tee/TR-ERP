@@ -1174,9 +1174,6 @@ export default function OrderList({
         {slipCheckImageZoom && (
           <div className="p-4">
             <img src={slipCheckImageZoom} alt="สลิปขยาย" className="max-w-full max-h-[75vh] h-auto mx-auto rounded-lg" />
-            <div className="text-center mt-3">
-              <button onClick={() => setSlipCheckImageZoom(null)} className="px-4 py-2 border rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50">ปิด</button>
-            </div>
           </div>
         )}
       </Modal>

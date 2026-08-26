@@ -61,7 +61,7 @@ interface ConvertForm {
 
 export default function PurchaseSample() {
   const { user } = useAuthContext()
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const [samples, setSamples] = useState<InventorySample[]>([])
   const [categoryOptions, setCategoryOptions] = useState<string[]>([])
@@ -655,7 +655,6 @@ export default function PurchaseSample() {
             <textarea value={note} onChange={(e) => setNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="ข้อมูลภาพรวมก่อนเริ่มทดสอบ (ถ้ามี)" />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setCreateOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button onClick={handleCreate} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
           </div>
         </div>
@@ -694,7 +693,7 @@ export default function PurchaseSample() {
           </div>
           <p className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">สินค้าตัวอย่างหนึ่งใบรับมีได้ 1 รายการ</p>
           <div><label className="block text-sm font-medium text-gray-700 mb-1">หมายเหตุภาพรวมตอนรับสินค้า</label><textarea value={editNote} onChange={(e) => setEditNote(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm" rows={2} placeholder="ข้อมูลภาพรวมก่อนเริ่มทดสอบ (ถ้ามี)" /></div>
-          <div className="flex justify-end gap-3 pt-2 border-t"><button onClick={() => setEditing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button><button onClick={handleUpdate} disabled={saving} className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-semibold">{saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}</button></div>
+          <div className="flex justify-end gap-3 pt-2 border-t"><button onClick={handleUpdate} disabled={saving} className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-semibold">{saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}</button></div>
         </div>}
       </Modal>
 
@@ -707,7 +706,7 @@ export default function PurchaseSample() {
             </div>
           ) : viewing ? (
             <>
-              <div className="flex items-start justify-between gap-4 pr-10">
+              <div className="flex items-start justify-between gap-4 pr-14">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียดสินค้าตัวอย่าง</h2>
                   <p className="text-sm text-gray-500 mt-1">
@@ -717,7 +716,6 @@ export default function PurchaseSample() {
                 <span className={`inline-block px-3 py-1 rounded-full text-xs font-semibold ${(STATUS_MAP[viewing.status] || { color: 'bg-gray-100 text-gray-700' }).color}`}>
                   {(STATUS_MAP[viewing.status] || { label: viewing.status }).label}
                 </span>
-                <button type="button" onClick={() => setViewing(null)} aria-label="ปิดหน้าต่าง" title="ปิด" className="absolute right-4 top-4 w-9 h-9 flex items-center justify-center rounded-full text-gray-500 hover:text-gray-900 hover:bg-gray-100 text-2xl leading-none">×</button>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -870,7 +868,6 @@ export default function PurchaseSample() {
                     บันทึกผลทดสอบ
                   </button>
                 )}
-                <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ปิด</button>
               </div>
             </>
           ) : null}
@@ -879,7 +876,6 @@ export default function PurchaseSample() {
 
       <Modal open={!!enlargedImage} onClose={() => setEnlargedImage('')} closeOnBackdropClick contentClassName="max-w-5xl bg-black/90 border-0" stackClassName="z-[70]">
         <div className="relative p-4 flex items-center justify-center min-h-[50vh]">
-          <button type="button" onClick={() => setEnlargedImage('')} aria-label="ปิดรูปขยาย" className="absolute right-3 top-3 z-10 w-10 h-10 rounded-full bg-white/90 text-gray-900 text-2xl hover:bg-white">×</button>
           {enlargedImage && <img src={enlargedImage} alt="รูปสินค้าตัวอย่างขนาดใหญ่" className="max-w-full max-h-[75vh] object-contain rounded-lg" />}
         </div>
       </Modal>
@@ -927,7 +923,6 @@ export default function PurchaseSample() {
           )}
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setTestOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button
               onClick={handleSubmitTestResult}
               disabled={actionSaving}
@@ -956,7 +951,6 @@ export default function PurchaseSample() {
             />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setStartTestOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button
               onClick={handleConfirmStartTesting}
               disabled={actionSaving}
@@ -1084,7 +1078,6 @@ export default function PurchaseSample() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={closeConvertModal} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">ยกเลิก</button>
             <button onClick={handleConvertToProduct} disabled={actionSaving} className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-semibold">
               {actionSaving ? 'กำลังบันทึก...' : 'สร้างสินค้าและนำเข้า'}
             </button>
@@ -1107,7 +1100,6 @@ export default function PurchaseSample() {
             />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setAddCategoryOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm">ยกเลิก</button>
             <button onClick={handleAddCategory} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold">บันทึก</button>
           </div>
         </div>
@@ -1138,7 +1130,6 @@ export default function PurchaseSample() {
             />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setAddSellerOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm">ยกเลิก</button>
             <button onClick={handleAddSeller} disabled={sellerSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-semibold disabled:opacity-50">
               {sellerSaving ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>

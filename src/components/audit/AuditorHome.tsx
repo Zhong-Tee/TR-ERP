@@ -23,7 +23,7 @@ export default function AuditorHome() {
   const [audits, setAudits] = useState<InventoryAudit[]>([])
   const [loading, setLoading] = useState(true)
   const [loggingOut, setLoggingOut] = useState(false)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     if (!user?.id) return

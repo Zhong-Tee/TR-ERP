@@ -100,7 +100,7 @@ function endOfDayIso(ymd: string): string {
 export default function WarehouseSub() {
   const { user } = useAuthContext()
   const canManageSubWarehouseSettings = user?.role === 'superadmin' || user?.role === 'admin'
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const [subWarehouses, setSubWarehouses] = useState<SubWarehouse[]>([])
   const [loadingSubs, setLoadingSubs] = useState(false)
@@ -1380,22 +1380,13 @@ export default function WarehouseSub() {
         contentClassName="max-w-xl w-full"
       >
         <div className="p-6 space-y-5 text-slate-900">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 pr-14">
             <div>
               <div className="text-xl font-black text-slate-900">เพิ่มชื่อคลังย่อย</div>
               <div className="text-sm text-slate-500 mt-1">
                 สร้างคลังย่อยเพื่อใช้จดบันทึกจำนวนสต๊อคแยกจากสต๊อคหลัก
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setCreateModalOpen(false)}
-              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
-              aria-label="ปิด"
-              title="ปิด"
-            >
-              ×
-            </button>
           </div>
           <div className="h-px bg-slate-200" />
           <div>
@@ -1410,13 +1401,6 @@ export default function WarehouseSub() {
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setCreateModalOpen(false)}
-              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               disabled={creatingSub}
@@ -1436,22 +1420,13 @@ export default function WarehouseSub() {
         contentClassName="max-w-2xl w-full"
       >
         <div className="p-6 space-y-5 text-slate-900">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 pr-14">
             <div>
               <div className="text-xl font-black text-slate-900">เพิ่มสินค้าเข้าคลังย่อย</div>
               <div className="text-sm text-slate-500 mt-1">
                 ค้นหาด้วยรหัสสินค้าในระบบ แล้วเลือกเพื่อเพิ่มเข้า “{selectedSub?.name || 'คลังย่อย'}”
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setAddProductModalOpen(false)}
-              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
-              aria-label="ปิด"
-              title="ปิด"
-            >
-              ×
-            </button>
           </div>
           <div className="h-px bg-slate-200" />
           <div>
@@ -1502,13 +1477,6 @@ export default function WarehouseSub() {
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setAddProductModalOpen(false)}
-              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
               disabled={addingProduct || !selectedProductId}
               onClick={addProductToSubWarehouse}
               className="px-5 py-2.5 rounded-xl font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shadow-sm"
@@ -1526,22 +1494,13 @@ export default function WarehouseSub() {
         contentClassName="max-w-2xl w-full"
       >
         <div className="p-6 space-y-5 text-slate-900">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 pr-14">
             <div>
               <div className="text-xl font-black text-slate-900">เพิ่ม/ลดสต๊อคคลังย่อย</div>
               <div className="text-sm text-slate-500 mt-1">
                 บันทึกรับเข้า/ลดยอดในคลังย่อย (ไม่ตัด/ไม่เพิ่มสต๊อคหลัก)
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setAdjustModalOpen(false)}
-              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center"
-              aria-label="ปิด"
-              title="ปิด"
-            >
-              ×
-            </button>
           </div>
           <div className="h-px bg-slate-200" />
           <div>
@@ -1609,13 +1568,6 @@ export default function WarehouseSub() {
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setAdjustModalOpen(false)}
-              className="px-4 py-2.5 rounded-xl font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
               disabled={adjustSaving}
               onClick={saveAdjust}
               className="px-5 py-2.5 rounded-xl font-semibold bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 shadow-sm"
@@ -1633,7 +1585,7 @@ export default function WarehouseSub() {
         contentClassName="max-w-4xl w-full max-h-[90vh] overflow-y-auto"
       >
         <div className="p-6 space-y-5 text-slate-900">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 pr-14">
             <div>
               <div className="text-xl font-black text-slate-900">ตั้งค่าหน้ายาง</div>
               <div className="text-sm text-slate-500 mt-1">
@@ -1644,14 +1596,6 @@ export default function WarehouseSub() {
                 คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span> · แสดงกลุ่มที่ใช้กับคลังนี้หรือกลุ่ม “ทุกคลังย่อย”
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setRubberMapModalOpen(false)}
-              className="w-10 h-10 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-black flex items-center justify-center shrink-0"
-              aria-label="ปิด"
-            >
-              ×
-            </button>
           </div>
           <div className="h-px bg-slate-200" />
 
@@ -1923,15 +1867,6 @@ export default function WarehouseSub() {
             </div>
           )}
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => setRubberMapModalOpen(false)}
-              className="px-5 py-2.5 rounded-xl font-semibold bg-slate-900 text-white hover:bg-slate-800"
-            >
-              ปิด
-            </button>
-          </div>
         </div>
       </Modal>
 

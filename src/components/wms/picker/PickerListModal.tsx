@@ -13,11 +13,8 @@ export default function PickerListModal({ items, currentItemId, onClose, onJumpT
   return (
     <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-md">
       <div className="bg-white w-full rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl h-[80vh]">
-        <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+        <div className="p-6 pr-16 border-b flex items-center bg-slate-50">
           <h3 className="font-black text-xl text-slate-800">รายการในใบงาน</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-red-500 text-2xl">
-            <i className="fas fa-times-circle"></i>
-          </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
           {items.length === 0 ? (

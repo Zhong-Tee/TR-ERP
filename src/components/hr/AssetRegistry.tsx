@@ -17,6 +17,7 @@ import {
 import { createStoragePath } from '../../lib/storagePath'
 import type { HRAsset, HRDepartment, HREmployee } from '../../types'
 import Modal from '../ui/Modal'
+import ModalCloseButton from '../ui/ModalCloseButton'
 
 const BUCKET = 'hr-assets'
 
@@ -994,7 +995,7 @@ export default function AssetRegistry() {
 
       <Modal open={formOpen} onClose={() => setFormOpen(false)} contentClassName="max-w-4xl" closeOnBackdropClick>
         <div className="p-6">
-          <h3 className="mb-4 text-lg font-semibold text-gray-900">{form.id ? 'แก้ไขทรัพย์สิน' : 'เพิ่มทรัพย์สิน'}</h3>
+          <h3 className="mb-4 pr-12 text-lg font-semibold text-gray-900">{form.id ? 'แก้ไขทรัพย์สิน' : 'เพิ่มทรัพย์สิน'}</h3>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <label className="block text-sm">
               <span className="text-gray-600">รหัสทรัพย์สิน</span>
@@ -1231,7 +1232,6 @@ export default function AssetRegistry() {
           </div>
 
           <div className="mt-6 flex justify-end gap-2">
-            <button onClick={() => setFormOpen(false)} className="rounded-xl border border-surface-200 px-4 py-2 hover:bg-surface-100">ยกเลิก</button>
             <button onClick={handleSave} disabled={saving} className="rounded-xl bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
               {saving ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
@@ -1243,15 +1243,10 @@ export default function AssetRegistry() {
         <div
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-4"
           onClick={() => setPreviewIndex(null)}
+          role="dialog"
+          aria-modal="true"
         >
-          <button
-            type="button"
-            onClick={() => setPreviewIndex(null)}
-            title="ปิด"
-            className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/25"
-          >
-            <FiX className="h-6 w-6" />
-          </button>
+          <ModalCloseButton onClick={() => setPreviewIndex(null)} className="absolute right-4 top-4" />
 
           {galleryUrls.length > 1 && (
             <>

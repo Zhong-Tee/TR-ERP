@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 import {
   PlanSettingsData,
   PlanJob,
@@ -386,9 +387,10 @@ export default function ProductionWorkQueue() {
       )}
       {/* Confirm / Alert Modal */}
       {modal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-          <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl">
-            <div className="px-5 pt-5 pb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" role="dialog" aria-modal="true">
+          <div className="relative w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl">
+            <ModalCloseButton onClick={() => handleModalAction(false)} className="absolute right-3 top-3 z-10" />
+            <div className="px-5 pr-14 pt-5 pb-4">
               <div className="flex items-start gap-3">
                 <div className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
                   modal.type === 'alert'
@@ -418,13 +420,6 @@ export default function ProductionWorkQueue() {
             }`}>
               {modal.type === 'confirm' ? (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => handleModalAction(false)}
-                    className="rounded-lg border border-gray-300 bg-white px-5 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 active:bg-gray-200 transition-colors"
-                  >
-                    ยกเลิก
-                  </button>
                   <button
                     type="button"
                     onClick={() => handleModalAction(true)}

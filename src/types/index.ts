@@ -1774,6 +1774,8 @@ export interface HRTask {
   started_at?: string
   due_at?: string
   submitted_at?: string
+  /** เวลาส่งงานครั้งแรก ใช้วัด SLA กำหนดส่งโดยไม่ถูกการส่งแก้ไขทับ */
+  first_submitted_at?: string
   completed_at?: string
   completion_note?: string
   completion_link?: string
@@ -1784,6 +1786,18 @@ export interface HRTask {
   creator?: HREmployee
   participants?: HRTaskParticipant[]
   checklist?: HRTaskChecklistItem[]
+}
+
+export interface HRTaskEvent {
+  id: string
+  task_id: string
+  event_type: string
+  from_status?: HRTaskStatus
+  to_status?: HRTaskStatus
+  actor_id?: string
+  event_at: string
+  details: Record<string, unknown>
+  actor?: Pick<HREmployee, 'id' | 'employee_code' | 'first_name' | 'last_name' | 'nickname'>
 }
 
 export interface HRTaskEvaluation {

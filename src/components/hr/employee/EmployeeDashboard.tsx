@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiX, FiChevronRight, FiPaperclip } from 'react-icons/fi'
+import { FiBell, FiCalendar, FiClock, FiFileText, FiCheckCircle, FiXCircle, FiUser, FiChevronRight, FiPaperclip } from 'react-icons/fi'
 import type { IconType } from 'react-icons'
 import {
   fetchEmployeeByUserId,
@@ -669,16 +669,8 @@ export default function EmployeeDashboard() {
           const st = resultStatus(n.title)
           const { Icon, color, bg } = notifIcon(n.type)
           return (
-            <div className="relative p-5">
-              <button
-                type="button"
-                onClick={() => setDetailNotif(null)}
-                aria-label="ปิดรายละเอียด"
-                className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-400 active:bg-gray-100 active:text-gray-700"
-              >
-                <FiX className="h-5 w-5" />
-              </button>
-              <div className="flex items-start gap-3 pr-10">
+            <div className="relative p-5 pr-16">
+              <div className="flex items-start gap-3">
                 <span className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${bg}`}>
                   <Icon className={`w-5 h-5 ${color}`} />
                 </span>
@@ -724,13 +716,6 @@ export default function EmployeeDashboard() {
                 <p className="mt-3 text-xs text-gray-400">ไม่พบข้อมูลคำขอที่เชื่อมกับแจ้งเตือนนี้</p>
               )}
 
-              <button
-                type="button"
-                onClick={() => setDetailNotif(null)}
-                className="mt-5 w-full py-2.5 rounded-xl bg-emerald-600 text-white font-medium active:bg-emerald-700"
-              >
-                ปิด
-              </button>
             </div>
           )
         })()}
@@ -739,16 +724,8 @@ export default function EmployeeDashboard() {
       {/* อนุมัติ/ปฏิเสธ จากมือถือ (เฉพาะ superadmin/admin/hr) */}
       <Modal open={!!approvalTarget} onClose={closeApproval} closeOnBackdropClick contentClassName="max-w-sm">
         {approvalTarget && (
-          <div className="relative p-5">
-            <button
-              type="button"
-              onClick={closeApproval}
-              aria-label="ปิดหน้าต่างอนุมัติ"
-              className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full text-gray-400 active:bg-gray-100 active:text-gray-700"
-            >
-              <FiX className="h-5 w-5" />
-            </button>
-            <h3 className="mb-3 pr-10 text-lg font-semibold text-gray-800">
+          <div className="relative p-5 pr-16">
+            <h3 className="mb-3 text-lg font-semibold text-gray-800">
               {approvalTarget.kind === 'leave' ? 'อนุมัติการลา' : approvalTarget.kind === 'ot' ? 'อนุมัติคำขอ OT' : 'อนุมัติคำขอ WFH'}
             </h3>
             <div className="space-y-1.5 text-sm text-gray-700">
@@ -839,14 +816,6 @@ export default function EmployeeDashboard() {
         closeOnBackdropClick
       >
         <div className="relative p-2">
-          <button
-            type="button"
-            onClick={() => setShowPhoto(false)}
-            aria-label="ปิด"
-            className="absolute top-3 right-3 z-10 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center active:bg-black/70"
-          >
-            <FiX className="w-5 h-5" />
-          </button>
           <button type="button" onClick={() => setShowPhoto(false)} className="block w-full">
             <img
               src={photoUrl ?? undefined}

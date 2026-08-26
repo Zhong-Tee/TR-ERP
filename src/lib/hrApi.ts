@@ -12,7 +12,7 @@ import type {
   HRWarning, HRWarningOffenseType, HRWarningPolicy, HRWarningDecision, HRCertificate, HRAsset, HRAssetLog,
   HRClockLocation, HRTimeEntry, HROTRequest, HRWorkSchedule, HRWFHRequest,
   HREmployeeWorkCalendar, HRCompanyHoliday,
-  HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation,
+  HRTask, HRTaskCategory, HRTaskStatus, HRTaskEvaluation, HRTaskEvent,
   HRAnnouncement, HRAnnouncementCategory, HRAnnouncementApprover, HRAnnouncementAckStatus,
   HRAnnouncementAckSummary,
   HRTimeCertification, HRScoreEvent, HRScorePeriod, HRScoreAppeal, HRScoreSettings,
@@ -137,6 +137,17 @@ export async function fetchTask(id: string) {
   return data as unknown as HRTask
 }
 
+/** ประวัติเหตุการณ์ของงาน เรียงจากเก่าไปใหม่ สำหรับ Timeline และรอบการส่งงาน */
+export async function fetchTaskEvents(taskId: string) {
+  const { data, error } = await supabase
+    .from('hr_task_events')
+    .select('*, actor:hr_employees!actor_id(id,employee_code,first_name,last_name,nickname)')
+    .eq('task_id', taskId)
+    .order('event_at', { ascending: true })
+  if (error) pgError(error)
+  return (data ?? []) as unknown as HRTaskEvent[]
+}
+
 /** ลบงานจากฐานข้อมูล — participants/checklist/evaluations ถูกลบตาม FK ON DELETE CASCADE */
 export async function deleteHRTask(id: string) {
   const { error } = await supabase.from('hr_tasks').delete().eq('id', id)
@@ -160,6 +171,20 @@ export async function updateTaskStatus(id: string, status: HRTaskStatus, note?: 
   }
   if (result.error) pgError(result.error)
   return result.data as unknown as HRTask
+}
+
+/** รับทราบและเริ่มงานในครั้งเดียว ลดขั้นตอนของพนักงานแต่ยังเก็บเวลาทั้งสองค่า */
+export async function acknowledgeAndStartTask(id: string) {
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('hr_tasks')
+    .update({ status: 'in_progress', acknowledged_at: now, started_at: now, updated_at: now })
+    .eq('id', id)
+    .eq('status', 'new')
+    .select(HR_TASK_SELECT)
+    .single()
+  if (error) pgError(error)
+  return data as unknown as HRTask
 }
 
 export async function toggleTaskChecklist(id: string, completed: boolean) {

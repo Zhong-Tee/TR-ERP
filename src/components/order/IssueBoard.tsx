@@ -955,13 +955,6 @@ export default function IssueBoard({
                 </h3>
                 <p className="text-sm text-emerald-100">{chatIssue.order?.bill_no || '-'}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setChatIssue(null)}
-                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition-colors"
-              >
-                ปิดหน้าต่าง
-              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-slate-100 to-slate-50">
               {chatLoading ? (

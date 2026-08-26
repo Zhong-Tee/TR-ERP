@@ -10,6 +10,7 @@ import {
   loadPOList,
   loadPODetail,
   loadApprovedPRsWithoutPO,
+  cancelApprovedPRWithoutPO,
   convertPRtoPO,
   markPOOrdered,
   updatePO,
@@ -51,7 +52,7 @@ interface PriceEdit {
 export default function PurchasePO() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuthContext()
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
 
   // list
@@ -75,6 +76,7 @@ export default function PurchasePO() {
   const [poNote, setPoNote] = useState('')
   const [expectedArrival, setExpectedArrival] = useState('')
   const [saving, setSaving] = useState(false)
+  const [cancellingPR, setCancellingPR] = useState(false)
 
   // detail
   const [viewing, setViewing] = useState<InventoryPO | null>(null)
@@ -285,6 +287,32 @@ export default function PurchasePO() {
       showMessage({ title: 'เกิดข้อผิดพลาด', message: 'สร้าง PO ไม่สำเร็จ: ' + (e?.message || e) })
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleCancelSourcePR() {
+    if (!selectedPR) return
+
+    const prNo = selectedPR.pr_no
+    const confirmed = await showConfirm({
+      title: 'ยกเลิก PR ต้นทาง',
+      message: `ยืนยันยกเลิก PR ${prNo} ใช่หรือไม่?\n\nPR ที่ยกเลิกแล้วจะไม่สามารถนำมาสร้าง PO ได้อีก`,
+      confirmText: 'ยกเลิก PR',
+    })
+    if (!confirmed) return
+
+    setCancellingPR(true)
+    try {
+      await cancelApprovedPRWithoutPO(selectedPR.id)
+      setCreateOpen(false)
+      setSelectedPR(null)
+      setAvailablePRs([])
+      await loadAll()
+      showMessage({ title: 'ยกเลิกสำเร็จ', message: `ยกเลิก PR ${prNo} แล้ว` })
+    } catch (e: any) {
+      showMessage({ title: 'เกิดข้อผิดพลาด', message: 'ยกเลิก PR ไม่สำเร็จ: ' + (e?.message || e) })
+    } finally {
+      setCancellingPR(false)
     }
   }
 
@@ -783,7 +811,7 @@ export default function PurchasePO() {
       {/* ── Create PO from PR Modal ── */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
         <div className="p-6 space-y-5">
-          <h2 className="text-xl font-bold text-gray-900">สร้างใบสั่งซื้อ (PO) จาก PR</h2>
+          <h2 className="pr-12 text-xl font-bold text-gray-900">สร้างใบสั่งซื้อ (PO) จาก PR</h2>
 
           {selectedPR && (
             <>
@@ -989,13 +1017,18 @@ export default function PurchasePO() {
               </div>
 
               <div className="flex justify-end gap-3 pt-2 border-t">
-                <button onClick={() => setCreateOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
-                  ยกเลิก
+                <button
+                  type="button"
+                  onClick={handleCancelSourcePR}
+                  disabled={saving || exporting || cancellingPR}
+                  className="px-5 py-2.5 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 text-sm font-medium disabled:opacity-50"
+                >
+                  {cancellingPR ? 'กำลังยกเลิก...' : 'ยกเลิก PR'}
                 </button>
                 <button
                   type="button"
                   onClick={handleExportCreatePNG}
-                  disabled={exporting || saving}
+                  disabled={exporting || saving || cancellingPR}
                   className="px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
                 >
                   {exporting ? (
@@ -1007,7 +1040,7 @@ export default function PurchasePO() {
                   )}
                   ดาวน์โหลด PNG
                 </button>
-                <button onClick={handleCreate} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
+                <button onClick={handleCreate} disabled={saving || cancellingPR} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
                   {saving ? 'กำลังสร้าง...' : 'สร้าง PO'}
                 </button>
               </div>
@@ -1025,7 +1058,7 @@ export default function PurchasePO() {
             </div>
           ) : viewing ? (
             <>
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between pr-14">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียด PO</h2>
                   <p className="text-sm text-gray-500 mt-1">
@@ -1327,9 +1360,6 @@ export default function PurchasePO() {
                   )}
                   ดาวน์โหลด PNG
                 </button>
-                <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
-                  ปิด
-                </button>
               </div>
             </>
           ) : null}
@@ -1403,9 +1433,6 @@ export default function PurchasePO() {
           )}
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setShippingOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-50 text-sm">
-              ยกเลิก
-            </button>
             <button onClick={handleSaveShipping} disabled={shippingSaving} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 text-sm font-semibold">
               {shippingSaving ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
@@ -1480,9 +1507,6 @@ export default function PurchasePO() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t">
-            <button onClick={() => setResolveOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
-              ยกเลิก
-            </button>
             <button
               onClick={handleSaveResolution}
               disabled={resolveSaving || resolutions.every((r) => r.resolution_type === 'waiting')}
@@ -1617,9 +1641,6 @@ export default function PurchasePO() {
               </div>
 
               <div className="flex justify-end gap-3 pt-2 border-t">
-                <button onClick={() => setEditOpen(false)} className="px-5 py-2.5 border rounded-lg hover:bg-gray-50 text-sm font-medium">
-                  ยกเลิก
-                </button>
                 <button onClick={handleSaveEditPO} disabled={editSaving} className="px-5 py-2.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 text-sm font-semibold">
                   {editSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
                 </button>

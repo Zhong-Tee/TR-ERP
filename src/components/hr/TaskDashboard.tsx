@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { FiAlertTriangle, FiAward, FiCheckCircle, FiClock, FiStar, FiTrendingUp, FiUsers, FiX } from 'react-icons/fi'
+import { FiAlertTriangle, FiAward, FiCheckCircle, FiClock, FiStar, FiTrendingUp, FiUsers } from 'react-icons/fi'
+import ModalCloseButton from '../ui/ModalCloseButton'
 import { fetchTaskEvaluations, getHRFileUrl } from '../../lib/hrApi'
 import { DIMENSIONS, evalScore, isTaskOverdue as isOverdue, TASK_ACTIVE_STATUSES as ACTIVE, type DimensionKey } from '../../lib/hrTaskMetrics'
 import type { HREmployee, HRTask, HRTaskEvaluation } from '../../types'
@@ -9,6 +10,7 @@ import type { HREmployee, HRTask, HRTaskEvaluation } from '../../types'
 type DimensionAvg = Record<DimensionKey, number | null>
 type Period = '30d' | '90d' | 'ytd' | 'all'
 const PERIODS: Array<[Period, string]> = [['30d', '30 วันล่าสุด'], ['90d', '90 วันล่าสุด'], ['ytd', 'ปีนี้'], ['all', 'ทั้งหมด']]
+const ACK_SLA_MINUTES = 30
 
 const UNCATEGORIZED = { id: '', name: 'ไม่ระบุประเภท', color: '#9ca3af' }
 const nameOf = (e?: HREmployee) => e ? `${e.first_name} ${e.last_name}${e.nickname ? ` (${e.nickname})` : ''}` : '-'
@@ -24,15 +26,19 @@ const scoreBg = (s: number) => s >= 4.5 ? 'bg-emerald-50 border-emerald-200' : s
 const pct = (n: number, total: number) => total ? Math.round((n / total) * 100) : 0
 const fmtDuration = (minutes: number) => {
   const days = Math.floor(minutes / 1440), hours = Math.floor((minutes % 1440) / 60), mins = Math.round(minutes % 60)
-  if (days) return `${days} วัน ${hours} ชม.`
-  if (hours) return `${hours} ชม. ${mins} นาที`
+  if (days) return `${days} วัน${hours ? ` ${hours} ชม.` : ''}`
+  if (hours) return `${hours} ชม.${mins ? ` ${mins} นาที` : ''}`
   return `${mins} นาที`
 }
+const firstSubmission = (t: HRTask) => t.first_submitted_at || t.submitted_at || (t.status === 'completed' ? t.completed_at : undefined)
 const taskDurationMin = (t: HRTask) => {
-  if (!t.completed_at) return null
-  const start = new Date(t.started_at || t.acknowledged_at || t.created_at).getTime()
-  return Math.max(0, (new Date(t.completed_at).getTime() - start) / 60000)
+  const submitted = firstSubmission(t)
+  if (!t.started_at || !submitted) return null
+  return Math.max(0, (new Date(submitted).getTime() - new Date(t.started_at).getTime()) / 60000)
 }
+const acknowledgeDurationMin = (t: HRTask) => t.acknowledged_at
+  ? Math.max(0, (new Date(t.acknowledged_at).getTime() - new Date(t.created_at).getTime()) / 60000)
+  : null
 
 type CategoryStat = {
   category: { id: string; name: string; color: string }
@@ -52,6 +58,8 @@ type EmployeeStat = {
   completed: number
   overdue: number
   onTimeRate: number | null
+  ackSlaRate: number | null
+  avgAckMin: number | null
   avgDurationMin: number | null
   avgScore: number | null
   evalCount: number
@@ -114,9 +122,10 @@ export default function TaskDashboard({ tasks }: { tasks: HRTask[] }) {
     }
     const rows = [...byEmployee.values()].map(({ employee, tasks: mine }): EmployeeStat => {
       const completedTasks = mine.filter((t) => t.status === 'completed')
-      const withDue = completedTasks.filter((t) => t.due_at && t.completed_at)
-      const onTime = withDue.filter((t) => new Date(t.completed_at!) <= new Date(t.due_at!))
-      const durations = completedTasks.map(taskDurationMin).filter((d): d is number => d !== null)
+      const withDue = mine.filter((t) => t.due_at && firstSubmission(t))
+      const onTime = withDue.filter((t) => new Date(firstSubmission(t)!) <= new Date(t.due_at!))
+      const durations = mine.map(taskDurationMin).filter((d): d is number => d !== null)
+      const ackDurations = mine.map(acknowledgeDurationMin).filter((d): d is number => d !== null)
       const myEvals = mine.flatMap((t) => (evalsByTask.get(t.id) ?? []).filter((ev) => ev.employee_id === employee.id))
       const dims = dimensionAvg(myEvals)
       const categories = buildCategoryStats(mine, evalsByTask, employee.id)
@@ -131,6 +140,8 @@ export default function TaskDashboard({ tasks }: { tasks: HRTask[] }) {
         completed: completedTasks.length,
         overdue: mine.filter(isOverdue).length,
         onTimeRate: withDue.length ? pct(onTime.length, withDue.length) : null,
+        ackSlaRate: ackDurations.length ? pct(ackDurations.filter((minutes) => minutes <= ACK_SLA_MINUTES).length, ackDurations.length) : null,
+        avgAckMin: ackDurations.length ? ackDurations.reduce((a, b) => a + b, 0) / ackDurations.length : null,
         avgDurationMin: durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null,
         avgScore: myEvals.length ? myEvals.reduce((a, ev) => a + evalScore(ev), 0) / myEvals.length : null,
         evalCount: myEvals.length,
@@ -146,8 +157,9 @@ export default function TaskDashboard({ tasks }: { tasks: HRTask[] }) {
   const team = useMemo(() => {
     const allEvals = [...evalsByTask.values()].flat()
     const completed = scopedTasks.filter((t) => t.status === 'completed')
-    const withDue = completed.filter((t) => t.due_at && t.completed_at)
-    const onTime = withDue.filter((t) => new Date(t.completed_at!) <= new Date(t.due_at!))
+    const withDue = scopedTasks.filter((t) => t.due_at && firstSubmission(t))
+    const onTime = withDue.filter((t) => new Date(firstSubmission(t)!) <= new Date(t.due_at!))
+    const ackDurations = scopedTasks.map(acknowledgeDurationMin).filter((d): d is number => d !== null)
     const teamDims = dimensionAvg(allEvals)
     return {
       total: scopedTasks.length,
@@ -155,6 +167,8 @@ export default function TaskDashboard({ tasks }: { tasks: HRTask[] }) {
       completed: completed.length,
       overdue: scopedTasks.filter(isOverdue).length,
       onTimeRate: withDue.length ? pct(onTime.length, withDue.length) : null,
+      ackSlaRate: ackDurations.length ? pct(ackDurations.filter((minutes) => minutes <= ACK_SLA_MINUTES).length, ackDurations.length) : null,
+      avgAckMin: ackDurations.length ? ackDurations.reduce((a, b) => a + b, 0) / ackDurations.length : null,
       avgScore: allEvals.length ? allEvals.reduce((a, ev) => a + evalScore(ev), 0) / allEvals.length : null,
       evalCount: allEvals.length,
       dims: teamDims,
@@ -164,16 +178,18 @@ export default function TaskDashboard({ tasks }: { tasks: HRTask[] }) {
 
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-2 text-gray-700"><FiTrendingUp className="text-emerald-600" /><span className="font-semibold">ประสิทธิภาพทีม</span><span className="text-sm text-gray-400">· นับจากวันที่มอบหมายงาน</span></div>
+      <div className="flex items-center gap-2 text-gray-700"><FiTrendingUp className="text-emerald-600" /><span className="font-semibold">KPI และ SLA ทีม</span><span className="text-sm text-gray-400">· นับจากวันที่มอบหมายงาน</span></div>
       <select value={period} onChange={(e) => setPeriod(e.target.value as Period)} className="border rounded-xl px-3 py-2 text-sm bg-white">{PERIODS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
     </div>
     {error && <div className="p-3 rounded-xl bg-red-50 text-red-700 text-sm">{error}</div>}
 
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
       <Kpi icon={FiUsers} label="งานที่มอบหมาย" value={String(team.total)} color="text-slate-700" />
       <Kpi icon={FiClock} label="กำลังดำเนินการ" value={String(team.active)} color="text-blue-600" />
       <Kpi icon={FiCheckCircle} label="เสร็จแล้ว" value={String(team.completed)} color="text-emerald-600" />
       <Kpi icon={FiAlertTriangle} label="เลยกำหนด" value={String(team.overdue)} color="text-red-600" />
+      <Kpi icon={FiCheckCircle} label={`รับทราบ ≤ ${ACK_SLA_MINUTES} นาที`} value={team.ackSlaRate === null ? '-' : `${team.ackSlaRate}%`} color="text-indigo-600" />
+      <Kpi icon={FiClock} label="เวลารับทราบเฉลี่ย" value={team.avgAckMin === null ? '-' : fmtDuration(team.avgAckMin)} color="text-violet-600" />
       <Kpi icon={FiClock} label="ส่งตรงเวลา" value={team.onTimeRate === null ? '-' : `${team.onTimeRate}%`} color="text-teal-600" />
       <Kpi icon={FiStar} label="คะแนนเฉลี่ยทีม" value={team.avgScore === null ? '-' : team.avgScore.toFixed(1)} sub={team.evalCount ? `จากการประเมิน ${team.evalCount} ครั้ง` : 'ยังไม่มีการประเมิน'} color="text-amber-500" />
     </div>
@@ -293,7 +309,7 @@ function EmployeeCard({ stat, rank, onClick }: { stat: EmployeeStat; rank: numbe
         <div key={label} className="bg-gray-50 rounded-xl py-2"><div className={`text-lg font-bold ${color}`}>{value}</div><div className="text-[10px] text-gray-500">{label}</div></div>)}
     </div>
     <div className="mt-3">
-      <div className="flex justify-between text-xs text-gray-500 mb-1"><span>ประเภทงานที่ได้รับ</span>{stat.onTimeRate !== null && <span>ส่งตรงเวลา <b className="text-gray-700">{stat.onTimeRate}%</b></span>}</div>
+      <div className="flex flex-wrap justify-between gap-1 text-xs text-gray-500 mb-1"><span>ประเภทงานที่ได้รับ</span><span className="flex gap-2">{stat.ackSlaRate !== null && <span>รับทราบตาม SLA <b className="text-gray-700">{stat.ackSlaRate}%</b></span>}{stat.onTimeRate !== null && <span>ส่งตรงเวลา <b className="text-gray-700">{stat.onTimeRate}%</b></span>}</span></div>
       <div className="flex h-2.5 rounded-full overflow-hidden bg-gray-100">{stat.categories.map((c) => <div key={c.category.id} title={`${c.category.name} ${c.share}%`} style={{ width: `${c.share}%`, backgroundColor: c.category.color }} />)}</div>
       <div className="flex flex-wrap gap-1.5 mt-2">{stat.categories.slice(0, 3).map((c) => <span key={c.category.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-50 text-[11px] text-gray-600"><span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.category.color }} />{c.category.name} {c.share}%</span>)}{stat.categories.length > 3 && <span className="text-[11px] text-gray-400">+{stat.categories.length - 3}</span>}</div>
     </div>
@@ -305,15 +321,17 @@ function EmployeeDetailModal({ stat, onClose }: { stat: EmployeeStat; onClose: (
   const e = stat.employee
   return createPortal(
     <div className="fixed inset-0 z-[1000] bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="รายละเอียดผลงานพนักงาน">
-      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b">
+      <div className="relative bg-white rounded-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col shadow-2xl">
+        <ModalCloseButton onClick={onClose} className="absolute right-3 top-3 z-20" />
+        <div className="flex items-center px-5 py-4 pr-16 border-b">
           <div className="flex items-center gap-3"><Avatar employee={e} /><div><h2 className="font-bold text-lg">{nameOf(e)}</h2><p className="text-xs text-gray-500">{e.position?.name ?? ''} {e.employee_code ? `· ${e.employee_code}` : ''}</p></div></div>
-          <button type="button" onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100" aria-label="ปิด"><FiX className="w-6 h-6" /></button>
         </div>
         <div className="overflow-y-auto p-5 space-y-5">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <Info label="งานที่มอบหมาย" value={String(stat.total)} />
             <Info label="เสร็จแล้ว" value={`${stat.completed} งาน`} />
+            <Info label={`รับทราบภายใน ${ACK_SLA_MINUTES} นาที`} value={stat.ackSlaRate === null ? '-' : `${stat.ackSlaRate}%`} />
+            <Info label="เวลารับทราบเฉลี่ย" value={stat.avgAckMin === null ? '-' : fmtDuration(stat.avgAckMin)} />
             <Info label="ส่งตรงเวลา" value={stat.onTimeRate === null ? '-' : `${stat.onTimeRate}%`} />
             <Info label="เวลาเฉลี่ย/งาน" value={stat.avgDurationMin === null ? '-' : fmtDuration(stat.avgDurationMin)} />
           </div>

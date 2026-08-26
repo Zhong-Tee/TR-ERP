@@ -82,11 +82,8 @@ export default function SentAlertsModal({ pickerId, onClose }: SentAlertsModalPr
   return (
     <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-2xl">
       <div className="bg-white rounded-3xl overflow-hidden shadow-2xl">
-        <div className="px-6 py-4 bg-slate-50 border-b flex items-center justify-between">
+        <div className="px-6 py-4 pr-16 bg-slate-50 border-b flex items-center">
           <h3 className="text-xl font-black text-slate-800">แจ้งเตือนที่ส่งไป</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-red-500 text-2xl">
-            <i className="fas fa-times-circle" />
-          </button>
         </div>
 
         <div className="p-4 max-h-[70vh] overflow-y-auto bg-slate-100/80">

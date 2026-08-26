@@ -11,7 +11,7 @@ export default function RequisitionList() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [detailItems, setDetailItems] = useState<any[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     if (!user?.id) return

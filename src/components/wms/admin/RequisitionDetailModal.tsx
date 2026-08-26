@@ -21,7 +21,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   const [approving, setApproving] = useState(false)
   const [selectedPicker, setSelectedPicker] = useState('')
   const [pickers, setPickers] = useState<any[]>([])
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const itemTopic = (item: any) => String(item.requisition_topic || item.topic || '').trim() || '-'
 
   const canApprove = CAN_APPROVE_ROLES.includes(user?.role || '') && requisition.status === 'pending'
@@ -192,19 +192,11 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
     <>
       <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-4xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+          <div className="p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">ใบเบิก: {requisition.requisition_id}</h2>
               <div className="mt-2">{getStatusBadge(requisition.status)}</div>
             </div>
-            <button
-              onClick={onClose}
-              className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all"
-              title="ปิดหน้าต่าง (ESC)"
-              aria-label="ปิดหน้าต่าง"
-            >
-              <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
-            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 bg-gray-50">

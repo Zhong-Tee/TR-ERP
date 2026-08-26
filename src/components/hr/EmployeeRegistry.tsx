@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ChangeEvent } from 'react'
-import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload, FiX, FiSend } from 'react-icons/fi'
+import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiUsers, FiDownload, FiUpload, FiSend } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import {
   fetchEmployees,
@@ -446,7 +446,7 @@ export default function EmployeeRegistry() {
   const [telegramTestingId, setTelegramTestingId] = useState<string | null>(null)
   const [telegramTestingAll, setTelegramTestingAll] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
-  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
+  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -983,7 +983,7 @@ export default function EmployeeRegistry() {
         closeOnBackdropClick
       >
         <div className="p-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center mb-4 pr-12">
             <h3 className="text-lg font-semibold text-gray-900">
               ประวัติเงินเดือน
               {salaryHistoryEmp && (
@@ -992,16 +992,6 @@ export default function EmployeeRegistry() {
                 </span>
               )}
             </h3>
-            <button
-              type="button"
-              onClick={() => {
-                setSalaryHistoryEmp(null)
-                loadData()
-              }}
-              className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"
-            >
-              <FiX className="w-5 h-5" />
-            </button>
           </div>
           {salaryHistoryEmp && (
             <div className="mb-4 grid grid-cols-3 gap-3">
@@ -1049,13 +1039,6 @@ export default function EmployeeRegistry() {
             (รหัส {deleteConfirm?.employee_code}) ใช่หรือไม่?
           </p>
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={handleDeleteCancel}
-              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={handleDeleteConfirm}

@@ -275,7 +275,6 @@ export default function CompanyDocuments() {
             <label className="flex items-center gap-2"><input type="checkbox" checked={docForm.requires_acknowledgment ?? false} onChange={(e) => setDocForm((p) => ({ ...p, requires_acknowledgment: e.target.checked }))} className="rounded border-surface-300 text-emerald-600" /><span className="text-sm text-gray-700">ต้องยืนยันการอ่าน</span></label>
           </div>
           <div className="flex justify-end gap-2 mt-6">
-            <button type="button" onClick={() => setDocModalOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-gray-700 hover:bg-surface-100">ยกเลิก</button>
             <button type="button" onClick={saveDocument} disabled={docSaving || !docForm.title?.trim()} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">{docSaving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
           </div>
         </div>
@@ -286,7 +285,6 @@ export default function CompanyDocuments() {
             <h2 className="text-lg font-semibold text-gray-900 mb-2">{viewDoc.title}</h2>
             {viewDoc.description && <p className="text-sm text-gray-600 mb-4">{viewDoc.description}</p>}
             {viewDoc.file_url ? <a href={getHRFileUrl(BUCKET, viewDoc.file_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-emerald-600 hover:underline">เปิดไฟล์</a> : viewDoc.content ? <div className="rounded-xl border border-surface-200 p-4 bg-white text-sm whitespace-pre-wrap max-h-96 overflow-y-auto">{viewDoc.content}</div> : <p className="text-gray-500">ไม่มีเนื้อหา</p>}
-            <div className="mt-4 flex justify-end"><button type="button" onClick={() => setViewDoc(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button></div>
           </div>
         )}
       </Modal>
@@ -324,7 +322,6 @@ export default function CompanyDocuments() {
             </div>
           </div>
           <div className="flex justify-end gap-2 mt-6">
-            <button type="button" onClick={() => setExamModalOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-gray-700 hover:bg-surface-100">ยกเลิก</button>
             <button type="button" onClick={saveExam} disabled={examSaving || !examForm.title?.trim()} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">{examSaving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
           </div>
         </div>
@@ -344,7 +341,6 @@ export default function CompanyDocuments() {
                 </div>
               ))}
             </div>
-            <div className="mt-4 flex justify-end"><button type="button" onClick={() => setPreviewExam(null)} className="px-4 py-2 rounded-xl border border-surface-200 hover:bg-surface-100">ปิด</button></div>
           </div>
         )}
       </Modal>

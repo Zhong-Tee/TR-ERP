@@ -39,7 +39,7 @@ export default function CreateRequisition() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [detailItems, setDetailItems] = useState<any[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     generateRequisitionId()

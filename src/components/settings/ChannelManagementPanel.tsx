@@ -391,7 +391,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
       {showForm && (
         <Modal open onClose={closeForm} contentClassName="max-w-lg w-full mx-4">
           <div className="p-6 space-y-4">
-            <h3 className="text-xl font-bold">{editing ? 'แก้ไขช่องทาง' : 'เพิ่มช่องทาง'}</h3>
+            <h3 className="text-xl font-bold pr-12">{editing ? 'แก้ไขช่องทาง' : 'เพิ่มช่องทาง'}</h3>
 
             <div>
               <label className="block text-sm font-medium mb-1">
@@ -498,14 +498,6 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={closeForm}
-                disabled={saving}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 font-semibold text-sm disabled:opacity-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
                 onClick={() => void handleSave()}
                 disabled={saving}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold text-sm disabled:opacity-50"
@@ -540,16 +532,9 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
       {confirm && (
         <Modal open onClose={() => setConfirm(null)} contentClassName="max-w-md w-full mx-4">
           <div className="p-6">
-            <h3 className="text-lg font-bold mb-2">{confirm.title}</h3>
+            <h3 className="text-lg font-bold mb-2 pr-12">{confirm.title}</h3>
             <p className="text-gray-700 whitespace-pre-line">{confirm.body}</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirm(null)}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 font-semibold text-sm"
-              >
-                ยกเลิก
-              </button>
               <button
                 type="button"
                 onClick={() => void confirm.onConfirm()}

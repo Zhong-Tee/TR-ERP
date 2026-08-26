@@ -1079,14 +1079,6 @@ export default function InterviewSchedule() {
             <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmDeleteInterview(null)}
-                disabled={!!deletingInterviewId}
-                className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 text-sm font-medium hover:bg-surface-200 disabled:opacity-50"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
                 onClick={handleDeleteInterview}
                 disabled={!!deletingInterviewId}
                 className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
@@ -1299,16 +1291,6 @@ export default function InterviewSchedule() {
                 </table>
               </div>
               <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setImportOpen(false)
-                    setImportTargetCandidate(null)
-                  }}
-                  className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
-                >
-                  ยกเลิก
-                </button>
                 <button
                   type="button"
                   onClick={handleImport}
@@ -1565,13 +1547,6 @@ export default function InterviewSchedule() {
             </div>
           </div>
           <div className="mt-6 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setScheduleModalOpen(false)}
-              className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={handleScheduleSubmit}

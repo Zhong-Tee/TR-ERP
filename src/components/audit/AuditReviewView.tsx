@@ -305,15 +305,6 @@ export default function AuditReviewView() {
             {modalTitle}
           </h3>
           <div className="mt-3 text-sm text-gray-600 whitespace-pre-line">{modalMessage}</div>
-          <button
-            type="button"
-            onClick={() => setModalOpen(false)}
-            className={`mt-6 px-8 py-2.5 rounded-xl font-semibold text-white transition-colors ${
-              modalType === 'success' ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'
-            }`}
-          >
-            ปิด
-          </button>
         </div>
       </Modal>
 
@@ -330,14 +321,8 @@ export default function AuditReviewView() {
             <p className="mt-2 text-sm text-gray-600">{confirmModal.message}</p>
             <div className="flex gap-3 mt-6">
               <button
-                onClick={() => setConfirmModal(null)}
-                className="flex-1 py-2.5 border-2 rounded-xl font-semibold text-gray-600 hover:bg-gray-50"
-              >
-                ยกเลิก
-              </button>
-              <button
                 onClick={confirmModal.onConfirm}
-                className="flex-1 py-2.5 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600"
+                className="ml-auto px-6 py-2.5 bg-orange-500 text-white rounded-xl font-semibold hover:bg-orange-600"
               >
                 ยืนยัน
               </button>

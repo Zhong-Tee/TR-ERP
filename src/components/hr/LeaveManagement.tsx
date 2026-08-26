@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi, FiX } from 'react-icons/fi'
+import { FiSearch, FiCalendar, FiFileText, FiExternalLink, FiClock, FiUpload, FiWifi } from 'react-icons/fi'
 import LeaveImport from './LeaveImport'
 import LeaveOverageReport from './LeaveOverageReport'
 import {
@@ -1344,15 +1344,7 @@ export default function LeaveManagement() {
         closeOnBackdropClick
       >
         {detailRequest && (
-          <div className="relative p-6 pt-14">
-            <button
-              type="button"
-              onClick={() => setDetailRequest(null)}
-              aria-label="ปิด"
-              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-red-100 text-red-600 transition-colors hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
-            >
-              <FiX className="h-5 w-5" aria-hidden="true" />
-            </button>
+          <div className="relative p-6 pr-16">
             <h3 className="text-lg font-semibold text-surface-800 mb-4">รายละเอียดคำขอลา</h3>
             <div className="space-y-3 text-sm">
               <p><span className="text-surface-500">พนักงาน:</span> {employeeDisplayName(detailRequest)}</p>
@@ -1420,13 +1412,6 @@ export default function LeaveManagement() {
           <div className="flex justify-end gap-2 mt-4">
             <button
               type="button"
-              onClick={closeRejectModal}
-              className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
               onClick={handleReject}
               disabled={actionLoading || !rejectReason.trim()}
               className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50"
@@ -1458,16 +1443,6 @@ export default function LeaveManagement() {
             className="w-full rounded-lg border border-surface-300 px-3 py-2 text-sm text-surface-800 placeholder:text-surface-400"
           />
           <div className="flex justify-end gap-2 mt-4">
-            <button
-              type="button"
-              onClick={() => {
-                setOtRejectingId(null)
-                setRejectReason('')
-              }}
-              className="px-4 py-2 rounded-lg bg-surface-100 text-surface-700 hover:bg-surface-200 text-sm font-medium"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={handleRejectOT}

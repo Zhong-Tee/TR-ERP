@@ -56,7 +56,7 @@ export default function TrainingCertificates() {
 
   const [viewItem, setViewItem] = useState<HRCertificate | null>(null)
 
-  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal()
+  const { showConfirm, showMessage, ConfirmModal, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const loadAll = useCallback(async () => {
     try {
@@ -369,7 +369,6 @@ export default function TrainingCertificates() {
           />
 
           <div className="flex justify-end gap-3 pt-2">
-            <button onClick={() => setFormOpen(false)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ยกเลิก</button>
             <button onClick={handleSave} disabled={saving} className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 transition-colors">
               {saving ? 'กำลังบันทึก...' : form.id ? 'บันทึก' : 'บันทึกการอบรม'}
             </button>
@@ -466,9 +465,6 @@ export default function TrainingCertificates() {
                 <AttachmentStrip label="รูปภาพ / ไฟล์แนบ" items={viewItem.attachment_urls.map((path) => ({ bucket: HR_WARNING_CERT_BUCKET, path }))} />
               )}
 
-              <div className="flex justify-end">
-                <button onClick={() => setViewItem(null)} className="px-4 py-2 rounded-xl border border-surface-200 text-sm hover:bg-surface-50">ปิด</button>
-              </div>
             </div>
           )
         })()}

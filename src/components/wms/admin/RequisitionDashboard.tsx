@@ -22,7 +22,7 @@ export default function RequisitionDashboard() {
   const [filterDateStart, setFilterDateStart] = useState('')
   const [filterDateEnd, setFilterDateEnd] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   // --- Create requisition state ---
   const [showCreate, setShowCreate] = useState(false)
@@ -560,14 +560,11 @@ export default function RequisitionDashboard() {
       {/* Create Requisition Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+          <div className="p-6 pr-16 border-b flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">สร้างใบเบิกสินค้า</h2>
               <span className="text-sm font-bold text-blue-200">{cRequisitionId}</span>
             </div>
-            <button onClick={() => setShowCreate(false)} className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
-              <i className="fas fa-times" style={{ fontSize: '1.5rem' }}></i>
-            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
@@ -691,7 +688,6 @@ export default function RequisitionDashboard() {
           </div>
 
           <div className="p-4 border-t bg-white flex justify-end gap-3">
-            <button onClick={() => setShowCreate(false)} className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition">ยกเลิก</button>
             <button onClick={cSubmit} disabled={cSubmitting || cSelectedItems.length === 0}
               className="bg-green-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition flex items-center gap-2">
               {cSubmitting ? <><i className="fas fa-spinner fa-spin"></i>กำลังบันทึก...</> : <><i className="fas fa-check-circle"></i>สร้างใบเบิก ({cSelectedItems.length} รายการ)</>}

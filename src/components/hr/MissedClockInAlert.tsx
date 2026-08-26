@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FiAlertTriangle, FiClock, FiX } from 'react-icons/fi'
+import { FiAlertTriangle, FiClock } from 'react-icons/fi'
+import ModalCloseButton from '../ui/ModalCloseButton'
 import { useAuthContext } from '../../contexts/AuthContext'
 import {
   fetchCompanyHolidays,
@@ -130,15 +131,13 @@ export default function MissedClockInAlert() {
   if (!state) return null
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-xl">
-        <div className="flex items-center justify-between px-4 py-3 bg-amber-500 text-white">
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="relative bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-xl">
+        <ModalCloseButton onClick={() => setState(null)} className="absolute right-3 top-3 z-10" />
+        <div className="flex items-center px-4 py-3 pr-16 bg-amber-500 text-white">
           <h3 className="font-semibold flex items-center gap-2">
             <FiAlertTriangle className="w-5 h-5" /> ลืมบันทึกเวลาเข้างาน
           </h3>
-          <button type="button" onClick={() => setState(null)} aria-label="ปิด">
-            <FiX className="w-5 h-5" />
-          </button>
         </div>
 
         <div className="p-5 space-y-4 text-center">
@@ -153,14 +152,7 @@ export default function MissedClockInAlert() {
           </p>
           <p className="text-sm text-gray-500">กรุณาบันทึกเวลาเข้างานที่เมนู "ลงเวลา"</p>
 
-          <div className={`grid gap-3 ${canOpenTimeClock ? 'grid-cols-2' : 'grid-cols-1'}`}>
-            <button
-              type="button"
-              onClick={() => setState(null)}
-              className="py-3 bg-gray-200 text-gray-700 rounded-xl font-semibold active:scale-95"
-            >
-              ปิด
-            </button>
+          <div className="grid gap-3 grid-cols-1">
             {canOpenTimeClock && (
               <button
                 type="button"

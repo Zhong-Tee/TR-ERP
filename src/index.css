@@ -86,3 +86,28 @@ aside > .max-h-\[570px\] {
 .employee-skills-page main > div:first-child .mt-4.grid > label:nth-child(n + 2) {
   display: none;
 }
+
+/* Standard close control for every dialog/popup. */
+[role='dialog'] button[aria-label^='ปิด'] {
+  display: inline-flex !important;
+  width: 2.25rem !important;
+  height: 2.25rem !important;
+  flex: 0 0 2.25rem !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 9999px !important;
+  background: #dc2626 !important;
+  color: #fff !important;
+  box-shadow: 0 4px 10px rgb(0 0 0 / 18%) !important;
+}
+
+[role='dialog'] button[aria-label^='ปิด']:hover {
+  background: #b91c1c !important;
+}
+
+/* A popup that already supplies a close control must not show a duplicate. */
+[data-modal-content]:has(.modal-scroll-viewport button[aria-label^='ปิด']) > .modal-standard-close {
+  display: none !important;
+}

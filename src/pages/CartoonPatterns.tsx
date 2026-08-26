@@ -1124,13 +1124,6 @@ export default function CartoonPatterns() {
           <div className="flex gap-2 mt-6 justify-end">
             <button
               type="button"
-              onClick={closeModal}
-              className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
               onClick={handleSave}
               disabled={saving}
               className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"

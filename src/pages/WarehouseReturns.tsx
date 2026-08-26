@@ -72,7 +72,7 @@ export default function WarehouseReturns() {
   const [reason, setReason] = useState('')
   const [note, setNote] = useState('')
 
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadAll()
@@ -426,14 +426,8 @@ export default function WarehouseReturns() {
       {/* Create modal - tracking lookup */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} closeOnBackdropClick={true} contentClassName="max-w-4xl">
         <div className="bg-white rounded-2xl w-full shadow-2xl">
-          <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+          <div className="p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <h2 className="text-2xl font-black text-white">เปิดใบรับสินค้าตีกลับ</h2>
-            <button
-              onClick={() => setCreateOpen(false)}
-              className="text-white text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-blue-800 transition-all"
-            >
-              <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
-            </button>
           </div>
 
           <div className="p-6 bg-gray-50 space-y-4">
@@ -567,16 +561,9 @@ export default function WarehouseReturns() {
             <div className="p-4 border-t border-gray-200 flex gap-3 bg-white">
               <button
                 type="button"
-                onClick={() => setCreateOpen(false)}
-                className="flex-1 py-3 border border-gray-300 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
                 onClick={createReturn}
                 disabled={saving || !reason.trim()}
-                className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition"
+                className="ml-auto py-3 px-8 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition"
               >
                 {saving ? (
                   <><i className="fas fa-spinner fa-spin mr-2"></i>กำลังบันทึก...</>
@@ -592,7 +579,7 @@ export default function WarehouseReturns() {
       {/* View detail modal */}
       <Modal open={!!viewing} onClose={() => setViewing(null)} closeOnBackdropClick={true} contentClassName="max-w-4xl">
         <div className="bg-white rounded-2xl w-full shadow-2xl">
-          <div className="sticky top-0 z-10 p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+          <div className="sticky top-0 z-10 p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">ใบรับคืน: {viewing?.return_no}</h2>
               {viewing && (
@@ -603,12 +590,6 @@ export default function WarehouseReturns() {
                 </div>
               )}
             </div>
-            <button
-              onClick={() => setViewing(null)}
-              className="text-white text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-blue-800 transition-all"
-            >
-              <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
-            </button>
           </div>
 
           <div className="p-6 bg-gray-50 space-y-4">

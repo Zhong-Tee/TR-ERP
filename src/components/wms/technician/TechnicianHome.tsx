@@ -10,7 +10,7 @@ import ModeSwitchButton from '../../ModeSwitchButton'
 export default function TechnicianHome() {
   const navigate = useNavigate()
   const { user, signOut } = useAuthContext()
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FiAlertCircle, FiChevronLeft, FiChevronRight, FiMessageSquare, FiX } from 'react-icons/fi'
+import { FiAlertCircle, FiChevronLeft, FiChevronRight, FiMessageSquare } from 'react-icons/fi'
 import { useAuthContext } from '../../../contexts/AuthContext'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 import {
   createScoreAppeal,
   fetchAttendanceFacts,
@@ -402,13 +403,11 @@ export default function EmployeeWorkScore() {
 
       {/* ฟอร์มทักท้วง */}
       {appealFor && (
-        <div className="fixed inset-0 z-50 flex items-end bg-black/40" onClick={() => setAppealFor(null)}>
-          <div className="w-full bg-white rounded-t-2xl p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-end bg-black/40" role="dialog" aria-modal="true" onClick={() => setAppealFor(null)}>
+          <div className="relative w-full bg-white rounded-t-2xl p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <ModalCloseButton onClick={() => setAppealFor(null)}/>
+            <div className="pr-12">
               <span className="font-semibold text-gray-800">ทักท้วงคะแนน</span>
-              <button type="button" onClick={() => setAppealFor(null)} aria-label="ปิด">
-                <FiX className="w-5 h-5 text-gray-400" />
-              </button>
             </div>
             <div className="text-sm text-gray-600">
               {appealFor.label} · {dayLabel(appealFor.event_date)} · {appealFor.points} คะแนน

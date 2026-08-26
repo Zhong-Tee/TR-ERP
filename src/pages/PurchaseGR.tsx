@@ -123,7 +123,7 @@ function getStoragePublicUrl(bucket: string | undefined, path: string | undefine
 
 export default function PurchaseGR() {
   const { user } = useAuthContext()
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canSeeFinancial = FINANCIAL_VISIBLE_ROLES.includes(user?.role || '')
   /** role มือถือที่รับสินค้า (picker/manager/auditor) ให้กรอกค่าขนส่งในประเทศตอน GR ได้ด้วย */
   const canEnterGrShipping = canSeeFinancial || ['picker', 'manager', 'auditor'].includes(user?.role || '')
@@ -1704,9 +1704,6 @@ export default function PurchaseGR() {
           </div>
 
           <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
-            <button type="button" onClick={clearReceiveDraft} className="px-5 py-2.5 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-800 bg-white">
-              ยกเลิก
-            </button>
             <button type="button" onClick={handleReceive} disabled={saving} className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm font-semibold">
               {saving ? 'กำลังบันทึก...' : hasExcess ? 'รับเกิน' : hasShortage ? 'รับบางส่วน' : 'รับเข้าคลัง'}
             </button>
@@ -1723,7 +1720,7 @@ export default function PurchaseGR() {
             </div>
           ) : viewing ? (
             <>
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between pr-14">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">รายละเอียด GR</h2>
                   <div className="text-sm text-gray-500 mt-1">
@@ -1998,11 +1995,6 @@ export default function PurchaseGR() {
                 </div>
               </div>
 
-              <div className="flex justify-end gap-3 pt-3 border-t">
-                <button onClick={() => setViewing(null)} className="px-5 py-2.5 border rounded-lg bg-white text-gray-700 hover:bg-gray-50 text-sm font-medium">
-                  ปิดหน้าต่าง
-                </button>
-              </div>
             </>
           ) : null}
         </div>
@@ -2020,13 +2012,6 @@ export default function PurchaseGR() {
           <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 pt-2 border-t border-gray-200">
             <button
               type="button"
-              onClick={closePendingImageSelection}
-              className="w-full sm:w-auto px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-semibold text-gray-800 bg-white hover:bg-gray-50"
-            >
-              ยกเลิก
-            </button>
-            <button
-              type="button"
               onClick={confirmPendingImageSelection}
               className="w-full sm:w-auto px-4 py-2.5 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700"
             >
@@ -2038,14 +2023,6 @@ export default function PurchaseGR() {
 
       <Modal open={!!zoomGallery} onClose={closeZoomGallery} closeOnBackdropClick contentClassName="max-w-3xl">
         <div className="p-3 relative">
-          <button
-            type="button"
-            onClick={closeZoomGallery}
-            className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-black/60 text-white text-lg leading-none"
-            aria-label="ปิดรูปขยาย"
-          >
-            ×
-          </button>
           {zoomGallery && zoomGallery.images.length > 1 && (
             <>
               <button
@@ -2092,13 +2069,6 @@ export default function PurchaseGR() {
             />
           </div>
           <div className="flex justify-end gap-3 pt-2 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={() => setEtaEditOpen(false)}
-              className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-800 bg-white"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={saveEtaEdit}

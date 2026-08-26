@@ -45,7 +45,7 @@ export default function ReturnRequisitionDashboard() {
     items: [],
   })
   const [processing, setProcessing] = useState<string | null>(null)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canManageReturnDecision = ['superadmin', 'admin', 'manager'].includes(user?.role || '')
   const canApproveReturn = ['superadmin', 'admin', 'manager', 'store'].includes(user?.role || '')
 
@@ -573,19 +573,11 @@ export default function ReturnRequisitionDashboard() {
       <Modal open={detailModal.open} onClose={() => setDetailModal((p) => ({ ...p, open: false }))} closeOnBackdropClick={true} contentClassName="max-w-4xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
           {/* Header */}
-          <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-600 to-blue-700">
+          <div className="p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">ใบคืน: {detailModal.ret?.return_no}</h2>
               <div className="mt-2">{detailModal.ret && getStatusBadge(detailModal.ret.status)}</div>
             </div>
-            <button
-              onClick={() => setDetailModal((p) => ({ ...p, open: false }))}
-              className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all"
-              title="ปิดหน้าต่าง (ESC)"
-              aria-label="ปิดหน้าต่าง"
-            >
-              <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
-            </button>
           </div>
 
           {/* Content */}
@@ -698,14 +690,11 @@ export default function ReturnRequisitionDashboard() {
       {/* Create Return Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b flex justify-between items-center bg-gradient-to-r from-orange-600 to-orange-700">
+          <div className="p-6 pr-16 border-b flex items-center bg-gradient-to-r from-orange-600 to-orange-700">
             <div>
               <h2 className="text-2xl font-black text-white">สร้างใบคืนสินค้า</h2>
               <span className="text-sm font-bold text-orange-200">{crReturnNo}</span>
             </div>
-            <button onClick={() => setShowCreate(false)} className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
-              <i className="fas fa-times" style={{ fontSize: '1.5rem' }}></i>
-            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6 bg-gray-50">
@@ -816,7 +805,6 @@ export default function ReturnRequisitionDashboard() {
           </div>
 
           <div className="p-4 border-t bg-white flex justify-end gap-3">
-            <button onClick={() => setShowCreate(false)} className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition">ยกเลิก</button>
             <button onClick={crSubmit} disabled={crSubmitting || crSelectedItems.length === 0}
               className="bg-orange-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-orange-700 disabled:opacity-50 transition flex items-center gap-2">
               {crSubmitting ? <><i className="fas fa-spinner fa-spin"></i>กำลังบันทึก...</> : <><i className="fas fa-check-circle"></i>สร้างใบคืน ({crSelectedItems.length} รายการ)</>}

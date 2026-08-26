@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
+import ModalCloseButton from '../components/ui/ModalCloseButton'
 
 interface InventoryHistoryRow {
   product_id: string
@@ -286,11 +287,11 @@ function MovementModal({ product, reportDate, onClose }: { product: InventoryHis
   }, { in: 0, out: 0 }), [movements])
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-50 flex items-stretch justify-center bg-black/50 px-4 pb-4" style={{ top: popupTop }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="flex min-h-0 w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex flex-none items-start justify-between border-b px-5 py-4">
+    <div className="fixed inset-x-0 bottom-0 z-50 flex items-stretch justify-center bg-black/50 px-4 pb-4" style={{ top: popupTop }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }} role="dialog" aria-modal="true">
+      <div className="relative flex min-h-0 w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <ModalCloseButton onClick={onClose} className="absolute right-3 top-3 z-10" />
+        <div className="flex flex-none items-start border-b px-5 py-4 pr-16">
           <div><h2 className="text-lg font-bold text-gray-900">ความเคลื่อนไหวสินค้า</h2><p className="mt-1 text-sm text-gray-600"><span className="font-semibold">{product.product_code}</span> — {product.product_name}</p></div>
-          <button type="button" onClick={onClose} className="rounded-lg px-3 py-1 text-2xl leading-none text-gray-500 hover:bg-gray-100">×</button>
         </div>
         <div className="flex flex-none flex-wrap items-end gap-3 border-b bg-gray-50 px-5 py-4">
           <label className="text-sm">วันที่เริ่มต้น<input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} className="mt-1 block rounded-lg border px-3 py-2" /></label>

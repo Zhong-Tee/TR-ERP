@@ -126,7 +126,7 @@ export default function EmployeeRequests() {
       })}</div>}
     </section>}
     {selectedRequest && <Modal open onClose={() => setSelectedRequest(null)} closeOnBackdropClick contentClassName="max-w-md">
-      <div className="flex items-center justify-between border-b px-4 py-3"><h3 className="font-bold text-gray-900">รายละเอียดคำร้อง</h3><button type="button" onClick={() => setSelectedRequest(null)} className="p-1 text-2xl leading-none text-gray-400">×</button></div>
+      <div className="flex items-center border-b px-4 py-3 pr-16"><h3 className="font-bold text-gray-900">รายละเอียดคำร้อง</h3></div>
       <div className="space-y-3 overflow-y-auto p-4 text-sm">
         <div className="flex items-start justify-between gap-2"><h4 className="text-base font-bold text-gray-900">{selectedRequest.problem_title}</h4><span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-bold ${HR_REQUEST_STATUS[selectedRequest.status].color}`}>{HR_REQUEST_STATUS[selectedRequest.status].label}</span></div>
         <RequestDetail label="การเสียเวลากับปัญหานี้" value={formatHRRequestDuration(selectedRequest.time_lost)} mono />

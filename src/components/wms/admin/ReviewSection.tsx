@@ -55,7 +55,7 @@ export default function ReviewSection() {
   const [showTabs, setShowTabs] = useState(false)
   const [reviewDeptFilter, setReviewDeptFilter] = useState('')
   const [reviewPlanSettings, setReviewPlanSettings] = useState<PlanDeptSettings | null>(null)
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
   const inspectResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]

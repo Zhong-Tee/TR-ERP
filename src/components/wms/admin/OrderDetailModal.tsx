@@ -22,7 +22,7 @@ interface OrderDetailModalProps {
 export default function OrderDetailModal({ workOrderId, orderDisplayName, onClose }: OrderDetailModalProps) {
   const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadOrderDetails()
@@ -102,18 +102,10 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
 
   return (
     <>
-      <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-4xl">
+      <Modal open={true} onClose={onClose} closeOnBackdropClick={true} scrollable={false} contentClassName="max-w-4xl">
         <div className="bg-white w-full max-h-[90vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+          <div className="p-6 pr-16 border-b flex items-center bg-slate-50">
             <h3 className="font-black text-xl text-slate-800">รายละเอียดใบงาน: {orderDisplayName}</h3>
-            <button
-              onClick={onClose}
-              className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all border-2 border-red-400 hover:border-red-600 shadow-md hover:shadow-lg"
-              title="ปิดหน้าต่าง (ESC)"
-              aria-label="ปิดหน้าต่าง"
-            >
-              <i className="fas fa-times" style={{ fontSize: '1.5rem', lineHeight: '1' }}></i>
-            </button>
           </div>
           <div className="flex-1 overflow-y-auto p-6">
             {loading ? (

@@ -245,6 +245,29 @@ export async function cancelPR(prId: string) {
   if (error) throw error
 }
 
+export async function cancelApprovedPRWithoutPO(prId: string) {
+  const { data: existingPOs, error: poError } = await supabase
+    .from('inv_po')
+    .select('id')
+    .eq('pr_id', prId)
+    .limit(1)
+  if (poError) throw poError
+  if (existingPOs && existingPOs.length > 0) {
+    throw new Error('PR นี้ถูกนำไปสร้าง PO แล้ว จึงไม่สามารถยกเลิกได้')
+  }
+
+  const { data: cancelledPRs, error: cancelError } = await supabase
+    .from('inv_pr')
+    .update({ status: 'cancelled' })
+    .eq('id', prId)
+    .eq('status', 'approved')
+    .select('id')
+  if (cancelError) throw cancelError
+  if (!cancelledPRs || cancelledPRs.length === 0) {
+    throw new Error('ไม่สามารถยกเลิก PR ได้ เนื่องจากสถานะรายการมีการเปลี่ยนแปลง')
+  }
+}
+
 export async function updatePR(input: {
   prId: string
   items: { product_id: string; qty: number; unit?: string; estimated_price?: number | null; note?: string }[]

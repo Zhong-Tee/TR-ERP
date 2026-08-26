@@ -911,9 +911,6 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
               ))}
             </div>
           )}
-          <div className="mt-4 text-right">
-            <button onClick={() => setShowLogsModal(false)} className="px-4 py-2 border rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50">ปิด</button>
-          </div>
         </div>
       </Modal>
     )
@@ -953,9 +950,6 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
               ))}
             </div>
           )}
-          <div className="mt-4 text-right">
-            <button onClick={() => setShowRevisionsModal(false)} className="px-4 py-2 border rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50">ปิด</button>
-          </div>
         </div>
       </Modal>
     )

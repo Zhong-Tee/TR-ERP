@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FiRefreshCw, FiDownload, FiLock, FiSearch, FiPlus, FiTrash2, FiX, FiAlertCircle, FiChevronDown } from 'react-icons/fi'
+import { FiRefreshCw, FiDownload, FiLock, FiSearch, FiPlus, FiTrash2, FiAlertCircle, FiChevronDown } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import Modal from '../ui/Modal'
 import PhotoLightbox from './PhotoLightbox'
@@ -157,7 +157,7 @@ const SORTABLE_SCORE_GROUPS = new Set(['attendance', 'time_entry', 'leave', ABSE
 
 export default function WorkScore() {
   const { user } = useAuthContext()
-  const { showConfirm, ConfirmModal } = useWmsModal()
+  const { showConfirm, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [activeTab, setActiveTab] = useState<TabKey>('summary')
   const [month, setMonth] = useState(monthStr())
   const [categories, setCategories] = useState<ScoreCategory[]>([])
@@ -874,13 +874,10 @@ export default function WorkScore() {
       <Modal open={!!reviewForm} onClose={() => setReviewForm(null)} closeOnBackdropClick contentClassName="max-w-md">
         {reviewForm && (
           <>
-            <div className={`flex items-center justify-between px-4 py-3 text-white ${reviewForm.accept ? 'bg-emerald-600' : 'bg-red-600'}`}>
+            <div className={`flex items-center px-4 py-3 pr-16 text-white ${reviewForm.accept ? 'bg-emerald-600' : 'bg-red-600'}`}>
               <span className="text-sm font-medium">
                 {reviewForm.accept ? 'ยอมรับคำทักท้วง' : 'ปฏิเสธคำทักท้วง'}
               </span>
-              <button type="button" onClick={() => setReviewForm(null)} aria-label="ปิด">
-                <FiX className="w-5 h-5" />
-              </button>
             </div>
             <div className="p-4 space-y-3">
               <div className="text-sm">
@@ -921,8 +918,6 @@ export default function WorkScore() {
                 </p>
               )}
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setReviewForm(null)}
-                  className="px-4 py-2 rounded-xl bg-surface-100 hover:bg-surface-200 text-sm">ยกเลิก</button>
                 <button type="button" onClick={() => void submitReview()} disabled={saving}
                   className={`px-4 py-2 rounded-xl text-white text-sm disabled:opacity-50 ${
                     reviewForm.accept ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
@@ -943,7 +938,7 @@ export default function WorkScore() {
       <Modal open={!!detailRow} onClose={() => setDetailRow(null)} closeOnBackdropClick contentClassName="max-w-5xl w-[96vw]">
         {detailRow && (
           <>
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
+            <div className="flex items-center justify-between px-4 py-3 pr-16 bg-emerald-600 text-white">
               <div className="flex items-center gap-2 min-w-0">
                 {detailRow.photoUrl && (
                   <img src={detailRow.photoUrl} alt="" className="w-9 h-9 rounded-full object-cover border border-white/40 shrink-0" />
@@ -957,7 +952,6 @@ export default function WorkScore() {
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-2xl font-bold tabular-nums">{detailRow.total}</span>
-                <button type="button" onClick={() => setDetailRow(null)} aria-label="ปิด"><FiX className="w-5 h-5" /></button>
               </div>
             </div>
             <div className="p-4 space-y-4 overflow-y-auto">

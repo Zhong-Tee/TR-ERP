@@ -24,7 +24,7 @@ export default function PickerJobCard({ item, allItems, currentIndex, onFinish, 
   const [showAlertModal, setShowAlertModal] = useState(false)
   const [showSentAlertsModal, setShowSentAlertsModal] = useState(false)
   const { user } = useAuthContext()
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const isMovedFromPlan = !!(item.plan_line_released || item.source_bill_released_from_wo)
   const finished = ['picked', 'correct', 'out_of_stock', 'returned', 'cancelled'].includes(item.status)

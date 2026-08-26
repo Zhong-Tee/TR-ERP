@@ -146,14 +146,8 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
   return (
     <Modal open={true} onClose={handleClose} closeOnBackdropClick={false} contentClassName="max-w-md">
       <div className="bg-white rounded-2xl w-full overflow-hidden flex flex-col">
-        <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+        <div className="p-4 pr-16 border-b border-gray-200 flex items-center">
           <h2 className="text-xl font-black text-gray-900">สแกนบาร์โค้ด</h2>
-          <button
-            onClick={handleClose}
-            className="text-red-600 hover:text-red-800 text-3xl font-bold w-10 h-10 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
-          >
-            <i className="fas fa-times"></i>
-          </button>
         </div>
 
         <div className="p-4 flex-1 flex flex-col items-center overflow-hidden">
@@ -175,12 +169,6 @@ export default function BarcodeScanner({ onScan, onClose }: BarcodeScannerProps)
               หยุดสแกน
             </button>
           )}
-          <button
-            onClick={handleClose}
-            className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-300"
-          >
-            ปิด
-          </button>
         </div>
         </div>
       </div>

@@ -19,7 +19,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
   const [approving, setApproving] = useState(false)
   const [selectedPicker, setSelectedPicker] = useState('')
   const [pickers, setPickers] = useState<any[]>([])
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadItems()
@@ -180,14 +180,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
       <>
         <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-2xl">
           <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+            <div className="p-4 pr-16 border-b border-gray-200 flex items-center">
               <h2 className="text-xl font-black text-gray-900">ใบเบิก: {requisition.requisition_id}</h2>
-              <button
-                onClick={onClose}
-                className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
-              >
-                <i className="fas fa-times"></i>
-              </button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
               <div className="text-center py-8 text-gray-500">
@@ -235,14 +229,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
     <>
       <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-2xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+          <div className="p-4 pr-16 border-b border-gray-200 flex items-center">
             <h2 className="text-xl font-black text-gray-900">ใบเบิก: {requisition.requisition_id}</h2>
-            <button
-              onClick={onClose}
-              className="text-red-600 hover:text-red-800 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-red-100 transition-all"
-            >
-              <i className="fas fa-times"></i>
-            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">

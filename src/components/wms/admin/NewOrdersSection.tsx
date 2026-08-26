@@ -42,7 +42,7 @@ export default function NewOrdersSection() {
   const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
   /** กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
   const [dueBillsByWo, setDueBillsByWo] = useState<Record<string, DueBillInfo[]>>({})
-  const { showMessage, MessageModal } = useWmsModal()
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const ensurePlanDeptStart = async (workOrderId: string) => {
     if (!workOrderId) return
@@ -319,9 +319,6 @@ export default function NewOrdersSection() {
             <div className="text-xs text-red-500 mb-4">ยังไม่มีผู้ใช้ Role picker กรุณาตั้งค่าในเมนู ตั้งค่า → จัดการสิทธิ์ผู้ใช้</div>
           )}
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={closeAssignPicker} className="px-4 py-2 border rounded-lg">
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={handleAssignPicker}

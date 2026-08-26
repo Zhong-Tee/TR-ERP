@@ -16,7 +16,7 @@ import { WMS_MENU_KEYS, WMS_COUNTED_KEYS, loadWmsTabCounts } from '../wmsUtils'
 export default function AdminLayout() {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const [activeMenu, setActiveMenu] = useState<string>('')
-  const { MessageModal, ConfirmModal } = useWmsModal()
+  const { MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
 
   const loadTabCounts = useCallback(async () => {

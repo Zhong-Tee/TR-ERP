@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FiUpload, FiTrash2, FiX } from 'react-icons/fi'
+import { FiUpload, FiTrash2 } from 'react-icons/fi'
 import {
   upsertEmployee,
   fetchDepartments,
@@ -72,7 +72,7 @@ const ADDRESS_FIELDS: readonly [string, string][] = [
   ['postal_code', 'รหัสไปรษณีย์'],
 ]
 
-export default function EmployeeForm({ employee, onSave, onClose }: EmployeeFormProps) {
+export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
   const [activeTab, setActiveTab] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -468,17 +468,10 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col">
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 shrink-0">
+      <div className="flex items-center p-4 pr-16 border-b border-gray-200 shrink-0">
         <h2 className="text-lg font-semibold text-gray-900">
           {employee ? 'แก้ไขพนักงาน' : 'เพิ่มพนักงาน'}
         </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg"
-        >
-          <FiX className="w-5 h-5" />
-        </button>
       </div>
 
       <div className="flex border-b border-gray-200 shrink-0">
@@ -1129,13 +1122,6 @@ export default function EmployeeForm({ employee, onSave, onClose }: EmployeeForm
       </div>
 
       <div className="flex justify-end gap-2 p-4 border-t border-gray-200 shrink-0">
-        <button
-          type="button"
-          onClick={onClose}
-          className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-        >
-          ยกเลิก
-        </button>
         {activeTab !== 4 && (
           <button
             type="submit"

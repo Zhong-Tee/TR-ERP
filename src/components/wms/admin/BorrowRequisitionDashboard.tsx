@@ -109,7 +109,7 @@ export default function BorrowRequisitionDashboard() {
   const [processing, setProcessing] = useState<string | null>(null)
   const [actionMode, setActionMode] = useState<'view' | 'return' | 'writeoff'>('view')
   const [actionQtys, setActionQtys] = useState<Record<string, number>>({})
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const canManage = ['superadmin', 'admin'].includes(user?.role || '')
   const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
   const canCreate = ['superadmin', 'admin', 'store', 'production'].includes(user?.role || '')
@@ -462,16 +462,13 @@ export default function BorrowRequisitionDashboard() {
       <Modal open={detailModal.open} onClose={() => setDetailModal({ open: false, bor: null, items: [] })} closeOnBackdropClick contentClassName="max-w-4xl">
         {detailModal.bor && (
           <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-            <div className="p-6 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-cyan-600 to-cyan-700">
+            <div className="p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-cyan-600 to-cyan-700">
               <div>
                 <h3 className="text-xl font-bold text-white">ใบยืม {detailModal.bor.borrow_no}</h3>
                 <span className={`mt-1 inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${STATUS_COLORS[detailModal.bor.status] || 'bg-white/20 text-white'}`}>
                   {STATUS_LABELS[detailModal.bor.status] || detailModal.bor.status}
                 </span>
               </div>
-              <button onClick={() => setDetailModal({ open: false, bor: null, items: [] })} className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
-                <i className="fas fa-times" style={{ fontSize: '1.5rem' }} />
-              </button>
             </div>
 
             <div className="p-6 space-y-4 overflow-y-auto flex-1">
@@ -604,14 +601,11 @@ export default function BorrowRequisitionDashboard() {
       {/* Create Borrow Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} closeOnBackdropClick={false} contentClassName="max-w-5xl">
         <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-          <div className="p-6 border-b flex justify-between items-center bg-gradient-to-r from-cyan-600 to-cyan-700">
+          <div className="p-6 pr-16 border-b flex items-center bg-gradient-to-r from-cyan-600 to-cyan-700">
             <div>
               <h3 className="text-xl font-bold text-white">สร้างใบยืม</h3>
               <span className="text-sm font-bold text-cyan-200">{crBorrowNo}</span>
             </div>
-            <button onClick={() => setShowCreate(false)} className="text-white hover:text-red-200 text-3xl font-bold w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/20 transition-all">
-              <i className="fas fa-times" style={{ fontSize: '1.5rem' }} />
-            </button>
           </div>
 
           <div className="p-6 space-y-4 overflow-y-auto flex-1">
@@ -721,7 +715,6 @@ export default function BorrowRequisitionDashboard() {
           </div>
 
           <div className="p-4 border-t bg-white flex justify-end gap-3">
-            <button onClick={() => setShowCreate(false)} className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition">ยกเลิก</button>
             <button onClick={crSubmit} disabled={crSubmitting || crSelectedItems.length === 0 || crSelectedItems.some((i) => !i.topic) || !crDueDate}
               className="bg-cyan-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-cyan-700 disabled:opacity-50 transition flex items-center gap-2">
               {crSubmitting ? <><i className="fas fa-spinner fa-spin" /> กำลังบันทึก...</> : <><i className="fas fa-check" /> ยืนยันสร้างใบยืม</>}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { addWorkingHours, type WorkingTimeData } from './hrTaskMetrics'
-import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HRWorkSchedule } from '../types'
+import { addWorkingHours, isTaskOverdue, type WorkingTimeData } from './hrTaskMetrics'
+import type { HRCompanyHoliday, HREmployee, HREmployeeWorkCalendar, HRLeaveRequest, HRTask, HRWorkSchedule } from '../types'
 
 // จันทร์-ศุกร์ 09:00-18:00
 const schedule = { id: 's1', name: 'ปกติ', work_start: '09:00', work_end: '18:00', late_grace_min: 0, work_days: '1,2,3,4,5', is_default: true, is_active: true } as HRWorkSchedule
@@ -57,5 +57,24 @@ describe('addWorkingHours', () => {
 
   it('ไม่มีตารางเวลา → บวกตรง ๆ', () => {
     expect(addWorkingHours(mon10, 4, employee, base({ schedules: [] }))).toEqual(new Date(2026, 7, 3, 14, 0))
+  })
+})
+
+describe('isTaskOverdue', () => {
+  const overdueTask = {
+    status: 'in_progress',
+    due_at: new Date(Date.now() - 60000).toISOString(),
+  } as HRTask
+
+  it('ถือว่างานที่ยังไม่ส่งและพ้นกำหนดแล้วเป็นงานเลยกำหนด', () => {
+    expect(isTaskOverdue(overdueTask)).toBe(true)
+  })
+
+  it('หยุดนับว่าเลยกำหนดทันทีเมื่อมีเวลาส่งครั้งแรก', () => {
+    expect(isTaskOverdue({ ...overdueTask, first_submitted_at: new Date().toISOString() })).toBe(false)
+  })
+
+  it('รองรับข้อมูลงานเดิมที่มีเฉพาะ submitted_at', () => {
+    expect(isTaskOverdue({ ...overdueTask, submitted_at: new Date().toISOString() })).toBe(false)
   })
 })

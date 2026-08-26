@@ -169,11 +169,10 @@ export default function CancelledBillStockModal({
           </div>
         )}
 
-        <div className="flex items-center justify-between border-t pt-4">
+        <div className="flex items-center border-t pt-4">
           <span className={`text-sm font-semibold ${pendingCount > 0 ? 'text-amber-700' : 'text-green-700'}`}>
             {pendingCount > 0 ? `รอตัดสินใจ ${pendingCount} รายการ` : lines.length > 0 ? 'ดำเนินการสต๊อคครบแล้ว' : ''}
           </span>
-          <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50">ปิด</button>
         </div>
       </div>
     </Modal>

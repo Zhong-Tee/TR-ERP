@@ -178,6 +178,7 @@ function ImportProgressModal({ progress }: { progress: ImportProgressState }) {
       open
       onClose={() => {}}
       closeOnBackdropClick={false}
+      showCloseButton={false}
       stackClassName="z-[80]"
       contentClassName="max-w-md w-full mx-4"
     >

@@ -242,7 +242,6 @@ export default function WorkCalendar() {
             : 'ต้องการลบวันหยุดบริษัทนี้ใช่หรือไม่?'}
         </p>
         <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={() => setConfirmAction(null)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">ยกเลิก</button>
           <button
             type="button"
             onClick={() => confirmAction?.type === 'restore' ? confirmRestoreRange() : confirmAction && confirmRemoveHoliday(confirmAction.id)}

@@ -282,7 +282,7 @@ export default function Settings() {
   /** index ของแถวโปรโมชั่นที่กำลังลากจัดลำดับ; null = ไม่ได้ลาก */
   const [draggedPromotionIndex, setDraggedPromotionIndex] = useState<number | null>(null)
 
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const sellerHiddenCount = useMemo(
     () => sellers.filter((s) => !s.is_active).length,
@@ -3306,7 +3306,7 @@ export default function Settings() {
               contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
             >
               <div className="p-6">
-                <h3 className="text-xl font-bold mb-4">
+                <h3 className="text-xl font-bold mb-4 pr-12">
                   {editingBank ? 'แก้ไขข้อมูลธนาคาร' : 'เพิ่มข้อมูลธนาคาร'}
                 </h3>
 
@@ -3443,12 +3443,6 @@ export default function Settings() {
                   >
                     บันทึก
                   </button>
-                  <button
-                    onClick={closeBankForm}
-                    className="flex-1 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
-                  >
-                    ยกเลิก
-                  </button>
                 </div>
               </div>
             </Modal>
@@ -3541,7 +3535,7 @@ export default function Settings() {
               contentClassName="max-w-2xl w-full mx-4 my-8 overflow-y-auto"
             >
               <div className="p-6">
-                <h3 className="text-xl font-bold mb-4">
+                <h3 className="text-xl font-bold mb-4 pr-12">
                   {editingBillHeader ? 'แก้ไขหัวบิล' : 'เพิ่มหัวบิล'}
                 </h3>
                 <div className="space-y-4">
@@ -3686,12 +3680,6 @@ export default function Settings() {
                     className="flex-1 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
                   >
                     {billHeaderSaving ? 'กำลังบันทึก...' : 'บันทึก'}
-                  </button>
-                  <button
-                    onClick={closeBillHeaderForm}
-                    className="flex-1 px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
-                  >
-                    ยกเลิก
                   </button>
                 </div>
               </div>
@@ -4358,7 +4346,7 @@ export default function Settings() {
               contentClassName="max-w-lg w-full mx-4 my-8 overflow-y-auto"
             >
               <div className="p-6">
-                <h3 className="text-xl font-bold mb-4">
+                <h3 className="text-xl font-bold mb-4 pr-12">
                   {sellerEditingId ? 'แก้ไขผู้ขาย' : 'เพิ่มผู้ขาย'}
                 </h3>
                 <div className="space-y-4">
@@ -4418,13 +4406,6 @@ export default function Settings() {
                     className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold disabled:opacity-50"
                   >
                     {sellerSaving ? 'กำลังบันทึก...' : sellerEditingId ? 'อัปเดต' : 'เพิ่ม'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={closeSellerModal}
-                    className="flex-1 px-4 py-2 border border-gray-300 rounded-xl hover:bg-gray-100 font-semibold"
-                  >
-                    ยกเลิก
                   </button>
                 </div>
               </div>
@@ -4852,7 +4833,7 @@ export default function Settings() {
         contentClassName="max-w-md"
       >
         <div className="p-6">
-          <h2 className="text-lg font-bold mb-4">สร้าง User ใหม่</h2>
+          <h2 className="text-lg font-bold mb-4 pr-12">สร้าง User ใหม่</h2>
           <div className="space-y-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-red-500">*</span></label>
@@ -4898,13 +4879,6 @@ export default function Settings() {
             </div>
           </div>
           <div className="flex justify-end gap-2 mt-6">
-            <button
-              type="button"
-              onClick={() => { setShowCreateUserModal(false); setCreateUserForm({ email: '', password: '', username: '', role: 'sales-tr' }) }}
-              className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition"
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               onClick={handleCreateUser}

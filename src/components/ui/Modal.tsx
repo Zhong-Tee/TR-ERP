@@ -1,4 +1,5 @@
 import React from 'react'
+import ModalCloseButton from './ModalCloseButton'
 
 export interface ModalProps {
   open: boolean
@@ -16,6 +17,10 @@ export interface ModalProps {
   role?: string
   ariaModal?: boolean
   ariaLabelledby?: string
+  /** ซ่อนปุ่มปิดสำหรับ Popup ที่ห้ามปิดระหว่างประมวลผล */
+  showCloseButton?: boolean
+  /** ปิดการเลื่อนของ viewport ชั้นนอก เมื่อเนื้อหาภายในจัดการ scrollbar เอง */
+  scrollable?: boolean
 }
 
 /**
@@ -33,6 +38,8 @@ export default function Modal({
   role = 'dialog',
   ariaModal = true,
   ariaLabelledby,
+  showCloseButton = true,
+  scrollable = true,
 }: ModalProps) {
   if (!open) return null
 
@@ -53,6 +60,7 @@ export default function Modal({
         role={role}
         aria-modal={ariaModal}
         aria-labelledby={ariaLabelledby}
+        data-modal-content
         className={`relative flex flex-col w-full rounded-2xl bg-surface-50 shadow-soft border border-surface-200 ${contentClassName}`}
         style={{
           maxHeight: 'calc(100vh - 6rem - var(--subnav-height, 0rem))',
@@ -62,7 +70,10 @@ export default function Modal({
         }}
         onClick={closeOnBackdropClick ? (e) => e.stopPropagation() : undefined}
       >
-        <div className="modal-scroll-viewport min-h-0 flex-1 overflow-y-auto rounded-[inherit]">
+        {showCloseButton ? (
+          <ModalCloseButton onClick={onClose} className="modal-standard-close absolute right-3 top-3 z-30" />
+        ) : null}
+        <div className={`modal-scroll-viewport min-h-0 flex-1 rounded-[inherit] ${scrollable ? 'overflow-y-auto' : 'overflow-hidden'}`}>
           {children}
         </div>
       </div>

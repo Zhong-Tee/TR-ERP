@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { FiX, FiExternalLink, FiFile, FiFileText, FiImage, FiChevronLeft, FiChevronRight, FiAlertCircle } from 'react-icons/fi'
+import { FiExternalLink, FiFile, FiFileText, FiImage, FiChevronLeft, FiChevronRight, FiAlertCircle } from 'react-icons/fi'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 import { getHRSignedUrl } from '../../../lib/hrApi'
 
 /** ไฟล์แนบ 1 รายการ — path คือ path ใน bucket หรือ URL เต็ม */
@@ -107,8 +108,8 @@ export default function AttachmentViewer({ items, startIndex = 0, onClose }: {
 
   // render ที่ body — กัน margin/overflow/stacking context ของหน้าที่เรียกใช้มากวนตำแหน่ง
   return createPortal(
-    <div className="fixed inset-0 z-[110] flex flex-col bg-black">
-      <div className="flex items-center gap-2 px-3 py-3 text-white">
+    <div className="fixed inset-0 z-[110] flex flex-col bg-black" role="dialog" aria-modal="true">
+      <div className="relative flex items-center gap-2 px-3 py-3 pr-16 text-white">
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{fileNameOf(att)}</span>
         {url && (
           <a
@@ -121,9 +122,7 @@ export default function AttachmentViewer({ items, startIndex = 0, onClose }: {
             เปิด/ดาวน์โหลด
           </a>
         )}
-        <button type="button" onClick={onClose} className="rounded-lg p-2 active:bg-white/20" aria-label="ปิด">
-          <FiX className="h-6 w-6" />
-        </button>
+        <ModalCloseButton onClick={onClose} className="absolute right-3 top-1/2 -translate-y-1/2" />
       </div>
 
       <div className={`flex-1 ${zoomed ? 'overflow-auto' : 'flex items-center justify-center overflow-hidden'} px-2 pb-2`}>

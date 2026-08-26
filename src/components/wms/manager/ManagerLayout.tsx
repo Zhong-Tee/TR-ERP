@@ -19,7 +19,7 @@ export default function ManagerLayout() {
   const navigate = useNavigate()
   const { user, signOut } = useAuthContext()
   const [activeView, setActiveView] = useState<ViewKey>('menu')
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
   const [loggingOut, setLoggingOut] = useState(false)
 
   const handleLogout = async () => {

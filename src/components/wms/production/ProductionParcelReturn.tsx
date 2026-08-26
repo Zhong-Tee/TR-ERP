@@ -31,7 +31,7 @@ export default function ProductionParcelReturn() {
   const [recentReturns, setRecentReturns] = useState<any[]>([])
   const [loadingRecent, setLoadingRecent] = useState(false)
   const [lightboxImg, setLightboxImg] = useState<string | null>(null)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => { loadRecentReturns() }, [])
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FiLogIn, FiLogOut, FiClock, FiMapPin, FiCamera, FiRefreshCw, FiX, FiPlus, FiUsers } from 'react-icons/fi'
+import { FiLogIn, FiLogOut, FiClock, FiMapPin, FiCamera, FiRefreshCw, FiPlus, FiUsers } from 'react-icons/fi'
+import ModalCloseButton from '../../ui/ModalCloseButton'
 import {
   fetchEmployeeByUserId,
   fetchClockLocations,
@@ -659,13 +660,11 @@ export default function EmployeeTimeClock() {
 
       {/* Modal ขั้นตอนถ่ายรูป/GPS */}
       {capture && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
+        <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="relative bg-white rounded-2xl w-full max-w-md overflow-hidden">
+            <ModalCloseButton onClick={closeCapture}/>
+            <div className="px-4 py-3 pr-16 bg-emerald-600 text-white">
               <h3 className="font-semibold">{ENTRY_LABELS[capture.type]}</h3>
-              <button type="button" onClick={closeCapture} aria-label="ปิด">
-                <FiX className="w-5 h-5" />
-              </button>
             </div>
 
             <div className="p-4 space-y-4">
@@ -776,13 +775,11 @@ export default function EmployeeTimeClock() {
 
       {/* Modal ขอ OT */}
       {otFormOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="relative bg-white rounded-2xl w-full max-w-md overflow-hidden">
+            <ModalCloseButton onClick={() => setOtFormOpen(false)}/>
+            <div className="px-4 py-3 pr-16 bg-emerald-600 text-white">
               <h3 className="font-semibold">ขอ OT</h3>
-              <button type="button" onClick={() => setOtFormOpen(false)} aria-label="ปิด">
-                <FiX className="w-5 h-5" />
-              </button>
             </div>
             <div className="p-4 space-y-3">
               <label className="block">
