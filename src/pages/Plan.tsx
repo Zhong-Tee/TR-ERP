@@ -13,7 +13,7 @@ import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
-import { isAdminOrSuperadmin } from '../config/accessPolicy'
+import { isAdminOrSuperadmin, isRoleInAllowedList } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
 import { getCutReadySec, getQcReadySec } from '../lib/planScheduling'
@@ -25,6 +25,7 @@ import ManpowerPanel from '../components/plan/ManpowerPanel'
 import EmployeeSkillsPanel from '../components/plan/EmployeeSkillsPanel'
 import { fetchMachines, type MachineryMachine } from '../lib/machineryApi'
 import { buildReadiness, fetchChecklistItems, fetchIncidents, fetchTodayInspections, overlapHours, type MachineryIncident, type MachineReadiness } from '../lib/machineryOperationsApi'
+import { fetchCancelledWmsHistory } from '../lib/cancelledWmsHistory'
 
 // --- Types (จาก plan.html) ---
 type ViewKey = 'dash' | 'manpower' | 'work-orders' | 'work-orders-manage' | 'dept' | 'jobs' | 'form' | 'set' | 'manpower-set' | 'employee-skills' | 'issue'
@@ -680,6 +681,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const canAccessPlanView = (view: ViewKey) =>
     isTechnician ? view === 'dash' : hasAccess(PLAN_MENU_KEY_MAP[view] || view)
   const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
+  const canManageCancelledStock = isRoleInAllowedList(user?.role, ['superadmin', 'admin', 'store']) && !tvMode
   const canSelectPlanDate = unlocked || user?.role === 'production' || isTechnician || tvMode
   const canEditProductionLine = unlocked || (user?.role === 'production' && !tvMode)
   const isSuperadmin = user?.role === 'superadmin'
@@ -1338,7 +1340,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
     [releasedByWO, loadReleasedOrderLines]
   )
 
-  // โหลด WMS lines ที่ถูก cancel และยัง pending การตัดสินใจ stock_action
+  // โหลด WMS lines ที่ถูกยกเลิกทั้งหมด รวมรายการที่คืนสต๊อค/ตีเป็นของเสียแล้ว
+  // เพื่อให้ Popup เป็นทั้งหน้าดำเนินการและประวัติตรวจสอบย้อนหลัง
   const loadCancelledWmsLines = useCallback(async (workOrderId: string, orderId?: string) => {
     setCancelledWmsLoading(true)
     setCancelledDetailWO(workOrderId)
@@ -1352,26 +1355,23 @@ export default function Plan({ tvMode = false }: PlanProps) {
         return
       }
 
-      const { data: exactData } = await supabase
-        .from('wms_orders')
-        .select('id, order_id, product_code, product_name, qty, status, stock_action, assigned_to, source_order_id')
-        .eq('work_order_id', workOrderId)
-        .eq('status', 'cancelled')
-        .is('stock_action', null)
-      const rows = exactData || []
-
-      const filteredRows =
-        targetOrderId && !String(targetOrderId).startsWith('__wo__')
-          ? rows.filter((r: any) => String(r.source_order_id || '') === String(targetOrderId))
-          : rows
-      setCancelledWmsLines(filteredRows)
+      const workOrderName =
+        jobs.find((j) => String(j.work_order_id || '') === workOrderId)?.name ||
+        cancelledByWO[workOrderId]?.[0]?.wo_name ||
+        null
+      const rows = await fetchCancelledWmsHistory({
+        workOrderId,
+        workOrderName,
+        orderId: targetOrderId,
+      })
+      setCancelledWmsLines(rows)
     } catch (e) {
       console.error('Error loading cancelled WMS lines:', e)
       setCancelledWmsLines([])
     } finally {
       setCancelledWmsLoading(false)
     }
-  }, [cancelledByWO])
+  }, [cancelledByWO, jobs])
 
   const openCancelledBillsModal = useCallback(
     (workOrderId: string) => {
@@ -1476,6 +1476,10 @@ export default function Plan({ tvMode = false }: PlanProps) {
   }, [loadStopProductionByWorkOrder, debouncedLoadStopProd])
 
   const handleStockAction = useCallback(async (wmsOrderId: string, action: 'recall' | 'waste') => {
+    if (!canManageCancelledStock) {
+      alert('ไม่มีสิทธิ์ปรับสต๊อค รายการนี้อนุญาตเฉพาะ superadmin, admin และ store')
+      return
+    }
     setStockActionLoading(wmsOrderId)
     try {
       if (action === 'recall') {
@@ -1495,7 +1499,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
     } finally {
       setStockActionLoading(null)
     }
-  }, [cancelledDetailWO, selectedCancelledOrderId, loadCancelledWmsLines, loadCancelledOrders, user?.id])
+  }, [canManageCancelledStock, cancelledDetailWO, selectedCancelledOrderId, loadCancelledWmsLines, loadCancelledOrders, user?.id])
 
   // ฟัง event จาก TopBar เพื่อเปลี่ยนไป view Issue
   useEffect(() => {
@@ -4502,9 +4506,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
               ) : cancelledWmsLines.length === 0 ? (
                 <div className="text-center py-6 text-gray-400">
                   <i className="fas fa-check-circle text-green-500 text-2xl mb-2 block"></i>
-                  <p>ไม่มีรายการ WMS ที่รอดำเนินการ</p>
+                  <p>ไม่พบรายการ WMS ของบิลนี้</p>
                   <p className="text-xs text-gray-400 mt-2">
-                    หากหน้าแจ้งเตือนมีรายการ แต่หน้าต่างนี้ว่าง ให้รีเฟรชหน้าแล้วลองเปิดใหม่อีกครั้ง
+                    บิลอาจถูกยกเลิกก่อนมอบหมายงานให้ Picker จึงไม่มีรายการสต๊อคที่ต้องดำเนินการ
                   </p>
                 </div>
               ) : (
@@ -4547,7 +4551,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             )}
                           </td>
                           <td className="px-3 py-2 text-center">
-                            {!line.stock_action && unlocked ? (
+                            {!line.stock_action && canManageCancelledStock ? (
                               <div className="flex gap-2 justify-center">
                                 <button
                                   onClick={() => handleStockAction(line.id, 'recall')}

@@ -53,7 +53,6 @@ export default function ReviewSection() {
   const [currentTab, setCurrentTab] = useState('all')
   const [showCounter, setShowCounter] = useState(false)
   const [showTabs, setShowTabs] = useState(false)
-  const [planBackfillLoading, setPlanBackfillLoading] = useState(false)
   const [reviewDeptFilter, setReviewDeptFilter] = useState('')
   const [reviewPlanSettings, setReviewPlanSettings] = useState<PlanDeptSettings | null>(null)
   const { showMessage, MessageModal } = useWmsModal()
@@ -372,54 +371,12 @@ export default function ReviewSection() {
     ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
   ).length
 
-  const inspectFullyChecked = inspectItems.length > 0 && checkedCount === inspectItems.length
-
   const deptViewItems = reviewDeptFilter
     ? inspectItems.filter((i) => String(i.picking_department || '') === reviewDeptFilter)
     : []
   const deptCheckedCount = deptViewItems.filter((i) =>
     ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
   ).length
-
-  const backfillPlanPickEndForCurrentWorkOrder = async (force: boolean) => {
-    const wid = reviewOrderActualId || reviewOrderSelect
-    if (!wid || !inspectFullyChecked) return
-    setPlanBackfillLoading(true)
-    try {
-      const { data, error } = await supabase.rpc('rpc_backfill_plan_pick_end_from_wms', {
-        p_work_order_id: wid,
-        p_force: force,
-      })
-      if (error) {
-        showMessage({ message: 'ซิงค์ Plan ไม่สำเร็จ: ' + error.message })
-        return
-      }
-      const row = data as { success?: boolean; error?: string; updated_count?: number; skipped?: unknown[] } | null
-      if (!row?.success) {
-        showMessage({ message: row?.error || 'ซิงค์ Plan ไม่สำเร็จ' })
-        return
-      }
-      if ((row.updated_count || 0) > 0) {
-        showMessage({ message: 'อัปเดตเวลาเสร็จเบิกใน Plan แล้ว' })
-      } else {
-        const sk = Array.isArray(row.skipped) ? row.skipped[0] : null
-        const reason =
-          sk && typeof sk === 'object' && sk !== null && 'reason' in sk
-            ? String((sk as { reason?: string }).reason || '')
-            : ''
-        showMessage({
-          message:
-            reason === 'already_stamped'
-              ? 'Plan มีเวลาเสร็จเบิกอยู่แล้ว — ใช้ "บังคับเขียนทับ" หากต้องการแก้'
-              : reason === 'inspect_not_complete'
-                ? 'ยังตรวจไม่ครบตามระบบ — ไม่ได้อัปเดต Plan'
-                : 'ไม่มีการเปลี่ยนแปลง (ดูเหตุผลใน skipped)',
-        })
-      }
-    } finally {
-      setPlanBackfillLoading(false)
-    }
-  }
 
   let filtered = inspectItems
   if (currentTab === 'all') filtered = inspectItems.filter((i) => isWmsReviewVisibleRow(i))
@@ -438,8 +395,7 @@ export default function ReviewSection() {
     <section>
       <div className="flex justify-between items-end mb-6 flex-wrap gap-4">
         <div>
-          <h2 className="text-3xl font-black text-slate-800">ตรวจสินค้า</h2>
-          <div className="flex gap-2 mt-4 items-end flex-wrap">
+          <div className="flex gap-2 items-end flex-wrap">
             <div>
               <label className="text-sm font-bold text-gray-700 uppercase block mb-1">1. เลือกวันที่</label>
               <input
@@ -498,35 +454,15 @@ export default function ReviewSection() {
           </div>
         </div>
         {showCounter && (
-          <div className="bg-white p-6 rounded-3xl shadow-xl border-t-4 border-blue-600 text-center min-w-[200px] flex flex-col items-center gap-3">
-            <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Checked / Total</div>
-            <div className="text-6xl font-black text-blue-600">
+          <div className="bg-white px-4 py-3 rounded-2xl shadow-lg border-t-[3px] border-blue-600 text-center min-w-[180px] flex flex-col items-center gap-1.5">
+            <div className="text-[9px] font-black text-gray-400 uppercase tracking-widest">ตรวจแล้ว / ทั้งหมด</div>
+            <div className="text-4xl leading-none font-black text-blue-600">
               {checkedCount} / {inspectItems.length}
             </div>
             {reviewDeptFilter && deptViewItems.length > 0 && (
-              <div className="text-xs font-bold text-slate-600 leading-snug">
+              <div className="text-[11px] font-bold text-slate-600 leading-snug">
                 แผนก {displayPickingDepartmentLabel(reviewDeptFilter)}: {deptCheckedCount} / {deptViewItems.length} ในมุมมองนี้
-                <div className="text-[10px] font-semibold text-slate-400 mt-0.5">การปิดงาน/ซิงค์ Plan ยังอิงทุกแถวด้านบน</div>
-              </div>
-            )}
-            {inspectFullyChecked && (reviewOrderActualId || reviewOrderSelect) && (
-              <div className="flex flex-col gap-2 w-full max-w-[220px]">
-                <button
-                  type="button"
-                  disabled={planBackfillLoading}
-                  onClick={() => backfillPlanPickEndForCurrentWorkOrder(false)}
-                  className="text-xs font-bold bg-slate-700 text-white px-3 py-2 rounded-lg hover:bg-slate-800 disabled:opacity-50"
-                >
-                  {planBackfillLoading ? 'กำลังซิงค์…' : 'ซิงค์เวลาเสร็จเบิก → Plan (ย้อนหลัง)'}
-                </button>
-                <button
-                  type="button"
-                  disabled={planBackfillLoading}
-                  onClick={() => backfillPlanPickEndForCurrentWorkOrder(true)}
-                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-700 underline disabled:opacity-50"
-                >
-                  บังคับเขียนทับเวลาใน Plan
-                </button>
+                <div className="text-[9px] font-semibold text-slate-400 mt-0.5">การปิดงาน/ซิงค์ Plan ยังอิงทุกแถวด้านบน</div>
               </div>
             )}
           </div>
@@ -648,8 +584,13 @@ export default function ReviewSection() {
                         {item.unit_name || 'ชิ้น'}
                         {getCondoStampLayersLabel(item) ? ` ${getCondoStampLayersLabel(item)}` : ''}
                       </div>
-                      <div className="text-xs text-gray-400 mt-1">
-                        UID: {item.item_uid || '-'} | WMS: {String(item.id || '').slice(0, 8)}
+                      <div className="text-xs text-gray-500 mt-1">
+                        รหัสสินค้า: <span className="font-semibold text-gray-600">{item.product_code || '-'}</span>
+                        {item.item_uid ? (
+                          <>
+                            {' '}| รหัสรายการ: <span className="font-semibold text-gray-600">{item.item_uid}</span>
+                          </>
+                        ) : null}
                       </div>
                       {awaitingShelfAfterBillCancel && (
                         <div className="text-xs font-bold text-rose-800 mt-1">

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useAuthContext } from '../../../contexts/AuthContext'
-import { isAdminOrSuperadmin } from '../../../config/accessPolicy'
+import { isRoleInAllowedList } from '../../../config/accessPolicy'
 import Modal from '../../ui/Modal'
+import { fetchCancelledWmsHistory } from '../../../lib/cancelledWmsHistory'
 
 export type CancelledBillSummary = {
   id: string
@@ -29,7 +30,7 @@ export default function CancelledBillStockModal({
   onChanged,
 }: Props) {
   const { user } = useAuthContext()
-  const canManageStock = isAdminOrSuperadmin(user?.role)
+  const canManageStock = isRoleInAllowedList(user?.role, ['superadmin', 'admin', 'store'])
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null)
   const [lines, setLines] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -42,35 +43,12 @@ export default function CancelledBillStockModal({
     setError('')
     setSelectedOrderId(orderId)
     try {
-      const { data: cancelledItems, error: itemError } = await supabase
-        .from('or_order_items')
-        .select('id, product_id')
-        .eq('order_id', orderId)
-        .not('cancellation_stock_action', 'is', null)
-      if (itemError) throw itemError
-
-      const itemIds = (cancelledItems || []).map((row: any) => row.id).filter(Boolean)
-      const productIds = (cancelledItems || []).map((row: any) => row.product_id).filter(Boolean)
-      const { data: products } = productIds.length
-        ? await supabase.from('pr_products').select('id, product_code').in('id', productIds)
-        : { data: [] as any[] }
-      const productCodes = new Set((products || []).map((p: any) => String(p.product_code || '').trim().toUpperCase()).filter(Boolean))
-
-      const { data: wmsRows, error: wmsError } = await supabase
-        .from('wms_orders')
-        .select('id, source_order_id, source_order_item_id, product_code, product_name, location, qty, status, stock_action, assigned_to, us_users!assigned_to(username)')
-        .eq('work_order_id', workOrderId)
-        .eq('status', 'cancelled')
-        .order('created_at', { ascending: true })
-      if (wmsError) throw wmsError
-
-      const itemIdSet = new Set(itemIds)
-      const filtered = (wmsRows || []).filter((row: any) => {
-        if (row.source_order_item_id) return itemIdSet.has(row.source_order_item_id)
-        if (row.source_order_id) return row.source_order_id === orderId
-        return productCodes.has(String(row.product_code || '').trim().toUpperCase())
+      const history = await fetchCancelledWmsHistory({
+        workOrderId,
+        workOrderName: displayName,
+        orderId,
       })
-      setLines(filtered)
+      setLines(history)
     } catch (e: any) {
       setLines([])
       setError(e?.message || 'โหลดรายการยกเลิกไม่สำเร็จ')

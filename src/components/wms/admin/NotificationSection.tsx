@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useAuthContext } from '../../../contexts/AuthContext'
-import { isAdminOrSuperadmin } from '../../../config/accessPolicy'
+import { isRoleInAllowedList } from '../../../config/accessPolicy'
 import Modal from '../../ui/Modal'
 import { enrichWmsNotificationsWithOrderDetails } from '../../../lib/wmsNotificationEnrichment'
 
 export default function NotificationSection() {
   const { user } = useAuthContext()
-  const canManageStock = isAdminOrSuperadmin(user?.role)
+  const canManageStock = isRoleInAllowedList(user?.role, ['superadmin', 'admin', 'store'])
   const [currentTab, setCurrentTab] = useState('unread')
   const [notifications, setNotifications] = useState<any[]>([])
   const [stockModalOrderId, setStockModalOrderId] = useState<string | null>(null)
