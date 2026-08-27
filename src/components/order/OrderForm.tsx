@@ -16,6 +16,7 @@ import * as Papa from 'papaparse'
 import { countThaiBillChars } from '../../lib/thaiBillCharCount'
 import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
 import { generateBillNo } from '../../lib/billNo'
+import { findWyProduct } from '../../lib/wyProductMatcher'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -510,6 +511,7 @@ interface OrderFormProps {
 type ImportedOrderItem = {
   product_id: string | null
   product_name: string
+  source_product_code?: string
   quantity: number
   unit_price?: number
   ink_color?: string
@@ -3363,28 +3365,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       if (hasValue(r['ยอดสุทธิ'])) curr.total_amount = rowTotal
       if (hasValue(r['ราคาก่อนลด'])) curr.price = rowPriceBeforeDiscount
       else if (hasValue(r['ราคาหลังลด'])) curr.price = rowPriceAfterDiscount + curr.discount
-      const normalizeLookup = (value: unknown) =>
-        String(value || '')
-          .trim()
-          .replace(/^'+/, '')
-          .replace(/\s+/g, '')
-          .toLowerCase()
       const rawCode = String(r['รหัส'] || '').trim().replace(/^'+/, '')
-      const normalizedCode = normalizeLookup(rawCode)
       const rowProductName = String(r['สินค้า'] || '').trim()
-      const normalizedRowProductName = normalizeLookup(rowProductName)
-      const p = products.find(
-        (x) => {
-          const code = normalizeLookup(x.product_code || '')
-          if (normalizedCode && code === normalizedCode) return true
-          const name = normalizeLookup(x.product_name || '')
-          if (normalizedCode && name === normalizedCode) return true
-          return !!normalizedRowProductName && name === normalizedRowProductName
-        }
-      )
+      const p = findWyProduct(products, rawCode, rowProductName)
       curr.items.push({
         product_id: p ? p.id : null,
         product_name: p ? p.product_name : String(r['สินค้า'] || 'รหัสไม่ตรง'),
+        source_product_code: rawCode,
         unit_price: parseNumber(r['ราคา']) || parseNumber(r['ราคาหลังลด']) || parseNumber(r['ราคาก่อนลด']),
         cartoon_pattern: '',
         line_pattern: '',
@@ -3459,13 +3446,24 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           }
 
           applyStampInkLogicToOrderObject(order)
-          const matchedItems = order.items.filter((item) => !!item.product_id)
-          if (matchedItems.length === 0) {
+          const unmatchedItems = order.items.filter((item) => !item.product_id)
+          if (order.items.length === 0 || unmatchedItems.length > 0) {
             errorCount += 1
             const label = useProvidedBillNo ? (order.bill_no || '') : String(order.channel_code || '')
-            errorLines.push(`${label || 'นำเข้า'}: ไม่มีรายการสินค้าที่จับคู่สินค้าได้`)
+            const unmatchedLabels = unmatchedItems
+              .map((item) => item.source_product_code || item.product_name)
+              .filter(Boolean)
+              .join(', ')
+            errorLines.push(
+              `${label || 'นำเข้า'}: ${
+                order.items.length === 0
+                  ? 'ไม่มีรายการสินค้า'
+                  : `ไม่พบสินค้าในระบบ (${unmatchedLabels || 'ไม่ทราบรหัส'}) จึงไม่นำเข้าทั้งบิล`
+              }`,
+            )
             continue
           }
+          const matchedItems = order.items
 
           let billNo = ''
           if (!useProvidedBillNo) {
