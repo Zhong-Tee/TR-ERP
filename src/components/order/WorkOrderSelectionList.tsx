@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
 import { localISODate } from '../../lib/localDate'
-import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
+import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
 import UrgencyBadge from '../common/UrgencyBadge'
@@ -51,7 +51,7 @@ export default function WorkOrderSelectionList({
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
-      query = query.in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
+      query = query.or(PLAN_WORK_QUEUE_POSTGREST_FILTER)
       if (channelFilter) {
         query = query.eq('channel_code', channelFilter)
       }

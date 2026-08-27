@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { useAuthContext } from '../contexts/AuthContext'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import { supabase } from '../lib/supabase'
-import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../lib/planWorkQueue'
+import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../lib/planWorkQueue'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../lib/orderFlowFilter'
 import * as XLSX from 'xlsx'
 import Modal from '../components/ui/Modal'
@@ -1114,7 +1114,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
 
       const [{ count: workQueueCount }, { data: manageNew }, { count: manageAll }] = await Promise.all([
         supabase.from('or_orders').select('id', { count: 'exact', head: true })
-          .in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
+          .or(PLAN_WORK_QUEUE_POSTGREST_FILTER)
           .is('work_order_id', null),
         supabase.rpc('rpc_plan_active_work_order_count'),
         allWorkOrdersFiltered,

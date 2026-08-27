@@ -4,7 +4,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import { UserRole } from '../../types'
 import { supabase } from '../../lib/supabase'
-import { PLAN_WORK_QUEUE_ORDER_STATUSES } from '../../lib/planWorkQueue'
+import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../../lib/planWorkQueue'
 import { loadWmsTabCounts } from '../wms/wmsUtils'
 import { fetchWorkOrdersWithProgress } from '../../lib/qcApi'
 import { loadPurchaseBadgeCounts } from '../../lib/purchaseApi'
@@ -285,7 +285,7 @@ export default function Sidebar({ isOpen }: SidebarProps) {
         supabase
           .from('or_orders')
           .select('id', { count: 'exact', head: true })
-          .in('status', PLAN_WORK_QUEUE_ORDER_STATUSES)
+          .or(PLAN_WORK_QUEUE_POSTGREST_FILTER)
           .is('work_order_id', null),
         supabase
           .from('pr_machinery_machines')

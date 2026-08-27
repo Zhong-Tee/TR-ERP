@@ -2002,7 +2002,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             requiresConfirmDesign,
             { fallbackNonPumpNonSales: 'ตรวจสอบแล้ว' },
           ) as typeof statusToSave
-        } else if (ownerRole === 'sales-tr' && !nonPumpDesignChecked(requiresConfirmDesign)) {
+        } else if (
+          channelCodeForSave.toUpperCase() !== 'WY'
+          && ownerRole === 'sales-tr'
+          && !nonPumpDesignChecked(requiresConfirmDesign)
+        ) {
           statusToSave = 'รอตรวจคำสั่งซื้อ'
         }
       }

@@ -32,6 +32,10 @@ export function computePostSlipVerificationStatus(
   const isPump = ch === 'PUMP'
   const fallbackNonPump: OrderStatus = options?.fallbackNonPumpNonSales ?? 'รอตรวจคำสั่งซื้อ'
 
+  // WY เปิดบิลด้วยมือและนำเข้าใช้เส้นทางเดียวกัน: ตรวจสอบแล้วทันที
+  // ไม่ต้องผ่านรอตรวจคำสั่งซื้อ ไม่ว่าเจ้าของบิลจะเป็น role ใด
+  if (ch.toUpperCase() === 'WY') return 'ตรวจสอบแล้ว'
+
   if (ownerRole === 'sales-pump') {
     if (isPump) {
       return pumpVerifiedRoutingStatus(pumpDesignChecked(requiresConfirmDesign))
