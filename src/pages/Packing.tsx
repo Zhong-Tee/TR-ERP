@@ -12,10 +12,13 @@ import {
   deleteQueueItem,
   getFolderHandle,
   getFolderPathNote,
+  getDeviceName,
+  getOrCreateDeviceId,
   listQueueItems,
   setAccessToken,
   setFolderHandle,
   setFolderPathNote,
+  setDeviceName,
   setSupabaseConfig,
   updateQueueItem,
   type UploadQueueItem,
@@ -173,7 +176,53 @@ type RecordingState = {
 const INACTIVITY_LIMIT = 60_000
 /** เก็บรายการคิวที่อัปโหลดเสร็จแล้วไว้กี่วันก่อนล้างอัตโนมัติ */
 const QUEUE_RETENTION_DAYS = 7
+const STALE_UPLOAD_MS = 10 * 60 * 1000
 const PACKING_DAILY_TAG_STORAGE_KEY = 'pk_daily_packing_tag_v1'
+
+type PackingUploadReportRow = {
+  id: string
+  recorded_by: string
+  device_id: string
+  device_name: string
+  folder_name: string | null
+  folder_path: string | null
+  work_order_name: string
+  tracking_number: string
+  filename: string
+  storage_path: string
+  file_size_bytes: number
+  duration_seconds: number | null
+  status: 'pending' | 'uploading' | 'success' | 'failed'
+  retry_count: number
+  last_error: string | null
+  local_deleted: boolean
+  client_created_at: string
+  client_updated_at: string
+  uploaded_at: string | null
+  reported_at: string
+}
+
+function formatFileSize(bytes: number | null | undefined): string {
+  const value = Number(bytes || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0 MB'
+  return `${(value / (1024 * 1024)).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MB`
+}
+
+function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefined): boolean {
+  if (status !== 'pending' && status !== 'uploading') return false
+  const time = new Date(updatedAt || '').getTime()
+  const limit = status === 'pending' ? 30 * 60 * 1000 : STALE_UPLOAD_MS
+  return !Number.isFinite(time) || Date.now() - time >= limit
+}
+
+function UploadStatusCard({ label, value, className }: { label: string; value: number; className: string }) {
+  return (
+    <div className={`rounded-xl border p-4 shadow-sm ${className}`}>
+      <div className="text-sm font-medium opacity-80">{label}</div>
+      <div className="mt-1 text-2xl font-bold tabular-nums">{value.toLocaleString('th-TH')}</div>
+    </div>
+  )
+}
 
 /** แสดงเลขพัสดุแบบไม่มีช่องว่าง */
 function formatParcelNo(value: string | null | undefined): string {
@@ -241,7 +290,7 @@ export default function Packing() {
   const [loading, setLoading] = useState(true)
   const { menuAccessLoading } = useMenuAccess()
   const [view, setView] = useState<'selection' | 'main'>('selection')
-  const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue' | 'tagSearch'>('new')
+  const [selectionTab, setSelectionTab] = useState<'new' | 'shipped' | 'queue' | 'report' | 'tagSearch'>('new')
   const [tagSearchInput, setTagSearchInput] = useState('')
   const [tagSearchLoading, setTagSearchLoading] = useState(false)
   const [tagSearchError, setTagSearchError] = useState('')
@@ -259,7 +308,7 @@ export default function Packing() {
   useEffect(() => {
     if (menuAccessLoading) return
     if (!hasAccess(`packing-${selectionTab}`)) {
-      const first = (['new', 'shipped', 'queue', 'tagSearch'] as const).find((t) => hasAccess(`packing-${t}`))
+      const first = (['new', 'shipped', 'queue', 'report', 'tagSearch'] as const).find((t) => hasAccess(`packing-${t}`))
       if (first) setSelectionTab(first)
     }
   }, [menuAccessLoading, hasAccess, selectionTab])
@@ -300,6 +349,8 @@ export default function Packing() {
   const [previewModal, setPreviewModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
   const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
   const [folderPath, setFolderPath] = useState('')
+  const [deviceId, setDeviceId] = useState('')
+  const [deviceName, setDeviceNameState] = useState('')
   const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [reconnectOpen, setReconnectOpen] = useState(false)
   const [pathModal, setPathModal] = useState<{ open: boolean; value: string }>({ open: false, value: '' })
@@ -307,6 +358,10 @@ export default function Packing() {
   const queueSignatureRef = useRef('')
   const shouldPollQueueRef = useRef(true)
   const [queueLoading, setQueueLoading] = useState(false)
+  const [uploadReportRows, setUploadReportRows] = useState<PackingUploadReportRow[]>([])
+  const [uploadReportLoading, setUploadReportLoading] = useState(false)
+  const [uploadReportSearch, setUploadReportSearch] = useState('')
+  const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
   const [packingVideoUrl, setPackingVideoUrl] = useState<string | null>(null)
   const [packingVideoLoading, setPackingVideoLoading] = useState(false)
   const [dialog, setDialog] = useState<{
@@ -470,12 +525,16 @@ export default function Packing() {
       const { data } = await supabase.auth.getSession()
       const token = data.session?.access_token || null
       await setAccessToken(token)
+      if (token) await requestQueueProcessing()
     }
     syncToken().catch(() => null)
     const { data: authSub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAccessToken(session?.access_token || null).catch(() => null)
+      setAccessToken(session?.access_token || null)
+        .then(() => session?.access_token ? requestQueueProcessing() : undefined)
+        .catch(() => null)
     })
     loadFolderFromSettings().catch(() => null)
+    loadDeviceSettings().catch(() => null)
     refreshQueue(true).catch(() => null)
     const timer = window.setInterval(() => {
       // poll เฉพาะตอนที่หน้าจอต้องใช้จริง ดูเงื่อนไขที่ effect ของ shouldPollQueueRef
@@ -535,6 +594,21 @@ export default function Packing() {
       return
     }
     setFolderHandleState(handle)
+  }
+
+  async function loadDeviceSettings() {
+    const id = await getOrCreateDeviceId()
+    const savedName = await getDeviceName()
+    const name = savedName || `เครื่องแพ็ค-${id.slice(0, 6).toUpperCase()}`
+    if (!savedName) await setDeviceName(name)
+    setDeviceId(id)
+    setDeviceNameState(name)
+  }
+
+  async function saveDeviceName() {
+    const next = deviceName.trim() || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`
+    await setDeviceName(next)
+    setDeviceNameState(next)
   }
 
   async function confirmReconnect() {
@@ -613,7 +687,25 @@ export default function Packing() {
 
   async function refreshQueue(showLoading = false) {
     if (showLoading) setQueueLoading(true)
-    const list = await listQueueItems()
+    let list = await listQueueItems()
+    const now = Date.now()
+    const staleUploading = list.filter((item) => {
+      if (item.status !== 'uploading') return false
+      const updatedAt = new Date(item.updatedAt || item.createdAt || 0).getTime()
+      return !Number.isFinite(updatedAt) || now - updatedAt >= STALE_UPLOAD_MS
+    })
+    if (staleUploading.length > 0) {
+      for (const item of staleUploading) {
+        await updateQueueItem(item.id, {
+          status: 'pending',
+          lastError: 'กู้คืนคิวอัตโนมัติ หลังการอัปโหลดถูกขัดจังหวะ',
+        })
+      }
+      const staleIds = new Set(staleUploading.map((item) => item.id))
+      list = list.map((item) => staleIds.has(item.id)
+        ? { ...item, status: 'pending', lastError: 'กู้คืนคิวอัตโนมัติ หลังการอัปโหลดถูกขัดจังหวะ', updatedAt: new Date().toISOString() }
+        : item)
+    }
     const sorted = await purgeExpiredQueueItems(
       list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     )
@@ -631,6 +723,81 @@ export default function Packing() {
       await cleanupLocalFiles(folderHandle, sorted)
     }
   }
+
+  async function requestQueueProcessing() {
+    if (!('serviceWorker' in navigator)) return
+    const reg = await navigator.serviceWorker.ready
+    const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
+    if (regAny.sync?.register) await regAny.sync.register('packing-upload')
+    regAny.active?.postMessage({ type: 'sync-now' })
+  }
+
+  async function syncQueueReports(items: UploadQueueItem[]) {
+    if (!user?.id || !deviceId || items.length === 0) return
+    const now = new Date().toISOString()
+    const ownItems = items.filter((item) => !item.recordedUserId || item.recordedUserId === user.id)
+    if (ownItems.length === 0) return
+    const payload = ownItems.map((item) => ({
+      id: item.id,
+      user_id: item.recordedUserId || user.id,
+      recorded_by: item.recordedBy || user.username || user.email || 'unknown',
+      device_id: item.deviceId || deviceId,
+      device_name: item.deviceId === deviceId ? (deviceName || item.deviceName) : (item.deviceName || deviceName) || 'ไม่ระบุชื่อเครื่อง',
+      folder_name: item.folderName || folderHandle?.name || null,
+      folder_path: item.folderPath || folderPath || null,
+      work_order_name: item.workOrderName,
+      tracking_number: item.trackingNumber,
+      filename: item.filename,
+      storage_path: item.storagePath,
+      file_size_bytes: Number(item.fileSize || 0),
+      duration_seconds: item.durationSeconds ?? null,
+      status: item.status,
+      retry_count: item.retryCount || 0,
+      last_error: item.lastError || null,
+      local_deleted: !!item.localDeleted,
+      recorded_at: item.recordedAt || item.createdAt,
+      client_created_at: item.createdAt,
+      client_updated_at: item.updatedAt,
+      reported_at: now,
+    }))
+    const { error } = await supabase
+      .from('pk_packing_upload_queue_reports')
+      .upsert(payload, { onConflict: 'id' })
+    if (error) console.warn('Packing upload report sync failed:', error.message)
+  }
+
+  async function loadUploadReport(showLoading = false) {
+    if (showLoading) setUploadReportLoading(true)
+    const { data, error } = await supabase
+      .from('pk_packing_upload_queue_reports')
+      .select('id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at')
+      .order('client_created_at', { ascending: false })
+      .limit(1000)
+    if (error) console.warn('Load packing upload report failed:', error.message)
+    else setUploadReportRows((data || []) as PackingUploadReportRow[])
+    if (showLoading) setUploadReportLoading(false)
+  }
+
+  useEffect(() => {
+    if (queueItems.length === 0 || !deviceId) return
+    void syncQueueReports(queueItems)
+    if (queueItems.some((item) => item.status === 'pending')) {
+      void requestQueueProcessing()
+    }
+  }, [queueItems, deviceId, deviceName, folderPath, folderHandle, user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!deviceId || !queueItems.some((item) => item.status === 'pending' || item.status === 'uploading')) return
+    const timer = window.setInterval(() => void syncQueueReports(queueItems), 60_000)
+    return () => window.clearInterval(timer)
+  }, [queueItems, deviceId, deviceName, folderPath, folderHandle, user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (selectionTab !== 'report') return
+    void loadUploadReport(true)
+    const timer = window.setInterval(() => void loadUploadReport(false), 10_000)
+    return () => window.clearInterval(timer)
+  }, [selectionTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function cleanupLocalFiles(handle: FileSystemDirectoryHandle, items: UploadQueueItem[]) {
     const targets = items.filter((i) => i.status === 'success' && !i.localDeleted)
@@ -1781,7 +1948,11 @@ export default function Packing() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: {
+          width: { ideal: 1280, max: 1280 },
+          height: { ideal: 720, max: 720 },
+          frameRate: { ideal: 24, max: 24 },
+        },
         audio: false,
       })
       streamRef.current = stream
@@ -1842,7 +2013,9 @@ export default function Packing() {
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
       const recorder = new MediaRecorder(streamRef.current, {
         mimeType: mimeType || undefined,
-        videoBitsPerSecond: 5_000_000,
+        // 720p/24fps at 1.5 Mbps is sufficient for packing evidence and is
+        // about 70% smaller than the previous 1080p/5 Mbps recording.
+        videoBitsPerSecond: 1_500_000,
       })
       recorderRef.current = recorder
       recordingChunksRef.current = []
@@ -1950,7 +2123,12 @@ export default function Packing() {
         fileType: blob.type || 'video/webm',
         fileSize: blob.size,
         recordedBy,
+        recordedUserId: user?.id || null,
         recordedAt: new Date().toISOString(),
+        deviceId,
+        deviceName,
+        folderName: folderHandle.name,
+        folderPath: folderPath || null,
         blob,
         localDeleted: localSaveError ? true : false
       }
@@ -1993,6 +2171,45 @@ export default function Packing() {
     stopRecording()
   }
 
+  const queueStatusSummary = useMemo(() => ({
+    pending: queueItems.filter((item) => item.status === 'pending' && !isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+    uploading: queueItems.filter((item) => item.status === 'uploading' && !isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+    success: queueItems.filter((item) => item.status === 'success').length,
+    failed: queueItems.filter((item) => item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)).length,
+  }), [queueItems])
+
+  const uploadReportDevices = useMemo(() => {
+    const devices = new Map<string, string>()
+    uploadReportRows.forEach((row) => {
+      if (!devices.has(row.device_id)) devices.set(row.device_id, row.device_name || 'ไม่ระบุชื่อเครื่อง')
+    })
+    return Array.from(devices, ([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
+  }, [uploadReportRows])
+
+  const filteredUploadReportRows = useMemo(() => {
+    const term = uploadReportSearch.trim().toLowerCase()
+    return uploadReportRows.filter((row) => {
+      if (uploadReportDeviceId && row.device_id !== uploadReportDeviceId) return false
+      if (!term) return true
+      return [
+        row.recorded_by,
+        row.device_name,
+        row.folder_path,
+        row.folder_name,
+        row.work_order_name,
+        row.tracking_number,
+      ].some((value) => String(value || '').toLowerCase().includes(term))
+    })
+  }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId])
+
+  const reportStatusSummary = useMemo(() => ({
+    pending: filteredUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    uploading: filteredUploadReportRows.filter((row) => row.status === 'uploading' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    success: filteredUploadReportRows.filter((row) => row.status === 'success').length,
+    failed: filteredUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
+  }), [filteredUploadReportRows])
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -2014,6 +2231,7 @@ export default function Packing() {
                 { key: 'new' as const, label: 'ใบงานใหม่', count: workOrders.length },
                 { key: 'shipped' as const, label: 'จัดส่งแล้ว' },
                 { key: 'queue' as const, label: 'คิวอัปโหลด' },
+                { key: 'report' as const, label: 'รายงาน' },
                 { key: 'tagSearch' as const, label: 'ค้นหา Tag' },
               ]).filter((tab) => hasAccess(`packing-${tab.key}`)).map((tab) => (
                 <button
@@ -2438,9 +2656,132 @@ export default function Packing() {
                 </div>
               )}
             </div>
+          ) : selectionTab === 'report' ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">รายงานคิวอัปโหลดทุกเครื่อง</h2>
+                  <p className="text-sm text-gray-500">ข้อมูลจากทุก User และทุกเครื่อง อัปเดตอัตโนมัติทุก 10 วินาที</p>
+                </div>
+                <div className="flex flex-1 flex-wrap justify-end gap-2 sm:flex-none">
+                  <label htmlFor="upload-report-device" className="sr-only">กรองเครื่องแพ็ค</label>
+                  <select
+                    id="upload-report-device"
+                    value={uploadReportDeviceId}
+                    onChange={(event) => setUploadReportDeviceId(event.target.value)}
+                    className="min-w-[210px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">เครื่องแพ็คทั้งหมด</option>
+                    {uploadReportDevices.map((device) => (
+                      <option key={device.id} value={device.id}>{device.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={uploadReportSearch}
+                    onChange={(event) => setUploadReportSearch(event.target.value)}
+                    className="min-w-[240px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm sm:flex-none"
+                    placeholder="ค้นหา User, เครื่อง, ใบงาน, เลขพัสดุ..."
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadUploadReport(true)}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    รีเฟรช
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <UploadStatusCard label="รอคิว" value={reportStatusSummary.pending} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={reportStatusSummary.uploading} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={reportStatusSummary.success} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={reportStatusSummary.failed} className="border-red-200 bg-red-50 text-red-800" />
+              </div>
+
+              {uploadReportLoading ? (
+                <div className="py-12 text-center text-gray-500">กำลังโหลดรายงาน...</div>
+              ) : filteredUploadReportRows.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">ยังไม่มีข้อมูลคิวอัปโหลด</div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <table className="w-full min-w-[1180px] text-sm">
+                    <thead className="bg-blue-600 text-white">
+                      <tr>
+                        <th className="px-3 py-3 text-left">เวลาบันทึก</th>
+                        <th className="px-3 py-3 text-left">User</th>
+                        <th className="px-3 py-3 text-left">เครื่อง / โฟลเดอร์</th>
+                        <th className="px-3 py-3 text-left">ใบงาน / เลขพัสดุ</th>
+                        <th className="px-3 py-3 text-right">ขนาดไฟล์</th>
+                        <th className="px-3 py-3 text-center">สถานะ</th>
+                        <th className="px-3 py-3 text-left">อัปเดตล่าสุด</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredUploadReportRows.map((row, index) => {
+                        const stale = isStaleQueueTimestamp(row.status, row.reported_at)
+                        const statusLabel = stale
+                          ? 'ค้าง/ขาดการติดต่อ'
+                          : row.status === 'success'
+                            ? 'อัปโหลดสำเร็จ'
+                            : row.status === 'failed'
+                              ? 'มีปัญหา'
+                              : row.status === 'uploading'
+                                ? 'กำลังอัปโหลด'
+                                : 'รอคิว'
+                        const statusClass = stale || row.status === 'failed'
+                          ? 'bg-red-100 text-red-700'
+                          : row.status === 'success'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : row.status === 'uploading'
+                              ? 'bg-sky-100 text-sky-700'
+                              : 'bg-amber-100 text-amber-700'
+                        return (
+                          <tr key={row.id} className={`border-t border-gray-200 ${index % 2 ? 'bg-gray-50' : 'bg-white'}`}>
+                            <td className="whitespace-nowrap px-3 py-3">{new Date(row.client_created_at).toLocaleString('th-TH')}</td>
+                            <td className="px-3 py-3 font-medium">{row.recorded_by}</td>
+                            <td className="px-3 py-3">
+                              <div className="font-medium text-gray-900">{row.device_name}</div>
+                              <div className="max-w-[320px] truncate text-xs text-gray-500" title={row.folder_path || row.folder_name || '-'}>
+                                {row.folder_path || row.folder_name || 'ไม่ระบุตำแหน่ง'}
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="font-medium">{row.work_order_name}</div>
+                              <div className="text-xs text-gray-500">{formatParcelNo(row.tracking_number)}</div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3 text-right font-medium tabular-nums">{formatFileSize(row.file_size_bytes)}</td>
+                            <td className="px-3 py-3 text-center">
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
+                              {row.retry_count > 0 && <div className="mt-1 text-[11px] text-gray-500">ลองใหม่ {row.retry_count} ครั้ง</div>}
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="whitespace-nowrap">{new Date(row.reported_at).toLocaleString('th-TH')}</div>
+                              {row.last_error && <div className="max-w-[260px] truncate text-xs text-red-600" title={row.last_error}>{row.last_error}</div>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           ) : (
             <div className="space-y-4">
               <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <label htmlFor="packing-device-name" className="font-medium text-gray-700">ชื่อเครื่อง:</label>
+                  <input
+                    id="packing-device-name"
+                    value={deviceName}
+                    onChange={(event) => setDeviceNameState(event.target.value)}
+                    onBlur={() => void saveDeviceName()}
+                    className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2"
+                    placeholder="เช่น เครื่องแพ็ค 1"
+                  />
+                  <span className="text-xs text-gray-400">ใช้แยกเครื่องในหน้ารายงาน</span>
+                </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <button
                     className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
@@ -2480,6 +2821,12 @@ export default function Packing() {
                     </button>
                   </div>
                 )}
+              </div>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <UploadStatusCard label="รอคิว" value={queueStatusSummary.pending} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={queueStatusSummary.uploading} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={queueStatusSummary.success} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={queueStatusSummary.failed} className="border-red-200 bg-red-50 text-red-800" />
               </div>
               {queueLoading ? (
                 <div className="text-center py-6 text-gray-500">กำลังโหลดคิว...</div>
@@ -2525,6 +2872,7 @@ export default function Packing() {
                           {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : item.filename} • {
                             isSuccess ? 'อัปโหลดสำเร็จ' : isFailed ? 'อัปโหลดไม่สำเร็จ' : isUploading ? 'กำลังอัปโหลด...' : 'รอคิว'
                           }
+                          {' • '}{formatFileSize(item.fileSize)}
                           {item.localDeleted ? ' • ลบไฟล์แล้ว' : ''}
                         </div>
                         {item.lastError && (

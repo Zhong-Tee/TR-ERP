@@ -17,6 +17,7 @@ export type ClaimCompareDetail = {
   proposed_snapshot: { order?: Record<string, unknown>; items?: unknown[] } | null
   ref_snapshot: {
     bill_no?: string
+    tracking_number?: string | null
     price?: number
     total_amount?: number
     shipping_cost?: number

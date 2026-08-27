@@ -220,6 +220,29 @@ serve(async (req: Request) => {
     const workOrderName = (meta.work_order_name as string) || 'unknown'
     const trackingNumber = (meta.tracking_number as string) || 'unknown'
     const storagePath = (meta.storage_path as string) || ''
+    const uploadQueueId = (meta.upload_queue_id as string) || null
+    const fileSizeBytes = Number(meta.file_size_bytes || file.size)
+
+    // Idempotency: a lost browser/worker response must not create a second Drive file.
+    if (uploadQueueId) {
+      const { data: existing } = await supabaseAdmin
+        .from('pk_packing_videos')
+        .select('gdrive_file_id, gdrive_url')
+        .eq('upload_queue_id', uploadQueueId)
+        .maybeSingle()
+      if (existing?.gdrive_file_id) {
+        await supabaseAdmin
+          .from('pk_packing_upload_queue_reports')
+          .update({ status: 'success', last_error: null, uploaded_at: new Date().toISOString(), reported_at: new Date().toISOString() })
+          .eq('id', uploadQueueId)
+        return jsonResponse({
+          success: true,
+          already_uploaded: true,
+          gdrive_file_id: existing.gdrive_file_id,
+          gdrive_url: existing.gdrive_url,
+        })
+      }
+    }
 
     console.log(`[upload-gdrive] WO=${workOrderName} TN=${trackingNumber} size=${file.size}`)
 
@@ -250,6 +273,10 @@ serve(async (req: Request) => {
         recorded_at: meta.recorded_at ?? null,
         gdrive_file_id: driveFile.id,
         gdrive_url: gdriveUrl,
+        upload_queue_id: uploadQueueId,
+        file_size_bytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : file.size,
+        device_id: meta.device_id ?? null,
+        device_name: meta.device_name ?? null,
       })
 
     if (insertError) {
@@ -260,6 +287,18 @@ serve(async (req: Request) => {
         gdrive_file_id: driveFile.id,
         gdrive_url: gdriveUrl,
       }, 500)
+    }
+
+    if (uploadQueueId) {
+      await supabaseAdmin
+        .from('pk_packing_upload_queue_reports')
+        .update({
+          status: 'success',
+          last_error: null,
+          uploaded_at: new Date().toISOString(),
+          reported_at: new Date().toISOString(),
+        })
+        .eq('id', uploadQueueId)
     }
 
     return jsonResponse({

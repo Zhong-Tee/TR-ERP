@@ -1296,6 +1296,7 @@ export interface HRTimeEntry {
   location_id?: string
   location_name?: string
   photo_url?: string
+  photo_expired_at?: string
   note?: string
   /** แหล่งที่มา: mobile=แอปมือถือ, device=เครื่องสแกนนิ้ว (นำเข้า), manual=HR กรอกเอง */
   source?: 'mobile' | 'device' | 'manual'

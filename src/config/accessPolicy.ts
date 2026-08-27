@@ -234,6 +234,7 @@ const MENU_KEY_PARENT_MAP: Record<string, string> = {
   'packing-new': 'packing',
   'packing-shipped': 'packing',
   'packing-queue': 'packing',
+  'packing-report': 'packing',
   'packing-tagSearch': 'packing',
   'account-claim-approval': 'account',
   'account-ecommerce': 'account',

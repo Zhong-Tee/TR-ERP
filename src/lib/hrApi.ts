@@ -330,6 +330,11 @@ export async function upsertEmployee(emp: Partial<HREmployee>) {
 export async function deleteEmployee(id: string) {
   const { error } = await supabase.from('hr_employees').delete().eq('id', id)
   if (error) pgError(error)
+  // ON DELETE CASCADE queues the employee's attendance photos via DB trigger.
+  // Ask the cleanup function to remove those Storage objects immediately.
+  await requestTimeClockPhotoCleanup({ force: true }).catch((cleanupError) => {
+    console.warn('Time-clock photo cleanup after employee delete failed:', cleanupError)
+  })
 }
 
 /** รหัสถัดไปที่จะได้เมื่อบันทึก (ไม่กินลำดับ) — ต้องมี migration 177 */
@@ -1895,6 +1900,28 @@ export async function uploadTimeClockPhoto(employeeId: string, blob: Blob) {
   })
   if (error) pgError(error)
   return data.path
+}
+
+const TIME_CLOCK_CLEANUP_STORAGE_KEY = 'tr-erp:hr-time-clock-cleanup-date'
+
+/**
+ * เรียกงานล้างรูปลงเวลา: ปกติสูงสุดวันละครั้งต่อ browser
+ * force ใช้หลังลบพนักงาน และ orphanPath ใช้เก็บกวาดไฟล์ที่อัปโหลดแล้วแต่ insert เวลาไม่สำเร็จ
+ */
+export async function requestTimeClockPhotoCleanup(options?: { force?: boolean; orphanPath?: string | null }) {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+  const hasLocalStorage = typeof window !== 'undefined' && !!window.localStorage
+  if (!options?.force && !options?.orphanPath && hasLocalStorage) {
+    if (window.localStorage.getItem(TIME_CLOCK_CLEANUP_STORAGE_KEY) === today) return
+  }
+
+  const { error } = await supabase.functions.invoke('hr-time-clock-cleanup', {
+    body: options?.orphanPath ? { orphan_path: options.orphanPath } : {},
+  })
+  if (error) throw error
+  if (!options?.orphanPath && hasLocalStorage) {
+    window.localStorage.setItem(TIME_CLOCK_CLEANUP_STORAGE_KEY, today)
+  }
 }
 
 /** bucket hr-time-clock เป็น private → ใช้ signed URL */

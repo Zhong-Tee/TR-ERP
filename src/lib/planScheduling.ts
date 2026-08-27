@@ -1,4 +1,4 @@
-const CUT_DELAY_DEPARTMENTS = new Set(['เบิก', 'STK', 'CTT', 'TUBE'])
+const CUT_DELAY_DEPARTMENTS = new Set(['เบิก', 'STK', 'CTT', 'CTT&SUB', 'TUBE'])
 
 /** Earliest department start derived from the work-order cut time. */
 export function getCutReadySec(department: string, cutSec: number): number | null {

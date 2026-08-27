@@ -4,6 +4,7 @@ const STORE_QUEUE = 'queue'
 const STORE_SETTINGS = 'settings'
 
 let processing = false
+const STALE_UPLOAD_MS = 10 * 60 * 1000
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -51,6 +52,53 @@ async function updateQueueItem(id, patch) {
   await withStore(STORE_QUEUE, 'readwrite', (store) => store.put(next))
 }
 
+async function reportQueueStatus(item, patch = {}) {
+  const supabaseUrl = await getSetting('supabaseUrl')
+  const supabaseAnonKey = await getSetting('supabaseAnonKey')
+  const accessToken = await getSetting('accessToken')
+  if (!supabaseUrl || !supabaseAnonKey || !accessToken || !item.recordedUserId) return
+
+  const next = { ...item, ...patch }
+  const response = await fetch(
+    `${supabaseUrl}/rest/v1/pk_packing_upload_queue_reports?on_conflict=id`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({
+        id: next.id,
+        user_id: next.recordedUserId,
+        recorded_by: next.recordedBy || 'unknown',
+        device_id: next.deviceId || 'unknown',
+        device_name: next.deviceName || 'ไม่ระบุชื่อเครื่อง',
+        folder_name: next.folderName || null,
+        folder_path: next.folderPath || null,
+        work_order_name: next.workOrderName,
+        tracking_number: next.trackingNumber,
+        filename: next.filename,
+        storage_path: next.storagePath,
+        file_size_bytes: next.fileSize || 0,
+        duration_seconds: next.durationSeconds || null,
+        status: next.status,
+        retry_count: next.retryCount || 0,
+        last_error: next.lastError || null,
+        local_deleted: !!next.localDeleted,
+        recorded_at: next.recordedAt || next.createdAt,
+        client_created_at: next.createdAt,
+        client_updated_at: new Date().toISOString(),
+        reported_at: new Date().toISOString(),
+      }),
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`Queue report failed (${response.status})`)
+  }
+}
+
 async function processQueue() {
   if (processing) return
   processing = true
@@ -61,9 +109,16 @@ async function processQueue() {
     if (!supabaseUrl || !supabaseAnonKey || !accessToken) return
 
     const items = await listQueueItems()
-    const candidates = items.filter((i) => i.status === 'pending' || i.status === 'failed')
+    const now = Date.now()
+    const candidates = items.filter((i) => {
+      if (i.status === 'pending' || i.status === 'failed') return true
+      if (i.status !== 'uploading') return false
+      const updatedAt = new Date(i.updatedAt || i.createdAt || 0).getTime()
+      return !Number.isFinite(updatedAt) || now - updatedAt >= STALE_UPLOAD_MS
+    })
     for (const item of candidates) {
       await updateQueueItem(item.id, { status: 'uploading', lastError: null })
+      await reportQueueStatus(item, { status: 'uploading', lastError: null }).catch(() => null)
       try {
         if (!item.blob) throw new Error('ไม่พบไฟล์สำหรับอัปโหลด')
 
@@ -78,8 +133,15 @@ async function processQueue() {
             tracking_number: item.trackingNumber,
             storage_path: item.storagePath,
             duration_seconds: item.durationSeconds || null,
+            file_size_bytes: item.fileSize || item.blob.size,
             recorded_by: item.recordedBy || null,
+            recorded_user_id: item.recordedUserId || null,
             recorded_at: item.recordedAt || null,
+            upload_queue_id: item.id,
+            device_id: item.deviceId || null,
+            device_name: item.deviceName || null,
+            folder_name: item.folderName || null,
+            folder_path: item.folderPath || null,
           }),
         )
 
@@ -101,6 +163,10 @@ async function processQueue() {
           lastError: null,
           blob: null,
         })
+        await reportQueueStatus(item, {
+          status: 'success',
+          lastError: null,
+        }).catch(() => null)
 
         if (self.registration && Notification.permission === 'granted') {
           self.registration.showNotification('อัปโหลดวิดีโอสำเร็จ', {
@@ -108,11 +174,18 @@ async function processQueue() {
           })
         }
       } catch (err) {
+        const retryCount = (item.retryCount || 0) + 1
+        const lastError = String(err?.message || err)
         await updateQueueItem(item.id, {
           status: 'failed',
-          retryCount: (item.retryCount || 0) + 1,
-          lastError: String(err?.message || err),
+          retryCount,
+          lastError,
         })
+        await reportQueueStatus(item, {
+          status: 'failed',
+          retryCount,
+          lastError,
+        }).catch(() => null)
         if (self.registration && Notification.permission === 'granted') {
           self.registration.showNotification('อัปโหลดวิดีโอล้มเหลว', {
             body: `${item.workOrderName} • ${item.trackingNumber}`,

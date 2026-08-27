@@ -4,6 +4,7 @@ import { getPublicUrl } from '../lib/qcApi'
 import { useAuthContext } from '../contexts/AuthContext'
 import { Product, ProductType, StockBalance } from '../types'
 import LotCostPopover from '../components/ui/LotCostPopover'
+import Modal from '../components/ui/Modal'
 import * as XLSX from 'xlsx'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
@@ -66,6 +67,7 @@ export default function Warehouse() {
   })
   const [salesMap, setSalesMap] = useState<Record<string, number>>({})
   const [salesLoading, setSalesLoading] = useState(false)
+  const [specialTrackedDetailId, setSpecialTrackedDetailId] = useState<string | null>(null)
 
   useEffect(() => {
     loadProducts()
@@ -314,6 +316,44 @@ export default function Warehouse() {
     })
   }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances, pendingPoMap, salesFromDate, salesMap, isSpecialTracked])
 
+  const specialTrackedDetail = useMemo(() => {
+    if (!specialTrackedDetailId) return null
+
+    const parentProduct = products.find((product) => product.id === specialTrackedDetailId)
+    if (!parentProduct) return null
+
+    const productById = new Map(products.map((product) => [product.id, product]))
+    const rows = (specialTrackedSources[specialTrackedDetailId] || [])
+      .map((sourceId) => {
+        const sourceProduct = productById.get(sourceId)
+        const balance = balances[sourceId]
+        const onHand = Number(balance?.on_hand || 0)
+        const safetyStock = Number(balance?.safety_stock || 0)
+        return {
+          id: sourceId,
+          productCode: sourceProduct?.product_code || sourceId,
+          productName: sourceProduct?.product_name || '-',
+          onHand,
+          safetyStock,
+          total: onHand + safetyStock,
+        }
+      })
+      .sort((a, b) => a.productCode.localeCompare(b.productCode, undefined, { numeric: true }))
+
+    return {
+      parentProduct,
+      rows,
+      totals: rows.reduce(
+        (result, row) => ({
+          onHand: result.onHand + row.onHand,
+          safetyStock: result.safetyStock + row.safetyStock,
+          total: result.total + row.total,
+        }),
+        { onHand: 0, safetyStock: 0, total: 0 },
+      ),
+    }
+  }, [specialTrackedDetailId, products, specialTrackedSources, balances])
+
   const handleDownloadExcel = useCallback(() => {
     const rows = filteredProducts.map((p) => {
       const stockDisplay = getStockDisplay(p.id)
@@ -354,8 +394,9 @@ export default function Warehouse() {
   }, [filteredProducts, pendingPoMap, salesMap, canSeeCost, getStockDisplay, isSpecialTracked]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="space-y-6 mt-4">
-      <div className="bg-white p-6 rounded-lg shadow">
+    <>
+      <div className="space-y-6 mt-4">
+        <div className="bg-white p-6 rounded-lg shadow">
         <div className="flex flex-wrap gap-4 mb-4 items-center">
           <div className="flex-1 min-w-[200px]">
             <label htmlFor="warehouse-search" className="sr-only">ค้นหาสินค้า</label>
@@ -522,11 +563,20 @@ export default function Warehouse() {
                       <td className="p-3 text-center">
                         {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (safetyStock !== null ? safetyStock.toLocaleString() : '-')}
                       </td>
-                      <td className="p-3 text-center font-medium text-gray-700">
+                      <td className="p-3 text-center font-medium text-gray-700 align-middle">
                         <span title={specialTracked ? `ยอดรวมจากสินค้าผลิตที่ผูกไว้ ${specialTrackedSources[product.id]?.length || 0} SKU (ไม่กระทบ FIFO)` : undefined}>
                           {totalInStock.toLocaleString()}
                         </span>
-                        {specialTracked && <div className="mt-0.5 text-[10px] font-normal text-sky-600">รวม {specialTrackedSources[product.id]?.length || 0} SKU</div>}
+                        {specialTracked && (
+                          <button
+                            type="button"
+                            onClick={() => setSpecialTrackedDetailId(product.id)}
+                            className="mx-auto mt-0.5 block rounded text-[10px] font-medium text-sky-600 underline decoration-sky-300 underline-offset-2 transition-colors hover:text-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-offset-1"
+                            aria-label={`ดูรายละเอียด ${specialTrackedSources[product.id]?.length || 0} SKU ของ ${product.product_name}`}
+                          >
+                            รวม {specialTrackedSources[product.id]?.length || 0} SKU
+                          </button>
+                        )}
                       </td>
                       <td className="p-3 text-center text-sm text-gray-600">
                         {(() => {
@@ -570,8 +620,65 @@ export default function Warehouse() {
             </table>
           </div>
         )}
+        </div>
       </div>
-    </div>
+
+      <Modal
+        open={specialTrackedDetail !== null}
+        onClose={() => setSpecialTrackedDetailId(null)}
+        closeOnBackdropClick
+        contentClassName="max-w-4xl"
+        ariaLabelledby="special-tracked-detail-title"
+      >
+        {specialTrackedDetail && (
+          <div>
+            <div className="border-b border-surface-200 px-5 py-4 pr-14 sm:px-6">
+              <h2 id="special-tracked-detail-title" className="text-lg font-bold text-gray-900">
+                รายละเอียด SKU ในคลัง
+              </h2>
+              <p className="mt-1 text-sm text-gray-500">
+                {specialTrackedDetail.parentProduct.product_code} · {specialTrackedDetail.parentProduct.product_name}
+              </p>
+            </div>
+
+            <div className="overflow-x-auto p-4 sm:p-6">
+              <table className="w-full min-w-[680px] text-sm">
+                <thead>
+                  <tr className="bg-blue-600 text-white">
+                    <th className="rounded-tl-xl px-4 py-3 text-left font-semibold">รหัส SKU</th>
+                    <th className="px-4 py-3 text-left font-semibold">ชื่อสินค้า</th>
+                    <th className="px-4 py-3 text-right font-semibold">จำนวนคงเหลือ</th>
+                    <th className="px-4 py-3 text-right font-semibold">Safety stock</th>
+                    <th className="rounded-tr-xl px-4 py-3 text-right font-semibold">รวมในคลัง</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {specialTrackedDetail.rows.map((row, index) => (
+                    <tr key={row.id} className={`border-b border-surface-200 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                      <td className="px-4 py-3 font-medium text-gray-900">{row.productCode}</td>
+                      <td className="px-4 py-3 text-gray-700">{row.productName}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{row.onHand.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{row.safetyStock.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-right font-semibold tabular-nums text-gray-900">{row.total.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-sky-50 text-gray-900">
+                    <td colSpan={2} className="rounded-bl-xl px-4 py-3 font-bold">
+                      รวม {specialTrackedDetail.rows.length} SKU
+                    </td>
+                    <td className="px-4 py-3 text-right font-bold tabular-nums">{specialTrackedDetail.totals.onHand.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right font-bold tabular-nums">{specialTrackedDetail.totals.safetyStock.toLocaleString()}</td>
+                    <td className="rounded-br-xl px-4 py-3 text-right font-bold tabular-nums text-sky-700">{specialTrackedDetail.totals.total.toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </>
   )
 }
 

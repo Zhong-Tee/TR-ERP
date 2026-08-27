@@ -18,6 +18,7 @@ import {
   fetchTimeCertifications,
   upsertTimeCertification,
   fetchEmployeeByUserId,
+  requestTimeClockPhotoCleanup,
 } from '../../lib/hrApi'
 import { useAuthContext } from '../../contexts/AuthContext'
 import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification, HRLeaveRequest, HRWFHRequest } from '../../types'
@@ -330,11 +331,17 @@ export default function TimeAttendance() {
     loadEntries()
   }, [loadEntries])
 
+  useEffect(() => {
+    requestTimeClockPhotoCleanup()
+      .then(() => loadEntries())
+      .catch((error) => console.warn('Time-clock photo cleanup failed:', error))
+  }, [loadEntries])
+
   // realtime: มีการบันทึกเวลาใหม่ → โหลดซ้ำ
   useEffect(() => {
     const channel = supabase
       .channel('hr_time_entries_live')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'hr_time_entries' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_time_entries' }, () => {
         loadEntries()
       })
       .subscribe()
@@ -1015,6 +1022,10 @@ export default function TimeAttendance() {
                               <FiCamera />
                             </button>
                           )
+                        ) : e.photo_expired_at ? (
+                          <span className="inline-flex rounded-full bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-500">
+                            หมดอายุ
+                          </span>
                         ) : (
                           <span className="text-gray-300">-</span>
                         )}

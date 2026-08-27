@@ -3839,7 +3839,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         work_order_name: null,
         shipped_by: null,
         shipped_time: null,
-        tracking_number: ref.tracking_number ?? null,
+        // บิลเคลมเป็นการจัดส่งใหม่ จึงรอเลขพัสดุใหม่หลังอนุมัติ
+        tracking_number: null,
         requires_confirm_design: ref.requires_confirm_design !== false,
       }
       const items = claimDraftItems.map((r) => ({
@@ -3864,6 +3865,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
       const refSnapshot = {
         bill_no: ref.bill_no,
+        tracking_number: ref.tracking_number ?? null,
         price: ref.price,
         total_amount: ref.total_amount,
         shipping_cost: ref.shipping_cost,
@@ -3977,7 +3979,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         work_order_name: null,
         shipped_by: null,
         shipped_time: null,
-        tracking_number: ref.tracking_number ?? null,
+        // บิลเคลมเป็นการจัดส่งใหม่ จึงรอเลขพัสดุใหม่หลังอนุมัติ
+        tracking_number: null,
         requires_confirm_design: ref.requires_confirm_design !== false,
       }
       const items = claimDraftItems.map((r) => ({
@@ -4001,6 +4004,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }))
       const refSnapshot = {
         bill_no: ref.bill_no,
+        tracking_number: ref.tracking_number ?? null,
         price: ref.price,
         total_amount: ref.total_amount,
         shipping_cost: ref.shipping_cost,
@@ -7025,9 +7029,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               )}
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
-                ยกเลิก
-              </button>
               <button
                 type="button"
                 onClick={() => selectedClaimRefOrder && setClaimStep(2)}
@@ -7098,9 +7099,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 className="px-4 py-2 border rounded-lg hover:bg-gray-100"
               >
                 ย้อนกลับ
-              </button>
-              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
-                ยกเลิก
               </button>
               <button
                 type="button"
@@ -7387,7 +7385,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 (s, r) => s + (r.is_free ? 0 : (Number(r.quantity) || 0) * (Number(r.unit_price) || 0)),
                 0,
               )
-              const claimNet = claimItemsTotal + (Number(claimShippingCost) || 0) - (Number(selectedClaimRefOrder.discount) || 0)
+              // บิลเคลมเป็นบิลใหม่: ใช้เฉพาะยอดรายการเคลมและค่าขนส่ง
+              // ไม่สืบทอดส่วนลดจากบิลอ้างอิง เพื่อให้ Preview ตรงกับข้อมูลที่บันทึกจริง
+              const claimNet = claimItemsTotal + (Number(claimShippingCost) || 0)
               const fmt = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2 })
               return (
                 <div className="flex justify-end mb-3">
@@ -7429,9 +7429,6 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 className="px-4 py-2 border rounded-lg hover:bg-gray-100"
               >
                 ย้อนกลับ
-              </button>
-              <button type="button" onClick={() => setClaimModalOpen(false)} className="px-4 py-2 border rounded-lg hover:bg-gray-100">
-                ยกเลิก
               </button>
               <button
                 type="button"

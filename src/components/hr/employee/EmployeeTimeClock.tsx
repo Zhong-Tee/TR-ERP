@@ -7,6 +7,7 @@ import {
   fetchTimeEntries,
   createTimeEntry,
   uploadTimeClockPhoto,
+  requestTimeClockPhotoCleanup,
   fetchOTRequests,
   createOTRequest,
   fetchWorkSchedules,
@@ -128,6 +129,12 @@ export default function EmployeeTimeClock() {
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    requestTimeClockPhotoCleanup().catch((error) => {
+      console.warn('Time-clock photo cleanup failed:', error)
+    })
+  }, [])
 
   useEffect(() => {
     if (!message) return
@@ -274,7 +281,7 @@ export default function EmployeeTimeClock() {
     try {
       // getUserMedia = ภาพสดจากกล้องเท่านั้น เลือกรูปจากแกลเลอรีไม่ได้
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 } },
         audio: false,
       })
       streamRef.current = stream
@@ -302,11 +309,14 @@ export default function EmployeeTimeClock() {
     const video = videoRef.current
     if (!video || !capture) return
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    const sourceWidth = video.videoWidth || 960
+    const sourceHeight = video.videoHeight || 540
+    const scale = Math.min(960 / sourceWidth, 540 / sourceHeight, 1)
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale))
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale))
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.drawImage(video, 0, 0)
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     canvas.toBlob(
       (blob) => {
         if (!blob) return
@@ -314,7 +324,7 @@ export default function EmployeeTimeClock() {
         setCapture((c) => (c ? { ...c, phase: 'preview', photoBlob: blob, photoUrl: URL.createObjectURL(blob) } : c))
       },
       'image/jpeg',
-      0.85,
+      0.72,
     )
   }
 
@@ -335,8 +345,10 @@ export default function EmployeeTimeClock() {
   async function submitEntry() {
     if (!capture || !employee || !capture.photoBlob || !capture.position || (!isRemoteWorkToday && !capture.target)) return
     setCapture((c) => (c ? { ...c, phase: 'submitting' } : c))
+    let uploadedPhotoPath: string | null = null
     try {
       const photoPath = await uploadTimeClockPhoto(employee.id, capture.photoBlob)
+      uploadedPhotoPath = photoPath
       const created = await createTimeEntry({
         employee_id: employee.id,
         entry_type: capture.type,
@@ -350,6 +362,7 @@ export default function EmployeeTimeClock() {
           : capture.target?.name,
         photo_url: photoPath,
       })
+      uploadedPhotoPath = null
       // แจ้งเตือน Telegram เข้ากลุ่ม Manager — ไม่ block การบันทึก ถ้าส่งไม่สำเร็จก็ไม่กระทบพนักงาน
       supabase.functions.invoke('hr-clock-notify', { body: { entry_id: created.id } }).catch(() => {})
       const locationLabel = isRemoteWorkToday
@@ -359,6 +372,9 @@ export default function EmployeeTimeClock() {
       closeCapture()
       load()
     } catch (e: any) {
+      if (uploadedPhotoPath) {
+        requestTimeClockPhotoCleanup({ force: true, orphanPath: uploadedPhotoPath }).catch(() => null)
+      }
       setMessage({ type: 'error', text: 'บันทึกไม่สำเร็จ: ' + e.message })
       setCapture((c) => (c ? { ...c, phase: 'preview' } : c))
     }

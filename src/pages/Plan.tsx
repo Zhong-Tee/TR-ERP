@@ -97,6 +97,11 @@ type DeptQtyByWorkOrderId = Record<string, Record<string, number>>
 /** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
 type CatQtyByWorkOrderId = Record<string, Record<string, number>>
 
+// รองรับทั้งชื่อเดิมและชื่อปัจจุบัน เพื่อให้ CTT&SUB ถูกคำนวณก่อน QC
+// โดยไม่กระทบใบงานเก่าที่ยังเก็บชื่อ CTT อยู่
+const PLAN_COMPUTATION_ORDER = ['เบิก', 'STK', 'CTT', 'CTT&SUB', 'TUBE', 'STAMP', 'LASER', 'QC', 'PACK']
+const QC_PRECEDING_DEPARTMENTS = ['STK', 'CTT', 'CTT&SUB', 'TUBE', 'STAMP', 'LASER']
+
 /** แผนกที่บันทึกเวลาอัตโนมัติ (ไม่ได้กดเริ่ม/เสร็จจากหน้า Plan) */
 const AUTO_TRACK_DEPTS: Record<string, string> = {
   'เบิก': 'บันทึกจาก WMS อัตโนมัติ',
@@ -530,9 +535,8 @@ function computePlanTimeline(
         if (berkFinishSec > 0) base = Math.max(base, berkFinishSec + 300)
       }
       if (dept === 'QC') {
-        const precedingDepts = ['STK', 'CTT', 'TUBE', 'STAMP', 'LASER']
         const finishTimes: number[] = []
-        precedingDepts.forEach((preDept) => {
+        QC_PRECEDING_DEPARTMENTS.forEach((preDept) => {
           if (getEffectiveQty(j, preDept, settings, deptQtyByWorkOrderId) > 0) {
             const finishSec = getEffectiveFinishSec(preDept, j, precomputed)
             if (finishSec > 0) finishTimes.push(finishSec)
@@ -616,6 +620,7 @@ const PLAN_DEPT_CARD_COLORS: Record<string, { chip: string; name: string; badge:
   STAMP: { chip: 'bg-purple-50 border-purple-300', name: 'text-purple-800', badge: 'bg-purple-700' },
   STK: { chip: 'bg-sky-50 border-sky-300', name: 'text-sky-800', badge: 'bg-sky-700' },
   CTT: { chip: 'bg-orange-50 border-orange-300', name: 'text-orange-800', badge: 'bg-orange-700' },
+  'CTT&SUB': { chip: 'bg-orange-50 border-orange-300', name: 'text-orange-800', badge: 'bg-orange-700' },
   LASER: { chip: 'bg-amber-50 border-amber-300', name: 'text-amber-800', badge: 'bg-amber-700' },
   TUBE: { chip: 'bg-teal-50 border-teal-300', name: 'text-teal-800', badge: 'bg-teal-700' },
   QC: { chip: 'bg-pink-50 border-pink-300', name: 'text-pink-800', badge: 'bg-pink-700' },
@@ -1966,9 +1971,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
     .sort((a, b) => a.order_index - b.order_index)
 
   const dashTimelines = (() => {
-    const computationOrder = ['เบิก', 'STK', 'CTT', 'TUBE', 'STAMP', 'LASER', 'QC', 'PACK']
     const allDepts = settings.departments
-    const orderedDepts = [...new Set([...computationOrder, ...allDepts])]
+    const orderedDepts = [...new Set([...PLAN_COMPUTATION_ORDER, ...allDepts])]
     const timelines: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {
@@ -1990,9 +1994,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
       .filter((j) => sameDay(j.date, dDate))
       .sort((a, b) => a.order_index - b.order_index)
 
-    const computationOrder = ['เบิก', 'STK', 'CTT', 'TUBE', 'STAMP', 'LASER', 'QC', 'PACK']
     const allDepts = settings.departments
-    const orderedDepts = [...new Set([...computationOrder, ...allDepts])]
+    const orderedDepts = [...new Set([...PLAN_COMPUTATION_ORDER, ...allDepts])]
     const tl: Record<string, TimelineItem[]> = {}
     orderedDepts.forEach((d) => {
       if (allDepts.includes(d)) {

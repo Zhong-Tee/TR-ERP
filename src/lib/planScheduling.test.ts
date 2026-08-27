@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { getCutReadySec, getQcReadySec } from './planScheduling'
 
 describe('Plan scheduling dependencies', () => {
-  it.each(['เบิก', 'STK', 'CTT', 'TUBE'])('starts %s five minutes after cut time', (department) => {
+  it.each(['เบิก', 'STK', 'CTT', 'CTT&SUB', 'TUBE'])('starts %s five minutes after cut time', (department) => {
     expect(getCutReadySec(department, 10 * 60)).toBe(15 * 60)
   })
 

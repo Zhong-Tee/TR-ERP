@@ -21,7 +21,12 @@ export interface UploadQueueItem {
   fileType?: string | null
   fileSize?: number | null
   recordedBy?: string | null
+  recordedUserId?: string | null
   recordedAt?: string | null
+  deviceId?: string | null
+  deviceName?: string | null
+  folderName?: string | null
+  folderPath?: string | null
   blob?: Blob | null
   localDeleted?: boolean
 }
@@ -91,6 +96,22 @@ export async function setFolderPathNote(note: string): Promise<void> {
 
 export async function getFolderPathNote(): Promise<string> {
   return (await getSetting<string>('folderPathNote')) || ''
+}
+
+export async function getOrCreateDeviceId(): Promise<string> {
+  const existing = await getSetting<string>('packingDeviceId')
+  if (existing) return existing
+  const id = crypto.randomUUID()
+  await setSetting('packingDeviceId', id)
+  return id
+}
+
+export async function getDeviceName(): Promise<string> {
+  return (await getSetting<string>('packingDeviceName')) || ''
+}
+
+export async function setDeviceName(name: string): Promise<void> {
+  await setSetting('packingDeviceName', name.trim())
 }
 
 export async function setSupabaseConfig(url: string, anonKey: string): Promise<void> {

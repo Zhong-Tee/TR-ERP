@@ -86,6 +86,8 @@ export default function ClaimRequestComparePanel({
   const displayClaimDescription =
     (detail.claim_description?.trim() || proposedClaimDetailsLegacy || '').trim() || null
   const displaySupportingUrl = externalUrlOrNull(detail.supporting_url ?? undefined)
+  const originalTrackingNumber =
+    refOrder?.tracking_number || detail.ref_snapshot?.tracking_number || detail.ref_order?.tracking_number || null
 
   const proposedCustomerFallback = customerFromProposedOrder(proposedOrder as Record<string, unknown>)
 
@@ -114,6 +116,10 @@ export default function ClaimRequestComparePanel({
         <span>
           บิลจัดส่งต้น:{' '}
           <strong className="font-mono">{refOrder?.bill_no || detail.ref_snapshot?.bill_no || '–'}</strong>
+        </span>
+        <span>
+          <span className="text-gray-400">·</span> เลขพัสดุเดิม:{' '}
+          <strong className="font-mono">{originalTrackingNumber || '–'}</strong>
         </span>
         {latestPriorReqBillNo ? (
           <span>

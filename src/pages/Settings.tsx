@@ -775,6 +775,7 @@ export default function Settings() {
     { key: 'packing-new', label: 'ใบงานใหม่', group: 'packing' },
     { key: 'packing-shipped', label: 'จัดส่งแล้ว', group: 'packing' },
     { key: 'packing-queue', label: 'คิวอัปโหลด', group: 'packing' },
+    { key: 'packing-report', label: 'รายงาน', group: 'packing' },
     { key: 'packing-tagSearch', label: 'ค้นหา Tag', group: 'packing' },
     // ── ทวนสอบขนส่ง ──
     { key: 'transport', label: 'ทวนสอบขนส่ง', group: '' },

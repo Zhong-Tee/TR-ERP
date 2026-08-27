@@ -220,7 +220,7 @@ export default function ClaimApprovalSection() {
       const { data: o, error } = await supabase
         .from('or_orders')
         .select(
-          'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, admin_user, billing_details',
+          'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, admin_user, tracking_number, billing_details',
         )
         .eq('id', r.ref_order_id)
         .maybeSingle()
@@ -260,6 +260,7 @@ export default function ClaimApprovalSection() {
           mobile_phone: emb.mobile_phone,
           channel_code: emb.channel_code,
           admin_user: emb.admin_user,
+          tracking_number: emb.tracking_number,
           order_items: items,
         })
       }
@@ -472,13 +473,6 @@ export default function ClaimApprovalSection() {
                     className="px-4 py-2 border border-amber-400 text-amber-700 rounded-lg hover:bg-amber-50 disabled:opacity-50"
                   >
                     ✏️ แก้ไขบิลเคลม
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDetail(null)}
-                    className="px-4 py-2 border rounded-lg hover:bg-gray-50"
-                  >
-                    ปิด
                   </button>
                   <button
                     type="button"

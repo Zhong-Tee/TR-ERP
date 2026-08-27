@@ -3,6 +3,7 @@ import {
   compareManpowerSkills,
   effectiveOperatorCount,
   effectiveRequiredHeadcount,
+  operatorSkillCandidates,
   type EmployeeSkill,
 } from './planManpower'
 
@@ -14,6 +15,7 @@ const skill = (employee_id: string, proficiency: number, is_primary: boolean): E
   efficiency_percent: 100,
   qualification_status: 'qualified',
   is_primary,
+  max_concurrent_jobs: 1,
 })
 
 describe('compareManpowerSkills', () => {
@@ -24,6 +26,11 @@ describe('compareManpowerSkills', () => {
 })
 
 describe('อนุญาตให้หัวหน้าทำงาน', () => {
+  const responsibilities = new Map([
+    ['operator', 'operator' as const],
+    ['supervisor', 'supervisor' as const],
+  ])
+
   it('ปิดสวิตช์แล้วแยกจำนวนหัวหน้าออกจากคนทำงาน', () => {
     expect(effectiveOperatorCount(1, 0, 1, false)).toBe(0)
     expect(effectiveRequiredHeadcount(3, 1, false)).toBe(4)
@@ -37,5 +44,23 @@ describe('อนุญาตให้หัวหน้าทำงาน', () =
   it('ไม่มีความต้องการหัวหน้าแล้วไม่เปลี่ยน Logic', () => {
     expect(effectiveOperatorCount(0, 2, 1, true)).toBe(2)
     expect(effectiveRequiredHeadcount(3, 0, true)).toBe(3)
+  })
+
+  it('เปิดสวิตช์แล้วหัวหน้าเป็นผู้สมัครงานปฏิบัติการได้ แม้โควตาหัวหน้าเป็นศูนย์', () => {
+    const candidates = operatorSkillCandidates(
+      [skill('supervisor', 4, true)],
+      (employeeId) => responsibilities.get(employeeId),
+      true,
+    )
+    expect(candidates.map((row) => row.employee_id)).toEqual(['supervisor'])
+  })
+
+  it('ให้ฝ่ายผลิตมาก่อนหัวหน้า เพื่อเก็บหัวหน้าไว้เป็นกำลังเสริม', () => {
+    const candidates = operatorSkillCandidates(
+      [skill('supervisor', 5, true), skill('operator', 2, false)],
+      (employeeId) => responsibilities.get(employeeId),
+      true,
+    )
+    expect(candidates.map((row) => row.employee_id)).toEqual(['operator', 'supervisor'])
   })
 })
