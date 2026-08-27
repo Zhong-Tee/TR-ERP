@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
-import { effectiveOperatorCount, effectiveRequiredHeadcount } from './planManpower'
+import {
+  compareManpowerSkills,
+  effectiveOperatorCount,
+  effectiveRequiredHeadcount,
+  type EmployeeSkill,
+} from './planManpower'
+
+const skill = (employee_id: string, proficiency: number, is_primary: boolean): EmployeeSkill => ({
+  employee_id,
+  department_name: 'เบิก',
+  process_name: 'หยิบของ',
+  proficiency,
+  efficiency_percent: 100,
+  qualification_status: 'qualified',
+  is_primary,
+})
+
+describe('compareManpowerSkills', () => {
+  it('prioritizes a primary worker before a higher-scored non-primary worker', () => {
+    const rows = [skill('high-score', 5, false), skill('primary', 2, true)].sort(compareManpowerSkills)
+    expect(rows.map((row) => row.employee_id)).toEqual(['primary', 'high-score'])
+  })
+})
 
 describe('อนุญาตให้หัวหน้าทำงาน', () => {
   it('ปิดสวิตช์แล้วแยกจำนวนหัวหน้าออกจากคนทำงาน', () => {
