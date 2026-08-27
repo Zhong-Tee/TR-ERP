@@ -7,6 +7,7 @@ import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import * as ExcelJS from 'exceljs'
+import Papa from 'papaparse'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
 import {
@@ -313,6 +314,40 @@ type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: 
 type PickingSlipModal = { open: boolean; workOrderName: string | null; mainItems: PickingMainRow[]; spareItems: PickingSpareRow[] }
 /** Modal นำเข้าเลขพัสดุ */
 type ImportTrackingModal = { open: boolean; workOrderName: string | null }
+type TrackingImportPhase = 'idle' | 'reading' | 'importing' | 'refreshing' | 'completed' | 'error'
+type TrackingImportDetail = {
+  row_no: number
+  bill_no: string
+  tracking_number: string
+  status: 'updated' | 'unchanged' | 'duplicate' | 'not_found' | 'outside_work_order' | 'invalid' | 'error'
+  message: string
+}
+type TrackingImportProgress = {
+  phase: TrackingImportPhase
+  total: number
+  processed: number
+  updated: number
+  unchanged: number
+  duplicate: number
+  notFound: number
+  outsideWorkOrder: number
+  invalid: number
+  failed: number
+  message: string
+  details: TrackingImportDetail[]
+}
+type TrackingImportBatchResult = {
+  success: boolean
+  processed: number
+  updated: number
+  unchanged: number
+  duplicate: number
+  not_found: number
+  outside_work_order: number
+  invalid: number
+  failed: number
+  results: TrackingImportDetail[]
+}
 /** Modal เรียงใบปะหน้า: เปิด + ชื่อใบงาน + ลำดับเลขพัสดุจากออร์เดอร์ */
 type WaybillSorterModal = { open: boolean; workOrderName: string | null; trackingNumbers: string[] }
 /** แถวข้อมูลในตาราง Preview ใบปะหน้า */
@@ -323,6 +358,31 @@ type WaybillPreviewModal = { open: boolean; workOrderName: string | null; rows: 
 interface PickingMainRow { woName: string; code: string; name: string; location: string; finalQty: number; dept: string }
 /** อะไหล่ — ข้อความตาม รหัสหน้ายาง (rubber_code) ในสินค้า */
 interface PickingSpareRow { label: string; qty: number }
+
+const TRACKING_IMPORT_BATCH_SIZE = 100
+const TRACKING_IMPORT_STATUS_LABELS: Record<TrackingImportDetail['status'], string> = {
+  updated: 'สำเร็จ',
+  unchanged: 'ข้อมูลเดิม',
+  duplicate: 'เลขพัสดุซ้ำ',
+  not_found: 'ไม่พบบิล',
+  outside_work_order: 'อยู่นอกใบงาน',
+  invalid: 'ข้อมูลไม่ถูกต้อง',
+  error: 'ผิดพลาด',
+}
+const EMPTY_TRACKING_IMPORT_PROGRESS: TrackingImportProgress = {
+  phase: 'idle',
+  total: 0,
+  processed: 0,
+  updated: 0,
+  unchanged: 0,
+  duplicate: 0,
+  notFound: 0,
+  outsideWorkOrder: 0,
+  invalid: 0,
+  failed: 0,
+  message: '',
+  details: [],
+}
 
 export default function WorkOrderManageList({
   searchTerm = '',
@@ -362,6 +422,7 @@ export default function WorkOrderManageList({
     spareItems: [],
   })
   const [importTrackingModal, setImportTrackingModal] = useState<ImportTrackingModal>({ open: false, workOrderName: null })
+  const [trackingImportProgress, setTrackingImportProgress] = useState<TrackingImportProgress>(EMPTY_TRACKING_IMPORT_PROGRESS)
   const [waybillSorterModal, setWaybillSorterModal] = useState<WaybillSorterModal>({ open: false, workOrderName: null, trackingNumbers: [] })
   const [waybillPreviewModal, setWaybillPreviewModal] = useState<WaybillPreviewModal>({ open: false, workOrderName: null, rows: [] })
   const [wsLog, setWsLog] = useState<string[]>([])
@@ -376,6 +437,18 @@ export default function WorkOrderManageList({
   const trackingFileInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfInputRef = useRef<HTMLInputElement>(null)
   const waybillPdfFolderInputRef = useRef<HTMLInputElement>(null)
+  const isTrackingImportBusy = ['reading', 'importing', 'refreshing'].includes(trackingImportProgress.phase)
+  const trackingImportPercent = trackingImportProgress.phase === 'completed'
+    ? 100
+    : trackingImportProgress.phase === 'refreshing'
+      ? 95
+      : trackingImportProgress.phase === 'importing' && trackingImportProgress.total > 0
+        ? Math.min(90, 10 + Math.round((trackingImportProgress.processed / trackingImportProgress.total) * 80))
+        : trackingImportProgress.phase === 'error' && trackingImportProgress.total > 0
+          ? Math.min(90, 10 + Math.round((trackingImportProgress.processed / trackingImportProgress.total) * 80))
+        : trackingImportProgress.phase === 'reading'
+          ? 5
+          : 0
   useEffect(() => {
     loadWorkOrders()
   }, [channelFilter, searchTerm, dateFrom, dateTo, mode])
@@ -1545,7 +1618,14 @@ export default function WorkOrderManageList({
   }
 
   function openImportTrackingModal(workOrderName: string) {
+    setTrackingImportProgress({ ...EMPTY_TRACKING_IMPORT_PROGRESS })
     setImportTrackingModal({ open: true, workOrderName })
+  }
+
+  function closeImportTrackingModal() {
+    if (isTrackingImportBusy) return
+    setImportTrackingModal({ open: false, workOrderName: null })
+    setTrackingImportProgress({ ...EMPTY_TRACKING_IMPORT_PROGRESS })
   }
 
   /** แมปหัวคอลัมน์ที่รองรับ → ฟิลด์ภายใน */
@@ -1590,17 +1670,18 @@ export default function WorkOrderManageList({
         reader.onload = (event) => {
           try {
             const csv = String(event.target?.result ?? '')
-            const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== '')
-            if (lines.length <= 1) throw new Error('ไฟล์ CSV ว่างเปล่า')
-            const headers = lines[0].split(',').map((h) => h.trim().replace(/"/g, ''))
+            const parsed = Papa.parse<string[]>(csv, { skipEmptyLines: true })
+            if (parsed.errors.length > 0) throw new Error(`อ่าน CSV ไม่สำเร็จ: ${parsed.errors[0].message}`)
+            const rows = parsed.data
+            if (rows.length <= 1) throw new Error('ไฟล์ CSV ว่างเปล่า')
+            const headers = rows[0].map((h) => String(h ?? '').replace(/^\uFEFF/, '').trim())
             const billNoIndex = findHeaderIndex(headers, BILL_NO_ALIASES)
             const trackingIndex = findHeaderIndex(headers, TRACKING_ALIASES)
             if (billNoIndex === -1 || trackingIndex === -1) throw new Error('ไม่พบหัวข้อ เลขออเดอร์/bill_no และ เลขพัสดุ/tracking_number')
             const updates: { bill_no: string; tracking_number: string }[] = []
-            for (let i = 1; i < lines.length; i++) {
-              const values = lines[i].split(',')
-              const bill_no = values[billNoIndex]?.trim().replace(/"/g, '')
-              const tracking_number = values[trackingIndex]?.trim().replace(/"/g, '')
+            for (let i = 1; i < rows.length; i++) {
+              const bill_no = String(rows[i]?.[billNoIndex] ?? '').trim()
+              const tracking_number = String(rows[i]?.[trackingIndex] ?? '').trim()
               if (bill_no && tracking_number) updates.push({ bill_no, tracking_number })
             }
             resolve(updates)
@@ -1616,47 +1697,104 @@ export default function WorkOrderManageList({
     const file = e.target.files?.[0]
     if (!file || !importTrackingModal.workOrderName) return
     const workOrderName = importTrackingModal.workOrderName
-    setImportTrackingModal({ open: false, workOrderName: null })
     e.target.value = ''
     setUpdating(true)
+    setTrackingImportProgress({
+      ...EMPTY_TRACKING_IMPORT_PROGRESS,
+      phase: 'reading',
+      message: `กำลังอ่านไฟล์ ${file.name}`,
+    })
     try {
       const updates = await parseTrackingFile(file)
       if (updates.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
+
+      let processed = 0
       let updated = 0
-      const duplicateBills: string[] = []
-      const seenInFile = new Set<string>()
-      for (const u of updates) {
-        const { data: ord } = await supabase.from('or_orders').select('id').eq('bill_no', u.bill_no).maybeSingle()
-        if (!ord) continue
-        // ข้ามถ้าเลขพัสดุซ้ำภายในไฟล์เดียวกัน
-        if (seenInFile.has(u.tracking_number)) {
-          duplicateBills.push(u.bill_no)
-          continue
-        }
-        // ข้ามถ้าเลขพัสดุซ้ำกับออร์เดอร์อื่นในระบบ (ยกเว้นตัวเอง)
-        const { data: dup } = await supabase
-          .from('or_orders')
-          .select('id')
-          .eq('tracking_number', u.tracking_number)
-          .neq('id', ord.id)
-          .limit(1)
-        if (dup && dup.length > 0) {
-          duplicateBills.push(u.bill_no)
-          continue
-        }
-        await supabase.from('or_orders').update({ tracking_number: u.tracking_number }).eq('id', ord.id)
-        seenInFile.add(u.tracking_number)
-        updated += 1
+      let unchanged = 0
+      let duplicate = 0
+      let notFound = 0
+      let outsideWorkOrder = 0
+      let invalid = 0
+      let failed = 0
+      const details: TrackingImportDetail[] = []
+
+      setTrackingImportProgress({
+        ...EMPTY_TRACKING_IMPORT_PROGRESS,
+        phase: 'importing',
+        total: updates.length,
+        message: `กำลังบันทึก 0 / ${updates.length} รายการ`,
+      })
+
+      for (let batchStart = 0; batchStart < updates.length; batchStart += TRACKING_IMPORT_BATCH_SIZE) {
+        const batch = updates.slice(batchStart, batchStart + TRACKING_IMPORT_BATCH_SIZE)
+        const { data, error } = await supabase.rpc('rpc_plan_import_tracking_batch', {
+          p_work_order_name: workOrderName,
+          p_rows: batch,
+        })
+        if (error) throw error
+        const result = data as TrackingImportBatchResult | null
+        if (!result?.success) throw new Error('ฐานข้อมูลไม่ยืนยันผลการนำเข้าเลขพัสดุ')
+
+        processed += result.processed ?? batch.length
+        updated += result.updated ?? 0
+        unchanged += result.unchanged ?? 0
+        duplicate += result.duplicate ?? 0
+        notFound += result.not_found ?? 0
+        outsideWorkOrder += result.outside_work_order ?? 0
+        invalid += result.invalid ?? 0
+        failed += result.failed ?? 0
+        ;(result.results || []).forEach((row) => {
+          if (row.status === 'updated' || row.status === 'unchanged') return
+          details.push({ ...row, row_no: batchStart + row.row_no })
+        })
+
+        setTrackingImportProgress({
+          phase: 'importing',
+          total: updates.length,
+          processed,
+          updated,
+          unchanged,
+          duplicate,
+          notFound,
+          outsideWorkOrder,
+          invalid,
+          failed,
+          message: `กำลังบันทึก ${processed} / ${updates.length} รายการ`,
+          details: [...details],
+        })
       }
+
+      setTrackingImportProgress((prev) => ({
+        ...prev,
+        phase: 'refreshing',
+        processed: updates.length,
+        message: 'บันทึกครบแล้ว กำลังอัปเดตรายการบิล',
+      }))
       const woRecord = workOrders.find((w) => w.work_order_name === workOrderName)
       if (woRecord) await loadOrdersForWo(woRecord.id)
       onRefresh?.()
-      const dupNote = duplicateBills.length > 0
-        ? `\nข้ามเลขพัสดุซ้ำ ${duplicateBills.length} รายการ: ${duplicateBills.join(', ')}`
-        : ''
-      setMessageModal({ open: true, message: `นำเข้าเลขพัสดุสำเร็จ ${updated} / ${updates.length} รายการ${dupNote}` })
-    } catch (err: any) {
-      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + (err?.message ?? err) })
+
+      setTrackingImportProgress({
+        phase: 'completed',
+        total: updates.length,
+        processed: updates.length,
+        updated,
+        unchanged,
+        duplicate,
+        notFound,
+        outsideWorkOrder,
+        invalid,
+        failed,
+        message: `นำเข้าเสร็จแล้ว ${updated} / ${updates.length} รายการ`,
+        details,
+      })
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      setTrackingImportProgress((prev) => ({
+        ...prev,
+        phase: 'error',
+        message: 'เกิดข้อผิดพลาด: ' + errorMessage,
+      }))
     } finally {
       setUpdating(false)
     }
@@ -2085,20 +2223,97 @@ export default function WorkOrderManageList({
       </Modal>
 
       {/* Modal นำเข้าเลขพัสดุ */}
-      <Modal open={importTrackingModal.open} onClose={() => setImportTrackingModal({ open: false, workOrderName: null })} contentClassName="max-w-md w-full">
+      <Modal open={importTrackingModal.open} onClose={closeImportTrackingModal} contentClassName="max-w-2xl w-full">
         <div className="p-6">
           <h3 className="text-lg font-bold text-gray-900 mb-2">นำเข้าเลขพัสดุ</h3>
+          <p className="text-gray-600 text-sm mb-1">ใบงาน: <span className="font-semibold text-gray-800">{importTrackingModal.workOrderName}</span></p>
           <p className="text-gray-600 text-sm mb-4">เลือกไฟล์ .xlsx หรือ .csv ที่มีคอลัมน์ เลขออเดอร์ (bill_no) และ เลขพัสดุ (tracking_number)</p>
-          <input
-            ref={trackingFileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700"
-            onChange={handleTrackingFileChange}
-          />
+
+          {!isTrackingImportBusy && (
+            <input
+              ref={trackingFileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700"
+              onChange={handleTrackingFileChange}
+            />
+          )}
+
+          {trackingImportProgress.phase !== 'idle' && (
+            <div className="mt-5 space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                  <span className={`font-semibold ${trackingImportProgress.phase === 'error' ? 'text-red-600' : 'text-gray-700'}`}>
+                    {trackingImportProgress.message}
+                  </span>
+                  <span className="font-bold text-blue-700">{trackingImportPercent}%</span>
+                </div>
+                <div className="h-3 overflow-hidden rounded-full bg-gray-200">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${trackingImportProgress.phase === 'error' ? 'bg-red-500' : trackingImportProgress.phase === 'completed' ? 'bg-emerald-500' : 'bg-blue-600'}`}
+                    style={{ width: `${trackingImportPercent}%` }}
+                  />
+                </div>
+              </div>
+
+              {trackingImportProgress.total > 0 && (
+                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-center">
+                    <div className="text-xs text-emerald-700">บันทึกสำเร็จ</div>
+                    <div className="text-lg font-bold text-emerald-700">{trackingImportProgress.updated}</div>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-2 text-center">
+                    <div className="text-xs text-gray-600">ข้อมูลเดิม</div>
+                    <div className="text-lg font-bold text-gray-700">{trackingImportProgress.unchanged}</div>
+                  </div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-center">
+                    <div className="text-xs text-amber-700">เลขซ้ำ</div>
+                    <div className="text-lg font-bold text-amber-700">{trackingImportProgress.duplicate}</div>
+                  </div>
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-center">
+                    <div className="text-xs text-red-700">ไม่สำเร็จ</div>
+                    <div className="text-lg font-bold text-red-700">
+                      {trackingImportProgress.notFound + trackingImportProgress.outsideWorkOrder + trackingImportProgress.invalid + trackingImportProgress.failed}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {trackingImportProgress.details.length > 0 && (
+                <div className="max-h-52 overflow-auto rounded-lg border border-gray-200">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-gray-100 text-gray-600">
+                      <tr>
+                        <th className="px-3 py-2">แถว</th>
+                        <th className="px-3 py-2">เลขออเดอร์</th>
+                        <th className="px-3 py-2">สถานะ</th>
+                        <th className="px-3 py-2">รายละเอียด</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trackingImportProgress.details.map((row, index) => (
+                        <tr key={`${row.row_no}-${row.bill_no}-${index}`} className="border-t border-gray-100">
+                          <td className="px-3 py-2">{row.row_no + 1}</td>
+                          <td className="px-3 py-2 font-medium">{row.bill_no || '-'}</td>
+                          <td className="whitespace-nowrap px-3 py-2">{TRACKING_IMPORT_STATUS_LABELS[row.status]}</td>
+                          <td className="px-3 py-2 text-gray-600">{row.message}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setImportTrackingModal({ open: false, workOrderName: null })} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
-              ปิด
+            <button
+              type="button"
+              onClick={closeImportTrackingModal}
+              disabled={isTrackingImportBusy}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isTrackingImportBusy ? 'กำลังนำเข้า...' : 'ปิด'}
             </button>
           </div>
         </div>

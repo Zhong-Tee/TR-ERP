@@ -4,12 +4,14 @@
 import { supabase } from './supabase'
 import { buildIlikeOr } from './searchFilter'
 import * as XLSX from 'xlsx'
-import type { QCItem, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
+import type { QCItem, QCRecord, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
+const QC_QUERY_BATCH_SIZE = 50
+const QC_QUERY_PAGE_SIZE = 1000
 
 export { QC_SELECTED_WORK_ORDER, QC_TEMP_SESSION }
 
@@ -25,12 +27,14 @@ export function getPublicUrl(bucket: string, filename: string | null | undefined
 
 /** Load all work orders (for QC WO selector). */
 export async function fetchWorkOrders(): Promise<WorkOrder[]> {
-  const { data, error } = await supabase
-    .from('or_work_orders')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (error) throw error
-  return data || []
+  return fetchAllQueryPages<WorkOrder>((from, to) =>
+    supabase
+      .from('or_work_orders')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, to)
+  )
 }
 
 /** Work order with QC progress: total items, pass/fail/remaining counts (items & bills). */
@@ -49,14 +53,68 @@ export interface WorkOrderWithProgress extends WorkOrder {
   due_bills: { ship_due_at: string | null; overdue_at: string | null }[]
 }
 
+type QCProgressRecord = {
+  id: string
+  session_id: string
+  item_uid: string
+  status: string
+  is_rejected: boolean | null
+  last_result_at: string | null
+}
+
+type QCPaginatedResponse = {
+  data: unknown[] | null
+  error: unknown
+}
+
+/** อ่านทุกหน้า ป้องกันข้อมูลหายเงียบเมื่อ PostgREST จำกัดผลลัพธ์ไว้ 1,000 แถว */
+async function fetchAllQueryPages<T>(
+  loadPage: (from: number, to: number) => PromiseLike<QCPaginatedResponse>
+): Promise<T[]> {
+  const result: T[] = []
+  let pageStart = 0
+  while (true) {
+    const { data, error } = await loadPage(pageStart, pageStart + QC_QUERY_PAGE_SIZE - 1)
+    if (error) throw error
+    const page = (data || []) as T[]
+    result.push(...page)
+    if (page.length < QC_QUERY_PAGE_SIZE) break
+    pageStart += QC_QUERY_PAGE_SIZE
+  }
+  return result
+}
+
+/** แบ่งค่าใน IN(...) ไม่ให้ URL ยาวเกินไป แล้วอ่านผลลัพธ์ทุกหน้าของแต่ละ batch */
+async function fetchQueryInBatches<T>(
+  values: string[],
+  loadPage: (batch: string[], from: number, to: number) => PromiseLike<QCPaginatedResponse>
+): Promise<T[]> {
+  const uniqueValues = [...new Set(values.filter(Boolean))]
+  const result: T[] = []
+  for (let batchStart = 0; batchStart < uniqueValues.length; batchStart += QC_QUERY_BATCH_SIZE) {
+    const batch = uniqueValues.slice(batchStart, batchStart + QC_QUERY_BATCH_SIZE)
+    result.push(...await fetchAllQueryPages<T>((from, to) => loadPage(batch, from, to)))
+  }
+  return result
+}
+
+/** โหลดผล QC แบบ batch เพื่อไม่ให้หน้า QC ยิง 2 queries ต่อใบงานพร้อมกันจนเบราว์เซอร์หรือเครือข่ายล้มเหลว */
+async function fetchProgressRecordsBySessionIds(sessionIds: string[]): Promise<QCProgressRecord[]> {
+  return fetchQueryInBatches<QCProgressRecord>(sessionIds, (batch, from, to) =>
+    supabase
+        .from('qc_records')
+        .select('id, session_id, item_uid, status, is_rejected, last_result_at')
+        .in('session_id', batch)
+        .order('last_result_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to)
+  )
+}
+
 /** Load work orders with QC progress. When excludeCompleted is true, hides WOs only if nothing left to check AND no open QC session (still waiting for Finish). */
 export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Promise<WorkOrderWithProgress[]> {
-  const { data: woRaw, error: woErr } = await supabase
-    .from('or_work_orders')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (woErr) throw woErr
-  if (!woRaw?.length) return []
+  const woRaw = await fetchWorkOrders()
+  if (!woRaw.length) return []
 
   // กรองใบงานยกเลิก + dedupe ตามชื่อใบงาน (คงแถวล่าสุด) ป้องกันการ์ดซ้ำในหน้า QC
   const latestWoByName: Record<string, WorkOrder> = {}
@@ -70,12 +128,21 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   const woNames = woList.map((w) => w.work_order_name)
 
-  const { data: orders, error: ordErr } = await supabase
-    .from('or_orders')
-    .select('id, work_order_name, bill_no, ship_due_at, overdue_at')
-    .in('work_order_name', woNames)
-    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
-  if (ordErr) throw ordErr
+  const orders = await fetchQueryInBatches<{
+    id: string
+    work_order_name: string
+    bill_no: string | null
+    ship_due_at: string | null
+    overdue_at: string | null
+  }>(woNames, (batch, from, to) =>
+    supabase
+      .from('or_orders')
+      .select('id, work_order_name, bill_no, ship_due_at, overdue_at')
+      .in('work_order_name', batch)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
   const dueBillsByWo: Record<string, { ship_due_at: string | null; overdue_at: string | null }[]> = {}
   woNames.forEach((n) => (dueBillsByWo[n] = []))
   ;(orders || []).forEach((o: { work_order_name: string; ship_due_at?: string | null; overdue_at?: string | null }) => {
@@ -89,7 +156,7 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     if (orderIdsByWo[o.work_order_name]) orderIdsByWo[o.work_order_name].push(o.id)
   })
 
-  const allOrderIds = (orders || []).map((o) => o.id)
+  const allOrderIds = orders.map((o) => o.id)
   if (allOrderIds.length === 0) {
     const emptyProgress = woList.map((wo) => ({
       ...wo,
@@ -109,15 +176,24 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     return emptyProgress
   }
 
-  const { data: items, error: itemsErr } = await supabase
-    .from('or_order_items')
-    .select('order_id, item_uid, quantity, created_at, id')
-    .in('order_id', allOrderIds)
-    .is('cancellation_stock_action', null)
-  if (itemsErr) throw itemsErr
+  const items = await fetchQueryInBatches<{
+    order_id: string
+    item_uid: string | null
+    quantity: number | null
+    created_at: string | null
+    id: string
+  }>(allOrderIds, (batch, from, to) =>
+    supabase
+      .from('or_order_items')
+      .select('order_id, item_uid, quantity, created_at, id')
+      .in('order_id', batch)
+      .is('cancellation_stock_action', null)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
 
   const itemsByOrderId: Record<string, { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string }[]> = {}
-  ;(items || []).forEach((row) => {
+  items.forEach((row) => {
     if (!itemsByOrderId[row.order_id]) itemsByOrderId[row.order_id] = []
     itemsByOrderId[row.order_id].push(row as { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string })
   })
@@ -164,20 +240,26 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
   // เฉพาะ session ของใบงานในรอบนี้ — กันพลาด default row limit ของ API ที่ตัดตารางใหญ่แล้วไม่ได้แถวล่าสุดของ WO
   const woSessionFilenames = [...new Set(woNames.map((n) => `WO-${n}`))]
-  const { data: allSessions, error: sessErr } =
-    woSessionFilenames.length === 0
-      ? { data: [] as { id: string; filename: string; end_time: string | null; created_at?: string | null; start_time?: string }[], error: null }
-      : await supabase
-          .from('qc_sessions')
-          .select('id, filename, end_time, created_at, start_time')
-          .in('filename', woSessionFilenames)
-  if (sessErr) throw sessErr
+  const allSessions = await fetchQueryInBatches<{
+    id: string
+    filename: string
+    end_time: string | null
+    created_at: string | null
+    start_time: string
+  }>(woSessionFilenames, (batch, from, to) =>
+    supabase
+      .from('qc_sessions')
+      .select('id, filename, end_time, created_at, start_time')
+      .in('filename', batch)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
   const sessionIdsByWo: Record<string, string[]> = {}
   woNames.forEach((n) => {
     sessionIdsByWo[n] = []
   })
   const hasOpenSessionByWoName: Record<string, boolean> = {}
-  ;(allSessions || []).forEach((s) => {
+  allSessions.forEach((s) => {
     const match = s.filename?.match(/^WO-(.+)$/)
     if (!match || !woNames.includes(match[1])) return
     const woKey = match[1]
@@ -185,11 +267,26 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     if (s.end_time == null) hasOpenSessionByWoName[woKey] = true
   })
 
-  // แยกโหลดต่อใบงานเพื่อให้ผลตรงกับหน้ารายละเอียด และไม่ถูกตัด/ปะปนเมื่อมีหลาย session
-  const latestRecordsByWo: Record<string, Awaited<ReturnType<typeof fetchLatestRecordsForWorkOrder>>> = {}
-  await Promise.all(woNames.map(async (name) => {
-    latestRecordsByWo[name] = await fetchLatestRecordsForWorkOrder(name)
-  }))
+  // โหลดผลของทุก session เป็น batch แทนการยิง 2 queries ต่อใบงานพร้อมกัน
+  // และ paginate เพื่อไม่ให้ติด default row limit ของ PostgREST
+  const sessionIdToWo: Record<string, string> = {}
+  const allSessionIds: string[] = []
+  allSessions.forEach((session) => {
+    const match = session.filename?.match(/^WO-(.+)$/)
+    if (!match || !woNames.includes(match[1])) return
+    sessionIdToWo[session.id] = match[1]
+    allSessionIds.push(session.id)
+  })
+  const progressRecords = await fetchProgressRecordsBySessionIds(allSessionIds)
+  const latestRecordsByWo: Record<string, QCProgressRecord[]> = {}
+  woNames.forEach((name) => (latestRecordsByWo[name] = []))
+  progressRecords.forEach((record) => {
+    const woName = sessionIdToWo[record.session_id]
+    if (woName) latestRecordsByWo[woName].push(record)
+  })
+  Object.values(latestRecordsByWo).forEach((records) => {
+    records.sort((a, b) => new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime())
+  })
 
   const result: WorkOrderWithProgress[] = woList.map((wo) => {
     const woName = wo.work_order_name
@@ -249,14 +346,22 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   })
 
   // ล่าสุดต่อชื่อใบงาน (วันที่ใหม่สุดก่อน) — ใช้เทียบว่า Plan ปิดขั้น QC แล้วหรือยัง
-  const { data: planJobRows, error: planJobErr } = await supabase
-    .from('plan_jobs')
-    .select('name, tracks, date')
-    .in('name', woNames)
-    .order('date', { ascending: false })
-  if (planJobErr) throw planJobErr
+  const planJobRows = await fetchQueryInBatches<{
+    name: string
+    tracks: Record<string, unknown>
+    date: string
+    id: string
+  }>(woNames, (batch, from, to) =>
+    supabase
+      .from('plan_jobs')
+      .select('id, name, tracks, date')
+      .in('name', batch)
+      .order('date', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
   const latestPlanTracksByName: Record<string, Record<string, unknown> | undefined> = {}
-  for (const row of planJobRows || []) {
+  for (const row of planJobRows) {
     const n = (row as { name?: string }).name
     if (!n || latestPlanTracksByName[n] !== undefined) continue
     latestPlanTracksByName[n] = (row as { tracks?: Record<string, unknown> }).tracks
@@ -286,15 +391,22 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
 
 /** Load order items for a work order and map to QCItem[] (for QC Operation session). */
 export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCItem[]> {
-  const { data: orders, error: ordersErr } = await supabase
-    .from('or_orders')
-    .select('id, bill_no, ship_due_at, overdue_at')
-    .eq('work_order_name', workOrderName)
-    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
-    .order('bill_no', { ascending: true })
-    .order('id', { ascending: true })
-  if (ordersErr) throw ordersErr
-  if (!orders?.length) return []
+  const orders = await fetchAllQueryPages<{
+    id: string
+    bill_no: string | null
+    ship_due_at: string | null
+    overdue_at: string | null
+  }>((from, to) =>
+    supabase
+      .from('or_orders')
+      .select('id, bill_no, ship_due_at, overdue_at')
+      .eq('work_order_name', workOrderName)
+      .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+      .order('bill_no', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+  if (!orders.length) return []
 
   const orderIds = orders.map((o) => o.id)
   const billByOrderId: Record<string, string> = {}
@@ -304,28 +416,53 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     dueByOrderId[o.id] = { ship_due_at: o.ship_due_at ?? null, overdue_at: o.overdue_at ?? null }
   })
 
-  const { data: items, error: itemsErr } = await supabase
-    .from('or_order_items')
-    .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
-    .in('order_id', orderIds)
-    .is('cancellation_stock_action', null)
-  if (itemsErr) throw itemsErr
-  if (!items?.length) return []
+  const items = await fetchQueryInBatches<{
+    id: string
+    order_id: string
+    item_uid: string | null
+    product_id: string | null
+    product_name: string | null
+    quantity: number | null
+    ink_color: string | null
+    font: string | null
+    cartoon_pattern: string | null
+    line_1: string | null
+    line_2: string | null
+    line_3: string | null
+    notes: string | null
+    file_attachment: string | null
+    created_at: string | null
+  }>(orderIds, (batch, from, to) =>
+    supabase
+      .from('or_order_items')
+      .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
+      .in('order_id', batch)
+      .is('cancellation_stock_action', null)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+  if (!items.length) return []
 
   const productIds = [...new Set(items.map((i) => i.product_id).filter(Boolean))] as string[]
   let productCodeMap: Record<string, string> = {}
   let productCategoryMap: Record<string, string | null> = {}
   if (productIds.length > 0) {
-    const { data: products } = await supabase
-      .from('pr_products')
-      .select('id, product_code, product_category')
-      .in('id', productIds)
-    if (products) {
-      products.forEach((p) => {
-        productCodeMap[p.id] = p.product_code || ''
-        productCategoryMap[p.id] = p.product_category ?? null
-      })
-    }
+    const products = await fetchQueryInBatches<{
+      id: string
+      product_code: string | null
+      product_category: string | null
+    }>(productIds, (batch, from, to) =>
+      supabase
+        .from('pr_products')
+        .select('id, product_code, product_category')
+        .in('id', batch)
+        .order('id', { ascending: true })
+        .range(from, to)
+    )
+    products.forEach((p) => {
+      productCodeMap[p.id] = p.product_code || ''
+      productCategoryMap[p.id] = p.product_category ?? null
+    })
   }
 
   const byOrder: Record<string, typeof items> = {}
@@ -394,13 +531,15 @@ export async function fetchOpenSessionForWo(workOrderName: string): Promise<{ id
 
 /** Load qc_records for a session (to restore Pass/Fail history). */
 export async function fetchRecordsForSession(sessionId: string) {
-  const { data, error } = await supabase
-    .from('qc_records')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  return data || []
+  return fetchAllQueryPages<QCRecord>((from, to) =>
+    supabase
+      .from('qc_records')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
 }
 
 /** Save one QC record (Pass/Fail) — upsert by session_id + item_uid. */
@@ -1083,23 +1222,33 @@ export async function fetchQcCategoryGroups(): Promise<QCCategoryGroup[]> {
 
 /** ผลตรวจล่าสุดต่อ UID จากทุก session ของใบงานเดียวกัน */
 export async function fetchLatestRecordsForWorkOrder(workOrderName: string) {
-  const { data: sessions, error: sessionError } = await supabase
-    .from('qc_sessions')
-    .select('id')
-    .eq('filename', `WO-${workOrderName}`)
-  if (sessionError) throw sessionError
-  const sessionIds = (sessions || []).map((session) => session.id)
+  const sessions = await fetchAllQueryPages<{ id: string }>((from, to) =>
+    supabase
+      .from('qc_sessions')
+      .select('id')
+      .eq('filename', `WO-${workOrderName}`)
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
+  const sessionIds = sessions.map((session) => session.id)
   if (sessionIds.length === 0) return []
 
-  const { data: records, error: recordError } = await supabase
-    .from('qc_records')
-    .select('*')
-    .in('session_id', sessionIds)
-    .order('last_result_at', { ascending: true })
-  if (recordError) throw recordError
+  const records = await fetchQueryInBatches<QCRecord>(sessionIds, (batch, from, to) =>
+    supabase
+      .from('qc_records')
+      .select('*')
+      .in('session_id', batch)
+      .order('last_result_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
 
-  const latestByUid = new Map<string, (typeof records)[number]>()
-  ;(records || []).forEach((record) => latestByUid.set(record.item_uid, record))
+  records.sort((a, b) => {
+    const timeDiff = new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime()
+    return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id)
+  })
+  const latestByUid = new Map<string, QCRecord>()
+  records.forEach((record) => latestByUid.set(record.item_uid, record))
   return Array.from(latestByUid.values())
 }
 
