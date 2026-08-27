@@ -151,6 +151,8 @@ export default function QC() {
 
   // QC Operation
   const [workOrdersWithProgress, setWorkOrdersWithProgress] = useState<WorkOrderWithProgress[]>([])
+  const [workOrdersLoading, setWorkOrdersLoading] = useState(true)
+  const [workOrdersError, setWorkOrdersError] = useState('')
   const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string; sessionId: string | null }>({ step: 'select', startTime: null, filename: '', sessionId: null })
   const [qcData, setQcData] = useState<{ items: QCItem[] }>({ items: [] })
   const [activeSessionItemUids, setActiveSessionItemUids] = useState<Set<string>>(new Set())
@@ -163,6 +165,7 @@ export default function QC() {
   const [cartoonExt, setCartoonExt] = useState('.jpg')
   const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
   const barcodeInputRef = useRef<HTMLInputElement>(null)
+  const workOrderReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentItemStartedAtRef = useRef<string>(new Date().toISOString())
 
   useEffect(() => {
@@ -388,6 +391,8 @@ export default function QC() {
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
 
   const loadWorkOrders = useCallback(async () => {
+    setWorkOrdersLoading(true)
+    setWorkOrdersError('')
     try {
       const list = await fetchWorkOrdersWithProgress(true)
       setWorkOrdersWithProgress(list)
@@ -414,7 +419,10 @@ export default function QC() {
         setPlanStartTimes(map)
       }
     } catch (e) {
-      console.error(e)
+      console.error('loadWorkOrders error:', e)
+      setWorkOrdersError('โหลดรายการรอ QC ไม่สำเร็จ กรุณาลองใหม่')
+    } finally {
+      setWorkOrdersLoading(false)
     }
   }, [isProduction])
 
@@ -593,10 +601,20 @@ export default function QC() {
         refreshActiveSessionItemUids()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, () => {
-        refreshActiveSessionItemUids()
+        // การสร้างใบงานมัก insert work order/order ก่อน insert items ถ้าไม่โหลดคิวซ้ำ
+        // ใบงานจะค้างเป็นรายการว่างจนกว่าผู้ใช้จะรีเฟรชหน้าเอง
+        if (workOrderReloadTimerRef.current) clearTimeout(workOrderReloadTimerRef.current)
+        workOrderReloadTimerRef.current = setTimeout(() => {
+          loadWorkOrders()
+          refreshActiveSessionItemUids()
+        }, 300)
       })
       .subscribe()
     return () => {
+      if (workOrderReloadTimerRef.current) {
+        clearTimeout(workOrderReloadTimerRef.current)
+        workOrderReloadTimerRef.current = null
+      }
       supabase.removeChannel(channel)
     }
   }, [loadRejectItems, loadWorkOrders, refreshActiveSessionItemUids])
@@ -1635,7 +1653,21 @@ export default function QC() {
         {currentView === 'qc' && (
           <div className={qcState.step === 'working' ? 'flex flex-col flex-1 min-h-0' : 'space-y-4'}>
             {qcState.step === 'select' && (
-              workOrdersWithProgress.length === 0 ? (
+              workOrdersError ? (
+                <div className="text-center py-12">
+                  <p className="text-red-600 font-medium">{workOrdersError}</p>
+                  <button
+                    type="button"
+                    onClick={() => loadWorkOrders()}
+                    disabled={workOrdersLoading}
+                    className="mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {workOrdersLoading ? 'กำลังโหลด...' : 'ลองใหม่'}
+                  </button>
+                </div>
+              ) : workOrdersLoading && workOrdersWithProgress.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">กำลังโหลดรายการรอ QC...</div>
+              ) : workOrdersWithProgress.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">ไม่มีใบงานที่ยังมีรายการรอ QC ในขณะนี้</div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
