@@ -76,6 +76,23 @@ interface PlanJob {
   manpower_locked_at?: string | null
   manpower_locked_by?: string | null
 }
+
+interface PlanBillNameEditChange {
+  field?: string
+  label?: string
+  before?: string | null
+  after?: string | null
+}
+
+interface PlanBillNameEditHistory {
+  log_id: string
+  work_order_id: string
+  order_id: string
+  bill_no: string | null
+  edited_by: string
+  edited_at: string
+  changes: PlanBillNameEditChange[]
+}
 type DeptQtyByWorkOrderId = Record<string, Record<string, number>>
 /** จำนวนสินค้าต่อหมวดหมู่ ต่อ work_order_id — ใช้กับขั้นตอนแบบ "ตามหมวดหมู่สินค้า" */
 type CatQtyByWorkOrderId = Record<string, Record<string, number>>
@@ -585,11 +602,12 @@ function getOverallJobStatus(
   return { key: 'pending' }
 }
 
-/** ใบงานเริ่มกระบวนการใดๆ ไปแล้วหรือยัง (นับทุกแผนก รวมแผนกบันทึกอัตโนมัติ เบิก/QC/PACK) */
-function hasStartedAnyProcess(job: PlanJob): boolean {
-  return Object.values(job.tracks || {}).some((deptTracks) =>
-    Object.entries(deptTracks || {}).some(([key, t]) => key !== 'เตรียมไฟล์' && !!t?.start)
-  )
+/** ใบงานเริ่มกระบวนการใดๆ ไปแล้วหรือยัง โดยข้ามเบิกได้เมื่อใบงานไม่มีสินค้าต้องเบิก */
+function hasStartedAnyProcess(job: PlanJob, skipRequisition = false): boolean {
+  return Object.entries(job.tracks || {}).some(([dept, deptTracks]) => {
+    if (skipRequisition && dept === 'เบิก') return false
+    return Object.entries(deptTracks || {}).some(([key, t]) => key !== 'เตรียมไฟล์' && !!t?.start)
+  })
 }
 
 /** สีประจำแผนกสำหรับมุมมองการ์ด (Dashboard) — ชิปเป็นพื้นผิวสีในตัว อ่านง่ายทั้งโหมดสว่าง/มืด */
@@ -717,6 +735,8 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [selectedReleasedOrderId, setSelectedReleasedOrderId] = useState<string | null>(null)
   const [releasedOrderLines, setReleasedOrderLines] = useState<any[]>([])
   const [releasedLinesLoading, setReleasedLinesLoading] = useState(false)
+  const [nameEditsByWO, setNameEditsByWO] = useState<Record<string, PlanBillNameEditHistory[]>>({})
+  const [nameEditDetailWO, setNameEditDetailWO] = useState<string | null>(null)
   const [stopProdByWO, setStopProdByWO] = useState<Record<string, StopProdIssueRow[]>>({})
   const [stopProdDetailWO, setStopProdDetailWO] = useState<string | null>(null)
   const [stopProdSelectedOrderId, setStopProdSelectedOrderId] = useState<string | null>(null)
@@ -1277,6 +1297,49 @@ export default function Plan({ tvMode = false }: PlanProps) {
   useEffect(() => {
     loadReleasedOrders()
   }, [loadReleasedOrders])
+
+  const loadPlanBillNameEditHistory = useCallback(async () => {
+    const workOrderIds = [...new Set(jobs.map((job) => job.work_order_id).filter((id): id is string => !!id))]
+    if (workOrderIds.length === 0) {
+      setNameEditsByWO({})
+      return
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_plan_bill_name_edit_history', {
+        p_work_order_ids: workOrderIds,
+      })
+      if (error) throw error
+
+      const grouped: Record<string, PlanBillNameEditHistory[]> = {}
+      for (const row of (data || []) as PlanBillNameEditHistory[]) {
+        const workOrderId = String(row.work_order_id || '')
+        if (!workOrderId) continue
+        if (!grouped[workOrderId]) grouped[workOrderId] = []
+        grouped[workOrderId].push(row)
+      }
+      setNameEditsByWO(grouped)
+    } catch (error) {
+      console.error('Error loading bill name edit history for Plan:', error)
+      setNameEditsByWO({})
+    }
+  }, [jobs])
+
+  useEffect(() => {
+    void loadPlanBillNameEditHistory()
+  }, [loadPlanBillNameEditHistory])
+
+  useEffect(() => {
+    const ch = supabase
+      .channel('plan_bill_name_edit_history')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ac_bill_edit_logs' }, () => {
+        void loadPlanBillNameEditHistory()
+      })
+      .subscribe()
+    return () => {
+      supabase.removeChannel(ch)
+    }
+  }, [loadPlanBillNameEditHistory])
 
   useEffect(() => {
     const ch = supabase
@@ -2004,6 +2067,26 @@ export default function Plan({ tvMode = false }: PlanProps) {
     })
     .sort((a, b) => b.date.localeCompare(a.date) || a.order_index - b.order_index)
 
+  const renderNameEditBadge = (job: PlanJob, compact = false) => {
+    const workOrderId = String(job.work_order_id || '')
+    const rows = nameEditsByWO[workOrderId] || []
+    if (!workOrderId || rows.length === 0) return null
+    const billCount = new Set(rows.map((row) => row.order_id)).size
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          setNameEditDetailWO(workOrderId)
+        }}
+        className={`${compact ? '' : 'ml-2 '}px-2 py-0.5 text-xs font-bold rounded-full bg-teal-100 text-teal-800 border border-teal-300 hover:bg-teal-200 transition`}
+        title="คลิกดูบิลและชื่อที่แก้ไข"
+      >
+        แก้ไขชื่อ {billCount}
+      </button>
+    )
+  }
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -2386,6 +2469,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             ยกเลิกใบงาน
                           </span>
                         )}
+                        {renderNameEditBadge(j)}
                         {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                           <button
                             type="button"
@@ -2753,6 +2837,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                           ยกเลิกใบงาน
                                         </span>
                                       )}
+                                      {renderNameEditBadge(j, true)}
                                       {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                                         <button
                                           type="button"
@@ -3188,7 +3273,11 @@ export default function Plan({ tvMode = false }: PlanProps) {
                               const blockedNames = ids
                                 .slice(insertIdx, fromIdx)
                                 .map((id) => visibleDayJobs.find((x) => x.id === id))
-                                .filter((jb): jb is PlanJob => !!jb && hasStartedAnyProcess(jb))
+                                .filter((jb): jb is PlanJob => {
+                                  if (!jb) return false
+                                  const skipRequisition = getEffectiveQty(jb, 'เบิก', settings, deptQtyByWorkOrderId) <= 0
+                                  return hasStartedAnyProcess(jb, skipRequisition)
+                                })
                                 .map((jb) => jb.name)
                               if (blockedNames.length > 0) {
                                 setQueueJumpBlocked(blockedNames)
@@ -3238,6 +3327,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                 ยกเลิกใบงาน
                               </span>
                             )}
+                            {renderNameEditBadge(j)}
                             {(releasedByWO[String(j.work_order_id || '')]?.length ?? 0) > 0 && (
                               <button
                                 type="button"
@@ -4460,6 +4550,78 @@ export default function Plan({ tvMode = false }: PlanProps) {
           )}
         </div>
       </Modal>
+
+      {/* Name-only bill edits made from Account > Bill edit */}
+      <Modal
+        open={!!nameEditDetailWO}
+        onClose={() => setNameEditDetailWO(null)}
+        contentClassName="max-w-4xl w-full max-h-[85vh] overflow-y-auto"
+      >
+        {nameEditDetailWO && (
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+              <h3 className="text-lg font-bold text-gray-800">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-teal-100 text-teal-700 mr-2">
+                  <i className="fas fa-history text-sm" />
+                </span>
+                ประวัติแก้ไขชื่อในใบงาน{' '}
+                {jobs.find((job) => String(job.work_order_id || '') === nameEditDetailWO)?.name || nameEditDetailWO}
+              </h3>
+            </div>
+
+            {(nameEditsByWO[nameEditDetailWO] || []).length === 0 ? (
+              <p className="py-8 text-center text-sm text-gray-400">ไม่พบประวัติการแก้ไขชื่อ</p>
+            ) : (
+              <div className="space-y-3">
+                {(nameEditsByWO[nameEditDetailWO] || []).map((log) => (
+                  <div key={log.log_id} className="rounded-xl border border-teal-200 bg-teal-50/40 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="font-mono font-bold text-teal-800">{log.bill_no || '-'}</span>
+                        <span className="ml-2 text-xs text-gray-500">แก้ไขโดย {log.edited_by || '-'}</span>
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {log.edited_at ? new Date(log.edited_at).toLocaleString('th-TH') : '-'}
+                      </span>
+                    </div>
+                    <div className="mt-3 overflow-hidden rounded-lg border border-gray-200 bg-white">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-gray-50 text-left text-gray-600">
+                            <th className="px-3 py-2 font-semibold">รายการที่แก้</th>
+                            <th className="px-3 py-2 font-semibold">ก่อนแก้</th>
+                            <th className="px-3 py-2 font-semibold">หลังแก้</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {(log.changes || []).map((change, index) => (
+                            <tr key={`${log.log_id}-${change.field || index}`}>
+                              <td className="px-3 py-2 font-medium text-gray-700">{change.label || change.field || '-'}</td>
+                              <td className="px-3 py-2 text-red-700 break-words">{change.before || <span className="text-gray-400">(ว่าง)</span>}</td>
+                              <td className="px-3 py-2 text-emerald-700 break-words">{change.after || <span className="text-gray-400">(ว่าง)</span>}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setNameEditDetailWO(null)}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Cancelled Bills Detail Modal */}
       <Modal open={!!cancelledDetailWO} onClose={() => { setCancelledDetailWO(null); setSelectedCancelledOrderId(null); setCancelledWmsLines([]) }} contentClassName="max-w-6xl w-full max-h-[85vh] overflow-y-auto">
         {cancelledDetailWO && (
