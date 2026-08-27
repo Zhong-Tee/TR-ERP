@@ -10,6 +10,7 @@ import {
   fetchOrderOwnerSalesRole,
   nonPumpDesignChecked,
 } from '../../lib/postSlipVerificationStatus'
+import { mapWyCustomerFields } from '../../lib/wyCustomerMapping'
 import Modal from '../ui/Modal'
 import * as XLSX from 'xlsx'
 import * as Papa from 'papaparse'
@@ -532,6 +533,7 @@ type ImportedOrder = {
   channel_code: string
   channel_order_no?: string | null
   customer_name: string
+  recipient_name?: string | null
   customer_address: string
   price: number
   shipping_cost: number
@@ -610,8 +612,8 @@ type ProductStockSnapshot = {
 
 /** ช่องทางที่บล็อกที่อยู่ลูกค้า (SHOP PICKUP=SHOPP บล็อกที่อยู่ ปิดเลขพัสดุ; SHOP SHIPPING=SHOP แสดงที่อยู่+ชื่อช่องทาง ปิดเลขพัสดุ) */
 const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
-/** ช่องทางที่แสดงฟิลด์ "ชื่อช่องทาง" (SHOP + SHOPP) */
-const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN']
+/** ช่องทางที่แยก "ชื่อลูกค้า/ผู้รับ" (recipient_name) ออกจาก "ชื่อช่องทาง" (customer_name) */
+const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'INFU', 'PN', 'WY']
 /** ช่องทางที่เปิดให้กรอกเลขพัสดุ (SHOP PICKUP ปิด) */
 const CHANNELS_ENABLE_TRACKING = ['SPTR', 'FSPTR', 'TTTR', 'LZTR']
 /** ช่องทางที่ให้กรอกราคาเอง (ล็อคราคา/หน่วย ใช้ราคาที่ข้อมูลชำระเงินแทน) */
@@ -3328,6 +3330,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const rowPriceBeforeDiscount = parseNumber(r['ราคาก่อนลด'])
       const rowPriceAfterDiscount = parseNumber(r['ราคาหลังลด'])
       if (!map.has(billNo)) {
+        const wyCustomer = mapWyCustomerFields(r)
         let pDate: string | null = null
         let pTime: string | null = null
         const rawDate = r['วันที่สั่งซื้อ']
@@ -3343,7 +3346,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           bill_no: billNo,
           channel_code: 'WY',
           channel_order_no: billNo,
-          customer_name: String(r['ชื่อลูกค้า'] || ''),
+          customer_name: wyCustomer.customerName,
+          recipient_name: wyCustomer.recipientName || null,
           customer_address: String(r['ชื่อที่อยู่-เบอร์โทรผู้รับ'] || r['ที่อยู่'] || r['เลขพัสดุ'] || ''),
           // `ราคา` is an item unit price, not the order subtotal.
           price: hasValue(r['ราคาก่อนลด'])
@@ -3506,6 +3510,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           const orderData = {
             channel_code: order.channel_code,
             customer_name: order.customer_name || '',
+            recipient_name: order.recipient_name || null,
             customer_address: order.customer_address || '',
             channel_order_no: order.channel_order_no ?? null,
             price: order.price || 0,
