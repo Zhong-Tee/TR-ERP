@@ -41,6 +41,25 @@ function safeFilePart(s: string): string {
   return t || 'export'
 }
 
+/** PostgREST errors are plain objects, so String(error) would hide the real cause. */
+function formatTrackingImportError(error: unknown): string {
+  if (error == null) return 'เกิดข้อผิดพลาดโดยไม่ทราบสาเหตุ'
+  if (typeof error === 'string') return error
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object') {
+    const value = error as Record<string, unknown>
+    const parts = [value.message, value.details, value.hint]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    if (parts.length > 0) return parts.join(' — ')
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return 'เกิดข้อผิดพลาดโดยไม่ทราบสาเหตุ'
+    }
+  }
+  return String(error)
+}
+
 /** สร้าง DOM สำหรับถ่าย PNG ใบเบิก (เลย์เอาต์เดียวกับเอกสารอ้างอิง) */
 function buildPickingSlipPrintDom(opts: {
   workOrderName: string
@@ -314,7 +333,9 @@ type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: 
 type PickingSlipModal = { open: boolean; workOrderName: string | null; mainItems: PickingMainRow[]; spareItems: PickingSpareRow[] }
 /** Modal นำเข้าเลขพัสดุ */
 type ImportTrackingModal = { open: boolean; workOrderName: string | null }
-type TrackingImportPhase = 'idle' | 'reading' | 'importing' | 'refreshing' | 'completed' | 'error'
+type TrackingImportPhase = 'idle' | 'reading' | 'conflict' | 'importing' | 'refreshing' | 'completed' | 'error'
+type TrackingImportRow = { bill_no: string; tracking_number: string }
+type TrackingImportConflict = { bill_no: string; tracking_numbers: string[] }
 type TrackingImportDetail = {
   row_no: number
   bill_no: string
@@ -423,6 +444,9 @@ export default function WorkOrderManageList({
   })
   const [importTrackingModal, setImportTrackingModal] = useState<ImportTrackingModal>({ open: false, workOrderName: null })
   const [trackingImportProgress, setTrackingImportProgress] = useState<TrackingImportProgress>(EMPTY_TRACKING_IMPORT_PROGRESS)
+  const [pendingTrackingRows, setPendingTrackingRows] = useState<TrackingImportRow[]>([])
+  const [trackingImportConflicts, setTrackingImportConflicts] = useState<TrackingImportConflict[]>([])
+  const [trackingConflictChoices, setTrackingConflictChoices] = useState<Record<string, string>>({})
   const [waybillSorterModal, setWaybillSorterModal] = useState<WaybillSorterModal>({ open: false, workOrderName: null, trackingNumbers: [] })
   const [waybillPreviewModal, setWaybillPreviewModal] = useState<WaybillPreviewModal>({ open: false, workOrderName: null, rows: [] })
   const [wsLog, setWsLog] = useState<string[]>([])
@@ -448,6 +472,8 @@ export default function WorkOrderManageList({
           ? Math.min(90, 10 + Math.round((trackingImportProgress.processed / trackingImportProgress.total) * 80))
         : trackingImportProgress.phase === 'reading'
           ? 5
+          : trackingImportProgress.phase === 'conflict'
+            ? 10
           : 0
   useEffect(() => {
     loadWorkOrders()
@@ -1619,6 +1645,9 @@ export default function WorkOrderManageList({
 
   function openImportTrackingModal(workOrderName: string) {
     setTrackingImportProgress({ ...EMPTY_TRACKING_IMPORT_PROGRESS })
+    setPendingTrackingRows([])
+    setTrackingImportConflicts([])
+    setTrackingConflictChoices({})
     setImportTrackingModal({ open: true, workOrderName })
   }
 
@@ -1626,6 +1655,40 @@ export default function WorkOrderManageList({
     if (isTrackingImportBusy) return
     setImportTrackingModal({ open: false, workOrderName: null })
     setTrackingImportProgress({ ...EMPTY_TRACKING_IMPORT_PROGRESS })
+    setPendingTrackingRows([])
+    setTrackingImportConflicts([])
+    setTrackingConflictChoices({})
+  }
+
+  function prepareTrackingRows(rows: TrackingImportRow[]): {
+    rows: TrackingImportRow[]
+    conflicts: TrackingImportConflict[]
+  } {
+    const byBill = new Map<string, { bill_no: string; trackingByKey: Map<string, string> }>()
+    for (const row of rows) {
+      const billKey = row.bill_no.trim().toUpperCase()
+      const trackingKey = row.tracking_number.trim().toUpperCase()
+      let group = byBill.get(billKey)
+      if (!group) {
+        group = { bill_no: row.bill_no.trim(), trackingByKey: new Map() }
+        byBill.set(billKey, group)
+      }
+      if (!group.trackingByKey.has(trackingKey)) {
+        group.trackingByKey.set(trackingKey, row.tracking_number.trim())
+      }
+    }
+
+    const deduplicatedRows: TrackingImportRow[] = []
+    const conflicts: TrackingImportConflict[] = []
+    for (const group of byBill.values()) {
+      const trackingNumbers = [...group.trackingByKey.values()]
+      if (trackingNumbers.length > 1) {
+        conflicts.push({ bill_no: group.bill_no, tracking_numbers: trackingNumbers })
+      } else if (trackingNumbers.length === 1) {
+        deduplicatedRows.push({ bill_no: group.bill_no, tracking_number: trackingNumbers[0] })
+      }
+    }
+    return { rows: deduplicatedRows, conflicts }
   }
 
   /** แมปหัวคอลัมน์ที่รองรับ → ฟิลด์ภายใน */
@@ -1693,19 +1756,9 @@ export default function WorkOrderManageList({
     })
   }
 
-  async function handleTrackingFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !importTrackingModal.workOrderName) return
-    const workOrderName = importTrackingModal.workOrderName
-    e.target.value = ''
+  async function executeTrackingImport(updates: TrackingImportRow[], workOrderName: string) {
     setUpdating(true)
-    setTrackingImportProgress({
-      ...EMPTY_TRACKING_IMPORT_PROGRESS,
-      phase: 'reading',
-      message: `กำลังอ่านไฟล์ ${file.name}`,
-    })
     try {
-      const updates = await parseTrackingFile(file)
       if (updates.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
 
       let processed = 0
@@ -1789,7 +1842,7 @@ export default function WorkOrderManageList({
         details,
       })
     } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
+      const errorMessage = formatTrackingImportError(err)
       setTrackingImportProgress((prev) => ({
         ...prev,
         phase: 'error',
@@ -1798,6 +1851,64 @@ export default function WorkOrderManageList({
     } finally {
       setUpdating(false)
     }
+  }
+
+  async function handleTrackingFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file || !importTrackingModal.workOrderName) return
+    const workOrderName = importTrackingModal.workOrderName
+    e.target.value = ''
+    setUpdating(true)
+    setPendingTrackingRows([])
+    setTrackingImportConflicts([])
+    setTrackingConflictChoices({})
+    setTrackingImportProgress({
+      ...EMPTY_TRACKING_IMPORT_PROGRESS,
+      phase: 'reading',
+      message: `กำลังอ่านไฟล์ ${file.name}`,
+    })
+    try {
+      const parsedRows = await parseTrackingFile(file)
+      if (parsedRows.length === 0) throw new Error('ไม่พบข้อมูลที่ถูกต้อง')
+      const prepared = prepareTrackingRows(parsedRows)
+      if (prepared.conflicts.length > 0) {
+        setPendingTrackingRows(prepared.rows)
+        setTrackingImportConflicts(prepared.conflicts)
+        setTrackingImportProgress({
+          ...EMPTY_TRACKING_IMPORT_PROGRESS,
+          phase: 'conflict',
+          total: prepared.rows.length + prepared.conflicts.length,
+          message: `พบ ${prepared.conflicts.length} ออเดอร์ที่มีหลายเลขพัสดุ กรุณาเลือกเลขที่ต้องการ`,
+        })
+        return
+      }
+      await executeTrackingImport(prepared.rows, workOrderName)
+    } catch (err: unknown) {
+      setTrackingImportProgress((prev) => ({
+        ...prev,
+        phase: 'error',
+        message: 'เกิดข้อผิดพลาด: ' + formatTrackingImportError(err),
+      }))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  async function confirmTrackingConflictChoices() {
+    if (!importTrackingModal.workOrderName) return
+    const allSelected = trackingImportConflicts.every((conflict) => trackingConflictChoices[conflict.bill_no])
+    if (!allSelected) return
+    const resolvedRows: TrackingImportRow[] = [
+      ...pendingTrackingRows,
+      ...trackingImportConflicts.map((conflict) => ({
+        bill_no: conflict.bill_no,
+        tracking_number: trackingConflictChoices[conflict.bill_no],
+      })),
+    ]
+    setPendingTrackingRows([])
+    setTrackingImportConflicts([])
+    setTrackingConflictChoices({})
+    await executeTrackingImport(resolvedRows, importTrackingModal.workOrderName)
   }
 
   if (loading && workOrders.length === 0) {
@@ -2229,7 +2340,7 @@ export default function WorkOrderManageList({
           <p className="text-gray-600 text-sm mb-1">ใบงาน: <span className="font-semibold text-gray-800">{importTrackingModal.workOrderName}</span></p>
           <p className="text-gray-600 text-sm mb-4">เลือกไฟล์ .xlsx หรือ .csv ที่มีคอลัมน์ เลขออเดอร์ (bill_no) และ เลขพัสดุ (tracking_number)</p>
 
-          {!isTrackingImportBusy && (
+          {!isTrackingImportBusy && trackingImportProgress.phase !== 'conflict' && (
             <input
               ref={trackingFileInputRef}
               type="file"
@@ -2256,7 +2367,68 @@ export default function WorkOrderManageList({
                 </div>
               </div>
 
-              {trackingImportProgress.total > 0 && (
+              {trackingImportProgress.phase === 'conflict' && trackingImportConflicts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                    ระบบจะยังไม่บันทึกข้อมูลจนกว่าจะเลือกเลขพัสดุให้ครบทุกออเดอร์ เพื่อป้องกันเลขแถวหลังเขียนทับแถวแรก
+                  </div>
+                  <div className="max-h-72 space-y-3 overflow-auto pr-1">
+                    {trackingImportConflicts.map((conflict) => (
+                      <fieldset key={conflict.bill_no} className="rounded-lg border border-gray-200 p-3">
+                        <legend className="px-1 text-sm font-bold text-gray-800">ออเดอร์ {conflict.bill_no}</legend>
+                        <div className="mt-1 space-y-2">
+                          {conflict.tracking_numbers.map((trackingNumber) => (
+                            <label
+                              key={trackingNumber}
+                              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm ${
+                                trackingConflictChoices[conflict.bill_no] === trackingNumber
+                                  ? 'border-blue-500 bg-blue-50 text-blue-900'
+                                  : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`tracking-conflict-${conflict.bill_no}`}
+                                value={trackingNumber}
+                                checked={trackingConflictChoices[conflict.bill_no] === trackingNumber}
+                                onChange={() => setTrackingConflictChoices((current) => ({
+                                  ...current,
+                                  [conflict.bill_no]: trackingNumber,
+                                }))}
+                              />
+                              <span className="font-mono font-semibold">{trackingNumber}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingTrackingRows([])
+                        setTrackingImportConflicts([])
+                        setTrackingConflictChoices({})
+                        setTrackingImportProgress({ ...EMPTY_TRACKING_IMPORT_PROGRESS })
+                      }}
+                      className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      ยกเลิกและเลือกไฟล์ใหม่
+                    </button>
+                    <button
+                      type="button"
+                      onClick={confirmTrackingConflictChoices}
+                      disabled={!trackingImportConflicts.every((conflict) => trackingConflictChoices[conflict.bill_no])}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      ยืนยันและนำเข้าต่อ
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {trackingImportProgress.total > 0 && trackingImportProgress.phase !== 'conflict' && (
                 <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
                   <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-center">
                     <div className="text-xs text-emerald-700">บันทึกสำเร็จ</div>

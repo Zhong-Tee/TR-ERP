@@ -35,7 +35,7 @@ DECLARE
   v_results JSONB := '[]'::JSONB;
 BEGIN
   SELECT role INTO v_role FROM public.us_users WHERE id = auth.uid();
-  IF v_role NOT IN ('superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'store') THEN
+  IF v_role NOT IN ('superadmin', 'admin', 'production', 'packing_staff') THEN
     RAISE EXCEPTION 'Not authorized to import parcel tracking numbers';
   END IF;
 
@@ -48,6 +48,17 @@ BEGIN
   END IF;
   IF jsonb_array_length(p_rows) > 100 THEN
     RAISE EXCEPTION 'A tracking import batch cannot exceed 100 rows';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(p_rows) AS item
+    WHERE NULLIF(btrim(COALESCE(item->>'bill_no', '')), '') IS NOT NULL
+      AND NULLIF(btrim(COALESCE(item->>'tracking_number', '')), '') IS NOT NULL
+    GROUP BY upper(btrim(item->>'bill_no'))
+    HAVING count(DISTINCT upper(btrim(item->>'tracking_number'))) > 1
+  ) THEN
+    RAISE EXCEPTION 'One or more order numbers have multiple tracking numbers in the same import batch';
   END IF;
 
   FOR v_row IN
