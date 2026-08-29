@@ -19,7 +19,7 @@ import type {
 } from '../types'
 import type { AttendanceFact, ScoreCategory, ScoreEventDraft, ScoreRule, ScoreSummary } from './workScore'
 
-export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*)`
+export const HR_TASK_SELECT = `*, category:hr_task_categories(*), creator:hr_employees!created_by(id,employee_code,first_name,last_name,nickname,photo_url,phone), participants:hr_task_participants(*,employee:hr_employees!employee_id(id,employee_code,first_name,last_name,nickname,photo_url,phone)), checklist:hr_task_checklist_items(*), evaluations:hr_task_evaluations(*)`
 
 export async function fetchTaskCategories(activeOnly = true) {
   let q = supabase.from('hr_task_categories').select('*').order('name')
@@ -47,6 +47,29 @@ export async function saveTaskCategory(category: Partial<HRTaskCategory>) {
   const { data, error } = await query.select().single()
   if (error) pgError(error)
   return data as HRTaskCategory
+}
+
+export interface HRTaskAssignerPermission {
+  employee_id: string
+  granted_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchTaskAssignerPermissions() {
+  const { data, error } = await supabase
+    .from('hr_task_assigner_permissions')
+    .select('*')
+    .order('created_at')
+  if (error) pgError(error)
+  return (data ?? []) as HRTaskAssignerPermission[]
+}
+
+export async function saveTaskAssignerPermissions(employeeIds: string[]) {
+  const { error } = await supabase.rpc('hr_set_task_assigners', {
+    p_employee_ids: [...new Set(employeeIds)],
+  })
+  if (error) pgError(error)
 }
 
 export async function fetchTaskTeams() {
@@ -100,11 +123,17 @@ export interface CreateHRTaskInput {
 
 export async function createHRTask(input: CreateHRTaskInput) {
   const { participants, checklist, ...task } = input
+  const checklistItems = checklist
+    .map((item) => ({ ...item, title: item.title.trim() }))
+    .filter((item) => item.title)
   if (!task.category_id) {
     throw new Error('กรุณาเลือกประเภทงาน')
   }
   if (!participants.some((participant) => participant.role === 'assignee' && participant.employee_id)) {
     throw new Error('กรุณาเลือกผู้รับผิดชอบอย่างน้อย 1 คน')
+  }
+  if (!checklistItems.length) {
+    throw new Error('กรุณากรอก Task ย่อยอย่างน้อย 1 ข้อ')
   }
   const { data, error } = await supabase.from('hr_tasks').insert({ ...task, status: 'new' }).select().single()
   if (error) pgError(error)
@@ -121,12 +150,10 @@ export async function createHRTask(input: CreateHRTaskInput) {
       pgError(pError)
     }
   }
-  if (checklist.length) {
-    const { error: cError } = await supabase.from('hr_task_checklist_items').insert(checklist.map((c) => ({ ...c, task_id: data.id })))
-    if (cError) {
-      await supabase.from('hr_tasks').delete().eq('id', data.id)
-      pgError(cError)
-    }
+  const { error: cError } = await supabase.from('hr_task_checklist_items').insert(checklistItems.map((c) => ({ ...c, task_id: data.id })))
+  if (cError) {
+    await supabase.from('hr_tasks').delete().eq('id', data.id)
+    pgError(cError)
   }
   return fetchTask(data.id)
 }
@@ -175,16 +202,31 @@ export async function updateTaskStatus(id: string, status: HRTaskStatus, note?: 
 
 /** รับทราบและเริ่มงานในครั้งเดียว ลดขั้นตอนของพนักงานแต่ยังเก็บเวลาทั้งสองค่า */
 export async function acknowledgeAndStartTask(id: string) {
-  const now = new Date().toISOString()
-  const { data, error } = await supabase
-    .from('hr_tasks')
-    .update({ status: 'in_progress', acknowledged_at: now, started_at: now, updated_at: now })
-    .eq('id', id)
-    .eq('status', 'new')
-    .select(HR_TASK_SELECT)
-    .single()
+  const { error } = await supabase.rpc('hr_task_acknowledge_my_part', { p_task_id: id })
   if (error) pgError(error)
-  return data as unknown as HRTask
+  return fetchTask(id)
+}
+
+/** บันทึกว่าสมาชิกทำส่วนของตนเสร็จแล้ว โดยยังไม่ส่งงานรวมให้หัวหน้าตรวจ */
+export async function completeMyTaskPart(id: string, note?: string, link?: string) {
+  const { error } = await supabase.rpc('hr_task_complete_my_part', {
+    p_task_id: id,
+    p_note: note ?? null,
+    p_link: link ?? null,
+  })
+  if (error) pgError(error)
+  return fetchTask(id)
+}
+
+/** ผู้รับผิดชอบหลักรวบรวมผลงานของทีมและส่งให้ผู้มอบหมายตรวจ */
+export async function submitTeamTask(id: string, note?: string, link?: string) {
+  const { error } = await supabase.rpc('hr_task_submit_team', {
+    p_task_id: id,
+    p_note: note ?? null,
+    p_link: link ?? null,
+  })
+  if (error) pgError(error)
+  return fetchTask(id)
 }
 
 export async function toggleTaskChecklist(id: string, completed: boolean) {

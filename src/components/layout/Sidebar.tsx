@@ -52,7 +52,7 @@ const menuItems: MenuItem[] = [
     label: 'Marketplace',
     icon: <FiGlobe className="w-6 h-6" />,
     path: '/marketplace',
-    roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'],
+    roles: ['superadmin', 'admin', 'sales-tr'],
   },
   {
     key: 'orders',

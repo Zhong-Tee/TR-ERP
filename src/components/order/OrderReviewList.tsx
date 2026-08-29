@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../../lib/supabase'
 import { getPublicUrl } from '../../lib/qcApi'
 import { Order } from '../../types'
@@ -182,6 +182,32 @@ interface OrderReviewListProps {
   onStatusUpdate?: () => void
 }
 
+function filterReviewOrders(orders: Order[], rawSearch: string): Order[] {
+  const search = rawSearch.trim().toLowerCase()
+  if (!search) return orders
+  return orders.filter((order) => {
+    const record = order as Order & {
+      recipient_name?: string | null
+      channel_order_no?: string | null
+      tracking_number?: string | null
+      or_order_items?: Array<{ product_name?: string | null; product_id?: string | null }>
+      order_items?: Array<{ product_name?: string | null; product_id?: string | null }>
+    }
+    const items = record.order_items || record.or_order_items || []
+    return [
+      order.bill_no,
+      order.customer_name,
+      record.recipient_name,
+      record.channel_order_no,
+      record.tracking_number,
+      order.admin_user,
+      ...items.flatMap((item) => [item.product_name, item.product_id]),
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(search))
+  })
+}
+
 export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -190,6 +216,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [updating, setUpdating] = useState(false)
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [channelFilter, setChannelFilter] = useState<string>('')
+  const [search, setSearch] = useState('')
   const [productImageMap, setProductImageMap] = useState<Record<string, { product_code?: string; product_name?: string }>>({})
   const [cartoonPatternImageMap, setCartoonPatternImageMap] = useState<Record<string, { pattern_name?: string; line_count?: number | null }>>({})
   /** ระดับบิล: checked = ถูกต้อง, unchecked = ผิด */
@@ -213,6 +240,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   const [productCategoryByProductId, setProductCategoryByProductId] = useState<Record<string, string>>({})
   /** Override ตั้งค่าฟิลด์ระดับสินค้า (product_id → { fieldKey → boolean | null }) */
   const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null>>>({})
+  const filteredOrders = useMemo(() => filterReviewOrders(orders, search), [orders, search])
+
+  function handleSearchChange(value: string) {
+    setSearch(value)
+    const matches = filterReviewOrders(orders, value)
+    if (!selectedOrder || !matches.some((order) => order.id === selectedOrder.id)) {
+      setSelectedOrder(matches[0] || null)
+    }
+  }
 
   useEffect(() => {
     loadOrders()
@@ -393,16 +429,16 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
   // ปุ่มลูกศร ขึ้น/ลง เพื่อเลื่อนรายการบิล
   const navigateOrder = useCallback(
     (direction: 'up' | 'down') => {
-      if (orders.length === 0) return
-      const currentIdx = selectedOrder ? orders.findIndex((o) => o.id === selectedOrder.id) : -1
+      if (filteredOrders.length === 0) return
+      const currentIdx = selectedOrder ? filteredOrders.findIndex((o) => o.id === selectedOrder.id) : -1
       const nextIdx = direction === 'up'
-        ? (currentIdx <= 0 ? orders.length - 1 : currentIdx - 1)
-        : (currentIdx >= orders.length - 1 ? 0 : currentIdx + 1)
-      setSelectedOrder(orders[nextIdx])
-      const el = document.getElementById(`order-review-item-${orders[nextIdx].id}`)
+        ? (currentIdx <= 0 ? filteredOrders.length - 1 : currentIdx - 1)
+        : (currentIdx >= filteredOrders.length - 1 ? 0 : currentIdx + 1)
+      setSelectedOrder(filteredOrders[nextIdx])
+      const el = document.getElementById(`order-review-item-${filteredOrders[nextIdx].id}`)
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     },
-    [orders, selectedOrder]
+    [filteredOrders, selectedOrder]
   )
 
   useEffect(() => {
@@ -441,14 +477,15 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
       if (error) throw error
       const list = data || []
       setOrders(list)
+      const visibleList = filterReviewOrders(list, search)
       // เลือกบิลแรกถ้ายังไม่มี หรือถ้าบิลที่เลือกไม่อยู่ในรายการที่กรองแล้ว
-      const stillInList = selectedOrder && list.some((o: Order) => o.id === selectedOrder.id)
-      if (list.length > 0 && (!selectedOrder || !stillInList)) {
-        setSelectedOrder(list[0])
-      } else if (list.length === 0) {
+      const stillInList = selectedOrder && visibleList.some((o: Order) => o.id === selectedOrder.id)
+      if (visibleList.length > 0 && (!selectedOrder || !stillInList)) {
+        setSelectedOrder(visibleList[0])
+      } else if (visibleList.length === 0) {
         setSelectedOrder(null)
       }
-      return list
+      return visibleList
     } catch (error: any) {
       console.error('Error loading orders:', error)
       alert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + error.message)
@@ -742,7 +779,9 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         <div className="p-4 border-b bg-gray-50 shrink-0 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold">รายการบิล</h2>
-            <span className="text-gray-600 text-sm">{orders.length} รายการ</span>
+            <span className="text-gray-600 text-sm">
+              {search.trim() ? `${filteredOrders.length} / ${orders.length}` : orders.length} รายการ
+            </span>
           </div>
           <div>
             <label htmlFor="admin-qc-channel-filter" className="block text-sm font-medium text-gray-700 mb-1">ช่องทาง</label>
@@ -762,13 +801,13 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
           </div>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
-          {orders.length === 0 ? (
+          {filteredOrders.length === 0 ? (
             <div className="flex-1 flex items-center justify-center text-gray-500 p-6 text-center min-h-0">
-              ไม่พบรายการบิล
+              {search.trim() ? 'ไม่พบรายการบิลที่ค้นหา' : 'ไม่พบรายการบิล'}
             </div>
           ) : (
             <div className="divide-y">
-              {orders.map((order) => (
+              {filteredOrders.map((order) => (
                 <button
                   key={order.id}
                   id={`order-review-item-${order.id}`}
@@ -825,7 +864,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         {selectedOrder ? (
           <>
             <div className="p-4 border-b bg-gray-50 shrink-0">
-              <h2 className="text-lg font-bold">รายละเอียดบิล</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-bold shrink-0">รายละเอียดบิล</h2>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => handleSearchChange(event.target.value)}
+                  placeholder="ค้นหาเลขบิล เลขคำสั่งซื้อ ลูกค้า หรือสินค้า..."
+                  aria-label="ค้นหารายการบิลที่รอตรวจสอบ"
+                  className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-normal focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
               <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
             </div>
             <div className="flex-1 overflow-y-auto p-4 min-h-0">
@@ -1110,7 +1159,17 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
         ) : (
           <div className="flex flex-col flex-1 min-h-0">
             <div className="p-4 border-b bg-gray-50 shrink-0">
-              <h2 className="text-lg font-bold">รายละเอียดบิล</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-bold shrink-0">รายละเอียดบิล</h2>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => handleSearchChange(event.target.value)}
+                  placeholder="ค้นหาเลขบิล เลขคำสั่งซื้อ ลูกค้า หรือสินค้า..."
+                  aria-label="ค้นหารายการบิลที่รอตรวจสอบ"
+                  className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-normal focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
               <p className="text-gray-600 mt-1 text-sm min-h-[1.25rem]">&nbsp;</p>
             </div>
             <div className="flex-1 flex items-center justify-center text-gray-500 p-6 text-center">

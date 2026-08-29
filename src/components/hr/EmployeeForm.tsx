@@ -40,6 +40,23 @@ const GENDER_OPTIONS = ['ชาย', 'หญิง'] as const
 const fieldClass =
   'w-full px-3 py-2 border border-gray-300 rounded-lg outline-none transition-colors focus:border-emerald-600 focus:ring-2 focus:ring-emerald-500/35 focus:outline-none'
 
+type NumericInputValue = number | ''
+
+function formatNumericInput(value: NumericInputValue, integer = false): string {
+  if (value === '') return ''
+  return Number(value).toLocaleString('en-US', {
+    maximumFractionDigits: integer ? 0 : 2,
+  })
+}
+
+function parseNumericInput(value: string, integer = false): NumericInputValue {
+  const normalized = value.replace(/,/g, '').replace(integer ? /\D/g : /[^\d.]/g, '')
+  if (!normalized) return ''
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed)) return ''
+  return integer ? Math.floor(parsed) : parsed
+}
+
 type DocEntry = { name: string; url: string; type: string; uploaded_at: string }
 
 interface EmployeeFormProps {
@@ -113,16 +130,19 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
   const [position_id, setPositionId] = useState('')
   const [hire_date, setHireDate] = useState('')
   const [probation_end_date, setProbationEndDate] = useState('')
+  const [contract_end_date, setContractEndDate] = useState('')
   const [salary, setSalary] = useState<number | ''>('')
   const [position_allowance, setPositionAllowance] = useState<number | ''>('')
   const [monthly_personal_tax, setMonthlyPersonalTax] = useState<number | ''>('')
   const [monthly_social_security, setMonthlySocialSecurity] = useState<number | ''>('')
   const [monthly_savings, setMonthlySavings] = useState<number | ''>('')
+  const [savings_maximum, setSavingsMaximum] = useState<number | ''>('')
   const [monthly_student_loan, setMonthlyStudentLoan] = useState<number | ''>('')
   const [monthly_company_loan, setMonthlyCompanyLoan] = useState<number | ''>('')
   const [income_opening_balance, setIncomeOpeningBalance] = useState<number | ''>('')
   const [personal_tax_opening_balance, setPersonalTaxOpeningBalance] = useState<number | ''>('')
   const [social_security_opening_balance, setSocialSecurityOpeningBalance] = useState<number | ''>('')
+  const [ewf_opening_balance, setEwfOpeningBalance] = useState<number | ''>('')
   const [student_loan_opening_balance, setStudentLoanOpeningBalance] = useState<number | ''>('')
   const [savings_opening_balance, setSavingsOpeningBalance] = useState<number | ''>('')
   const [company_loan_opening_balance, setCompanyLoanOpeningBalance] = useState<number | ''>('')
@@ -232,16 +252,21 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
       setProbationEndDate(
         employee.probation_end_date ? employee.probation_end_date.slice(0, 10) : ''
       )
+      setContractEndDate(
+        employee.contract_end_date ? employee.contract_end_date.slice(0, 10) : ''
+      )
       setSalary(employee.salary ?? '')
       setPositionAllowance(employee.position_allowance ?? '')
       setMonthlyPersonalTax(employee.monthly_personal_tax ?? '')
       setMonthlySocialSecurity(employee.monthly_social_security ?? '')
       setMonthlySavings(employee.monthly_savings ?? '')
+      setSavingsMaximum(employee.savings_maximum ?? '')
       setMonthlyStudentLoan(employee.monthly_student_loan ?? '')
       setMonthlyCompanyLoan(employee.monthly_company_loan ?? '')
       setIncomeOpeningBalance(employee.income_opening_balance ?? '')
       setPersonalTaxOpeningBalance(employee.personal_tax_opening_balance ?? '')
       setSocialSecurityOpeningBalance(employee.social_security_opening_balance ?? '')
+      setEwfOpeningBalance(employee.ewf_opening_balance ?? '')
       setStudentLoanOpeningBalance(employee.student_loan_opening_balance ?? '')
       setSavingsOpeningBalance(employee.savings_opening_balance ?? '')
       setCompanyLoanOpeningBalance(employee.company_loan_opening_balance ?? '')
@@ -267,6 +292,7 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
       setEmploymentStatus('active')
       setContractType('permanent')
       setEmployeeCode('')
+      setContractEndDate('')
       setDocuments([])
     }
   }, [employee])
@@ -403,16 +429,19 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
         position_id: position_id || undefined,
         hire_date: hire_date || undefined,
         probation_end_date: probation_end_date || undefined,
+        contract_end_date: contract_end_date || null,
         salary: typeof salary === 'number' ? salary : undefined,
         position_allowance: typeof position_allowance === 'number' ? position_allowance : undefined,
         monthly_personal_tax: typeof monthly_personal_tax === 'number' ? monthly_personal_tax : 0,
         monthly_social_security: typeof monthly_social_security === 'number' ? monthly_social_security : 0,
         monthly_savings: typeof monthly_savings === 'number' ? monthly_savings : 0,
+        savings_maximum: typeof savings_maximum === 'number' ? savings_maximum : null,
         monthly_student_loan: typeof monthly_student_loan === 'number' ? monthly_student_loan : 0,
         monthly_company_loan: typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
         income_opening_balance: typeof income_opening_balance === 'number' ? income_opening_balance : 0,
         personal_tax_opening_balance: typeof personal_tax_opening_balance === 'number' ? personal_tax_opening_balance : 0,
         social_security_opening_balance: typeof social_security_opening_balance === 'number' ? social_security_opening_balance : 0,
+        ewf_opening_balance: typeof ewf_opening_balance === 'number' ? ewf_opening_balance : 0,
         student_loan_opening_balance: typeof student_loan_opening_balance === 'number' ? student_loan_opening_balance : 0,
         savings_opening_balance: typeof savings_opening_balance === 'number' ? savings_opening_balance : 0,
         company_loan_opening_balance: typeof company_loan_opening_balance === 'number' ? company_loan_opening_balance : 0,
@@ -886,25 +915,42 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   className={fieldClass}
                 />
               </label>
-              {([
-                ['เงินสะสม/เดือน', monthly_savings, setMonthlySavings],
-                ['เงินกู้บริษัทฯ/เดือน', monthly_company_loan, setMonthlyCompanyLoan],
-              ] as const).map(([label, value, setter]) => (
-                <label key={label}>
-                  <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={value === '' ? '' : Number(value).toLocaleString('en-US')}
-                    onChange={(e) => {
-                      const normalized = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, '')
-                      setter(normalized === '' ? '' : Number(normalized))
-                    }}
-                    placeholder="0.00"
-                    className={fieldClass}
-                  />
-                </label>
-              ))}
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินสะสม/เดือน</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={formatNumericInput(monthly_savings)}
+                  onChange={(e) => setMonthlySavings(parseNumericInput(e.target.value))}
+                  placeholder="0.00"
+                  className={fieldClass}
+                />
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">ยอดเงินสะสมสูงสุด</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={formatNumericInput(savings_maximum)}
+                  onChange={(e) => setSavingsMaximum(parseNumericInput(e.target.value))}
+                  placeholder="เว้นว่าง = ไม่จำกัด"
+                  className={fieldClass}
+                />
+                <span className="mt-1 block text-xs text-gray-500">
+                  ระบบจะหยุดหักเมื่อยอดสะสมรวมถึงจำนวนนี้
+                </span>
+              </label>
+              <label>
+                <span className="block text-sm font-medium text-gray-700 mb-1">เงินกู้บริษัทฯ/เดือน</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={formatNumericInput(monthly_company_loan)}
+                  onChange={(e) => setMonthlyCompanyLoan(parseNumericInput(e.target.value))}
+                  placeholder="0.00"
+                  className={fieldClass}
+                />
+              </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">สถานะการจ้าง</span>
                 <select
@@ -1029,7 +1075,7 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
               เอกสารแนบของพนักงาน (อัปโหลดได้หลังจากบันทึกพนักงานแล้ว)
             </p>
             {employee?.id && (
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-end gap-3">
                 <select
                   value={docUploadType}
                   onChange={(e) => setDocUploadType(e.target.value)}
@@ -1041,6 +1087,19 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                     </option>
                   ))}
                 </select>
+                {docUploadType === 'สัญญาจ้าง' && (
+                  <label className="min-w-[210px]">
+                    <span className="block text-sm font-medium text-gray-700 mb-1">
+                      วันที่หมดสัญญาจ้าง
+                    </span>
+                    <input
+                      type="date"
+                      value={contract_end_date}
+                      onChange={(e) => setContractEndDate(e.target.value)}
+                      className={fieldClass}
+                    />
+                  </label>
+                )}
                 <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 cursor-pointer disabled:opacity-50">
                   <FiUpload />
                   {docUploading ? 'กำลังอัปโหลด...' : 'อัปโหลดเอกสาร'}
@@ -1089,34 +1148,27 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
 
         {activeTab === 5 && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมารวมรายรับ</span>
-              <input type="number" min="0" step="0.01" value={income_opening_balance} onChange={(e) => setIncomeOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาภาษีสะสม</span>
-              <input type="number" min="0" step="0.01" value={personal_tax_opening_balance} onChange={(e) => setPersonalTaxOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมา สปส.</span>
-              <input type="number" min="0" step="0.01" value={social_security_opening_balance} onChange={(e) => setSocialSecurityOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมา กยศ. สะสม</span>
-              <input type="number" min="0" step="0.01" value={student_loan_opening_balance} onChange={(e) => setStudentLoanOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาเงินสะสม</span>
-              <input type="number" min="0" step="0.01" value={savings_opening_balance} onChange={(e) => setSavingsOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">ยอดยกมาเงินกู้บริษัทฯ</span>
-              <input type="number" min="0" step="0.01" value={company_loan_opening_balance} onChange={(e) => setCompanyLoanOpeningBalance(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
-            <label>
-              <span className="block text-sm font-medium text-gray-700 mb-1">จำนวนงวดเงินกู้ยกมา</span>
-              <input type="number" min="0" step="1" value={company_loan_opening_installments} onChange={(e) => setCompanyLoanOpeningInstallments(e.target.value === '' ? '' : Number(e.target.value))} className={fieldClass} />
-            </label>
+            {([
+              ['ยอดยกมารวมรายรับ', income_opening_balance, setIncomeOpeningBalance, false],
+              ['ยอดยกมาภาษีสะสม', personal_tax_opening_balance, setPersonalTaxOpeningBalance, false],
+              ['ยอดยกมา สปส.', social_security_opening_balance, setSocialSecurityOpeningBalance, false],
+              ['ยอดยกมา EWF', ewf_opening_balance, setEwfOpeningBalance, false],
+              ['ยอดยกมา กยศ. สะสม', student_loan_opening_balance, setStudentLoanOpeningBalance, false],
+              ['ยอดยกมาเงินสะสม', savings_opening_balance, setSavingsOpeningBalance, false],
+              ['ยอดยกมาเงินกู้บริษัทฯ', company_loan_opening_balance, setCompanyLoanOpeningBalance, false],
+              ['จำนวนงวดเงินกู้ยกมา', company_loan_opening_installments, setCompanyLoanOpeningInstallments, true],
+            ] as const).map(([label, value, setter, integer]) => (
+              <label key={label}>
+                <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+                <input
+                  type="text"
+                  inputMode={integer ? 'numeric' : 'decimal'}
+                  value={formatNumericInput(value, integer)}
+                  onChange={(e) => setter(parseNumericInput(e.target.value, integer))}
+                  className={fieldClass}
+                />
+              </label>
+            ))}
           </div>
         )}
       </div>

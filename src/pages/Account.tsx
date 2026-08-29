@@ -1006,8 +1006,8 @@ export default function Account() {
 
   return (
     <div className="space-y-4 md:space-y-8">
-      <div className="sticky top-0 z-10 -mx-3 border-b border-surface-200 bg-white px-3 shadow-soft sm:-mx-4 sm:px-4 md:-mx-6 md:px-6">
-        <nav className="flex min-w-max flex-nowrap gap-1 overflow-x-auto py-2 sm:gap-3 md:py-3">
+      <div className="sticky top-0 z-10 -mx-3 border-b border-surface-200 bg-white shadow-soft sm:-mx-4 md:-mx-6">
+        <nav className="flex min-w-max flex-nowrap gap-1 overflow-x-auto px-2 py-2 scrollbar-thin sm:gap-3 sm:px-4 md:px-6 md:py-3 lg:px-8">
           {ACCOUNT_TOP_NAV_ITEMS.filter((item) => hasAccess(item.accessKey ?? `account-${item.section}`)).map((item) => {
             const pill = accountTopNavCountPill(item)
             return (
@@ -2058,15 +2058,8 @@ export default function Account() {
           closeOnBackdropClick
           contentClassName="max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col"
         >
-            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-800">ข้อมูลบิล (ดูอย่างเดียว)</h3>
-              <button
-                type="button"
-                onClick={() => { setViewOrderId(null); setViewBillRefund(null) }}
-                className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
-              >
-                ✕
-              </button>
             </div>
             <div className="p-6 overflow-y-auto flex-1 text-base">
               {viewOrderLoading ? (

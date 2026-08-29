@@ -44,7 +44,7 @@ export function isRoleInAllowedList(role: MaybeRole, allowedRoles?: string[]): b
 
 export const DESKTOP_MENU_PATH_ORDER: { key: string; path: string; roles: UserRole[] }[] = [
   { key: 'dashboard', path: '/dashboard', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
-  { key: 'marketplace', path: '/marketplace', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump'] },
+  { key: 'marketplace', path: '/marketplace', roles: ['superadmin', 'admin', 'sales-tr'] },
   { key: 'orders', path: '/orders', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'qc_order', 'account'] },
   { key: 'admin-qc', path: '/admin-qc', roles: ['superadmin', 'admin', 'sales-tr', 'qc_order'] },
   { key: 'plan', path: '/plan', roles: ['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'store'] },

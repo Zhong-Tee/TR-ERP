@@ -1080,18 +1080,23 @@ export interface HREmployee {
   monthly_personal_tax?: number
   monthly_social_security?: number
   monthly_savings?: number
+  /** เพดานยอดเงินสะสมรวม; null/undefined = ไม่จำกัด */
+  savings_maximum?: number | null
   monthly_student_loan?: number
   monthly_company_loan?: number
   /** ยอดตั้งต้นก่อนเริ่มใช้ระบบเงินเดือน */
   income_opening_balance?: number
   personal_tax_opening_balance?: number
   social_security_opening_balance?: number
+  ewf_opening_balance?: number
   student_loan_opening_balance?: number
   savings_opening_balance?: number
   company_loan_opening_balance?: number
   company_loan_opening_installments?: number
   hire_date?: string
   probation_end_date?: string
+  /** วันที่สิ้นสุดสัญญาจ้าง ใช้สำหรับแจ้งเตือนและเรียงลำดับอายุสัญญา */
+  contract_end_date?: string | null
   employment_status: 'active' | 'probation' | 'resigned' | 'terminated'
   /** ประเภทสัญญาจ้าง: permanent=ประจำ, daily=รายวัน */
   contract_type?: 'permanent' | 'daily'
@@ -1745,6 +1750,12 @@ export interface HRTaskParticipant {
   employee_id: string
   role: HRTaskParticipantRole
   is_primary: boolean
+  work_status?: 'pending' | 'in_progress' | 'completed'
+  acknowledged_at?: string
+  started_at?: string
+  completed_at?: string
+  submission_note?: string
+  submission_link?: string
   employee?: HREmployee
 }
 
@@ -1787,6 +1798,7 @@ export interface HRTask {
   creator?: HREmployee
   participants?: HRTaskParticipant[]
   checklist?: HRTaskChecklistItem[]
+  evaluations?: HRTaskEvaluation[]
 }
 
 export interface HRTaskEvent {

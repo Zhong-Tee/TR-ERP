@@ -27,16 +27,40 @@ export default function Marketplace() {
   const [activeTab, setActiveTab] = useState<MpTabKey>('new')
   const [configs, setConfigs] = useState<MpChannelConfig[]>([])
   const [salesUsers, setSalesUsers] = useState<MpSalesUser[]>([])
+  const [marketplaceUsers, setMarketplaceUsers] = useState<MpSalesUser[]>([])
   const [refreshKey, setRefreshKey] = useState(0)
+  const [canAssign, setCanAssign] = useState(user?.role === 'superadmin')
 
   const isAdmin = isAdminOrSuperadmin(user?.role)
 
+  const canAccessTab = useCallback(
+    (tabKey: MpTabKey) => tabKey === 'new' ? canAssign || hasAccess('marketplace-new') : hasAccess(`marketplace-${tabKey}`),
+    [canAssign, hasAccess],
+  )
+
+  const loadAssignPermission = useCallback(async () => {
+    if (!user) {
+      return
+    }
+    if (user.role === 'superadmin') {
+      return
+    }
+    const { data, error } = await supabase.rpc('mp_can_assign_orders')
+    setCanAssign(!error && data === true)
+  }, [user])
+
+  useEffect(() => {
+    // โหลดสิทธิ์จากฐานข้อมูลเมื่อผู้ใช้เปลี่ยน (setState เกิดหลัง RPC ตอบกลับ)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadAssignPermission()
+  }, [loadAssignPermission])
+
   // เลือก tab แรกที่มีสิทธิ์ (sales จะ land ที่ Assign เพราะไม่มีสิทธิ์ Dashboard/งานใหม่)
   useEffect(() => {
-    if (hasAccess(`marketplace-${activeTab}`)) return
-    const firstAccessible = MP_TABS.find((t) => hasAccess(`marketplace-${t.key}`))
+    if (canAccessTab(activeTab)) return
+    const firstAccessible = MP_TABS.find((t) => canAccessTab(t.key))
     if (firstAccessible) setActiveTab(firstAccessible.key)
-  }, [hasAccess, activeTab])
+  }, [canAccessTab, activeTab])
 
   const loadConfigs = useCallback(async () => {
     const { data, error } = await supabase
@@ -50,11 +74,12 @@ export default function Marketplace() {
     const { data, error } = await supabase
       .from('us_users')
       .select('id, username, email, role, is_active')
-      .eq('is_active', true)
     if (!error && data) {
+      const users = data as (MpSalesUser & { is_active: boolean })[]
+      setMarketplaceUsers(users)
       setSalesUsers(
-        (data as (MpSalesUser & { is_active: boolean })[])
-          .filter((u) => isSalesAssignableRole(u.role))
+        users
+          .filter((u) => u.is_active && isSalesAssignableRole(u.role))
           .sort((a, b) => (a.username || a.email).localeCompare(b.username || b.email)),
       )
     }
@@ -98,16 +123,24 @@ export default function Marketplace() {
       // The completed tab intentionally has no badge, so do not spend a count
       // query on the largest/history status.
       const statuses = ['new', 'assigned', 'follow_up', 'cancelled'] as const
-      const results = await Promise.all(
-        statuses.map((s) =>
-          supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', s),
+      const [results, ownAssignedResult] = await Promise.all([
+        Promise.all(
+          statuses.map((s) =>
+            supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', s),
+          ),
         ),
-      )
+        supabase
+          .from('mp_orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'assigned')
+          .eq('assigned_to', user?.id || ''),
+      ])
       if (cancelled) return
       const counts: Record<string, number> = {}
       statuses.forEach((s, i) => {
         counts[s] = results[i].count || 0
       })
+      counts.assigned_own = ownAssignedResult.count || 0
       setTabCounts(counts)
       // TopBar: admin = งานรอมอบหมาย, sales = งานของตัวเองที่ยังไม่เสร็จ
       const topbarCount = isAdmin ? counts.new : (counts.assigned || 0) + (counts.follow_up || 0)
@@ -117,7 +150,7 @@ export default function Marketplace() {
     return () => {
       cancelled = true
     }
-  }, [isAdmin, refreshKey])
+  }, [isAdmin, refreshKey, user?.id])
 
   /** จำนวนที่จะแสดงบน badge ของแต่ละแถบ (Dashboard/ตั้งค่า ไม่มี) */
   const tabBadge = (key: string): number => {
@@ -125,7 +158,7 @@ export default function Marketplace() {
       case 'new':
         return tabCounts.new || 0
       case 'assign':
-        return tabCounts.assigned || 0
+        return tabCounts.assigned_own || 0
       case 'follow-up':
         return tabCounts.follow_up || 0
       case 'cancelled':
@@ -148,8 +181,8 @@ export default function Marketplace() {
   }, [])
 
   const visibleTabs = useMemo(
-    () => MP_TABS.filter((tab) => hasAccess(`marketplace-${tab.key}`)),
-    [hasAccess],
+    () => MP_TABS.filter((tab) => canAccessTab(tab.key)),
+    [canAccessTab],
   )
 
   if (!user) return null
@@ -157,8 +190,8 @@ export default function Marketplace() {
   return (
     <div className="space-y-6">
       {/* เมนูย่อย — สไตล์เดียวกับหน้า ตั้งค่า/ออเดอร์ */}
-      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+        <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {visibleTabs.map((tab) => {
               const badge = tabBadge(tab.key)
@@ -190,11 +223,12 @@ export default function Marketplace() {
         <MarketplaceDashboard salesUsers={salesUsers} refreshKey={refreshKey} />
       )}
 
-      {activeTab === 'new' && hasAccess('marketplace-new') && (
+      {activeTab === 'new' && canAccessTab('new') && (
         <MarketplaceNewTab
           user={user}
           configs={configs}
           salesUsers={salesUsers}
+          canAssign={canAssign}
           refreshKey={refreshKey}
           onChanged={triggerRefresh}
         />
@@ -206,8 +240,10 @@ export default function Marketplace() {
           status="assigned"
           user={user}
           isAdmin={isAdmin}
+          canAssign={canAssign}
           configs={configs}
           salesUsers={salesUsers}
+          users={marketplaceUsers}
           refreshKey={refreshKey}
           onChanged={triggerRefresh}
         />
@@ -219,8 +255,10 @@ export default function Marketplace() {
           status="follow_up"
           user={user}
           isAdmin={isAdmin}
+          canAssign={canAssign}
           configs={configs}
           salesUsers={salesUsers}
+          users={marketplaceUsers}
           refreshKey={refreshKey}
           onChanged={triggerRefresh}
         />
@@ -232,8 +270,10 @@ export default function Marketplace() {
           status="done"
           user={user}
           isAdmin={isAdmin}
+          canAssign={canAssign}
           configs={configs}
           salesUsers={salesUsers}
+          users={marketplaceUsers}
           refreshKey={refreshKey}
           onChanged={triggerRefresh}
         />
@@ -245,15 +285,22 @@ export default function Marketplace() {
           status="cancelled"
           user={user}
           isAdmin={isAdmin}
+          canAssign={canAssign}
           configs={configs}
           salesUsers={salesUsers}
+          users={marketplaceUsers}
           refreshKey={refreshKey}
           onChanged={triggerRefresh}
         />
       )}
 
       {activeTab === 'settings' && hasAccess('marketplace-settings') && (
-        <MarketplaceSettingsTab configs={configs} onConfigsChanged={loadConfigs} />
+        <MarketplaceSettingsTab
+          user={user}
+          configs={configs}
+          onConfigsChanged={loadConfigs}
+          onAssignersChanged={loadAssignPermission}
+        />
       )}
     </div>
   )

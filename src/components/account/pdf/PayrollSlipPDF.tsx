@@ -49,6 +49,7 @@ export interface PayrollYtd {
   income: number
   personalTax: number
   socialSecurity: number
+  ewf: number
   studentLoan: number
   companyLoan: number
   accumulatedSavings: number
@@ -64,16 +65,17 @@ export default function PayrollSlipPDF({ company, item, monthLabel, paymentDate,
     ['เงินเดือน', item.base_salary], ['เงินพิเศษ/ประจำตำแหน่ง', item.position_allowance], ['รายได้อื่น', item.other_income],
   ].filter(([, value]) => Number(value) !== 0) as [string, number][]
   const deductions = [
-    ['ภาษีส่วนบุคคล', item.personal_tax], ['ประกันสังคม', item.social_security], ['เงินสะสม', item.savings], ['เงินกู้ยืม กยศ.', item.student_loan],
+    ['ภาษีส่วนบุคคล', item.personal_tax], ['ประกันสังคม', item.social_security], ['EWF', item.ewf], ['เงินสะสม', item.savings], ['เงินกู้ยืม กยศ.', item.student_loan],
     ['เงินกู้บริษัทฯ', item.company_loan], ['ลาเกินสิทธิ์', item.leave_deduction], ['รายการหักอื่น', item.other_deduction],
   ].filter(([, value]) => Number(value) !== 0) as [string, number][]
   const gross = item.gross_income ?? item.base_salary + item.position_allowance + item.other_income
-  const totalDeduction = item.total_deduction ?? item.personal_tax + item.social_security + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
+  const totalDeduction = item.total_deduction ?? item.personal_tax + item.social_security + item.ewf + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
   const net = item.net_pay ?? gross - totalDeduction
   const ytdRows = [
     ['รวมรายรับทั้งหมดต่อปี', ytd.income],
     ['ภาษีสะสมรวม', ytd.personalTax],
     ['ประกันสังคมสะสมรวม', ytd.socialSecurity],
+    ['EWF สะสมรวม', ytd.ewf],
     ['เงินสะสมรวม', ytd.accumulatedSavings],
     ['กยศ. สะสมรวม', ytd.studentLoan],
     ['เงินกู้บริษัทฯ คงเหลือ', ytd.companyLoanBalance],

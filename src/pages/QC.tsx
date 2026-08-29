@@ -1624,8 +1624,8 @@ export default function QC() {
   return (
     <div className="w-full flex-1 min-h-0 flex flex-col outline-none" onKeyDown={handleKeydown} tabIndex={0}>
       {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
-      <div className="shrink-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
-        <div className="w-full flex items-center gap-4">
+      <div className="shrink-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+        <div className="w-full flex items-center gap-4 overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3 flex-1" aria-label="Tabs">
             {filteredMenus.map((m) => (
               <button

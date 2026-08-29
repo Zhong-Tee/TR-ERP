@@ -41,6 +41,7 @@ const EMPLOYEE_TEMPLATE_HEADERS = [
   'ตำแหน่ง',
   'วันที่เข้างาน',
   'วันสิ้นสุดทดลองงาน',
+  'วันที่หมดสัญญาจ้าง',
   'ฐานเงินเดือน',
   'เงินพิเศษ/ประจำตำแหน่ง',
   'สถานะการจ้าง',
@@ -90,6 +91,7 @@ const EMPLOYEE_TEMPLATE_SAMPLE_ROW = [
   'พนักงานคลัง',
   '2026-01-01',
   '2026-04-01',
+  '2027-01-01',
   15000,
   2000,
   'active',
@@ -185,6 +187,56 @@ function getTenureLabel(hireDate?: string): string {
   if (months > 0) parts.push(`${months} เดือน`)
   if (days > 0 || parts.length === 0) parts.push(`${days} วัน`)
   return parts.join(' ')
+}
+
+function parseLocalDate(date?: string | null): Date | null {
+  if (!date) return null
+  const match = date.slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const parsed = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function startOfToday(): Date {
+  const today = new Date()
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate())
+}
+
+function getContractDaysRemaining(contractEndDate?: string | null): number | null {
+  const end = parseLocalDate(contractEndDate)
+  if (!end) return null
+  return Math.round((end.getTime() - startOfToday().getTime()) / 86_400_000)
+}
+
+function getDateDurationLabel(from: Date, to: Date): string {
+  let years = to.getFullYear() - from.getFullYear()
+  let months = to.getMonth() - from.getMonth()
+  let days = to.getDate() - from.getDate()
+
+  if (days < 0) {
+    months -= 1
+    days += new Date(to.getFullYear(), to.getMonth(), 0).getDate()
+  }
+  if (months < 0) {
+    years -= 1
+    months += 12
+  }
+
+  const parts: string[] = []
+  if (years > 0) parts.push(`${years} ปี`)
+  if (months > 0) parts.push(`${months} เดือน`)
+  if (days > 0 || parts.length === 0) parts.push(`${days} วัน`)
+  return parts.join(' ')
+}
+
+function getContractAgeLabel(contractEndDate?: string | null): string {
+  const end = parseLocalDate(contractEndDate)
+  if (!end) return '-'
+  const today = startOfToday()
+  if (end.getTime() < today.getTime()) {
+    return `หมดสัญญาแล้ว ${getDateDurationLabel(end, today)}`
+  }
+  return `เหลือ ${getDateDurationLabel(today, end)}`
 }
 
 function normalizeText(value: unknown): string {
@@ -338,6 +390,7 @@ function buildEmployeePayload(
     position_id: positionId,
     hire_date: formatExcelDate(row['วันที่เข้างาน']),
     probation_end_date: formatExcelDate(row['วันสิ้นสุดทดลองงาน']),
+    contract_end_date: formatExcelDate(row['วันที่หมดสัญญาจ้าง']) ?? null,
     salary: Number.isFinite(salary) ? salary : undefined,
     position_allowance: Number.isFinite(positionAllowance) ? positionAllowance : undefined,
     employment_status: getEmploymentStatus(row['สถานะการจ้าง']),
@@ -366,6 +419,7 @@ function employeeToTemplateRow(emp: HREmployee): (string | number)[] {
     'ตำแหน่ง': emp.position?.name ?? '',
     'วันที่เข้างาน': emp.hire_date ?? '',
     'วันสิ้นสุดทดลองงาน': emp.probation_end_date ?? '',
+    'วันที่หมดสัญญาจ้าง': emp.contract_end_date ?? '',
     'ฐานเงินเดือน': emp.salary ?? '',
     'เงินพิเศษ/ประจำตำแหน่ง': emp.position_allowance ?? '',
     'สถานะการจ้าง': getStatusLabel(emp.employment_status),
@@ -412,6 +466,7 @@ function downloadEmployeeRegistryTemplate(employees: HREmployee[] = []) {
     ['หัวข้อ', 'รายละเอียด'],
     ['ช่องที่มี *', 'ต้องกรอกข้อมูลก่อน import'],
     ['รูปแบบวันที่', 'ใช้รูปแบบ YYYY-MM-DD เช่น 2026-01-31'],
+    ['วันที่หมดสัญญาจ้าง', 'ใช้สำหรับแสดงอายุสัญญา แจ้งเตือนล่วงหน้า 60 วัน และเรียงลำดับในหน้าทะเบียนพนักงาน'],
     ['สถานะการจ้าง', 'active = ปฏิบัติงาน, probation = ทดลองงาน, resigned = ลาออก, terminated = ถูกเลิกจ้าง'],
     ['ประเภทสัญญาจ้าง', 'permanent = ประจำ, daily = รายวัน'],
     ['ฐานเงินเดือน / เงินพิเศษ', 'กรอกเป็นตัวเลข เช่น 15000 — ระบบจะนำ 2 ช่องนี้บวกกันแสดงในหน้ารายการ (template เก่าที่ใช้หัวคอลัมน์ "เงินเดือน" ยังนำเข้าได้ โดยถือเป็นฐานเงินเดือน)'],
@@ -436,6 +491,7 @@ export default function EmployeeRegistry() {
   const [search, setSearch] = useState('')
   const [filterDept, setFilterDept] = useState<string>('')
   const [filterStatus, setFilterStatus] = useState<string>('')
+  const [contractSort, setContractSort] = useState<'none' | 'desc' | 'asc'>('none')
   const [modalOpen, setModalOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<HREmployee | undefined>(undefined)
   const [deleteConfirm, setDeleteConfirm] = useState<HREmployee | null>(null)
@@ -472,14 +528,23 @@ export default function EmployeeRegistry() {
     loadData()
   }, [loadData])
 
-  const filtered = employees.filter((emp) => {
-    if (!search.trim()) return true
-    const q = search.toLowerCase().trim()
-    const name = `${emp.first_name} ${emp.last_name}`.toLowerCase()
-    const nickname = (emp.nickname ?? '').toLowerCase()
-    const code = (emp.employee_code ?? '').toLowerCase()
-    return name.includes(q) || nickname.includes(q) || code.includes(q)
-  })
+  const filtered = employees
+    .filter((emp) => {
+      if (!search.trim()) return true
+      const q = search.toLowerCase().trim()
+      const name = `${emp.first_name} ${emp.last_name}`.toLowerCase()
+      const nickname = (emp.nickname ?? '').toLowerCase()
+      const code = (emp.employee_code ?? '').toLowerCase()
+      return name.includes(q) || nickname.includes(q) || code.includes(q)
+    })
+    .sort((a, b) => {
+      if (contractSort === 'none') return 0
+      const aDays = getContractDaysRemaining(a.contract_end_date)
+      const bDays = getContractDaysRemaining(b.contract_end_date)
+      if (aDays == null) return 1
+      if (bDays == null) return -1
+      return contractSort === 'desc' ? bDays - aDays : aDays - bDays
+    })
 
   const stats = {
     total: employees.length,
@@ -752,6 +817,16 @@ export default function EmployeeRegistry() {
             <option value="resigned">ลาออก</option>
             <option value="terminated">ถูกเลิกจ้าง</option>
           </select>
+          <select
+            value={contractSort}
+            onChange={(e) => setContractSort(e.target.value as typeof contractSort)}
+            aria-label="เรียงลำดับอายุสัญญาจ้าง"
+            className="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
+          >
+            <option value="none">เรียงอายุสัญญา</option>
+            <option value="desc">อายุสัญญา: มากไปน้อย</option>
+            <option value="asc">อายุสัญญา: น้อยไปมาก</option>
+          </select>
           <button
             type="button"
             onClick={handleDownloadTemplate}
@@ -823,13 +898,14 @@ export default function EmployeeRegistry() {
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">วันที่เข้างาน</th>
                   <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อายุงาน</th>
+                  <th className="text-left py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap">อายุสัญญา</th>
                   <th className="text-right py-3 px-3 text-xs font-semibold text-gray-700 whitespace-nowrap w-24">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="py-12 text-center text-gray-500">
+                    <td colSpan={14} className="py-12 text-center text-gray-500">
                       ไม่พบพนักงาน
                     </td>
                   </tr>
@@ -930,6 +1006,26 @@ export default function EmployeeRegistry() {
                       </td>
                       <td className="py-3 px-3 text-sm text-gray-600">
                         {getTenureLabel(emp.hire_date)}
+                      </td>
+                      <td className="py-3 px-3 text-sm text-gray-600 whitespace-nowrap">
+                        {emp.contract_end_date ? (
+                          <div className="space-y-1">
+                            <div>{new Date(`${emp.contract_end_date.slice(0, 10)}T00:00:00`).toLocaleDateString('th-TH')}</div>
+                            <div className={getContractDaysRemaining(emp.contract_end_date)! < 0 ? 'text-red-700' : 'text-gray-500'}>
+                              {getContractAgeLabel(emp.contract_end_date)}
+                            </div>
+                            {(() => {
+                              const days = getContractDaysRemaining(emp.contract_end_date)
+                              const isWorking = emp.employment_status === 'active' || emp.employment_status === 'probation'
+                              if (!isWorking || days == null || days < 0 || days > 60) return null
+                              return (
+                                <span className="inline-flex px-2 py-0.5 rounded-full border border-amber-300 bg-amber-100 text-amber-800 text-xs font-semibold">
+                                  ใกล้หมดสัญญา ภายใน 60 วัน
+                                </span>
+                              )
+                            })()}
+                          </div>
+                        ) : '-'}
                       </td>
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1">

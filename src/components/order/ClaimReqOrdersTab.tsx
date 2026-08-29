@@ -352,6 +352,8 @@ export default function ClaimReqOrdersTab({
   const [compareApprovedResult, setCompareApprovedResult] = useState<string | null>(null)
   /** แก้ไขบิลเคลม (เฉพาะคำขอสถานะ pending) */
   const [editOpen, setEditOpen] = useState(false)
+  const [editMode, setEditMode] = useState<'pending' | 'rejected'>('pending')
+  const [editLoadingId, setEditLoadingId] = useState<string | null>(null)
 
   const canConfirm = CAN_CONFIRM_ROLES.includes(userRole as (typeof CAN_CONFIRM_ROLES)[number])
   const canEditClaim = CAN_EDIT_CLAIM_ROLES.includes(userRole || '')
@@ -421,6 +423,25 @@ export default function ClaimReqOrdersTab({
       setCompareOpen(false)
     } finally {
       setCompareLoading(false)
+    }
+  }
+
+  async function openRejectedClaimEdit(requestId: string) {
+    setEditLoadingId(requestId)
+    try {
+      const bundle = await loadClaimCompareBundle(supabase, requestId)
+      if (bundle.detail.status !== 'rejected') {
+        throw new Error('รายการนี้ไม่ได้อยู่ในสถานะปฏิเสธแล้ว')
+      }
+      setCompareDetail(bundle.detail)
+      setCompareRefOrder(bundle.refOrder)
+      setEditMode('rejected')
+      setEditOpen(true)
+      markSeen(requestId, 'rejected')
+    } catch (error: unknown) {
+      alert('เปิดหน้าแก้ไขไม่สำเร็จ: ' + ((error as Error)?.message || String(error)))
+    } finally {
+      setEditLoadingId(null)
     }
   }
 
@@ -606,7 +627,7 @@ export default function ClaimReqOrdersTab({
         }
       }
 
-      let latestReqByRef: Record<string, string> = {}
+      const latestReqByRef: Record<string, string> = {}
       if (pendingRefIds.length > 0) {
         const CHUNK = 80
         type PriorApprovedRow = {
@@ -1338,6 +1359,22 @@ export default function ClaimReqOrdersTab({
                         </td>
                         <td className="p-3 align-middle" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-center gap-2">
+                            {canEditClaim && (
+                              <button
+                                type="button"
+                                disabled={editLoadingId === c.id}
+                                onClick={() => void openRejectedClaimEdit(c.id)}
+                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:cursor-wait disabled:opacity-50"
+                                title="แก้ไขและส่งอนุมัติอีกครั้ง"
+                                aria-label="แก้ไขบิลเคลม"
+                              >
+                                {editLoadingId === c.id ? (
+                                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                ) : (
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M12 20h9"/><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
+                                )}
+                              </button>
+                            )}
                             <EvidenceLinkCell supportingUrl={c.supporting_url} />
                             <VideoLinkCell url={c.packing_video_url} />
                           </div>
@@ -1457,28 +1494,18 @@ export default function ClaimReqOrdersTab({
                 latestPriorReqBillNo={compareLatestPrior}
                 approvedResultBillNo={compareApprovedResult}
               />
-              <div className="mt-4 flex items-center justify-between gap-2 border-t border-gray-100 pt-4 shrink-0">
-                <div>
-                  {compareDetail.status === 'pending' && canEditClaim && (
-                    <button
-                      type="button"
-                      disabled={compareLoading}
-                      onClick={() => setEditOpen(true)}
-                      className="px-5 py-2.5 rounded-xl bg-amber-500 text-white font-medium hover:bg-amber-600 disabled:opacity-50"
-                    >
-                      ✏️ แก้ไขบิลเคลม
-                    </button>
-                  )}
-                </div>
-                <button
+              {compareDetail.status === 'pending' && canEditClaim && (
+                <div className="mt-4 flex items-center gap-2 border-t border-gray-100 pt-4 shrink-0">
+                  <button
                   type="button"
                   disabled={compareLoading}
-                  onClick={() => setCompareOpen(false)}
-                  className="px-5 py-2.5 rounded-xl border border-surface-300 bg-white text-gray-800 font-medium hover:bg-surface-50 disabled:opacity-50"
+                  onClick={() => { setEditMode('pending'); setEditOpen(true) }}
+                  className="px-5 py-2.5 rounded-xl bg-amber-500 text-white font-medium hover:bg-amber-600 disabled:opacity-50"
                 >
-                  ปิด
+                  ✏️ แก้ไขบิลเคลม
                 </button>
-              </div>
+                </div>
+              )}
             </>
           ) : null}
         </div>
@@ -1486,12 +1513,14 @@ export default function ClaimReqOrdersTab({
 
       <ClaimEditModal
         open={editOpen}
+        mode={editMode}
         detail={compareDetail}
         refOrderTotal={compareRefOrder?.total_amount ?? (Number(compareDetail?.ref_snapshot?.total_amount) || 0)}
         onClose={() => setEditOpen(false)}
         onSaved={async () => {
           await load()
-          if (compareDetail) await openClaimCompare(compareDetail.id)
+          if (editMode === 'pending' && compareDetail) await openClaimCompare(compareDetail.id)
+          else setCompareOpen(false)
         }}
       />
 
@@ -1629,14 +1658,6 @@ export default function ClaimReqOrdersTab({
           </form>
           {errorMsg && <p className="text-sm text-red-600 mb-3">{errorMsg}</p>}
           <div className="flex gap-3 justify-end pt-2">
-            <button
-              type="button"
-              className="px-4 py-2.5 rounded-xl border border-surface-300 text-gray-700 hover:bg-surface-50"
-              disabled={saving}
-              onClick={() => setModalOpen(false)}
-            >
-              ยกเลิก
-            </button>
             <button
               type="button"
               className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-medium hover:bg-emerald-700 disabled:opacity-50 shadow-sm"

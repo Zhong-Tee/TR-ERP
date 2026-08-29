@@ -6,6 +6,7 @@ import { computeDueTimestamps } from '../../lib/shipDueBadge'
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import MarketplaceOrderModal from './MarketplaceOrderModal'
+import { useWmsModal } from '../wms/useWmsModal'
 import type { User } from '../../types'
 import type { MpChannelConfig, MpOrder, MpOrderStatus, MpSalesUser } from '../../types/marketplace'
 
@@ -26,19 +27,24 @@ export default function MarketplaceWorkList({
   status,
   user,
   isAdmin,
+  canAssign,
   configs,
   salesUsers,
+  users,
   refreshKey,
   onChanged,
 }: {
   status: Exclude<MpOrderStatus, 'new'>
   user: User
   isAdmin: boolean
+  canAssign: boolean
   configs: MpChannelConfig[]
   salesUsers: MpSalesUser[]
+  users: MpSalesUser[]
   refreshKey: number
   onChanged: () => void
 }) {
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [orders, setOrders] = useState<MpOrder[]>([])
   const [loading, setLoading] = useState(false)
   const [filterUser, setFilterUser] = useState('')
@@ -50,12 +56,18 @@ export default function MarketplaceWorkList({
   const [openOrder, setOpenOrder] = useState<MpOrder | null>(null)
   const [repairingPaymentTimes, setRepairingPaymentTimes] = useState(false)
   const [repairingOrderTotals, setRepairingOrderTotals] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkAssigneeId, setBulkAssigneeId] = useState('')
+  const [bulkAssigning, setBulkAssigning] = useState(false)
+  const canFilterAssignee = canAssign
+  const canBulkAssign = status === 'assigned' && canAssign
+  const assignableUsers = useMemo(() => salesUsers.filter((candidate) => candidate.role !== 'sales-pump'), [salesUsers])
 
   const userById = useMemo(() => {
     const m = new Map<string, MpSalesUser>()
-    salesUsers.forEach((u) => m.set(u.id, u))
+    users.forEach((u) => m.set(u.id, u))
     return m
-  }, [salesUsers])
+  }, [users])
 
   const loadOrders = useCallback(async () => {
     setLoading(true)
@@ -67,8 +79,11 @@ export default function MarketplaceWorkList({
         .order(status === 'done' ? 'billed_at' : status === 'cancelled' ? 'cancelled_at' : 'assigned_at', {
           ascending: false,
         })
-      // sales ถูกจำกัดด้วย RLS อยู่แล้ว — filter เพิ่มเฉพาะ admin ที่เลือกกรอง
-      if (isAdmin && filterUser) query = query.eq('assigned_to', filterUser)
+      // แถบ Assign ของผู้ใช้ทั่วไป = งานที่รับผิดชอบเอง + งานที่ตนเป็นผู้มอบหมาย
+      // superadmin เห็นงานที่ Assign ทั้งหมดของทุกคน
+      if (status === 'assigned' && user.role !== 'superadmin') {
+        query = query.or(`assigned_to.eq.${user.id},assigned_by.eq.${user.id}`)
+      }
       const { data, error } = await query
       if (error) throw error
       setOrders((data || []) as MpOrder[])
@@ -77,7 +92,7 @@ export default function MarketplaceWorkList({
     } finally {
       setLoading(false)
     }
-  }, [status, isAdmin, filterUser])
+  }, [status, user.id, user.role])
 
   useEffect(() => {
     loadOrders()
@@ -100,6 +115,7 @@ export default function MarketplaceWorkList({
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase()
     const rows = orders.filter((o) => {
+      if (filterUser && o.assigned_to !== filterUser) return false
       if (draftOnly && !o.draft_saved_at) return false
       if (filterChannel && o.channel_code !== filterChannel) return false
       if (!q) return true
@@ -128,9 +144,85 @@ export default function MarketplaceWorkList({
       if (ta == null || tb == null) return ta == null ? (tb == null ? 0 : 1) : -1
       return paymentSort === 'asc' ? ta - tb : tb - ta
     })
-  }, [orders, search, draftOnly, filterChannel, paymentSort, userById])
+  }, [orders, search, draftOnly, filterChannel, filterUser, paymentSort, userById])
 
   const readOnly = status === 'done' || status === 'cancelled'
+  const selectedCount = useMemo(
+    () => orders.reduce((count, order) => count + (selectedIds.has(order.id) ? 1 : 0), 0),
+    [orders, selectedIds],
+  )
+  const allVisibleSelected = canBulkAssign
+    && filteredOrders.length > 0
+    && filteredOrders.every((order) => selectedIds.has(order.id))
+
+  function toggleSelected(orderId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(orderId)) next.delete(orderId)
+      else next.add(orderId)
+      return next
+    })
+  }
+
+  function selectAllVisible() {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      filteredOrders.forEach((order) => next.add(order.id))
+      return next
+    })
+  }
+
+  function clearAllSelected() {
+    setSelectedIds(new Set())
+  }
+
+  async function handleBulkAssign() {
+    if (!canBulkAssign || selectedCount === 0) return
+    const target = assignableUsers.find((candidate) => candidate.id === bulkAssigneeId)
+    if (!target) {
+      showMessage({ message: 'กรุณาเลือกผู้รับผิดชอบคนใหม่' })
+      return
+    }
+    const selectedOrderIds = orders.filter((order) => selectedIds.has(order.id)).map((order) => order.id)
+    if (selectedOrderIds.length === 0) return
+    const confirmed = await showConfirm({
+      title: 'เปลี่ยนผู้รับผิดชอบหลายรายการ',
+      message: `เปลี่ยนผู้รับผิดชอบ ${selectedOrderIds.length} งาน เป็น “${target.username || target.email}” ใช่หรือไม่?`,
+      confirmText: 'เปลี่ยนผู้รับผิดชอบ',
+    })
+    if (!confirmed) return
+
+    setBulkAssigning(true)
+    try {
+      let affected = 0
+      const assignedAt = new Date().toISOString()
+      for (let index = 0; index < selectedOrderIds.length; index += 200) {
+        const ids = selectedOrderIds.slice(index, index + 200)
+        const { data, error } = await supabase
+          .from('mp_orders')
+          .update({
+            assigned_to: target.id,
+            assigned_by: user.id,
+            assigned_at: assignedAt,
+          })
+          .in('id', ids)
+          .eq('status', 'assigned')
+          .select('id')
+        if (error) throw error
+        affected += (data || []).length
+      }
+      clearAllSelected()
+      setBulkAssigneeId('')
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+      onChanged()
+      await loadOrders()
+      showMessage({ title: 'เปลี่ยนผู้รับผิดชอบแล้ว', message: `อัปเดตสำเร็จ ${affected} งาน` })
+    } catch (err) {
+      showMessage({ title: 'เปลี่ยนผู้รับผิดชอบไม่สำเร็จ', message: (err as Error).message })
+    } finally {
+      setBulkAssigning(false)
+    }
+  }
 
   const repairablePaymentTimes = useMemo(() => {
     return orders.flatMap((order) => {
@@ -198,7 +290,55 @@ export default function MarketplaceWorkList({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-xl font-bold text-slate-800 mr-auto">{STATUS_TITLES[status]}</h2>
+        <h2 className="text-xl font-bold text-slate-800 mr-auto">
+          {STATUS_TITLES[status]}
+          {status === 'assigned' && (
+            <span className="ml-2 inline-flex min-w-7 h-7 px-2 items-center justify-center rounded-full bg-orange-500 text-white text-sm font-bold align-middle">
+              {orders.length}
+            </span>
+          )}
+        </h2>
+        {canBulkAssign && (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-3 py-2">
+            <span className="text-sm font-semibold text-green-800">เลือกแล้ว {selectedCount}</span>
+            <button
+              type="button"
+              onClick={selectAllVisible}
+              disabled={filteredOrders.length === 0 || allVisibleSelected}
+              className="px-3 py-1.5 rounded-lg border border-green-300 bg-white text-green-700 font-medium hover:bg-green-100 disabled:opacity-40"
+            >
+              ทั้งหมด
+            </button>
+            <button
+              type="button"
+              onClick={clearAllSelected}
+              disabled={selectedCount === 0}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+            >
+              ล้าง
+            </button>
+            <select
+              value={bulkAssigneeId}
+              onChange={(event) => setBulkAssigneeId(event.target.value)}
+              className="border border-green-300 rounded-lg bg-white px-3 py-1.5 min-w-[190px]"
+            >
+              <option value="">— ผู้รับผิดชอบคนใหม่ —</option>
+              {assignableUsers.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.username || candidate.email}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={handleBulkAssign}
+              disabled={bulkAssigning || selectedCount === 0 || !bulkAssigneeId}
+              className="px-4 py-1.5 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-40"
+            >
+              {bulkAssigning ? 'กำลังเปลี่ยน...' : 'เปลี่ยนผู้รับผิดชอบ'}
+            </button>
+          </div>
+        )}
         {isAdmin && repairablePaymentTimes.length > 0 && (
           <button
             type="button"
@@ -258,14 +398,14 @@ export default function MarketplaceWorkList({
             )
           })}
         </select>
-        {isAdmin && (
+        {canFilterAssignee && (
           <select
             value={filterUser}
             onChange={(e) => setFilterUser(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-2"
           >
             <option value="">ผู้รับผิดชอบ: ทั้งหมด</option>
-            {salesUsers.map((u) => (
+            {assignableUsers.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.username || u.email}
               </option>
@@ -276,9 +416,20 @@ export default function MarketplaceWorkList({
 
       <div className="bg-white rounded-xl border border-surface-200 shadow-soft overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[900px]">
+          <table className="w-full text-sm min-w-[1050px]">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
+                {canBulkAssign && (
+                  <th className="px-3 py-3 w-12 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(event) => event.target.checked ? selectAllVisible() : clearAllSelected()}
+                      aria-label="เลือกงานทั้งหมดที่แสดง"
+                      className="w-4 h-4 accent-green-600"
+                    />
+                  </th>
+                )}
                 <th className="text-left px-4 py-3">เลขคำสั่งซื้อ</th>
                 <th className="text-left px-4 py-3">ช่องทาง</th>
                 <th className="text-left px-4 py-3">ผู้ซื้อ</th>
@@ -311,6 +462,7 @@ export default function MarketplaceWorkList({
                   </button>
                 </th>
                 <th className="text-left px-4 py-3">ผู้รับผิดชอบ</th>
+                {status === 'assigned' && <th className="text-left px-4 py-3">ผู้มอบหมาย</th>}
                 <th className="text-left px-4 py-3">วันที่ Assign</th>
                 {status === 'follow_up' && <th className="text-left px-4 py-3">โน้ตติดตาม</th>}
                 {status === 'done' && <th className="text-left px-4 py-3">เลขบิล</th>}
@@ -322,12 +474,12 @@ export default function MarketplaceWorkList({
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">กำลังโหลด...</td>
+                  <td colSpan={11} className="px-4 py-8 text-center text-gray-400">กำลังโหลด...</td>
                 </tr>
               )}
               {!loading && filteredOrders.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                     {search.trim() ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการ'}
                   </td>
                 </tr>
@@ -335,12 +487,26 @@ export default function MarketplaceWorkList({
               {!loading &&
                 filteredOrders.map((o) => {
                   const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
+                  const assigner = o.assigned_by ? userById.get(o.assigned_by) : null
                   return (
                     <tr
                       key={o.id}
-                      className="border-t border-surface-100 cursor-pointer hover:bg-blue-50/40"
+                      className={`border-t border-surface-100 cursor-pointer hover:bg-blue-50/40 ${
+                        selectedIds.has(o.id) ? 'bg-green-50/70' : ''
+                      }`}
                       onClick={() => setOpenOrder(o)}
                     >
+                      {canBulkAssign && (
+                        <td className="px-3 py-3 text-center" onClick={(event) => event.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(o.id)}
+                            onChange={() => toggleSelected(o.id)}
+                            aria-label={`เลือกงาน ${o.marketplace_order_no}`}
+                            className="w-4 h-4 accent-green-600"
+                          />
+                        </td>
+                      )}
                       <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">
                         <span className="mr-2">{o.marketplace_order_no}</span>
                         <UrgencyBadge order={o} />
@@ -357,6 +523,11 @@ export default function MarketplaceWorkList({
                       <td className="px-4 py-3">
                         {assignee ? assignee.username || assignee.email : o.assigned_to ? '...' : '-'}
                       </td>
+                      {status === 'assigned' && (
+                        <td className="px-4 py-3">
+                          {assigner ? assigner.username || assigner.email : o.assigned_by ? '...' : '-'}
+                        </td>
+                      )}
                       <td className="px-4 py-3 whitespace-nowrap">
                         {o.assigned_at ? formatDateTime(o.assigned_at) : '-'}
                         {o.draft_saved_at && (
@@ -399,9 +570,9 @@ export default function MarketplaceWorkList({
       {openOrder && (
         <MarketplaceOrderModal
           mpOrder={openOrder}
-          readOnly={readOnly}
+          readOnly={readOnly || openOrder.assigned_to !== user.id}
           user={user}
-          isAdmin={isAdmin}
+          canAssign={canAssign && openOrder.assigned_to === user.id}
           salesUsers={salesUsers}
           onClose={() => setOpenOrder(null)}
           onChanged={() => {
@@ -410,6 +581,8 @@ export default function MarketplaceWorkList({
           }}
         />
       )}
+      {MessageModal}
+      {ConfirmModal}
     </div>
   )
 }

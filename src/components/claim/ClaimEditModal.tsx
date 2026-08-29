@@ -27,10 +27,12 @@ type Props = {
   onClose: () => void
   /** เรียกหลังบันทึกสำเร็จ — ให้หน้าแม่รีโหลดรายการ/รายละเอียด */
   onSaved: () => void | Promise<void>
+  /** rejected = บันทึกข้อมูลและส่งกลับไปรออนุมัติ แม้ข้อมูลไม่เปลี่ยน */
+  mode?: 'pending' | 'rejected'
 }
 
 /** Modal แก้ไขบิลเคลม (proposed_snapshot) — แก้ได้จนกว่าคำขอจะถูกอนุมัติหรือปฏิเสธ */
-export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, onSaved }: Props) {
+export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, onSaved, mode = 'pending' }: Props) {
   const [rows, setRows] = useState<EditClaimItemRow[]>([])
   const [shipping, setShipping] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -83,15 +85,23 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
         },
         items: rows,
       }
-      const { data, error: upErr } = await supabase
-        .from('or_claim_requests')
-        .update({ proposed_snapshot: nextSnapshot })
-        .eq('id', detail.id)
-        .eq('status', 'pending')
-        .select('id')
-      if (upErr) throw upErr
-      if (!data || data.length === 0) {
-        throw new Error('คำขอนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว — แก้ไขไม่ได้')
+      if (mode === 'rejected') {
+        const { error: resubmitError } = await supabase.rpc('rpc_resubmit_rejected_claim_request', {
+          p_request_id: detail.id,
+          p_proposed_snapshot: nextSnapshot,
+        })
+        if (resubmitError) throw resubmitError
+      } else {
+        const { data, error: upErr } = await supabase
+          .from('or_claim_requests')
+          .update({ proposed_snapshot: nextSnapshot })
+          .eq('id', detail.id)
+          .eq('status', 'pending')
+          .select('id')
+        if (upErr) throw upErr
+        if (!data || data.length === 0) {
+          throw new Error('คำขอนี้ถูกอนุมัติหรือปฏิเสธไปแล้ว — แก้ไขไม่ได้')
+        }
       }
       await onSaved()
       onClose()
@@ -119,7 +129,7 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
         <h3 className="text-lg font-bold mb-1">แก้ไขบิลเคลม</h3>
         <p className="text-sm text-gray-600 mb-3">
           บิลอ้างอิง: <strong className="font-mono">{detail?.ref_snapshot?.bill_no || '–'}</strong>{' '}
-          — แก้ไขได้จนกว่าคำขอจะถูกอนุมัติหรือปฏิเสธ
+          — {mode === 'rejected' ? 'บันทึกเพื่อส่งให้บัญชีอนุมัติอีกครั้ง' : 'แก้ไขได้จนกว่าคำขอจะถูกอนุมัติหรือปฏิเสธ'}
         </p>
         <div className="border rounded-lg overflow-auto flex-1 min-h-[160px] max-h-[46vh] mb-3">
           <table className="w-full text-xs sm:text-sm min-w-[1100px]">
@@ -231,18 +241,10 @@ export default function ClaimEditModal({ open, detail, refOrderTotal, onClose, o
           <button
             type="button"
             disabled={saving}
-            onClick={onClose}
-            className="px-4 py-2 border rounded-lg hover:bg-gray-100 disabled:opacity-50"
-          >
-            ยกเลิก
-          </button>
-          <button
-            type="button"
-            disabled={saving}
             onClick={() => void save()}
             className="px-4 py-2 rounded-lg bg-amber-500 text-white font-medium hover:bg-amber-600 disabled:opacity-50"
           >
-            {saving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+            {saving ? 'กำลังบันทึก...' : mode === 'rejected' ? 'บันทึกแก้ไขและส่งอนุมัติอีกครั้ง' : 'บันทึกการแก้ไข'}
           </button>
         </div>
       </div>

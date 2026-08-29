@@ -20,12 +20,14 @@ export default function MarketplaceNewTab({
   user,
   configs,
   salesUsers,
+  canAssign,
   refreshKey,
   onChanged,
 }: {
   user: User
   configs: MpChannelConfig[]
   salesUsers: MpSalesUser[]
+  canAssign: boolean
   refreshKey: number
   onChanged: () => void
 }) {
@@ -45,7 +47,6 @@ export default function MarketplaceNewTab({
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
 
   const activeConfigs = useMemo(() => configs.filter((c) => c.is_active), [configs])
-
   useEffect(() => {
     if (!configId && activeConfigs.length > 0) setConfigId(activeConfigs[0].id)
   }, [activeConfigs, configId])
@@ -323,6 +324,10 @@ export default function MarketplaceNewTab({
   }
 
   async function handleAssign() {
+    if (!canAssign) {
+      showMessage({ title: 'ไม่มีสิทธิ์มอบหมายงาน', message: 'บัญชีนี้ไม่มีสิทธิ์ Assign งาน Marketplace' })
+      return
+    }
     if (selected.size === 0) {
       showMessage({ message: 'กรุณาเลือกออเดอร์ที่ต้องการมอบหมาย' })
       return
@@ -509,28 +514,30 @@ export default function MarketplaceNewTab({
             {deleting ? 'กำลังลบ...' : 'ลบ'}
           </button>
         )}
-        <div className="flex items-center gap-2 ml-auto">
-          <select
-            value={assignTo}
-            onChange={(e) => setAssignTo(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 min-w-[180px]"
-          >
-            <option value="">— เลือก sales —</option>
-            {salesUsers.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.username || u.email} ({u.role})
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={assigning || selected.size === 0 || !assignTo}
-            onClick={handleAssign}
-            className="px-5 py-2 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-50"
-          >
-            {assigning ? 'กำลังมอบหมาย...' : 'มอบหมายงาน'}
-          </button>
-        </div>
+        {canAssign && (
+          <div className="flex items-center gap-2 ml-auto">
+            <select
+              value={assignTo}
+              onChange={(e) => setAssignTo(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 min-w-[180px]"
+            >
+              <option value="">— เลือก sales —</option>
+              {salesUsers.filter((u) => u.role !== 'sales-pump').map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.username || u.email} ({u.role})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={assigning || selected.size === 0 || !assignTo}
+              onClick={handleAssign}
+              className="px-5 py-2 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-50"
+            >
+              {assigning ? 'กำลังมอบหมาย...' : 'มอบหมายงาน'}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* รายการรอมอบหมาย */}

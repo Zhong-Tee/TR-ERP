@@ -2118,9 +2118,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
       {/* เมนูย่อยอยู่ภายในพื้นที่ scroll หลักและยึดด้านบนใต้ TopBar */}
       {!tvMode && (
         <div
-          className="sticky top-0 z-30 -mx-6 shrink-0 border-b border-surface-200 bg-white px-6 shadow-soft"
+          className="sticky top-0 z-30 -mx-6 shrink-0 border-b border-surface-200 bg-white shadow-soft"
         >
-          <div className="flex w-full items-center gap-3 pl-4 pr-2 sm:pl-6 sm:pr-2 lg:pl-8 lg:pr-2">
+          <div className="flex w-full items-center gap-3 px-2 sm:px-4 md:px-6 lg:px-8">
             <div className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {(

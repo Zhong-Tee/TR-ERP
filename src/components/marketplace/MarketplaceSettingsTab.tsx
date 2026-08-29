@@ -15,11 +15,19 @@ import {
   type MpParseResult,
 } from '../../lib/marketplaceImport'
 import { DEFAULT_DUE_RULE, type DueRule } from '../../lib/shipDueBadge'
+import type { User } from '../../types'
 import type { MpChannelConfig, MpShippingRule } from '../../types/marketplace'
 
 interface ChannelOption {
   channel_code: string
   channel_name: string
+}
+
+interface MarketplaceAssignerUser {
+  id: string
+  username?: string | null
+  email: string
+  role: string
 }
 
 const SOURCE_TYPE_LABELS: Record<MpMapRow['source_type'], string> = {
@@ -53,11 +61,15 @@ const emptyEditor = (): EditorState => ({
 })
 
 export default function MarketplaceSettingsTab({
+  user,
   configs,
   onConfigsChanged,
+  onAssignersChanged,
 }: {
+  user: User
   configs: MpChannelConfig[]
   onConfigsChanged: () => void
+  onAssignersChanged: () => void
 }) {
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const [channels, setChannels] = useState<ChannelOption[]>([])
@@ -69,6 +81,82 @@ export default function MarketplaceSettingsTab({
   const [sampleSheets, setSampleSheets] = useState<Record<string, unknown[][]>>({})
   const [testResult, setTestResult] = useState<MpParseResult | null>(null)
   const [draggedMapIndex, setDraggedMapIndex] = useState<number | null>(null)
+  const [assignerUsers, setAssignerUsers] = useState<MarketplaceAssignerUser[]>([])
+  const [assignerIds, setAssignerIds] = useState<Set<string>>(new Set())
+  const [loadingAssigners, setLoadingAssigners] = useState(false)
+  const [savingAssigners, setSavingAssigners] = useState(false)
+
+  useEffect(() => {
+    if (user.role !== 'superadmin') return
+    let cancelled = false
+
+    async function loadAssigners() {
+      setLoadingAssigners(true)
+      try {
+        const [usersResult, permissionsResult] = await Promise.all([
+          supabase
+            .from('us_users')
+            .select('id, username, email, role')
+            .eq('is_active', true)
+            .in('role', ['admin', 'sales-tr'])
+            .order('username', { ascending: true }),
+          supabase
+            .from('mp_assigner_permissions')
+            .select('user_id, can_assign')
+            .eq('can_assign', true),
+        ])
+        if (usersResult.error) throw usersResult.error
+        if (permissionsResult.error) throw permissionsResult.error
+        if (cancelled) return
+        setAssignerUsers((usersResult.data || []) as MarketplaceAssignerUser[])
+        setAssignerIds(
+          new Set((permissionsResult.data || []).map((row: { user_id: string }) => row.user_id)),
+        )
+      } catch (err) {
+        console.error('Error loading Marketplace assigners:', err)
+      } finally {
+        if (!cancelled) setLoadingAssigners(false)
+      }
+    }
+
+    loadAssigners()
+    return () => {
+      cancelled = true
+    }
+  }, [user.role])
+
+  function toggleAssigner(userId: string) {
+    setAssignerIds((current) => {
+      const next = new Set(current)
+      if (next.has(userId)) next.delete(userId)
+      else next.add(userId)
+      return next
+    })
+  }
+
+  async function saveAssigners() {
+    if (user.role !== 'superadmin') return
+    setSavingAssigners(true)
+    try {
+      const now = new Date().toISOString()
+      const rows = assignerUsers.map((assigner) => ({
+        user_id: assigner.id,
+        can_assign: assignerIds.has(assigner.id),
+        granted_by: user.id,
+        updated_at: now,
+      }))
+      if (rows.length > 0) {
+        const { error } = await supabase.from('mp_assigner_permissions').upsert(rows, { onConflict: 'user_id' })
+        if (error) throw error
+      }
+      await onAssignersChanged()
+      showMessage({ title: 'บันทึกสำเร็จ', message: 'อัปเดตรายชื่อผู้มีสิทธิ์ Assign งานแล้ว' })
+    } catch (err) {
+      showMessage({ title: 'บันทึกสิทธิ์ไม่สำเร็จ', message: (err as Error).message })
+    } finally {
+      setSavingAssigners(false)
+    }
+  }
 
   /** หัวตารางจาก sheet + แถวหัวตารางที่เลือกอยู่ในฟอร์ม */
   const sampleHeaders = useMemo(() => {
@@ -275,6 +363,68 @@ export default function MarketplaceSettingsTab({
 
   return (
     <div className="space-y-6">
+      {user.role === 'superadmin' && (
+        <section className="bg-white rounded-xl border border-surface-200 shadow-soft p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800">สิทธิ์มอบหมายงาน</h2>
+              <p className="text-sm text-slate-500 mt-1">
+                กำหนดเป็นราย User ว่าใครสามารถกดมอบหมายหรือเปลี่ยนผู้รับผิดชอบได้
+                เมื่อเปิดสิทธิ์แล้ว ระบบจะแสดงเมนูงานใหม่ให้ User โดยอัตโนมัติ
+                ทั้งนี้ผู้ใช้ยังต้องมีสิทธิ์เข้าเมนู Marketplace หลักจากหน้าตั้งค่า Role
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={savingAssigners || loadingAssigners}
+              onClick={saveAssigners}
+              className="px-4 py-2 rounded-lg bg-green-600 text-white font-bold hover:bg-green-700 disabled:opacity-50"
+            >
+              {savingAssigners ? 'กำลังบันทึก...' : 'บันทึกสิทธิ์'}
+            </button>
+          </div>
+
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            superadmin มีสิทธิ์ Assign เสมอ ไม่จำเป็นต้องเลือกในรายการ
+          </div>
+
+          {loadingAssigners ? (
+            <div className="py-6 text-center text-gray-400">กำลังโหลดรายชื่อ...</div>
+          ) : assignerUsers.length === 0 ? (
+            <div className="py-6 text-center text-gray-400">ไม่พบผู้ใช้ admin หรือ sales-tr ที่เปิดใช้งาน</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {assignerUsers.map((assigner) => {
+                const checked = assignerIds.has(assigner.id)
+                return (
+                  <label
+                    key={assigner.id}
+                    className={`flex items-center gap-3 rounded-lg border px-4 py-3 cursor-pointer transition-colors ${
+                      checked ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleAssigner(assigner.id)}
+                      className="h-4 w-4 accent-green-600"
+                    />
+                    <span className="min-w-0">
+                      <span className="block font-semibold text-slate-800 truncate">
+                        {assigner.username || assigner.email}
+                      </span>
+                      <span className="block text-xs text-gray-500 truncate">
+                        {assigner.email} · {assigner.role}
+                      </span>
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-800">ตั้งค่าช่องทางนำเข้า</h2>

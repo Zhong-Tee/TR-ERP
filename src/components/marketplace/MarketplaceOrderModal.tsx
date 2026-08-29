@@ -81,7 +81,7 @@ export default function MarketplaceOrderModal({
   mpOrder,
   readOnly,
   user,
-  isAdmin = false,
+  canAssign,
   salesUsers = [],
   onClose,
   onChanged,
@@ -89,7 +89,7 @@ export default function MarketplaceOrderModal({
   mpOrder: MpOrder
   readOnly: boolean
   user: User
-  isAdmin?: boolean
+  canAssign: boolean
   salesUsers?: MpSalesUser[]
   onClose: () => void
   onChanged: () => void
@@ -123,7 +123,6 @@ export default function MarketplaceOrderModal({
   const [splitQtys, setSplitQtys] = useState<number[]>([])
   // map: itemId → groupId ของรายการที่ผู้ใช้กด "แยก" ในเซสชันนี้ (ไม่บันทึกลง DB — ใช้คุมปุ่ม "รวมกลับ")
   const [splitGroups, setSplitGroups] = useState<Record<string, string>>({})
-
   const productById = useMemo(() => {
     const m = new Map<string, ProductOption>()
     products.forEach((p) => m.set(p.id, p))
@@ -672,8 +671,12 @@ export default function MarketplaceOrderModal({
     return u ? u.username || u.email : 'ผู้ใช้ที่ถูกลบ'
   }, [assignedTo, salesUsers])
 
-  // เปลี่ยนผู้รับผิดชอบ (admin/superadmin เท่านั้น) — บันทึกทันที
+  // เปลี่ยนผู้รับผิดชอบ — บันทึกทันที (ตรวจซ้ำทั้ง UI และ RLS)
   async function handleChangeAssignee(newId: string) {
+    if (!canAssign) {
+      showMessage({ title: 'ไม่มีสิทธิ์มอบหมายงาน', message: 'บัญชีนี้ไม่มีสิทธิ์ Assign งาน Marketplace' })
+      return
+    }
     const prev = assignedTo
     if (newId === prev) return
     setAssignedTo(newId)
@@ -719,18 +722,27 @@ export default function MarketplaceOrderModal({
         <div className="flex-1 overflow-y-auto p-6 space-y-5">
           {/* Header */}
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleCopyOrderNo}
-              title="คลิกเพื่อคัดลอกเลขคำสั่งซื้อ"
-              className="text-xl font-bold text-slate-800 hover:text-blue-700 transition-colors"
-            >
-              {mpOrder.marketplace_order_no}
-            </button>
+            {readOnly ? (
+              <span className="text-xl font-bold text-slate-800">{mpOrder.marketplace_order_no}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCopyOrderNo}
+                title="คลิกเพื่อคัดลอกเลขคำสั่งซื้อ"
+                className="text-xl font-bold text-slate-800 hover:text-blue-700 transition-colors"
+              >
+                {mpOrder.marketplace_order_no}
+              </button>
+            )}
             {copied && (
               <span className="text-xs text-green-600 font-medium animate-pulse">คัดลอกแล้ว</span>
             )}
             <UrgencyBadge order={mpOrder} />
+            {readOnly && (
+              <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-600 font-semibold text-sm">
+                ดูอย่างเดียว
+              </span>
+            )}
             <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold text-sm">
               {mpOrder.channel_code}
             </span>
@@ -742,13 +754,6 @@ export default function MarketplaceOrderModal({
                 เปิดบิลแล้ว: {mpOrder.billed_bill_no}
               </span>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="ml-auto px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50"
-            >
-              ปิด
-            </button>
           </div>
 
           {/* ข้อมูลออเดอร์ */}
@@ -759,7 +764,7 @@ export default function MarketplaceOrderModal({
             </span>
             <span className="flex items-center gap-1.5">
               <span className="text-gray-500">ผู้รับผิดชอบ</span>
-              {isAdmin ? (
+              {canAssign ? (
                 <>
                   <select
                     value={assignedTo}
@@ -768,7 +773,7 @@ export default function MarketplaceOrderModal({
                     className="border border-gray-300 rounded-lg px-2 py-1 text-sm font-medium text-slate-800 disabled:opacity-60"
                   >
                     <option value="">— ยังไม่มอบหมาย —</option>
-                    {salesUsers.map((u) => (
+                    {salesUsers.filter((u) => u.role !== 'sales-pump' || u.id === assignedTo).map((u) => (
                       <option key={u.id} value={u.id}>
                         {u.username || u.email}
                       </option>

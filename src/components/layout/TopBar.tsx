@@ -705,7 +705,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
           data-app-subnav
           className="relative z-30 shrink-0 border-b border-surface-200 bg-white shadow-soft"
         >
-          <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
+          <div className="app-subnav-scrollbar w-full overflow-x-auto px-2 sm:px-4 md:px-6 lg:px-8">
             <div className="flex items-center justify-between gap-4">
               <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
                 {activeSubTabs.map((tab) => {

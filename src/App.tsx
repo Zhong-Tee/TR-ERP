@@ -281,7 +281,7 @@ function AppRoutes() {
       <Route
         path="/marketplace"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr']}>
             <Layout>
               <Marketplace />
             </Layout>

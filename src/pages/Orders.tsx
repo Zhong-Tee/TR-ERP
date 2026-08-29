@@ -609,10 +609,10 @@ export default function Orders() {
     >
       {/* หัวเมนูย่อย — sticky ภายใน scroll container ไม่ทะลุ */}
       <div
-        className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6"
+        className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6"
       >
         {/* Navigation Tabs */}
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+        <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {[
               { id: 'all', label: 'ทั้งหมด' },

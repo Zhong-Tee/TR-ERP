@@ -1379,6 +1379,7 @@ export default function Settings() {
   async function toggleRoleMenu(role: string, menuKey: string, checked: boolean) {
     const targetMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)
     if (!targetMenu) return
+    if (role === 'sales-pump' && (targetMenu.key === 'marketplace' || targetMenu.group === 'marketplace')) return
     setRoleMenus((prev) => {
       const childrenByParent = buildChildrenByParent()
       const parentOfMenu = MENU_ROLE_OPTIONS.find((m) => m.key === menuKey)?.group || ''
@@ -1440,11 +1441,12 @@ export default function Settings() {
         const menus = currentRoleMenus[role] ?? {}
         const r = normalizeRole(role)
         MENU_ROLE_OPTIONS.forEach((menu) => {
+          const marketplaceBlocked = role === 'sales-pump' && (menu.key === 'marketplace' || menu.group === 'marketplace')
           payload.push({
             role: r,
             menu_key: menu.key,
             menu_name: menu.label,
-            has_access: menus[menu.key] ?? false,
+            has_access: marketplaceBlocked ? false : (menus[menu.key] ?? false),
           })
         })
       })
@@ -2615,8 +2617,8 @@ export default function Settings() {
   return (
     <div className="space-y-6">
       {/* เมนูย่อย — สไตล์เดียวกับเมนูออเดอร์ */}
-      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
-        <div className="w-full px-4 sm:px-6 lg:px-8 overflow-x-auto scrollbar-thin">
+      <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6">
+        <div className="w-full overflow-x-auto px-2 scrollbar-thin sm:px-4 md:px-6 lg:px-8">
           <nav className="flex gap-1 sm:gap-3 flex-nowrap min-w-max py-3" aria-label="Tabs">
             {SETTINGS_TABS.filter((tab) => hasAccess(`settings-${tab.key}`)).map((tab) => (
               <button
@@ -3144,12 +3146,14 @@ export default function Settings() {
                       {settingsRoles.map((role) => (
                         (() => {
                           const compatibility = getRoleMenuCompatibility(menu.key, menu.group, role)
-                          return <td key={role} className="p-2 text-center" title={compatibility.detail}>
+                          const marketplaceBlocked = role === 'sales-pump' && (menu.key === 'marketplace' || menu.group === 'marketplace')
+                          return <td key={role} className="p-2 text-center" title={marketplaceBlocked ? 'sales-pump ไม่สามารถเข้า Marketplace ได้' : compatibility.detail}>
                           <div className="flex items-center justify-center gap-1.5">
                           <input
                             type="checkbox"
                             className="rounded border-gray-300 w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-                            checked={roleMenus?.[role]?.[menu.key] ?? false}
+                            checked={marketplaceBlocked ? false : (roleMenus?.[role]?.[menu.key] ?? false)}
+                            disabled={marketplaceBlocked}
                             onChange={(e) => toggleRoleMenu(role, menu.key, e.target.checked)}
                           />
                           <span aria-label={compatibility.label} className={`inline-block h-2 w-2 rounded-full ${compatibility.level === 'supported' ? 'bg-emerald-500' : 'bg-amber-500'}`} />

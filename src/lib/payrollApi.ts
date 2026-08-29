@@ -13,6 +13,7 @@ export interface PayrollItem {
   position_allowance: number
   personal_tax: number
   social_security: number
+  ewf: number
   savings: number
   student_loan: number
   company_loan: number
@@ -22,6 +23,7 @@ export interface PayrollItem {
   income_opening_balance: number
   personal_tax_opening_balance: number
   social_security_opening_balance: number
+  ewf_opening_balance: number
   student_loan_opening_balance: number
   savings_opening_balance: number
   company_loan_opening_balance: number
@@ -58,6 +60,27 @@ export const DEFAULT_SOCIAL_SECURITY_SETTINGS: SocialSecuritySettings = {
   id: true,
   contribution_rate: 5,
   maximum_wage_base: 17500,
+}
+
+export function calculateCappedSavings(input: {
+  monthlySavings: number
+  openingBalance: number
+  priorSavings: number
+  maximumBalance?: number | null
+}): number {
+  const monthlySavings = Math.max(0, Number(input.monthlySavings) || 0)
+  if (input.maximumBalance == null) return monthlySavings
+  const maximumBalance = Math.max(0, Number(input.maximumBalance) || 0)
+  const accumulatedBeforeMonth = Math.max(0, Number(input.openingBalance) || 0)
+    + Math.max(0, Number(input.priorSavings) || 0)
+  const remaining = Math.max(0, maximumBalance - accumulatedBeforeMonth)
+  return Math.round(Math.min(monthlySavings, remaining) * 100) / 100
+}
+
+/** กองทุนสงเคราะห์ลูกจ้าง (EWF) = ฐานเงินเดือนรวมเงินพิเศษ × 0.25% */
+export function calculateEwf(wage: number): number {
+  const eligibleWage = Math.max(0, Number(wage) || 0)
+  return Math.round(eligibleWage * 0.0025 * 100) / 100
 }
 
 function throwIfError(error: { message: string } | null) {
@@ -209,16 +232,14 @@ export async function savePayrollRun(input: {
       // Generated and server-managed columns must be absent from the INSERT
       // payload. Sending them as undefined can still become a non-DEFAULT
       // value after PostgREST serialization.
-      const {
-        id: _id,
-        payroll_run_id: _payrollRunId,
-        gross_income: _grossIncome,
-        total_deduction: _totalDeduction,
-        net_pay: _netPay,
-        created_at: _createdAt,
-        updated_at: _updatedAt,
-        ...editable
-      } = item as PayrollItem & { created_at?: string; updated_at?: string }
+      const editable = { ...item } as PayrollItem & { created_at?: string; updated_at?: string }
+      delete editable.id
+      delete editable.payroll_run_id
+      delete editable.gross_income
+      delete editable.total_deduction
+      delete editable.net_pay
+      delete editable.created_at
+      delete editable.updated_at
       return {
         ...editable,
         payroll_run_id: run.id,
