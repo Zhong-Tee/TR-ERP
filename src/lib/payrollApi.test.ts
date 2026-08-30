@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateCappedSavings, calculateEwf } from './payrollApi'
+import { calculateCappedSavings, calculateEmployeeEwf, calculateEwf } from './payrollApi'
 
 describe('calculateEwf', () => {
   it('calculates 0.25% from base salary plus position allowance', () => {
@@ -8,6 +8,20 @@ describe('calculateEwf', () => {
 
   it('rounds the result to two decimal places', () => {
     expect(calculateEwf(16667)).toBe(41.67)
+  })
+})
+
+describe('calculateEmployeeEwf', () => {
+  it('does not deduct EWF from EMP00001', () => {
+    expect(calculateEmployeeEwf('EMP00001', 150000, true)).toBe(0)
+  })
+
+  it('does not deduct EWF when the company setting is disabled', () => {
+    expect(calculateEmployeeEwf('EMP00002', 100000, false)).toBe(0)
+  })
+
+  it('calculates EWF for other employees when enabled', () => {
+    expect(calculateEmployeeEwf('EMP00002', 100000, true)).toBe(250)
   })
 })
 

@@ -1131,6 +1131,8 @@ export interface HRCompany {
   signatory_name?: string | null
   signatory_title?: string | null
   signature_url?: string | null
+  /** เปิด/ปิดการหักกองทุนสงเคราะห์ลูกจ้าง (EWF) ของบริษัท */
+  ewf_enabled?: boolean
   is_active: boolean
   created_at?: string
   updated_at?: string

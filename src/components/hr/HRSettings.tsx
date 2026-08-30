@@ -55,7 +55,7 @@ import SocialSecuritySettings from './SocialSecuritySettings'
 const TABS = [
   'รายละเอียดบริษัท', 'ชื่อแผนก', 'ชื่อตำแหน่งงาน', 'ประเภทการลา', 'คะแนนปฏิบัติงาน',
   'ประเภทประกาศ', 'ผู้อนุมัติประกาศ', 'ผู้สัมภาษณ์งาน', 'เกณฑ์คะแนนสัมภาษณ์งาน',
-  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config', 'การหัก สปส',
+  'เส้นทางเงินเดือน', 'Onboarding Templates', 'Telegram Config', 'การหัก สปส/EWF',
 ] as const
 
 /** แท็บคะแนนปฏิบัติงาน — แยกเป็น component ลูก (ไฟล์นี้ยาวพอแล้ว) */

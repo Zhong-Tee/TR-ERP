@@ -45,6 +45,7 @@ type NumericInputValue = number | ''
 function formatNumericInput(value: NumericInputValue, integer = false): string {
   if (value === '') return ''
   return Number(value).toLocaleString('en-US', {
+    minimumFractionDigits: integer ? 0 : 2,
     maximumFractionDigits: integer ? 0 : 2,
   })
 }
@@ -55,6 +56,51 @@ function parseNumericInput(value: string, integer = false): NumericInputValue {
   const parsed = Number(normalized)
   if (!Number.isFinite(parsed)) return ''
   return integer ? Math.floor(parsed) : parsed
+}
+
+interface NumericInputProps {
+  value: NumericInputValue
+  onChange: (value: NumericInputValue) => void
+  integer?: boolean
+  placeholder?: string
+  className?: string
+}
+
+/**
+ * Keeps the user's decimal draft intact while typing (including a trailing zero),
+ * then displays monetary values with exactly two decimal places when unfocused.
+ */
+function NumericInput({
+  value,
+  onChange,
+  integer = false,
+  placeholder,
+  className,
+}: NumericInputProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const displayValue = draft ?? formatNumericInput(value, integer)
+
+  const handleChange = (rawValue: string) => {
+    const normalized = rawValue.replace(/,/g, '')
+    const validPattern = integer ? /^\d*$/ : /^\d*(?:\.\d{0,2})?$/
+    if (!validPattern.test(normalized)) return
+
+    setDraft(normalized)
+    onChange(parseNumericInput(normalized, integer))
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={integer ? 'numeric' : 'decimal'}
+      value={displayValue}
+      onFocus={() => setDraft(value === '' ? '' : integer ? String(value) : Number(value).toFixed(2))}
+      onChange={(e) => handleChange(e.target.value)}
+      onBlur={() => setDraft(null)}
+      placeholder={placeholder}
+      className={className}
+    />
+  )
 }
 
 type DocEntry = { name: string; url: string; type: string; uploaded_at: string }
@@ -889,50 +935,36 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                 <span className="block text-sm font-medium text-gray-700 mb-1">
                   {contract_type === 'daily' ? 'ค่าแรงรายวัน' : 'ฐานเงินเดือน'}
                 </span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={salary === '' ? '' : Number(salary).toLocaleString('en-US')}
-                  onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, '')
-                    setSalary(digits === '' ? '' : Number(digits))
-                  }}
-                  placeholder="เช่น 12,000"
+                <NumericInput
+                  value={salary}
+                  onChange={setSalary}
+                  placeholder="เช่น 12,000.00"
                   className={fieldClass}
                 />
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เงินพิเศษ/ประจำตำแหน่ง</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={position_allowance === '' ? '' : Number(position_allowance).toLocaleString('en-US')}
-                  onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, '')
-                    setPositionAllowance(digits === '' ? '' : Number(digits))
-                  }}
-                  placeholder="เช่น 2,000"
+                <NumericInput
+                  value={position_allowance}
+                  onChange={setPositionAllowance}
+                  placeholder="เช่น 2,000.00"
                   className={fieldClass}
                 />
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เงินสะสม/เดือน</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={formatNumericInput(monthly_savings)}
-                  onChange={(e) => setMonthlySavings(parseNumericInput(e.target.value))}
+                <NumericInput
+                  value={monthly_savings}
+                  onChange={setMonthlySavings}
                   placeholder="0.00"
                   className={fieldClass}
                 />
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">ยอดเงินสะสมสูงสุด</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={formatNumericInput(savings_maximum)}
-                  onChange={(e) => setSavingsMaximum(parseNumericInput(e.target.value))}
+                <NumericInput
+                  value={savings_maximum}
+                  onChange={setSavingsMaximum}
                   placeholder="เว้นว่าง = ไม่จำกัด"
                   className={fieldClass}
                 />
@@ -942,11 +974,9 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
               </label>
               <label>
                 <span className="block text-sm font-medium text-gray-700 mb-1">เงินกู้บริษัทฯ/เดือน</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={formatNumericInput(monthly_company_loan)}
-                  onChange={(e) => setMonthlyCompanyLoan(parseNumericInput(e.target.value))}
+                <NumericInput
+                  value={monthly_company_loan}
+                  onChange={setMonthlyCompanyLoan}
                   placeholder="0.00"
                   className={fieldClass}
                 />
@@ -1160,11 +1190,10 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
             ] as const).map(([label, value, setter, integer]) => (
               <label key={label}>
                 <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
-                <input
-                  type="text"
-                  inputMode={integer ? 'numeric' : 'decimal'}
-                  value={formatNumericInput(value, integer)}
-                  onChange={(e) => setter(parseNumericInput(e.target.value, integer))}
+                <NumericInput
+                  value={value}
+                  onChange={setter}
+                  integer={integer}
                   className={fieldClass}
                 />
               </label>

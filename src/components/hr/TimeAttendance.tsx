@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { FiRefreshCw, FiMapPin, FiCamera, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
+import * as ExcelJS from 'exceljs'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
 import TimeEntryImport from './TimeEntryImport'
@@ -13,6 +14,7 @@ import {
   fetchWFHRequests,
   fetchWorkCalendar,
   fetchCompanyHolidays,
+  resolveEmployeeDayType,
   getTimeClockPhotoUrl,
   getTimeClockPhotoUrls,
   fetchTimeCertifications,
@@ -21,7 +23,7 @@ import {
   requestTimeClockPhotoCleanup,
 } from '../../lib/hrApi'
 import { useAuthContext } from '../../contexts/AuthContext'
-import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification, HRLeaveRequest, HRWFHRequest } from '../../types'
+import type { HRTimeEntry, HREmployee, HRDepartment, HRWorkSchedule, HRTimeEntryType, HRTimeCertification, HRLeaveRequest, HRWFHRequest, HREmployeeWorkCalendar } from '../../types'
 
 const ENTRY_LABELS: Record<HRTimeEntryType, string> = {
   clock_in: 'เข้างาน',
@@ -59,6 +61,31 @@ function todayStr(): string {
 
 function monthStr(): string {
   return todayStr().slice(0, 7)
+}
+
+function dateRange(from: string, to: string): string[] {
+  if (!from || !to || from > to) return []
+  const dates: string[] = []
+  const current = new Date(`${from}T12:00:00`)
+  const end = new Date(`${to}T12:00:00`)
+  while (current <= end) {
+    const pad = (value: number) => String(value).padStart(2, '0')
+    dates.push(`${current.getFullYear()}-${pad(current.getMonth() + 1)}-${pad(current.getDate())}`)
+    current.setDate(current.getDate() + 1)
+  }
+  return dates
+}
+
+function leaveDescription(leaves: HRLeaveRequest[]): string {
+  return leaves.map((leave) => {
+    const name = leave.leave_type?.name || 'ลา'
+    if (leave.leave_mode === 'hourly') {
+      const start = leave.start_time?.slice(0, 5) || '-'
+      const end = leave.end_time?.slice(0, 5) || '-'
+      return `${name} ${start}–${end}`
+    }
+    return `${name} เต็มวัน`
+  }).join('; ')
 }
 
 function empName(e?: HREmployee | null): string {
@@ -202,6 +229,7 @@ export default function TimeAttendance() {
   const [photoView, setPhotoView] = useState<{ url: string; caption: string } | null>(null)
   const [photoLoading, setPhotoLoading] = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [exportingEntries, setExportingEntries] = useState(false)
   /** signed URL รูปย่อในตาราง (path → url) */
   const [photoThumbs, setPhotoThumbs] = useState<Record<string, string>>({})
 
@@ -606,134 +634,292 @@ export default function TimeAttendance() {
     )
   }, [summaryRows, summarySearch])
 
-  const exportEntries = () => {
-    const today = todayStr()
-    const deptName = (emp: HREmployee) =>
-      (emp as HREmployee & { department?: { name?: string } }).department?.name ?? '-'
+  const exportEntries = async () => {
+    if (!dateFrom || !dateTo || dateFrom > dateTo) return
+    setExportingEntries(true)
+    try {
+      const [allEmployees, allSchedules, calendarDays, companyHolidays] = await Promise.all([
+        fetchEmployees(),
+        fetchWorkSchedules(true),
+        fetchWorkCalendar(dateFrom, dateTo),
+        fetchCompanyHolidays(dateFrom, dateTo),
+      ])
+      const today = todayStr()
+      const dates = dateRange(dateFrom, dateTo)
+      const deptName = (employee: HREmployee) => employee.department?.name ?? '-'
+      const entryEmployeeIds = new Set(filteredEntries.map((entry) => entry.employee_id))
+      const searchTerm = search.trim().toLowerCase()
+      const reportEmployees = allEmployees
+        .filter((employee) => ['active', 'probation'].includes(employee.employment_status) || entryEmployeeIds.has(employee.id))
+        .filter((employee) => !departmentFilter || employee.department_id === departmentFilter)
+        .filter((employee) => !searchTerm || `${employee.employee_code} ${employee.first_name} ${employee.last_name} ${employee.nickname ?? ''}`.toLowerCase().includes(searchTerm))
+        .sort((a, b) => (a.employee_code || '').localeCompare(b.employee_code || '', 'en', { numeric: true, sensitivity: 'base' }))
 
-    // แบนข้อมูล Dashboard → รายการต่อคน-ต่อวัน แล้วเรียงตามชื่อ→วันที่
-    const flat = dashboardGroups
-      .flatMap(({ date, rows }) =>
-        rows.map((r) => ({
-          date,
-          r,
-          lateMin: r.clockIn ? entryLateMinutes(r.clockIn) : 0,
-          otMin: otMinutesOf(r),
-        })),
+      const scheduleById = new Map(allSchedules.map((schedule) => [schedule.id, schedule]))
+      const fallbackSchedule = allSchedules.find((schedule) => schedule.is_default && schedule.is_active)
+        ?? allSchedules.find((schedule) => schedule.is_active)
+        ?? FALLBACK_SCHEDULE
+      const calendarByKey = new Map(calendarDays.map((day) => [`${day.employee_id}|${day.work_date}`, day]))
+      const holidayByDate = new Map(companyHolidays.map((holiday) => [holiday.holiday_date, holiday]))
+      const entriesByKey = new Map<string, DashRow>()
+      filteredEntries.forEach((entry) => {
+        const employee = reportEmployees.find((row) => row.id === entry.employee_id) ?? entry.employee
+        if (!employee) return
+        const key = `${entry.employee_id}|${entry.work_date}`
+        const row = entriesByKey.get(key) ?? { employee }
+        const time = new Date(entry.entry_time).getTime()
+        if (entry.entry_type === 'clock_in' && (!row.clockIn || time < new Date(row.clockIn.entry_time).getTime())) row.clockIn = entry
+        if (entry.entry_type === 'clock_out' && (!row.clockOut || time > new Date(row.clockOut.entry_time).getTime())) row.clockOut = entry
+        if (entry.entry_type === 'ot_in' && (!row.otIn || time < new Date(row.otIn.entry_time).getTime())) row.otIn = entry
+        if (entry.entry_type === 'ot_out' && (!row.otOut || time > new Date(row.otOut.entry_time).getTime())) row.otOut = entry
+        entriesByKey.set(key, row)
+      })
+
+      const dayLeaves = (employeeId: string, date: string) => approvedLeaves.filter((leave) =>
+        leave.employee_id === employeeId && leave.start_date <= date && leave.end_date >= date,
       )
-      .sort(
-        (a, b) =>
-          empName(a.r.employee).localeCompare(empName(b.r.employee), 'th') || a.date.localeCompare(b.date),
+      const lateMinutesFor = (
+        entry: HRTimeEntry,
+        employee: HREmployee,
+        schedule: HRWorkSchedule | typeof FALLBACK_SCHEDULE,
+        override?: HREmployeeWorkCalendar,
+      ) => {
+        const overrideSchedule = override?.work_schedule_id ? scheduleById.get(override.work_schedule_id) : undefined
+        const effectiveSchedule = overrideSchedule ?? schedule
+        const wfh = approvedWFH.find((request) =>
+          request.employee_id === employee.id && request.start_date <= entry.work_date && request.end_date >= entry.work_date,
+        )
+        let expected = parseTimeToMinutes((override?.work_start || wfh?.start_time || effectiveSchedule.work_start).slice(0, 5))
+        const actual = localMinutes(entry.entry_time)
+        const leaves = dayLeaves(employee.id, entry.work_date)
+        if (leaves.some((leave) => leave.leave_mode !== 'hourly')) return 0
+        const ranges = leaves
+          .filter((leave) => leave.leave_mode === 'hourly' && leave.start_time && leave.end_time)
+          .map((leave) => [parseTimeToMinutes(leave.start_time!.slice(0, 5)), parseTimeToMinutes(leave.end_time!.slice(0, 5))] as const)
+          .sort((a, b) => a[0] - b[0])
+        if (ranges.some(([start, end]) => actual >= start && actual <= end)) return 0
+        ranges.forEach(([start, end]) => { if (start <= expected && end > expected) expected = end })
+        return Math.max(0, actual - (expected + (effectiveSchedule.late_grace_min ?? 0)))
+      }
+
+      type ReportDay = {
+        employee: HREmployee
+        date: string
+        row: DashRow
+        lateMin: number
+        otMin: number
+        statusKey: DashStatusKey | 'leave' | 'holiday' | 'absent' | 'future'
+        statusLabel: string
+        dayTypeLabel: string
+        leaveLabel: string
+      }
+      const reportDays: ReportDay[] = []
+      reportEmployees.forEach((employee) => {
+        const assigned = employee.work_schedule_id ? scheduleById.get(employee.work_schedule_id) : undefined
+        const baseSchedule = assigned ?? fallbackSchedule
+        dates.forEach((date) => {
+          if (employee.hire_date && date < employee.hire_date.slice(0, 10)) return
+          const key = `${employee.id}|${date}`
+          const row = entriesByKey.get(key) ?? { employee }
+          const override = calendarByKey.get(key)
+          const holiday = holidayByDate.get(date)
+          const dayType = resolveEmployeeDayType(date, baseSchedule as HRWorkSchedule, override, holiday)
+          const leaves = dayLeaves(employee.id, date)
+          const hasEntry = !!(row.clockIn || row.clockOut || row.otIn || row.otOut)
+          const lateMin = dayType === 'work' && row.clockIn ? lateMinutesFor(row.clockIn, employee, baseSchedule, override) : 0
+          const otMin = otMinutesOf(row)
+          let dayTypeLabel = 'วันทำงาน'
+          let statusKey: ReportDay['statusKey'] = 'normal'
+          let statusLabel = 'ปกติ'
+
+          if (dayType === 'company_holiday') {
+            dayTypeLabel = holiday?.name ? `วันหยุดบริษัท (${holiday.name})` : 'วันหยุดบริษัท'
+            statusKey = 'holiday'
+            statusLabel = hasEntry ? 'มาทำงานวันหยุด' : 'ไม่ต้องลงเวลา'
+          } else if (dayType === 'weekly_off') {
+            dayTypeLabel = override?.day_type === 'weekly_off' ? 'วันหยุดเฉพาะพนักงาน' : 'วันหยุดประจำสัปดาห์'
+            statusKey = 'holiday'
+            statusLabel = hasEntry ? 'มาทำงานวันหยุด' : 'ไม่ต้องลงเวลา'
+          } else if (!hasEntry && leaves.length) {
+            statusKey = 'leave'
+            statusLabel = 'ลา'
+          } else if (!hasEntry) {
+            statusKey = date < today ? 'absent' : date === today ? 'missing_in' : 'future'
+            statusLabel = date < today ? 'ขาดงาน' : date === today ? 'ยังไม่ลงเวลา' : 'ยังไม่ถึงวันทำงาน'
+          } else {
+            const status = dashStatusOf(row, lateMin, date < today)
+            statusKey = status.key
+            statusLabel = status.label
+          }
+
+          reportDays.push({
+            employee,
+            date,
+            row,
+            lateMin,
+            otMin,
+            statusKey,
+            statusLabel,
+            dayTypeLabel,
+            leaveLabel: dayType === 'work' ? leaveDescription(leaves) : '',
+          })
+        })
+      })
+
+      // เรียงรหัสพนักงานจากน้อยไปมาก แล้วเรียงวันที่ของพนักงานคนนั้นจากเก่าไปใหม่
+      reportDays.sort((a, b) =>
+        (a.employee.employee_code || '').localeCompare(b.employee.employee_code || '', 'en', { numeric: true, sensitivity: 'base' })
+        || a.date.localeCompare(b.date),
       )
+      const dailyRows = reportDays.map((day) => ({
+        'วันที่': new Date(`${day.date}T00:00:00`).toLocaleDateString('th-TH'),
+        'รหัส': day.employee.employee_code ?? '',
+        'พนักงาน': empName(day.employee),
+        'แผนก': deptName(day.employee),
+        'เข้างาน': day.row.clockIn ? fmtClock(day.row.clockIn.entry_time) : '',
+        'ออกงาน': day.row.clockOut ? fmtClock(day.row.clockOut.entry_time) : '',
+        'สาย (วัน)': day.lateMin > 0 ? minutesToHHMM(day.lateMin) : day.row.clockIn ? 'ตรงเวลา' : '',
+        'เข้า OT': day.row.otIn ? fmtClock(day.row.otIn.entry_time) : '',
+        'ออก OT': day.row.otOut ? fmtClock(day.row.otOut.entry_time) : '',
+        'OT รวม (วัน)': day.otMin > 0 ? minutesToHHMM(day.otMin) : '',
+        'ประเภทวัน': day.dayTypeLabel,
+        'สถานะ': day.statusLabel,
+        'การลา': day.leaveLabel,
+      }))
 
-    // ── ชีต 1: รายวัน (ละเอียด) — เข้า/ออก/OT/สาย ต่อคนต่อวันในแถวเดียว ──
-    const dailyRows = flat.map((f) => {
-      const st = dashStatusOf(f.r, f.lateMin, f.date < today)
-      return {
-        'วันที่': new Date(f.date + 'T00:00:00').toLocaleDateString('th-TH'),
-        'รหัส': f.r.employee.employee_code ?? '',
-        'พนักงาน': empName(f.r.employee),
-        'แผนก': deptName(f.r.employee),
-        'เข้างาน': f.r.clockIn ? fmtClock(f.r.clockIn.entry_time) : '',
-        'ออกงาน': f.r.clockOut ? fmtClock(f.r.clockOut.entry_time) : '',
-        'สาย (วัน)': f.lateMin > 0 ? minutesToHHMM(f.lateMin) : f.r.clockIn ? 'ตรงเวลา' : '',
-        'เข้า OT': f.r.otIn ? fmtClock(f.r.otIn.entry_time) : '',
-        'ออก OT': f.r.otOut ? fmtClock(f.r.otOut.entry_time) : '',
-        'OT รวม (วัน)': f.otMin > 0 ? minutesToHHMM(f.otMin) : '',
-        'สถานะ': st.label,
+      type Agg = { employee: HREmployee; present: number; lateCount: number; lateMin: number; otMin: number; missIn: number; missOut: number }
+      const byEmp = new Map<string, Agg>()
+      reportDays.forEach((day) => {
+        const aggregate = byEmp.get(day.employee.id) ?? { employee: day.employee, present: 0, lateCount: 0, lateMin: 0, otMin: 0, missIn: 0, missOut: 0 }
+        if (day.row.clockIn) aggregate.present++
+        if (day.lateMin > 0) { aggregate.lateCount++; aggregate.lateMin += day.lateMin }
+        aggregate.otMin += day.otMin
+        if (day.statusKey === 'missing_in') aggregate.missIn++
+        if (day.statusKey === 'missing_out') aggregate.missOut++
+        byEmp.set(day.employee.id, aggregate)
+      })
+      const perEmp = [...byEmp.values()].sort((a, b) =>
+        (a.employee.employee_code || '').localeCompare(b.employee.employee_code || '', 'en', { numeric: true, sensitivity: 'base' }),
+      )
+      const grandLate = perEmp.reduce((sum, row) => sum + row.lateMin, 0)
+      const grandOt = perEmp.reduce((sum, row) => sum + row.otMin, 0)
+      const summaryRows: Record<string, string | number>[] = perEmp.map((row) => ({
+        'รหัส': row.employee.employee_code ?? '', 'พนักงาน': empName(row.employee), 'แผนก': deptName(row.employee),
+        'มาทำงาน (วัน)': row.present, 'สาย (ครั้ง)': row.lateCount,
+        'สายรวม': row.lateMin > 0 ? minutesToHHMM(row.lateMin) : '-', 'OT รวม': row.otMin > 0 ? minutesToHHMM(row.otMin) : '-',
+        'ลืมเข้า (ครั้ง)': row.missIn || '', 'ลืมออก (ครั้ง)': row.missOut || '',
+      }))
+      summaryRows.push({
+        'รหัส': '', 'พนักงาน': '★ รวมทั้งหมด', 'แผนก': '', 'มาทำงาน (วัน)': '',
+        'สาย (ครั้ง)': perEmp.reduce((sum, row) => sum + row.lateCount, 0),
+        'สายรวม': grandLate > 0 ? minutesToHHMM(grandLate) : '-', 'OT รวม': grandOt > 0 ? minutesToHHMM(grandOt) : '-',
+        'ลืมเข้า (ครั้ง)': perEmp.reduce((sum, row) => sum + row.missIn, 0) || '',
+        'ลืมออก (ครั้ง)': perEmp.reduce((sum, row) => sum + row.missOut, 0) || '',
+      })
+
+      const rawRows = [...filteredEntries]
+        .sort((a, b) => (a.employee?.employee_code || '').localeCompare(b.employee?.employee_code || '', 'en', { numeric: true, sensitivity: 'base' }) || a.work_date.localeCompare(b.work_date) || a.entry_time.localeCompare(b.entry_time))
+        .map((entry) => {
+          const lateMin = entryLateMinutes(entry)
+          const earlyMin = entryEarlyLeaveMinutes(entry)
+          return {
+            'รหัส': entry.employee?.employee_code ?? '', 'พนักงาน': empName(entry.employee),
+            'แผนก': entry.employee?.department?.name ?? '-', 'ประเภท': ENTRY_LABELS[entry.entry_type],
+            'วันที่': new Date(`${entry.work_date}T00:00:00`).toLocaleDateString('th-TH'),
+            'เวลา': new Date(entry.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            'สาย / ออกก่อน': entry.entry_type === 'clock_in' ? (lateMin > 0 ? `สาย ${minutesToHHMM(lateMin)}` : 'ตรงเวลา')
+              : entry.entry_type === 'clock_out' ? (earlyMin > 0 ? `ออกก่อน ${minutesToHHMM(earlyMin)}` : 'ครบเวลา') : '-',
+            'จุดบันทึก': entry.location_name ?? '-', 'ระยะ (ม.)': entry.distance_m != null ? Math.round(entry.distance_m) : '',
+          }
+        })
+
+      const workbook = new ExcelJS.Workbook()
+      workbook.creator = 'TR-ERP'
+      workbook.created = new Date()
+      const border: Partial<ExcelJS.Borders> = {
+        top: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+        left: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+        bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+        right: { style: 'thin', color: { argb: 'FFD1D5DB' } },
       }
-    })
+      const styleHeader = (worksheet: ExcelJS.Worksheet) => {
+        const header = worksheet.getRow(1)
+        header.height = 25
+        header.eachCell((cell) => {
+          cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } }
+          cell.alignment = { vertical: 'middle', horizontal: 'center' }
+          cell.border = border
+        })
+        worksheet.views = [{ state: 'frozen', ySplit: 1 }]
+        if (worksheet.columnCount) worksheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: worksheet.columnCount } }
+      }
 
-    // ── ชีต 2: สรุปต่อคน + แถวรวมทั้งหมด ──
-    type Agg = {
-      employee: HREmployee
-      present: number
-      lateCount: number
-      lateMin: number
-      otMin: number
-      missIn: number
-      missOut: number
+      const dailySheet = workbook.addWorksheet('รายวัน (ละเอียด)')
+      const dailyColumns = [
+        ['วันที่', 13], ['รหัส', 12], ['พนักงาน', 28], ['แผนก', 20], ['เข้างาน', 10], ['ออกงาน', 10],
+        ['สาย (วัน)', 13], ['เข้า OT', 10], ['ออก OT', 10], ['OT รวม (วัน)', 14], ['ประเภทวัน', 30], ['สถานะ', 20], ['การลา', 30],
+      ] as const
+      dailySheet.columns = dailyColumns.map(([key, width]) => ({ header: key, key, width }))
+      dailyRows.forEach((data, index) => {
+        const row = dailySheet.addRow(data)
+        const reportDay = reportDays[index]
+        const fillColor = reportDay.statusKey === 'late' ? 'FFFFE0B2'
+          : reportDay.statusKey === 'leave' ? 'FFEDE9FE'
+            : ['absent', 'missing_in', 'missing_out'].includes(reportDay.statusKey) ? 'FFFFCDD2'
+              : reportDay.statusKey === 'holiday' ? 'FFE3F2FD'
+                : reportDay.statusKey === 'future' ? 'FFF3F4F6'
+                  : reportDay.statusKey === 'certified' ? 'FFD9EAF7'
+                    : reportDay.statusKey === 'working' ? 'FFE0F2FE'
+                      : 'FFFFFFFF'
+        row.eachCell((cell) => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } }
+          cell.border = border
+          cell.alignment = { vertical: 'middle', horizontal: 'left' }
+        })
+        row.getCell(12).font = { bold: true, color: { argb: reportDay.statusKey === 'absent' ? 'FFB91C1C' : 'FF374151' } }
+      })
+      styleHeader(dailySheet)
+
+      const summarySheet = workbook.addWorksheet('สรุปต่อคน')
+      const summaryColumns = [['รหัส', 12], ['พนักงาน', 28], ['แผนก', 20], ['มาทำงาน (วัน)', 16], ['สาย (ครั้ง)', 14], ['สายรวม', 14], ['OT รวม', 14], ['ลืมเข้า (ครั้ง)', 16], ['ลืมออก (ครั้ง)', 16]] as const
+      summarySheet.columns = summaryColumns.map(([key, width]) => ({ header: key, key, width }))
+      summaryRows.forEach((data) => {
+        const row = summarySheet.addRow(data)
+        row.eachCell((cell) => { cell.border = border; cell.alignment = { vertical: 'middle', horizontal: 'left' } })
+      })
+      const totalRow = summarySheet.getRow(summarySheet.rowCount)
+      totalRow.font = { bold: true }
+      totalRow.eachCell((cell) => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } } })
+      styleHeader(summarySheet)
+
+      const rawSheet = workbook.addWorksheet('บันทึกดิบ')
+      const rawHeaders = Object.keys(rawRows[0] ?? { 'รหัส': '', 'พนักงาน': '', 'แผนก': '', 'ประเภท': '', 'วันที่': '', 'เวลา': '', 'สาย / ออกก่อน': '', 'จุดบันทึก': '', 'ระยะ (ม.)': '' })
+      rawSheet.columns = rawHeaders.map((key) => ({ header: key, key, width: key === 'พนักงาน' ? 28 : key === 'แผนก' || key === 'จุดบันทึก' ? 20 : 14 }))
+      rawRows.forEach((data) => {
+        const row = rawSheet.addRow(data)
+        row.eachCell((cell) => { cell.border = border; cell.alignment = { vertical: 'middle', horizontal: 'left' } })
+      })
+      styleHeader(rawSheet)
+
+      const buffer = await workbook.xlsx.writeBuffer()
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `สรุปเวลาทำงาน_${dateFrom}_ถึง_${dateTo}.xlsx`
+      link.style.display = 'none'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      // Chrome may start consuming a large ExcelJS Blob after the click stack
+      // completes. Revoking immediately can make the download require a retry.
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    } catch (error) {
+      window.alert(error instanceof Error ? `Export Excel ไม่สำเร็จ: ${error.message}` : 'Export Excel ไม่สำเร็จ')
+    } finally {
+      setExportingEntries(false)
     }
-    const byEmp = new Map<string, Agg>()
-    for (const f of flat) {
-      const a =
-        byEmp.get(f.r.employee.id) ??
-        { employee: f.r.employee, present: 0, lateCount: 0, lateMin: 0, otMin: 0, missIn: 0, missOut: 0 }
-      if (f.r.clockIn) a.present++
-      if (f.lateMin > 0) {
-        a.lateCount++
-        a.lateMin += f.lateMin
-      }
-      a.otMin += f.otMin
-      const st = dashStatusOf(f.r, f.lateMin, f.date < today)
-      if (st.key === 'missing_in') a.missIn++
-      if (st.key === 'missing_out') a.missOut++
-      byEmp.set(f.r.employee.id, a)
-    }
-    const perEmp = [...byEmp.values()].sort((a, b) =>
-      empName(a.employee).localeCompare(empName(b.employee), 'th'),
-    )
-    const grandLate = perEmp.reduce((s, a) => s + a.lateMin, 0)
-    const grandOt = perEmp.reduce((s, a) => s + a.otMin, 0)
-    const summaryRows: Record<string, string | number>[] = perEmp.map((a) => ({
-      'รหัส': a.employee.employee_code ?? '',
-      'พนักงาน': empName(a.employee),
-      'แผนก': deptName(a.employee),
-      'มาทำงาน (วัน)': a.present,
-      'สาย (ครั้ง)': a.lateCount,
-      'สายรวม': a.lateMin > 0 ? minutesToHHMM(a.lateMin) : '-',
-      'OT รวม': a.otMin > 0 ? minutesToHHMM(a.otMin) : '-',
-      'ลืมเข้า (ครั้ง)': a.missIn || '',
-      'ลืมออก (ครั้ง)': a.missOut || '',
-    }))
-    summaryRows.push({
-      'รหัส': '',
-      'พนักงาน': '★ รวมทั้งหมด',
-      'แผนก': '',
-      'มาทำงาน (วัน)': '',
-      'สาย (ครั้ง)': perEmp.reduce((s, a) => s + a.lateCount, 0),
-      'สายรวม': grandLate > 0 ? minutesToHHMM(grandLate) : '-',
-      'OT รวม': grandOt > 0 ? minutesToHHMM(grandOt) : '-',
-      'ลืมเข้า (ครั้ง)': perEmp.reduce((s, a) => s + a.missIn, 0) || '',
-      'ลืมออก (ครั้ง)': perEmp.reduce((s, a) => s + a.missOut, 0) || '',
-    })
-
-    // ── ชีต 3: บันทึกดิบ (log ทุกครั้ง) เผื่อต้องการตรวจย้อน ──
-    const rawRows = filteredEntries.map((e) => {
-      const lm = entryLateMinutes(e)
-      const earlyMin = entryEarlyLeaveMinutes(e)
-      return {
-        'รหัส': e.employee?.employee_code ?? '',
-        'พนักงาน': empName(e.employee),
-        'แผนก': (e.employee as HREmployee & { department?: { name?: string } })?.department?.name ?? '-',
-        'ประเภท': ENTRY_LABELS[e.entry_type],
-        'วันที่': new Date(e.work_date + 'T00:00:00').toLocaleDateString('th-TH'),
-        'เวลา': new Date(e.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        'สาย / ออกก่อน': e.entry_type === 'clock_in'
-          ? (lm > 0 ? `สาย ${minutesToHHMM(lm)}` : 'ตรงเวลา')
-          : e.entry_type === 'clock_out'
-            ? (earlyMin > 0 ? `ออกก่อน ${minutesToHHMM(earlyMin)}` : 'ครบเวลา')
-            : '-',
-        'จุดบันทึก': e.location_name ?? '-',
-        'ระยะ (ม.)': e.distance_m != null ? Math.round(e.distance_m) : '',
-      }
-    })
-
-    const wb = XLSX.utils.book_new()
-    const wsDaily = XLSX.utils.json_to_sheet(dailyRows)
-    wsDaily['!cols'] = [
-      { wch: 13 }, { wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 9 }, { wch: 9 },
-      { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 12 }, { wch: 12 },
-    ]
-    XLSX.utils.book_append_sheet(wb, wsDaily, 'รายวัน (ละเอียด)')
-    const wsSum = XLSX.utils.json_to_sheet(summaryRows)
-    wsSum['!cols'] = [
-      { wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 },
-      { wch: 12 }, { wch: 14 }, { wch: 14 },
-    ]
-    XLSX.utils.book_append_sheet(wb, wsSum, 'สรุปต่อคน')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows), 'บันทึกดิบ')
-    XLSX.writeFile(wb, `สรุปเวลาทำงาน_${dateFrom}_ถึง_${dateTo}.xlsx`)
   }
 
   const exportSummary = () => {
@@ -867,10 +1053,10 @@ export default function TimeAttendance() {
             <button
               type="button"
               onClick={exportEntries}
-              disabled={filteredEntries.length === 0}
+              disabled={entriesLoading || exportingEntries || !dateFrom || !dateTo || dateFrom > dateTo}
               className="flex items-center gap-1.5 px-3 py-2 border border-emerald-600 text-emerald-700 text-sm font-medium rounded-lg hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <FiDownload /> Export Excel
+              <FiDownload /> {exportingEntries ? 'กำลังสร้าง...' : 'Export Excel'}
             </button>
             <button
               type="button"

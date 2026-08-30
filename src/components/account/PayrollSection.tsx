@@ -6,7 +6,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import type { HRCompany, HREmployee } from '../../types'
 import {
   fetchConfirmedLeaveDeductions, fetchHRCompanies, fetchPayrollEmployees, fetchPayrollHistory,
-  fetchPayrollRun, fetchSocialSecuritySettings, calculateSocialSecurity, calculateCappedSavings, calculateEwf, savePayrollRun,
+  fetchPayrollRun, fetchSocialSecuritySettings, calculateSocialSecurity, calculateCappedSavings, calculateEmployeeEwf, savePayrollRun,
   type PayrollItem, type PayrollRun,
 } from '../../lib/payrollApi'
 import PayrollSlipPDF, { type PayrollYtd } from './pdf/PayrollSlipPDF'
@@ -79,6 +79,7 @@ export default function PayrollSection() {
   const [preview, setPreview] = useState<{ item: PayrollItem; url: string } | null>(null)
   const [zipLoading, setZipLoading] = useState(false)
   const company = companies.find((c) => c.id === companyId)
+  const ewfEnabled = company?.ewf_enabled !== false
   const locked = run?.status === 'confirmed'
 
   useEffect(() => {
@@ -120,7 +121,9 @@ export default function PayrollSection() {
           const savings = savedRun.status === 'confirmed' || !employee
             ? Number(item.savings)
             : employeeSavingsForMonth(employee, historyRows, month)
-          const ewf = savedRun.status === 'confirmed' ? Number(item.ewf) : calculateEwf(baseSalary + positionAllowance)
+          const ewf = savedRun.status === 'confirmed'
+            ? Number(item.ewf)
+            : calculateEmployeeEwf(item.employee_code, baseSalary + positionAllowance, ewfEnabled)
           const payrollInputsChanged = openingBalancesChanged
             || (savedRun.status !== 'confirmed' && (savings !== Number(item.savings) || ewf !== Number(item.ewf)))
           return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary + positionAllowance, socialSecuritySettings), ewf, savings, student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), ...openingBalances, reviewed_at: payrollInputsChanged ? null : item.reviewed_at, reviewed_by: payrollInputsChanged ? null : item.reviewed_by }
@@ -134,7 +137,7 @@ export default function PayrollSection() {
         base_salary: Number(employee.salary) || 0, position_allowance: Number(employee.position_allowance) || 0,
         personal_tax: Number(employee.monthly_personal_tax) || 0,
         social_security: employeeSocialSecurity(employee.employee_code, (Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0), socialSecuritySettings),
-        ewf: calculateEwf((Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0)),
+        ewf: calculateEmployeeEwf(employee.employee_code, (Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0), ewfEnabled),
         savings: employeeSavingsForMonth(employee, historyRows, month),
         student_loan: Number(employee.monthly_student_loan) || 0, company_loan: Number(employee.monthly_company_loan) || 0,
         leave_deduction: leaveMap[employee.id] || 0, other_income: 0, other_deduction: 0,
@@ -146,7 +149,7 @@ export default function PayrollSection() {
       }
     } catch (e) { setMessage(e instanceof Error ? e.message : 'โหลดข้อมูลเงินเดือนไม่สำเร็จ') }
     finally { setLoading(false) }
-  }, [companyId, month])
+  }, [companyId, ewfEnabled, month])
   useEffect(() => { load() }, [load])
 
   const totals = useMemo(() => items.reduce((sum, item) => { const c = calc(item); return { salary: sum.salary + c.gross, tax: sum.tax + item.personal_tax, social: sum.social + item.social_security, ewf: sum.ewf + item.ewf, savings: sum.savings + item.savings, student: sum.student + item.student_loan, companyLoan: sum.companyLoan + item.company_loan, leave: sum.leave + item.leave_deduction, net: sum.net + c.net } }, { salary: 0, tax: 0, social: 0, ewf: 0, savings: 0, student: 0, companyLoan: 0, leave: 0, net: 0 }), [items])
@@ -227,6 +230,11 @@ export default function PayrollSection() {
     setPreview((old) => { if (old) URL.revokeObjectURL(old.url); return { item, url: URL.createObjectURL(blob) } })
   }
 
+  const closePreview = () => setPreview((old) => {
+    if (old) URL.revokeObjectURL(old.url)
+    return null
+  })
+
   const downloadAllSlipsZip = async () => {
     if (!company || !locked || !items.length) return
     setZipLoading(true); setMessage('')
@@ -250,9 +258,25 @@ export default function PayrollSection() {
     setSaving(true)
     try {
       const saved = await savePayrollRun({ month, company, paymentDate, items: nextItems, confirm: false, userId: user.id })
-      setRun(saved); setItems(sortPayrollItems(saved.items || nextItems)); setPreview(null)
+      setRun(saved); setItems(sortPayrollItems(saved.items || nextItems)); closePreview()
       setHistory(await fetchPayrollHistory(companyId)); setMessage(`ตรวจสอบสลิป ${preview.item.employee_code} แล้ว`)
     } catch (e) { setMessage(e instanceof Error ? e.message : 'บันทึกผลตรวจสอบไม่สำเร็จ') }
+    finally { setSaving(false) }
+  }
+
+  const cancelReviewed = async () => {
+    if (!preview || !company || locked || !preview.item.reviewed_at) return
+    if (!window.confirm(`ยกเลิกการตรวจสอบสลิป ${preview.item.employee_code} และคืนสถานะเป็น “ยังไม่ตรวจสอบ” หรือไม่?`)) return
+    const employeeCode = preview.item.employee_code
+    const nextItems = items.map((item) => item.employee_id === preview.item.employee_id
+      ? { ...item, reviewed_at: null, reviewed_by: null }
+      : item)
+    setSaving(true)
+    try {
+      const saved = await savePayrollRun({ month, company, paymentDate, items: nextItems, confirm: false, userId: user?.id })
+      setRun(saved); setItems(sortPayrollItems(saved.items || nextItems)); closePreview()
+      setHistory(await fetchPayrollHistory(companyId)); setMessage(`ยกเลิกการตรวจสอบสลิป ${employeeCode} แล้ว`)
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'ยกเลิกการตรวจสอบไม่สำเร็จ') }
     finally { setSaving(false) }
   }
 
@@ -298,8 +322,8 @@ export default function PayrollSection() {
     {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">{cards.map(([label, value, color]) => <div key={label} className="rounded-xl border bg-white p-4"><div className="text-xs text-gray-500">{label}</div><div className={`mt-1 text-xl font-bold ${color}`}>{fmt(value)}</div></div>)}</div>
     <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','ภาษี','ประกันสังคม','EWF','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่นๆ','หักอื่นๆ','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{visibleItems.map((item) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><div className="flex items-center gap-2"><b>{item.employee_code}</b>{locked ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">ยืนยันยอดแล้ว</span> : item.reviewed_at ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">ตรวจสอบแล้ว</span> : null}</div><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td>{(['personal_tax','social_security','ewf','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'ewf' ? <><div>{fmt(item.ewf)}</div><div className="text-xs text-teal-600">สะสม {fmt(progress.accumulatedEwf)}</div></> : key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['personal_tax','student_loan','other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="text" inputMode="decimal" value={item[key]} onChange={(e) => { const value = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, ''); update(item.employee_id, key, Number(value) || 0) }} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><div className="flex justify-end gap-2"><button onClick={() => previewSlip(item)} className="rounded-lg bg-gray-100 text-gray-700 px-3 py-2">ดู</button><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></div></td></tr> })}{visibleItems.length === 0 && <tr><td colSpan={13} className="p-10 text-center text-gray-500">ไม่พบพนักงานที่ค้นหา</td></tr>}</tbody></table>}</div>
-    <Modal open={!!preview} onClose={() => setPreview((old) => { if (old) URL.revokeObjectURL(old.url); return null })} contentClassName="max-w-none h-full flex flex-col rounded-xl">
-      {preview && <div className="flex h-full min-h-0 flex-col"><div className="flex items-center justify-between gap-3 border-b p-4"><div><div className="font-semibold">พรีวิวสลิปเงินเดือน — {preview.item.employee_code}</div><div className="text-sm text-gray-500">{preview.item.employee_name} · {monthLabel(month)}</div></div><div className="flex items-center gap-2">{!locked && !preview.item.reviewed_at && <button type="button" onClick={markReviewed} disabled={saving} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50">ตรวจสอบแล้ว</button>}<button type="button" onClick={() => downloadSlip(preview.item)} className="rounded-lg bg-blue-50 px-4 py-2 text-blue-700">ดาวน์โหลด</button><button type="button" aria-label="ปิดพรีวิวสลิปเงินเดือน" title="ปิด" onClick={() => setPreview((old) => { if (old) URL.revokeObjectURL(old.url); return null })} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-600 text-white hover:bg-red-700"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg></button></div></div><iframe title={`สลิป ${preview.item.employee_code}`} src={`${preview.url}#zoom=150`} className="min-h-0 flex-1 w-full" /></div>}
+    <Modal open={!!preview} onClose={closePreview} contentClassName="max-w-none h-full flex flex-col rounded-xl">
+      {preview && <div className="flex h-full min-h-0 flex-col"><div className="flex items-center justify-between gap-3 border-b p-4"><div><div className="font-semibold">พรีวิวสลิปเงินเดือน — {preview.item.employee_code}</div><div className="text-sm text-gray-500">{preview.item.employee_name} · {monthLabel(month)}</div></div><div className="flex items-center gap-2">{!locked && !preview.item.reviewed_at && <button type="button" onClick={markReviewed} disabled={saving} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50">ตรวจสอบแล้ว</button>}{!locked && preview.item.reviewed_at && <button type="button" onClick={cancelReviewed} disabled={saving} className="rounded-lg border border-amber-500 bg-amber-50 px-4 py-2 text-amber-700 hover:bg-amber-100 disabled:opacity-50">ยกเลิกการตรวจสอบ</button>}<button type="button" onClick={() => downloadSlip(preview.item)} className="rounded-lg bg-blue-50 px-4 py-2 text-blue-700">ดาวน์โหลด</button><button type="button" aria-label="ปิดพรีวิวสลิปเงินเดือน" title="ปิด" onClick={closePreview} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-600 text-white hover:bg-red-700"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg></button></div></div><iframe title={`สลิป ${preview.item.employee_code}`} src={`${preview.url}#zoom=150`} className="min-h-0 flex-1 w-full" /></div>}
     </Modal>
     </>}
   </div>

@@ -83,6 +83,12 @@ export function calculateEwf(wage: number): number {
   return Math.round(eligibleWage * 0.0025 * 100) / 100
 }
 
+/** EMP00001 is exempt; other employees follow their company's EWF setting. */
+export function calculateEmployeeEwf(employeeCode: string, wage: number, ewfEnabled = true): number {
+  if (!ewfEnabled || employeeCode.trim().toUpperCase() === 'EMP00001') return 0
+  return calculateEwf(wage)
+}
+
 function throwIfError(error: { message: string } | null) {
   if (error) throw new Error(error.message)
 }
