@@ -9,6 +9,14 @@ const corsHeaders = {
 }
 
 const TRANSACTIONAL_TABLES = [
+  'mp_order_items',
+  'mp_orders',
+  'mp_import_batches',
+  'qc_escalation_decisions',
+  'qc_record_attempts',
+  'plan_worker_assignments',
+  'pk_packing_reset_logs',
+  'pk_packing_upload_queue_reports',
   'or_claim_requests',
   'pk_packing_unit_scans',
   'inv_gr_item_images',
@@ -40,6 +48,7 @@ const TRANSACTIONAL_TABLES = [
   'ac_manual_slip_checks',
   'ac_credit_note_items',
   'inv_lot_consumptions',
+  'inv_stock_balance_history',
   'inv_pr_items',
   'inv_po_items',
   'inv_gr_items',
@@ -95,6 +104,18 @@ const PRESERVED_GROUPS = {
     'bill_header_settings',
     'st_user_menus',
     'settings_reasons',
+    'mp_channel_configs',
+    'mp_assigner_permissions',
+    'pr_sellers',
+    'wms_requisition_topics',
+    'wms_return_topics',
+    'wms_borrow_topics',
+    'wms_notification_topics',
+    'qc_checklist_topics',
+    'qc_checklist_items',
+    'qc_skip_settings',
+    'qc_mandatory_rules',
+    'plan_settings',
     'ac_ecommerce_channels',
     'ac_ecommerce_channel_maps',
     'wh_sub_warehouses',
@@ -374,7 +395,9 @@ serve(async (req: Request) => {
       const expectedConfirm =
         operation.operation_type === 'annual_close'
           ? `CLOSE YEAR ${operation.target_year}`
-          : 'RESET DATA'
+          : operation.operation_type === 'go_live_reset'
+            ? 'GO LIVE RESET'
+            : 'RESET DATA'
 
       if (confirmText !== expectedConfirm) {
         return jsonResponse(
@@ -383,8 +406,11 @@ serve(async (req: Request) => {
         )
       }
 
-      if (operation.operation_type === 'annual_close' && !operation.backup_verified_at) {
-        return jsonResponse({ success: false, error: 'ต้องสำรองและ verify backup ก่อนปิดงวดรายปี' }, 400)
+      if (
+        ['annual_close', 'go_live_reset'].includes(operation.operation_type)
+        && !operation.backup_verified_at
+      ) {
+        return jsonResponse({ success: false, error: 'ต้องสำรองและ verify backup ก่อนล้างข้อมูล' }, 400)
       }
 
       const { data: resetData, error: resetError } = await supabaseAdmin.rpc('rpc_data_reset_execute', {
@@ -412,6 +438,27 @@ serve(async (req: Request) => {
         countTable(supabaseAdmin, 'or_orders'),
       ])
 
+      const { data: afterCounts, error: afterCountsError } = await supabaseAdmin
+        .from('erp_data_operation_table_counts')
+        .select('table_name, row_count')
+        .eq('operation_id', operationId)
+        .eq('phase', 'after_reset')
+
+      if (afterCountsError) throw afterCountsError
+
+      const openingAllowed = new Set([
+        'inv_stock_balances',
+        'inv_stock_lots',
+        'inv_stock_movements',
+        'inv_stock_balance_history',
+        'ac_inventory_epochs',
+        'ac_inventory_epoch_openings',
+      ])
+      const remainingTransactional = (afterCounts ?? []).filter((row) => {
+        if ((row.row_count ?? 0) <= 0) return false
+        return !(opAfter.stock_strategy === 'opening' && openingAllowed.has(row.table_name))
+      })
+
       const verification = {
         operation_status: opAfter.status,
         reset_completed_at: opAfter.reset_completed_at,
@@ -420,16 +467,10 @@ serve(async (req: Request) => {
         inv_stock_lots: lots.row_count,
         inv_stock_movements: movements.row_count,
         or_orders: orders.row_count,
+        remaining_transactional: remainingTransactional,
       }
 
-      const remainingRows = [
-        balances.row_count,
-        lots.row_count,
-        movements.row_count,
-        orders.row_count,
-      ].some((count) => (count ?? 0) > 0)
-
-      if (remainingRows) {
+      if (remainingTransactional.length > 0) {
         throw new Error('ล้างข้อมูลไม่สมบูรณ์ ยังพบข้อมูลธุรกรรมคงเหลือในระบบ')
       }
 
@@ -450,8 +491,19 @@ serve(async (req: Request) => {
       .update({ status: 'backup_running', backup_started_at: new Date().toISOString(), error_message: null })
       .eq('id', operationId)
 
+    let transactionalTables = TRANSACTIONAL_TABLES
+    const { data: scopedTables, error: scopedTablesError } = await supabaseAdmin.rpc(
+      'erp_data_tables_for_operation',
+      { p_operation_type: operation.operation_type },
+    )
+    if (!scopedTablesError && Array.isArray(scopedTables) && scopedTables.length > 0) {
+      transactionalTables = scopedTables.map(String)
+    } else if (operation.operation_type === 'go_live_reset') {
+      throw new Error(`โหลดขอบเขตตาราง Go-live ไม่สำเร็จ: ${scopedTablesError?.message || 'ไม่พบรายการตาราง'}`)
+    }
+
     const transactionalCounts = await Promise.all(
-      TRANSACTIONAL_TABLES.map((tableName) => countTable(supabaseAdmin, tableName)),
+      transactionalTables.map((tableName) => countTable(supabaseAdmin, tableName)),
     )
 
     const preservedCounts: Record<string, unknown[]> = {}
@@ -462,7 +514,7 @@ serve(async (req: Request) => {
     }
 
     const uniqueTables = Array.from(new Set([
-      ...TRANSACTIONAL_TABLES,
+      ...transactionalTables,
       ...Object.values(PRESERVED_GROUPS).flat(),
     ]))
     const operationPrefix = `${operation.operation_type}/${operation.target_year || 'manual'}/${operationId}`
@@ -490,6 +542,17 @@ serve(async (req: Request) => {
         pageSize,
         zip,
       }))
+    }
+
+    if (operation.operation_type === 'go_live_reset') {
+      const requiredTables = new Set(transactionalTables)
+      const failedRequired = exportedTables.filter((entry) => (
+        requiredTables.has(entry.table_name) && entry.success === false
+      ))
+      if (failedRequired.length > 0) {
+        const names = failedRequired.map((entry) => entry.table_name).join(', ')
+        throw new Error(`Backup ไม่สมบูรณ์ จึงยกเลิกการล้างข้อมูล: ${names}`)
+      }
     }
 
     const manifest = {

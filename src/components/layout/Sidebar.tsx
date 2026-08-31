@@ -275,9 +275,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
       const mpCountQuery = isAdminOrSuperadmin(user?.role)
         ? supabase.from('mp_orders').select('id', { count: 'exact', head: true }).eq('status', 'new')
         : supabase.from('mp_orders').select('id', { count: 'exact', head: true }).in('status', ['assigned', 'follow_up'])
-      const [rpcRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
+      const [rpcRes, ordersActionableRes, qcWoList, wmsResult, pendingReturnsRes, purchaseBadge, planWorkQueueRes, machineryWorkingRes, hrLeavePendingRes, hrOtPendingRes, hrWfhPendingRes, mpCountRes] =
         await Promise.all([
         supabase.rpc('get_sidebar_counts', { p_username: adminName, p_role: user?.role ?? '' }),
+        supabase.rpc('get_orders_sidebar_actionable_count', { p_username: adminName, p_role: user?.role ?? '' }),
         fetchWorkOrdersWithProgress(true).catch(() => [] as any[]),
         loadWmsTabCounts(),
         supabase.from('inv_returns').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
@@ -310,7 +311,10 @@ export default function Sidebar({ isOpen }: SidebarProps) {
 
       setMenuCounts({
         marketplace: mpCountRes.count || 0,
-        orders: (c.orders || 0) + (c.orders_req_claim_shipping || 0),
+        // นับออเดอร์ที่เปิดเข้าไปจัดการได้จริงแบบไม่ซ้ำ รวมงานสถานะค้างและบิลเคลมที่อนุมัติแล้วรอยืนยันที่อยู่
+        orders: ordersActionableRes.error
+          ? (c.orders || 0) + (c.orders_req_claim_shipping || 0)
+          : Number(ordersActionableRes.data || 0),
         'admin-qc': c.admin_qc || 0,
         plan: planWorkQueueRes.count || 0,
         machinery: machineryWorkingRes.count || 0,

@@ -21,6 +21,10 @@ import {
   loadGRsForPO,
   resolveShortage,
   recalcPOLandedCost,
+  correctPOUnitCosts,
+  loadPOCostCorrectionHistory,
+  type POCostCorrectionResult,
+  type POCostCorrectionHistory,
 } from '../lib/purchaseApi'
 import { getPublicUrl } from '../lib/qcApi'
 import { localISODate } from '../lib/localDate'
@@ -116,6 +120,15 @@ export default function PurchasePO() {
   const [editNote, setEditNote] = useState('')
   const [editArrival, setEditArrival] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+
+  // Superadmin-only retrospective cost correction
+  const [costCorrectionOpen, setCostCorrectionOpen] = useState(false)
+  const [costCorrectionPO, setCostCorrectionPO] = useState<InventoryPO | null>(null)
+  const [costCorrectionItems, setCostCorrectionItems] = useState<{ item_id: string; product_code: string; product_name: string; unit: string; old_unit_price: number; new_unit_price: number }[]>([])
+  const [costCorrectionReason, setCostCorrectionReason] = useState('')
+  const [costCorrectionSaving, setCostCorrectionSaving] = useState(false)
+  const [costCorrectionResult, setCostCorrectionResult] = useState<POCostCorrectionResult | null>(null)
+  const [costCorrectionHistory, setCostCorrectionHistory] = useState<POCostCorrectionHistory[]>([])
 
   // Partial PO count for badge
   const [partialCount, setPartialCount] = useState(0)
@@ -431,6 +444,70 @@ export default function PurchasePO() {
       }))
     )
     setEditOpen(true)
+  }
+
+  function openCostCorrection(po: InventoryPO) {
+    const items = po.inv_po_items || []
+    setCostCorrectionPO(po)
+    setCostCorrectionItems(items.map((item) => ({
+      item_id: item.id,
+      product_code: item.pr_products?.product_code || '',
+      product_name: item.pr_products?.product_name || '',
+      unit: item.unit || item.pr_products?.unit_name || 'ชิ้น',
+      old_unit_price: Number(item.unit_price) || 0,
+      new_unit_price: Number(item.unit_price) || 0,
+    })))
+    setCostCorrectionReason('')
+    setCostCorrectionResult(null)
+    setCostCorrectionHistory([])
+    setCostCorrectionOpen(true)
+    void loadPOCostCorrectionHistory(po.id)
+      .then(setCostCorrectionHistory)
+      .catch((error) => console.error('Unable to load PO cost correction history:', error))
+  }
+
+  async function handleSaveCostCorrection() {
+    if (!costCorrectionPO) return
+    const reason = costCorrectionReason.trim()
+    const changedItems = costCorrectionItems.filter((item) => item.new_unit_price !== item.old_unit_price)
+    if (reason.length < 5) {
+      showMessage({ title: 'ข้อมูลไม่ครบ', message: 'กรุณาระบุเหตุผลในการแก้ไขอย่างน้อย 5 ตัวอักษร' })
+      return
+    }
+    if (changedItems.length === 0) {
+      showMessage({ title: 'ไม่มีการเปลี่ยนแปลง', message: 'กรุณาแก้ไขราคาต่อหน่วยอย่างน้อย 1 รายการ' })
+      return
+    }
+    if (changedItems.some((item) => !Number.isFinite(item.new_unit_price) || item.new_unit_price < 0)) {
+      showMessage({ title: 'ราคาไม่ถูกต้อง', message: 'ราคาต่อหน่วยต้องเป็นตัวเลขตั้งแต่ 0 ขึ้นไป' })
+      return
+    }
+
+    const ok = await showConfirm({
+      title: 'ยืนยันแก้ไขต้นทุนย้อนหลัง',
+      message: `ยืนยันแก้ไขราคา ${changedItems.length} รายการใน ${costCorrectionPO.po_no} หรือไม่? ระบบจะบันทึกประวัติและปรับต้นทุนล็อตสินค้าคงเหลือ`,
+      confirmText: 'ยืนยันแก้ไข',
+    })
+    if (!ok) return
+
+    setCostCorrectionSaving(true)
+    try {
+      const result = await correctPOUnitCosts({
+        poId: costCorrectionPO.id,
+        reason,
+        items: changedItems.map((item) => ({ item_id: item.item_id, new_unit_price: item.new_unit_price })),
+      })
+      setCostCorrectionResult(result)
+      const history = await loadPOCostCorrectionHistory(costCorrectionPO.id)
+      setCostCorrectionHistory(history)
+      const detail = await loadPODetail(costCorrectionPO.id, canSeeFinancial)
+      setViewing(detail)
+      await loadAll()
+    } catch (e: unknown) {
+      showMessage({ title: 'แก้ไขไม่สำเร็จ', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setCostCorrectionSaving(false)
+    }
   }
 
   const editTotalAmount = useMemo(() => {
@@ -1347,6 +1424,16 @@ export default function PurchasePO() {
                     แก้ไข PO
                   </button>
                 )}
+                {user?.role === 'superadmin' && (
+                  <button
+                    onClick={() => openCostCorrection(viewing)}
+                    className="px-5 py-2.5 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 text-sm font-semibold transition-colors"
+                    title="แก้ไขราคาโดยบันทึกประวัติและผลกระทบต่อต้นทุน"
+                  >
+                    <i className="fas fa-file-invoice-dollar mr-1"></i>
+                    แก้ไขต้นทุนย้อนหลัง
+                  </button>
+                )}
                 <button
                   onClick={handleExportPNG}
                   disabled={exporting}
@@ -1645,6 +1732,145 @@ export default function PurchasePO() {
                 <button onClick={handleSaveEditPO} disabled={editSaving} className="px-5 py-2.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 text-sm font-semibold">
                   {editSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
                 </button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+      {/* Superadmin retrospective PO cost correction */}
+      <Modal
+        open={costCorrectionOpen}
+        onClose={() => !costCorrectionSaving && setCostCorrectionOpen(false)}
+        closeOnBackdropClick={false}
+        contentClassName="max-w-5xl"
+      >
+        <div className="p-6 space-y-5">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">แก้ไขต้นทุนย้อนหลัง</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              สำหรับ Superadmin เท่านั้น ทุกการแก้ไขจะบันทึกราคาเดิม ราคาใหม่ เหตุผล ผู้แก้ไข และผลกระทบต่อต้นทุน
+            </p>
+          </div>
+
+          {costCorrectionPO && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-red-50 p-3 text-sm">
+                <span className="font-semibold text-red-800">PO: {costCorrectionPO.po_no}</span>
+                <span className="text-red-700">สถานะ: {STATUS_MAP[costCorrectionPO.status]?.label || costCorrectionPO.status}</span>
+              </div>
+
+              {!costCorrectionResult && grHistory.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  PO นี้มีการรับเข้า GR แล้ว {grHistory.length} ใบ ระบบจะปรับต้นทุนของล็อตที่ยังเหลือ ส่วนสินค้าที่ถูกใช้ไปแล้วจะบันทึกผลต่างไว้ให้ฝ่ายบัญชีตรวจสอบ โดยไม่แก้ประวัติการเบิกย้อนหลัง
+                </div>
+              )}
+
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="px-3 py-3 text-left font-semibold">รหัสสินค้า</th>
+                      <th className="px-3 py-3 text-left font-semibold">สินค้า</th>
+                      <th className="px-3 py-3 text-right font-semibold">ราคาเดิม</th>
+                      <th className="px-3 py-3 text-right font-semibold">ราคาใหม่</th>
+                      <th className="px-3 py-3 text-right font-semibold">ผลต่าง/หน่วย</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {costCorrectionItems.map((item, idx) => {
+                      const delta = item.new_unit_price - item.old_unit_price
+                      return (
+                        <tr key={item.item_id} className={delta !== 0 ? 'bg-amber-50/50' : ''}>
+                          <td className="px-3 py-2 text-gray-600">{item.product_code}</td>
+                          <td className="px-3 py-2 font-medium text-gray-800">
+                            {item.product_name}
+                            <span className="ml-1 text-xs font-normal text-gray-400">({item.unit})</span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-600">{item.old_unit_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step={0.01}
+                              value={item.new_unit_price}
+                              disabled={Boolean(costCorrectionResult)}
+                              onChange={(e) => setCostCorrectionItems((prev) => prev.map((row, i) => i === idx ? { ...row, new_unit_price: Number(e.target.value) } : row))}
+                              className="ml-auto block w-36 rounded-lg border px-3 py-2 text-right disabled:bg-gray-100"
+                            />
+                          </td>
+                          <td className={`px-3 py-2 text-right font-semibold ${delta > 0 ? 'text-red-600' : delta < 0 ? 'text-emerald-600' : 'text-gray-400'}`}>
+                            {delta > 0 ? '+' : ''}{delta.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {!costCorrectionResult ? (
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">เหตุผลในการแก้ไข <span className="text-red-500">*</span></label>
+                  <textarea
+                    value={costCorrectionReason}
+                    onChange={(e) => setCostCorrectionReason(e.target.value)}
+                    rows={3}
+                    maxLength={500}
+                    placeholder="เช่น ผู้ขายแจ้งราคาต่อหน่วยที่ถูกต้องภายหลังรับสินค้า"
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                  />
+                  <p className="mt-1 text-xs text-gray-400">อย่างน้อย 5 ตัวอักษร และไม่สามารถลบประวัติการแก้ไขได้</p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="font-bold text-emerald-800">บันทึกสำเร็จ: {costCorrectionResult.correction_no}</div>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3 text-sm">
+                    <div><div className="text-gray-500">ยอด PO ใหม่</div><div className="font-bold text-gray-900">{Number(costCorrectionResult.new_grand_total).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div></div>
+                    <div><div className="text-gray-500">ผลต่างสินค้าคงเหลือ</div><div className="font-bold text-blue-700">{Number(costCorrectionResult.inventory_value_delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div></div>
+                    <div><div className="text-gray-500">ผลต่างสินค้าที่ใช้ไปแล้ว</div><div className="font-bold text-amber-700">{Number(costCorrectionResult.consumed_cost_delta).toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท</div></div>
+                  </div>
+                </div>
+              )}
+
+              {costCorrectionHistory.length > 0 && (
+                <div className="rounded-xl border border-gray-200 p-4">
+                  <h3 className="text-sm font-bold text-gray-800">ประวัติการแก้ไขต้นทุน ({costCorrectionHistory.length})</h3>
+                  <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
+                    {costCorrectionHistory.map((entry) => (
+                      <div key={entry.id} className="rounded-lg bg-gray-50 p-3 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold text-blue-700">{entry.correction_no}</span>
+                          <span className="text-xs text-gray-500">
+                            {new Date(entry.created_at).toLocaleString('th-TH')} · {entry.corrected_by ? (userMap[entry.corrected_by] || entry.corrected_by) : 'ระบบ'}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-gray-700">เหตุผล: {entry.reason}</div>
+                        <div className="mt-1 text-xs text-gray-500">
+                          ยอดรวม {Number(entry.old_grand_total).toLocaleString()} → {Number(entry.new_grand_total).toLocaleString()} บาท · ผลต่างคงเหลือ {Number(entry.inventory_value_delta).toLocaleString()} บาท · ใช้ไปแล้ว {Number(entry.consumed_cost_delta).toLocaleString()} บาท
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-3 border-t pt-3">
+                <button
+                  onClick={() => setCostCorrectionOpen(false)}
+                  disabled={costCorrectionSaving}
+                  className="rounded-lg bg-gray-100 px-5 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+                >
+                  {costCorrectionResult ? 'ปิด' : 'ยกเลิก'}
+                </button>
+                {!costCorrectionResult && (
+                  <button
+                    onClick={handleSaveCostCorrection}
+                    disabled={costCorrectionSaving}
+                    className="rounded-lg bg-red-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {costCorrectionSaving ? 'กำลังบันทึก...' : 'ยืนยันแก้ไขต้นทุน'}
+                  </button>
+                )}
               </div>
             </>
           )}

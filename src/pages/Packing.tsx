@@ -193,9 +193,13 @@ type VideoQualityProfile = {
 }
 
 const VIDEO_QUALITY_PROFILES: Record<VideoQualityProfileId, VideoQualityProfile> = {
-  high: { id: 'high', label: 'คุณภาพสูง', description: '720p · 24 FPS · 1.5 Mbps', width: 1280, height: 720, fps: 24, bitrate: 1_500_000 },
-  standard: { id: 'standard', label: 'มาตรฐาน (แนะนำ)', description: '720p · 20 FPS · 0.9 Mbps', width: 1280, height: 720, fps: 20, bitrate: 900_000 },
-  data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.55 Mbps', width: 854, height: 480, fps: 15, bitrate: 550_000 },
+  original: { id: 'original', label: 'คมชัดสูงสุด', description: '1080p · 30 FPS · 8 Mbps (~60 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
+  ultra: { id: 'ultra', label: 'คมชัดพิเศษ', description: '1080p · 30 FPS · 6 Mbps (~45 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000 },
+  very_high: { id: 'very_high', label: 'คมชัดมาก', description: '1080p · 24 FPS · 4 Mbps (~30 MB/นาที)', width: 1920, height: 1080, fps: 24, bitrate: 4_000_000 },
+  high: { id: 'high', label: 'คุณภาพสูง', description: '720p · 30 FPS · 3 Mbps (~23 MB/นาที)', width: 1280, height: 720, fps: 30, bitrate: 3_000_000 },
+  standard: { id: 'standard', label: 'ชัดสมดุล (แนะนำ)', description: '720p · 24 FPS · 2 Mbps (~15 MB/นาที)', width: 1280, height: 720, fps: 24, bitrate: 2_000_000 },
+  balanced: { id: 'balanced', label: 'ไฟล์ขนาดกลาง', description: '720p · 20 FPS · 1.2 Mbps (~9 MB/นาที)', width: 1280, height: 720, fps: 20, bitrate: 1_200_000 },
+  data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.65 Mbps (~5 MB/นาที)', width: 854, height: 480, fps: 15, bitrate: 650_000 },
 }
 
 const DEVICE_ONLINE_MS = 2 * 60 * 1000

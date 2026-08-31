@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import DangerTypedConfirmModal from '../ui/DangerTypedConfirmModal'
 
-type OperationType = 'annual_close' | 'reset_only' | 'backup_only'
+type OperationType = 'annual_close' | 'reset_only' | 'backup_only' | 'go_live_reset'
 type PanelActionMode = OperationType | 'delete_products' | 'delete_sellers'
 type StockStrategy = 'opening' | 'zero'
 type PanelTab = 'actions' | 'backups'
@@ -21,6 +21,7 @@ type PreviewResult = {
   stock_strategy: StockStrategy
   target_year: number | null
   total_rows: number
+  database_size_bytes?: number
   table_counts: TableCount[]
   blockers: Record<string, number | string>
   hr_policy: {
@@ -71,6 +72,7 @@ type ResetRunResult = {
     inv_stock_lots: number | null
     inv_stock_movements: number | null
     or_orders: number | null
+    remaining_transactional?: Array<{ table_name: string; row_count: number }>
   }
 }
 
@@ -132,7 +134,7 @@ const currentYear = new Date().getFullYear()
 
 const TABLE_GROUP_OPTIONS: Array<{ key: BackupTableGroup; label: string; prefixes?: string[]; tables?: string[] }> = [
   { key: 'all', label: 'ทั้งหมด' },
-  { key: 'orders', label: 'ออเดอร์/งานขาย', prefixes: ['or_'] },
+  { key: 'orders', label: 'Marketplace/ออเดอร์/งานขาย', prefixes: ['mp_', 'or_'] },
   { key: 'warehouse', label: 'คลัง/สต๊อก', prefixes: ['inv_stock', 'inv_lot', 'wh_sub', 'roll_'] },
   { key: 'purchase', label: 'จัดซื้อ/รับสินค้า', prefixes: ['inv_pr', 'inv_po', 'inv_gr', 'inv_sample'] },
   { key: 'account', label: 'บัญชี/สลิป/Ecommerce', prefixes: ['ac_'] },
@@ -156,6 +158,9 @@ const TABLE_GROUP_OPTIONS: Array<{ key: BackupTableGroup; label: string; prefixe
 ]
 
 const TABLE_LABELS: Record<string, string> = {
+  mp_import_batches: 'ประวัตินำเข้า Marketplace',
+  mp_orders: 'งาน Marketplace',
+  mp_order_items: 'รายการสินค้า Marketplace',
   or_orders: 'ออเดอร์/บิลขาย',
   or_order_items: 'รายการสินค้าในออเดอร์',
   or_work_orders: 'ใบสั่งงาน',
@@ -169,8 +174,12 @@ const TABLE_LABELS: Record<string, string> = {
   wms_borrow_requisitions: 'ใบยืม WMS',
   qc_sessions: 'รอบตรวจ QC',
   qc_records: 'ผลตรวจ QC',
+  qc_record_attempts: 'ประวัติการตรวจ QC แต่ละครั้ง',
+  qc_escalation_decisions: 'ผลตัดสิน QC Escalation',
   pk_packing_logs: 'ประวัติจัดของ',
   pk_packing_unit_scans: 'สแกนจัดของรายชิ้น',
+  pk_packing_reset_logs: 'ประวัติรีเซ็ตการแพ็ค',
+  pk_packing_upload_queue_reports: 'รายงานคิวอัปโหลด Packing',
   inv_stock_movements: 'ประวัติเคลื่อนไหวสต๊อก',
   inv_stock_lots: 'Lot สต๊อก FIFO',
   inv_stock_balances: 'ยอดคงเหลือสต๊อก',
@@ -358,6 +367,8 @@ function buildResetSuccessMessage(
   const baseMessage =
     operationType === 'annual_close'
       ? `ปิดงวดปี ${targetYear} สำเร็จ พร้อมสำรองข้อมูลและล้างข้อมูลธุรกรรม`
+      : operationType === 'go_live_reset'
+        ? 'ล้างข้อมูลทดลองก่อนเริ่มใช้งานจริงสำเร็จ พร้อมสำรองข้อมูลและเก็บ Master Data ครบถ้วน'
       : stockStrategy === 'zero'
         ? 'ล้างข้อมูลธุรกรรมสำเร็จ สต๊OCKเป็นศูนย์ โดยไม่ลบข้อมูล HR'
         : 'ล้างข้อมูลธุรกรรมสำเร็จ โดยไม่ลบข้อมูล HR'
@@ -373,6 +384,18 @@ function buildResetSuccessMessage(
 function formatCount(value: number | null | undefined) {
   if (value === null || value === undefined) return '-'
   return value.toLocaleString()
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024
+    unit += 1
+  }
+  return `${size.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${units[unit]}`
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -442,6 +465,7 @@ function buildDisplayColumns(tableName: string, columns: string[], showTechnical
 
 function operationLabel(type: PanelActionMode) {
   if (type === 'annual_close') return 'ปิดงวดรายปี'
+  if (type === 'go_live_reset') return 'ล้างข้อมูลทดลองก่อนใช้งานจริง'
   if (type === 'reset_only') return 'ล้างข้อมูลอย่างเดียว'
   if (type === 'delete_products') return 'ลบรายการสินค้า'
   if (type === 'delete_sellers') return 'ลบรายการผู้ขาย'
@@ -467,6 +491,11 @@ export default function DataBackupClearPanel() {
   const [activePanelTab, setActivePanelTab] = useState<PanelTab>('actions')
   const [targetYear, setTargetYear] = useState(currentYear)
   const [stockStrategy, setStockStrategy] = useState<StockStrategy>('opening')
+  const [goLivePrepared, setGoLivePrepared] = useState<{
+    operationId: string
+    stockStrategy: StockStrategy
+    backup: BackupRunResult
+  } | null>(null)
   const [runningMode, setRunningMode] = useState<PanelActionMode | null>(null)
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [result, setResult] = useState<OperationResult | null>(null)
@@ -606,14 +635,33 @@ export default function DataBackupClearPanel() {
       return count ?? 0
     }
 
-    const [balances, lots, movements, orders] = await Promise.all([
+    const [balances, lots, movements, orders, afterCountsResult] = await Promise.all([
       countTable('inv_stock_balances'),
       countTable('inv_stock_lots'),
       countTable('inv_stock_movements'),
       countTable('or_orders'),
+      supabase
+        .from('erp_data_operation_table_counts')
+        .select('table_name, row_count')
+        .eq('operation_id', operationId)
+        .eq('phase', 'after_reset'),
     ])
 
-    if ([balances, lots, movements, orders].some((value) => value > 0)) {
+    if (afterCountsResult.error) throw new Error(formatOperationError(afterCountsResult.error))
+    const openingAllowed = new Set([
+      'inv_stock_balances',
+      'inv_stock_lots',
+      'inv_stock_movements',
+      'inv_stock_balance_history',
+      'ac_inventory_epochs',
+      'ac_inventory_epoch_openings',
+    ])
+    const remainingTransactional = (afterCountsResult.data ?? []).filter((row) => {
+      if ((row.row_count ?? 0) <= 0) return false
+      return !(op.stock_strategy === 'opening' && openingAllowed.has(row.table_name))
+    })
+
+    if (remainingTransactional.length > 0) {
       throw new Error('ล้างข้อมูลไม่สมบูรณ์ ยังพบข้อมูลธุรกรรมคงเหลือในระบบ')
     }
 
@@ -625,6 +673,7 @@ export default function DataBackupClearPanel() {
       inv_stock_lots: lots,
       inv_stock_movements: movements,
       or_orders: orders,
+      remaining_transactional: remainingTransactional,
     }
   }
 
@@ -645,19 +694,39 @@ export default function DataBackupClearPanel() {
   }
 
   async function runReset(operationId: string, operationType: OperationType) {
-    const expectedText = operationType === 'annual_close' ? `CLOSE YEAR ${targetYear}` : 'RESET DATA'
+    const expectedText = operationType === 'annual_close'
+      ? `CLOSE YEAR ${targetYear}`
+      : operationType === 'go_live_reset'
+        ? 'GO LIVE RESET'
+        : 'RESET DATA'
+    const isGoLive = operationType === 'go_live_reset'
     const confirmText = await requestDangerConfirm({
       title:
         operationType === 'annual_close'
           ? `ยืนยันปิดงวดปี ${targetYear}`
+          : isGoLive
+            ? 'ยืนยันล้างข้อมูลทดลองก่อนเริ่มใช้งานจริง'
           : 'ยืนยันล้างข้อมูลธุรกรรม',
       description:
         operationType === 'annual_close'
           ? 'สำรองข้อมูลและล้างข้อมูลธุรกรรมทั้งหมด โดยไม่ลบข้อมูล HR'
+          : isGoLive
+            ? 'ระบบสำรองข้อมูล ตรวจสอบ Manifest แล้วล้างเฉพาะข้อมูลทดลองตามขอบเขตที่กำหนด โดยเก็บ Master Data และไม่ลบไฟล์ Storage'
           : 'ล้างข้อมูลธุรกรรมทั้งหมด โดยไม่สำรองข้อมูล และไม่ลบข้อมูล HR',
-      bullets: ['การดำเนินการนี้ไม่สามารถย้อนกลับได้', 'ไม่ลบข้อมูล HR'],
+      bullets: isGoLive
+        ? [
+            'เก็บสินค้า ผู้ขาย ผู้ใช้ สิทธิ์ และการตั้งค่าทั้งหมด',
+            'ข้อมูล Marketplace, ออเดอร์, Plan, WMS, QC, Packing, บัญชี, คลัง และจัดซื้อที่ระบุจะถูกล้าง',
+            stockStrategy === 'opening' ? 'เก็บยอดสต๊อกปัจจุบันเป็นยอดยกมา' : 'สต๊อกหลังล้างเป็นศูนย์',
+            'ไฟล์ใน Storage จะยังไม่ถูกลบ',
+          ]
+        : ['การดำเนินการนี้ไม่สามารถย้อนกลับได้', 'ไม่ลบข้อมูล HR'],
       expectedText,
-      confirmLabel: operationType === 'annual_close' ? 'ปิดงวดและล้างข้อมูล' : 'ล้างข้อมูล',
+      confirmLabel: operationType === 'annual_close'
+        ? 'ปิดงวดและล้างข้อมูล'
+        : isGoLive
+          ? 'สำรองและล้างข้อมูลทดลอง'
+          : 'ล้างข้อมูล',
     })
     if (confirmText === null) {
       throw new Error('ยกเลิกการล้างข้อมูล')
@@ -987,7 +1056,61 @@ export default function DataBackupClearPanel() {
     }
   }
 
+  async function runGoLiveReset() {
+    setRunningMode('go_live_reset')
+    setResult(null)
+    let operationId = goLivePrepared?.operationId ?? ''
+    try {
+      if (!goLivePrepared) {
+        operationId = await createOperation('go_live_reset')
+        await previewOperation(operationId)
+        const backupResult = await runBackup(operationId)
+        setGoLivePrepared({ operationId, stockStrategy, backup: backupResult })
+        setResult({
+          mode: 'go_live_reset',
+          operationId,
+          status: 'success',
+          message: 'Preflight และ Backup สำเร็จ กรุณาตรวจสอบจำนวนข้อมูลด้านล่าง แล้วกด “ยืนยันล้างข้อมูลทดลอง” อีกครั้ง',
+          details: backupResult,
+        })
+        await loadBackups()
+        return
+      }
+
+      if (goLivePrepared.stockStrategy !== stockStrategy) {
+        setGoLivePrepared(null)
+        throw new Error('นโยบายสต๊อกมีการเปลี่ยนแปลง กรุณาทำ Preflight และ Backup ใหม่')
+      }
+
+      const resetResult = await runReset(operationId, 'go_live_reset')
+      setPreview(null)
+      setGoLivePrepared(null)
+      setResult({
+        mode: 'go_live_reset',
+        operationId,
+        status: 'success',
+        message: buildResetSuccessMessage(resetResult, stockStrategy, 'go_live_reset'),
+        details: { ...resetResult, ...goLivePrepared.backup },
+      })
+      await loadBackups()
+    } catch (error) {
+      setResult({
+        mode: 'go_live_reset',
+        operationId: operationId || '-',
+        status: 'error',
+        message: formatOperationError(error),
+      })
+    } finally {
+      setRunningMode(null)
+    }
+  }
+
   const isRunning = runningMode !== null
+  const updateStockStrategy = (value: StockStrategy) => {
+    setStockStrategy(value)
+    setGoLivePrepared(null)
+    setPreview((current) => current?.operation_type === 'go_live_reset' ? null : current)
+  }
 
   return (
     <div className="space-y-6">
@@ -1012,13 +1135,15 @@ export default function DataBackupClearPanel() {
           targetYear={targetYear}
           setTargetYear={setTargetYear}
           stockStrategy={stockStrategy}
-          setStockStrategy={setStockStrategy}
+          setStockStrategy={updateStockStrategy}
           runningMode={runningMode}
+          goLivePrepared={Boolean(goLivePrepared)}
           isRunning={isRunning}
           preview={preview}
           result={result}
           topTableCounts={topTableCounts}
           runAnnualClose={runAnnualClose}
+          runGoLiveReset={runGoLiveReset}
           runResetOnly={runResetOnly}
           runBackupOnly={runBackupOnly}
           runDeleteAllProducts={runDeleteAllProducts}
@@ -1077,11 +1202,13 @@ function ActionsView({
   stockStrategy,
   setStockStrategy,
   runningMode,
+  goLivePrepared,
   isRunning,
   preview,
   result,
   topTableCounts,
   runAnnualClose,
+  runGoLiveReset,
   runResetOnly,
   runBackupOnly,
   runDeleteAllProducts,
@@ -1092,11 +1219,13 @@ function ActionsView({
   stockStrategy: StockStrategy
   setStockStrategy: (value: StockStrategy) => void
   runningMode: PanelActionMode | null
+  goLivePrepared: boolean
   isRunning: boolean
   preview: PreviewResult | null
   result: OperationResult | null
   topTableCounts: TableCount[]
   runAnnualClose: () => void
+  runGoLiveReset: () => void
   runResetOnly: () => void
   runBackupOnly: () => void
   runDeleteAllProducts: () => void
@@ -1131,6 +1260,38 @@ function ActionsView({
               <option value="zero">ล้างสต๊อกเป็นศูนย์</option>
             </select>
           </label>
+        </div>
+      </div>
+
+      <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-5 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-lg font-bold text-amber-950">ล้างข้อมูลทดลองก่อนเริ่มใช้งานจริง</h3>
+              <span className="rounded-full bg-amber-200 px-2 py-1 text-xs font-bold text-amber-900">GO-LIVE</span>
+            </div>
+            <p className="mt-1 text-sm text-amber-900">
+              Preflight → สำรองและตรวจสอบ ZIP/Manifest → ล้างแบบ Transaction → ตรวจผล โดยเก็บสินค้า ผู้ขาย ผู้ใช้ HR และการตั้งค่าทั้งหมด
+            </p>
+            <p className="mt-2 text-xs font-medium text-amber-800">
+              งานค้างใน Preflight เป็นคำเตือนสำหรับโหมดนี้ เพราะข้อมูลทั้งหมดเป็นข้อมูลทดลองที่จะล้างตามขอบเขต
+            </p>
+            <p className="mt-1 text-xs font-medium text-red-700">
+              Backup ที่ปุ่มนี้สร้างเป็น JSON/ZIP ระดับแอป ควรมี Database Backup หรือ pg_dump จาก Supabase เพิ่มอีกชุดก่อนยืนยันล้างจริง
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={runGoLiveReset}
+            disabled={isRunning}
+            className="shrink-0 rounded-lg bg-amber-700 px-5 py-3 font-bold text-white hover:bg-amber-800 disabled:opacity-50"
+          >
+            {runningMode === 'go_live_reset'
+              ? 'กำลังดำเนินการ...'
+              : goLivePrepared
+                ? 'ยืนยันล้างข้อมูลทดลอง'
+                : 'เริ่ม Preflight และ Backup'}
+          </button>
         </div>
       </div>
 
@@ -1213,7 +1374,7 @@ function ActionsView({
               <h3 className="font-semibold text-gray-900">Preflight ล่าสุด</h3>
               <p className="text-sm text-gray-600">
                 Operation: <span className="font-mono">{preview.operation_id}</span> · รวมข้อมูลที่จะล้าง{' '}
-                {formatCount(preview.total_rows)} แถว
+                {formatCount(preview.total_rows)} แถว · ขนาดฐานข้อมูล {formatBytes(preview.database_size_bytes)}
               </p>
             </div>
             <span className="px-3 py-1 rounded-full bg-green-50 text-green-700 text-sm font-semibold">

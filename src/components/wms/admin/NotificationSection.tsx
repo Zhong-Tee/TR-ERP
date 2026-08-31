@@ -256,7 +256,6 @@ export default function NotificationSection() {
 
   return (
     <section>
-      <h2 className="text-3xl font-black mb-6 text-slate-800">ศูนย์แจ้งเตือน</h2>
       <div className="flex gap-2 mb-6 bg-gray-200 p-1 rounded-xl w-fit">
         <button
           onClick={() => { setPage(1); setCurrentTab('unread') }}
@@ -272,8 +271,8 @@ export default function NotificationSection() {
         </button>
       </div>
       <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-gray-50 text-[18.66px] uppercase text-slate-800 font-black border-b">
+        <table className="w-full text-left text-sm text-slate-700">
+          <thead className="border-b border-slate-200 bg-slate-50 text-sm font-semibold text-slate-700">
             <tr>
               <th className="p-4 text-center">ลำดับ</th>
               <th className="p-4">วัน-เวลา</th>

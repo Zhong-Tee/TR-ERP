@@ -4,7 +4,14 @@ const STORE_QUEUE = 'queue'
 const STORE_SETTINGS = 'settings'
 
 export type UploadStatus = 'pending' | 'uploading' | 'success' | 'failed'
-export type VideoQualityProfileId = 'high' | 'standard' | 'data_saver'
+export type VideoQualityProfileId =
+  | 'original'
+  | 'ultra'
+  | 'very_high'
+  | 'high'
+  | 'standard'
+  | 'balanced'
+  | 'data_saver'
 
 export interface UploadQueueItem {
   id: string
@@ -129,7 +136,18 @@ export async function setDeviceName(name: string): Promise<void> {
 
 export async function getVideoQualityProfile(): Promise<VideoQualityProfileId> {
   const saved = await getSetting<string>('packingVideoQualityProfile')
-  return saved === 'high' || saved === 'data_saver' || saved === 'standard' ? saved : 'standard'
+  const validProfiles: VideoQualityProfileId[] = [
+    'original',
+    'ultra',
+    'very_high',
+    'high',
+    'standard',
+    'balanced',
+    'data_saver',
+  ]
+  return validProfiles.includes(saved as VideoQualityProfileId)
+    ? saved as VideoQualityProfileId
+    : 'standard'
 }
 
 export async function setVideoQualityProfile(profile: VideoQualityProfileId): Promise<void> {

@@ -556,8 +556,8 @@ export default function RequisitionDashboard() {
 
       <div className="bg-white p-6 rounded-2xl border shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-gray-50 text-[16px] uppercase text-gray-400">
+          <table className="w-full text-left text-sm text-slate-700">
+            <thead className="bg-slate-50 text-sm font-semibold text-slate-700">
               <tr>
                 <th className="p-4">รายการเบิก</th>
                 <th className="p-4">ผู้เบิก</th>
@@ -568,7 +568,7 @@ export default function RequisitionDashboard() {
                 <th className="p-4 text-center">จัดการ</th>
               </tr>
             </thead>
-            <tbody className="divide-y text-gray-600">
+            <tbody className="divide-y divide-slate-200 text-slate-700">
               {requisitions.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-8 text-center text-gray-400">
@@ -578,7 +578,7 @@ export default function RequisitionDashboard() {
                 </tr>
               ) : (
                 requisitions.map((req) => (
-                  <tr key={req.id} className="hover:bg-blue-50 border-b transition">
+                  <tr key={req.id} className="border-b border-slate-200 transition-colors hover:bg-blue-50/60">
                     <td className="p-4">
                       <div className="font-black text-blue-600">{req.requisition_id}</div>
                       <div className="mt-1 flex flex-wrap gap-1">
@@ -591,12 +591,12 @@ export default function RequisitionDashboard() {
                     </td>
                     <td className="p-4 font-bold text-slate-700">{req.created_by_user?.username || '---'}</td>
                     <td className="p-4 font-bold text-slate-700">{req.approved_by_user?.username || '-'}</td>
-                    <td className="p-4 text-gray-500 text-xs">{formatDate(req.created_at)}</td>
-                    <td className="p-4 text-gray-500 text-xs">{formatDate(req.approved_at)}</td>
+                    <td className="p-4 whitespace-nowrap text-base font-medium tabular-nums text-slate-700">{formatDate(req.created_at)}</td>
+                    <td className="p-4 whitespace-nowrap text-base font-medium tabular-nums text-slate-700">{formatDate(req.approved_at)}</td>
                     <td className="p-4 text-center">{getStatusBadge(req.status)}</td>
                     <td className="p-4 text-center">
-                      <button onClick={() => openDetail(req)} className="text-blue-500 font-bold underline hover:text-blue-700">
-                        View
+                      <button onClick={() => openDetail(req)} className="inline-flex items-center justify-center whitespace-nowrap rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-100 hover:text-blue-800">
+                        ดูรายละเอียด
                       </button>
                     </td>
                   </tr>

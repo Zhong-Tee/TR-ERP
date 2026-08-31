@@ -419,6 +419,67 @@ export async function updatePO(input: {
   return data as { total_amount: number }
 }
 
+export interface POCostCorrectionResult {
+  success: boolean
+  correction_id: string
+  correction_no: string
+  changed_count: number
+  new_total_amount: number
+  new_grand_total: number
+  inventory_value_delta: number
+  consumed_cost_delta: number
+  items: {
+    item_id: string
+    product_code: string
+    old_unit_price: number
+    new_unit_price: number
+    qty_received: number
+    qty_remaining: number
+    qty_consumed: number
+    inventory_value_delta: number
+    consumed_cost_delta: number
+  }[]
+}
+
+export interface POCostCorrectionHistory {
+  id: string
+  correction_no: string
+  reason: string
+  old_total_amount: number
+  new_total_amount: number
+  old_grand_total: number
+  new_grand_total: number
+  inventory_value_delta: number
+  consumed_cost_delta: number
+  corrected_by: string | null
+  created_at: string
+  inv_po_cost_correction_items: POCostCorrectionResult['items']
+}
+
+export async function correctPOUnitCosts(input: {
+  poId: string
+  reason: string
+  items: { item_id: string; new_unit_price: number }[]
+}) {
+  const { data, error } = await supabase.rpc('rpc_correct_po_unit_costs', {
+    p_po_id: input.poId,
+    p_reason: input.reason,
+    p_items: input.items,
+  })
+  if (error) throw error
+  return data as POCostCorrectionResult
+}
+
+export async function loadPOCostCorrectionHistory(poId: string) {
+  const { data, error } = await supabase
+    .from('inv_po_cost_corrections')
+    .select('*, inv_po_cost_correction_items(*)')
+    .eq('po_id', poId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data || []) as unknown as POCostCorrectionHistory[]
+}
+
 export async function updatePONonFinancial(input: {
   poId: string
   note?: string

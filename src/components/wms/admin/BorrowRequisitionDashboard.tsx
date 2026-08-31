@@ -420,9 +420,9 @@ export default function BorrowRequisitionDashboard() {
         <div className="text-center text-gray-400 py-16">ไม่มีรายการ</div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-left text-sm text-slate-700">
             <thead>
-              <tr className="bg-gray-50 text-gray-600 border-b border-gray-200">
+              <tr className="border-b border-slate-200 bg-slate-50 text-sm font-semibold text-slate-700">
                 <th className="px-4 py-3 text-left font-semibold">เลขที่ใบยืม</th>
                 <th className="px-4 py-3 text-left font-semibold">ผู้ยืม</th>
                 <th className="px-4 py-3 text-left font-semibold">วันที่ยืม</th>
@@ -432,19 +432,19 @@ export default function BorrowRequisitionDashboard() {
                 <th className="px-4 py-3 text-center font-semibold">จัดการ</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-200 text-slate-700">
               {borrows.map((b) => {
                 const overdue = isOverdue(b.due_date, b.status)
                 return (
-                  <tr key={b.id} className={`hover:bg-gray-50/50 ${overdue ? 'bg-red-50/40' : ''}`}>
-                    <td className="px-4 py-3 font-mono text-xs font-semibold">{b.borrow_no}</td>
-                    <td className="px-4 py-3 text-gray-700">{b.created_by_user?.username || '-'}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">{new Date(b.created_at).toLocaleDateString('th-TH')}</td>
-                    <td className={`px-4 py-3 text-xs font-semibold ${overdue ? 'text-red-600' : 'text-gray-700'}`}>
+                  <tr key={b.id} className={`transition-colors hover:bg-blue-50/60 ${overdue ? 'bg-red-50/40' : ''}`}>
+                    <td className="px-4 py-3 font-semibold text-blue-700">{b.borrow_no}</td>
+                    <td className="px-4 py-3 font-medium text-slate-700">{b.created_by_user?.username || '-'}</td>
+                    <td className="px-4 py-3 whitespace-nowrap text-base font-medium tabular-nums text-slate-700">{new Date(b.created_at).toLocaleDateString('th-TH')}</td>
+                    <td className={`px-4 py-3 whitespace-nowrap text-base font-medium tabular-nums ${overdue ? 'text-red-600' : 'text-slate-700'}`}>
                       {new Date(b.due_date).toLocaleDateString('th-TH')}
                       {overdue && <i className="fas fa-exclamation-triangle text-red-500 ml-1.5" />}
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs max-w-[200px] truncate">{b.note || '-'}</td>
+                    <td className="max-w-[200px] truncate px-4 py-3 text-slate-600">{b.note || '-'}</td>
                     <td className="px-4 py-3 text-center">
                       <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${STATUS_COLORS[overdue && !['returned','written_off','rejected'].includes(b.status) ? 'overdue' : b.status] || 'bg-gray-100 text-gray-600'}`}>
                         {overdue && !['returned','written_off','rejected'].includes(b.status) ? 'เลยกำหนด' : STATUS_LABELS[b.status] || b.status}
@@ -452,8 +452,8 @@ export default function BorrowRequisitionDashboard() {
                     </td>
                     <td className="px-4 py-3 text-center">
                       <button type="button" onClick={() => openDetail(b)}
-                        className="px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100">
-                        ดู
+                        className="inline-flex items-center justify-center whitespace-nowrap rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-100 hover:text-blue-800">
+                        ดูรายละเอียด
                       </button>
                     </td>
                   </tr>

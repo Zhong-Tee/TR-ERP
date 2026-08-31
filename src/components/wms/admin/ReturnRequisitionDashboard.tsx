@@ -528,8 +528,8 @@ export default function ReturnRequisitionDashboard() {
       {/* Table */}
       <div className="bg-white p-6 rounded-2xl border shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-gray-50 text-[16px] uppercase text-gray-400">
+          <table className="w-full text-left text-sm text-slate-700">
+            <thead className="bg-slate-50 text-sm font-semibold text-slate-700">
               <tr>
                 <th className="p-4">รายการคืน</th>
                 <th className="p-4">ผู้คืน</th>
@@ -540,7 +540,7 @@ export default function ReturnRequisitionDashboard() {
                 <th className="p-4 text-center">จัดการ</th>
               </tr>
             </thead>
-            <tbody className="divide-y text-gray-600">
+            <tbody className="divide-y divide-slate-200 text-slate-700">
               {returns.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="p-8 text-center text-gray-400">
@@ -550,16 +550,16 @@ export default function ReturnRequisitionDashboard() {
                 </tr>
               ) : (
                 returns.map((r) => (
-                  <tr key={r.id} className="hover:bg-blue-50 border-b transition">
+                  <tr key={r.id} className="border-b border-slate-200 transition-colors hover:bg-blue-50/60">
                     <td className="p-4 font-black text-blue-600">{r.return_no}</td>
                     <td className="p-4 font-bold text-slate-700">{r.created_by_user?.username || '-'}</td>
-                    <td className="p-4 text-gray-500 text-xs">{formatDate(r.created_at)}</td>
-                    <td className="p-4 text-gray-500 text-sm">{r.note || '-'}</td>
-                    <td className="p-4 text-gray-500 text-xs">{formatDate(r.approved_at || '')}</td>
+                    <td className="p-4 whitespace-nowrap text-base font-medium tabular-nums text-slate-700">{formatDate(r.created_at)}</td>
+                    <td className="p-4 text-slate-600">{r.note || '-'}</td>
+                    <td className="p-4 whitespace-nowrap text-base font-medium tabular-nums text-slate-700">{formatDate(r.approved_at || '')}</td>
                     <td className="p-4 text-center">{getStatusBadge(r.status)}</td>
                     <td className="p-4 text-center">
-                      <button onClick={() => openDetail(r)} className="text-blue-500 font-bold underline hover:text-blue-700">
-                        View
+                      <button onClick={() => openDetail(r)} className="inline-flex items-center justify-center whitespace-nowrap rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition-colors hover:bg-blue-100 hover:text-blue-800">
+                        ดูรายละเอียด
                       </button>
                     </td>
                   </tr>
