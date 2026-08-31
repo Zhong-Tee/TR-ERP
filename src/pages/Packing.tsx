@@ -16,7 +16,9 @@ import {
   getOrCreateDeviceId,
   getVideoQualityProfile,
   listQueueItems,
+  remapQueueDevice,
   setAccessToken,
+  setDeviceId as persistDeviceId,
   setFolderHandle,
   setFolderPathNote,
   setDeviceName,
@@ -241,7 +243,10 @@ type PackingUploadReportRow = {
 
 type PackingDeviceRow = {
   device_id: string
+  user_id: string
   device_name: string
+  last_username: string | null
+  is_active: boolean
   quality_profile: VideoQualityProfileId
   folder_name: string | null
   folder_path: string | null
@@ -467,6 +472,9 @@ export default function Packing() {
   const [uploadReportSearch, setUploadReportSearch] = useState('')
   const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
   const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
+  const [stationClaimDeviceId, setStationClaimDeviceId] = useState('')
+  const [stationClaiming, setStationClaiming] = useState(false)
+  const [stationClaimMessage, setStationClaimMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [requeueImport, setRequeueImport] = useState<{
     open: boolean
     file: File | null
@@ -733,6 +741,53 @@ export default function Packing() {
     setDeviceNameState(next)
   }
 
+  async function claimExistingPackingStation() {
+    const target = packingDevices.find((device) => device.device_id === stationClaimDeviceId)
+    if (!target || !deviceId) {
+      setStationClaimMessage({ type: 'error', text: 'กรุณาเลือกทะเบียนสถานีแพ็คเดิม' })
+      return
+    }
+    if (target.device_id === deviceId) {
+      setStationClaimMessage({ type: 'success', text: 'Browser นี้ใช้ทะเบียนสถานีดังกล่าวอยู่แล้ว' })
+      return
+    }
+    if (queueItems.some((item) => item.status === 'uploading')) {
+      setStationClaimMessage({ type: 'error', text: 'กรุณารอให้อัปโหลดไฟล์ปัจจุบันเสร็จก่อนเปลี่ยนทะเบียนสถานี' })
+      return
+    }
+
+    setStationClaiming(true)
+    setStationClaimMessage(null)
+    try {
+      const { data, error } = await supabase.rpc('rpc_claim_packing_device', {
+        p_target_device_id: target.device_id,
+        p_current_device_id: deviceId,
+        p_device_name: target.device_name,
+      })
+      if (error) throw error
+
+      const claimed = data as { device_id?: string; device_name?: string }
+      const nextId = claimed?.device_id || target.device_id
+      const nextName = claimed?.device_name || target.device_name
+      await remapQueueDevice(deviceId, nextId, nextName)
+      await persistDeviceId(nextId)
+      await setDeviceName(nextName)
+      setDeviceId(nextId)
+      setDeviceNameState(nextName)
+      setQueueItems(await listQueueItems())
+      setStationClaimDeviceId('')
+      setStationClaimMessage({ type: 'success', text: `ผูก Browser นี้กับสถานี ${nextName} แล้ว` })
+      await loadPackingDeviceRegistry()
+    } catch (error) {
+      const message = error && typeof error === 'object' && 'message' in error
+        ? String((error as { message?: unknown }).message || 'ผูกสถานีไม่สำเร็จ')
+        : String(error)
+      setStationClaimMessage({ type: 'error', text: message })
+    } finally {
+      setStationClaiming(false)
+    }
+  }
+
   async function changeVideoQualityProfile(profile: VideoQualityProfileId) {
     await setVideoQualityProfile(profile)
     setVideoQualityProfileState(profile)
@@ -955,6 +1010,21 @@ export default function Packing() {
     if (error) console.warn('Packing upload report sync failed:', error.message)
   }
 
+  async function loadPackingDeviceRegistry() {
+    const { data, error } = await supabase
+      .from('pk_packing_devices')
+      .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+      .eq('is_active', true)
+      .order('last_seen_at', { ascending: false })
+    if (error) {
+      console.warn('Load packing devices failed:', error.message)
+      return [] as PackingDeviceRow[]
+    }
+    const rows = (data || []) as PackingDeviceRow[]
+    setPackingDevices(rows)
+    return rows
+  }
+
   async function loadUploadReport(showLoading = false) {
     if (showLoading) setUploadReportLoading(true)
     const [reportResult, deviceResult] = await Promise.all([
@@ -965,7 +1035,8 @@ export default function Packing() {
         .limit(1000),
       supabase
         .from('pk_packing_devices')
-        .select('device_id, device_name, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+        .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+        .eq('is_active', true)
         .order('last_seen_at', { ascending: false }),
     ])
     if (reportResult.error) console.warn('Load packing upload report failed:', reportResult.error.message)
@@ -980,6 +1051,8 @@ export default function Packing() {
     const { error } = await supabase.from('pk_packing_devices').upsert({
       device_id: deviceId,
       user_id: user.id,
+      last_username: user.username || user.email || 'unknown',
+      is_active: true,
       device_name: deviceName || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`,
       quality_profile: videoQualityProfile,
       folder_name: folderHandle?.name || null,
@@ -1012,6 +1085,11 @@ export default function Packing() {
     const timer = window.setInterval(() => void loadUploadReport(false), 10_000)
     return () => window.clearInterval(timer)
   }, [selectionTab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (selectionTab !== 'queue') return
+    void loadPackingDeviceRegistry()
+  }, [selectionTab, deviceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!user?.id || !deviceId) return
@@ -2542,7 +2620,11 @@ export default function Packing() {
 
   const uploadReportDevices = useMemo(() => {
     const devices = new Map<string, string>()
-    packingDevices.forEach((device) => devices.set(device.device_id, device.device_name || 'ไม่ระบุชื่อเครื่อง'))
+    packingDevices.forEach((device) => {
+      const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+      const label = `${device.device_name || 'ไม่ระบุชื่อเครื่อง'} • ${device.last_username || 'ไม่ทราบ User'} • ${online ? 'ออนไลน์' : 'ออฟไลน์'}`
+      devices.set(device.device_id, label)
+    })
     uploadReportRows.forEach((row) => {
       if (!devices.has(row.device_id)) devices.set(row.device_id, row.device_name || 'ไม่ระบุชื่อเครื่อง')
     })
@@ -3211,6 +3293,54 @@ export default function Packing() {
                       <option key={profile.id} value={profile.id}>{profile.label} — {profile.description}</option>
                     ))}
                   </select>
+                </div>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
+                  <div className="mb-2 font-semibold text-blue-900">ผูก Browser นี้กับทะเบียนสถานีเดิม</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={stationClaimDeviceId}
+                      onChange={(event) => {
+                        setStationClaimDeviceId(event.target.value)
+                        setStationClaimMessage(null)
+                      }}
+                      className="min-w-[300px] rounded-lg border border-blue-300 bg-white px-3 py-2"
+                    >
+                      <option value="">-- เลือกสถานีเดิม --</option>
+                      {packingDevices
+                        .filter((device) => device.device_id !== deviceId)
+                        .map((device) => {
+                          const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+                          return (
+                            <option key={device.device_id} value={device.device_id} disabled={online}>
+                              {device.device_name} • {device.last_username || 'ไม่ทราบ User'} • {online ? 'ออนไลน์' : 'ออฟไลน์'}
+                            </option>
+                          )
+                        })}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void claimExistingPackingStation()}
+                      disabled={!stationClaimDeviceId || stationClaiming}
+                      className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {stationClaiming ? 'กำลังผูกสถานี...' : 'ใช้ทะเบียนสถานีนี้'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void loadPackingDeviceRegistry()}
+                      className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-blue-700 hover:bg-blue-100"
+                    >
+                      รีเฟรชทะเบียน
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-blue-700">
+                    ใช้เมื่อ Browser ถูกล้างข้อมูลหรือสร้างรหัสเครื่องใหม่ ระบบจะย้ายประวัติของ Browser ปัจจุบันกลับไปยังสถานีเดิม
+                  </p>
+                  {stationClaimMessage && (
+                    <div className={`mt-2 rounded-lg px-3 py-2 text-xs font-medium ${stationClaimMessage.type === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                      {stationClaimMessage.text}
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <button

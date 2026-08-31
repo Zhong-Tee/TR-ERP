@@ -126,6 +126,10 @@ export async function getOrCreateDeviceId(): Promise<string> {
   return id
 }
 
+export async function setDeviceId(id: string): Promise<void> {
+  await setSetting('packingDeviceId', id.trim())
+}
+
 export async function getDeviceName(): Promise<string> {
   return (await getSetting<string>('packingDeviceName')) || ''
 }
@@ -184,6 +188,22 @@ export async function updateQueueItem(id: string, patch: Partial<UploadQueueItem
   if (!existing) return
   const next: UploadQueueItem = { ...existing, ...patch, updatedAt: new Date().toISOString() }
   await withStore(STORE_QUEUE, 'readwrite', (store) => store.put(next))
+}
+
+export async function remapQueueDevice(
+  currentDeviceId: string,
+  targetDeviceId: string,
+  targetDeviceName: string,
+): Promise<void> {
+  const items = await listQueueItems()
+  await Promise.all(
+    items
+      .filter((item) => !item.deviceId || item.deviceId === currentDeviceId)
+      .map((item) => updateQueueItem(item.id, {
+        deviceId: targetDeviceId,
+        deviceName: targetDeviceName,
+      })),
+  )
 }
 
 export async function deleteQueueItem(id: string): Promise<void> {
