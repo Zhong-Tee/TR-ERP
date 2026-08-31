@@ -22,6 +22,7 @@ import {
   loadUserDisplayNames,
   loadSellers,
 } from '../lib/purchaseApi'
+import { normalizeProductUnitName } from '../lib/productUnits'
 import { getPublicUrl } from '../lib/qcApi'
 import ZoomImage from '../components/ui/ZoomImage'
 
@@ -203,8 +204,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
   }
 
   function getProductUnit(product?: (Product & { last_price?: number | null }) | null): string {
-    const name = product?.unit_name?.trim()
-    return name || 'ชิ้น'
+    return normalizeProductUnitName(product?.unit_name)
   }
 
   /* ── Filter options extracted from products ── */

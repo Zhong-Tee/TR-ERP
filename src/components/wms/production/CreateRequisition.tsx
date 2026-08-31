@@ -12,6 +12,7 @@ interface ReqItem {
   product_name: string
   storage_location?: string
   qty: number
+  unit_name?: string | null
   requisition_topic: string
   item_note?: string
   damage_files?: File[]
@@ -79,7 +80,7 @@ export default function CreateRequisition() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location')
+        .select('product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', productTypeFilter)
         .order('product_name')
@@ -239,7 +240,7 @@ export default function CreateRequisition() {
           uploadedPaths.push(path); damagePaths.push(path)
         }
         items.push({ requisition_id: requisitionId, product_code: item.product_code, product_name: item.product_name,
-          location: item.storage_location || null, qty: item.qty, requisition_topic: item.requisition_topic || null,
+          location: item.storage_location || null, qty: item.qty, unit_name: item.unit_name?.trim() || 'ชิ้น', requisition_topic: item.requisition_topic || null,
           item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths })
       }
       const { error: itemsError } = await supabase.from('wms_requisition_items').insert(items)
@@ -403,6 +404,7 @@ export default function CreateRequisition() {
                       className="w-12 text-center rounded border border-gray-300 bg-white text-gray-900 text-sm py-1"
                       min={1}
                     />
+                    <span className="ml-1 text-xs font-semibold text-gray-600">{item.unit_name || 'ชิ้น'}</span>
                     <button type="button" onClick={() => updateQty(item.product_code, item.qty + 1)} className="w-7 h-7 rounded bg-gray-200 text-gray-900 font-bold text-sm">+</button>
                   </div>
                 </div>
@@ -485,7 +487,7 @@ export default function CreateRequisition() {
                                 <div className="text-[10px] text-gray-500">รหัส: {item.product_code}</div>
                               </div>
                               <div className="text-blue-700 font-bold text-sm shrink-0 bg-blue-100 px-2 py-0.5 rounded-lg">
-                                x{item.qty}
+                                {item.qty} {item.unit_name || 'ชิ้น'}
                               </div>
                             </div>
                           ))}

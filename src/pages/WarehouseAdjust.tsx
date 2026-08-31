@@ -91,7 +91,7 @@ export default function WarehouseAdjust() {
     try {
       const [adjustRes, productRes, balanceRes, usersRes, itemCountRes, specialTrackedRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
-        supabase.from('pr_products').select('id, product_code, product_name, order_point').eq('is_active', true).order('product_code', { ascending: true }),
+        supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_name').eq('is_active', true).order('product_code', { ascending: true }),
         supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
         supabase.from('us_users').select('id, username'),
         supabase.from('inv_adjustment_items').select('adjustment_id'),
@@ -133,7 +133,7 @@ export default function WarehouseAdjust() {
     () =>
       products.filter((p) => !nonAdjustableProductIds.has(p.id)).map((p) => ({
         value: p.id,
-        label: `${p.product_code} - ${p.product_name}`,
+        label: `${p.product_code} - ${p.product_name} (${p.unit_name || 'ชิ้น'})`,
       })),
     [products, nonAdjustableProductIds]
   )
@@ -184,13 +184,14 @@ export default function WarehouseAdjust() {
   }
 
   function downloadCurrentProducts() {
-    const headers = ['product_code', 'product_name', 'on_hand', 'safety_stock', 'order_point']
+    const headers = ['product_code', 'product_name', 'unit_name', 'on_hand', 'safety_stock', 'order_point']
     const rows = products.filter((p) => !nonAdjustableProductIds.has(p.id)).map((p) => {
       const b = balances[p.id]
       const op = p.order_point != null ? Number(p.order_point) : 0
       return [
         p.product_code,
         p.product_name,
+        p.unit_name || 'ชิ้น',
         b ? b.on_hand : 0,
         b?.safety_stock ?? 0,
         Number.isFinite(op) ? op : 0,
@@ -200,6 +201,7 @@ export default function WarehouseAdjust() {
     ws['!cols'] = [
       { wch: 15 }, // product_code
       { wch: 30 }, // product_name
+      { wch: 12 }, // unit_name
       { wch: 12 }, // on_hand
       { wch: 14 }, // safety_stock
       { wch: 14 }, // order_point
@@ -420,7 +422,7 @@ export default function WarehouseAdjust() {
     setViewing(adjustment)
     const { data, error } = await supabase
       .from('inv_adjustment_items')
-      .select(`id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock${canSeeCost ? ', estimated_total_cost_impact, approved_total_cost_impact' : ''}, pr_products(product_code, product_name)`)
+      .select(`id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock${canSeeCost ? ', estimated_total_cost_impact, approved_total_cost_impact' : ''}, pr_products(product_code, product_name, unit_name)`)
       .eq('adjustment_id', adjustment.id)
     if (!error) {
       const rows = (data || []) as unknown as InventoryAdjustmentItem[]
@@ -712,7 +714,7 @@ export default function WarehouseAdjust() {
                         const newOnHand = item.after_on_hand != null
                           ? Number(item.after_on_hand)
                           : oldOnHand + Number(item.qty_delta || 0)
-                        return `${oldOnHand.toLocaleString()} -> ${newOnHand.toLocaleString()}`
+                        return `${oldOnHand.toLocaleString()} -> ${newOnHand.toLocaleString()} ${item.pr_products?.unit_name || 'ชิ้น'}`
                       })()}
                     </td>
                     <td className="p-2 text-right text-gray-600">
@@ -723,11 +725,11 @@ export default function WarehouseAdjust() {
                         const newSafety = item.after_safety_stock != null
                           ? Number(item.after_safety_stock)
                           : Number(item.new_safety_stock ?? oldSafety)
-                        return `${oldSafety.toLocaleString()} -> ${newSafety.toLocaleString()}`
+                        return `${oldSafety.toLocaleString()} -> ${newSafety.toLocaleString()} ${item.pr_products?.unit_name || 'ชิ้น'}`
                       })()}
                     </td>
                     <td className={`p-2 text-right font-medium ${Number(item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {Number(item.qty_delta) > 0 ? '+' : ''}{Number(item.qty_delta).toLocaleString()}
+                      {Number(item.qty_delta) > 0 ? '+' : ''}{Number(item.qty_delta).toLocaleString()} {item.pr_products?.unit_name || 'ชิ้น'}
                     </td>
                     {canSeeCost && <td className="p-2 text-right font-medium text-gray-700">
                       {Number(item.approved_total_cost_impact ?? item.estimated_total_cost_impact ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -821,7 +823,7 @@ const DraftItemsList = React.memo(function DraftItemsList({
               {(() => {
                 const selectedProduct = item.product_id ? productIdMap[item.product_id] : null
                 const selectedOpt = selectedProduct
-                  ? { value: selectedProduct.id, label: `${selectedProduct.product_code} - ${selectedProduct.product_name}` }
+                  ? { value: selectedProduct.id, label: `${selectedProduct.product_code} - ${selectedProduct.product_name} (${selectedProduct.unit_name || 'ชิ้น'})` }
                   : null
                 const rowOptions = selectedOpt && !productOptions.some((opt) => opt.value === item.product_id)
                   ? [selectedOpt, ...productOptions]
@@ -906,7 +908,7 @@ const DraftItemsList = React.memo(function DraftItemsList({
 
             return (
               <p className="text-xs text-gray-500">
-                ปัจจุบัน: เคลื่อนไหว {currentOnHand.toLocaleString()} | Safety {currentSafety.toLocaleString()} | รวม {currentTotal.toLocaleString()} {' '}
+                หน่วย: {productIdMap[item.product_id]?.unit_name || 'ชิ้น'} • ปัจจุบัน: เคลื่อนไหว {currentOnHand.toLocaleString()} | Safety {currentSafety.toLocaleString()} | รวม {currentTotal.toLocaleString()} {' '}
                 • หลังปรับ: เคลื่อนไหว {targetOnHand.toLocaleString()} | Safety {targetSafety.toLocaleString()} | รวม {targetTotal.toLocaleString()} {' '}
                 • ระบบจะปรับ: เคลื่อนไหว {formatDelta(deltaOnHand)} | Safety {formatDelta(deltaSafety)}
               </p>

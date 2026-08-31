@@ -106,7 +106,7 @@ export default function PurchasePO() {
   // Resolution modal
   const [resolveOpen, setResolveOpen] = useState(false)
   const [resolvePO, setResolvePO] = useState<InventoryPO | null>(null)
-  const [resolutions, setResolutions] = useState<{ po_item_id: string; product_name: string; qty_outstanding: number; resolution_type: string; resolution_note: string }[]>([])
+  const [resolutions, setResolutions] = useState<{ po_item_id: string; product_name: string; unit: string; qty_outstanding: number; resolution_type: string; resolution_note: string }[]>([])
   const [resolveSaving, setResolveSaving] = useState(false)
 
   // Edit PO modal
@@ -406,6 +406,7 @@ export default function PurchasePO() {
         .map((item: any) => ({
           po_item_id: item.id,
           product_name: `${item.pr_products?.product_code || ''} - ${item.pr_products?.product_name || ''}`,
+          unit: item.unit || item.pr_products?.unit_name || 'ชิ้น',
           qty_outstanding: Number(item.qty) - (Number(item.qty_received_total) || 0) - (Number(item.resolution_qty) || 0),
           resolution_type: 'waiting',
           resolution_note: '',
@@ -1003,7 +1004,7 @@ export default function PurchasePO() {
                               )}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle', fontSize: 16, fontWeight: 600 }}>
-                              {Number(item.qty).toLocaleString()}
+                              {Number(item.qty).toLocaleString()} {item.unit || prod?.unit_name || 'ชิ้น'}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{prod?.product_name_cn || '-'}</div>
@@ -1323,7 +1324,7 @@ export default function PurchasePO() {
                               )}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle', fontSize: 16, fontWeight: 600 }}>
-                              {Number(item.qty).toLocaleString()}
+                              {Number(item.qty).toLocaleString()} {item.unit || prod?.unit_name || 'ชิ้น'}
                             </td>
                             <td style={{ border: '1px solid #d1d5db', padding: 8, textAlign: 'center', verticalAlign: 'middle' }}>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{prod?.product_name_cn || '-'}</div>
@@ -1467,7 +1468,7 @@ export default function PurchasePO() {
                     <td className="px-3 py-2">
                       <div className="font-medium text-gray-900">{r.product_name}</div>
                     </td>
-                    <td className="px-3 py-2 text-right text-red-600 font-semibold">{r.qty_outstanding.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right text-red-600 font-semibold">{r.qty_outstanding.toLocaleString()} {r.unit}</td>
                     <td className="px-3 py-2 text-center">
                       <select
                         value={r.resolution_type}

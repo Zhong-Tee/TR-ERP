@@ -60,10 +60,10 @@ export default function SafetyStockTable({ items }: SafetyStockTableProps) {
                   </td>
                   <td className="p-3 text-xs text-gray-600">{item.product_category || '-'}</td>
                   <td className="p-3 text-xs text-gray-600">{item.storage_location || '-'}</td>
-                  <td className="p-3 text-right font-medium">{systemSafety.toLocaleString()}</td>
-                  <td className="p-3 text-right font-medium">{countedSafety.toLocaleString()}</td>
+                  <td className="p-3 text-right font-medium">{systemSafety.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
+                  <td className="p-3 text-right font-medium">{countedSafety.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className={`p-3 text-right font-bold ${diff >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                    {diff > 0 ? '+' : ''}{diff.toLocaleString()}
+                    {diff > 0 ? '+' : ''}{diff.toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}
                   </td>
                 </tr>
               )

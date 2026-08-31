@@ -53,7 +53,7 @@ export async function fetchAuditById(id: string) {
 export async function fetchAuditItems(auditId: string) {
   const { data, error } = await supabase
     .from('inv_audit_items')
-    .select('*, pr_products(product_code, product_name, storage_location, product_category)')
+    .select('*, pr_products(product_code, product_name, storage_location, product_category, unit_name)')
     .eq('audit_id', auditId)
     .order('created_at', { ascending: true })
   if (error) throw error
@@ -174,7 +174,7 @@ export async function createAudit(input: CreateAuditInput) {
   // 2. ดึงสินค้าตาม scope
   let productQuery = supabase
     .from('pr_products')
-    .select('id, product_code, product_name, product_category, storage_location')
+    .select('id, product_code, product_name, product_category, storage_location, unit_name')
     .eq('is_active', true)
 
   if (input.auditType === 'category' && input.scopeFilter?.categories?.length) {
@@ -208,6 +208,7 @@ export async function createAudit(input: CreateAuditInput) {
       is_counted: false,
       storage_location: p.storage_location || null,
       product_category: p.product_category || null,
+      unit_name: p.unit_name?.trim() || 'ชิ้น',
       system_location: p.storage_location || null,
       system_safety_stock: snapshot.systemSafetyStock,
     }

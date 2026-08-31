@@ -87,7 +87,7 @@ export default function Warehouse() {
     try {
       const { data, error } = await supabase
         .from('pr_products')
-        .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost, is_hold')
+        .select('id, product_code, product_name, product_category, product_type, order_point, order_point_days, seller_name, landed_cost, unit_name, is_hold')
         .eq('is_active', true)
         .order('product_code', { ascending: true })
       if (error) throw error
@@ -363,18 +363,20 @@ export default function Warehouse() {
       const avg = calcAvgDailySales(p.id)
       const days = calcDaysRemaining(p.id, onHand)
       const specialTracked = isSpecialTracked(p.id)
+      const unitName = p.unit_name?.trim() || 'ชิ้น'
       const row: Record<string, unknown> = {
         'รหัสสินค้า': p.product_code,
         'ประเภท': specialTracked ? 'ST' : (p.product_type || 'FG'),
         'หมวดหมู่': p.product_category || '-',
         'ชื่อสินค้า': p.product_name,
+        'หน่วย': unitName,
         'ผู้ขาย': p.seller_name || '-',
         'จุดสั่งซื้อ': p.order_point || '-',
         'จำนวนคงเหลือ': specialTracked ? 'ไม่มีค่า' : onHand,
         'รอรับเข้า': specialTracked ? 'ไม่มีค่า' : (pendingQty > 0 ? pendingQty : '-'),
         'Safety stock': specialTracked ? 'ไม่มีค่า' : (safetyStock ?? '-'),
         'รวมในคลัง': stockDisplay.total,
-        'การใช้ (ชิ้น/วัน)': !specialTracked && avg !== null ? avg : '-',
+        'การใช้ (หน่วย/วัน)': !specialTracked && avg !== null ? avg : '-',
         'วันขายคงเหลือ': !specialTracked && days !== null ? days : '-',
       }
       if (canSeeCost) {
@@ -531,6 +533,7 @@ export default function Warehouse() {
                   const specialTracked = isSpecialTracked(product.id)
                   const totalInStock = stockDisplay.total
                   const isLow = isBelowReorderThreshold(product, onHand)
+                  const unitName = product.unit_name?.trim() || 'ชิ้น'
                   return (
                     <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3">
@@ -553,19 +556,19 @@ export default function Warehouse() {
                       <td className="p-3">{product.product_category || '-'}</td>
                       <td className="p-3">{product.product_name}</td>
                       <td className="p-3 text-sm">{product.seller_name || '-'}</td>
-                      <td className="p-3 text-center">{product.order_point || '-'}</td>
+                      <td className="p-3 text-center">{product.order_point ? `${Number(product.order_point).toLocaleString()} ${unitName}` : '-'}</td>
                       <td className={`p-3 text-center ${isLow ? 'bg-orange-50 text-orange-700 font-semibold' : ''}`}>
-                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : onHand.toLocaleString()}
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : `${onHand.toLocaleString()} ${unitName}`}
                       </td>
                       <td className="p-3 text-center">
-                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (pendingQty > 0 ? pendingQty.toLocaleString() : '-')}
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (pendingQty > 0 ? `${pendingQty.toLocaleString()} ${unitName}` : '-')}
                       </td>
                       <td className="p-3 text-center">
-                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (safetyStock !== null ? safetyStock.toLocaleString() : '-')}
+                        {specialTracked ? <span className="text-xs text-gray-400">ไม่มีค่า</span> : (safetyStock !== null ? `${safetyStock.toLocaleString()} ${unitName}` : '-')}
                       </td>
                       <td className="p-3 text-center font-medium text-gray-700 align-middle">
                         <span title={specialTracked ? `ยอดรวมจากสินค้าผลิตที่ผูกไว้ ${specialTrackedSources[product.id]?.length || 0} SKU (ไม่กระทบ FIFO)` : undefined}>
-                          {totalInStock.toLocaleString()}
+                          {totalInStock.toLocaleString()} {unitName}
                         </span>
                         {specialTracked && (
                           <button
@@ -583,7 +586,7 @@ export default function Warehouse() {
                           if (specialTracked) return <span className="text-gray-400">-</span>
                           const avg = calcAvgDailySales(product.id)
                           if (avg === null) return <span className="text-gray-400">-</span>
-                          return <span>{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                          return <span>{avg.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {unitName}/วัน</span>
                         })()}
                       </td>
                       <td className="p-3 text-center">

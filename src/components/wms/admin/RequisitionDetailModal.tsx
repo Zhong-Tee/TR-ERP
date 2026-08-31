@@ -251,7 +251,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         </div>
                       </div>
                       <div className="text-slate-800 font-black text-xl shrink-0 bg-blue-100 px-4 py-2 rounded-lg">
-                        x{item.qty}
+                        {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
                     </div>
                   ))}

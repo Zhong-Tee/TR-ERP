@@ -78,7 +78,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
           {showSystemQty && (
             <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg">
               <span className="text-xs font-medium text-blue-700">สต๊อคคงเหลือ (ระบบ)</span>
-              <span className="text-lg font-bold text-blue-800">{item.system_qty}</span>
+              <span className="text-lg font-bold text-blue-800">{item.system_qty} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</span>
             </div>
           )}
         </div>
@@ -86,7 +86,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
         {/* Counted Qty - Blind Count */}
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-1">
-            จำนวนที่นับได้ <span className="text-red-500">*</span>
+            จำนวนที่นับได้ ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-red-500">*</span>
           </label>
           <input
             type="number"
@@ -144,7 +144,7 @@ export default function ProductCountCard({ item, showSystemQty = false, onSave, 
         {item.system_safety_stock != null && item.system_safety_stock > 0 && (
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-1">
-              Safety Stock ที่นับได้ <span className="text-gray-400 font-normal">(ถ้ามี)</span>
+              Safety Stock ที่นับได้ ({item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}) <span className="text-gray-400 font-normal">(ถ้ามี)</span>
             </label>
             <input
               type="number"

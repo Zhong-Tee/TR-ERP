@@ -545,6 +545,7 @@ export interface InventoryAuditItem {
   is_counted?: boolean
   storage_location?: string | null
   product_category?: string | null
+  unit_name?: string | null
   system_location?: string | null
   actual_location?: string | null
   location_match?: boolean | null
@@ -558,6 +559,7 @@ export interface InventoryAuditItem {
     product_name: string
     storage_location?: string | null
     product_category?: string | null
+    unit_name?: string | null
   }
 }
 

@@ -314,7 +314,7 @@ export default function MobileCountView() {
                     </div>
                     {audit.show_system_qty && (
                       <div className="text-xs text-blue-700 font-semibold mt-0.5">
-                        สต๊อค: {item.system_qty}
+                        สต๊อค: {item.system_qty} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}
                       </div>
                     )}
                   </div>
@@ -325,7 +325,7 @@ export default function MobileCountView() {
                           นับแล้ว
                         </span>
                         <span className="text-lg font-bold text-green-700 mt-0.5">
-                          {item.counted_qty}
+                          {item.counted_qty} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}
                         </span>
                         {item.counted_safety_stock != null && (
                           <span className="text-xs text-blue-600 font-medium mt-0.5">

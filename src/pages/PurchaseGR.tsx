@@ -50,6 +50,7 @@ interface ReceiveItem {
   product_id: string
   product_code: string
   product_name: string
+  unit_name: string
   qty_ordered: number
   qty_received: number | ''
   qty_already_received: number
@@ -290,6 +291,7 @@ export default function PurchaseGR() {
             product_id: item.product_id,
             product_code: item.pr_products?.product_code || '',
             product_name: item.pr_products?.product_name || '',
+            unit_name: item.unit || item.pr_products?.unit_name || 'ชิ้น',
             qty_ordered: remaining,
             qty_received: remaining,
             qty_already_received: alreadyReceived,
@@ -1269,7 +1271,8 @@ export default function PurchaseGR() {
                     <span className="text-[11px] font-medium text-gray-800">{item.product_code}</span>
                     <span className="text-[11px] text-gray-300"> · </span>
                     <span className="text-[11px] text-gray-500">ชื่อ</span>{' '}
-                    <span className="text-sm font-semibold text-gray-900">{item.product_name}</span>
+                    <span className="text-sm font-semibold text-gray-900">{item.product_name}</span>{' '}
+                    <span className="text-[11px] font-semibold text-blue-700">หน่วย: {item.unit_name}</span>
                   </div>
                   {item.item_note && (
                     <div className="text-[11px] text-amber-700 leading-snug line-clamp-2">* {item.item_note}</div>
@@ -1311,7 +1314,7 @@ export default function PurchaseGR() {
                   {/* รับ (แคบ) + ปุ่มรูป GR บรรทัดเดียว */}
                   <div className="flex items-end justify-between gap-3 pt-0.5">
                     <div className="shrink-0">
-                      <label className="block text-xs text-gray-600 mb-1">รับ</label>
+                      <label className="block text-xs text-gray-600 mb-1">รับ ({item.unit_name})</label>
                       <input
                         type="number"
                         inputMode="numeric"
@@ -1476,6 +1479,7 @@ export default function PurchaseGR() {
                         <div className="text-xs mt-0.5 break-words">
                           <span className="text-gray-500">ชื่อสินค้า </span>
                           <span className="font-medium text-gray-900">{item.product_name}</span>
+                          <span className="ml-2 text-[11px] font-semibold text-blue-700">หน่วย: {item.unit_name}</span>
                         </div>
                         {item.item_note && (
                           <div className="text-xs text-amber-600 mt-0.5 break-words">* {item.item_note}</div>
@@ -1814,6 +1818,7 @@ export default function PurchaseGR() {
                         <div className="min-w-0">
                           <div className="font-semibold text-gray-900 text-sm">{prod?.product_code || '-'}</div>
                           <div className="font-medium text-gray-800 text-sm break-words">{prod?.product_name || '-'}</div>
+                          <div className="text-xs font-semibold text-blue-700">หน่วย: {prod?.unit_name || 'ชิ้น'}</div>
                         </div>
                       </div>
                       <div className={`grid ${canSeeFinancial ? 'grid-cols-5' : 'grid-cols-4'} gap-2 text-xs`}>
@@ -1920,6 +1925,7 @@ export default function PurchaseGR() {
                           <td className="px-3 py-2">
                             <div className="font-medium text-gray-900">{prod?.product_code || '-'}</div>
                             <div className="text-sm text-gray-700 break-words">{prod?.product_name || '-'}</div>
+                            <div className="text-xs font-semibold text-blue-700">หน่วย: {prod?.unit_name || 'ชิ้น'}</div>
                           </td>
                           <td className="px-3 py-2 text-right text-gray-600">{item.qty_ordered != null ? orderQty.toLocaleString() : '-'}</td>
                           <td className="px-3 py-2 text-right font-medium">{receivedQty.toLocaleString()}</td>

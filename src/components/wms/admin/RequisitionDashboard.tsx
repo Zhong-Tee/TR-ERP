@@ -194,6 +194,7 @@ export default function RequisitionDashboard() {
               ...baseData,
               รายการสินค้า: '-',
               จำนวน: '-',
+              หน่วย: '-',
               _requisitionId: requisition.requisition_id,
             },
           ]
@@ -203,6 +204,7 @@ export default function RequisitionDashboard() {
           ...baseData,
           รายการสินค้า: item.product_name,
           จำนวน: item.qty.toString(),
+          หน่วย: item.unit_name || 'ชิ้น',
           _requisitionId: requisition.requisition_id,
         }))
       })
@@ -300,7 +302,7 @@ export default function RequisitionDashboard() {
     try {
       const { data } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location')
+        .select('product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', pt || cProductType)
         .order('product_name')
@@ -316,7 +318,7 @@ export default function RequisitionDashboard() {
     try {
       const { data } = await supabase
         .from('pr_products')
-        .select('product_code, product_name, storage_location')
+        .select('product_code, product_name, storage_location, unit_name')
         .eq('is_active', true)
         .eq('product_type', cProductType)
         .or(buildIlikeOr(cSearchTerm, ['product_code', 'product_name']))
@@ -429,7 +431,7 @@ export default function RequisitionDashboard() {
           uploadedPaths.push(path); damagePaths.push(path)
         }
         items.push({ requisition_id: cRequisitionId, product_code: item.product_code, product_name: item.product_name,
-          location: item.storage_location || null, qty: item.qty, requisition_topic: item.requisition_topic || null,
+          location: item.storage_location || null, qty: item.qty, unit_name: item.unit_name?.trim() || 'ชิ้น', requisition_topic: item.requisition_topic || null,
           item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths })
       }
       const { error: itemErr } = await supabase.from('wms_requisition_items').insert(items)
@@ -713,6 +715,7 @@ export default function RequisitionDashboard() {
                               <button onClick={() => cUpdateQty(item.product_code, item.qty - 1)} className="w-8 h-8 rounded-lg bg-red-100 text-red-600 font-bold hover:bg-red-200">-</button>
                               <input type="number" value={item.qty} onChange={(e) => cUpdateQty(item.product_code, Number(e.target.value) || 0)}
                                 className="w-14 text-center border rounded-lg p-1.5 text-sm font-bold" min={1} />
+                              <span className="ml-1 text-xs font-semibold text-gray-600">{item.unit_name || 'ชิ้น'}</span>
                               <button onClick={() => cUpdateQty(item.product_code, item.qty + 1)} className="w-8 h-8 rounded-lg bg-green-100 text-green-600 font-bold hover:bg-green-200">+</button>
                             </div>
                           </div>

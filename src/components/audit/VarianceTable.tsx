@@ -67,8 +67,8 @@ export default function VarianceTable({ items, showOnlyMismatch }: VarianceTable
                   </td>
                   <td className="p-3 text-xs text-gray-600">{item.product_category || '-'}</td>
                   <td className="p-3 text-xs text-gray-600">{item.storage_location || '-'}</td>
-                  <td className="p-3 text-right font-medium">{Number(item.system_qty).toLocaleString()}</td>
-                  <td className="p-3 text-right font-medium">{Number(item.counted_qty).toLocaleString()}</td>
+                  <td className="p-3 text-right font-medium">{Number(item.system_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
+                  <td className="p-3 text-right font-medium">{Number(item.counted_qty).toLocaleString()} {item.unit_name || item.pr_products?.unit_name || 'ชิ้น'}</td>
                   <td className={`p-3 text-right font-bold ${
                     isMatch ? 'text-green-600' : variance > 0 ? 'text-blue-600' : 'text-red-600'
                   }`}>
