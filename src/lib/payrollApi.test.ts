@@ -1,5 +1,63 @@
 import { describe, expect, it } from 'vitest'
-import { calculateCappedSavings, calculateEmployeeEwf, calculateEwf } from './payrollApi'
+import { calculateCappedSavings, calculateDailyWageSummary, calculateEmployeeEwf, calculateEwf, calculateOvertimePay, calculateSocialSecurity, type DailyWageDetail } from './payrollApi'
+
+describe('calculateOvertimePay', () => {
+  it('calculates daily employee OT at 1.5x on workdays and 3x on holidays', () => {
+    expect(calculateOvertimePay({
+      salary: 400,
+      contractType: 'daily',
+      normalHours: 2,
+      holidayHours: 1,
+    })).toEqual({ normalHours: 2, holidayHours: 1, overtimePay: 300 })
+  })
+
+  it('converts monthly salary to a daily and hourly wage before applying OT rates', () => {
+    expect(calculateOvertimePay({
+      salary: 15000,
+      contractType: 'permanent',
+      normalHours: 2,
+      holidayHours: 1,
+    })).toEqual({ normalHours: 2, holidayHours: 1, overtimePay: 375 })
+  })
+})
+
+describe('calculateDailyWageSummary', () => {
+  it('pays worked days, half days and company holidays but not full-day leave', () => {
+    const makeDetail = (status: DailyWageDetail['status'], payableDay: number): DailyWageDetail => ({
+      workDate: '2026-08-01', status, payableDay, dailyRate: 400, amount: 400 * payableDay, note: '',
+    })
+    const result = calculateDailyWageSummary(400, [
+      makeDetail('worked_full', 1),
+      makeDetail('worked_half', 0.5),
+      makeDetail('paid_holiday', 1),
+      makeDetail('unpaid_leave', 0),
+      makeDetail('unpaid_leave', 0.5),
+      makeDetail('unresolved', 0),
+    ])
+
+    expect(result).toMatchObject({
+      fullDays: 1,
+      halfDays: 2,
+      paidHolidayDays: 1,
+      unpaidLeaveDays: 1.5,
+      payableDays: 3,
+      unresolvedDays: 1,
+      regularPay: 1200,
+    })
+  })
+})
+
+describe('calculateSocialSecurity', () => {
+  const settings = { contribution_rate: 5, maximum_wage_base: 17500 }
+
+  it('calculates the contribution from the supplied base salary', () => {
+    expect(calculateSocialSecurity(15000, settings)).toBe(750)
+  })
+
+  it('caps the contribution at the configured maximum wage base', () => {
+    expect(calculateSocialSecurity(20000, settings)).toBe(875)
+  })
+})
 
 describe('calculateEwf', () => {
   it('calculates 0.25% from base salary plus position allowance', () => {
@@ -22,6 +80,10 @@ describe('calculateEmployeeEwf', () => {
 
   it('calculates EWF for other employees when enabled', () => {
     expect(calculateEmployeeEwf('EMP00002', 100000, true)).toBe(250)
+  })
+
+  it('calculates daily employee EWF from the regular wage actually payable', () => {
+    expect(calculateEmployeeEwf('EMP00021', 10500)).toBe(26.25)
   })
 })
 

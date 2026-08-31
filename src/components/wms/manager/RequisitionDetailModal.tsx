@@ -13,30 +13,37 @@ interface RequisitionDetailModalProps {
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
   const { user } = useAuthContext()
   const canApprove = ['superadmin', 'admin', 'store'].includes(user?.role || '')
-  const [items, setItems] = useState<any[]>([])
+  const hasPreloadedItems = Array.isArray(requisition.items)
+  const [items, setItems] = useState<any[]>(() => sortOrderItems(hasPreloadedItems ? requisition.items : []))
   const [damagePhotoUrls, setDamagePhotoUrls] = useState<Record<string, string>>({})
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!hasPreloadedItems)
   const [approving, setApproving] = useState(false)
   const [selectedPicker, setSelectedPicker] = useState('')
-  const [pickers, setPickers] = useState<any[]>([])
+  const [pickers, setPickers] = useState<any[]>(() => requisition.preloadedPickers || [])
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   useEffect(() => {
     loadItems()
-    loadPickers()
+    if (!Array.isArray(requisition.preloadedPickers)) loadPickers()
   }, [requisition])
 
   const loadItems = async () => {
     try {
-      const { data, error } = await supabase
-        .from('wms_requisition_items')
-        .select('*')
-        .eq('requisition_id', requisition.requisition_id)
-        .order('created_at', { ascending: true })
+      let sortedItems: any[]
+      if (Array.isArray(requisition.items)) {
+        sortedItems = sortOrderItems(requisition.items)
+      } else {
+        setLoading(true)
+        const { data, error } = await supabase
+          .from('wms_requisition_items')
+          .select('*')
+          .eq('requisition_id', requisition.requisition_id)
+          .order('created_at', { ascending: true })
 
-      if (error) throw error
+        if (error) throw error
+        sortedItems = sortOrderItems(data || [])
+      }
 
-      const sortedItems = sortOrderItems(data || [])
       setItems(sortedItems)
       const paths = sortedItems.flatMap((item: any) => item.damage_image_paths || [])
       if (paths.length) {
@@ -82,29 +89,11 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
     setApproving(true)
     try {
-      const { error: reqError } = await supabase
-        .from('wms_requisitions')
-        .update({
-          status: 'approved',
-          approved_by: user?.id,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', requisition.id)
-
-      if (reqError) throw reqError
-
-      const orderData = items.map((item) => ({
-        order_id: requisition.requisition_id,
-        product_code: item.product_code,
-        product_name: item.product_name,
-        location: item.location,
-        qty: item.qty,
-        assigned_to: selectedPicker,
-        status: 'pending',
-      }))
-
-      const { error: orderError } = await supabase.from('wms_orders').insert(orderData)
-      if (orderError) throw orderError
+      const { error } = await supabase.rpc('approve_wms_requisition', {
+        p_requisition_id: requisition.id,
+        p_picker_id: selectedPicker,
+      })
+      if (error) throw error
 
       showMessage({ message: `✅ อนุมัติใบเบิก ${requisition.requisition_id} สำเร็จ!\nมอบหมายให้ Picker แล้ว` })
       onClose()

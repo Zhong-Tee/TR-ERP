@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
 import {
   getProductImageUrl,
@@ -18,6 +18,16 @@ import {
   getCondoStampDisplayQty,
   getCondoStampLayersLabel,
 } from '../../../lib/wmsCondoStampConsolidation'
+
+const REQUISITION_SCOPE_PREFIX = 'req:'
+const isRequisitionScope = (scopeId: string) => scopeId.startsWith(REQUISITION_SCOPE_PREFIX)
+const requisitionNumberFromScope = (scopeId: string) => scopeId.slice(REQUISITION_SCOPE_PREFIX.length)
+const reviewScopeFromRow = (row: any): string => {
+  const workOrderId = String(row.work_order_id || '').trim()
+  if (workOrderId) return workOrderId
+  const orderId = String(row.order_id || '').trim()
+  return orderId.startsWith('REQ-') ? `${REQUISITION_SCOPE_PREFIX}${orderId}` : ''
+}
 
 /** บันทึกเวลาเสร็จแผนก "เบิก" ใน plan_jobs.tracks (atomic merge) */
 const ensurePlanDeptEnd = async (workOrderId: string) => {
@@ -55,8 +65,9 @@ export default function ReviewSection() {
   const [showTabs, setShowTabs] = useState(false)
   const [reviewDeptFilter, setReviewDeptFilter] = useState('')
   const [reviewPlanSettings, setReviewPlanSettings] = useState<PlanDeptSettings | null>(null)
+  const [reviewDropdownLoading, setReviewDropdownLoading] = useState(false)
   const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
-  const inspectResyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reviewLoadRequestRef = useRef(0)
   useEffect(() => {
     const today = new Date().toISOString().split('T')[0]
     setReviewDate(today)
@@ -69,12 +80,6 @@ export default function ReviewSection() {
       resetReviewUI()
     }
   }, [reviewDate])
-
-  useEffect(() => {
-    return () => {
-      if (inspectResyncTimerRef.current) clearTimeout(inspectResyncTimerRef.current)
-    }
-  }, [])
 
   const resetReviewUI = () => {
     setShowCounter(false)
@@ -106,42 +111,61 @@ export default function ReviewSection() {
     }))
   }
 
-  const fetchInspectRows = useCallback(async (workOrderId: string): Promise<any[]> => {
-    if (!workOrderId) return []
-    const { data, error } = await supabase
-      .from('wms_orders')
-      .select('*')
-      .eq('work_order_id', workOrderId)
-      .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-    if (error) {
-      console.error('fetchInspectRows error:', error)
-      return []
+  const enrichRequisitionReviewRows = async (rows: any[]): Promise<any[]> => {
+    if (!rows.length || rows.every((row) => row._requisition_meta_loaded)) return rows
+    const requisitionNumbers = [...new Set(
+      rows
+        .filter((row) => reviewScopeFromRow(row).startsWith(REQUISITION_SCOPE_PREFIX))
+        .map((row) => String(row.order_id || '').trim())
+        .filter(Boolean)
+    )]
+    if (!requisitionNumbers.length) return rows
+
+    const [requisitionsResult, itemsResult] = await Promise.all([
+      supabase
+        .from('wms_requisitions')
+        .select('requisition_id, created_by, notes, requester:us_users!created_by(username)')
+        .in('requisition_id', requisitionNumbers),
+      supabase
+        .from('wms_requisition_items')
+        .select('requisition_id, product_code, requisition_topic, item_note')
+        .in('requisition_id', requisitionNumbers),
+    ])
+    if (requisitionsResult.error || itemsResult.error) {
+      console.error('enrichRequisitionReviewRows error:', requisitionsResult.error || itemsResult.error)
+      return rows
     }
-    const sorted = sortOrderItems(await enrichReleasedSourceOrders((data || []) as any[]))
-    const plan = await fetchPlanDeptSettings()
-    setReviewPlanSettings(plan)
-    const enriched = await enrichWmsRowsWithPickingDepartment(sorted, plan)
-    return consolidateCondoStampWmsDisplayRows(enriched as any[])
-  }, [])
 
-  const scheduleInspectResync = useCallback((workOrderId: string) => {
-    if (!workOrderId) return
-    if (inspectResyncTimerRef.current) clearTimeout(inspectResyncTimerRef.current)
-    inspectResyncTimerRef.current = setTimeout(async () => {
-      const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
-      if (!currentWorkOrderId || currentWorkOrderId !== workOrderId) return
-      const fresh = await fetchInspectRows(workOrderId)
-      if (fresh.length > 0) setInspectItems(fresh)
-    }, 1200)
-  }, [fetchInspectRows, reviewOrderActualId, reviewOrderSelect])
+    const requisitionMap = new Map(
+      (requisitionsResult.data || []).map((row: any) => [String(row.requisition_id), row])
+    )
+    const itemMap = new Map(
+      (itemsResult.data || []).map((row: any) => [`${row.requisition_id}\u0000${row.product_code}`, row])
+    )
+    return rows.map((row) => {
+      const requisitionNumber = String(row.order_id || '').trim()
+      if (!requisitionNumbers.includes(requisitionNumber)) return row
+      const requisition = requisitionMap.get(requisitionNumber) as any
+      const requisitionItem = itemMap.get(`${requisitionNumber}\u0000${row.product_code}`) as any
+      return {
+        ...row,
+        _requisition_meta_loaded: true,
+        requisition_type: String(requisitionItem?.requisition_topic || '').trim() || '-',
+        requisition_note: String(requisitionItem?.item_note || requisition?.notes || '').trim() || '-',
+        requisition_requester: String(
+          (Array.isArray(requisition?.requester) ? requisition.requester[0]?.username : requisition?.requester?.username) || '-'
+        ),
+      }
+    })
+  }
 
-  const loadReviewDropdown = async (skipReset = true) => {
+  const loadReviewDropdown = async (skipReset = true, showLoading = true) => {
     if (!skipReset) resetReviewUI()
     if (!reviewDate) return
+    const requestId = ++reviewLoadRequestRef.current
+    if (showLoading) setReviewDropdownLoading(true)
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('wms_orders')
       .select(
         'id, work_order_id, order_id, product_code, product_name, location, qty, assigned_to, status, error_count, not_find_count, created_at, source_order_id, plan_line_released, stock_action'
@@ -152,20 +176,41 @@ export default function ReviewSection() {
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
 
-    if (!data) return
-    const enrichedRows = await enrichReleasedSourceOrders(data as any[])
+    if (error || !data) {
+      if (requestId === reviewLoadRequestRef.current) {
+        setRowsByWorkOrder({})
+        setOrderOptions([{ value: '', label: 'โหลดรายการไม่สำเร็จ — กรุณาลองใหม่' }])
+        setReviewPendingOrders([])
+        setReviewDropdownLoading(false)
+      }
+      if (error) console.error('loadReviewDropdown error:', error)
+      return
+    }
+    if (requestId !== reviewLoadRequestRef.current) return
+    const [sourceEnrichedRows, requisitionEnrichedRows] = await Promise.all([
+      enrichReleasedSourceOrders(data as any[]),
+      enrichRequisitionReviewRows(data as any[]),
+    ])
+    const requisitionMetaById = new Map(
+      requisitionEnrichedRows
+        .filter((row) => row._requisition_meta_loaded)
+        .map((row) => [row.id, row])
+    )
+    const enrichedRows = sourceEnrichedRows.map((row) => {
+      const requisitionRow = requisitionMetaById.get(row.id)
+      return requisitionRow ? { ...row, ...requisitionRow } : row
+    })
+    if (requestId !== reviewLoadRequestRef.current) return
 
     const groupedByWo: Record<string, any[]> = {}
     ;(enrichedRows as any[]).forEach((obj) => {
-      const wid = String(obj.work_order_id || '')
-      if (!wid) return
-      if (!groupedByWo[wid]) groupedByWo[wid] = []
-      groupedByWo[wid].push(obj)
+      const scopeId = reviewScopeFromRow(obj)
+      if (!scopeId) return
+      if (!groupedByWo[scopeId]) groupedByWo[scopeId] = []
+      groupedByWo[scopeId].push(obj)
     })
 
-    setRowsByWorkOrder(groupedByWo)
-
-    const workOrderIds = Object.keys(groupedByWo)
+    const workOrderIds = Object.keys(groupedByWo).filter((scopeId) => !isRequisitionScope(scopeId))
     const woNameById: Record<string, string> = {}
     if (workOrderIds.length > 0) {
       const { data: workOrders } = await supabase
@@ -178,19 +223,23 @@ export default function ReviewSection() {
         if (id) woNameById[id] = name
       })
     }
+    if (requestId !== reviewLoadRequestRef.current) return
 
-    const grouped = Object.entries(groupedByWo).map(([woId, rows]) => {
+    const grouped = Object.entries(groupedByWo).map(([scopeId, rows]) => {
       const first = rows[0] || {}
       const total = rows.length
       const picked = rows.filter((r) => r.status === 'picked').length
       const pending = rows.filter((r) => r.status === 'pending').length
       const shelfPending = rows.filter((r) => isWmsCancelledAwaitingPhysicalShelf(r)).length
       const uncheckedInspect = picked + shelfPending
-      const nameFromWorkOrder = String(woNameById[woId] || '').trim()
+      const requisitionScope = isRequisitionScope(scopeId)
+      const nameFromWorkOrder = String(woNameById[scopeId] || '').trim()
       const nameFromRow = String(first.order_id || '').trim()
-      const labelBase = nameFromWorkOrder || nameFromRow || 'ไม่ระบุชื่อใบงาน'
+      const labelBase = requisitionScope
+        ? `ใบเบิก ${nameFromRow}`
+        : nameFromWorkOrder || nameFromRow || 'ไม่ระบุชื่อใบงาน'
       return {
-        id: woId,
+        id: scopeId,
         label: labelBase,
         total,
         picked,
@@ -205,10 +254,11 @@ export default function ReviewSection() {
     const completed = grouped.filter((o) => o.pending === 0)
     const currentSelected = reviewOrderSelect
 
+    setRowsByWorkOrder(groupedByWo)
     setOrderOptions(
       completed.length
         ? [
-            { value: '', label: '-- เลือกใบงานที่จัดเสร็จแล้ว --' },
+            { value: '', label: '-- เลือกใบงานหรือใบเบิกที่จัดเสร็จแล้ว --' },
             ...completed.map((o) => ({
               value: o.id,
               label:
@@ -218,7 +268,7 @@ export default function ReviewSection() {
               hasUnchecked: o.uncheckedInspect > 0,
             })),
           ]
-        : [{ value: '', label: 'ไม่มีใบงานที่พร้อมตรวจ' }]
+        : [{ value: '', label: 'ไม่มีใบงานหรือใบเบิกที่พร้อมตรวจ' }]
     )
     setReviewPendingOrders(
       completed
@@ -232,23 +282,27 @@ export default function ReviewSection() {
     } else if (currentSelected) {
       setReviewOrderSelect('')
     }
+    if (requestId === reviewLoadRequestRef.current) setReviewDropdownLoading(false)
   }
 
   const startInspection = async (selectedOrderId?: string) => {
-    const selectedWoId = String(selectedOrderId || reviewOrderSelect || '')
-    if (!selectedWoId) {
-      showMessage({ message: 'โปรดเลือกใบงานที่ต้องการตรวจ!' })
+    const selectedScopeId = String(selectedOrderId || reviewOrderSelect || '')
+    if (!selectedScopeId) {
+      showMessage({ message: 'โปรดเลือกใบงานหรือใบเบิกที่ต้องการตรวจ!' })
       return
     }
-    let rows: any[] = rowsByWorkOrder[selectedWoId] ? [...rowsByWorkOrder[selectedWoId]] : []
+    let rows: any[] = rowsByWorkOrder[selectedScopeId] ? [...rowsByWorkOrder[selectedScopeId]] : []
     if (rows.length === 0) {
-      const { data, error } = await supabase
+      let query = supabase
         .from('wms_orders')
         .select('*')
-        .eq('work_order_id', selectedWoId)
         .or(WMS_REVIEW_INCLUDE_CANCELLED_RECALLED_OR)
         .order('created_at', { ascending: true })
         .order('id', { ascending: true })
+      query = isRequisitionScope(selectedScopeId)
+        ? query.eq('order_id', requisitionNumberFromScope(selectedScopeId))
+        : query.eq('work_order_id', selectedScopeId)
+      const { data, error } = await query
       if (error) console.error(error)
       rows = data || []
     }
@@ -257,22 +311,29 @@ export default function ReviewSection() {
       return
     }
 
-    const canonicalWorkOrderId = String(rows[0]?.work_order_id || selectedWoId)
+    const canonicalScopeId = reviewScopeFromRow(rows[0]) || selectedScopeId
     const hasUnfinishedItems = rows.some((item) => item.status === 'pending')
     if (hasUnfinishedItems) {
       showMessage({ message: 'ไม่อนุญาตให้ตรวจเนื่องจากใบงานนี้ยังจัดไม่เสร็จสิ้น (มีรายการค้างจัด)' })
       return
     }
 
-    const plan = await fetchPlanDeptSettings()
-    const sortedData = sortOrderItems(await enrichReleasedSourceOrders(rows))
-    const withDept = consolidateCondoStampWmsDisplayRows(
-      await enrichWmsRowsWithPickingDepartment(sortedData, plan)
-    )
-    setReviewPlanSettings(plan)
+    const sourceEnrichedRows = await enrichReleasedSourceOrders(rows)
+    const sortedData = sortOrderItems(await enrichRequisitionReviewRows(sourceEnrichedRows))
+    let withDept: any[]
+    if (isRequisitionScope(canonicalScopeId)) {
+      withDept = consolidateCondoStampWmsDisplayRows(sortedData)
+      setReviewPlanSettings(null)
+    } else {
+      const plan = await fetchPlanDeptSettings()
+      withDept = consolidateCondoStampWmsDisplayRows(
+        await enrichWmsRowsWithPickingDepartment(sortedData, plan)
+      )
+      setReviewPlanSettings(plan)
+    }
     setReviewDeptFilter('')
-    setReviewOrderSelect(canonicalWorkOrderId)
-    setReviewOrderActualId(canonicalWorkOrderId)
+    setReviewOrderSelect(canonicalScopeId)
+    setReviewOrderActualId(canonicalScopeId)
     setInspectItems(withDept as any[])
     setShowCounter(true)
     setShowTabs(true)
@@ -292,24 +353,70 @@ export default function ReviewSection() {
     if (newStatus === 'wrong') updateData.error_count = (item?.error_count || 0) + 1
     if (newStatus === 'not_find') updateData.not_find_count = (item?.not_find_count || 0) + 1
 
-    await supabase.from('wms_orders').update(updateData).in('id', targetIds)
-
     const currentWorkOrderId = reviewOrderActualId || reviewOrderSelect
+    const previousRows = inspectItems
+    const previousScopeRows = rowsByWorkOrder[currentWorkOrderId] || []
+    const previousPendingOrders = reviewPendingOrders
+    const previousOrderOptions = orderOptions
     const optimisticRows = inspectItems.map((i) => (i.id === id ? { ...i, ...updateData } : i))
-    const sortedData = sortOrderItems(await enrichReleasedSourceOrders(optimisticRows))
+    const sortedData = sortOrderItems(optimisticRows)
+    const remainingUnchecked = sortedData.filter(
+      (row) => row.status === 'picked' || isWmsCancelledAwaitingPhysicalShelf(row)
+    ).length
+
+    // แสดงผลทันที ไม่รอ trigger ตัดสต๊อก/FIFO และ query ประกอบอื่น ๆ ทำงานเสร็จ
+    reviewLoadRequestRef.current += 1
+    setReviewDropdownLoading(false)
     setInspectItems(sortedData)
-    scheduleInspectResync(currentWorkOrderId)
+    setRowsByWorkOrder((current) => ({
+      ...current,
+      [currentWorkOrderId]: (current[currentWorkOrderId] || []).map((row) =>
+        targetIds.includes(row.id) ? { ...row, ...updateData } : row
+      ),
+    }))
+    setReviewPendingOrders((current) => remainingUnchecked === 0
+      ? current.filter((order) => order.id !== currentWorkOrderId)
+      : current.map((order) => order.id === currentWorkOrderId ? { ...order, unchecked: remainingUnchecked } : order)
+    )
+    setOrderOptions((current) => current.map((option) => {
+      if (option.value !== currentWorkOrderId) return option
+      const statusLabel = remainingUnchecked > 0
+        ? `[ยังไม่ได้ตรวจ ${remainingUnchecked} รายการ]`
+        : '[ตรวจเสร็จแล้ว]'
+      return {
+        ...option,
+        label: option.label.replace(/\[(?:ยังไม่ได้ตรวจ \d+ รายการ|ตรวจเสร็จแล้ว)\]/, statusLabel),
+        hasUnchecked: remainingUnchecked > 0,
+      }
+    }))
+
+    const { error: updateError } = await supabase.from('wms_orders').update(updateData).in('id', targetIds)
+    if (updateError) {
+      setInspectItems(previousRows)
+      setRowsByWorkOrder((current) => ({ ...current, [currentWorkOrderId]: previousScopeRows }))
+      setReviewPendingOrders(previousPendingOrders)
+      setOrderOptions(previousOrderOptions)
+      showMessage({ message: `อัปเดตผลตรวจไม่สำเร็จ: ${updateError.message}` })
+      return
+    }
 
     if (sortedData.length > 0) {
       const isFullyChecked = sortedData.every((i) =>
         ['correct', 'wrong', 'not_find', 'out_of_stock', 'returned'].includes(i.status)
       )
       if (isFullyChecked) {
-        await supabase
+        const completionUpdate = supabase
           .from('wms_orders')
           .update({ end_time: new Date().toISOString() })
-          .eq('work_order_id', currentWorkOrderId)
-          .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        if (isRequisitionScope(currentWorkOrderId)) {
+          await completionUpdate
+            .eq('order_id', requisitionNumberFromScope(currentWorkOrderId))
+            .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        } else {
+          await completionUpdate
+            .eq('work_order_id', currentWorkOrderId)
+            .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+        }
 
         try {
           await saveFirstCheckSummary(String(sortedData[0]?.order_id || ''), sortedData)
@@ -319,12 +426,14 @@ export default function ReviewSection() {
 
         // Plan "เบิก" finish (⚡): ต้องสอดคล้องกับ isFullyChecked — รวมคืนคลัง/ไม่เจอ/หยิบผิด
         // เดิมเรียกเฉพาะเมื่อทุกแถว correct ทำให้กรณีย้ายบิลแล้วคืนเข้าคลังไม่ประทับเวลา
-        await ensurePlanDeptEnd(currentWorkOrderId)
+        if (!isRequisitionScope(currentWorkOrderId)) {
+          await ensurePlanDeptEnd(currentWorkOrderId)
+        }
       }
     }
 
     // อัปเดต dropdown (เปลี่ยนสีเมื่อตรวจครบ) + แจ้ง AdminLayout ให้อัปเดตตัวเลข badge
-    loadReviewDropdown()
+    loadReviewDropdown(true, false)
     window.dispatchEvent(new Event('wms-data-changed'))
   }
 
@@ -402,22 +511,29 @@ export default function ReviewSection() {
                 type="date"
                 value={reviewDate}
                 onChange={(e) => {
+                  // ยกเลิกผลโหลดของวันเดิมและล้างรายการที่กำลังแสดงทันที
+                  reviewLoadRequestRef.current += 1
                   setReviewDate(e.target.value)
                   setReviewOrderSelect('')
-                  setReviewOrderActualId('')
+                  setReviewDropdownLoading(true)
+                  setRowsByWorkOrder({})
+                  setOrderOptions([{ value: '', label: 'กำลังโหลดรายการ...' }])
+                  setReviewPendingOrders([])
+                  resetReviewUI()
                 }}
                 className="border px-2 rounded-lg text-sm shadow-sm outline-none h-[42px]"
               />
             </div>
             <div>
-              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">2. เลือกใบงาน</label>
+              <label className="text-sm font-bold text-gray-700 uppercase block mb-1">2. เลือกใบงาน / ใบเบิก</label>
               <select
                 value={reviewOrderSelect}
+                disabled={reviewDropdownLoading}
                 onChange={(e) => {
                   setReviewOrderSelect(e.target.value)
                   resetReviewUI()
                 }}
-                className="border px-2.5 rounded-lg w-96 text-sm shadow-sm outline-none h-[42px]"
+                className="border px-2.5 rounded-lg w-96 text-sm shadow-sm outline-none h-[42px] disabled:bg-gray-100 disabled:text-gray-400"
               >
                 {orderOptions.map((opt, idx) => (
                   <option key={idx} value={opt.value} style={opt.hasUnchecked ? { color: 'red', fontWeight: 'bold' } : {}}>
@@ -428,9 +544,10 @@ export default function ReviewSection() {
             </div>
             <button
               onClick={() => startInspection()}
-              className="bg-blue-600 text-white px-6 h-[42px] rounded-lg font-bold shadow-md hover:bg-blue-700"
+              disabled={reviewDropdownLoading || !reviewOrderSelect}
+              className="bg-blue-600 text-white px-6 h-[42px] rounded-lg font-bold shadow-md hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              เริ่มเช็คสินค้า
+              {reviewDropdownLoading ? 'กำลังโหลด...' : 'เริ่มเช็คสินค้า'}
             </button>
             {showTabs && inspectItems.length > 0 && reviewPlanSettings && (
               <div>
@@ -471,7 +588,7 @@ export default function ReviewSection() {
       {reviewPendingOrders.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
           <h3 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
-            รายการใบงานที่ต้องตรวจเพิ่มเติม
+            รายการใบงานและใบเบิกที่ต้องตรวจเพิ่มเติม
             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-600 text-white text-xs font-bold">
               {reviewPendingOrders.length}
             </span>
@@ -544,7 +661,7 @@ export default function ReviewSection() {
         <div className="divide-y">
           {filtered.length === 0 ? (
             <div className="p-20 text-center text-gray-300 italic">
-              {inspectItems.length === 0 ? 'เลือกวันที่และใบงานเพื่อเริ่มการตรวจสอบ' : `ไม่มีรายการในหมวดหมู่ ${currentTab.toUpperCase()}`}
+              {inspectItems.length === 0 ? 'เลือกวันที่และใบงานหรือใบเบิกเพื่อเริ่มการตรวจสอบ' : `ไม่มีรายการในหมวดหมู่ ${currentTab.toUpperCase()}`}
             </div>
           ) : (
             filtered.map((item, idx) => {
@@ -592,6 +709,22 @@ export default function ReviewSection() {
                           </>
                         ) : null}
                       </div>
+                      {item._requisition_meta_loaded && (
+                        <div className="mt-2 grid gap-x-4 gap-y-1 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-700 sm:grid-cols-3">
+                          <div>
+                            <span className="font-bold text-blue-700">ประเภทใบเบิก:</span>{' '}
+                            {item.requisition_type || '-'}
+                          </div>
+                          <div>
+                            <span className="font-bold text-blue-700">หมายเหตุการเบิก:</span>{' '}
+                            <span className="break-words">{item.requisition_note || '-'}</span>
+                          </div>
+                          <div>
+                            <span className="font-bold text-blue-700">ผู้เบิก:</span>{' '}
+                            {item.requisition_requester || '-'}
+                          </div>
+                        </div>
+                      )}
                       {awaitingShelfAfterBillCancel && (
                         <div className="text-xs font-bold text-rose-800 mt-1">
                           บิลยกเลิกหลังหยิบ — ตัดจอง/คืนสต๊อคในระบบแล้ว กดคืนคลังเมื่อเก็บของกลับที่จัดเก็บ

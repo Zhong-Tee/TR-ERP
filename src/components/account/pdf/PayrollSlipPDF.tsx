@@ -58,17 +58,20 @@ export interface PayrollYtd {
 }
 
 export default function PayrollSlipPDF({ company, item, monthLabel, paymentDate, ytd }: { company: HRCompany; item: PayrollItem; monthLabel: string; paymentDate: string; ytd: PayrollYtd }) {
+  const isDaily = item.pay_type === 'daily'
   const positionOnly = item.department_position?.includes(' / ')
     ? item.department_position.split(' / ').slice(1).join(' / ')
     : item.department_position || '-'
   const incomes = [
-    ['เงินเดือน', item.base_salary], ['เงินพิเศษ/ประจำตำแหน่ง', item.position_allowance], ['รายได้อื่น', item.other_income],
+    [isDaily ? `ค่าจ้างรายวัน (${fmt(Number(item.payable_days))} วัน)` : 'เงินเดือน', item.base_salary], ['เงินพิเศษ/ประจำตำแหน่ง', item.position_allowance],
+    [`OT (ปกติ ${fmt(item.ot_normal_hours)} ชม. / วันหยุด ${fmt(item.ot_holiday_hours)} ชม.)`, item.overtime_pay],
+    ['รายได้อื่น', item.other_income],
   ].filter(([, value]) => Number(value) !== 0) as [string, number][]
   const deductions = [
-    ['ภาษีส่วนบุคคล', item.personal_tax], ['ประกันสังคม', item.social_security], ['EWF', item.ewf], ['เงินสะสม', item.savings], ['เงินกู้ยืม กยศ.', item.student_loan],
+    ['ภาษีส่วนบุคคล', item.personal_tax], ['ประกันสังคม', item.social_security], ['เงินกองทุนสงเคราะห์ลูกจ้าง', item.ewf], ['เงินสะสม', item.savings], ['เงินกู้ยืม กยศ.', item.student_loan],
     ['เงินกู้บริษัทฯ', item.company_loan], ['ลาเกินสิทธิ์', item.leave_deduction], ['รายการหักอื่น', item.other_deduction],
   ].filter(([, value]) => Number(value) !== 0) as [string, number][]
-  const gross = item.gross_income ?? item.base_salary + item.position_allowance + item.other_income
+  const gross = item.gross_income ?? item.base_salary + item.position_allowance + item.overtime_pay + item.other_income
   const totalDeduction = item.total_deduction ?? item.personal_tax + item.social_security + item.ewf + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
   const net = item.net_pay ?? gross - totalDeduction
   const ytdRows = [
@@ -83,14 +86,14 @@ export default function PayrollSlipPDF({ company, item, monthLabel, paymentDate,
   return <Document><Page size={[595.28, 841.89]} style={s.page} wrap={false}>
     <View style={s.header}>
       <View style={s.companyWrap}>{company.logo_url && <Image src={company.logo_url} style={s.logo} />}<View><Text style={s.companyName}>{pdfText(company.name_th)}</Text>{company.name_en && <Text style={s.companyLine}>{pdfText(company.name_en)}</Text>}<Text style={s.companyLine}>{pdfText(company.address || '-')}</Text><Text style={s.companyLine}>{pdfText(`โทร ${company.phone || '-'} · เลขผู้เสียภาษี ${company.tax_id || '-'}`)}</Text></View></View>
-      <View><Text style={s.title}>สลิปเงินเดือน</Text><Text style={s.subtitle}>PAYSLIP / SALARY SLIP</Text></View>
+      <View><Text style={s.title}>{isDaily ? 'สลิปค่าจ้าง' : 'สลิปเงินเดือน'}</Text><Text style={s.subtitle}>{isDaily ? 'DAILY WAGE SLIP' : 'PAYSLIP / SALARY SLIP'}</Text></View>
     </View>
     <View style={s.info}><View style={[s.infoRow, s.infoRowDivider]}><Text style={s.infoLabel}>{pdfText('ชื่อ-สกุล')}</Text><Text style={s.infoValue}>{pdfText(item.employee_name || '-')}</Text><Text style={s.infoLabel}>{pdfText('ตำแหน่ง')}</Text><Text style={s.infoValue}>{pdfText(positionOnly)}</Text></View><View style={s.infoRow}><Text style={s.infoLabel}>{pdfText('ประจำเดือน')}</Text><Text style={s.infoValue}>{pdfText(monthLabel)}</Text><Text style={s.infoLabel}>{pdfText('วันที่จ่าย')}</Text><Text style={s.infoValue}>{pdfText(paymentDate || '-')}</Text></View></View>
     <View style={s.columns}>
       <View style={s.column}><Text style={s.sectionTitleIncome}>{pdfText('รายการได้')}</Text>{incomes.map(([label, value]) => <View key={label} style={s.row}><Text>{pdfText(label)}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalIncome]}><Text>{pdfText('รวมเงินได้')}</Text><Text>{fmt(gross)}</Text></View></View>
       <View style={s.column}><Text style={s.sectionTitleDeduction}>{pdfText('รายการหัก')}</Text>{deductions.map(([label, value], index) => <View key={label} style={[s.row, index % 2 ? s.alt : {}]}><Text>{pdfText(label)}</Text><Text>{fmt(value)}</Text></View>)}<View style={[s.row, s.totalDeduction]}><Text>{pdfText('รวมเงินหัก')}</Text><Text>{fmt(totalDeduction)}</Text></View></View>
     </View>
-    <View style={s.net}><Text style={s.netLabel}>{pdfText('เงินเดือนสุทธิ (NET PAY)')}</Text><Text style={s.netValue}>{pdfText(`${fmt(net)} บาท`)}</Text></View>
+    <View style={s.net}><Text style={s.netLabel}>{pdfText(isDaily ? 'ค่าจ้างสุทธิ (NET PAY)' : 'เงินเดือนสุทธิ (NET PAY)')}</Text><Text style={s.netValue}>{pdfText(`${fmt(net)} บาท`)}</Text></View>
     {ytdRows.length > 0 && <View style={s.ytd}><Text style={s.ytdTitle}>{pdfText('ข้อมูลสะสมต่อปี')}</Text>{ytdRows.map(([label, value]) => <View key={label} style={s.row}><Text>{pdfText(label)}</Text><Text>{pdfText(label === 'เงินกู้บริษัทฯ คงเหลือ' ? `${fmt(value)} (${ytd.companyLoanInstallments} งวด)` : fmt(value))}</Text></View>)}</View>}
     <View style={s.sign}>{company.signature_url && <Image src={company.signature_url} style={s.signature} />}<Text style={s.signText}>({company.signatory_name || 'ผู้มีอำนาจลงนาม'})</Text><Text style={s.signText}>{company.signatory_title || 'ผู้จ่ายเงิน'}</Text></View>
     <Text style={s.footer}>เอกสารนี้จัดทำโดยระบบ ไม่ต้องลงลายมือชื่อกำกับหากส่งในรูปแบบอิเล็กทรอนิกส์</Text>

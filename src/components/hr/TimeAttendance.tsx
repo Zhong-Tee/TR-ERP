@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { FiRefreshCw, FiMapPin, FiCamera, FiSearch, FiDownload, FiUpload } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import * as ExcelJS from 'exceljs'
@@ -230,6 +230,8 @@ export default function TimeAttendance() {
   const [photoLoading, setPhotoLoading] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [exportingEntries, setExportingEntries] = useState(false)
+  const realtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const realtimeNeedsRelatedRef = useRef(false)
   /** signed URL รูปย่อในตาราง (path → url) */
   const [photoThumbs, setPhotoThumbs] = useState<Record<string, string>>({})
 
@@ -331,52 +333,89 @@ export default function TimeAttendance() {
     return Math.max(0, endMin - localMinutes(entry.entry_time))
   }
 
-  const loadEntries = useCallback(async () => {
-    setEntriesLoading(true)
+  const loadEntries = useCallback(async (options: { silent?: boolean; includeRelated?: boolean } = {}) => {
+    const { silent = false, includeRelated = true } = options
+    if (!silent) setEntriesLoading(true)
     try {
-      const [data, leaves, wfh] = await Promise.all([
-        fetchTimeEntries({
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
-          entry_type: typeFilter || undefined,
-          limit: 2000,
-        }),
+      const dataPromise = fetchTimeEntries({
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        entry_type: typeFilter || undefined,
+        limit: 2000,
+      })
+
+      if (!includeRelated) {
+        setEntries(await dataPromise)
+        return
+      }
+
+      const [data, leaves, wfh, certs] = await Promise.all([
+        dataPromise,
         fetchLeaveRequests({ status: 'approved' }),
         fetchWFHRequests({ status: 'approved' }),
+        dateFrom && dateTo ? fetchTimeCertifications(dateFrom, dateTo) : Promise.resolve([]),
       ])
       setEntries(data)
       setApprovedLeaves(leaves)
       setApprovedWFH(wfh)
-      if (dateFrom && dateTo) setCertifications(await fetchTimeCertifications(dateFrom, dateTo))
+      setCertifications(certs)
     } catch (e) {
       console.error('Error loading time entries:', e)
     } finally {
-      setEntriesLoading(false)
+      if (!silent) setEntriesLoading(false)
     }
   }, [dateFrom, dateTo, typeFilter])
 
   useEffect(() => {
-    loadEntries()
+    void loadEntries()
   }, [loadEntries])
 
+  // งานล้างรูปทำครั้งเดียวเมื่อเปิดหน้า และไม่บังคับให้ตารางโหลดซ้ำ
   useEffect(() => {
     requestTimeClockPhotoCleanup()
-      .then(() => loadEntries())
       .catch((error) => console.warn('Time-clock photo cleanup failed:', error))
-  }, [loadEntries])
+  }, [])
 
-  // realtime: มีการบันทึกเวลาใหม่ → โหลดซ้ำ
+  // realtime: รวมเหตุการณ์ที่เข้ามาติดกัน แล้วอัปเดตข้อมูลที่จำเป็นแบบเงียบ
   useEffect(() => {
+    const scheduleRealtimeRefresh = (includeRelated = false) => {
+      realtimeNeedsRelatedRef.current ||= includeRelated
+      if (realtimeRefreshTimerRef.current) clearTimeout(realtimeRefreshTimerRef.current)
+      realtimeRefreshTimerRef.current = setTimeout(() => {
+        realtimeRefreshTimerRef.current = null
+        const refreshRelated = realtimeNeedsRelatedRef.current
+        realtimeNeedsRelatedRef.current = false
+        void loadEntries({ silent: true, includeRelated: refreshRelated })
+      }, 800)
+    }
+
     const channel = supabase
       .channel('hr_time_entries_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_time_entries' }, () => {
-        loadEntries()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_time_entries' }, (payload) => {
+        // INSERT นอกช่วง/ประเภทที่กำลังดูไม่กระทบตารางนี้ จึงไม่ต้องโหลดใหม่
+        if (payload.eventType === 'INSERT') {
+          const inserted = payload.new as Partial<HRTimeEntry>
+          if (inserted.work_date && (
+            (dateFrom && inserted.work_date < dateFrom)
+            || (dateTo && inserted.work_date > dateTo)
+            || (typeFilter && inserted.entry_type !== typeFilter)
+          )) return
+        }
+        scheduleRealtimeRefresh()
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_leave_requests' }, () => scheduleRealtimeRefresh(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_wfh_requests' }, () => scheduleRealtimeRefresh(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hr_time_certifications' }, () => scheduleRealtimeRefresh(true))
       .subscribe()
     return () => {
+      if (realtimeRefreshTimerRef.current) {
+        clearTimeout(realtimeRefreshTimerRef.current)
+        realtimeRefreshTimerRef.current = null
+      }
+      realtimeNeedsRelatedRef.current = false
       supabase.removeChannel(channel)
     }
-  }, [loadEntries])
+  }, [dateFrom, dateTo, loadEntries, typeFilter])
 
   // โหลด signed URL รูปย่อของรายการที่ยังไม่มีในแคช (ครั้งละชุดเดียว)
   useEffect(() => {
@@ -1045,7 +1084,7 @@ export default function TimeAttendance() {
             </label>
             <button
               type="button"
-              onClick={loadEntries}
+              onClick={() => void loadEntries()}
               className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700"
             >
               <FiRefreshCw className={entriesLoading ? 'animate-spin' : ''} /> รีเฟรช
@@ -1307,7 +1346,7 @@ export default function TimeAttendance() {
       )}
 
       {/* Modal นำเข้าข้อมูลจากเครื่องสแกนนิ้ว */}
-      <TimeEntryImport open={showImport} onClose={() => setShowImport(false)} onImported={loadEntries} />
+      <TimeEntryImport open={showImport} onClose={() => setShowImport(false)} onImported={() => void loadEntries()} />
 
       {/* Modal หัวหน้ารับรองเวลา */}
       <Modal open={!!certForm} onClose={() => setCertForm(null)} closeOnBackdropClick contentClassName="max-w-md">
@@ -1394,6 +1433,13 @@ type DashFilter = 'all' | 'problem' | 'late' | 'missing'
  */
 function CertifiedSlot({ cert, onCertify }: { cert?: HRTimeCertification; onCertify: () => void }) {
   if (cert) {
+    const certifier = cert.certifier
+    const certifierFullName = certifier
+      ? `${certifier.first_name || ''} ${certifier.last_name || ''}`.replace(/\s+/g, ' ').trim()
+      : ''
+    const certifierDisplayName = certifierFullName
+      ? `${certifierFullName}${certifier?.nickname ? ` (${certifier.nickname})` : ''}`
+      : 'ไม่พบข้อมูล'
     return (
       <>
         <div className="font-bold text-gray-800 tabular-nums">{fmtClock(cert.certified_time)}</div>
@@ -1405,6 +1451,9 @@ function CertifiedSlot({ cert, onCertify }: { cert?: HRTimeCertification; onCert
         >
           ✓ หัวหน้ารับรอง
         </button>
+        <div className="mt-1 truncate text-[10px] text-sky-700" title={`ผู้รับรอง: ${certifierDisplayName}`}>
+          ผู้รับรอง: {certifierDisplayName}
+        </div>
       </>
     )
   }

@@ -94,6 +94,32 @@ function formatDateTimeFull(dateStr: string): string {
   })
 }
 
+/** รองรับทั้งข้อมูลใหม่และใบลาเก่าที่มีช่วงเวลา แต่ยังไม่ได้บันทึก leave_mode */
+function isHourlyLeave(req: HRLeaveRequest): boolean {
+  return req.leave_mode === 'hourly' || Boolean(req.start_time && req.end_time)
+}
+
+/** แสดงระยะเวลารายชั่วโมงให้อ่านง่าย โดยไม่แปลงกลับเป็นเศษส่วนของวัน */
+function hourlyLeaveDuration(req: HRLeaveRequest): string {
+  let totalMinutes = Math.round(Number(req.total_hours ?? 0) * 60)
+
+  if (totalMinutes <= 0 && req.start_time && req.end_time) {
+    const [startHour, startMinute] = req.start_time.split(':').map(Number)
+    const [endHour, endMinute] = req.end_time.split(':').map(Number)
+    totalMinutes = (endHour * 60 + endMinute) - (startHour * 60 + startMinute)
+  }
+
+  if (totalMinutes <= 0) return '-'
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return [hours ? `${hours} ชั่วโมง` : '', minutes ? `${minutes} นาที` : ''].filter(Boolean).join(' ')
+}
+
+function hourlyLeaveTimeRange(req: HRLeaveRequest): string {
+  if (!req.start_time || !req.end_time) return '-'
+  return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
+}
+
 /** ป้ายชื่อประเภทคำขอ */
 const KIND_LABEL: Record<ApprovalTarget['kind'], string> = {
   leave: 'การลา',
@@ -109,15 +135,16 @@ function requestDetailRows(target: ApprovalTarget): { label: string; value: stri
   ]
   if (target.kind === 'leave') {
     const req = target.req
+    const hourly = isHourlyLeave(req)
     rows.push({ label: 'ประเภทลา', value: (req.leave_type as { name?: string })?.name ?? '-' })
     if (req.is_emergency) rows.push({ label: 'ความเร่งด่วน', value: 'ฉุกเฉิน' })
     rows.push({ label: 'วันที่', value: `${req.start_date} – ${req.end_date}` })
     rows.push({
       label: 'จำนวน',
-      value: req.leave_mode === 'hourly' && req.total_hours ? `${req.total_hours} ชม.` : `${req.total_days} วัน`,
+      value: hourly ? hourlyLeaveDuration(req) : `${req.total_days} วัน`,
     })
-    if (req.leave_mode === 'hourly' && req.start_time && req.end_time) {
-      rows.push({ label: 'ช่วงเวลา', value: `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.` })
+    if (hourly) {
+      rows.push({ label: 'ช่วงเวลา', value: hourlyLeaveTimeRange(req) })
     }
   } else if (target.kind === 'ot') {
     const req = target.req
@@ -214,6 +241,7 @@ export default function EmployeeDashboard() {
   const [detailNotif, setDetailNotif] = useState<{ notif: HRNotification; target: ApprovalTarget | null } | null>(null)
   const [rejectMode, setRejectMode] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
+  const [decisionToConfirm, setDecisionToConfirm] = useState<'approved' | 'rejected' | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
 
   const load = useCallback(async () => {
@@ -300,23 +328,23 @@ export default function EmployeeDashboard() {
     }
   }
 
-  const closeApproval = () => {
+  const closeApproval = (force = false) => {
+    if (actionBusy && !force) return
+    setDecisionToConfirm(null)
     setApprovalTarget(null)
     setRejectMode(false)
     setRejectReason('')
   }
 
-  const submitDecision = async (decision: 'approved' | 'rejected') => {
-    if (!approvalTarget || !employee) return
+  const submitDecision = (decision: 'approved' | 'rejected') => {
+    if (!approvalTarget || actionBusy) return
     if (decision === 'rejected' && !rejectReason.trim()) return
-    const requestLabel = approvalTarget.kind === 'leave' ? 'คำขอลา' : approvalTarget.kind === 'ot' ? 'คำขอ OT' : 'คำขอ WFH'
-    const requester = reqEmpName(approvalTarget.req.employee)
-    const confirmed = window.confirm(
-      decision === 'approved'
-        ? `ยืนยันอนุมัติ${requestLabel}ของ ${requester} ใช่หรือไม่?`
-        : `ยืนยันไม่อนุมัติ${requestLabel}ของ ${requester} ใช่หรือไม่?`,
-    )
-    if (!confirmed) return
+    setDecisionToConfirm(decision)
+  }
+
+  const confirmSubmitDecision = async () => {
+    if (!approvalTarget || !employee || !decisionToConfirm) return
+    const decision = decisionToConfirm
     setActionBusy(true)
     try {
       const now = new Date().toISOString()
@@ -347,12 +375,13 @@ export default function EmployeeDashboard() {
             : { reject_reason: rejectReason.trim() }),
         })
       }
-      closeApproval()
+      closeApproval(true)
       await load()
     } catch (e) {
       console.error(e)
       alert('ดำเนินการไม่สำเร็จ — อาจไม่มีสิทธิ์ หรือคำขอถูกดำเนินการไปแล้ว')
     } finally {
+      setDecisionToConfirm(null)
       setActionBusy(false)
     }
   }
@@ -734,7 +763,15 @@ export default function EmployeeDashboard() {
                 <>
                   {approvalTarget.req.is_emergency && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">คำขอลากิจฉุกเฉิน</div>}
                   <p>ประเภท: {(approvalTarget.req.leave_type as { name?: string })?.name ?? '-'}</p>
-                  <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date} ({approvalTarget.req.total_days} วัน)</p>
+                  <p>วันที่: {approvalTarget.req.start_date} – {approvalTarget.req.end_date}</p>
+                  {isHourlyLeave(approvalTarget.req) ? (
+                    <>
+                      <p>ช่วงเวลาลา: {hourlyLeaveTimeRange(approvalTarget.req)}</p>
+                      <p>จำนวนชั่วโมงลา: {hourlyLeaveDuration(approvalTarget.req)}</p>
+                    </>
+                  ) : (
+                    <p>จำนวนวันลา: {approvalTarget.req.total_days} วัน</p>
+                  )}
                   {approvalTarget.req.reason && <p>เหตุผล: {approvalTarget.req.reason}</p>}
                 </>
               ) : approvalTarget.kind === 'ot' ? (
@@ -804,6 +841,48 @@ export default function EmployeeDashboard() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+      </Modal>
+
+      {/* ยืนยันผลด้วย Modal ของระบบ แทนกล่อง confirm ของเบราว์เซอร์ */}
+      <Modal
+        open={Boolean(decisionToConfirm && approvalTarget)}
+        onClose={() => { if (!actionBusy) setDecisionToConfirm(null) }}
+        closeOnBackdropClick={!actionBusy}
+        contentClassName="max-w-sm"
+        stackClassName="z-[60]"
+        showCloseButton={false}
+        ariaLabelledby="approval-confirm-title"
+      >
+        {decisionToConfirm && approvalTarget && (
+          <div className="p-5">
+            <h3 id="approval-confirm-title" className="text-lg font-semibold text-gray-800">
+              {decisionToConfirm === 'approved' ? 'ยืนยันการอนุมัติ' : 'ยืนยันไม่อนุมัติ'}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-gray-600">
+              {decisionToConfirm === 'approved' ? 'ยืนยันอนุมัติ' : 'ยืนยันไม่อนุมัติ'}
+              {approvalTarget.kind === 'leave' ? 'คำขอลา' : approvalTarget.kind === 'ot' ? 'คำขอ OT' : 'คำขอ WFH'}ของ{' '}
+              <span className="font-semibold text-gray-800">{reqEmpName(approvalTarget.req.employee)}</span> ใช่หรือไม่?
+            </p>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setDecisionToConfirm(null)}
+                disabled={actionBusy}
+                className="flex-1 rounded-xl border border-gray-300 py-2.5 text-sm font-medium text-gray-700 disabled:opacity-40"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={confirmSubmitDecision}
+                disabled={actionBusy}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-medium text-white disabled:opacity-40 ${decisionToConfirm === 'approved' ? 'bg-emerald-600 active:bg-emerald-700' : 'bg-red-600 active:bg-red-700'}`}
+              >
+                {actionBusy ? 'กำลังบันทึก…' : decisionToConfirm === 'approved' ? 'ยืนยันอนุมัติ' : 'ยืนยันไม่อนุมัติ'}
+              </button>
+            </div>
           </div>
         )}
       </Modal>

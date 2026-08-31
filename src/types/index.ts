@@ -114,6 +114,11 @@ export interface Order {
   } | null
   created_at: string
   updated_at: string
+  /** การเก็บรายการตรวจสอบไม่ผ่านเข้าประวัติ (ไม่ลบบิล/สลิป) */
+  failed_queue_archived_at?: string | null
+  failed_queue_archived_by?: string | null
+  failed_queue_archived_by_name?: string | null
+  failed_queue_archive_reason?: string | null
   order_items?: OrderItem[]
 }
 
@@ -1133,6 +1138,7 @@ export interface HRCompany {
   signature_url?: string | null
   /** เปิด/ปิดการหักกองทุนสงเคราะห์ลูกจ้าง (EWF) ของบริษัท */
   ewf_enabled?: boolean
+  sort_order?: number
   is_active: boolean
   created_at?: string
   updated_at?: string
@@ -1170,6 +1176,11 @@ export interface HRLeaveRequest {
   approved_by?: string
   approved_at?: string
   reject_reason?: string
+  /** พนักงานผู้กดยกเลิกใบลา */
+  cancelled_by?: string | null
+  /** ชื่อบัญชีสำรอง กรณีผู้ยกเลิกไม่ได้ผูกกับข้อมูลพนักงาน */
+  cancelled_by_name?: string | null
+  cancelled_at?: string | null
   medical_cert_url?: string
   notified_before: boolean
   notified_morning: boolean
@@ -1179,6 +1190,8 @@ export interface HRLeaveRequest {
   leave_type?: HRLeaveType
   /** ผู้อนุมัติ (join จาก approved_by) */
   approver?: { first_name?: string; last_name?: string; nickname?: string } | null
+  /** ผู้ยกเลิก (join จาก cancelled_by) */
+  canceller?: { first_name?: string; last_name?: string; nickname?: string } | null
 }
 
 export interface HRLeaveBalance {

@@ -22,24 +22,28 @@ export async function enrichWmsNotificationsWithOrderDetails(
   if (!data.length) return []
 
   const oids = [...new Set(data.map((n: any) => n.order_id))]
-  const { data: oDetails } = await supabase
-    .from('wms_orders')
-    .select('id, order_id, source_order_id, product_code, product_name, location, status, stock_action')
-    .in('order_id', oids)
+  const [{ data: oDetails }, { data: candidateOrders }] = await Promise.all([
+    supabase
+      .from('wms_orders')
+      .select('id, order_id, source_order_id, product_code, product_name, location, status, stock_action')
+      .in('order_id', oids),
+    supabase
+      .from('or_orders')
+      .select('id, bill_no, customer_name, work_order_name, created_at')
+      .in('work_order_name', oids)
+      .order('created_at', { ascending: false }),
+  ])
 
-  const { data: cancelledItemRows } = await supabase
-    .from('or_order_items')
-    .select('order_id')
-    .not('cancellation_stock_action', 'is', null)
-  const cancellationOrderIds = [...new Set((cancelledItemRows || []).map((r: any) => r.order_id).filter(Boolean))]
-  const { data: cancelledOrders } = cancellationOrderIds.length > 0
+  const candidateOrderIds = (candidateOrders || []).map((row: any) => row.id).filter(Boolean)
+  const { data: cancelledItemRows } = candidateOrderIds.length
     ? await supabase
-        .from('or_orders')
-        .select('id, bill_no, customer_name, work_order_name, created_at')
-        .in('work_order_name', oids)
-        .in('id', cancellationOrderIds)
-        .order('created_at', { ascending: false })
+        .from('or_order_items')
+        .select('order_id')
+        .in('order_id', candidateOrderIds)
+        .not('cancellation_stock_action', 'is', null)
     : { data: [] as any[] }
+  const cancellationOrderIds = new Set((cancelledItemRows || []).map((r: any) => r.order_id).filter(Boolean))
+  const cancelledOrders = (candidateOrders || []).filter((row: any) => cancellationOrderIds.has(row.id))
 
   const cancelledOrderIds = [...new Set((cancelledOrders || []).map((o: any) => o.id).filter(Boolean))]
   let orderCodeSetMap = new Map<string, Set<string>>()

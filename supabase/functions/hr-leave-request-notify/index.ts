@@ -1,5 +1,5 @@
-// แจ้งใบลาใหม่ (รออนุมัติ) เข้ากลุ่ม HR (Telegram)
-// เรียกจาก client หลังพนักงานยื่นใบลาสำเร็จ: body = { leave_id }
+// แจ้งใบลาใหม่/ผลอนุมัติ/การยกเลิก เข้ากลุ่ม HR และแชตส่วนตัวพนักงาน (Telegram)
+// body = { leave_id, event?: 'created' | 'approved' | 'rejected' | 'cancelled' }
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
@@ -46,7 +46,7 @@ Deno.serve(async (req) => {
 
     const { data: leave, error } = await supabase
       .from('hr_leave_requests')
-      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name)), approver:hr_employees!approved_by(first_name, last_name, nickname)')
+      .select('*, leave_type:hr_leave_types(name), employee:hr_employees!employee_id(first_name, last_name, nickname, photo_url, telegram_chat_id, department:hr_departments!department_id(name)), approver:hr_employees!approved_by(first_name, last_name, nickname), canceller:hr_employees!cancelled_by(first_name, last_name, nickname)')
       .eq('id', leave_id)
       .single()
     if (error || !leave) throw new Error('leave request not found: ' + error?.message)
@@ -58,6 +58,11 @@ Deno.serve(async (req) => {
     const approver = leave.approver
     const approverName = `${approver?.first_name ?? ''} ${approver?.last_name ?? ''}`.trim()
       || approver?.nickname
+      || '-'
+    const canceller = leave.canceller
+    const cancellerName = `${canceller?.first_name ?? ''} ${canceller?.last_name ?? ''}`.trim()
+      || canceller?.nickname
+      || leave.cancelled_by_name
       || '-'
     const leaveTypeName = leave.leave_type?.name ?? '-'
     const leaveType = leave.is_emergency ? `${leaveTypeName} (ฉุกเฉิน)` : leaveTypeName
@@ -76,7 +81,9 @@ Deno.serve(async (req) => {
         ? '✅ <b>อนุมัติใบลาแล้ว</b>'
         : event === 'rejected'
           ? '❌ <b>ไม่อนุมัติใบลา</b>'
-          : '📋 <b>ใบลาใหม่ — รออนุมัติ</b>'
+          : event === 'cancelled'
+            ? '🚫 <b>ใบลาถูกยกเลิก</b>'
+            : '📋 <b>ใบลาใหม่ — รออนุมัติ</b>'
 
     const textLines = [
       header,
@@ -88,6 +95,9 @@ Deno.serve(async (req) => {
     ]
     if (event === 'approved') {
       textLines.splice(1, 0, `👤 <b>ผู้อนุมัติ:</b> ${escapeHtml(approverName)}`)
+    }
+    if (event === 'cancelled') {
+      textLines.splice(1, 0, `👤 <b>ผู้ยกเลิก:</b> ${escapeHtml(cancellerName)}`)
     }
     if (leaveTimeText) textLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
     textLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)
@@ -128,17 +138,22 @@ Deno.serve(async (req) => {
       related_id: leave_id,
     })
 
-    // แจ้งผลอนุมัติ/ปฏิเสธ เข้าแชทส่วนตัวพนักงาน (ถ้ากรอก telegram_chat_id ไว้)
-    if ((event === 'approved' || event === 'rejected') && emp?.telegram_chat_id) {
+    // แจ้งผลอนุมัติ/ปฏิเสธ/ยกเลิก เข้าแชตส่วนตัวพนักงาน (ถ้ากรอก telegram_chat_id ไว้)
+    if ((event === 'approved' || event === 'rejected' || event === 'cancelled') && emp?.telegram_chat_id) {
       const pLines = [
         event === 'approved'
           ? '✅ <b>ใบลาของคุณได้รับการอนุมัติ</b>'
-          : '❌ <b>ใบลาของคุณถูกปฏิเสธ</b>',
+          : event === 'rejected'
+            ? '❌ <b>ใบลาของคุณถูกปฏิเสธ</b>'
+            : '🚫 <b>ใบลาของคุณถูกยกเลิก</b>',
         `📋 <b>ประเภทลา:</b> ${escapeHtml(leaveType)}`,
         `📅 <b>วันที่:</b> ${escapeHtml(leaveDateText)}`,
       ]
       if (event === 'approved') {
         pLines.splice(1, 0, `👤 <b>ผู้อนุมัติ:</b> ${escapeHtml(approverName)}`)
+      }
+      if (event === 'cancelled') {
+        pLines.splice(1, 0, `👤 <b>ผู้ยกเลิก:</b> ${escapeHtml(cancellerName)}`)
       }
       if (leaveTimeText) pLines.push(`🕐 <b>ช่วงเวลา:</b> ${escapeHtml(leaveTimeText)}`)
       pLines.push(`⏱️ <b>จำนวน:</b> ${escapeHtml(leaveAmountText)}`)

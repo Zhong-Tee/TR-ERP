@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import { buildIlikeOr } from '../../lib/searchFilter'
-import { fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
+import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
@@ -58,6 +58,11 @@ interface OrderListProps {
   loadOrderRelations?: boolean
   /** เปิดเครื่องมือเลือกบิลและ Export CSV เลขพัสดุ (ใช้ในแท็บจัดส่งแล้ว) */
   enableTrackingExport?: boolean
+  /** ตัวกรองรายการตรวจสอบไม่ผ่านที่เก็บเข้าประวัติ */
+  failureArchiveFilter?: 'active' | 'archived' | 'all'
+  /** เปิดปุ่มเก็บเข้าประวัติและการแบ่งหน้า */
+  enableFailureArchive?: boolean
+  onFailureArchiveChange?: () => void | Promise<void>
 }
 
 export default function OrderList({
@@ -87,6 +92,9 @@ export default function OrderList({
   excludeClaimBills = false,
   loadOrderRelations = true,
   enableTrackingExport = false,
+  failureArchiveFilter = 'all',
+  enableFailureArchive = false,
+  onFailureArchiveChange,
 }: OrderListProps) {
   const { user } = useAuthContext()
   const [orders, setOrders] = useState<Order[]>([])
@@ -96,6 +104,10 @@ export default function OrderList({
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null)
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   const [failedClaimEditOrder, setFailedClaimEditOrder] = useState<Order | null>(null)
+  const [archiveConfirmOrder, setArchiveConfirmOrder] = useState<Order | null>(null)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [archivingOrderId, setArchivingOrderId] = useState<string | null>(null)
+  const [failurePage, setFailurePage] = useState(1)
   /** ป้องกัน request เก่าที่ตอบช้ากว่าเขียนทับผลจากตัวกรองล่าสุด */
   const loadRequestRef = useRef(0)
 
@@ -220,10 +232,16 @@ export default function OrderList({
     salesTrTeamAdminValues,
     narrowSalesTrAdminUser,
     loadOrderRelations,
+    failureArchiveFilter,
+    enableFailureArchive,
     user?.role,
     user?.username,
     user?.email,
   ])
+
+  useEffect(() => {
+    setFailurePage(1)
+  }, [failureArchiveFilter, searchTerm, channelFilter, adminUserFilter, status])
 
   function applySalesOrderAdminScope(query: any): any | null {
     if (isSalesPumpOwnerScopedRole(user?.role)) {
@@ -239,6 +257,13 @@ export default function OrderList({
       return q
     }
     return query
+  }
+
+  function applyFailureArchiveFilter(query: any): any {
+    if (!enableFailureArchive || failureArchiveFilter === 'all') return query
+    return failureArchiveFilter === 'archived'
+      ? query.not('failed_queue_archived_at', 'is', null)
+      : query.is('failed_queue_archived_at', null)
   }
 
   async function loadOrders() {
@@ -283,12 +308,13 @@ export default function OrderList({
         if (adminUserFilter.trim()) {
           query = query.eq('admin_user', adminUserFilter.trim())
         }
+        query = applyFailureArchiveFilter(query)
         query = applySalesOrderAdminScope(query)
         if (query === null) {
           commitEmptyResult()
           return
         }
-        const { data, error } = await query.limit(100)
+        const { data, error } = await query.limit(enableFailureArchive ? 500 : 100)
         if (error) throw error
         filteredData = data || []
       } else {
@@ -332,13 +358,14 @@ export default function OrderList({
         if (dateTo) {
           query = query.lte(dateField, `${dateTo}T23:59:59.999Z`)
         }
+        query = applyFailureArchiveFilter(query)
         query = applySalesOrderAdminScope(query)
         if (query === null) {
           commitEmptyResult()
           return
         }
 
-        const { data, error } = await query.limit(100)
+        const { data, error } = await query.limit(enableFailureArchive ? 500 : 100)
 
         if (error) throw error
         filteredData = data || []
@@ -346,7 +373,11 @@ export default function OrderList({
         // แท็บตรวจสอบไม่ผ่าน: รวมบิลที่รายการโอนคืนล่าสุดถูกปฏิเสธ (คงสถานะจริงของบิลไว้)
         if (includeRejectedOverpayRefundOrders) {
           const loadedIds = new Set(filteredData.map((o: any) => o.id))
-          const rejectedIds = (await fetchLatestRejectedOverpayOrderIds(supabase)).filter(
+          const [refundIds, manualSlipIds] = await Promise.all([
+            fetchLatestRejectedOverpayOrderIds(supabase),
+            fetchLatestRejectedManualSlipOrderIds(supabase),
+          ])
+          const rejectedIds = [...new Set([...refundIds, ...manualSlipIds])].filter(
             (id) => !loadedIds.has(id),
           )
           if (rejectedIds.length > 0) {
@@ -367,9 +398,10 @@ export default function OrderList({
             if (adminUserFilter.trim()) {
               extraQuery = extraQuery.eq('admin_user', adminUserFilter.trim())
             }
+            extraQuery = applyFailureArchiveFilter(extraQuery)
             const scopedExtraQuery = applySalesOrderAdminScope(extraQuery)
             if (scopedExtraQuery !== null) {
-              const { data: extraData } = await scopedExtraQuery.limit(100)
+              const { data: extraData } = await scopedExtraQuery.limit(enableFailureArchive ? 500 : 100)
               filteredData = [...filteredData, ...(extraData || [])].sort(
                 (a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')),
               )
@@ -555,6 +587,68 @@ export default function OrderList({
     }
   }
 
+  const canArchiveFailure = ['superadmin', 'admin', 'account'].includes(user?.role ?? '')
+
+  async function archiveFailureOrder() {
+    if (!archiveConfirmOrder || !canArchiveFailure) return
+    const reason = archiveReason.trim()
+    if (!reason) return
+    setArchivingOrderId(archiveConfirmOrder.id)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          failed_queue_archived_at: new Date().toISOString(),
+          failed_queue_archived_by: user?.id,
+          failed_queue_archived_by_name: user?.username || user?.email || 'ผู้ใช้งานระบบ',
+          failed_queue_archive_reason: reason,
+        })
+        .eq('id', archiveConfirmOrder.id)
+      if (error) throw error
+      setArchiveConfirmOrder(null)
+      setArchiveReason('')
+      await loadOrders()
+      await onFailureArchiveChange?.()
+    } catch (error: unknown) {
+      alert('เก็บเข้าประวัติไม่สำเร็จ: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setArchivingOrderId(null)
+    }
+  }
+
+  async function restoreFailureOrder(order: Order) {
+    if (!canArchiveFailure) return
+    setArchivingOrderId(order.id)
+    try {
+      const { error } = await supabase
+        .from('or_orders')
+        .update({
+          failed_queue_archived_at: null,
+          failed_queue_archived_by: null,
+          failed_queue_archived_by_name: null,
+          failed_queue_archive_reason: null,
+        })
+        .eq('id', order.id)
+      if (error) throw error
+      await loadOrders()
+      await onFailureArchiveChange?.()
+    } catch (error: unknown) {
+      alert('นำรายการกลับมาดำเนินการไม่สำเร็จ: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setArchivingOrderId(null)
+    }
+  }
+
+  const failurePageSize = 25
+  const failurePageCount = enableFailureArchive ? Math.max(1, Math.ceil(orders.length / failurePageSize)) : 1
+  const visibleOrders = enableFailureArchive
+    ? orders.slice((failurePage - 1) * failurePageSize, failurePage * failurePageSize)
+    : orders
+
+  useEffect(() => {
+    setFailurePage((page) => Math.min(page, failurePageCount))
+  }, [failurePageCount])
+
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -585,7 +679,7 @@ export default function OrderList({
           </button>
         </div>
       )}
-      {orders.map((order, orderIdx) => {
+      {visibleOrders.map((order, orderIdx) => {
         const channelCode = (order.channel_code || '').toUpperCase()
         const channelColor =
           channelCode.startsWith('TTTR') ? 'bg-blue-100 text-blue-700 border border-blue-200'
@@ -656,6 +750,14 @@ export default function OrderList({
                     ? 'ตรวจสอบแล้ว (โอนเกิน)'
                     : order.status}
                 </span>
+                {order.failed_queue_archived_at && (
+                  <span
+                    className="px-2.5 py-1 rounded-full text-sm font-semibold bg-gray-200 text-gray-700 border border-gray-300"
+                    title={order.failed_queue_archive_reason || undefined}
+                  >
+                    เก็บเข้าประวัติแล้ว
+                  </span>
+                )}
                 {showDesignBadge && (
                   <span className="px-2.5 py-1 rounded-full text-sm font-semibold bg-fuchsia-100 text-fuchsia-800 border border-fuchsia-200">
                     ออกแบบ
@@ -907,6 +1009,14 @@ export default function OrderList({
                 <div className="text-sm text-surface-500 mt-0.5">
                   {formatDateTime(order.created_at)}
                 </div>
+                {order.failed_queue_archived_at && (
+                  <div className="mt-1 max-w-[260px] text-xs leading-5 text-gray-500">
+                    เก็บโดย {order.failed_queue_archived_by_name || '-'} · {formatDateTime(order.failed_queue_archived_at)}
+                    <div className="truncate" title={order.failed_queue_archive_reason || undefined}>
+                      เหตุผล: {order.failed_queue_archive_reason || '-'}
+                    </div>
+                  </div>
+                )}
                 {order.status === 'จัดส่งแล้ว' && (
                   <div className="text-sm text-surface-500 mt-0.5 whitespace-nowrap">
                     เวลาแพ็คสินค้า:{' '}
@@ -962,6 +1072,33 @@ export default function OrderList({
                   >
                     <i className="fas fa-paper-plane mr-1"></i>ส่งตรวจสลิป
                   </button>
+                  {enableFailureArchive && canArchiveFailure && !order.failed_queue_archived_at && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setArchiveReason('')
+                        setArchiveConfirmOrder(order)
+                      }}
+                      disabled={!!archivingOrderId}
+                      className="px-3 py-2 bg-gray-700 hover:bg-gray-800 disabled:opacity-50 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      เก็บเข้าประวัติ
+                    </button>
+                  )}
+                  {enableFailureArchive && canArchiveFailure && order.failed_queue_archived_at && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void restoreFailureOrder(order)
+                      }}
+                      disabled={!!archivingOrderId}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl whitespace-nowrap transition"
+                    >
+                      {archivingOrderId === order.id ? 'กำลังนำกลับ...' : 'นำกลับมาดำเนินการ'}
+                    </button>
+                  )}
                 </div>
               ) : null}
               {/* บิลปฏิเสธโอนคืนที่ถูกรวมเข้าแท็บตรวจสอบไม่ผ่าน (สถานะอื่น เช่น จัดส่งแล้ว) ไม่ให้ย้ายกลับรอลงข้อมูล */}
@@ -1002,6 +1139,74 @@ export default function OrderList({
         </div>
         )
       })}
+      {enableFailureArchive && orders.length > failurePageSize && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white px-4 py-3">
+          <span className="text-sm text-surface-600">
+            แสดง {(failurePage - 1) * failurePageSize + 1}–{Math.min(failurePage * failurePageSize, orders.length)} จาก {orders.length} รายการ
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setFailurePage((page) => Math.max(1, page - 1))}
+              disabled={failurePage === 1}
+              className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm disabled:opacity-40"
+            >
+              ก่อนหน้า
+            </button>
+            <span className="text-sm font-medium">หน้า {failurePage}/{failurePageCount}</span>
+            <button
+              type="button"
+              onClick={() => setFailurePage((page) => Math.min(failurePageCount, page + 1))}
+              disabled={failurePage === failurePageCount}
+              className="rounded-lg border border-surface-300 px-3 py-1.5 text-sm disabled:opacity-40"
+            >
+              ถัดไป
+            </button>
+          </div>
+        </div>
+      )}
+      <Modal
+        open={!!archiveConfirmOrder}
+        onClose={() => { if (!archivingOrderId) setArchiveConfirmOrder(null) }}
+        contentClassName="max-w-md"
+      >
+        {archiveConfirmOrder && (
+          <div className="p-6">
+            <h3 className="text-xl font-semibold text-surface-900">เก็บรายการเข้าประวัติ</h3>
+            <p className="mt-2 text-sm text-surface-600">
+              บิล <strong>{archiveConfirmOrder.bill_no}</strong> จะถูกซ่อนจากคิวที่ต้องดำเนินการ โดยไม่ลบบิล สลิป หรือประวัติการตรวจสอบ
+            </p>
+            <label className="mt-4 block text-sm font-medium text-surface-700">
+              เหตุผล <span className="text-red-600">*</span>
+              <textarea
+                rows={3}
+                value={archiveReason}
+                onChange={(e) => setArchiveReason(e.target.value)}
+                placeholder="ระบุเหตุผลที่เก็บรายการเข้าประวัติ"
+                className="mt-1 w-full rounded-xl border border-surface-300 px-3 py-2 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setArchiveConfirmOrder(null)}
+                disabled={!!archivingOrderId}
+                className="rounded-xl border border-surface-300 px-4 py-2 text-sm disabled:opacity-50"
+              >
+                ย้อนกลับ
+              </button>
+              <button
+                type="button"
+                onClick={() => void archiveFailureOrder()}
+                disabled={!archiveReason.trim() || !!archivingOrderId}
+                className="rounded-xl bg-gray-800 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-900 disabled:opacity-40"
+              >
+                {archivingOrderId ? 'กำลังบันทึก...' : 'ยืนยันเก็บเข้าประวัติ'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
       <Modal
         open={!!deleteConfirmOrder}
         onClose={() => { if (!deletingOrderId) setDeleteConfirmOrder(null) }}

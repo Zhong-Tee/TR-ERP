@@ -64,6 +64,7 @@ interface NumericInputProps {
   integer?: boolean
   placeholder?: string
   className?: string
+  disabled?: boolean
 }
 
 /**
@@ -76,6 +77,7 @@ function NumericInput({
   integer = false,
   placeholder,
   className,
+  disabled = false,
 }: NumericInputProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const displayValue = draft ?? formatNumericInput(value, integer)
@@ -99,6 +101,7 @@ function NumericInput({
       onBlur={() => setDraft(null)}
       placeholder={placeholder}
       className={className}
+      disabled={disabled}
     />
   )
 }
@@ -477,13 +480,13 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
         probation_end_date: probation_end_date || undefined,
         contract_end_date: contract_end_date || null,
         salary: typeof salary === 'number' ? salary : undefined,
-        position_allowance: typeof position_allowance === 'number' ? position_allowance : undefined,
+        position_allowance: contract_type === 'daily' ? 0 : typeof position_allowance === 'number' ? position_allowance : undefined,
         monthly_personal_tax: typeof monthly_personal_tax === 'number' ? monthly_personal_tax : 0,
         monthly_social_security: typeof monthly_social_security === 'number' ? monthly_social_security : 0,
-        monthly_savings: typeof monthly_savings === 'number' ? monthly_savings : 0,
-        savings_maximum: typeof savings_maximum === 'number' ? savings_maximum : null,
+        monthly_savings: contract_type === 'daily' ? 0 : typeof monthly_savings === 'number' ? monthly_savings : 0,
+        savings_maximum: contract_type === 'daily' ? null : typeof savings_maximum === 'number' ? savings_maximum : null,
         monthly_student_loan: typeof monthly_student_loan === 'number' ? monthly_student_loan : 0,
-        monthly_company_loan: typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
+        monthly_company_loan: contract_type === 'daily' ? 0 : typeof monthly_company_loan === 'number' ? monthly_company_loan : 0,
         income_opening_balance: typeof income_opening_balance === 'number' ? income_opening_balance : 0,
         personal_tax_opening_balance: typeof personal_tax_opening_balance === 'number' ? personal_tax_opening_balance : 0,
         social_security_opening_balance: typeof social_security_opening_balance === 'number' ? social_security_opening_balance : 0,
@@ -948,7 +951,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   value={position_allowance}
                   onChange={setPositionAllowance}
                   placeholder="เช่น 2,000.00"
-                  className={fieldClass}
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
                 />
               </label>
               <label>
@@ -957,7 +961,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   value={monthly_savings}
                   onChange={setMonthlySavings}
                   placeholder="0.00"
-                  className={fieldClass}
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
                 />
               </label>
               <label>
@@ -966,7 +971,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   value={savings_maximum}
                   onChange={setSavingsMaximum}
                   placeholder="เว้นว่าง = ไม่จำกัด"
-                  className={fieldClass}
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
                 />
                 <span className="mt-1 block text-xs text-gray-500">
                   ระบบจะหยุดหักเมื่อยอดสะสมรวมถึงจำนวนนี้
@@ -978,7 +984,8 @@ export default function EmployeeForm({ employee, onSave }: EmployeeFormProps) {
                   value={monthly_company_loan}
                   onChange={setMonthlyCompanyLoan}
                   placeholder="0.00"
-                  className={fieldClass}
+                  disabled={contract_type === 'daily'}
+                  className={`${fieldClass} disabled:bg-gray-100 disabled:cursor-not-allowed`}
                 />
               </label>
               <label>

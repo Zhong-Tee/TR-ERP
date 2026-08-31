@@ -411,7 +411,7 @@ export async function upsertLeaveType(lt: Partial<HRLeaveType>) {
 
 export async function fetchLeaveRequests(filters?: { status?: string; employee_id?: string }) {
   let q = supabase.from('hr_leave_requests')
-    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name), position:hr_positions!position_id(name)), leave_type:hr_leave_types!leave_type_id(name), approver:hr_employees!approved_by(first_name, last_name, nickname)')
+    .select('*, employee:hr_employees!employee_id(id, employee_code, first_name, last_name, nickname, department:hr_departments!department_id(name), position:hr_positions!position_id(name)), leave_type:hr_leave_types!leave_type_id(name), approver:hr_employees!approved_by(first_name, last_name, nickname), canceller:hr_employees!cancelled_by(first_name, last_name, nickname)')
     .order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.employee_id) q = q.eq('employee_id', filters.employee_id)

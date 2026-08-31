@@ -91,29 +91,11 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
     setApproving(true)
     try {
-      const { error: reqError } = await supabase
-        .from('wms_requisitions')
-        .update({
-          status: 'approved',
-          approved_by: user?.id,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', requisition.id)
-
-      if (reqError) throw reqError
-
-      const orderData = items.map((item) => ({
-        order_id: requisition.requisition_id,
-        product_code: item.product_code,
-        product_name: item.product_name,
-        location: item.location,
-        qty: item.qty,
-        assigned_to: selectedPicker,
-        status: 'pending',
-      }))
-
-      const { error: orderError } = await supabase.from('wms_orders').insert(orderData)
-      if (orderError) throw orderError
+      const { error } = await supabase.rpc('approve_wms_requisition', {
+        p_requisition_id: requisition.id,
+        p_picker_id: selectedPicker,
+      })
+      if (error) throw error
 
       showMessage({ message: `อนุมัติใบเบิก ${requisition.requisition_id} สำเร็จ!\nมอบหมายให้ Picker แล้ว` })
       onClose()

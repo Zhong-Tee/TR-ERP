@@ -127,6 +127,15 @@ function leaveTimeRange(req: HRLeaveRequest): string | null {
   return `${req.start_time.slice(0, 5)} – ${req.end_time.slice(0, 5)} น.`
 }
 
+function cancellerDisplayName(req: HRLeaveRequest): string {
+  const canceller = req.canceller
+  if (canceller) {
+    const name = [canceller.first_name, canceller.last_name].filter(Boolean).join(' ')
+    if (name) return canceller.nickname ? `${name} (${canceller.nickname})` : name
+  }
+  return req.cancelled_by_name?.trim() || '-'
+}
+
 function EmergencyBadge({ request }: { request: HRLeaveRequest }) {
   if (!request.is_emergency) return null
   return <span className="ml-2 inline-flex shrink-0 rounded-full border border-red-200 bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">ฉุกเฉิน</span>
@@ -228,6 +237,7 @@ export default function LeaveManagement() {
   const [companyHolidays, setCompanyHolidays] = useState<HRCompanyHoliday[]>([])
   const [employeeById, setEmployeeById] = useState<Record<string, HREmployee>>({})
   const [detailRequest, setDetailRequest] = useState<HRLeaveRequest | null>(null)
+  const [cancelLeaveTarget, setCancelLeaveTarget] = useState<HRLeaveRequest | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [actionLoading, setActionLoading] = useState(false)
@@ -534,17 +544,24 @@ export default function LeaveManagement() {
     }
   }
 
-  const handleCancelLeave = async (request: HRLeaveRequest) => {
+  const handleCancelLeave = async () => {
+    const request = cancelLeaveTarget
+    if (!request) return
     if (!canCancelLeave || request.status === 'cancelled') return
-    if (!window.confirm(`ยืนยันยกเลิกใบลาของ ${employeeDisplayName(request)} หรือไม่?`)) return
 
     setActionLoading(true)
     setError(null)
     try {
-      await updateLeaveRequest(request.id, { status: 'cancelled' })
+      await updateLeaveRequest(request.id, {
+        status: 'cancelled',
+        cancelled_by: currentEmployeeId ?? null,
+        cancelled_by_name: user?.username || user?.email || 'ผู้ใช้งานระบบ',
+        cancelled_at: new Date().toISOString(),
+      })
       supabase.functions.invoke('hr-leave-request-notify', {
         body: { leave_id: request.id, event: 'cancelled' },
       }).catch(() => {})
+      setCancelLeaveTarget(null)
       setDetailRequest(null)
       setSuccessMessage('ยกเลิกใบลาสำเร็จ')
       await loadData()
@@ -1361,6 +1378,9 @@ export default function LeaveManagement() {
                   {statusLabel(detailRequest.status)}
                 </span>
               </p>
+              {detailRequest.status === 'cancelled' && (
+                <p><span className="text-surface-500">ผู้ยกเลิก:</span> {cancellerDisplayName(detailRequest)}</p>
+              )}
               {detailRequest.reject_reason && (
                 <p><span className="text-surface-500">เหตุผลไม่อนุมัติ:</span> {detailRequest.reject_reason}</p>
               )}
@@ -1380,13 +1400,54 @@ export default function LeaveManagement() {
               {canCancelLeave && detailRequest.status !== 'cancelled' && (
                 <button
                   type="button"
-                  onClick={() => handleCancelLeave(detailRequest)}
+                  onClick={() => setCancelLeaveTarget(detailRequest)}
                   disabled={actionLoading}
                   className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 text-sm font-medium disabled:opacity-50"
                 >
                   {actionLoading ? 'กำลังยกเลิกใบลา...' : 'ยกเลิกใบลา'}
                 </button>
               )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ยืนยันยกเลิกใบลาด้วย Modal ของระบบ */}
+      <Modal
+        open={!!cancelLeaveTarget}
+        onClose={() => { if (!actionLoading) setCancelLeaveTarget(null) }}
+        closeOnBackdropClick={!actionLoading}
+        contentClassName="max-w-sm"
+        stackClassName="z-[60]"
+        showCloseButton={false}
+        ariaLabelledby="cancel-leave-confirm-title"
+      >
+        {cancelLeaveTarget && (
+          <div className="p-5">
+            <h3 id="cancel-leave-confirm-title" className="text-lg font-semibold text-surface-800">
+              ยืนยันยกเลิกใบลา
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-surface-600">
+              ยืนยันยกเลิกใบลาของ{' '}
+              <span className="font-semibold text-surface-800">{employeeDisplayName(cancelLeaveTarget)}</span> หรือไม่?
+            </p>
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setCancelLeaveTarget(null)}
+                disabled={actionLoading}
+                className="flex-1 rounded-xl border border-surface-300 py-2.5 text-sm font-medium text-surface-700 disabled:opacity-40"
+              >
+                ย้อนกลับ
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelLeave}
+                disabled={actionLoading}
+                className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-40"
+              >
+                {actionLoading ? 'กำลังยกเลิก…' : 'ยืนยันยกเลิก'}
+              </button>
             </div>
           </div>
         )}

@@ -6,10 +6,11 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import type { HRCompany, HREmployee } from '../../types'
 import {
   fetchConfirmedLeaveDeductions, fetchHRCompanies, fetchPayrollEmployees, fetchPayrollHistory,
-  fetchPayrollRun, fetchSocialSecuritySettings, calculateSocialSecurity, calculateCappedSavings, calculateEmployeeEwf, savePayrollRun,
+  fetchPayrollRun, fetchSocialSecuritySettings, fetchPayrollOvertime, calculateSocialSecurity, calculateCappedSavings, calculateEmployeeEwf, savePayrollRun,
   type PayrollItem, type PayrollRun,
 } from '../../lib/payrollApi'
 import PayrollSlipPDF, { type PayrollYtd } from './pdf/PayrollSlipPDF'
+import DailyPayrollSection from './DailyPayrollSection'
 import Modal from '../ui/Modal'
 
 const currentMonth = () => new Date().toISOString().slice(0, 7)
@@ -27,7 +28,7 @@ const slipFileName = (item: PayrollItem, targetMonth: string) => {
 const sortPayrollItems = (rows: PayrollItem[]) => [...rows].sort((a, b) =>
   a.employee_code.localeCompare(b.employee_code, 'en', { numeric: true, sensitivity: 'base' }))
 const calc = (item: PayrollItem) => {
-  const gross = item.base_salary + item.position_allowance + item.other_income
+  const gross = item.base_salary + item.position_allowance + item.overtime_pay + item.other_income
   const deduction = item.personal_tax + item.social_security + item.ewf + item.savings + item.student_loan + item.company_loan + item.leave_deduction + item.other_deduction
   return { gross, deduction, net: gross - deduction }
 }
@@ -71,7 +72,7 @@ export default function PayrollSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
-  const [activeView, setActiveView] = useState<'payroll' | 'history'>('payroll')
+  const [activeView, setActiveView] = useState<'payroll' | 'daily' | 'history'>('payroll')
   const [employeeSearch, setEmployeeSearch] = useState('')
   const [historySearch, setHistorySearch] = useState('')
   const [historyDateFrom, setHistoryDateFrom] = useState('')
@@ -90,18 +91,33 @@ export default function PayrollSection() {
     if (!companyId) return
     setLoading(true); setMessage('')
     try {
-      const [employees, leaveMap, savedRun, historyRows, socialSecuritySettings] = await Promise.all([
-        fetchPayrollEmployees(companyId), fetchConfirmedLeaveDeductions(month), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId), fetchSocialSecuritySettings(),
+      const payrollEmployees = await fetchPayrollEmployees(companyId)
+      const dailyEmployeeIds = new Set(payrollEmployees
+        .filter((employee) => employee.contract_type === 'daily')
+        .map((employee) => employee.id))
+      const employees = payrollEmployees.filter((employee) => employee.contract_type !== 'daily')
+      const [leaveMap, savedRun, historyRows, socialSecuritySettings, overtimeByEmployee] = await Promise.all([
+        fetchConfirmedLeaveDeductions(month), fetchPayrollRun(month, companyId), fetchPayrollHistory(companyId), fetchSocialSecuritySettings(), fetchPayrollOvertime(month, employees),
       ])
       setHistory(historyRows)
       setRun(savedRun)
       setPaymentDate(savedRun?.payment_date || `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()}`)
       if (savedRun?.items?.length) {
         const employeesById = new Map(employees.map((employee) => [employee.id, employee]))
-        setItems(sortPayrollItems((savedRun.items || []).map((item) => {
+        setItems(sortPayrollItems((savedRun.items || [])
+          .filter((item) => item.pay_type !== 'daily' && !dailyEmployeeIds.has(item.employee_id))
+          .map((item) => {
           const employee = employeesById.get(item.employee_id)
-          const baseSalary = Number(item.base_salary)
-          const positionAllowance = Number(item.position_allowance)
+          const savedBaseSalary = Number(item.base_salary)
+          const savedPositionAllowance = Number(item.position_allowance)
+          // Draft payroll must follow the employee's latest salary settings.
+          // Confirmed runs remain immutable snapshots for payroll history.
+          const baseSalary = savedRun.status === 'confirmed' || !employee
+            ? savedBaseSalary
+            : Number(employee.salary) || 0
+          const positionAllowance = savedRun.status === 'confirmed' || !employee
+            ? savedPositionAllowance
+            : Number(employee.position_allowance) || 0
           const savedOpeningBalances = {
             income_opening_balance: Number(item.income_opening_balance),
             personal_tax_opening_balance: Number(item.personal_tax_opening_balance),
@@ -124,19 +140,38 @@ export default function PayrollSection() {
           const ewf = savedRun.status === 'confirmed'
             ? Number(item.ewf)
             : calculateEmployeeEwf(item.employee_code, baseSalary + positionAllowance, ewfEnabled)
+          const overtime = savedRun.status === 'confirmed' || !employee
+            ? {
+              normalHours: Number(item.ot_normal_hours) || 0,
+              holidayHours: Number(item.ot_holiday_hours) || 0,
+              overtimePay: Number(item.overtime_pay) || 0,
+            }
+            : overtimeByEmployee[item.employee_id] || { normalHours: 0, holidayHours: 0, overtimePay: 0 }
           const payrollInputsChanged = openingBalancesChanged
-            || (savedRun.status !== 'confirmed' && (savings !== Number(item.savings) || ewf !== Number(item.ewf)))
-          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary + positionAllowance, socialSecuritySettings), ewf, savings, student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), ...openingBalances, reviewed_at: payrollInputsChanged ? null : item.reviewed_at, reviewed_by: payrollInputsChanged ? null : item.reviewed_by }
-        })))
+            || (savedRun.status !== 'confirmed' && (
+              baseSalary !== savedBaseSalary
+              || positionAllowance !== savedPositionAllowance
+              || savings !== Number(item.savings)
+              || ewf !== Number(item.ewf)
+              || overtime.normalHours !== Number(item.ot_normal_hours || 0)
+              || overtime.holidayHours !== Number(item.ot_holiday_hours || 0)
+              || overtime.overtimePay !== Number(item.overtime_pay || 0)
+            ))
+          return { ...item, employee_name: employee ? employeeFullName(employee) : item.employee_name, employee_nickname: item.employee_nickname || employee?.nickname || null, base_salary: baseSalary, position_allowance: positionAllowance, ot_normal_hours: overtime.normalHours, ot_holiday_hours: overtime.holidayHours, overtime_pay: overtime.overtimePay, personal_tax: Number(item.personal_tax), social_security: savedRun.status === 'confirmed' ? Number(item.social_security) : employeeSocialSecurity(item.employee_code, baseSalary, socialSecuritySettings), ewf, savings, student_loan: Number(item.student_loan), company_loan: Number(item.company_loan), leave_deduction: Number(item.leave_deduction), other_income: Number(item.other_income), other_deduction: Number(item.other_deduction), ...openingBalances, reviewed_at: payrollInputsChanged ? null : item.reviewed_at, reviewed_by: payrollInputsChanged ? null : item.reviewed_by }
+          })))
       }
       else if ((!savedRun || savedRun.status === 'draft') && month === currentMonth()) setItems(sortPayrollItems(employees.map((employee) => ({
         employee_id: employee.id, employee_code: employee.employee_code,
         employee_name: employeeFullName(employee),
         employee_nickname: employee.nickname || null,
         department_position: [employee.department?.name, employee.position?.name].filter(Boolean).join(' / '),
+        pay_type: 'permanent',
         base_salary: Number(employee.salary) || 0, position_allowance: Number(employee.position_allowance) || 0,
+        ot_normal_hours: overtimeByEmployee[employee.id]?.normalHours || 0,
+        ot_holiday_hours: overtimeByEmployee[employee.id]?.holidayHours || 0,
+        overtime_pay: overtimeByEmployee[employee.id]?.overtimePay || 0,
         personal_tax: Number(employee.monthly_personal_tax) || 0,
-        social_security: employeeSocialSecurity(employee.employee_code, (Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0), socialSecuritySettings),
+        social_security: employeeSocialSecurity(employee.employee_code, Number(employee.salary) || 0, socialSecuritySettings),
         ewf: calculateEmployeeEwf(employee.employee_code, (Number(employee.salary) || 0) + (Number(employee.position_allowance) || 0), ewfEnabled),
         savings: employeeSavingsForMonth(employee, historyRows, month),
         student_loan: Number(employee.monthly_student_loan) || 0, company_loan: Number(employee.monthly_company_loan) || 0,
@@ -152,7 +187,7 @@ export default function PayrollSection() {
   }, [companyId, ewfEnabled, month])
   useEffect(() => { load() }, [load])
 
-  const totals = useMemo(() => items.reduce((sum, item) => { const c = calc(item); return { salary: sum.salary + c.gross, tax: sum.tax + item.personal_tax, social: sum.social + item.social_security, ewf: sum.ewf + item.ewf, savings: sum.savings + item.savings, student: sum.student + item.student_loan, companyLoan: sum.companyLoan + item.company_loan, leave: sum.leave + item.leave_deduction, net: sum.net + c.net } }, { salary: 0, tax: 0, social: 0, ewf: 0, savings: 0, student: 0, companyLoan: 0, leave: 0, net: 0 }), [items])
+  const totals = useMemo(() => items.reduce((sum, item) => { const c = calc(item); return { salary: sum.salary + c.gross, overtime: sum.overtime + item.overtime_pay, tax: sum.tax + item.personal_tax, social: sum.social + item.social_security, ewf: sum.ewf + item.ewf, savings: sum.savings + item.savings, student: sum.student + item.student_loan, companyLoan: sum.companyLoan + item.company_loan, leave: sum.leave + item.leave_deduction, net: sum.net + c.net } }, { salary: 0, overtime: 0, tax: 0, social: 0, ewf: 0, savings: 0, student: 0, companyLoan: 0, leave: 0, net: 0 }), [items])
   const visibleItems = useMemo(() => {
     const query = employeeSearch.trim().toLocaleLowerCase('th-TH')
     if (!query) return items
@@ -284,16 +319,19 @@ export default function PayrollSection() {
     const exportItems = targetRun?.items || items
     const exportCompany = targetRun?.company || company
     const exportMonth = targetRun?.payroll_month.slice(0, 7) || month
+    const isDaily = targetRun?.payroll_type === 'daily'
     const rows = exportItems.map((item) => {
       const c = calc(item)
+      if (isDaily) return { 'รหัสพนักงาน': item.employee_code, 'ชื่อ-สกุล': item.employee_name, 'แผนก/ตำแหน่ง': item.department_position || '', 'ค่าแรง/วัน': item.daily_rate, 'วันเต็ม': item.full_days, 'ครึ่งวัน': item.half_days, 'วันหยุดจ่าย': item.paid_holiday_days, 'วันลาไม่จ่าย': item.unpaid_leave_days, 'จำนวนวันจ่าย': item.payable_days, 'ค่าจ้าง': item.base_salary, 'OT วันทำงาน (ชม.)': item.ot_normal_hours, 'OT วันหยุด (ชม.)': item.ot_holiday_hours, 'เงิน OT': item.overtime_pay, 'เงินกองทุนสงเคราะห์ลูกจ้าง': item.ewf, 'รายได้อื่น': item.other_income, 'หักอื่น': item.other_deduction, 'เงินสุทธิ': c.net }
       const progress = financialProgress(item, exportMonth, targetRun ? false : !locked)
-      return { 'รหัสพนักงาน': item.employee_code, 'ชื่อ-สกุล': item.employee_name, 'แผนก/ตำแหน่ง': item.department_position || '', 'เงินเดือน': item.base_salary, 'เงินพิเศษ': item.position_allowance, 'รายได้อื่น': item.other_income, 'รวมรายได้': c.gross, 'ภาษี': item.personal_tax, 'ประกันสังคม': item.social_security, 'EWF เดือนนี้': item.ewf, 'EWF สะสมรวม': progress.accumulatedEwf, 'เงินสะสมเดือนนี้': item.savings, 'เงินสะสมรวม': progress.accumulatedSavings, 'กยศ.': item.student_loan, 'เงินกู้บริษัทฯ เดือนนี้': item.company_loan, 'เงินกู้บริษัทฯ คงเหลือ': progress.companyLoanBalance, 'งวดคงเหลือ': progress.companyLoanInstallments, 'ลาเกินสิทธิ์': item.leave_deduction, 'หักอื่น': item.other_deduction, 'รวมหัก': c.deduction, 'เงินสุทธิ': c.net }
+      return { 'รหัสพนักงาน': item.employee_code, 'ชื่อ-สกุล': item.employee_name, 'แผนก/ตำแหน่ง': item.department_position || '', 'เงินเดือน': item.base_salary, 'เงินพิเศษ': item.position_allowance, 'OT วันทำงาน (ชม.)': item.ot_normal_hours, 'OT วันหยุด (ชม.)': item.ot_holiday_hours, 'เงิน OT': item.overtime_pay, 'รายได้อื่น': item.other_income, 'รวมรายได้': c.gross, 'ภาษี': item.personal_tax, 'ประกันสังคม': item.social_security, 'เงินกองทุนสงเคราะห์ลูกจ้างเดือนนี้': item.ewf, 'เงินกองทุนสงเคราะห์ลูกจ้างสะสมรวม': progress.accumulatedEwf, 'เงินสะสมเดือนนี้': item.savings, 'เงินสะสมรวม': progress.accumulatedSavings, 'กยศ.': item.student_loan, 'เงินกู้บริษัทฯ เดือนนี้': item.company_loan, 'เงินกู้บริษัทฯ คงเหลือ': progress.companyLoanBalance, 'งวดคงเหลือ': progress.companyLoanInstallments, 'ลาเกินสิทธิ์': item.leave_deduction, 'หักอื่น': item.other_deduction, 'รวมหัก': c.deduction, 'เงินสุทธิ': c.net }
     })
-    const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [12, 26, 24, ...Array(12).fill(14)].map((wch) => ({ wch }))
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'เงินเดือน'); XLSX.writeFile(wb, `รายงานเงินเดือน_${exportCompany?.company_key || 'company'}_${exportMonth}.xlsx`)
+    const ws = XLSX.utils.json_to_sheet(rows); ws['!cols'] = [12, 26, 24, ...Array(21).fill(14)].map((wch) => ({ wch }))
+    const reportName = isDaily ? 'ค่าจ้างรายวัน' : 'เงินเดือน'
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, reportName); XLSX.writeFile(wb, `รายงาน${reportName}_${exportCompany?.company_key || 'company'}_${exportMonth}.xlsx`)
   }
 
-  const cards = [['ยอดเงินเดือน', totals.salary, 'text-blue-700'], ['ภาษีส่วนบุคคล', totals.tax, 'text-amber-700'], ['ประกันสังคม', totals.social, 'text-purple-700'], ['EWF', totals.ewf, 'text-teal-700'], ['เงินสะสม', totals.savings, 'text-indigo-700'], ['กยศ.', totals.student, 'text-cyan-700'], ['เงินกู้บริษัทฯ', totals.companyLoan, 'text-orange-700'], ['ลาเกินสิทธิ์', totals.leave, 'text-red-700'], ['ยอดสุทธิ', totals.net, 'text-emerald-700']] as const
+  const cards = [['ยอดเงินเดือน', totals.salary, 'text-blue-700'], ['เงิน OT', totals.overtime, 'text-violet-700'], ['ภาษีส่วนบุคคล', totals.tax, 'text-amber-700'], ['ประกันสังคม', totals.social, 'text-purple-700'], ['เงินกองทุนสงเคราะห์ลูกจ้าง', totals.ewf, 'text-teal-700'], ['เงินสะสม', totals.savings, 'text-indigo-700'], ['กยศ.', totals.student, 'text-cyan-700'], ['เงินกู้บริษัทฯ', totals.companyLoan, 'text-orange-700'], ['ลาเกินสิทธิ์', totals.leave, 'text-red-700'], ['ยอดสุทธิ', totals.net, 'text-emerald-700']] as const
   const filteredHistory = history.filter((row) => {
     const reportMonth = row.payroll_month.slice(0, 7)
     if (historyDateFrom && reportMonth < historyDateFrom) return false
@@ -305,7 +343,8 @@ export default function PayrollSection() {
   })
   return <div className="space-y-5">
     <div className="flex gap-2 border-b border-gray-200">
-      <button type="button" onClick={() => setActiveView('payroll')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'payroll' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>จัดทำเงินเดือน</button>
+      <button type="button" onClick={() => setActiveView('payroll')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'payroll' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>จัดทำเงินเดือน (ประจำ)</button>
+      <button type="button" onClick={() => setActiveView('daily')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'daily' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>จัดทำค่าจ้าง (รายวัน)</button>
       <button type="button" onClick={() => setActiveView('history')} className={`px-4 py-3 font-medium border-b-2 ${activeView === 'history' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-gray-500'}`}>รายงานย้อนหลัง</button>
     </div>
     {activeView === 'history' ? <>
@@ -316,12 +355,12 @@ export default function PayrollSection() {
         <label className="text-sm flex-1 min-w-64">ค้นหา<input type="search" value={historySearch} onChange={(e) => setHistorySearch(e.target.value)} placeholder="เดือน บริษัท รหัส หรือชื่อพนักงาน" className="block mt-1 w-full rounded-lg border px-3 py-2" /></label>
       </div>
       {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
-      <div className="rounded-xl border bg-white overflow-x-auto"><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="p-3 text-left">เดือน</th><th className="p-3 text-left">บริษัท</th><th className="p-3 text-right">พนักงาน</th><th className="p-3 text-right">ยอดสุทธิ</th><th className="p-3 text-right">รายงาน</th></tr></thead><tbody>{filteredHistory.map((h) => <tr key={h.id} className="border-t"><td className="p-3">{monthLabel(h.payroll_month.slice(0, 7))}</td><td className="p-3">{h.company?.name_th}</td><td className="p-3 text-right">{h.items?.length || 0}</td><td className="p-3 text-right font-semibold">{fmt((h.items || []).reduce((sum, item) => sum + calc(item).net, 0))}</td><td className="p-3 text-right"><button onClick={() => exportExcel(h)} className="text-emerald-700">ดาวน์โหลด Excel</button></td></tr>)}{!loading && !filteredHistory.length && <tr><td colSpan={5} className="p-10 text-center text-gray-500">ไม่พบรายงาน</td></tr>}</tbody></table></div>
-    </> : <>
+      <div className="rounded-xl border bg-white overflow-x-auto"><table className="w-full text-sm"><thead className="bg-gray-50"><tr><th className="p-3 text-left">เดือน</th><th className="p-3 text-left">บริษัท</th><th className="p-3 text-left">ประเภท</th><th className="p-3 text-right">พนักงาน</th><th className="p-3 text-right">ยอดสุทธิ</th><th className="p-3 text-right">รายงาน</th></tr></thead><tbody>{filteredHistory.map((h) => <tr key={h.id} className="border-t"><td className="p-3">{monthLabel(h.payroll_month.slice(0, 7))}</td><td className="p-3">{h.company?.name_th}</td><td className="p-3">{h.payroll_type === 'daily' ? 'รายวัน' : 'ประจำ'}</td><td className="p-3 text-right">{h.items?.length || 0}</td><td className="p-3 text-right font-semibold">{fmt((h.items || []).reduce((sum, item) => sum + calc(item).net, 0))}</td><td className="p-3 text-right"><button onClick={() => exportExcel(h)} className="text-emerald-700">ดาวน์โหลด Excel</button></td></tr>)}{!loading && !filteredHistory.length && <tr><td colSpan={6} className="p-10 text-center text-gray-500">ไม่พบรายงาน</td></tr>}</tbody></table></div>
+    </> : activeView === 'daily' ? <DailyPayrollSection /> : <>
     <div className="rounded-xl border bg-white p-4 flex flex-wrap gap-3 items-end"><label className="text-sm">บริษัท<select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2 min-w-72">{companies.map((c) => <option key={c.id} value={c.id}>{c.name_th}</option>)}</select></label><label className="text-sm">เดือน<input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="block mt-1 rounded-lg border px-3 py-2" /></label><label className="text-sm">วันที่จ่าย<input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} disabled={locked} className="block mt-1 rounded-lg border px-3 py-2 disabled:bg-gray-100" /></label><label className="text-sm flex-1 min-w-56 max-w-sm">ค้นหาพนักงาน<input type="search" value={employeeSearch} onChange={(e) => setEmployeeSearch(e.target.value)} placeholder="ชื่อ ชื่อเล่น หรือรหัสพนักงาน" className="block mt-1 w-full rounded-lg border px-3 py-2" /></label><span className={`rounded-full px-3 py-2 text-sm font-semibold ${locked ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{locked ? 'ยืนยันยอดแล้ว' : `ตรวจแล้ว ${items.filter((item) => item.reviewed_at).length}/${items.length}`}</span><div className="ml-auto flex gap-2"><button onClick={() => exportExcel()} disabled={!items.length} className="rounded-lg border border-emerald-600 px-4 py-2 text-emerald-700">ดาวน์โหลด Excel</button>{locked && <button onClick={downloadAllSlipsZip} disabled={zipLoading || !items.length} className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-50">{zipLoading ? 'กำลังสร้าง ZIP...' : 'ดาวน์โหลด ZIP'}</button>}{!locked && <><button onClick={() => save(false)} disabled={saving || !items.length} className="rounded-lg border px-4 py-2 disabled:opacity-50">บันทึกร่าง</button><button onClick={() => save(true)} disabled={saving || !items.length || items.some((item) => !item.reviewed_at)} title={items.some((item) => !item.reviewed_at) ? 'ต้องตรวจสอบสลิปให้ครบทุกคนก่อน' : undefined} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50">ยืนยันยอด</button></>}</div></div>
     {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">{message}</div>}
-    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-9 gap-3">{cards.map(([label, value, color]) => <div key={label} className="rounded-xl border bg-white p-4"><div className="text-xs text-gray-500">{label}</div><div className={`mt-1 text-xl font-bold ${color}`}>{fmt(value)}</div></div>)}</div>
-    <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','ภาษี','ประกันสังคม','EWF','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่นๆ','หักอื่นๆ','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{visibleItems.map((item) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><div className="flex items-center gap-2"><b>{item.employee_code}</b>{locked ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">ยืนยันยอดแล้ว</span> : item.reviewed_at ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">ตรวจสอบแล้ว</span> : null}</div><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td>{(['personal_tax','social_security','ewf','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'ewf' ? <><div>{fmt(item.ewf)}</div><div className="text-xs text-teal-600">สะสม {fmt(progress.accumulatedEwf)}</div></> : key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['personal_tax','student_loan','other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="text" inputMode="decimal" value={item[key]} onChange={(e) => { const value = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, ''); update(item.employee_id, key, Number(value) || 0) }} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><div className="flex justify-end gap-2"><button onClick={() => previewSlip(item)} className="rounded-lg bg-gray-100 text-gray-700 px-3 py-2">ดู</button><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></div></td></tr> })}{visibleItems.length === 0 && <tr><td colSpan={13} className="p-10 text-center text-gray-500">ไม่พบพนักงานที่ค้นหา</td></tr>}</tbody></table>}</div>
+    <div className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-10 gap-3">{cards.map(([label, value, color]) => <div key={label} className="rounded-xl border bg-white p-4"><div className="text-xs text-gray-500">{label}</div><div className={`mt-1 text-xl font-bold ${color}`}>{fmt(value)}</div></div>)}</div>
+    <div className="rounded-xl border bg-white overflow-x-auto">{loading ? <div className="p-12 text-center">กำลังโหลด...</div> : <table className="w-full text-sm whitespace-nowrap"><thead className="bg-gray-50"><tr>{['พนักงาน','เงินเดือน','OT','ภาษี','ประกันสังคม','EWF','เงินสะสม','กยศ.','กู้บริษัทฯ','ลาเกินสิทธิ์','รายได้อื่นๆ','หักอื่นๆ','สุทธิ','สลิป'].map((h) => <th key={h} className="p-3 text-right first:text-left">{h}</th>)}</tr></thead><tbody>{visibleItems.map((item) => { const c = calc(item); const progress = financialProgress(item); return <tr key={item.employee_id} className="border-t"><td className="p-3"><div className="flex items-center gap-2"><b>{item.employee_code}</b>{locked ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">ยืนยันยอดแล้ว</span> : item.reviewed_at ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">ตรวจสอบแล้ว</span> : null}</div><div>{item.employee_name}</div><div className="text-xs text-gray-500">{item.department_position}</div></td><td className="p-3 text-right">{fmt(item.base_salary + item.position_allowance)}</td><td className="p-2 text-right"><div>{fmt(item.overtime_pay)}</div><div className="text-xs text-violet-600">ปกติ {fmt(item.ot_normal_hours)} ชม. · วันหยุด {fmt(item.ot_holiday_hours)} ชม.</div></td>{(['personal_tax','social_security','ewf','savings','student_loan','company_loan','leave_deduction','other_income','other_deduction'] as const).map((key) => <td key={key} className="p-2 text-right">{key === 'ewf' ? <><div>{fmt(item.ewf)}</div><div className="text-xs text-teal-600">สะสม {fmt(progress.accumulatedEwf)}</div></> : key === 'savings' ? <><div>{fmt(item.savings)}</div><div className="text-xs text-indigo-600">สะสม {fmt(progress.accumulatedSavings)}</div></> : key === 'company_loan' ? <><div>{fmt(item.company_loan)}</div><div className="text-xs text-orange-600">เหลือ {fmt(progress.companyLoanBalance)} ({progress.companyLoanInstallments} งวด)</div></> : locked || !['personal_tax','student_loan','other_income','other_deduction'].includes(key) ? fmt(item[key]) : <input type="text" inputMode="decimal" value={item[key]} onChange={(e) => { const value = e.target.value.replace(/,/g, '').replace(/[^\d.]/g, ''); update(item.employee_id, key, Number(value) || 0) }} className="w-24 rounded border px-2 py-1 text-right" />}</td>)}<td className="p-3 text-right font-bold text-emerald-700">{fmt(c.net)}</td><td className="p-3 text-right"><div className="flex justify-end gap-2"><button onClick={() => previewSlip(item)} className="rounded-lg bg-gray-100 text-gray-700 px-3 py-2">ดู</button><button onClick={() => downloadSlip(item)} className="rounded-lg bg-blue-50 text-blue-700 px-3 py-2">ดาวน์โหลด</button></div></td></tr> })}{visibleItems.length === 0 && <tr><td colSpan={14} className="p-10 text-center text-gray-500">ไม่พบพนักงานที่ค้นหา</td></tr>}</tbody></table>}</div>
     <Modal open={!!preview} onClose={closePreview} contentClassName="max-w-none h-full flex flex-col rounded-xl">
       {preview && <div className="flex h-full min-h-0 flex-col"><div className="flex items-center justify-between gap-3 border-b p-4"><div><div className="font-semibold">พรีวิวสลิปเงินเดือน — {preview.item.employee_code}</div><div className="text-sm text-gray-500">{preview.item.employee_name} · {monthLabel(month)}</div></div><div className="flex items-center gap-2">{!locked && !preview.item.reviewed_at && <button type="button" onClick={markReviewed} disabled={saving} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-50">ตรวจสอบแล้ว</button>}{!locked && preview.item.reviewed_at && <button type="button" onClick={cancelReviewed} disabled={saving} className="rounded-lg border border-amber-500 bg-amber-50 px-4 py-2 text-amber-700 hover:bg-amber-100 disabled:opacity-50">ยกเลิกการตรวจสอบ</button>}<button type="button" onClick={() => downloadSlip(preview.item)} className="rounded-lg bg-blue-50 px-4 py-2 text-blue-700">ดาวน์โหลด</button><button type="button" aria-label="ปิดพรีวิวสลิปเงินเดือน" title="ปิด" onClick={closePreview} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-600 text-white hover:bg-red-700"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg></button></div></div><iframe title={`สลิป ${preview.item.employee_code}`} src={`${preview.url}#zoom=150`} className="min-h-0 flex-1 w-full" /></div>}
     </Modal>

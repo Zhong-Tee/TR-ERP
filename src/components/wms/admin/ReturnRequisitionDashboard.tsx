@@ -8,6 +8,8 @@ import Modal from '../../ui/Modal'
 import * as ExcelJS from 'exceljs'
 import type { ProductType } from '../../../types'
 
+const PAGE_SIZE = 25
+
 interface ReturnRequisition {
   id: string
   return_no: string
@@ -39,6 +41,8 @@ export default function ReturnRequisitionDashboard() {
   })
   const [filterDateEnd, setFilterDateEnd] = useState(() => new Date().toISOString().split('T')[0])
   const [filterStatus, setFilterStatus] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
   const [detailModal, setDetailModal] = useState<{ open: boolean; ret: ReturnRequisition | null; items: ReturnItem[] }>({
     open: false,
     ret: null,
@@ -74,38 +78,35 @@ export default function ReturnRequisitionDashboard() {
       })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [filterDateStart, filterDateEnd, filterStatus])
+  }, [filterDateStart, filterDateEnd, filterStatus, page])
 
   const loadReturns = async () => {
     setLoading(true)
     try {
-      let query = supabase.from('wms_return_requisitions').select('*').order('created_at', { ascending: false })
+      let query = supabase
+        .from('wms_return_requisitions')
+        .select('*, created_by_user:created_by(username), approved_by_user:approved_by(username)', { count: 'exact' })
+        .order('created_at', { ascending: false })
       if (filterDateStart) query = query.gte('created_at', filterDateStart + 'T00:00:00')
       if (filterDateEnd) query = query.lte('created_at', filterDateEnd + 'T23:59:59')
       if (filterStatus) query = query.eq('status', filterStatus)
 
-      const { data, error } = await query
+      const { data, error, count } = await query.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
       if (error) throw error
-
-      const rows = data || []
-      const userIds = [...new Set(rows.flatMap((r: any) => [r.created_by, r.approved_by].filter(Boolean)))]
-      const userMap = new Map<string, string>()
-      if (userIds.length > 0) {
-        const { data: users } = await supabase.from('us_users').select('id, username').in('id', userIds)
-        for (const u of (users ?? []) as { id: string; username: string }[]) userMap.set(u.id, u.username)
-      }
-      const withUsers = rows.map((r: any) => ({
-        ...r,
-        created_by_user: r.created_by ? { username: userMap.get(r.created_by) || '-' } : null,
-        approved_by_user: r.approved_by ? { username: userMap.get(r.approved_by) || '-' } : null,
-      }))
-      setReturns(withUsers)
+      setTotalCount(count || 0)
+      setReturns((data || []) as ReturnRequisition[])
     } catch (e: any) {
       console.error('Load return requisitions error:', e)
       showMessage({ message: `โหลดข้อมูลไม่สำเร็จ: ${e.message}` })
     } finally {
       setLoading(false)
     }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const setFilterAndResetPage = (setter: (value: string) => void, value: string) => {
+    setPage(1)
+    setter(value)
   }
 
   const openDetail = async (ret: ReturnRequisition) => {
@@ -307,7 +308,7 @@ export default function ReturnRequisitionDashboard() {
   }
 
   const stats = {
-    total: returns.length,
+    total: totalCount,
     pending: returns.filter((r) => r.status === 'pending').length,
     approved: returns.filter((r) => r.status === 'approved').length,
     rejected: returns.filter((r) => r.status === 'rejected').length,
@@ -489,14 +490,14 @@ export default function ReturnRequisitionDashboard() {
               <input
                 type="date"
                 value={filterDateStart}
-                onChange={(e) => setFilterDateStart(e.target.value)}
+                onChange={(e) => setFilterAndResetPage(setFilterDateStart, e.target.value)}
                 className="border p-2 rounded-lg text-sm outline-none shadow-sm"
               />
               <span className="text-gray-400 self-center">-</span>
               <input
                 type="date"
                 value={filterDateEnd}
-                onChange={(e) => setFilterDateEnd(e.target.value)}
+                onChange={(e) => setFilterAndResetPage(setFilterDateEnd, e.target.value)}
                 className="border p-2 rounded-lg text-sm outline-none shadow-sm"
               />
             </div>
@@ -505,7 +506,7 @@ export default function ReturnRequisitionDashboard() {
             <label className="text-sm font-bold text-gray-700 uppercase mb-2 block">สถานะ</label>
             <select
               value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
+              onChange={(e) => setFilterAndResetPage(setFilterStatus, e.target.value)}
               className="w-full border p-2 rounded-lg text-sm outline-none"
             >
               <option value="">ทั้งหมด</option>
@@ -566,6 +567,16 @@ export default function ReturnRequisitionDashboard() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
+          <span className="text-gray-500">แสดง {returns.length} จาก {totalCount} ใบ</span>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ก่อนหน้า</button>
+            <span className="font-semibold">หน้า {page} / {totalPages}</span>
+            <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ถัดไป</button>
+          </div>
         </div>
       </div>
 

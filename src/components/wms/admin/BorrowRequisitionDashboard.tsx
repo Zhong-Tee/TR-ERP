@@ -7,6 +7,8 @@ import { getProductImageUrl } from '../wmsUtils'
 import Modal from '../../ui/Modal'
 import type { ProductType } from '../../../types'
 
+const PAGE_SIZE = 25
+
 function ZoomImage({ src }: { src: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
@@ -103,6 +105,8 @@ export default function BorrowRequisitionDashboard() {
   })
   const [filterDateEnd, setFilterDateEnd] = useState(() => new Date().toISOString().split('T')[0])
   const [filterStatus, setFilterStatus] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
   const [detailModal, setDetailModal] = useState<{ open: boolean; bor: BorrowRequisition | null; items: BorrowItem[] }>({
     open: false, bor: null, items: [],
   })
@@ -133,20 +137,21 @@ export default function BorrowRequisitionDashboard() {
     try {
       let q = supabase
         .from('wms_borrow_requisitions')
-        .select('*, created_by_user:created_by(username), approved_by_user:approved_by(username)')
+        .select('*, created_by_user:created_by(username), approved_by_user:approved_by(username)', { count: 'exact' })
         .gte('created_at', filterDateStart + 'T00:00:00')
         .lte('created_at', filterDateEnd + 'T23:59:59')
         .order('created_at', { ascending: false })
       if (filterStatus) q = q.eq('status', filterStatus)
-      const { data, error } = await q
+      const { data, error, count } = await q.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
       if (error) throw error
+      setTotalCount(count || 0)
       setBorrows((data || []) as BorrowRequisition[])
     } catch (e: any) {
       showMessage({ message: 'โหลดข้อมูลไม่สำเร็จ: ' + e.message })
     } finally {
       setLoading(false)
     }
-  }, [filterDateStart, filterDateEnd, filterStatus])
+  }, [filterDateStart, filterDateEnd, filterStatus, page])
 
   useEffect(() => { loadBorrows() }, [loadBorrows])
 
@@ -357,12 +362,13 @@ export default function BorrowRequisitionDashboard() {
   }
 
   const stats = {
-    total: borrows.length,
+    total: totalCount,
     pending: borrows.filter((b) => b.status === 'pending').length,
     active: borrows.filter((b) => ['approved', 'partial_returned', 'overdue'].includes(b.status)).length,
     overdue: borrows.filter((b) => isOverdue(b.due_date, b.status)).length,
     returned: borrows.filter((b) => b.status === 'returned').length,
   }
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
 
   return (
     <div className="space-y-4">
@@ -396,12 +402,12 @@ export default function BorrowRequisitionDashboard() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <input type="date" value={filterDateStart} onChange={(e) => setFilterDateStart(e.target.value)}
+        <input type="date" value={filterDateStart} onChange={(e) => { setPage(1); setFilterDateStart(e.target.value) }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         <span className="text-gray-400">ถึง</span>
-        <input type="date" value={filterDateEnd} onChange={(e) => setFilterDateEnd(e.target.value)}
+        <input type="date" value={filterDateEnd} onChange={(e) => { setPage(1); setFilterDateEnd(e.target.value) }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}
+        <select value={filterStatus} onChange={(e) => { setPage(1); setFilterStatus(e.target.value) }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm">
           {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
@@ -455,6 +461,16 @@ export default function BorrowRequisitionDashboard() {
               })}
             </tbody>
           </table>
+          <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
+            <span className="text-gray-500">แสดง {borrows.length} จาก {totalCount} ใบ</span>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
+                className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ก่อนหน้า</button>
+              <span className="font-semibold">หน้า {page} / {totalPages}</span>
+              <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+                className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ถัดไป</button>
+            </div>
+          </div>
         </div>
       )}
 

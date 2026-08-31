@@ -4,6 +4,7 @@ const STORE_QUEUE = 'queue'
 const STORE_SETTINGS = 'settings'
 
 export type UploadStatus = 'pending' | 'uploading' | 'success' | 'failed'
+export type VideoQualityProfileId = 'high' | 'standard' | 'data_saver'
 
 export interface UploadQueueItem {
   id: string
@@ -29,6 +30,18 @@ export interface UploadQueueItem {
   folderPath?: string | null
   blob?: Blob | null
   localDeleted?: boolean
+  qualityProfile?: VideoQualityProfileId | 'imported' | null
+  requestedWidth?: number | null
+  requestedHeight?: number | null
+  requestedFps?: number | null
+  requestedBitrate?: number | null
+  actualWidth?: number | null
+  actualHeight?: number | null
+  actualFps?: number | null
+  mimeType?: string | null
+  codec?: string | null
+  recorderBitrate?: number | null
+  actualBitrate?: number | null
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -112,6 +125,15 @@ export async function getDeviceName(): Promise<string> {
 
 export async function setDeviceName(name: string): Promise<void> {
   await setSetting('packingDeviceName', name.trim())
+}
+
+export async function getVideoQualityProfile(): Promise<VideoQualityProfileId> {
+  const saved = await getSetting<string>('packingVideoQualityProfile')
+  return saved === 'high' || saved === 'data_saver' || saved === 'standard' ? saved : 'standard'
+}
+
+export async function setVideoQualityProfile(profile: VideoQualityProfileId): Promise<void> {
+  await setSetting('packingVideoQualityProfile', profile)
 }
 
 export async function setSupabaseConfig(url: string, anonKey: string): Promise<void> {

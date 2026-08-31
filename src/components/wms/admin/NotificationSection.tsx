@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useAuthContext } from '../../../contexts/AuthContext'
 import { isRoleInAllowedList } from '../../../config/accessPolicy'
 import Modal from '../../ui/Modal'
 import { enrichWmsNotificationsWithOrderDetails } from '../../../lib/wmsNotificationEnrichment'
+
+const PAGE_SIZE = 50
 
 export default function NotificationSection() {
   const { user } = useAuthContext()
@@ -16,22 +18,34 @@ export default function NotificationSection() {
   const [cancelledLines, setCancelledLines] = useState<any[]>([])
   const [cancelledLoading, setCancelledLoading] = useState(false)
   const [stockActionLoading, setStockActionLoading] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadRequestRef = useRef(0)
 
   useEffect(() => {
-    loadNotifications()
+    void loadNotifications()
+    const scheduleReload = () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = setTimeout(() => {
+        void loadNotifications()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      }, 300)
+    }
 
     const channel = supabase
       .channel('wms-notifications-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_notifications' }, () => {
-        loadNotifications()
-        window.dispatchEvent(new Event('wms-data-changed'))
+        scheduleReload()
       })
       .subscribe()
 
     return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       supabase.removeChannel(channel)
     }
-  }, [currentTab])
+  }, [currentTab, page])
 
   const normalizeOrderKey = (value: unknown) =>
     String(value || '')
@@ -142,21 +156,30 @@ export default function NotificationSection() {
 
   /** ส่ง tabOverride เมื่อเพิ่ง setCurrentTab แล้ว state ยังไม่ทัน sync (เช่น หลังกดแก้ไขแล้ว) */
   const loadNotifications = async (tabOverride?: string) => {
+    const requestId = ++loadRequestRef.current
+    setLoading(true)
     const tab = tabOverride ?? currentTab
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .from('wms_notifications')
-      .select('*, us_users!picker_id(username)')
+      .select('id, order_id, picker_id, type, status, is_read, created_at, us_users!picker_id(username)', { count: 'exact' })
       .eq('status', tab)
       .order('created_at', { ascending: false })
+      .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
 
+    if (requestId !== loadRequestRef.current) return
     if (error) {
       console.error('loadNotifications:', error.message)
+      setLoading(false)
       return
     }
-    if (!data) return
+    if (!data) { setLoading(false); return }
 
     const notificationsWithDetails = await enrichWmsNotificationsWithOrderDetails(supabase, data)
-    setNotifications(notificationsWithDetails)
+    if (requestId === loadRequestRef.current) {
+      setTotalCount(count || 0)
+      setNotifications(notificationsWithDetails)
+      setLoading(false)
+    }
   }
 
   /** ยกเลิกบิลสร้างหลายแถวต่อใบงาน — อัปเดตทุกแถวในกลุ่ม (order_id แบบ normalize) */
@@ -236,13 +259,13 @@ export default function NotificationSection() {
       <h2 className="text-3xl font-black mb-6 text-slate-800">ศูนย์แจ้งเตือน</h2>
       <div className="flex gap-2 mb-6 bg-gray-200 p-1 rounded-xl w-fit">
         <button
-          onClick={() => setCurrentTab('unread')}
+          onClick={() => { setPage(1); setCurrentTab('unread') }}
           className={`px-6 py-2 rounded-lg font-bold transition text-sm ${currentTab === 'unread' ? 'tab-active' : ''}`}
         >
           รายการใหม่
         </button>
         <button
-          onClick={() => setCurrentTab('fixed')}
+          onClick={() => { setPage(1); setCurrentTab('fixed') }}
           className={`px-6 py-2 rounded-lg font-bold transition text-sm ${currentTab === 'fixed' ? 'tab-active' : ''}`}
         >
           แก้ไขแล้ว
@@ -262,7 +285,11 @@ export default function NotificationSection() {
             </tr>
           </thead>
           <tbody className="divide-y text-gray-600">
-            {notifications.map((n, idx) => (
+            {loading ? (
+              <tr><td colSpan={7} className="p-12 text-center text-gray-400"><i className="fas fa-spinner fa-spin text-2xl" /> <span className="ml-2">กำลังโหลดรายการ...</span></td></tr>
+            ) : notifications.length === 0 ? (
+              <tr><td colSpan={7} className="p-12 text-center text-gray-400">ไม่มีรายการ</td></tr>
+            ) : notifications.map((n, idx) => (
               <tr key={n.id} className={`border-b ${!n.is_read ? 'bg-blue-50' : ''}`}>
                 <td className={`p-4 text-center ${fontSizeClass}`}>{idx + 1}</td>
                 <td className={`p-4 ${fontSizeClass}`}>{new Date(n.created_at).toLocaleString('th-TH')}</td>
@@ -308,6 +335,17 @@ export default function NotificationSection() {
             ))}
           </tbody>
         </table>
+        <div className="flex items-center justify-between border-t px-4 py-3 text-sm">
+          <span className="text-gray-500">แสดง {notifications.length} จาก {totalCount} รายการ</span>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ก่อนหน้า</button>
+            <span className="font-semibold">หน้า {page} / {Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}</span>
+            <button type="button" onClick={() => setPage((p) => Math.min(Math.max(1, Math.ceil(totalCount / PAGE_SIZE)), p + 1))}
+              disabled={page >= Math.max(1, Math.ceil(totalCount / PAGE_SIZE))}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ถัดไป</button>
+          </div>
+        </div>
       </div>
       <Modal
         open={!!stockModalOrderId}

@@ -12,6 +12,7 @@ import type { ProductType } from '../../../types'
 const PHOTO_REQUIRED_TOPICS = new Set(['ผลิตเสีย', 'สินค้าชำรุด'])
 const requiresDamageEvidence = (topic: string) => PHOTO_REQUIRED_TOPICS.has(topic)
 const DAMAGE_BUCKET = 'wms-damage-evidence'
+const PAGE_SIZE = 25
 
 export default function RequisitionDashboard() {
   const { user } = useAuthContext()
@@ -22,6 +23,10 @@ export default function RequisitionDashboard() {
   const [filterDateStart, setFilterDateStart] = useState('')
   const [filterDateEnd, setFilterDateEnd] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [filterTopic, setFilterTopic] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
+  const [listTopics, setListTopics] = useState<string[]>([])
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   // --- Create requisition state ---
@@ -60,12 +65,18 @@ export default function RequisitionDashboard() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [filterDateStart, filterDateEnd, filterStatus])
+  }, [filterDateStart, filterDateEnd, filterStatus, filterTopic, page])
 
   const loadRequisitions = async () => {
     try {
       setLoading(true)
-      let query = supabase.from('wms_requisitions').select('*').order('created_at', { ascending: false })
+      const itemRelation = filterTopic
+        ? 'wms_requisition_items!inner(requisition_topic)'
+        : 'wms_requisition_items(requisition_topic)'
+      let query = supabase
+        .from('wms_requisitions')
+        .select(`*, ${itemRelation}`, { count: 'exact' })
+        .order('created_at', { ascending: false })
 
       if (filterDateStart) {
         query = query.gte('created_at', filterDateStart + 'T00:00:00')
@@ -76,9 +87,18 @@ export default function RequisitionDashboard() {
       if (filterStatus) {
         query = query.eq('status', filterStatus)
       }
+      if (filterTopic) {
+        query = query.eq('wms_requisition_items.requisition_topic', filterTopic)
+      }
 
-      const { data, error } = await query
+      query = query.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
+      const [{ data, error, count }, { data: topicRows }] = await Promise.all([
+        query,
+        supabase.from('wms_requisition_topics').select('topic_name').order('topic_name'),
+      ])
       if (error) throw error
+      setTotalCount(count || 0)
+      setListTopics((topicRows || []).map((row: any) => String(row.topic_name || '').trim()).filter(Boolean))
 
       const rows = data || []
       const userIds = [...new Set(rows.flatMap((r: any) => [r.created_by, r.approved_by].filter(Boolean)))]
@@ -247,7 +267,7 @@ export default function RequisitionDashboard() {
   }
 
   const stats = {
-    total: requisitions.length,
+    total: totalCount,
     pending: requisitions.filter((r) => r.status === 'pending').length,
     approved: requisitions.filter((r) => r.status === 'approved').length,
     rejected: requisitions.filter((r) => r.status === 'rejected').length,
@@ -306,6 +326,16 @@ export default function RequisitionDashboard() {
       setCSearching(false)
     }
   }
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const setFilterAndResetPage = (setter: (value: string) => void, value: string) => {
+    setPage(1)
+    setter(value)
+  }
+
+  const getRequisitionTopics = (req: any) => [...new Set<string>((req.wms_requisition_items || [])
+    .map((item: any) => String(item.requisition_topic || '').trim())
+    .filter(Boolean))]
 
   useEffect(() => {
     if (!showCreate) return
@@ -476,14 +506,14 @@ export default function RequisitionDashboard() {
               <input
                 type="date"
                 value={filterDateStart}
-                onChange={(e) => setFilterDateStart(e.target.value)}
+                onChange={(e) => setFilterAndResetPage(setFilterDateStart, e.target.value)}
                 className="border p-2 rounded-lg text-sm outline-none shadow-sm"
               />
               <span className="text-gray-400 self-center">-</span>
               <input
                 type="date"
                 value={filterDateEnd}
-                onChange={(e) => setFilterDateEnd(e.target.value)}
+                onChange={(e) => setFilterAndResetPage(setFilterDateEnd, e.target.value)}
                 className="border p-2 rounded-lg text-sm outline-none shadow-sm"
               />
             </div>
@@ -492,13 +522,24 @@ export default function RequisitionDashboard() {
             <label className="text-sm font-bold text-gray-700 uppercase mb-2 block">สถานะ</label>
             <select
               value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
+              onChange={(e) => setFilterAndResetPage(setFilterStatus, e.target.value)}
               className="w-full border p-2 rounded-lg text-sm outline-none"
             >
               <option value="">ทั้งหมด</option>
               <option value="pending">รออนุมัติ</option>
               <option value="approved">อนุมัติแล้ว</option>
               <option value="rejected">ปฏิเสธ</option>
+            </select>
+          </div>
+          <div className="w-52">
+            <label className="text-sm font-bold text-gray-700 uppercase mb-2 block">ประเภทใบเบิก</label>
+            <select
+              value={filterTopic}
+              onChange={(e) => setFilterAndResetPage(setFilterTopic, e.target.value)}
+              className="w-full border p-2 rounded-lg text-sm outline-none"
+            >
+              <option value="">ทั้งหมด</option>
+              {listTopics.map((topic) => <option key={topic} value={topic}>{topic}</option>)}
             </select>
           </div>
           <button
@@ -536,7 +577,16 @@ export default function RequisitionDashboard() {
               ) : (
                 requisitions.map((req) => (
                   <tr key={req.id} className="hover:bg-blue-50 border-b transition">
-                    <td className="p-4 font-black text-blue-600">{req.requisition_id}</td>
+                    <td className="p-4">
+                      <div className="font-black text-blue-600">{req.requisition_id}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {getRequisitionTopics(req).map((topic) => (
+                          <span key={topic} className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${topic === 'ผลิตเสีย' ? 'bg-red-100 text-red-700 ring-1 ring-red-200' : 'bg-blue-50 text-blue-700'}`}>
+                            {topic === 'ผลิตเสีย' && <i className="fas fa-triangle-exclamation mr-1" />}{topic}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
                     <td className="p-4 font-bold text-slate-700">{req.created_by_user?.username || '---'}</td>
                     <td className="p-4 font-bold text-slate-700">{req.approved_by_user?.username || '-'}</td>
                     <td className="p-4 text-gray-500 text-xs">{formatDate(req.created_at)}</td>
@@ -552,6 +602,16 @@ export default function RequisitionDashboard() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
+          <span className="text-gray-500">แสดง {requisitions.length} จาก {totalCount} ใบ</span>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ก่อนหน้า</button>
+            <span className="font-semibold">หน้า {page} / {totalPages}</span>
+            <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+              className="rounded-lg border px-3 py-1.5 font-bold disabled:opacity-40">ถัดไป</button>
+          </div>
         </div>
       </div>
 

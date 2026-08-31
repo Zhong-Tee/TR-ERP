@@ -14,14 +14,17 @@ import {
   getFolderPathNote,
   getDeviceName,
   getOrCreateDeviceId,
+  getVideoQualityProfile,
   listQueueItems,
   setAccessToken,
   setFolderHandle,
   setFolderPathNote,
   setDeviceName,
+  setVideoQualityProfile,
   setSupabaseConfig,
   updateQueueItem,
   type UploadQueueItem,
+  type VideoQualityProfileId,
 } from '../lib/packingQueue'
 import { isAdminOrSuperadmin } from '../config/accessPolicy'
 import {
@@ -179,6 +182,24 @@ const QUEUE_RETENTION_DAYS = 7
 const STALE_UPLOAD_MS = 10 * 60 * 1000
 const PACKING_DAILY_TAG_STORAGE_KEY = 'pk_daily_packing_tag_v1'
 
+type VideoQualityProfile = {
+  id: VideoQualityProfileId
+  label: string
+  description: string
+  width: number
+  height: number
+  fps: number
+  bitrate: number
+}
+
+const VIDEO_QUALITY_PROFILES: Record<VideoQualityProfileId, VideoQualityProfile> = {
+  high: { id: 'high', label: 'คุณภาพสูง', description: '720p · 24 FPS · 1.5 Mbps', width: 1280, height: 720, fps: 24, bitrate: 1_500_000 },
+  standard: { id: 'standard', label: 'มาตรฐาน (แนะนำ)', description: '720p · 20 FPS · 0.9 Mbps', width: 1280, height: 720, fps: 20, bitrate: 900_000 },
+  data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.55 Mbps', width: 854, height: 480, fps: 15, bitrate: 550_000 },
+}
+
+const DEVICE_ONLINE_MS = 2 * 60 * 1000
+
 type PackingUploadReportRow = {
   id: string
   recorded_by: string
@@ -200,12 +221,89 @@ type PackingUploadReportRow = {
   client_updated_at: string
   uploaded_at: string | null
   reported_at: string
+  quality_profile: VideoQualityProfileId | 'imported' | null
+  requested_width: number | null
+  requested_height: number | null
+  requested_fps: number | null
+  requested_bitrate: number | null
+  actual_width: number | null
+  actual_height: number | null
+  actual_fps: number | null
+  mime_type: string | null
+  codec: string | null
+  recorder_bitrate: number | null
+  actual_bitrate: number | null
+}
+
+type PackingDeviceRow = {
+  device_id: string
+  device_name: string
+  quality_profile: VideoQualityProfileId
+  folder_name: string | null
+  folder_path: string | null
+  pending_count: number
+  uploading_count: number
+  failed_count: number
+  last_seen_at: string
+}
+
+type RecordingVideoMetadata = {
+  qualityProfile: VideoQualityProfileId | 'imported'
+  requestedWidth: number | null
+  requestedHeight: number | null
+  requestedFps: number | null
+  requestedBitrate: number | null
+  actualWidth: number | null
+  actualHeight: number | null
+  actualFps: number | null
+  mimeType: string | null
+  codec: string | null
+  recorderBitrate: number | null
+  actualBitrate: number | null
 }
 
 function formatFileSize(bytes: number | null | undefined): string {
   const value = Number(bytes || 0)
   if (!Number.isFinite(value) || value <= 0) return '0 MB'
   return `${(value / (1024 * 1024)).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MB`
+}
+
+function formatDuration(seconds: number | null | undefined): string {
+  const value = Math.max(0, Math.round(Number(seconds || 0)))
+  if (!value) return '-'
+  const minutes = Math.floor(value / 60)
+  const remainder = value % 60
+  return `${minutes}:${String(remainder).padStart(2, '0')} นาที`
+}
+
+function megabytesPerMinute(bytes: number | null | undefined, seconds: number | null | undefined): number | null {
+  const size = Number(bytes || 0)
+  const duration = Number(seconds || 0)
+  if (size <= 0 || duration <= 0) return null
+  return (size / (1024 * 1024)) / (duration / 60)
+}
+
+function formatBitrate(bitsPerSecond: number | null | undefined): string {
+  const value = Number(bitsPerSecond || 0)
+  if (value <= 0) return '-'
+  return `${(value / 1_000_000).toLocaleString('th-TH', { maximumFractionDigits: 2 })} Mbps`
+}
+
+function codecFromMimeType(mimeType: string): string {
+  const match = mimeType.match(/codecs?=([^;]+)/i)
+  return match?.[1]?.replace(/["']/g, '').trim() || mimeType.split('/')[1]?.split(';')[0] || '-'
+}
+
+function uploadRecoveryAdvice(row: PackingUploadReportRow, deviceOnline: boolean): string {
+  const error = String(row.last_error || '').toLowerCase()
+  if (!deviceOnline) return 'เครื่องต้นทางออฟไลน์: เปิดเครื่องและ Chrome profile เดิม แล้วเข้า “คิวอัปโหลด”'
+  if (/ไม่พบไฟล์|missing.*file|no.*file/.test(error)) return 'ไม่พบไฟล์ในคิว: ใช้ปุ่ม “นำไฟล์ .webm กลับเข้าคิว” ที่เครื่องต้นทาง'
+  if (/401|403|unauthor|jwt|token|session/.test(error)) return 'Session หมดอายุ: เข้าสู่ระบบใหม่ที่เครื่องต้นทาง แล้วกดอัปโหลดใหม่'
+  if (/failed to fetch|network|internet|connection|เชื่อมต่อ/.test(error)) return 'ตรวจอินเทอร์เน็ตของเครื่องต้นทาง แล้วกดอัปโหลดใหม่'
+  if (/413|too large|payload|ขนาด/.test(error)) return 'ไฟล์ใหญ่เกินไป: ใช้โปรไฟล์มาตรฐาน/ประหยัด และลองอัปโหลดบนเครือข่ายที่เสถียร'
+  if (/google drive|timeout|timed out|500|502|503|504/.test(error)) return 'บริการปลายทางหรือเครือข่ายขัดข้อง: รอสักครู่แล้วกดอัปโหลดใหม่'
+  if (row.status === 'failed') return 'ไปที่เครื่องต้นทาง → คิวอัปโหลด → ตรวจ Error และกด “อัปโหลดใหม่”'
+  return 'เครื่องยังออนไลน์แต่คิวไม่ขยับ: เปิดแท็บคิวที่เครื่องต้นทางและสั่งอัปโหลดใหม่'
 }
 
 function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefined): boolean {
@@ -351,6 +449,7 @@ export default function Packing() {
   const [folderPath, setFolderPath] = useState('')
   const [deviceId, setDeviceId] = useState('')
   const [deviceName, setDeviceNameState] = useState('')
+  const [videoQualityProfile, setVideoQualityProfileState] = useState<VideoQualityProfileId>('standard')
   const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [reconnectOpen, setReconnectOpen] = useState(false)
   const [pathModal, setPathModal] = useState<{ open: boolean; value: string }>({ open: false, value: '' })
@@ -362,6 +461,18 @@ export default function Packing() {
   const [uploadReportLoading, setUploadReportLoading] = useState(false)
   const [uploadReportSearch, setUploadReportSearch] = useState('')
   const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
+  const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
+  const [requeueImport, setRequeueImport] = useState<{
+    open: boolean
+    file: File | null
+    workOrderName: string
+    trackingNumber: string
+    durationSeconds: number | null
+    width: number | null
+    height: number | null
+    saving: boolean
+    error: string
+  }>({ open: false, file: null, workOrderName: '', trackingNumber: '', durationSeconds: null, width: null, height: null, saving: false, error: '' })
   const [packingVideoUrl, setPackingVideoUrl] = useState<string | null>(null)
   const [packingVideoLoading, setPackingVideoLoading] = useState(false)
   const [dialog, setDialog] = useState<{
@@ -405,10 +516,12 @@ export default function Packing() {
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
   const recordingStartRef = useRef<number | null>(null)
+  const recordingVideoMetadataRef = useRef<RecordingVideoMetadata | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const previewLoadingRef = useRef(false)
   const confirmActionRef = useRef<null | (() => void)>(null)
   const stopAdvanceRef = useRef(false)
+  const requeueFileInputRef = useRef<HTMLInputElement | null>(null)
 
   const ensurePlanDeptStart = async (workOrderName: string) => {
     if (!workOrderName) return
@@ -597,18 +710,29 @@ export default function Packing() {
   }
 
   async function loadDeviceSettings() {
-    const id = await getOrCreateDeviceId()
-    const savedName = await getDeviceName()
+    const [id, savedName, savedProfile] = await Promise.all([
+      getOrCreateDeviceId(),
+      getDeviceName(),
+      getVideoQualityProfile(),
+    ])
     const name = savedName || `เครื่องแพ็ค-${id.slice(0, 6).toUpperCase()}`
     if (!savedName) await setDeviceName(name)
     setDeviceId(id)
     setDeviceNameState(name)
+    setVideoQualityProfileState(savedProfile)
   }
 
   async function saveDeviceName() {
     const next = deviceName.trim() || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`
     await setDeviceName(next)
     setDeviceNameState(next)
+  }
+
+  async function changeVideoQualityProfile(profile: VideoQualityProfileId) {
+    await setVideoQualityProfile(profile)
+    setVideoQualityProfileState(profile)
+    // ปิด stream เดิมเพื่อให้การบันทึกครั้งต่อไปขอค่ากล้องตามโปรไฟล์ใหม่
+    cleanupRecording(true, true)
   }
 
   async function confirmReconnect() {
@@ -755,6 +879,18 @@ export default function Packing() {
       retry_count: item.retryCount || 0,
       last_error: item.lastError || null,
       local_deleted: !!item.localDeleted,
+      quality_profile: item.qualityProfile || null,
+      requested_width: item.requestedWidth || null,
+      requested_height: item.requestedHeight || null,
+      requested_fps: item.requestedFps || null,
+      requested_bitrate: item.requestedBitrate || null,
+      actual_width: item.actualWidth || null,
+      actual_height: item.actualHeight || null,
+      actual_fps: item.actualFps || null,
+      mime_type: item.mimeType || item.fileType || null,
+      codec: item.codec || null,
+      recorder_bitrate: item.recorderBitrate || null,
+      actual_bitrate: item.actualBitrate || null,
       recorded_at: item.recordedAt || item.createdAt,
       client_created_at: item.createdAt,
       client_updated_at: item.updatedAt,
@@ -768,14 +904,39 @@ export default function Packing() {
 
   async function loadUploadReport(showLoading = false) {
     if (showLoading) setUploadReportLoading(true)
-    const { data, error } = await supabase
-      .from('pk_packing_upload_queue_reports')
-      .select('id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at')
-      .order('client_created_at', { ascending: false })
-      .limit(1000)
-    if (error) console.warn('Load packing upload report failed:', error.message)
-    else setUploadReportRows((data || []) as PackingUploadReportRow[])
+    const [reportResult, deviceResult] = await Promise.all([
+      supabase
+        .from('pk_packing_upload_queue_reports')
+        .select('id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
+        .order('client_created_at', { ascending: false })
+        .limit(1000),
+      supabase
+        .from('pk_packing_devices')
+        .select('device_id, device_name, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
+        .order('last_seen_at', { ascending: false }),
+    ])
+    if (reportResult.error) console.warn('Load packing upload report failed:', reportResult.error.message)
+    else setUploadReportRows((reportResult.data || []) as PackingUploadReportRow[])
+    if (deviceResult.error) console.warn('Load packing devices failed:', deviceResult.error.message)
+    else setPackingDevices((deviceResult.data || []) as PackingDeviceRow[])
     if (showLoading) setUploadReportLoading(false)
+  }
+
+  async function syncDeviceHeartbeat() {
+    if (!user?.id || !deviceId) return
+    const { error } = await supabase.from('pk_packing_devices').upsert({
+      device_id: deviceId,
+      user_id: user.id,
+      device_name: deviceName || `เครื่องแพ็ค-${deviceId.slice(0, 6).toUpperCase()}`,
+      quality_profile: videoQualityProfile,
+      folder_name: folderHandle?.name || null,
+      folder_path: folderPath || null,
+      pending_count: queueItems.filter((item) => item.status === 'pending').length,
+      uploading_count: queueItems.filter((item) => item.status === 'uploading').length,
+      failed_count: queueItems.filter((item) => item.status === 'failed').length,
+      last_seen_at: new Date().toISOString(),
+    }, { onConflict: 'device_id' })
+    if (error) console.warn('Packing device heartbeat failed:', error.message)
   }
 
   useEffect(() => {
@@ -798,6 +959,13 @@ export default function Packing() {
     const timer = window.setInterval(() => void loadUploadReport(false), 10_000)
     return () => window.clearInterval(timer)
   }, [selectionTab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!user?.id || !deviceId) return
+    void syncDeviceHeartbeat()
+    const timer = window.setInterval(() => void syncDeviceHeartbeat(), 60_000)
+    return () => window.clearInterval(timer)
+  }, [user?.id, deviceId, deviceName, videoQualityProfile, folderPath, folderHandle, queueItems]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function cleanupLocalFiles(handle: FileSystemDirectoryHandle, items: UploadQueueItem[]) {
     const targets = items.filter((i) => i.status === 'success' && !i.localDeleted)
@@ -1628,6 +1796,111 @@ export default function Packing() {
     }
   }
 
+  async function inspectBackupVideo(file: File): Promise<{ durationSeconds: number | null; width: number | null; height: number | null }> {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file)
+      const video = document.createElement('video')
+      const finish = (result: { durationSeconds: number | null; width: number | null; height: number | null }) => {
+        URL.revokeObjectURL(url)
+        resolve(result)
+      }
+      video.preload = 'metadata'
+      video.onloadedmetadata = () => finish({
+        durationSeconds: Number.isFinite(video.duration) ? Math.round(video.duration) : null,
+        width: video.videoWidth || null,
+        height: video.videoHeight || null,
+      })
+      video.onerror = () => finish({ durationSeconds: null, width: null, height: null })
+      video.src = url
+    })
+  }
+
+  async function chooseBackupVideo(file: File | null) {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.webm') && !file.type.includes('webm')) {
+      openAlert('รองรับเฉพาะไฟล์วิดีโอ .webm เท่านั้น')
+      return
+    }
+    const metadata = await inspectBackupVideo(file)
+    setRequeueImport({
+      open: true,
+      file,
+      workOrderName: '',
+      trackingNumber: '',
+      durationSeconds: metadata.durationSeconds,
+      width: metadata.width,
+      height: metadata.height,
+      saving: false,
+      error: '',
+    })
+  }
+
+  async function importBackupVideoToQueue() {
+    const file = requeueImport.file
+    const workOrderName = requeueImport.workOrderName.trim()
+    const trackingNumber = formatParcelNo(requeueImport.trackingNumber)
+    if (!file || !workOrderName || !trackingNumber) {
+      setRequeueImport((current) => ({ ...current, error: 'กรุณาระบุใบงานและเลขพัสดุให้ครบ' }))
+      return
+    }
+    setRequeueImport((current) => ({ ...current, saving: true, error: '' }))
+    try {
+      const { data: order } = await supabase
+        .from('or_orders')
+        .select('id')
+        .eq('work_order_name', workOrderName)
+        .eq('tracking_number', trackingNumber)
+        .limit(1)
+        .maybeSingle()
+      const now = new Date().toISOString()
+      const durationSeconds = requeueImport.durationSeconds
+      const item: UploadQueueItem = {
+        id: crypto.randomUUID(),
+        workOrderName,
+        trackingNumber,
+        orderId: order?.id || '',
+        filename: file.name,
+        storagePath: `work_orders/${workOrderName}/${trackingNumber}/${file.name}`,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        retryCount: 0,
+        lastError: null,
+        durationSeconds,
+        fileType: file.type || 'video/webm',
+        fileSize: file.size,
+        recordedBy: user?.username || user?.email || 'unknown',
+        recordedUserId: user?.id || null,
+        recordedAt: now,
+        deviceId,
+        deviceName,
+        folderName: folderHandle?.name || null,
+        folderPath: folderPath || null,
+        blob: file,
+        localDeleted: false,
+        qualityProfile: 'imported',
+        requestedWidth: null,
+        requestedHeight: null,
+        requestedFps: null,
+        requestedBitrate: null,
+        actualWidth: requeueImport.width,
+        actualHeight: requeueImport.height,
+        actualFps: null,
+        mimeType: file.type || 'video/webm',
+        codec: codecFromMimeType(file.type || 'video/webm'),
+        recorderBitrate: null,
+        actualBitrate: durationSeconds ? Math.round((file.size * 8) / durationSeconds) : null,
+      }
+      await addQueueItem(item)
+      await refreshQueue()
+      await requestQueueProcessing()
+      setRequeueImport((current) => ({ ...current, open: false, file: null, saving: false }))
+      openAlert('นำไฟล์สำรองกลับเข้าคิวแล้ว ระบบกำลังเริ่มอัปโหลด', 'สำเร็จ')
+    } catch (error: any) {
+      setRequeueImport((current) => ({ ...current, saving: false, error: error?.message || 'นำไฟล์กลับเข้าคิวไม่สำเร็จ' }))
+    }
+  }
+
   async function handleParcelScan() {
     if (!currentGroup) return
     const scanValue = parcelScanValue.trim().toUpperCase()
@@ -1947,11 +2220,12 @@ export default function Packing() {
       return false
     }
     try {
+      const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 1280, max: 1280 },
-          height: { ideal: 720, max: 720 },
-          frameRate: { ideal: 24, max: 24 },
+          width: { ideal: profile.width, max: profile.width },
+          height: { ideal: profile.height, max: profile.height },
+          frameRate: { ideal: profile.fps, max: profile.fps },
         },
         audio: false,
       })
@@ -2011,12 +2285,26 @@ export default function Packing() {
 
       const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
+      const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
       const recorder = new MediaRecorder(streamRef.current, {
         mimeType: mimeType || undefined,
-        // 720p/24fps at 1.5 Mbps is sufficient for packing evidence and is
-        // about 70% smaller than the previous 1080p/5 Mbps recording.
-        videoBitsPerSecond: 1_500_000,
+        videoBitsPerSecond: profile.bitrate,
       })
+      const trackSettings = streamRef.current.getVideoTracks()[0]?.getSettings()
+      recordingVideoMetadataRef.current = {
+        qualityProfile: profile.id,
+        requestedWidth: profile.width,
+        requestedHeight: profile.height,
+        requestedFps: profile.fps,
+        requestedBitrate: profile.bitrate,
+        actualWidth: trackSettings?.width ?? null,
+        actualHeight: trackSettings?.height ?? null,
+        actualFps: trackSettings?.frameRate ?? null,
+        mimeType: recorder.mimeType || mimeType || 'video/webm',
+        codec: codecFromMimeType(recorder.mimeType || mimeType || 'video/webm'),
+        recorderBitrate: Number(recorder.videoBitsPerSecond || 0) || null,
+        actualBitrate: null,
+      }
       recorderRef.current = recorder
       recordingChunksRef.current = []
       recordingStartRef.current = Date.now()
@@ -2036,7 +2324,15 @@ export default function Packing() {
         const durationSeconds = recordingStartRef.current
           ? Math.round((Date.now() - recordingStartRef.current) / 1000)
           : null
-        await queueRecording(blob, trackingNumber, durationSeconds || undefined)
+        const videoMetadata = recordingVideoMetadataRef.current
+          ? {
+              ...recordingVideoMetadataRef.current,
+              actualBitrate: durationSeconds && durationSeconds > 0
+                ? Math.round((blob.size * 8) / durationSeconds)
+                : null,
+            }
+          : null
+        await queueRecording(blob, trackingNumber, durationSeconds || undefined, videoMetadata)
         cleanupRecording(true)
         if (stopAdvanceRef.current) {
           stopAdvanceRef.current = false
@@ -2055,6 +2351,7 @@ export default function Packing() {
     recorderRef.current = null
     recordingChunksRef.current = []
     recordingStartRef.current = null
+    recordingVideoMetadataRef.current = null
     if (stopStream) {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop())
@@ -2069,7 +2366,7 @@ export default function Packing() {
     }
   }
 
-  async function queueRecording(blob: Blob, trackingNumber: string, durationSeconds?: number) {
+  async function queueRecording(blob: Blob, trackingNumber: string, durationSeconds?: number, videoMetadata?: RecordingVideoMetadata | null) {
     if (!currentWorkOrderName || !currentGroup) return
     if (!folderHandle) {
       openAlert('ยังไม่ได้เลือกโฟลเดอร์จัดเก็บ กรุณาเลือกโฟลเดอร์ก่อน')
@@ -2130,7 +2427,19 @@ export default function Packing() {
         folderName: folderHandle.name,
         folderPath: folderPath || null,
         blob,
-        localDeleted: localSaveError ? true : false
+        localDeleted: localSaveError ? true : false,
+        qualityProfile: videoMetadata?.qualityProfile ?? videoQualityProfile,
+        requestedWidth: videoMetadata?.requestedWidth ?? null,
+        requestedHeight: videoMetadata?.requestedHeight ?? null,
+        requestedFps: videoMetadata?.requestedFps ?? null,
+        requestedBitrate: videoMetadata?.requestedBitrate ?? null,
+        actualWidth: videoMetadata?.actualWidth ?? null,
+        actualHeight: videoMetadata?.actualHeight ?? null,
+        actualFps: videoMetadata?.actualFps ?? null,
+        mimeType: videoMetadata?.mimeType ?? blob.type ?? null,
+        codec: videoMetadata?.codec ?? codecFromMimeType(blob.type || 'video/webm'),
+        recorderBitrate: videoMetadata?.recorderBitrate ?? null,
+        actualBitrate: videoMetadata?.actualBitrate ?? (durationSeconds ? Math.round((blob.size * 8) / durationSeconds) : null),
       }
       await addQueueItem(item)
       await refreshQueue()
@@ -2180,12 +2489,18 @@ export default function Packing() {
 
   const uploadReportDevices = useMemo(() => {
     const devices = new Map<string, string>()
+    packingDevices.forEach((device) => devices.set(device.device_id, device.device_name || 'ไม่ระบุชื่อเครื่อง'))
     uploadReportRows.forEach((row) => {
       if (!devices.has(row.device_id)) devices.set(row.device_id, row.device_name || 'ไม่ระบุชื่อเครื่อง')
     })
     return Array.from(devices, ([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name, 'th', { numeric: true }))
-  }, [uploadReportRows])
+  }, [packingDevices, uploadReportRows])
+
+  const packingDeviceById = useMemo(
+    () => new Map(packingDevices.map((device) => [device.device_id, device])),
+    [packingDevices],
+  )
 
   const filteredUploadReportRows = useMemo(() => {
     const term = uploadReportSearch.trim().toLowerCase()
@@ -2209,6 +2524,11 @@ export default function Packing() {
     success: filteredUploadReportRows.filter((row) => row.status === 'success').length,
     failed: filteredUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
   }), [filteredUploadReportRows])
+
+  const reportDeviceSummary = useMemo(() => ({
+    online: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS).length,
+    offline: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() >= DEVICE_ONLINE_MS).length,
+  }), [packingDevices])
 
   if (loading) {
     return (
@@ -2699,26 +3019,41 @@ export default function Packing() {
                 <UploadStatusCard label="มีปัญหา/ค้าง" value={reportStatusSummary.failed} className="border-red-200 bg-red-50 text-red-800" />
               </div>
 
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm">
+                <span className="font-semibold text-gray-800">สถานะเครื่อง:</span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" /> ออนไลน์ {reportDeviceSummary.online}
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600">
+                  <span className="h-2 w-2 rounded-full bg-gray-400" /> ออฟไลน์ {reportDeviceSummary.offline}
+                </span>
+                <span className="text-xs text-gray-500">ออนไลน์ = ติดต่อระบบภายใน 2 นาทีล่าสุด</span>
+              </div>
+
               {uploadReportLoading ? (
                 <div className="py-12 text-center text-gray-500">กำลังโหลดรายงาน...</div>
               ) : filteredUploadReportRows.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">ยังไม่มีข้อมูลคิวอัปโหลด</div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-                  <table className="w-full min-w-[1180px] text-sm">
+                  <table className="w-full min-w-[1700px] text-sm">
                     <thead className="bg-blue-600 text-white">
                       <tr>
                         <th className="px-3 py-3 text-left">เวลาบันทึก</th>
                         <th className="px-3 py-3 text-left">User</th>
                         <th className="px-3 py-3 text-left">เครื่อง / โฟลเดอร์</th>
                         <th className="px-3 py-3 text-left">ใบงาน / เลขพัสดุ</th>
+                        <th className="px-3 py-3 text-right">ระยะเวลา</th>
                         <th className="px-3 py-3 text-right">ขนาดไฟล์</th>
+                        <th className="px-3 py-3 text-left">ข้อมูลวิดีโอ</th>
                         <th className="px-3 py-3 text-center">สถานะ</th>
-                        <th className="px-3 py-3 text-left">อัปเดตล่าสุด</th>
+                        <th className="px-3 py-3 text-left">อัปเดตล่าสุด / วิธีแก้ไข</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredUploadReportRows.map((row, index) => {
+                        const device = packingDeviceById.get(row.device_id)
+                        const deviceOnline = Boolean(device && Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS)
                         const stale = isStaleQueueTimestamp(row.status, row.reported_at)
                         const statusLabel = stale
                           ? 'ค้าง/ขาดการติดต่อ'
@@ -2745,12 +3080,37 @@ export default function Packing() {
                               <div className="max-w-[320px] truncate text-xs text-gray-500" title={row.folder_path || row.folder_name || '-'}>
                                 {row.folder_path || row.folder_name || 'ไม่ระบุตำแหน่ง'}
                               </div>
+                              <div className={`mt-1 text-xs font-medium ${deviceOnline ? 'text-emerald-600' : 'text-gray-500'}`}>
+                                {deviceOnline ? '● ออนไลน์' : '● ออฟไลน์'}
+                                {device?.last_seen_at ? ` · ล่าสุด ${new Date(device.last_seen_at).toLocaleString('th-TH')}` : ' · ยังไม่มี heartbeat'}
+                              </div>
                             </td>
                             <td className="px-3 py-3">
                               <div className="font-medium">{row.work_order_name}</div>
                               <div className="text-xs text-gray-500">{formatParcelNo(row.tracking_number)}</div>
                             </td>
-                            <td className="whitespace-nowrap px-3 py-3 text-right font-medium tabular-nums">{formatFileSize(row.file_size_bytes)}</td>
+                            <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{formatDuration(row.duration_seconds)}</td>
+                            <td className="whitespace-nowrap px-3 py-3 text-right font-medium tabular-nums">
+                              <div>{formatFileSize(row.file_size_bytes)}</div>
+                              <div className="mt-1 text-xs font-normal text-gray-500">
+                                {megabytesPerMinute(row.file_size_bytes, row.duration_seconds)?.toLocaleString('th-TH', { maximumFractionDigits: 2 }) ?? '-'} MB/นาที
+                              </div>
+                            </td>
+                            <td className="px-3 py-3 text-xs text-gray-600">
+                              <div className="font-medium text-gray-900">
+                                {row.quality_profile === 'imported'
+                                  ? 'ไฟล์นำกลับเข้าคิว'
+                                  : row.quality_profile && VIDEO_QUALITY_PROFILES[row.quality_profile]
+                                    ? VIDEO_QUALITY_PROFILES[row.quality_profile].label
+                                    : 'ข้อมูลเดิม'}
+                              </div>
+                              <div>
+                                จริง: {row.actual_width && row.actual_height ? `${row.actual_width}×${row.actual_height}` : '-'}
+                                {row.actual_fps ? ` · ${Number(row.actual_fps).toLocaleString('th-TH', { maximumFractionDigits: 1 })} FPS` : ''}
+                                {row.codec ? ` · ${row.codec}` : ''}
+                              </div>
+                              <div>Bitrate ขอ/Recorder/จริง: {formatBitrate(row.requested_bitrate)} / {formatBitrate(row.recorder_bitrate)} / {formatBitrate(row.actual_bitrate)}</div>
+                            </td>
                             <td className="px-3 py-3 text-center">
                               <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass}`}>{statusLabel}</span>
                               {row.retry_count > 0 && <div className="mt-1 text-[11px] text-gray-500">ลองใหม่ {row.retry_count} ครั้ง</div>}
@@ -2758,6 +3118,11 @@ export default function Packing() {
                             <td className="px-3 py-3">
                               <div className="whitespace-nowrap">{new Date(row.reported_at).toLocaleString('th-TH')}</div>
                               {row.last_error && <div className="max-w-[260px] truncate text-xs text-red-600" title={row.last_error}>{row.last_error}</div>}
+                              {(stale || row.status === 'failed') && (
+                                <div className="mt-1 max-w-[340px] text-xs leading-5 text-amber-700">
+                                  💡 {uploadRecoveryAdvice(row, deviceOnline)}
+                                </div>
+                              )}
                             </td>
                           </tr>
                         )
@@ -2781,6 +3146,18 @@ export default function Packing() {
                     placeholder="เช่น เครื่องแพ็ค 1"
                   />
                   <span className="text-xs text-gray-400">ใช้แยกเครื่องในหน้ารายงาน</span>
+                  <label htmlFor="packing-video-quality" className="ml-2 font-medium text-gray-700">คุณภาพวิดีโอ:</label>
+                  <select
+                    id="packing-video-quality"
+                    value={videoQualityProfile}
+                    onChange={(event) => void changeVideoQualityProfile(event.target.value as VideoQualityProfileId)}
+                    disabled={recordingState.status === 'recording'}
+                    className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2 disabled:opacity-50"
+                  >
+                    {Object.values(VIDEO_QUALITY_PROFILES).map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.label} — {profile.description}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <button
@@ -2793,6 +3170,23 @@ export default function Packing() {
                     โฟลเดอร์ปัจจุบัน:{' '}
                     <span className="font-semibold">{folderHandle?.name || 'ยังไม่ได้เลือก'}</span>
                   </div>
+                  <input
+                    ref={requeueFileInputRef}
+                    type="file"
+                    accept="video/webm,.webm"
+                    className="hidden"
+                    onChange={(event) => {
+                      void chooseBackupVideo(event.target.files?.[0] || null)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => requeueFileInputRef.current?.click()}
+                    className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 hover:bg-violet-100"
+                  >
+                    นำไฟล์ .webm กลับเข้าคิว
+                  </button>
                   {folderHandle ? (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
                       เชื่อมต่ออยู่
@@ -3567,6 +3961,64 @@ export default function Packing() {
               onClick={() => saveFolderPath(pathModal.value)}
             >
               บันทึก
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={requeueImport.open}
+        onClose={() => { if (!requeueImport.saving) setRequeueImport((current) => ({ ...current, open: false, file: null })) }}
+        contentClassName="max-w-lg"
+        closeOnBackdropClick={!requeueImport.saving}
+      >
+        <div className="space-y-4 p-5">
+          <div>
+            <h3 className="text-lg font-semibold">นำไฟล์ .webm สำรองกลับเข้าคิว</h3>
+            <p className="mt-1 text-sm text-gray-500">ไฟล์จะถูกเก็บในคิวของ Chrome เครื่องนี้และอัปโหลดตามปกติ</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
+            <div className="font-medium text-gray-900">{requeueImport.file?.name || '-'}</div>
+            <div className="mt-1 text-xs text-gray-500">
+              {formatFileSize(requeueImport.file?.size)} · {formatDuration(requeueImport.durationSeconds)} ·{' '}
+              {requeueImport.width && requeueImport.height ? `${requeueImport.width}×${requeueImport.height}` : 'ไม่ทราบความละเอียด'}
+            </div>
+          </div>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-gray-700">ใบงาน *</span>
+            <input
+              value={requeueImport.workOrderName}
+              onChange={(event) => setRequeueImport((current) => ({ ...current, workOrderName: event.target.value, error: '' }))}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2"
+              placeholder="เช่น SPTR-270869-R1"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-gray-700">เลขพัสดุ *</span>
+            <input
+              value={requeueImport.trackingNumber}
+              onChange={(event) => setRequeueImport((current) => ({ ...current, trackingNumber: event.target.value, error: '' }))}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2"
+              placeholder="กรอกหรือสแกนเลขพัสดุ"
+            />
+          </label>
+          {requeueImport.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{requeueImport.error}</p>}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              disabled={requeueImport.saving}
+              onClick={() => setRequeueImport((current) => ({ ...current, open: false, file: null }))}
+              className="rounded-lg bg-gray-200 px-4 py-2 text-sm hover:bg-gray-300 disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="button"
+              disabled={requeueImport.saving}
+              onClick={() => void importBackupVideoToQueue()}
+              className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {requeueImport.saving ? 'กำลังนำเข้าคิว...' : 'นำกลับเข้าคิวและอัปโหลด'}
             </button>
           </div>
         </div>

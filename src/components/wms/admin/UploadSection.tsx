@@ -19,24 +19,33 @@ export default function UploadSection() {
   const [cancelledByWorkOrder, setCancelledByWorkOrder] = useState<Record<string, CancelledBillSummary[]>>({})
   const [cancelledModal, setCancelledModal] = useState<{ workOrderId: string; displayName: string } | null>(null)
   const [tick, setTick] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadRequestRef = useRef(0)
   // เก็บเวลาล่าสุดสำหรับแต่ละ order เพื่อ freeze เมื่อ COMPLETED
   const durationCacheRef = useRef<Record<string, string>>({})
 
   useEffect(() => {
     loadUsers()
-    loadOrdersDashboard()
+    const scheduleReload = () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = setTimeout(() => {
+        void loadOrdersDashboard()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      }, 300)
+    }
 
     const channel = supabase
       .channel('wms-upload-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'wms_orders' }, () => {
-        loadOrdersDashboard()
-        window.dispatchEvent(new Event('wms-data-changed'))
+        scheduleReload()
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => loadOrdersDashboard())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, () => loadOrdersDashboard())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, scheduleReload)
       .subscribe()
 
     return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       supabase.removeChannel(channel)
     }
   }, [])
@@ -52,15 +61,20 @@ export default function UploadSection() {
     }
   }, [filterDateStart, filterDateEnd, filterUser])
 
-  const loadUsers = async () => {
+  async function loadUsers() {
     const { data } = await supabase.from('us_users').select('id, username, role').order('username')
     if (data) {
       setUsers(data as UserRow[])
     }
   }
 
-  const loadOrdersDashboard = async () => {
-    let q = supabase.from('wms_orders').select('*, us_users(username)').or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+  async function loadOrdersDashboard() {
+    const requestId = ++loadRequestRef.current
+    setLoading(true)
+    let q = supabase
+      .from('wms_orders')
+      .select('id, work_order_id, order_id, assigned_to, created_at, end_time, status, product_code, product_name, location, qty, us_users(username)')
+      .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (filterDateStart) {
       q = q.gte('created_at', filterDateStart + 'T00:00:00')
@@ -73,7 +87,8 @@ export default function UploadSection() {
     }
 
     const { data } = await q.order('created_at', { ascending: false })
-    if (!data) return
+    if (requestId !== loadRequestRef.current) return
+    if (!data) { setLoading(false); return }
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {
       const woId = (obj.work_order_id as string | null | undefined) ?? null
@@ -148,9 +163,11 @@ export default function UploadSection() {
         })
       })
     }
-    setCancelledByWorkOrder(nextCancelledByWo)
-
-    setOrders(Object.values(grouped))
+    if (requestId === loadRequestRef.current) {
+      setCancelledByWorkOrder(nextCancelledByWo)
+      setOrders(Object.values(grouped))
+      setLoading(false)
+    }
   }
 
   const openDetailModal = (workOrderId: string | null, displayName: string) => {
@@ -200,7 +217,9 @@ export default function UploadSection() {
               </button>
             </div>
           </div>
-          <div className="overflow-x-auto">
+          {loading ? (
+            <div className="py-16 text-center text-gray-400"><i className="fas fa-spinner fa-spin text-2xl" /> <span className="ml-2">กำลังโหลดรายการ...</span></div>
+          ) : <div className="overflow-x-auto">
           <table className="w-full min-w-[1200px] table-fixed text-left text-sm" data-tick={tick}>
             <colgroup>
               <col className="w-[22%]" />
@@ -308,7 +327,7 @@ export default function UploadSection() {
               })}
             </tbody>
           </table>
-          </div>
+          </div>}
         </div>
       </section>
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { HRCompany } from '../../types'
-import { deleteHRCompanyAsset, fetchHRCompanies, uploadHRCompanyPng, upsertHRCompany } from '../../lib/payrollApi'
+import { deleteHRCompanyAsset, fetchHRCompanies, reorderHRCompanies, uploadHRCompanyPng, upsertHRCompany } from '../../lib/payrollApi'
 
 const emptyCompany = (): Partial<HRCompany> => ({
   company_key: '', name_th: '', name_en: '', address: '', tax_id: '', branch: 'สำนักงานใหญ่',
@@ -14,6 +14,8 @@ export default function CompanySettings() {
   const [message, setMessage] = useState('')
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [signatureFile, setSignatureFile] = useState<File | null>(null)
+  const [draggedCompanyId, setDraggedCompanyId] = useState<string | null>(null)
+  const [dragOverCompanyId, setDragOverCompanyId] = useState<string | null>(null)
   const logoPreview = useMemo(() => logoFile ? URL.createObjectURL(logoFile) : form.logo_url || '', [logoFile, form.logo_url])
   const signaturePreview = useMemo(() => signatureFile ? URL.createObjectURL(signatureFile) : form.signature_url || '', [signatureFile, form.signature_url])
   useEffect(() => () => { if (logoFile && logoPreview) URL.revokeObjectURL(logoPreview) }, [logoFile, logoPreview])
@@ -31,7 +33,7 @@ export default function CompanySettings() {
         logoFile ? uploadHRCompanyPng(companyKey, 'logo', logoFile) : Promise.resolve(form.logo_url || null),
         signatureFile ? uploadHRCompanyPng(companyKey, 'signature', signatureFile) : Promise.resolve(form.signature_url || null),
       ])
-      await upsertHRCompany({ ...form, company_key: companyKey, name_th: form.name_th.trim(), logo_url: logoUrl, signature_url: signatureUrl })
+      await upsertHRCompany({ ...form, company_key: companyKey, name_th: form.name_th.trim(), logo_url: logoUrl, signature_url: signatureUrl, sort_order: form.id ? form.sort_order : companies.length + 1 })
       setMessage('บันทึกรายละเอียดบริษัทเรียบร้อย')
       setForm(emptyCompany())
       setLogoFile(null)
@@ -77,17 +79,52 @@ export default function CompanySettings() {
       setSaving(false)
     }
   }
+  const dropCompany = async (targetCompanyId: string) => {
+    const sourceCompanyId = draggedCompanyId
+    setDraggedCompanyId(null)
+    setDragOverCompanyId(null)
+    if (!sourceCompanyId || sourceCompanyId === targetCompanyId) return
+    const previous = companies
+    const sourceIndex = previous.findIndex((company) => company.id === sourceCompanyId)
+    const targetIndex = previous.findIndex((company) => company.id === targetCompanyId)
+    if (sourceIndex < 0 || targetIndex < 0) return
+    const next = [...previous]
+    const [moved] = next.splice(sourceIndex, 1)
+    next.splice(targetIndex, 0, moved)
+    const ordered = next.map((company, index) => ({ ...company, sort_order: index + 1 }))
+    setCompanies(ordered)
+    setMessage('กำลังบันทึกลำดับบริษัท...')
+    try {
+      await reorderHRCompanies(ordered.map((company) => company.id))
+      setMessage('บันทึกลำดับบริษัทเรียบร้อย')
+    } catch (e) {
+      setCompanies(previous)
+      setMessage(e instanceof Error ? e.message : 'บันทึกลำดับบริษัทไม่สำเร็จ')
+    }
+  }
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_460px]">
       <div className="rounded-xl border border-surface-200 bg-white overflow-hidden">
         <div className="px-4 py-3 bg-surface-50 border-b font-semibold">รายละเอียดบริษัทสำหรับระบบเงินเดือน</div>
         <div className="divide-y">
           {companies.map((company) => (
-            <button key={company.id} type="button" onClick={() => chooseCompany(company)} className="w-full p-4 text-left hover:bg-emerald-50 flex gap-3 items-start">
+            <div
+              key={company.id}
+              draggable
+              onDragStart={(event) => { setDraggedCompanyId(company.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', company.id) }}
+              onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDragOverCompanyId(company.id) }}
+              onDragLeave={() => setDragOverCompanyId((id) => id === company.id ? null : id)}
+              onDrop={(event) => { event.preventDefault(); void dropCompany(company.id) }}
+              onDragEnd={() => { setDraggedCompanyId(null); setDragOverCompanyId(null) }}
+              className={`flex items-stretch transition-colors ${dragOverCompanyId === company.id && draggedCompanyId !== company.id ? 'bg-emerald-50 ring-2 ring-inset ring-emerald-400' : ''}`}
+            >
+              <div className="flex w-10 shrink-0 cursor-grab items-center justify-center text-xl text-gray-400 active:cursor-grabbing" title="ลากเพื่อสลับลำดับ" aria-label="ลากเพื่อสลับลำดับ">⠿</div>
+              <button type="button" onClick={() => chooseCompany(company)} className="flex min-w-0 flex-1 gap-3 p-4 pl-0 text-left hover:bg-emerald-50 items-start">
               {company.logo_url ? <img src={company.logo_url} alt="" className="h-14 w-20 object-contain rounded border bg-white" /> : <div className="h-14 w-20 rounded bg-surface-100 flex items-center justify-center text-xs text-gray-400">LOGO</div>}
               <div className="min-w-0"><div className="font-semibold">{company.name_th}</div><div className="text-sm text-gray-500">{company.name_en || '-'}</div><div className="text-xs text-gray-500 mt-1">เลขผู้เสียภาษี {company.tax_id || '-'} · {company.phone || '-'}</div></div>
               <span className={`ml-auto text-xs rounded-full px-2 py-1 ${company.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>{company.is_active ? 'ใช้งาน' : 'ปิดใช้งาน'}</span>
-            </button>
+              </button>
+            </div>
           ))}
         </div>
       </div>

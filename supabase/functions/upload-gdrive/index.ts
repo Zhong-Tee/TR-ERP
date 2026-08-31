@@ -277,6 +277,18 @@ serve(async (req: Request) => {
         file_size_bytes: Number.isFinite(fileSizeBytes) ? fileSizeBytes : file.size,
         device_id: meta.device_id ?? null,
         device_name: meta.device_name ?? null,
+        quality_profile: meta.quality_profile ?? null,
+        requested_width: meta.requested_width ?? null,
+        requested_height: meta.requested_height ?? null,
+        requested_fps: meta.requested_fps ?? null,
+        requested_bitrate: meta.requested_bitrate ?? null,
+        actual_width: meta.actual_width ?? null,
+        actual_height: meta.actual_height ?? null,
+        actual_fps: meta.actual_fps ?? null,
+        mime_type: meta.mime_type ?? file.type ?? null,
+        codec: meta.codec ?? null,
+        recorder_bitrate: meta.recorder_bitrate ?? null,
+        actual_bitrate: meta.actual_bitrate ?? null,
       })
 
     if (insertError) {

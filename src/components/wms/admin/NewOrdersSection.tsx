@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
@@ -42,6 +42,8 @@ export default function NewOrdersSection() {
   const [activeBillCountByWo, setActiveBillCountByWo] = useState<Record<string, number>>({})
   /** กำหนดส่งของบิลในใบงาน (บิลจากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
   const [dueBillsByWo, setDueBillsByWo] = useState<Record<string, DueBillInfo[]>>({})
+  const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadRequestRef = useRef(0)
   const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
   const ensurePlanDeptStart = async (workOrderId: string) => {
@@ -56,30 +58,34 @@ export default function NewOrdersSection() {
   }
 
   useEffect(() => {
-    loadWorkOrders()
-    loadPickers()
+    void Promise.all([loadWorkOrders(), loadPickers()])
+    const scheduleReload = () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
+      reloadTimerRef.current = setTimeout(() => {
+        void loadWorkOrders()
+        window.dispatchEvent(new Event('wms-data-changed'))
+      }, 300)
+    }
     const woChannel = supabase
       .channel('wms-new-workorders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
-        loadWorkOrders()
-        window.dispatchEvent(new Event('wms-data-changed'))
+        scheduleReload()
       })
       .subscribe()
     const ordersChannel = supabase
       .channel('wms-new-workorders-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadWorkOrders()
-        window.dispatchEvent(new Event('wms-data-changed'))
+        scheduleReload()
       })
       .subscribe()
     const wmsChannel = supabase
       .channel('wms-new-workorders-wms')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'wms_orders' }, () => {
-        loadWorkOrders()
-        window.dispatchEvent(new Event('wms-data-changed'))
+        scheduleReload()
       })
       .subscribe()
     return () => {
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       supabase.removeChannel(woChannel)
       supabase.removeChannel(ordersChannel)
       supabase.removeChannel(wmsChannel)
@@ -87,22 +93,26 @@ export default function NewOrdersSection() {
   }, [])
 
   const loadWorkOrders = async () => {
+    const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
-      const { data } = await supabase
-        .from('or_work_orders')
-        .select('id, work_order_name, order_count, created_at, plan_wo_modified')
-        .eq('status', 'กำลังผลิต')
-        .order('created_at', { ascending: false })
+      const [{ data }, assignedNames] = await Promise.all([
+        supabase
+          .from('or_work_orders')
+          .select('id, work_order_name, order_count, created_at, plan_wo_modified')
+          .eq('status', 'กำลังผลิต')
+          .order('created_at', { ascending: false }),
+        fetchWorkOrderNamesWithWmsAssigned(),
+      ])
 
       if (!data || data.length === 0) {
+        if (requestId !== loadRequestRef.current) return
         setWorkOrders([])
         setActiveBillCountByWo({})
         return
       }
 
       const deduped = dedupeWorkOrdersByName(data)
-      const assignedNames = await fetchWorkOrderNamesWithWmsAssigned()
       const unassigned = deduped.filter((wo) => !assignedNames.has(wo.work_order_name))
 
       let finalList: Array<{
@@ -181,11 +191,12 @@ export default function NewOrdersSection() {
           }
         }
       }
+      if (requestId !== loadRequestRef.current) return
       setActiveBillCountByWo(counts)
       setDueBillsByWo(dueMap)
       setWorkOrders(finalList)
     } finally {
-      setLoading(false)
+      if (requestId === loadRequestRef.current) setLoading(false)
     }
   }
 

@@ -335,7 +335,6 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   const warehouseTabs = [
     { path: '/warehouse/sub', label: 'คลังย่อย' },
     { path: '/warehouse', label: 'คลังสินค้า' },
-    { path: '/warehouse/requisition-approval', label: 'อนุมัติใบเบิก' },
     { path: '/warehouse/audit', label: 'Audit' },
     { path: '/warehouse/adjust', label: 'ปรับสต๊อค' },
     { path: '/warehouse/returns', label: 'รับสินค้าตีกลับ' },

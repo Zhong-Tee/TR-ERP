@@ -33,6 +33,8 @@ type Tab =
   | 'shipped'
   | 'cancelled'
 
+type FailureArchiveFilter = 'active' | 'archived' | 'all'
+
 const ALL_TABS: Tab[] = ['all', 'create', 'claim-req', 'waiting', 'data-error', 'complete', 'verified', 'refund-return', 'confirm', 'shipped', 'cancelled', 'issue']
 
 /** แท็บที่ sales-tr มี dropdown + ปุ่มเฉพาะฉัน กรอง admin_user */
@@ -77,6 +79,7 @@ export default function Orders() {
   const [tabStatusFilter, setTabStatusFilter] = useState<OrderStatus | ''>('จัดส่งแล้ว')
   const [waitingCount, setWaitingCount] = useState(0)
   const [completeCount, setCompleteCount] = useState(0)
+  const [failureArchiveFilter, setFailureArchiveFilter] = useState<FailureArchiveFilter>('active')
   const [verifiedCount, setVerifiedCount] = useState(0)
   const [refundReturnCount, setRefundReturnCount] = useState(0)
   const [dataErrorCount, setDataErrorCount] = useState(0)
@@ -263,7 +266,9 @@ export default function Orders() {
       
       // Load complete count (รวม ตรวจสอบไม่ผ่าน และ ตรวจสอบไม่สำเร็จ)
       const { count: completeStatusCount } = await applyOwnerFilter(
-        supabase.from('or_orders').select('id', { count: 'exact', head: true }).in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
+        supabase.from('or_orders').select('id', { count: 'exact', head: true })
+          .in('status', ['ตรวจสอบไม่ผ่าน', 'ตรวจสอบไม่สำเร็จ'])
+          .is('failed_queue_archived_at', null)
       )
 
       // นับเพิ่ม: บิลที่รายการโอนคืน/ตรวจสลิปมือ ล่าสุดถูกปฏิเสธ (แสดงรวมในแท็บตรวจสอบไม่ผ่าน โดยไม่เปลี่ยนสถานะบิล)
@@ -279,6 +284,7 @@ export default function Orders() {
             supabase.from('or_orders').select('id', { count: 'exact', head: true })
               .in('id', rejectedIds)
               .not('status', 'in', '("ตรวจสอบไม่ผ่าน","ตรวจสอบไม่สำเร็จ","ยกเลิก")')
+              .is('failed_queue_archived_at', null)
           )
           rejectedExtraCount = count ?? 0
         }
@@ -712,6 +718,18 @@ export default function Orders() {
                   ))}
                 </select>
               )}
+              {activeTab === 'complete' && (
+                <select
+                  value={failureArchiveFilter}
+                  onChange={(e) => setFailureArchiveFilter(e.target.value as FailureArchiveFilter)}
+                  className="px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 bg-surface-50 text-base"
+                  aria-label="กรองรายการที่เก็บเข้าประวัติ"
+                >
+                  <option value="active">กำลังดำเนินการ</option>
+                  <option value="archived">เก็บเข้าประวัติแล้ว</option>
+                  <option value="all">ทั้งหมด</option>
+                </select>
+              )}
               {activeTab === 'all' && (
                 <>
                   <select
@@ -867,9 +885,11 @@ export default function Orders() {
             adminUserFilter={adminUserFilter}
             onOrderClick={handleOrderClick}
             showBillingStatus={true}
-            onCountChange={suppressSalesTrListCountSync ? undefined : setCompleteCount}
             showMoveToWaitingButton={true}
             onMoveToWaiting={handleMoveToWaiting}
+            enableFailureArchive={true}
+            failureArchiveFilter={failureArchiveFilter}
+            onFailureArchiveChange={refreshCounts}
             refreshTrigger={listRefreshKey}
             useDetailViewOnClick={true}
             {...salesTrOrderListProps}
