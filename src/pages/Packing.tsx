@@ -457,6 +457,7 @@ export default function Packing() {
   const queueSignatureRef = useRef('')
   const shouldPollQueueRef = useRef(true)
   const [queueLoading, setQueueLoading] = useState(false)
+  const [clearingQueue, setClearingQueue] = useState(false)
   const [uploadReportRows, setUploadReportRows] = useState<PackingUploadReportRow[]>([])
   const [uploadReportLoading, setUploadReportLoading] = useState(false)
   const [uploadReportSearch, setUploadReportSearch] = useState('')
@@ -854,6 +855,54 @@ export default function Packing() {
     const regAny = reg as ServiceWorkerRegistration & { sync?: { register: (tag: string) => Promise<void> } }
     if (regAny.sync?.register) await regAny.sync.register('packing-upload')
     regAny.active?.postMessage({ type: 'sync-now' })
+  }
+
+  // ปุ่มชั่วคราวสำหรับล้างคิวเก่าที่เก็บใน IndexedDB และไฟล์สำรองของ Chrome เครื่องนี้
+  async function clearAllLocalQueueItems() {
+    if (clearingQueue) return
+    setClearingQueue(true)
+    try {
+      const items = await listQueueItems()
+      if (!folderHandle || !(await isFolderHandleUsable(folderHandle))) {
+        throw new Error('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์ .webm ได้ครบ')
+      }
+
+      const filenames = Array.from(new Set(
+        items
+          .filter((item) => !item.localDeleted && item.filename)
+          .map((item) => item.filename),
+      ))
+      let deletedFileCount = 0
+      const deleteErrors: string[] = []
+      for (const filename of filenames) {
+        try {
+          await folderHandle.removeEntry(filename)
+          deletedFileCount += 1
+        } catch (error: any) {
+          // ไฟล์ที่ไม่พบถือว่าถูกลบไปแล้ว จึงไม่ต้องขวางการล้างคิว
+          if (error?.name !== 'NotFoundError') {
+            deleteErrors.push(`${filename}: ${describeFolderError(error)}`)
+          }
+        }
+      }
+      if (deleteErrors.length > 0) {
+        throw new Error(`ลบไฟล์สำรองไม่สำเร็จ ${deleteErrors.length.toLocaleString('th-TH')} ไฟล์\n${deleteErrors.slice(0, 3).join('\n')}`)
+      }
+
+      for (const item of items) {
+        await deleteQueueItem(item.id)
+      }
+      queueSignatureRef.current = ''
+      await refreshQueue()
+      openAlert(
+        `ล้างคิวในเครื่องนี้เรียบร้อย ${items.length.toLocaleString('th-TH')} รายการ\nลบไฟล์ .webm สำรองแล้ว ${deletedFileCount.toLocaleString('th-TH')} ไฟล์`,
+        'ล้างคิวสำเร็จ',
+      )
+    } catch (error: any) {
+      openAlert(`ล้างคิวไม่สำเร็จ: ${error?.message || error}`, 'เกิดข้อผิดพลาด')
+    } finally {
+      setClearingQueue(false)
+    }
   }
 
   async function syncQueueReports(items: UploadQueueItem[]) {
@@ -3228,8 +3277,8 @@ export default function Packing() {
                 <div className="text-center py-6 text-gray-500">ไม่มีคิวอัปโหลด</div>
               ) : (
                 <>
-                {queueItems.some((i) => i.status === 'success' && i.localDeleted) && (
-                  <div className="flex justify-end">
+                  <div className="flex flex-wrap justify-end gap-2">
+                  {queueItems.some((i) => i.status === 'success' && i.localDeleted) && (
                     <button
                       className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm"
                       onClick={async () => {
@@ -3242,8 +3291,28 @@ export default function Packing() {
                     >
                       ลบรายการที่ลบไฟล์แล้วทั้งหมด ({queueItems.filter((i) => i.status === 'success' && i.localDeleted).length})
                     </button>
+                  )}
+                    <button
+                      type="button"
+                      disabled={clearingQueue}
+                      className="px-4 py-2 text-sm bg-red-700 text-white rounded-lg hover:bg-red-800 font-semibold shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => {
+                        if (!folderHandle) {
+                          openAlert('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์ .webm ได้ครบ')
+                          return
+                        }
+                        openConfirm(
+                          `ต้องการลบคิวทั้งหมดใน Chrome เครื่องนี้จำนวน ${queueItems.length.toLocaleString('th-TH')} รายการหรือไม่?\n\nระบบจะลบรายการรอคิว กำลังอัปโหลด ล้มเหลว และสำเร็จออกจาก IndexedDB พร้อมลบไฟล์ .webm ที่อ้างอิงอยู่ในโฟลเดอร์ที่เชื่อมต่อ การทำรายการนี้ย้อนกลับไม่ได้`,
+                          () => void clearAllLocalQueueItems(),
+                          'ล้างคิวและไฟล์วิดีโอทั้งหมด',
+                          'ยืนยันลบทั้งหมด',
+                          'ยกเลิก',
+                        )
+                      }}
+                    >
+                      {clearingQueue ? 'กำลังล้างคิว...' : 'ล้างคิวทั้งหมด (ชั่วคราว)'}
+                    </button>
                   </div>
-                )}
                 <div className="space-y-2">
                   {queueItems.map((item) => {
                     const isSuccess = item.status === 'success'

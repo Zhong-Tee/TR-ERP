@@ -842,7 +842,7 @@ export default function PurchasePR({ fixedPrType, hideCreate = false }: { fixedP
         <div className="fixed right-0 bottom-0 z-50 flex flex-col bg-white" style={{ left: 'var(--content-offset-left, 16rem)', top: 'calc(4rem + var(--subnav-height, 0rem))' }} role="dialog" aria-modal="true">
           <ModalCloseButton onClick={closeCreate} className="absolute right-4 top-4 z-20" />
           {/* Supplier selector + Search + Filters */}
-          <div className="px-6 pt-5 pb-3 border-b bg-gray-50 shrink-0 space-y-2">
+          <div className="pl-6 pr-20 pt-5 pb-3 border-b bg-gray-50 shrink-0 space-y-2">
             <div className="flex gap-3 items-center">
               <select
                 value={selectedSupplierId}
