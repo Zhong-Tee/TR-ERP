@@ -51,6 +51,8 @@ const TRANSACTIONAL_TABLES = [
   'inv_stock_balance_history',
   'inv_pr_items',
   'inv_po_items',
+  'inv_po_cost_correction_items',
+  'inv_po_cost_corrections',
   'inv_gr_items',
   'inv_audit_count_logs',
   'inv_adjustment_items',
@@ -131,6 +133,22 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
+}
+
+function formatErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) return error.message
+  if (error && typeof error === 'object') {
+    const value = error as Record<string, unknown>
+    const parts = [value.message, value.details, value.hint, value.code]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    if (parts.length > 0) return Array.from(new Set(parts)).join(' | ')
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return 'Unknown object error'
+    }
+  }
+  return typeof error === 'string' ? error : String(error)
 }
 
 async function countTable(supabaseAdmin: ReturnType<typeof createClient>, tableName: string) {
@@ -634,7 +652,7 @@ serve(async (req: Request) => {
       warning: manifest.note,
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = formatErrorMessage(error)
     return jsonResponse({ success: false, error: message })
   }
 })
