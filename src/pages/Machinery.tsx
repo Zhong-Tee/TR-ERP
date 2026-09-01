@@ -153,6 +153,7 @@ export default function Machinery() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [savingGroupType, setSavingGroupType] = useState<string | null>(null)
   const [myPendingPurchaseCount, setMyPendingPurchaseCount] = useState(0)
   const [grantedInspectionMachineIds, setGrantedInspectionMachineIds] = useState<string[]>([])
 
@@ -697,6 +698,47 @@ export default function Machinery() {
     }
   }
 
+  const onGroupPowerChange = async (machineType: string, turnOn: boolean) => {
+    if (!canToggleMachinePower || savingGroupType) return
+    const groupMachines = machines.filter((machine) => (machine.machine_type || 'ทั่วไป') === machineType)
+    const targets = groupMachines.filter((machine) => turnOn
+      ? machine.current_status === 'power_off'
+      : machine.current_status === 'working' || machine.current_status === 'idle')
+    if (targets.length === 0) return
+    const protectedCount = groupMachines.length - groupMachines.filter((machine) =>
+      machine.current_status === 'working' || machine.current_status === 'idle' || machine.current_status === 'power_off',
+    ).length
+    const actionLabel = turnOn ? 'เปิด' : 'ปิด'
+    const confirmed = await showConfirm({
+      title: `ยืนยัน${actionLabel}เครื่องทั้งกลุ่ม`,
+      message: `${actionLabel}เครื่องในกลุ่ม “${machineType}” จำนวน ${targets.length} เครื่องหรือไม่?${protectedCount > 0 ? `\nเครื่องเสีย/กำลังซ่อม/หยุดใช้งาน ${protectedCount} เครื่องจะไม่ถูกเปลี่ยนสถานะ` : ''}`,
+      confirmText: `${actionLabel}เครื่อง ${targets.length} เครื่อง`,
+      cancelText: 'ยกเลิก',
+    })
+    if (!confirmed) return
+
+    setSavingGroupType(machineType)
+    setError(null)
+    try {
+      const results = await Promise.allSettled(targets.map((machine) => {
+        const nextStatus: PrMachineryStatus = turnOn
+          ? ((machineProductionToday.get(machine.id) || 0) > 0 ? 'working' : 'idle')
+          : 'power_off'
+        return changeMachineStatus(machine.id, nextStatus, `${actionLabel}เครื่องทั้งกลุ่ม: ${machineType}`)
+      }))
+      await load()
+      window.dispatchEvent(new Event('sidebar-refresh-counts'))
+      const failedCount = results.filter((result) => result.status === 'rejected').length
+      if (failedCount > 0) {
+        setError(`${actionLabel}เครื่องสำเร็จ ${targets.length - failedCount} เครื่อง และไม่สำเร็จ ${failedCount} เครื่อง`)
+      }
+    } catch (e: any) {
+      setError(e?.message || String(e))
+    } finally {
+      setSavingGroupType(null)
+    }
+  }
+
   const [histLoading, setHistLoading] = useState(false)
   const [histEvents, setHistEvents] = useState<MachineryEvent[]>([])
   const [histRepairEvents, setHistRepairEvents] = useState<MachineryEvent[]>([])
@@ -999,11 +1041,22 @@ export default function Machinery() {
               if (!stats) return null
               const abnormalCount = stats.brokenCount + stats.repairingCount
               const selected = monitorMachineType === type
+              const switchableMachines = stats.machines.filter((machine) =>
+                machine.current_status === 'working' || machine.current_status === 'idle' || machine.current_status === 'power_off')
+              const allPoweredOn = switchableMachines.length > 0 && switchableMachines.every((machine) => machine.current_status !== 'power_off')
+              const groupSaving = savingGroupType === type
               return (
-                <button
+                <div
                   key={type}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setMonitorMachineType((current) => (current === type ? '' : type))}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setMonitorMachineType((current) => (current === type ? '' : type))
+                    }
+                  }}
                   className={`rounded-xl border p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md ${
                     selected ? 'border-emerald-400 bg-emerald-50 ring-1 ring-emerald-300' : 'border-gray-200 bg-white'
                   }`}
@@ -1015,11 +1068,29 @@ export default function Machinery() {
                         {stats.machines.length} เครื่อง · ทำงาน {stats.workingCount}
                       </div>
                     </div>
-                    <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${
-                      abnormalCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
-                    }`}>
-                      {abnormalCount > 0 ? `ผิดปกติ ${abnormalCount}` : 'ปกติ'}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {canToggleMachinePower && <label
+                        className={`inline-flex items-center gap-1.5 ${switchableMachines.length > 0 && !groupSaving ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                        title={allPoweredOn ? `ปิดเครื่องที่เปิดอยู่ทั้งหมดในกลุ่ม ${type}` : `เปิดเครื่องที่ปิดอยู่ทั้งหมดในกลุ่ม ${type}`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <span className="text-[10px] font-bold uppercase text-slate-600">{groupSaving ? 'กำลังบันทึก' : allPoweredOn ? 'เปิด' : 'ปิด'}</span>
+                        <input
+                          type="checkbox"
+                          className="peer sr-only"
+                          checked={allPoweredOn}
+                          disabled={switchableMachines.length === 0 || groupSaving || savingGroupType !== null}
+                          onChange={() => void onGroupPowerChange(type, !allPoweredOn)}
+                          aria-label={`${allPoweredOn ? 'ปิด' : 'เปิด'}เครื่องทั้งกลุ่ม ${type}`}
+                        />
+                        <span className="relative h-6 w-11 rounded-full bg-slate-400 transition-colors peer-checked:bg-emerald-500 peer-disabled:opacity-60 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition-transform peer-checked:after:translate-x-5" />
+                      </label>}
+                      <span className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                        abnormalCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        {abnormalCount > 0 ? `ผิดปกติ ${abnormalCount}` : 'ปกติ'}
+                      </span>
+                    </div>
                   </div>
                   <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
                     <div><div className="text-xs text-gray-500">งานวันนี้</div><div className="font-bold tabular-nums">{fmtInt(stats.productionToday)}</div></div>
@@ -1032,7 +1103,7 @@ export default function Machinery() {
                       style={{ width: `${Math.min(stats.utilizationPercent, 100)}%` }}
                     />
                   </div>
-                </button>
+                </div>
               )
             })}
           </div>

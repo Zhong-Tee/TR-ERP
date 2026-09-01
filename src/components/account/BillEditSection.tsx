@@ -613,7 +613,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
           <i className="fas fa-search mr-2 text-blue-500"></i>
           ค้นหาบิล
         </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-1 items-end gap-4 mb-4 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="block text-sm font-semibold text-gray-600 mb-1">
               วันที่เริ่มต้น
@@ -622,7 +622,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
               )}
             </label>
             <input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm" />
+              className="h-10 w-full rounded-lg border px-3 text-sm" />
           </div>
           <div>
             <label className="block text-sm font-semibold text-gray-600 mb-1">
@@ -632,12 +632,12 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
               )}
             </label>
             <input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm" />
+              className="h-10 w-full rounded-lg border px-3 text-sm" />
           </div>
           <div>
             <label className="block text-sm font-semibold text-gray-600 mb-1">ช่องทางขาย</label>
             <select value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+              className="h-10 w-full rounded-lg border bg-white px-3 text-sm">
               <option value="">ทั้งหมด</option>
               {channels.map((ch) => (
                 <option key={ch.channel_code} value={ch.channel_code}>{ch.channel_code} - {ch.channel_name}</option>
@@ -649,9 +649,9 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
             <div className="flex gap-2">
               <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                placeholder="เลขบิล, ชื่อ, ที่อยู่, เบอร์โทร..." className="flex-1 border rounded-lg px-3 py-2 text-sm" />
+                placeholder="เลขบิล, ชื่อ, ที่อยู่, เบอร์โทร..." className="h-10 min-w-0 flex-1 rounded-lg border px-3 text-sm" />
               <button onClick={handleSearch} disabled={searching}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition disabled:opacity-50 shrink-0">
+                className="h-10 shrink-0 rounded-lg bg-blue-600 px-4 font-bold text-white transition hover:bg-blue-700 disabled:opacity-50">
                 {searching ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div> : <i className="fas fa-search"></i>}
               </button>
             </div>
