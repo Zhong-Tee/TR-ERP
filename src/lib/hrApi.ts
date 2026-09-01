@@ -100,10 +100,24 @@ export async function updateTaskTeam(teamId: string, name: string, managerId: st
 }
 
 export async function fetchTasks(filters?: { employeeId?: string; status?: HRTaskStatus; search?: string }) {
+  let relatedTaskIds: string[] | undefined
+  if (filters?.employeeId) {
+    const { data: participantRows, error: participantError } = await supabase
+      .from('hr_task_participants')
+      .select('task_id')
+      .eq('employee_id', filters.employeeId)
+    if (participantError) pgError(participantError)
+    relatedTaskIds = [...new Set((participantRows ?? []).map((row) => row.task_id))]
+  }
+
   let q = supabase.from('hr_tasks').select(HR_TASK_SELECT).order('created_at', { ascending: false })
   if (filters?.status) q = q.eq('status', filters.status)
   if (filters?.search?.trim()) q = q.or(buildIlikeOr(filters.search.trim(), ['task_no', 'title', 'description']))
-  if (filters?.employeeId) q = q.eq('hr_task_participants.employee_id', filters.employeeId)
+  if (filters?.employeeId) {
+    q = relatedTaskIds?.length
+      ? q.or(`created_by.eq.${filters.employeeId},id.in.(${relatedTaskIds.join(',')})`)
+      : q.eq('created_by', filters.employeeId)
+  }
   const { data, error } = await q
   if (error) pgError(error)
   return (data ?? []) as unknown as HRTask[]

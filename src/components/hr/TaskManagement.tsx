@@ -176,7 +176,18 @@ export default function TaskManagement() {
       </div>
       <div className="p-4 flex flex-col md:flex-row gap-3"><label className="relative flex-1"><FiSearch className="absolute left-3 top-3 text-gray-400"/><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหารหัส ชื่องาน หรือพนักงาน..." className="w-full border rounded-xl py-2.5 pl-10 pr-3"/></label><select value={status} onChange={(e) => setStatus(e.target.value)} className="border rounded-xl px-3"><option value="">ทุกสถานะ</option>{Object.entries(STATUS).filter(([key])=>scope==='completed'?key==='completed':scope==='global'||key!=='completed').map(([k,v]) => <option key={k} value={k}>{v}</option>)}{scope!=='completed'&&<option value="overdue">เลยกำหนด</option>}{(scope==='global'||scope==='completed')&&<option value="reviewed">รีวิวแล้ว</option>}</select><select value={dueSort} onChange={(e) => setDueSort(e.target.value as typeof dueSort)} className="border rounded-xl px-3" aria-label="เรียงตามกำหนดส่ง"><option value="">กำหนดส่ง: ค่าเดิม</option><option value="asc">กำหนดส่ง: น้อยไปมาก</option><option value="desc">กำหนดส่ง: มากไปน้อย</option></select></div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[1440px] table-fixed text-sm">
+          <colgroup>
+            <col style={{width:'14%'}}/>
+            <col style={{width:'23%'}}/>
+            <col style={{width:'14%'}}/>
+            <col style={{width:'12%'}}/>
+            <col style={{width:'8%'}}/>
+            <col style={{width:'8%'}}/>
+            <col style={{width:'7%'}}/>
+            <col style={{width:'9%'}}/>
+            <col style={{width:'5%'}}/>
+          </colgroup>
           <thead className="bg-gray-50 text-gray-600"><tr><th className="text-left p-3">งาน</th><th className="text-left p-3">ผู้รับผิดชอบ</th><th className="text-left p-3">ผู้ประสานงาน / ที่ปรึกษา</th><th className="text-left p-3">กำหนดส่ง</th><th className="text-left p-3">เวลาที่ใช้</th><th className="text-left p-3">ความคืบหน้า</th><th className="text-left p-3">ลิงก์ผลงาน</th><th className="text-left p-3">สถานะ</th><th className="p-3"></th></tr></thead>
           <tbody>{visible.map((t) => <tr key={t.id} onClick={()=>setDetailTask(t)} className="border-t cursor-pointer hover:bg-emerald-50/40">
             <td className="p-3"><div className="font-semibold">{t.title}</div><div className="flex items-center gap-1.5 text-xs text-gray-500"><span>{t.task_no} ·</span><span className="w-2.5 h-2.5 rounded-full shrink-0 border border-black/10" style={{backgroundColor:t.category?.color??'#9ca3af'}}/><span>{t.category?.name ?? 'ไม่ระบุประเภท'}</span></div></td>
@@ -186,7 +197,7 @@ export default function TaskManagement() {
             <td className="p-3 min-w-36"><div className="font-medium whitespace-nowrap">{elapsedText(t)}</div></td>
             <td className="p-3 min-w-36"><div className="h-2 bg-gray-100 rounded-full"><div className="h-full bg-emerald-500 rounded-full" style={{width:`${t.progress}%`}}/></div><span className="text-xs">{t.progress}%</span></td>
             <td className="p-3">{workLink(t.completion_link)?<a href={workLink(t.completion_link)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} className="inline-flex items-center gap-1.5 text-blue-600 hover:underline whitespace-nowrap"><FiExternalLink/> เปิดลิงก์</a>:<span className="text-gray-400">-</span>}</td>
-            <td className="p-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${displayedStatusStyle(t)}`}>{displayedStatus(t)}</span></td>
+            <td className="p-3"><span className={`inline-flex whitespace-nowrap px-2 py-1 rounded-full text-xs font-medium ${displayedStatusStyle(t)}`}>{displayedStatus(t)}</span></td>
             <td className="p-3"><div className="flex items-center justify-end gap-3">{t.status === 'review' && isManaged(t) && <button disabled={busy} onClick={(e)=>{e.stopPropagation();setEvaluationTask(t)}} className="text-emerald-600 font-semibold whitespace-nowrap">ประเมิน</button>}{canDelete(t) && <button type="button" disabled={busy} onClick={(e)=>{e.stopPropagation();setDeleteTarget(t)}} className="inline-flex items-center gap-1 text-red-600 font-semibold whitespace-nowrap hover:text-red-700 disabled:opacity-40" title="ลบงาน"><FiTrash2 />ลบ</button>}</div></td>
           </tr>)}</tbody>
         </table>
