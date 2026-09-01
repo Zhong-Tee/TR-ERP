@@ -70,11 +70,15 @@ type SearchResult = {
   channel_code: string
   customer_name: string
   customer_address: string
+  express_receipt_number: string | null
   status: OrderStatus
   total_amount: number
   created_at: string
   entry_date: string
   billing_details: Record<string, unknown> | null
+  work_order_id: string | null
+  work_order_name: string | null
+  shipped_time: string | null
   has_edit_log?: boolean
   revision_no?: number
 }
@@ -136,7 +140,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     setSearchStats(null)
     try {
       const selectOrderFields =
-        'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, status, total_amount, created_at, entry_date, billing_details, revision_no'
+        'id, bill_no, channel_order_no, channel_code, customer_name, customer_address, express_receipt_number, status, total_amount, created_at, entry_date, billing_details, revision_no, work_order_id, work_order_name, shipped_time'
 
       /** รองรับทั้ง select(...) และ select(..., { count, head }) — ห้ามใช้ ReturnType<typeof supabase.from> (เป็น QueryBuilder ก่อน select) */
       const applyOrderFilters = <
@@ -147,7 +151,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
         let query = q
         if (searchQuery.trim()) {
           const s = searchQuery.trim()
-          query = query.or(buildIlikeOr(s, ['bill_no', 'channel_order_no', 'customer_name', 'customer_address']))
+          query = query.or(buildIlikeOr(s, ['bill_no', 'channel_order_no', 'customer_name', 'customer_address', 'express_receipt_number']))
         }
         if (filterChannel) query = query.eq('channel_code', filterChannel)
         return query
@@ -492,10 +496,10 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
     return changes
   }
 
-  function getEditZoneBadge(status: string): { label: string; color: string } {
-    if (status === 'จัดส่งแล้ว') return { label: 'เคลม', color: 'bg-red-100 text-red-700' }
-    if (status === 'ยกเลิก') return { label: 'ปิด', color: 'bg-gray-200 text-gray-500' }
-    if (['ใบสั่งงาน', 'ใบงานกำลังผลิต'].includes(status)) return { label: 'ขอยกเลิก/แก้ชื่อได้', color: 'bg-amber-100 text-amber-700' }
+  function getEditZoneBadge(order: SearchResult): { label: string; color: string } {
+    if (order.status === 'จัดส่งแล้ว' || order.shipped_time) return { label: 'เคลม', color: 'bg-red-100 text-red-700' }
+    if (order.status === 'ยกเลิก') return { label: 'ปิด', color: 'bg-gray-200 text-gray-500' }
+    if (order.work_order_id || order.work_order_name?.trim()) return { label: 'ขอยกเลิก/แก้ชื่อได้', color: 'bg-amber-100 text-amber-700' }
     return { label: 'แก้ไขได้', color: 'bg-green-100 text-green-700' }
   }
 
@@ -728,7 +732,7 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                 </thead>
                 <tbody className="divide-y">
                   {searchResults.map((r) => {
-                    const zone = getEditZoneBadge(r.status)
+                    const zone = getEditZoneBadge(r)
                     return (
                       <tr key={r.id} className="hover:bg-blue-50/50 cursor-pointer transition-colors"
                         onClick={() => handleSelectOrder(r.id)}>
@@ -749,6 +753,11 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                               </span>
                             )}
                           </div>
+                          {r.express_receipt_number && (
+                            <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
+                              รับด่วน: {r.express_receipt_number}
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold">{r.channel_code}</span>

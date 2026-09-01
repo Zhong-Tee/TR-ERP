@@ -47,7 +47,7 @@ export default function WorkOrderSelectionList({
     try {
       let query = supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, admin_user, tracking_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at, urgency_label, urgency_color, requires_confirm_design')
+        .select('id, bill_no, customer_name, admin_user, tracking_number, express_receipt_number, channel_code, recipient_name, channel_order_no, scheduled_pickup_at, claim_shipping_confirmed_at, status, shipped_time, ship_due_at, overdue_at, urgency_label, urgency_color, requires_confirm_design')
         .is('work_order_id', null)
         .order('created_at', { ascending: false })
 
@@ -58,7 +58,7 @@ export default function WorkOrderSelectionList({
 
       if (searchTerm) {
         query = query.or(
-          buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'admin_user', 'tracking_number', 'channel_order_no', 'recipient_name'])
+          buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'admin_user', 'tracking_number', 'express_receipt_number', 'channel_order_no', 'recipient_name'])
         )
       }
 
@@ -479,6 +479,11 @@ export default function WorkOrderSelectionList({
                         </span>
                       )}
                       <UrgencyBadge order={order} className="ml-1.5" />
+                      {order.express_receipt_number && (
+                        <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
+                          รับด่วน: {order.express_receipt_number}
+                        </div>
+                      )}
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.recipient_name ?? ''}>
                       {order.recipient_name ?? '-'}

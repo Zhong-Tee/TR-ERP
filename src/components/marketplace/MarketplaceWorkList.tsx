@@ -127,6 +127,7 @@ export default function MarketplaceWorkList({
         o.recipient_name,
         o.phone,
         o.tracking_no,
+        o.express_receipt_number,
         o.follow_up_note,
         o.cancel_note,
         o.billed_bill_no,
@@ -510,6 +511,11 @@ export default function MarketplaceWorkList({
                       <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">
                         <span className="mr-2">{o.marketplace_order_no}</span>
                         <UrgencyBadge order={o} />
+                        {o.express_receipt_number && (
+                          <div className="mt-1 font-mono text-xs font-semibold text-cyan-700">
+                            รับด่วน: {o.express_receipt_number}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold">

@@ -9,6 +9,7 @@ export interface MpShippingRule {
   channel_code: string
   label: string
   color: 'blue' | 'orange' | 'green' | 'purple' | 'pink' | 'slate'
+  requires_express_receipt_number?: boolean
 }
 
 /** ตาราง mp_channel_configs — ตั้งค่าช่องทางนำเข้าไฟล์ Order (เมนู Marketplace) */
@@ -50,6 +51,8 @@ export interface MpOrder {
   postal_code: string | null
   buyer_note: string | null
   tracking_no: string | null
+  requires_express_receipt_number: boolean
+  express_receipt_number: string | null
   shipping_fee: number | null
   order_total: number | null
   raw_snapshot: Record<string, string | number | null> | null

@@ -31,6 +31,16 @@ export default function ProductionWorkQueue() {
   const [expandedJob, setExpandedJob] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalState>(null)
   const confirmResolveRef = useRef<((v: boolean) => void) | null>(null)
+  const jobsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const jobsRequestRef = useRef(0)
+  const actionBusyRef = useRef<Set<string>>(new Set())
+  const [actionBusyKeys, setActionBusyKeys] = useState<Set<string>>(new Set())
+
+  const setActionBusy = useCallback((key: string, busy: boolean) => {
+    if (busy) actionBusyRef.current.add(key)
+    else actionBusyRef.current.delete(key)
+    setActionBusyKeys(new Set(actionBusyRef.current))
+  }, [])
 
   const showConfirm = useCallback((message: string): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -58,6 +68,7 @@ export default function ProductionWorkQueue() {
   }, [depFilter, selectableDepts])
 
   const load = useCallback(async () => {
+    const jobsRequestId = ++jobsRequestRef.current
     try {
       const [settingsRes, jobsRes] = await Promise.all([
         supabase.from('plan_settings').select('data').eq('id', 1).single(),
@@ -67,7 +78,9 @@ export default function ProductionWorkQueue() {
         ? { ...defaultSettings, ...settingsRes.data.data }
         : defaultSettings
       setSettings(loadedSettings)
-      setJobs((jobsRes.data || []) as PlanJob[])
+      if (jobsRequestId === jobsRequestRef.current) {
+        setJobs((jobsRes.data || []) as PlanJob[])
+      }
     } catch (e) {
       console.error('ProductionWorkQueue load error:', e)
     } finally {
@@ -75,61 +88,89 @@ export default function ProductionWorkQueue() {
     }
   }, [])
 
+  const scheduleJobsRefresh = useCallback(() => {
+    if (jobsRefreshTimerRef.current) clearTimeout(jobsRefreshTimerRef.current)
+    jobsRefreshTimerRef.current = setTimeout(async () => {
+      const requestId = ++jobsRequestRef.current
+      const { data, error } = await supabase.from('plan_jobs').select('*').order('order_index')
+      if (error) {
+        console.error('ProductionWorkQueue realtime refresh error:', error)
+        return
+      }
+      if (requestId === jobsRequestRef.current && data) setJobs(data as PlanJob[])
+    }, 150)
+  }, [])
+
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
     const channel = supabase
       .channel('prod-queue-plan-jobs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_jobs' }, () => {
-        supabase
-          .from('plan_jobs')
-          .select('*')
-          .order('order_index')
-          .then(({ data }) => data && setJobs(data as PlanJob[]))
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_jobs' }, scheduleJobsRefresh)
       .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [])
+    return () => {
+      if (jobsRefreshTimerRef.current) clearTimeout(jobsRefreshTimerRef.current)
+      supabase.removeChannel(channel)
+    }
+  }, [scheduleJobsRefresh])
 
   const markStart = useCallback(
     async (jobId: string, dept: string, proc: string) => {
+      const actionKey = `${dept}_${jobId}`
+      if (actionBusyRef.current.has(actionKey)) return
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (t?.start && !(await showConfirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?'))) return
-      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
-        p_job_id: jobId,
-        p_dept: dept,
-        p_patch: { [proc]: { start: nowISO() } },
-      })
-      if (error) {
-        showAlert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
-        return
+      setActionBusy(actionKey, true)
+      ++jobsRequestRef.current
+      try {
+        const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+          p_job_id: jobId,
+          p_dept: dept,
+          p_patch: { [proc]: { start: nowISO() } },
+        })
+        if (error) {
+          showAlert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+          return
+        }
+        ++jobsRequestRef.current
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      } finally {
+        setActionBusy(actionKey, false)
       }
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
     },
-    [jobs, showConfirm, showAlert]
+    [jobs, showConfirm, showAlert, setActionBusy]
   )
 
   const markEnd = useCallback(
     async (jobId: string, dept: string, proc: string) => {
+      const actionKey = `${dept}_${jobId}`
+      if (actionBusyRef.current.has(actionKey)) return
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (!t?.start && !(await showConfirm('ยังไม่กดเริ่ม จะบันทึกเสร็จเลยหรือไม่?'))) return
-      const now = nowISO()
-      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
-        p_job_id: jobId,
-        p_dept: dept,
-        p_patch: { [proc]: { start_if_null: now, end: now } },
-      })
-      if (error) {
-        showAlert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
-        return
+      setActionBusy(actionKey, true)
+      ++jobsRequestRef.current
+      try {
+        const now = nowISO()
+        const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+          p_job_id: jobId,
+          p_dept: dept,
+          p_patch: { [proc]: { start_if_null: now, end: now } },
+        })
+        if (error) {
+          showAlert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+          return
+        }
+        ++jobsRequestRef.current
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+      } finally {
+        setActionBusy(actionKey, false)
       }
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
     },
-    [jobs, showConfirm, showAlert]
+    [jobs, showConfirm, showAlert, setActionBusy]
   )
 
   const backStep = useCallback(
@@ -284,6 +325,7 @@ export default function ProductionWorkQueue() {
                   const isStarted = !!t?.start
                   const expKey = `${dept}_${j.id}`
                   const isExpanded = expandedJob === expKey
+                  const isActionBusy = actionBusyKeys.has(expKey)
 
                   return (
                     <div
@@ -335,17 +377,19 @@ export default function ProductionWorkQueue() {
                             <button
                               type="button"
                               onClick={() => markStart(j.id, dept, currentProc)}
-                              className="w-full rounded-lg bg-blue-600 py-3 text-base font-bold text-white hover:bg-blue-700 active:bg-blue-800"
+                              disabled={isActionBusy}
+                              className="w-full rounded-lg bg-blue-600 py-3 text-base font-bold text-white hover:bg-blue-700 active:bg-blue-800 disabled:cursor-wait disabled:opacity-60"
                             >
-                              เริ่ม: {currentProc}
+                              {isActionBusy ? 'กำลังบันทึก...' : `เริ่ม: ${currentProc}`}
                             </button>
                           ) : (
                             <button
                               type="button"
                               onClick={() => markEnd(j.id, dept, currentProc)}
-                              className="w-full rounded-lg bg-green-600 py-3 text-base font-bold text-white hover:bg-green-700 active:bg-green-800"
+                              disabled={isActionBusy}
+                              className="w-full rounded-lg bg-green-600 py-3 text-base font-bold text-white hover:bg-green-700 active:bg-green-800 disabled:cursor-wait disabled:opacity-60"
                             >
-                              เสร็จ: {currentProc}
+                              {isActionBusy ? 'กำลังบันทึก...' : `เสร็จ: ${currentProc}`}
                             </button>
                           )}
                           <div className="mt-2 flex justify-between border-t border-dashed border-gray-200 pt-2 text-[11px] text-gray-500">

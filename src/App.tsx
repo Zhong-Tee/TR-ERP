@@ -320,7 +320,7 @@ function AppRoutes() {
       <Route
         path="/plan"
         element={
-          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'technician']}>
+          <ProtectedRoute allowedRoles={['superadmin', 'admin', 'sales-tr', 'sales-pump', 'production', 'qc_staff', 'packing_staff', 'technician']}>
             <Layout>
               <Plan />
             </Layout>

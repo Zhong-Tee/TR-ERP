@@ -269,6 +269,17 @@ export interface MpItemRow {
 }
 
 /**
+ * SKU จาก Marketplace บางไฟล์เติม suffix หลังรหัสสินค้า เช่น 110000242-4
+ * รหัสสินค้า ERP ปัจจุบันเป็นเลข 9 หลัก จึงตัด suffix เฉพาะรูปแบบนี้เท่านั้น
+ * เพื่อไม่ให้ SKU ตัวอักษรหรือรหัสที่มีขีดเป็นส่วนหนึ่งของรหัสจริงถูกจับคู่ผิด
+ */
+export function normalizeMarketplaceSkuForProductMatch(value: string | null | undefined): string {
+  const normalized = String(value || '').trim().toLowerCase()
+  const suffixedNineDigitSku = normalized.match(/^(\d{9})-.+$/)
+  return suffixedNineDigitSku?.[1] || normalized
+}
+
+/**
  * แปลงรายการสินค้าจากไฟล์เป็นแถวสำหรับ mp_order_items — 1 แถวต่อ 1 รายการในไฟล์
  * คงจำนวนตามไฟล์ไว้ ถ้าต้องลงชื่อแยกกัน sales กดปุ่ม "แยกรายการ" ในหน้า Assign เอง
  * คืน unmatchedSku = จำนวนแถวที่จับคู่สินค้าในระบบจาก SKU ไม่ได้
@@ -280,7 +291,11 @@ export function buildMpItemRows(
 ): { rows: MpItemRow[]; unmatchedSku: number } {
   let unmatchedSku = 0
   const rows = items.map((it, idx) => {
-    const productId = it.sku_ref ? skuToProductId.get(it.sku_ref.trim().toLowerCase()) || null : null
+    const rawSku = it.sku_ref?.trim().toLowerCase() || ''
+    // ให้รหัสเต็มชนะก่อน เผื่อในระบบมี SKU ที่มีขีดจริง แล้วจึง fallback ไปยังรหัสฐาน 9 หลัก
+    const productId = rawSku
+      ? skuToProductId.get(rawSku) || skuToProductId.get(normalizeMarketplaceSkuForProductMatch(rawSku)) || null
+      : null
     if (!productId) unmatchedSku++
     return {
       mp_order_id: mpOrderId,
@@ -323,6 +338,7 @@ export interface MpParsedOrder {
   shipping_option: string | null
   urgency_label: string | null
   urgency_color: string | null
+  requires_express_receipt_number: boolean
   items: MpParsedItem[]
 }
 
@@ -448,6 +464,7 @@ export async function parseMarketplaceWorkbook(file: File, config: MpParseConfig
         shipping_option: shippingOption,
         urgency_label: matchedShipping?.rule.label.trim() || null,
         urgency_color: matchedShipping?.rule.color || null,
+        requires_express_receipt_number: !!matchedShipping?.rule.requires_express_receipt_number,
         items: [],
       }
       orderMap.set(orderNo, order)

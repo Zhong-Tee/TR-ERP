@@ -8,7 +8,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
-import { getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
+import { canOperationalRoleSeeIssue, getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
 import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { getChatEnterToSendPref, setChatEnterToSendPref } from '../../lib/chatEnterToSendPrefs'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
@@ -26,6 +26,7 @@ type IssueWithOrder = Issue & {
   order?: Pick<Order, 'id' | 'bill_no' | 'customer_name' | 'channel_code' | 'work_order_name' | 'admin_user'>
   type?: IssueType | null
   creatorName?: string
+  creatorRole?: string
 }
 
 type UnreadOrderChatRow = {
@@ -272,24 +273,28 @@ export default function IssueBoard({
         orderMap = new Map((orders || []).map((o: any) => [o.id, o as Order]))
       }
       const creatorIds = Array.from(new Set(list.map((i) => i.created_by))).filter(Boolean)
-      let creatorMap = new Map<string, string>()
+      let creatorMap = new Map<string, { name: string; role: string }>()
       if (creatorIds.length > 0) {
-        const { data: creators } = await supabase
-          .from('us_users')
-          .select('id, username')
-          .in('id', creatorIds)
-        creatorMap = new Map((creators || []).map((u: { id: string; username?: string }) => [u.id, u.username || u.id]))
+        const { data: creators, error: creatorsError } = await supabase.rpc('get_issue_creator_profiles', {
+          p_user_ids: creatorIds,
+        })
+        if (creatorsError) throw creatorsError
+        creatorMap = new Map((creators || []).map((u: { id: string; username?: string; role?: string }) => [
+          u.id,
+          { name: u.username || u.id, role: u.role || '' },
+        ]))
       }
       const typeMap = new Map(types.map((t) => [t.id, t]))
       let withOrder: IssueWithOrder[] = list.map((i) => ({
         ...i,
         order: orderMap.get(i.order_id),
         type: i.type_id ? typeMap.get(i.type_id) || null : null,
-        creatorName: creatorMap.get(i.created_by),
+        creatorName: creatorMap.get(i.created_by)?.name,
+        creatorRole: creatorMap.get(i.created_by)?.role,
       }))
       // sales-tr: issue ของบิลที่ผู้ลงข้อมูลเป็นสมาชิก sales-tr ทั้งทีม
       // sales-pump: เฉพาะบิลตัวเอง
-      // production: issue ที่ตัวเองสร้าง หรือเป็นเจ้าของบิล
+      // production / qc_staff / packing_staff: issue ที่ตัวเองเปิด + issue ที่ฝ่ายขายเปิด
       // superadmin / admin: ทั้งหมด
       const visibilityScope = getIssueVisibilityScope(user?.role)
       const ownerName = user?.username || user?.email || ''
@@ -301,8 +306,8 @@ export default function IssueBoard({
         }
       } else if (visibilityScope === 'ownerOrders') {
         withOrder = withOrder.filter((i) => (i.order?.admin_user || '') === ownerName)
-      } else if (visibilityScope === 'creatorOrOwner') {
-        withOrder = withOrder.filter((i) => i.created_by === user?.id || (i.order?.admin_user || '') === ownerName)
+      } else if (visibilityScope === 'operational') {
+        withOrder = withOrder.filter((i) => canOperationalRoleSeeIssue(user?.id, i.created_by, i.creatorRole))
       } else if (visibilityScope === 'none') {
         withOrder = []
       }
@@ -538,7 +543,7 @@ export default function IssueBoard({
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, work_order_name')
+        .select('id, bill_no, customer_name, work_order_name, express_receipt_number')
         .eq('work_order_name', name)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -558,8 +563,8 @@ export default function IssueBoard({
       try {
         const { data, error } = await supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, work_order_name')
-          .or(buildIlikeOr(q, ['bill_no', 'customer_name']))
+          .select('id, bill_no, customer_name, work_order_name, express_receipt_number')
+          .or(buildIlikeOr(q, ['bill_no', 'customer_name', 'express_receipt_number']))
           .order('created_at', { ascending: false })
           .limit(20)
         if (error) throw error
@@ -1122,6 +1127,7 @@ export default function IssueBoard({
                   >
                     <span className="font-semibold text-blue-600">{o.bill_no}</span>
                     {o.customer_name && <span className="text-gray-500 ml-2">{o.customer_name}</span>}
+                    {o.express_receipt_number && <span className="ml-2 font-mono text-xs text-cyan-700">รับด่วน: {o.express_receipt_number}</span>}
                     {o.work_order_name && <span className="text-gray-400 ml-2 text-xs">[{o.work_order_name}]</span>}
                   </button>
                 ))}

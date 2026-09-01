@@ -130,9 +130,10 @@ export async function openBillFromMpOrder(params: {
   paymentMethod: string
   requiresConfirmDesign: boolean
   trackingNo?: string | null
+  expressReceiptNumber?: string | null
   billingDetails?: Record<string, unknown> | null
 }): Promise<OpenBillResult> {
-  const { mpOrder, items, user, productById, paymentMethod, requiresConfirmDesign, trackingNo, billingDetails } = params
+  const { mpOrder, items, user, productById, paymentMethod, requiresConfirmDesign, trackingNo, expressReceiptNumber, billingDetails } = params
   const channelCode = mpOrder.channel_code
   const currentUserName = user.username || user.email
 
@@ -172,6 +173,7 @@ export async function openBillFromMpOrder(params: {
     recipient_name: mpOrder.recipient_name || null,
     channel_order_no: mpOrder.marketplace_order_no,
     tracking_number: (trackingNo ?? mpOrder.tracking_no)?.trim() || null,
+    express_receipt_number: (expressReceiptNumber ?? mpOrder.express_receipt_number)?.trim() || null,
     admin_user: currentUserName,
     entry_date: new Date().toISOString().slice(0, 10),
     requires_confirm_design: requiresConfirmDesign,

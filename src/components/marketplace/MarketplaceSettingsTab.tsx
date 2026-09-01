@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FiMenu } from 'react-icons/fi'
+import { FiMenu, FiTrash2 } from 'react-icons/fi'
 import * as XLSX from 'xlsx'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
@@ -299,6 +299,7 @@ export default function MarketplaceSettingsTab({
           match_value: r.match_value.trim(),
           label: r.label.trim(),
           color: r.color || 'orange',
+          requires_express_receipt_number: !!r.requires_express_receipt_number,
         })),
         is_active: editor.is_active,
       }
@@ -500,9 +501,11 @@ export default function MarketplaceSettingsTab({
                     <button
                       type="button"
                       onClick={() => handleDelete(cfg)}
-                      className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
+                      title="ลบการตั้งค่า"
+                      aria-label={`ลบการตั้งค่า ${cfg.name}`}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
                     >
-                      ลบ
+                      <FiTrash2 aria-hidden="true" />
                     </button>
                   </td>
                 </tr>
@@ -663,7 +666,7 @@ export default function MarketplaceSettingsTab({
               </p>
             </div>
             {editor.shipping_rules.map((rule, idx) => (
-              <div key={idx} className="grid grid-cols-1 md:grid-cols-7 gap-3 rounded-lg border border-blue-100 bg-white p-3">
+              <div key={idx} className="grid grid-cols-1 md:grid-cols-8 gap-3 rounded-lg border border-blue-100 bg-white p-3">
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">หัวคอลัมน์</label>
                   {sampleHeaders.length > 0 ? (
@@ -712,14 +715,44 @@ export default function MarketplaceSettingsTab({
                     <option value="slate">เทา</option>
                   </select>
                 </div>
-                <div className="flex items-end">
-                  <button type="button" onClick={() => setEditor({ ...editor, shipping_rules: editor.shipping_rules.filter((_, i) => i !== idx) })} className="w-full px-2 py-2 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-sm">ลบ</button>
+                <div className="flex flex-col items-center justify-end gap-1">
+                  <label className="text-center text-xs font-semibold text-gray-600">เลขรับพัสดุด่วน</label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!rule.requires_express_receipt_number}
+                    onClick={() => setEditor({
+                      ...editor,
+                      shipping_rules: editor.shipping_rules.map((r, i) => i === idx
+                        ? { ...r, requires_express_receipt_number: !r.requires_express_receipt_number }
+                        : r),
+                    })}
+                    className={`relative h-8 w-14 rounded-full transition-colors ${
+                      rule.requires_express_receipt_number ? 'bg-blue-600' : 'bg-gray-300'
+                    }`}
+                    title="เปิดเพื่อแสดงช่องเลขรับพัสดุด่วนในหน้า Assign"
+                  >
+                    <span className={`absolute left-1 top-1 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                      rule.requires_express_receipt_number ? 'translate-x-6' : 'translate-x-0'
+                    }`} />
+                  </button>
+                </div>
+                <div className="flex items-end justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setEditor({ ...editor, shipping_rules: editor.shipping_rules.filter((_, i) => i !== idx) })}
+                    title="ลบกฎตัวเลือกการจัดส่ง"
+                    aria-label={`ลบกฎตัวเลือกการจัดส่งรายการที่ ${idx + 1}`}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
+                  >
+                    <FiTrash2 aria-hidden="true" />
+                  </button>
                 </div>
               </div>
             ))}
             <button
               type="button"
-              onClick={() => setEditor({ ...editor, shipping_rules: [...editor.shipping_rules, { source_type: 'header_exact', source_value: sampleHeaders.find((h) => h.includes('ตัวเลือกการจัดส่ง')) || 'ตัวเลือกการจัดส่ง', match_type: 'contains', match_value: '', channel_code: editor.channel_code || channels[0]?.channel_code || '', label: '', color: 'orange' }] })}
+              onClick={() => setEditor({ ...editor, shipping_rules: [...editor.shipping_rules, { source_type: 'header_exact', source_value: sampleHeaders.find((h) => h.includes('ตัวเลือกการจัดส่ง')) || 'ตัวเลือกการจัดส่ง', match_type: 'contains', match_value: '', channel_code: editor.channel_code || channels[0]?.channel_code || '', label: '', color: 'orange', requires_express_receipt_number: false }] })}
               className="px-3 py-1.5 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 text-sm font-semibold"
             >
               + เพิ่มตัวเลือกการจัดส่ง
@@ -901,9 +934,11 @@ export default function MarketplaceSettingsTab({
                           onClick={() =>
                             setEditor({ ...editor, column_map: editor.column_map.filter((_, i) => i !== idx) })
                           }
-                          className="px-2 py-1 rounded text-red-500 hover:bg-red-50"
+                          title="ลบการจับคู่คอลัมน์"
+                          aria-label={`ลบการจับคู่คอลัมน์รายการที่ ${idx + 1}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded text-red-500 hover:bg-red-50"
                         >
-                          ลบ
+                          <FiTrash2 aria-hidden="true" />
                         </button>
                       </td>
                     </tr>

@@ -299,7 +299,7 @@ export default function OrderList({
           .order('created_at', { ascending: false })
         if (searchTerm) {
           query = query.or(
-            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
+            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
           )
         }
         if (channelFilter) {
@@ -342,7 +342,7 @@ export default function OrderList({
 
         if (searchTerm) {
           query = query.or(
-            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
+            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
           )
         }
 
@@ -389,7 +389,7 @@ export default function OrderList({
               .order('created_at', { ascending: false })
             if (searchTerm) {
               extraQuery = extraQuery.or(
-                buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number'])
+                buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
               )
             }
             if (channelFilter) {
@@ -931,6 +931,9 @@ export default function OrderList({
                   )}
                   {order.tracking_number && (
                     <span><span className="font-medium">เลขพัสดุ:</span> {order.tracking_number}</span>
+                  )}
+                  {order.express_receipt_number && (
+                    <span className="text-cyan-800"><span className="font-medium">เลขรับพัสดุด่วน:</span> {order.express_receipt_number}</span>
                   )}
                 </p>
                 <p className="mb-1 font-bold">

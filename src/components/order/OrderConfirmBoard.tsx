@@ -455,7 +455,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
       const bill = (o.bill_no || '').toLowerCase()
       const cn = (o.customer_name || '').toLowerCase()
       const rn = (o.recipient_name || '').toLowerCase()
-      return bill.includes(q) || cn.includes(q) || rn.includes(q)
+      const expressReceipt = (o.express_receipt_number || '').toLowerCase()
+      return bill.includes(q) || cn.includes(q) || rn.includes(q) || expressReceipt.includes(q)
     })
   }, [viewMode, ordersByKey.noDesign, ordersByKey.completed, confirmTableSearch, noDesignAlertOnly])
 
@@ -1532,6 +1533,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             {order.bill_no}
                           </button>
                           <UrgencyBadge order={order} className="ml-1.5" />
+                          {order.express_receipt_number && (
+                            <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
+                          )}
                         </td>
                         <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                           {order.customer_name}
@@ -1792,6 +1796,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
                             {order.bill_no}
                             <UrgencyBadge order={order} className="ml-1.5" />
+                            {order.express_receipt_number && (
+                              <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
+                            )}
                           </td>
                           <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                             {order.customer_name}
@@ -1957,6 +1964,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             {order.bill_no}
                             <UrgencyBadge order={order} className="ml-1.5" />
                           </div>
+                          {order.express_receipt_number && (
+                            <div className="font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
+                          )}
                           <div className="mt-1 min-h-7 text-sm leading-7 text-gray-500 truncate">{order.customer_name}</div>
                         </div>
                         <div className="text-right shrink-0">

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { buildMpItemRows, isLazadaImport, parseBangkokDateTime, type MpParsedItem } from './marketplaceImport'
+import * as XLSX from 'xlsx'
+import {
+  buildMpItemRows,
+  isLazadaImport,
+  normalizeMarketplaceSkuForProductMatch,
+  parseBangkokDateTime,
+  parseMarketplaceWorkbook,
+  type MpParsedItem,
+} from './marketplaceImport'
 
 function item(partial: Partial<MpParsedItem>): MpParsedItem {
   return {
@@ -67,10 +75,79 @@ describe('buildMpItemRows', () => {
     expect(unmatchedSku).toBe(2)
   })
 
+  it('จับคู่ seller SKU ที่มี suffix หลังรหัสสินค้าเลข 9 หลัก', () => {
+    const skuMap = new Map([['110000242', 'product-110000242']])
+    const { rows, unmatchedSku } = buildMpItemRows(
+      'mp-1',
+      [item({ sku_ref: '110000242-4' }), item({ sku_ref: ' 110000242-ชุดพิเศษ ' })],
+      skuMap,
+    )
+    expect(rows.map((r) => r.product_id)).toEqual(['product-110000242', 'product-110000242'])
+    expect(rows.map((r) => r.sku_ref)).toEqual(['110000242-4', ' 110000242-ชุดพิเศษ '])
+    expect(unmatchedSku).toBe(0)
+  })
+
+  it('ให้ SKU เต็มที่มีขีดในระบบชนะรหัสฐาน', () => {
+    const skuMap = new Map([
+      ['110000242-4', 'exact-product'],
+      ['110000242', 'base-product'],
+    ])
+    const { rows } = buildMpItemRows('mp-1', [item({ sku_ref: '110000242-4' })], skuMap)
+    expect(rows[0].product_id).toBe('exact-product')
+  })
+
   it('ไม่คัดลอกชื่อตัวเลือกจากไฟล์มาใส่ช่องลาย', () => {
     const { rows } = buildMpItemRows('mp-1', [item({ variation: 'SET B,FPB01สีฟ้า' })], new Map())
     expect(rows[0].variation).toBe('SET B,FPB01สีฟ้า')
     expect(rows[0].cartoon_pattern).toBeNull()
+  })
+})
+
+describe('normalizeMarketplaceSkuForProductMatch', () => {
+  it('ตัด suffix เมื่อขึ้นต้นด้วยเลขสินค้า 9 หลักตามด้วยขีด', () => {
+    expect(normalizeMarketplaceSkuForProductMatch(' 110000333-3 ')).toBe('110000333')
+  })
+
+  it('ไม่ตัด SKU รูปแบบอื่นเพื่อป้องกันการจับคู่ผิด', () => {
+    expect(normalizeMarketplaceSkuForProductMatch('ABC-1')).toBe('abc-1')
+    expect(normalizeMarketplaceSkuForProductMatch('1100003333-1')).toBe('1100003333-1')
+  })
+})
+
+describe('parseMarketplaceWorkbook shipping rule', () => {
+  it('ส่งต่อการตั้งค่าเลขรับพัสดุด่วนจากกฎที่จับคู่ได้ไปยังออเดอร์', async () => {
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      ['เลขคำสั่งซื้อ', 'เวลาชำระ', 'ตัวเลือกการจัดส่ง', 'SKU', 'จำนวน'],
+      ['ORDER-1', '31/08/2026 23:14', 'Express Delivery', '110000242', 1],
+    ]), 'orders')
+    const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer
+    const file = { arrayBuffer: async () => bytes } as File
+
+    const result = await parseMarketplaceWorkbook(file, {
+      sheet_name: 'orders',
+      header_row: 0,
+      channel_code: 'SPTR',
+      column_map: [
+        { field_key: 'order_no', source_type: 'header_exact', source_value: 'เลขคำสั่งซื้อ', priority: 0 },
+        { field_key: 'payment_time', source_type: 'header_exact', source_value: 'เวลาชำระ', priority: 0 },
+        { field_key: 'sku_ref', source_type: 'header_exact', source_value: 'SKU', priority: 0 },
+        { field_key: 'qty', source_type: 'header_exact', source_value: 'จำนวน', priority: 0 },
+      ],
+      shipping_rules: [{
+        source_type: 'header_exact',
+        source_value: 'ตัวเลือกการจัดส่ง',
+        match_type: 'contains',
+        match_value: 'Express',
+        channel_code: 'FSPTR',
+        label: 'ส่งด่วน',
+        color: 'orange',
+        requires_express_receipt_number: true,
+      }],
+    })
+
+    expect(result.orders[0].channel_code).toBe('FSPTR')
+    expect(result.orders[0].requires_express_receipt_number).toBe(true)
   })
 })
 

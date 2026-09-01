@@ -808,6 +808,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     postal_code: '',
     mobile_phone: '',
     tracking_number: '',
+    express_receipt_number: '',
     price: 0,
     shipping_cost: 0,
     discount: 0,
@@ -1016,6 +1017,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           postal_code: bd?.postal_code ?? '',
           mobile_phone: bd?.mobile_phone ?? '',
           tracking_number: (order as { tracking_number?: string }).tracking_number || '',
+          express_receipt_number: (order as { express_receipt_number?: string }).express_receipt_number || '',
           price: order.price,
           shipping_cost: order.shipping_cost,
           discount: order.discount,
@@ -4943,6 +4945,18 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
             </div>
+            {formData.express_receipt_number && (
+              <div>
+                <label className="block text-sm font-medium mb-1">เลขรับพัสดุด่วน</label>
+                <input
+                  type="text"
+                  value={formData.express_receipt_number}
+                  onChange={(e) => setFormData({ ...formData, express_receipt_number: e.target.value })}
+                  disabled={formDisabled}
+                  className={`w-full rounded-lg border border-cyan-300 px-3 py-2 font-mono ${formDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-500' : 'bg-cyan-50/40'}`}
+                />
+              </div>
+            )}
           </div>
         </div>
         )}
@@ -6964,11 +6978,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                         const bill = (o.bill_no || '').toLowerCase()
                         const name = (o.customer_name || '').toLowerCase()
                         const orderNo = (o.channel_order_no || '').toLowerCase()
+                        const expressReceipt = (o.express_receipt_number || '').toLowerCase()
                         const reqBill = (claimRefMetaByOrderId[o.id]?.latestReqBillNo || '').toLowerCase()
                         return (
                           bill.includes(search) ||
                           name.includes(search) ||
                           orderNo.includes(search) ||
+                          expressReceipt.includes(search) ||
                           (reqBill && reqBill.includes(search))
                         )
                       })

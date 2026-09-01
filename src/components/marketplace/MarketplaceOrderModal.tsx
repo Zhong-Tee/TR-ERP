@@ -111,6 +111,7 @@ export default function MarketplaceOrderModal({
   const [cancelMode, setCancelMode] = useState(false)
   const [cancelNote, setCancelNote] = useState('')
   const [trackingNo, setTrackingNo] = useState(mpOrder.tracking_no || '')
+  const [expressReceiptNumber, setExpressReceiptNumber] = useState(mpOrder.express_receipt_number || '')
   const [assignedTo, setAssignedTo] = useState(mpOrder.assigned_to || '')
   const [savingAssignee, setSavingAssignee] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -477,7 +478,10 @@ export default function MarketplaceOrderModal({
       // เก็บเลขพัสดุที่กรอกไว้กับงาน (คงอยู่เมื่อเปิด popup ใหม่ / รอติดตาม)
       const { error: trackErr } = await supabase
         .from('mp_orders')
-        .update({ tracking_no: trackingNo.trim() || null })
+        .update({
+          tracking_no: trackingNo.trim() || null,
+          express_receipt_number: expressReceiptNumber.trim() || null,
+        })
         .eq('id', mpOrder.id)
       if (trackErr) throw trackErr
 
@@ -649,6 +653,7 @@ export default function MarketplaceOrderModal({
         paymentMethod: 'โอน',
         requiresConfirmDesign,
         trackingNo,
+        expressReceiptNumber,
         billingDetails,
       })
       window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
@@ -809,6 +814,18 @@ export default function MarketplaceOrderModal({
                 {mpOrder.order_total != null ? `${mpOrder.order_total.toLocaleString('th-TH')} บาท` : '-'}
               </span>
             </span>
+            {mpOrder.tracking_no && readOnly && (
+              <span className="flex gap-1.5">
+                <span className="text-gray-500">เลขพัสดุ</span>
+                <span className="font-mono font-semibold text-slate-800">{mpOrder.tracking_no}</span>
+              </span>
+            )}
+            {mpOrder.express_receipt_number && readOnly && (
+              <span className="flex gap-1.5">
+                <span className="text-gray-500">เลขรับพัสดุด่วน</span>
+                <span className="font-mono font-semibold text-cyan-800">{mpOrder.express_receipt_number}</span>
+              </span>
+            )}
             {mpOrder.follow_up_note && (
               <span className="flex gap-1.5">
                 <span className="text-gray-500">โน้ตติดตาม</span>
@@ -836,6 +853,18 @@ export default function MarketplaceOrderModal({
                   }`}
                 />
               </div>
+              {mpOrder.requires_express_receipt_number && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-semibold text-gray-700">เลขรับพัสดุด่วน</label>
+                  <input
+                    type="text"
+                    value={expressReceiptNumber}
+                    onChange={(e) => setExpressReceiptNumber(e.target.value)}
+                    placeholder="กรอกเลขรับพัสดุด่วน"
+                    className="w-64 rounded-lg border border-cyan-300 bg-cyan-50/40 px-3 py-1.5 font-mono text-sm"
+                  />
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => setRequiresConfirmDesign((v) => !v)}

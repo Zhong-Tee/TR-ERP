@@ -13,7 +13,7 @@ import Modal from '../components/ui/Modal'
 import IssueBoard from '../components/order/IssueBoard'
 import WorkOrderSelectionList from '../components/order/WorkOrderSelectionList'
 import WorkOrderManageList from '../components/order/WorkOrderManageList'
-import { isAdminOrSuperadmin, isRoleInAllowedList } from '../config/accessPolicy'
+import { isAdminOrSuperadmin, isOperationalIssueRole, isRoleInAllowedList } from '../config/accessPolicy'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { localISODate } from '../lib/localDate'
 import { getCutReadySec, getQcReadySec } from '../lib/planScheduling'
@@ -702,7 +702,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const { hasAccess, menuAccessLoading } = useMenuAccess()
   const isTechnician = user?.role === 'technician'
   const canAccessPlanView = (view: ViewKey) =>
-    isTechnician ? view === 'dash' : hasAccess(PLAN_MENU_KEY_MAP[view] || view)
+    isTechnician
+      ? view === 'dash'
+      : (view === 'issue' && isOperationalIssueRole(user?.role)) || hasAccess(PLAN_MENU_KEY_MAP[view] || view)
   const unlocked = isAdminOrSuperadmin(user?.role) && !tvMode
   const canManageCancelledStock = isRoleInAllowedList(user?.role, ['superadmin', 'admin', 'store']) && !tvMode
   const canSelectPlanDate = unlocked || user?.role === 'production' || isTechnician || tvMode
@@ -870,6 +872,16 @@ export default function Plan({ tvMode = false }: PlanProps) {
   }>({ open: false, jobId: null, dept: null, procName: '', step: 'confirm', resultMessage: '' })
   const menuCountsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stopProdDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planJobsRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const planJobsRequestRef = useRef(0)
+  const deptActionBusyRef = useRef<Set<string>>(new Set())
+  const [deptActionBusyKeys, setDeptActionBusyKeys] = useState<Set<string>>(new Set())
+
+  const setDeptActionBusy = useCallback((key: string, busy: boolean) => {
+    if (busy) deptActionBusyRef.current.add(key)
+    else deptActionBusyRef.current.delete(key)
+    setDeptActionBusyKeys(new Set(deptActionBusyRef.current))
+  }, [])
 
   const selectableDepts = settings.departments.filter((d) => !['เบิก', 'QC', 'PACK'].includes(d))
 
@@ -881,6 +893,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = !!opts?.silent
+    const jobsRequestId = ++planJobsRequestRef.current
     if (!silent) setDbStatus('กำลังโหลด...')
     try {
       const [settingsRes, jobsRes] = await Promise.all([
@@ -893,7 +906,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
         ? { ...defaultSettings, ...settingsRes.data.data }
         : defaultSettings
       setSettings(loadedSettings)
-      setJobs((jobsRes.data || []) as PlanJob[])
+      if (jobsRequestId === planJobsRequestRef.current) {
+        setJobs((jobsRes.data || []) as PlanJob[])
+      }
       if (!silent) setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     } catch (e: any) {
       console.error('Plan load error:', e)
@@ -904,6 +919,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
     } finally {
       if (!silent) setLoading(false)
     }
+  }, [])
+
+  const schedulePlanJobsRefresh = useCallback(() => {
+    if (planJobsRefreshTimerRef.current) clearTimeout(planJobsRefreshTimerRef.current)
+    planJobsRefreshTimerRef.current = setTimeout(async () => {
+      const requestId = ++planJobsRequestRef.current
+      const { data, error } = await supabase.from('plan_jobs').select('*').order('order_index')
+      if (error) {
+        console.error('Plan realtime refresh error:', error)
+        return
+      }
+      if (requestId === planJobsRequestRef.current && data) setJobs(data as PlanJob[])
+    }, 150)
   }, [])
 
   /** เบราว์เซอร์ทีวีบางรุ่นตัด WebSocket — โหลดซ้ำเป็นระยะให้ข้อมูลยังเคลื่อนไหว */
@@ -1160,18 +1188,13 @@ export default function Plan({ tvMode = false }: PlanProps) {
   useEffect(() => {
     const channel = supabase
       .channel('plan_jobs')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_jobs' }, () => {
-        supabase
-          .from('plan_jobs')
-          .select('*')
-          .order('order_index')
-          .then(({ data }) => data && setJobs(data as PlanJob[]))
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'plan_jobs' }, schedulePlanJobsRefresh)
       .subscribe()
     return () => {
+      if (planJobsRefreshTimerRef.current) clearTimeout(planJobsRefreshTimerRef.current)
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [schedulePlanJobsRefresh])
 
   const loadDashboardBillCounts = useCallback(async () => {
     const workOrderIds = Array.from(
@@ -1829,58 +1852,76 @@ export default function Plan({ tvMode = false }: PlanProps) {
 
   const markStart = useCallback(
     async (jobId: string, dept: string, proc: string) => {
+      const actionKey = `${dept}_${jobId}`
+      if (deptActionBusyRef.current.has(actionKey)) return
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (t?.start && !window.confirm('มีเวลาเริ่มอยู่แล้ว ต้องการแทนที่?')) return
-      const now = nowISO()
-      const firstProc = (settings.processes[dept] || [])[0]?.name
-      const patch: Record<string, Record<string, string>> = {
-        [proc]: { start: now },
+      setDeptActionBusy(actionKey, true)
+      ++planJobsRequestRef.current
+      try {
+        const now = nowISO()
+        const firstProc = (settings.processes[dept] || [])[0]?.name
+        const patch: Record<string, Record<string, string>> = {
+          [proc]: { start: now },
+        }
+        // เมื่อเริ่มหัวข้อแรก ให้ stamp "เตรียมไฟล์" ทันทีด้วย (ถ้ายังไม่มีเวลา)
+        if (firstProc && proc === firstProc) {
+          patch['เตรียมไฟล์'] = { start_if_null: now }
+        }
+        setDbStatus('กำลังอัปเดต...')
+        const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+          p_job_id: jobId,
+          p_dept: dept,
+          p_patch: patch,
+        })
+        if (error) {
+          setDbStatus('อัปเดตล้มเหลว')
+          alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+          return
+        }
+        ++planJobsRequestRef.current
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+        setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
+      } finally {
+        setDeptActionBusy(actionKey, false)
       }
-      // เมื่อเริ่มหัวข้อแรก ให้ stamp "เตรียมไฟล์" ทันทีด้วย (ถ้ายังไม่มีเวลา)
-      if (firstProc && proc === firstProc) {
-        patch['เตรียมไฟล์'] = { start_if_null: now }
-      }
-      setDbStatus('กำลังอัปเดต...')
-      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
-        p_job_id: jobId,
-        p_dept: dept,
-        p_patch: patch,
-      })
-      if (error) {
-        setDbStatus('อัปเดตล้มเหลว')
-        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
-        return
-      }
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
-      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs, settings.processes]
+    [jobs, settings.processes, setDeptActionBusy]
   )
 
   const markEnd = useCallback(
     async (jobId: string, dept: string, proc: string) => {
+      const actionKey = `${dept}_${jobId}`
+      if (deptActionBusyRef.current.has(actionKey)) return
       const job = jobs.find((j) => j.id === jobId)
       if (!job) return
       const t = job.tracks?.[dept]?.[proc]
       if (!t?.start && !window.confirm('ยังไม่กดเริ่ม จะบันทึกเสร็จเลยหรือไม่?')) return
-      const now = nowISO()
-      setDbStatus('กำลังอัปเดต...')
-      const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
-        p_job_id: jobId,
-        p_dept: dept,
-        p_patch: { [proc]: { start_if_null: now, end: now } },
-      })
-      if (error) {
-        setDbStatus('อัปเดตล้มเหลว')
-        alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
-        return
+      setDeptActionBusy(actionKey, true)
+      ++planJobsRequestRef.current
+      try {
+        const now = nowISO()
+        setDbStatus('กำลังอัปเดต...')
+        const { data: newTracks, error } = await supabase.rpc('merge_plan_tracks', {
+          p_job_id: jobId,
+          p_dept: dept,
+          p_patch: { [proc]: { start_if_null: now, end: now } },
+        })
+        if (error) {
+          setDbStatus('อัปเดตล้มเหลว')
+          alert('บันทึกข้อมูลไม่สำเร็จ! ' + error.message)
+          return
+        }
+        ++planJobsRequestRef.current
+        setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
+        setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
+      } finally {
+        setDeptActionBusy(actionKey, false)
       }
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tracks: newTracks } : j)))
-      setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
     },
-    [jobs]
+    [jobs, setDeptActionBusy]
   )
 
   const backStep = useCallback(
@@ -2819,6 +2860,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                             const isStarted = !!t?.start
                             const expKey = `${dept}_${j.id}`
                             const isExpanded = expandedDeptJob === expKey
+                            const isActionBusy = deptActionBusyKeys.has(expKey)
                             return (
                               <div
                                 key={j.id}
@@ -2913,17 +2955,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                         <button
                                           type="button"
                                           onClick={() => markStart(j.id, dept, currentProc)}
-                                          className="rounded-lg bg-blue-600 py-2.5 text-base font-bold text-white hover:bg-blue-700"
+                                          disabled={isActionBusy}
+                                          className="rounded-lg bg-blue-600 py-2.5 text-base font-bold text-white hover:bg-blue-700 disabled:cursor-wait disabled:opacity-60"
                                         >
-                                          เริ่ม: {currentProc}
+                                          {isActionBusy ? 'กำลังบันทึก...' : `เริ่ม: ${currentProc}`}
                                         </button>
                                       ) : (
                                         <button
                                           type="button"
                                           onClick={() => markEnd(j.id, dept, currentProc)}
-                                          className="rounded-lg bg-green-600 py-2.5 text-base font-bold text-white hover:bg-green-700"
+                                          disabled={isActionBusy}
+                                          className="rounded-lg bg-green-600 py-2.5 text-base font-bold text-white hover:bg-green-700 disabled:cursor-wait disabled:opacity-60"
                                         >
-                                          เสร็จ: {currentProc}
+                                          {isActionBusy ? 'กำลังบันทึก...' : `เสร็จ: ${currentProc}`}
                                         </button>
                                       )}
                                       <button
@@ -2938,7 +2982,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
                                             resultMessage: '',
                                           })
                                         }}
-                                        disabled={!hasStartedFirstStep || !unlocked}
+                                        disabled={isActionBusy || !hasStartedFirstStep || !unlocked}
                                         className="rounded-lg border border-red-500 bg-red-500 py-2.5 px-4 text-base font-medium text-white hover:bg-red-600 disabled:opacity-30 disabled:cursor-not-allowed"
                                       >
                                         ล้าง

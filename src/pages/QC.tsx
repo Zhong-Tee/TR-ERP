@@ -166,11 +166,19 @@ export default function QC() {
   const [imgErrors, setImgErrors] = useState({ product: false, cartoon: false })
   const barcodeInputRef = useRef<HTMLInputElement>(null)
   const workOrderReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const workOrderLoadRequestRef = useRef(0)
+  const hiddenCompletedWorkOrdersRef = useRef<Set<string>>(new Set())
+  const qcStepRef = useRef<QCStep>('select')
+  const rejectLoadRequestRef = useRef(0)
   const currentItemStartedAtRef = useRef<string>(new Date().toISOString())
 
   useEffect(() => {
     if (currentItem?.uid) currentItemStartedAtRef.current = new Date().toISOString()
   }, [currentItem?.uid])
+
+  useEffect(() => {
+    qcStepRef.current = qcState.step
+  }, [qcState.step])
 
   // Reject
   const [rejectData, setRejectData] = useState<QCRecord[]>([])
@@ -391,16 +399,30 @@ export default function QC() {
   const [planStartTimes, setPlanStartTimes] = useState<Record<string, string | null>>({})
 
   const loadWorkOrders = useCallback(async () => {
+    const requestId = ++workOrderLoadRequestRef.current
     setWorkOrdersLoading(true)
     setWorkOrdersError('')
     try {
-      const list = await fetchWorkOrdersWithProgress(true)
+      const fetchedList = await fetchWorkOrdersWithProgress(true)
+      if (requestId !== workOrderLoadRequestRef.current) return
+
+      // A completed card is removed optimistically after the close transaction.
+      // Keep it hidden if an older database snapshot/realtime request still
+      // contains it, then release the guard once a fresh query confirms removal.
+      const fetchedNames = new Set(fetchedList.map((workOrder) => workOrder.work_order_name))
+      hiddenCompletedWorkOrdersRef.current.forEach((workOrderName) => {
+        if (!fetchedNames.has(workOrderName)) hiddenCompletedWorkOrdersRef.current.delete(workOrderName)
+      })
+      const list = fetchedList.filter(
+        (workOrder) => !hiddenCompletedWorkOrdersRef.current.has(workOrder.work_order_name)
+      )
       setWorkOrdersWithProgress(list)
       if (isProduction && list.length > 0) {
         const results = await Promise.all(list.map(async (workOrder) => {
           const { data, error } = await supabase.rpc('rpc_qc_skip_eligibility', { p_work_order_name: workOrder.work_order_name })
           return [workOrder.work_order_name, error ? null : data as QcSkipEligibility] as const
         }))
+        if (requestId !== workOrderLoadRequestRef.current) return
         setSkipEligibilityByWo(Object.fromEntries(results.filter((entry): entry is readonly [string, QcSkipEligibility] => Boolean(entry[1]))))
       } else if (!isProduction) {
         setSkipEligibilityByWo({})
@@ -411,6 +433,7 @@ export default function QC() {
           .from('plan_jobs')
           .select('name, tracks')
           .in('name', names)
+        if (requestId !== workOrderLoadRequestRef.current) return
         const map: Record<string, string | null> = {}
         ;(planJobs || []).forEach((pj: any) => {
           const start = pj.tracks?.QC?.['เริ่มQC']?.start ?? null
@@ -419,12 +442,21 @@ export default function QC() {
         setPlanStartTimes(map)
       }
     } catch (e) {
+      if (requestId !== workOrderLoadRequestRef.current) return
       console.error('loadWorkOrders error:', e)
       setWorkOrdersError('โหลดรายการรอ QC ไม่สำเร็จ กรุณาลองใหม่')
     } finally {
-      setWorkOrdersLoading(false)
+      if (requestId === workOrderLoadRequestRef.current) setWorkOrdersLoading(false)
     }
   }, [isProduction])
+
+  const scheduleWorkOrdersReload = useCallback((delayMs = 300) => {
+    if (workOrderReloadTimerRef.current) clearTimeout(workOrderReloadTimerRef.current)
+    workOrderReloadTimerRef.current = setTimeout(() => {
+      workOrderReloadTimerRef.current = null
+      void loadWorkOrders()
+    }, delayMs)
+  }, [loadWorkOrders])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -436,14 +468,23 @@ export default function QC() {
     }
   }, [])
 
+  const refreshRejectItems = useCallback(async () => {
+    const requestId = ++rejectLoadRequestRef.current
+    const data = await fetchRejectItems()
+    // Realtime events can start overlapping requests. Only the newest response is
+    // allowed to replace the list, otherwise an older one-item snapshot can hide
+    // a second reject that was saved milliseconds later.
+    if (requestId === rejectLoadRequestRef.current) setRejectData(data)
+    return data
+  }, [])
+
   const loadRejectItems = useCallback(async () => {
     try {
-      const data = await fetchRejectItems()
-      setRejectData(data)
+      await refreshRejectItems()
     } catch (e) {
       console.error(e)
     }
-  }, [])
+  }, [refreshRejectItems])
 
   const loadCategoryGroups = useCallback(async () => {
     try {
@@ -588,26 +629,23 @@ export default function QC() {
       .channel('qc-page-realtime-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_records' }, () => {
         loadRejectItems()
-        loadWorkOrders()
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qc_sessions' }, () => {
-        loadWorkOrders()
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, () => {
-        loadWorkOrders()
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, () => {
-        loadWorkOrders()
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
         refreshActiveSessionItemUids()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_items' }, () => {
         // การสร้างใบงานมัก insert work order/order ก่อน insert items ถ้าไม่โหลดคิวซ้ำ
         // ใบงานจะค้างเป็นรายการว่างจนกว่าผู้ใช้จะรีเฟรชหน้าเอง
-        if (workOrderReloadTimerRef.current) clearTimeout(workOrderReloadTimerRef.current)
-        workOrderReloadTimerRef.current = setTimeout(() => {
-          loadWorkOrders()
-          refreshActiveSessionItemUids()
-        }, 300)
+        if (qcStepRef.current === 'select') scheduleWorkOrdersReload()
+        refreshActiveSessionItemUids()
       })
       .subscribe()
     return () => {
@@ -617,7 +655,7 @@ export default function QC() {
       }
       supabase.removeChannel(channel)
     }
-  }, [loadRejectItems, loadWorkOrders, refreshActiveSessionItemUids])
+  }, [loadRejectItems, refreshActiveSessionItemUids, scheduleWorkOrdersReload])
 
   useEffect(() => {
     if (currentView === 'reject') loadRejectItems()
@@ -877,8 +915,7 @@ export default function QC() {
     setLoading(true)
     try {
       await submitQcRecheck(currentRejectItem.id, 'fail', reason, qcUsername)
-      const updatedList = await fetchRejectItems()
-      setRejectData(updatedList)
+      const updatedList = await refreshRejectItems()
       const changed = updatedList.find((r) => r.id === currentRejectItem.id)
       const nextTab: 1 | 2 | 'escalated' = changed?.workflow_status === 'escalated'
         ? 'escalated'
@@ -988,9 +1025,13 @@ export default function QC() {
       setQcCategoryFilter('')
       const finishedWoName = qcState.filename.startsWith('WO-') ? qcState.filename.slice(3) : ''
       if (finishedWoName) {
+        hiddenCompletedWorkOrdersRef.current.add(finishedWoName)
         setWorkOrdersWithProgress((previous) => previous.filter((workOrder) => workOrder.work_order_name !== finishedWoName))
       }
-      await Promise.all([loadRejectItems(), loadWorkOrders()])
+      // The close transaction is already complete. Refresh the expensive queue
+      // queries in the background so the operator returns to a clean queue now.
+      void loadRejectItems()
+      void loadWorkOrders()
     } catch (e: any) {
       alert('บันทึกไม่สำเร็จ: ' + (e?.message || e))
     } finally {
@@ -1053,8 +1094,7 @@ export default function QC() {
         )
         setQcData((prev) => ({ ...prev, items: updatedItems }))
 
-        const updatedList = await fetchRejectItems()
-        setRejectData(updatedList)
+        const updatedList = await refreshRejectItems()
         const next = updatedList.find((r) => r.id !== currentRejectItem.id && r.retry_count === (currentRejectItem.retry_count || 1))
         const nextAny = updatedList.find((r) => r.id !== currentRejectItem.id)
         setCurrentRejectItem(next || nextAny || null)
@@ -1079,8 +1119,7 @@ export default function QC() {
     setLoading(true)
     try {
       await resolveQcEscalation(currentRejectItem.id, decision, reason, qcUsername)
-      const updatedList = await fetchRejectItems()
-      setRejectData(updatedList)
+      const updatedList = await refreshRejectItems()
       const next = updatedList.find((r) => r.workflow_status === 'escalated') || updatedList[0] || null
       setCurrentRejectItem(next)
       setActiveRejectTab(next ? (next.workflow_status === 'escalated' ? 'escalated' : Math.min(next.retry_count || 1, 2) as 1 | 2) : 'queue')
@@ -1373,10 +1412,11 @@ export default function QC() {
       })
 
       // เอารายการใบงานออกจากหน้าให้ทันทีหลังข้าม QC สำเร็จ
+      hiddenCompletedWorkOrdersRef.current.add(woName)
       setWorkOrdersWithProgress((prev) => prev.filter((wo) => wo.work_order_name !== woName))
       setProductionSkipReason('')
-      await loadWorkOrders()
-      loadRejectItems()
+      void loadWorkOrders()
+      void loadRejectItems()
     } catch (e: any) {
       alert('เกิดข้อผิดพลาด: ' + (e?.message || e))
     } finally {
@@ -3857,7 +3897,7 @@ export default function QC() {
       </Modal>
 
       {/* Session detail modal */}
-      <Modal open={showSessionModal} onClose={() => setShowSessionModal(false)} contentClassName="max-w-6xl max-h-[90vh] flex flex-col">
+      <Modal open={showSessionModal} onClose={() => setShowSessionModal(false)} contentClassName="max-w-[96vw] w-full max-h-[90vh] flex flex-col">
         <div className="p-4 pr-16 border-b flex items-center bg-gray-50 font-bold">
           <h3 className="text-xl">รายการตรวจสอบในเซสชัน</h3>
         </div>

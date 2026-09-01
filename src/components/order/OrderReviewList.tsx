@@ -200,6 +200,7 @@ function filterReviewOrders(orders: Order[], rawSearch: string): Order[] {
       record.recipient_name,
       record.channel_order_no,
       record.tracking_number,
+      record.express_receipt_number,
       order.admin_user,
       ...items.flatMap((item) => [item.product_name, item.product_id]),
     ]

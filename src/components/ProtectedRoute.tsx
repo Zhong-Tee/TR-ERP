@@ -4,6 +4,7 @@ import { UserRole } from '../types'
 import { useMenuAccess } from '../contexts/MenuAccessContext'
 import {
   isRoleInAllowedList,
+  isOperationalIssueRole,
   PARENT_SUB_PAGES,
   resolveMenuKeyFromPath,
   TECHNICIAN_ROLE,
@@ -138,6 +139,11 @@ export default function ProtectedRoute({
       return <>{children}</>
     }
     return <NoAccessFallback />
+  }
+
+  // ฝ่ายปฏิบัติการเปิด /plan เพื่อดู Issue ของตัวเองได้ แม้ไม่ได้รับสิทธิ์เมนู Plan ส่วนอื่น
+  if (location.pathname === '/plan' && isOperationalIssueRole(user.role)) {
+    return <>{children}</>
   }
 
   // Desktop roles: wait for menuAccess before deciding

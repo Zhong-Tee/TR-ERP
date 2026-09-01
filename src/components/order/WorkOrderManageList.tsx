@@ -249,6 +249,7 @@ function orderMatchesSearch(order: Order, needleLower: string): boolean {
     order.customer_name,
     order.recipient_name,
     order.tracking_number,
+    order.express_receipt_number,
     order.channel_order_no,
   ]
   return fields.some((f) => String(f || '').toLowerCase().includes(needleLower))
@@ -517,7 +518,7 @@ export default function WorkOrderManageList({
           .select('work_order_id')
           .not('work_order_id', 'is', null)
           .or(
-            buildIlikeOr(searchRaw, ['bill_no', 'customer_name', 'recipient_name', 'tracking_number', 'channel_order_no'])
+            buildIlikeOr(searchRaw, ['bill_no', 'customer_name', 'recipient_name', 'tracking_number', 'express_receipt_number', 'channel_order_no'])
           )
         if (mode === 'active') {
           orderMatchQuery = orderMatchQuery
@@ -634,7 +635,7 @@ export default function WorkOrderManageList({
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, express_receipt_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
         .in('work_order_id', workOrderIds)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -678,7 +679,7 @@ export default function WorkOrderManageList({
     try {
       const { data, error } = await supabase
         .from('or_orders')
-        .select('id, bill_no, customer_name, recipient_name, tracking_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
+        .select('id, bill_no, customer_name, recipient_name, tracking_number, express_receipt_number, channel_code, customer_address, status, channel_order_no, total_amount, claim_type, admin_user, work_order_id')
         .eq('work_order_id', workOrderId)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -2139,6 +2140,11 @@ export default function WorkOrderManageList({
                                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                                         {order.bill_no ?? '-'}
                                       </button>
+                                      {order.express_receipt_number && (
+                                        <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
+                                          รับด่วน: {order.express_receipt_number}
+                                        </div>
+                                      )}
                                       {!isOrderAllowedInFulfillmentFlow(order.status) && (
                                         <div className="mt-1 w-fit rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
                                           ยกเลิกบิล

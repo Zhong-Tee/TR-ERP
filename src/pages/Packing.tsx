@@ -44,6 +44,7 @@ type OrderWithItems = Order & {
 
 type PackingItem = {
   tracking_number: string
+  express_receipt_number: string
   customer_name: string
   order_id: string
   product_name: string
@@ -95,6 +96,14 @@ function activePackingOrderItems(order: OrderWithItems | any): any[] {
   )
 }
 
+function resolvePackingQcStatus(
+  qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
+  unitUid: string,
+  sourceLineUid: string | null | undefined
+): 'pass' | 'fail' | 'skip' | null {
+  return qcStatusMap[unitUid] ?? (sourceLineUid ? qcStatusMap[sourceLineUid] : undefined) ?? null
+}
+
 function buildPackingItemsFromOrder(
   order: OrderWithItems,
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
@@ -119,9 +128,13 @@ function buildPackingItemsFromOrder(
       seq += 1
       const unitUid = flatBillUnitUid(bill, seq)
       const key = `${order.id}\u0001${unitUid}`
-      const qcStatus = qcStatusMap[unitUid] || null
+      // Legacy QC records can be keyed by the original order-line UID, while
+      // current records use bill-unit UID. Match the same fallback used by the
+      // QC Operation queue so Packing cannot disagree with a completed session.
+      const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid)
       rows.push({
         tracking_number: order.tracking_number || '',
+        express_receipt_number: order.express_receipt_number || '',
         customer_name: order.customer_name || '',
         order_id: order.id,
         product_name: item.product_name || '',
@@ -429,6 +442,7 @@ export default function Packing() {
       bill_no: string | null
       customer_name: string | null
       tracking_number: string | null
+      express_receipt_number: string | null
     }>
   >([])
   const [shippedDateFrom, setShippedDateFrom] = useState(() => {
@@ -539,12 +553,11 @@ export default function Packing() {
   const ensurePlanDeptStart = async (workOrderName: string) => {
     if (!workOrderName) return
     const now = new Date().toISOString()
-    const { error } = await supabase.rpc('merge_plan_tracks_by_name', {
-      p_job_name: workOrderName,
-      p_dept: 'PACK',
-      p_patch: { 'เริ่มแพ็ค': { start_if_null: now } },
+    const { error } = await supabase.rpc('pk_start_work_order_packing', {
+      p_work_order_name: workOrderName,
+      p_started_at: now,
     })
-    if (error) console.error('PACK ensurePlanDeptStart error:', error.message)
+    if (error) throw error
   }
 
   const checkAndMarkPackEnd = async (workOrderName: string) => {
@@ -591,8 +604,13 @@ export default function Packing() {
       openAlert('ใบงานนี้ยังไม่มีบิลที่มีเลขพัสดุ')
       return
     }
-    const skipTrack = isAdminOrSuperadmin(user?.role)
-    if (!skipTrack) await ensurePlanDeptStart(workOrderName)
+    try {
+      await ensurePlanDeptStart(workOrderName)
+    } catch (error: any) {
+      console.error('PACK ensurePlanDeptStart error:', error)
+      openAlert('เริ่มแพ็คไม่สำเร็จ: ไม่สามารถบันทึกเวลาเริ่ม PACK ได้\n' + (error?.message || error))
+      return
+    }
 
     let startTime: Date = new Date()
     const { data: planJob } = await supabase
@@ -1290,6 +1308,9 @@ export default function Packing() {
       )
       const bill = String(ord.bill_no || '').trim() || '—'
       const unitUids = Array.from({ length: totalUnits }, (_, i) => flatBillUnitUid(bill, i + 1))
+      activePackingOrderItems(ord).forEach((item: any) => {
+        if (item.item_uid) unitUids.push(item.item_uid)
+      })
       const qcStatusMap = await fetchQcStatusMap(unitUids)
       const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet)
       setTagSearchRows(rows)
@@ -1425,7 +1446,8 @@ export default function Packing() {
       const bill = (row.bill_no || '').toLowerCase()
       const customer = (row.customer_name || '').toLowerCase()
       const tracking = (row.tracking_number || '').toLowerCase().replace(/\s+/g, '')
-      return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && tracking.includes(qNoSpace))
+      const expressReceipt = (row.express_receipt_number || '').toLowerCase().replace(/\s+/g, '')
+      return bill.includes(q) || customer.includes(q) || (qNoSpace !== '' && (tracking.includes(qNoSpace) || expressReceipt.includes(qNoSpace)))
     }
     // แสดงทั้งใบงานที่มีบิลตรงคำค้นอย่างน้อย 1 บิล (จำนวนบิลบนการ์ดจึงยังครบ)
     const matchedWo = new Set(base.filter(rowMatches).map((r) => r.work_order_name))
@@ -1620,6 +1642,7 @@ export default function Packing() {
           const bill = String(o.bill_no || '').trim() || '—'
           let seq = 0
           activePackingOrderItems(o).forEach((oi: any) => {
+            if (oi.item_uid) allUnitUids.push(oi.item_uid)
             const n = normalizedLineQuantity(oi.quantity)
             for (let i = 0; i < n; i += 1) {
               seq += 1
@@ -1670,7 +1693,7 @@ export default function Packing() {
               for (let i = 0; i < n; i += 1) {
                 seq += 1
                 const unitUid = flatBillUnitUid(bill, seq)
-                const st = qcStatusMap[unitUid]
+                const st = resolvePackingQcStatus(qcStatusMap, unitUid, oi.item_uid)
                 if (st === 'pass' || st === 'skip') unitReady += 1
                 const key = `${o.id}\u0001${unitUid}`
                 if (scannedKeySet.has(key)) unitScanned += 1
@@ -1696,7 +1719,7 @@ export default function Packing() {
               for (let i = 0; i < n; i += 1) {
                 seq += 1
                 allUnitCount += 1
-                if (qcStatusMap[flatBillUnitUid(bill, seq)] === 'skip') skipUnitCount += 1
+                if (resolvePackingQcStatus(qcStatusMap, flatBillUnitUid(bill, seq), oi.item_uid) === 'skip') skipUnitCount += 1
               }
             })
           })
@@ -1747,7 +1770,7 @@ export default function Packing() {
 
       const { data: shippedData, error: shippedError } = await supabase
         .from('or_orders')
-        .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number')
+        .select('id, work_order_name, shipped_time, channel_code, shipped_by, bill_no, customer_name, tracking_number, express_receipt_number')
         .eq('status', 'จัดส่งแล้ว')
         .not('work_order_name', 'is', null)
       if (shippedError) throw shippedError
@@ -1786,13 +1809,17 @@ export default function Packing() {
       const unitUids: string[] = []
       ordersWithTracking.forEach((order) => {
         const bill = String(order.bill_no || '').trim() || '—'
-        const totalUnits = activePackingOrderItems(order).reduce(
+        const activeItems = activePackingOrderItems(order)
+        const totalUnits = activeItems.reduce(
           (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
           0
         )
         for (let i = 0; i < totalUnits; i += 1) {
           unitUids.push(flatBillUnitUid(bill, i + 1))
         }
+        activeItems.forEach((item: any) => {
+          if (item.item_uid) unitUids.push(item.item_uid)
+        })
       })
       const qcStatusMap = await fetchQcStatusMap(unitUids)
       await prepareDataForPacking(ordersWithTracking, qcStatusMap, scannedKeySet)
@@ -1807,19 +1834,45 @@ export default function Packing() {
   async function fetchQcStatusMap(itemUids: Array<string | null | undefined>) {
     const uniqueUids = Array.from(new Set(itemUids.filter((uid): uid is string => !!uid && String(uid).trim() !== '')))
     if (uniqueUids.length === 0) return {}
-    const { data, error } = await supabase
-      .from('qc_records')
-      .select('item_uid, status, remark, created_at, last_result_at')
-      .in('item_uid', uniqueUids)
-      .order('last_result_at', { ascending: false })
-    if (error) {
-      console.error('QC status load error:', error)
-      return {}
+
+    // PostgREST limits a response page. Fetch every matching record in bounded
+    // UID batches, otherwise an older/high-volume WO can silently lose statuses.
+    const rows: Array<{
+      id: string
+      item_uid: string
+      status: string
+      remark: string | null
+      created_at: string | null
+      last_result_at: string | null
+    }> = []
+    const uidBatchSize = 200
+    const pageSize = 1000
+    for (let batchStart = 0; batchStart < uniqueUids.length; batchStart += uidBatchSize) {
+      const batch = uniqueUids.slice(batchStart, batchStart + uidBatchSize)
+      for (let from = 0; ; from += pageSize) {
+        const { data, error } = await supabase
+          .from('qc_records')
+          .select('id, item_uid, status, remark, created_at, last_result_at')
+          .in('item_uid', batch)
+          .order('id', { ascending: true })
+          .range(from, from + pageSize - 1)
+        if (error) {
+          console.error('QC status load error:', error)
+          return {}
+        }
+        rows.push(...((data || []) as typeof rows))
+        if (!data || data.length < pageSize) break
+      }
     }
+
+    rows.sort((a, b) => {
+      const timeDiff = new Date(a.last_result_at || 0).getTime() - new Date(b.last_result_at || 0).getTime()
+      return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id)
+    })
     const map: Record<string, 'pass' | 'fail' | 'skip'> = {}
-    ;(data || []).forEach((row: any) => {
+    rows.forEach((row) => {
       const uid = row.item_uid
-      if (!uid || map[uid]) return
+      if (!uid) return
       if (row.status === 'pass' && row.remark === 'ข้ามการ QC') {
         map[uid] = 'skip'
       } else if (row.status === 'pass' || row.status === 'fail') {
@@ -2674,7 +2727,7 @@ export default function Packing() {
   }
 
   return (
-    <div className="w-full flex flex-col min-h-0 h-full flex-1">
+    <div className={`w-full flex flex-col min-h-0 h-full flex-1 ${view === 'main' ? 'pb-6' : ''}`}>
 
       {view === 'selection' ? (
         <>
@@ -2839,7 +2892,7 @@ export default function Packing() {
                   type="text"
                   value={shippedSearch}
                   onChange={(e) => setShippedSearch(e.target.value)}
-                  placeholder="ค้นหาเลขบิล ชื่อลูกค้า หรือเลขพัสดุ"
+                  placeholder="ค้นหาเลขบิล ลูกค้า เลขพัสดุ หรือเลขรับพัสดุด่วน"
                   className="w-full border rounded-lg pl-3 pr-9 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
                 {shippedSearch && (
@@ -2979,6 +3032,12 @@ export default function Packing() {
                         เลขพัสดุ:{' '}
                         <span className="font-mono font-semibold">{formatParcelNo(tagSearchMeta.tracking || '') || '—'}</span>
                       </div>
+                      {tagSearchRows[0]?.express_receipt_number && (
+                        <div className="text-sm text-cyan-700">
+                          เลขรับพัสดุด่วน:{' '}
+                          <span className="font-mono font-semibold">{tagSearchRows[0].express_receipt_number}</span>
+                        </div>
+                      )}
                       <div className="text-sm text-gray-600">ลูกค้า: {tagSearchRows[0]?.customer_name || '—'}</div>
                     </div>
                     <div className="text-center md:self-start">
@@ -3604,7 +3663,7 @@ export default function Packing() {
                 </span>
                 <input
                   className="border rounded-lg px-3 py-2 text-base flex-1 min-w-0"
-                  placeholder="ค้นหาเลขพัสดุ..."
+                  placeholder="ค้นหาเลขพัสดุ หรือเลขรับพัสดุด่วน..."
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
                 />
@@ -3623,18 +3682,20 @@ export default function Packing() {
                 </svg>
                 {showUnpackedOnly ? 'แสดงทั้งหมด' : 'แสดงเฉพาะที่ยังไม่แพ็ค'}
               </button>
-              <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1">
+              <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1 pb-8">
                 {aggregatedData.map((group, index) => {
                   const isDone = group[0].isOrderComplete
                   const isFullScanned = group.every((item) => item.scanned)
                   const icon = isDone ? '✅' : isFullScanned ? '🟢' : '📦'
                   const tracking = group[0].tracking_number
+                  const expressReceiptNumber = group[0].express_receipt_number
                   const trackingDisp = formatParcelNo(tracking)
                   const searchNorm = searchTerm.replace(/\s+/g, '').toLowerCase()
                   if (
                     searchTerm &&
                     !trackingDisp.toLowerCase().includes(searchNorm) &&
-                    !tracking.toLowerCase().includes(searchTerm.toLowerCase())
+                    !tracking.toLowerCase().includes(searchTerm.toLowerCase()) &&
+                    !expressReceiptNumber.toLowerCase().includes(searchTerm.toLowerCase())
                   ) {
                     return null
                   }
@@ -3656,6 +3717,11 @@ export default function Packing() {
                             {!isDone && <UrgencyBadge order={group[0]} className="ml-1.5" />}
                           </div>
                           <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
+                          {expressReceiptNumber && (
+                            <div className="mt-0.5 font-mono text-xs font-semibold text-cyan-700">
+                              เลขรับพัสดุด่วน: {expressReceiptNumber}
+                            </div>
+                          )}
                           <div className="mt-1 flex items-center gap-2 flex-wrap">
                             <div className="text-sm font-bold text-indigo-700 tabular-nums">
                               Tag {group[0].packingTag ?? '—'}
@@ -4052,6 +4118,9 @@ export default function Packing() {
                               </tr>
                             )
                           })}
+                        <tr aria-hidden="true">
+                          <td colSpan={10} className="h-8 border-0 p-0 bg-white" />
+                        </tr>
                         </tbody>
                       </table>
                     </div>

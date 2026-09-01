@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
-import { canClearAllChats, canUseIssueChat, resolveMenuKeyFromPath } from '../../config/accessPolicy'
+import { canClearAllChats, canUseIssueChat, isOperationalIssueRole, resolveMenuKeyFromPath } from '../../config/accessPolicy'
 import { dispatchIssueOnCount } from '../../lib/issueOnCountBroadcast'
 import { broadcastHrMyOpenTaskCount, loadHrMyOpenTaskCount } from '../../lib/hrTaskBadge'
 import ModeSwitchButton from '../ModeSwitchButton'
@@ -308,8 +308,7 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
   /** Navigate to the correct Issue page based on role, then switch Issue tab (on / unread / …) */
   const handleIssueClick = (tabKey: string) => {
     // กำหนดเส้นทางตาม role
-    const isProductionRole = user?.role === 'production'
-    const targetPath = isProductionRole ? '/plan' : '/orders'
+    const targetPath = isOperationalIssueRole(user?.role) ? '/plan' : '/orders'
 
     // ถ้าอยู่ในหน้าที่ถูกต้องแล้ว → แค่ส่ง event สลับ tab
     if (location.pathname === targetPath) {

@@ -445,6 +445,8 @@ export default function OrderDetailView({
             <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
             <InfoRow label="เบอร์โทร" value={displayPhone || addressParts.phone} />
             <InfoRow label="เลขคำสั่งซื้อ" value={order.channel_order_no} />
+            <InfoRow label="เลขพัสดุ" value={order.tracking_number} />
+            <InfoRow label="เลขรับพัสดุด่วน" value={order.express_receipt_number} />
             {order.channel_code === 'SHOPP' && (
               <InfoRow
                 label="วันที่ เวลา นัดรับ"

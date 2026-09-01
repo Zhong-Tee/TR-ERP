@@ -348,7 +348,22 @@ export function canSeeOfficeChannel(role: MaybeRole): boolean {
 }
 
 export function canUseIssueChat(role: MaybeRole): boolean {
-  return role === 'superadmin' || role === 'admin' || isSalesOwnerScopedRole(role) || role === 'production'
+  return role === 'superadmin' || role === 'admin' || isSalesOwnerScopedRole(role) || isOperationalIssueRole(role)
+}
+
+/** ฝ่ายปฏิบัติการเห็น Ticket ที่ตัวเองเปิด รวมถึง Ticket ที่ฝ่ายขายเปิด */
+export function isOperationalIssueRole(role: MaybeRole): boolean {
+  return isRoleInAllowedList(role, ['production', 'qc_staff', 'packing_staff'])
+}
+
+export function canOperationalRoleSeeIssue(
+  viewerId: string | null | undefined,
+  issueCreatedBy: string | null | undefined,
+  issueCreatorRole: MaybeRole,
+): boolean {
+  return !!viewerId && (
+    issueCreatedBy === viewerId || isRoleInAllowedList(issueCreatorRole, ['sales-tr', 'sales-pump'])
+  )
 }
 
 export function canClearAllChats(role: MaybeRole): boolean {
@@ -357,10 +372,10 @@ export function canClearAllChats(role: MaybeRole): boolean {
 
 export function getIssueVisibilityScope(
   role: MaybeRole
-): 'all' | 'ownerOrders' | 'salesTrTeam' | 'creatorOrOwner' | 'none' {
+): 'all' | 'ownerOrders' | 'salesTrTeam' | 'operational' | 'none' {
   if (isAdminOrSuperadmin(role)) return 'all'
   if (isSalesTrTeamRole(role)) return 'salesTrTeam'
   if (isSalesPumpOwnerScopedRole(role)) return 'ownerOrders'
-  if (role === 'production') return 'creatorOrOwner'
+  if (isOperationalIssueRole(role)) return 'operational'
   return 'none'
 }

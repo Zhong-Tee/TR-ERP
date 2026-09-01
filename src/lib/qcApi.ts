@@ -5,7 +5,7 @@ import { supabase } from './supabase'
 import { buildIlikeOr } from './searchFilter'
 import * as XLSX from 'xlsx'
 import type { QCItem, QCRecord, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
-import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from './orderFlowFilter'
+import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN, isOrderAllowedInFulfillmentFlow } from './orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
@@ -741,41 +741,56 @@ export function clearSessionBackup(): void {
 
 /** Load rejected qc_records (is_rejected = true) for Reject Management. */
 export async function fetchRejectItems() {
-  const { data, error } = await supabase
-    .from('qc_records')
-    .select('*')
-    .eq('is_rejected', true)
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  const rejectedRecords = data || []
+  const rejectedRecords = await fetchAllQueryPages<QCRecord>((from, to) =>
+    supabase
+      .from('qc_records')
+      .select('*')
+      .eq('is_rejected', true)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to)
+  )
   if (rejectedRecords.length === 0) return []
 
-  const itemUids = [...new Set(rejectedRecords.map((r) => r.item_uid).filter(Boolean))]
-  if (itemUids.length === 0) return rejectedRecords
+  // QC records use a flattened per-unit UID (bill-sequence), while or_order_items
+  // stores the source-line UID. Linking them by item_uid drops valid siblings from
+  // the recheck list. bill_no is persisted on every QC record and is the stable
+  // link back to the order containing those flattened units.
+  const billNos = [...new Set(rejectedRecords.map((r) => r.bill_no?.trim()).filter((v): v is string => Boolean(v)))]
+  if (billNos.length === 0) return rejectedRecords
 
-  const { data: itemRows, error: itemErr } = await supabase
-    .from('or_order_items')
-    .select('item_uid, order_id')
-    .in('item_uid', itemUids)
-    .is('cancellation_stock_action', null)
-  if (itemErr) throw itemErr
-
-  const orderIds = [...new Set((itemRows || []).map((r) => r.order_id).filter(Boolean))]
-  if (orderIds.length === 0) return rejectedRecords
-
-  const { data: activeOrders, error: ordErr } = await supabase
-    .from('or_orders')
-    .select('id, bill_no, ship_due_at, overdue_at')
-    .in('id', orderIds)
-    .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
-  if (ordErr) throw ordErr
-
-  const activeOrderIdSet = new Set((activeOrders || []).map((r) => r.id))
-  const activeItemUidSet = new Set(
-    (itemRows || [])
-      .filter((r) => activeOrderIdSet.has(r.order_id))
-      .map((r) => r.item_uid)
+  const matchingOrders = await fetchQueryInBatches<{
+    id: string
+    bill_no: string | null
+    status: string | null
+    ship_due_at: string | null
+    overdue_at: string | null
+  }>(billNos, (batch, from, to) =>
+    supabase
+      .from('or_orders')
+      .select('id, bill_no, status, ship_due_at, overdue_at')
+      .in('bill_no', batch)
+      .order('id', { ascending: true })
+      .range(from, to)
   )
+
+  const matchedBillNoSet = new Set(matchingOrders.map((order) => order.bill_no).filter(Boolean))
+  const allowedOrders = matchingOrders.filter((order) => isOrderAllowedInFulfillmentFlow(order.status))
+  const allowedOrderIds = allowedOrders.map((order) => order.id)
+  const activeItemRows = allowedOrderIds.length === 0 ? [] : await fetchQueryInBatches<{ order_id: string }>(
+    allowedOrderIds,
+    (batch, from, to) => supabase
+      .from('or_order_items')
+      .select('order_id')
+      .in('order_id', batch)
+      .is('cancellation_stock_action', null)
+      .order('order_id', { ascending: true })
+      .range(from, to)
+  )
+  const orderIdsWithActiveItems = new Set(activeItemRows.map((row) => row.order_id))
+  const activeOrders = allowedOrders.filter((order) => orderIdsWithActiveItems.has(order.id))
+  const activeBillNoSet = new Set(activeOrders.map((order) => order.bill_no).filter(Boolean))
+
   // ป้าย ส่งด่วน/ล่าช้า: map กำหนดส่งตามเลขบิล (บิลจากเมนู Marketplace เท่านั้นที่มีค่า)
   const dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null }> = {}
   ;(activeOrders || []).forEach((o: { bill_no?: string | null; ship_due_at?: string | null; overdue_at?: string | null }) => {
@@ -784,7 +799,9 @@ export async function fetchRejectItems() {
     }
   })
   return rejectedRecords
-    .filter((r) => activeItemUidSet.has(r.item_uid))
+    // Keep legacy records whose bill can no longer be resolved. If the bill still
+    // exists, show it only while at least one matching order item remains active.
+    .filter((r) => !r.bill_no || !matchedBillNoSet.has(r.bill_no) || activeBillNoSet.has(r.bill_no))
     .map((r) => ({
       ...r,
       ship_due_at: dueByBillNo[r.bill_no]?.ship_due_at ?? null,

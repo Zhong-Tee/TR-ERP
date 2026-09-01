@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FiArrowDown, FiArrowUp } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { useWmsModal } from '../wms/useWmsModal'
-import { buildMpItemRows, parseMarketplaceWorkbook, type MpParsedOrder } from '../../lib/marketplaceImport'
+import {
+  buildMpItemRows,
+  normalizeMarketplaceSkuForProductMatch,
+  parseMarketplaceWorkbook,
+  type MpParsedOrder,
+} from '../../lib/marketplaceImport'
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
 import type { User } from '../../types'
@@ -100,6 +105,7 @@ export default function MarketplaceNewTab({
           o.recipient_name,
           o.phone,
           o.tracking_no,
+          o.express_receipt_number,
           o.platform_status,
         ]
           .filter(Boolean)
@@ -190,11 +196,15 @@ export default function MarketplaceNewTab({
       }
 
       // auto-match SKU → pr_products.product_code
-      const skus = Array.from(
+      const importedSkus = Array.from(
         new Set(
           importOrders.flatMap((o) => o.items.map((it) => (it.sku_ref || '').trim()).filter(Boolean)),
         ),
       )
+      const skus = Array.from(new Set(importedSkus.flatMap((sku) => {
+        const normalized = normalizeMarketplaceSkuForProductMatch(sku)
+        return normalized && normalized !== sku.toLowerCase() ? [sku, normalized] : [sku]
+      })))
       const skuToProductId = new Map<string, string>()
       for (const chunk of chunked(skus, CHUNK)) {
         const { data } = await supabase
@@ -233,6 +243,7 @@ export default function MarketplaceNewTab({
           shipping_option: o.shipping_option,
           urgency_label: o.urgency_label,
           urgency_color: o.urgency_color,
+          requires_express_receipt_number: o.requires_express_receipt_number,
           marketplace_order_no: o.marketplace_order_no,
           platform_status: o.platform_status,
           buyer_username: o.buyer_username,
@@ -607,6 +618,11 @@ export default function MarketplaceNewTab({
                     <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">
                       <span className="mr-2">{o.marketplace_order_no}</span>
                       <UrgencyBadge order={o} />
+                      {o.express_receipt_number && (
+                        <div className="mt-1 font-mono text-xs font-semibold text-cyan-700">
+                          รับด่วน: {o.express_receipt_number}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold">
