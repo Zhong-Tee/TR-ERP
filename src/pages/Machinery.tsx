@@ -35,6 +35,7 @@ import { isSuperadmin } from '../config/accessPolicy'
 import { getActiveMobileMode, hasDesktopOverride } from '../lib/mobileMode'
 import {
   buildReadiness,
+  copyMachineryChecklistSettings,
   fetchChecklistItems,
   fetchInspectionAccessMachineIds,
   fetchTodayInspections,
@@ -156,6 +157,7 @@ export default function Machinery() {
   const [grantedInspectionMachineIds, setGrantedInspectionMachineIds] = useState<string[]>([])
 
   const isProductionRole = user?.role === 'production'
+  const canToggleMachinePower = ['superadmin', 'admin', 'technician'].includes(user?.role || '')
 
   const showMachineSettingsTab =
     !isProductionRole &&
@@ -446,6 +448,11 @@ export default function Machinery() {
   }, [monitorMachines])
 
   const onStatusChange = async (machineId: string, status: PrMachineryStatus) => {
+    const currentStatus = machines.find((machine) => machine.id === machineId)?.current_status
+    if ((status === 'power_off' || currentStatus === 'power_off') && !canToggleMachinePower) {
+      setError('เฉพาะ superadmin, admin และ technician เท่านั้นที่เปิดหรือปิดเครื่องได้')
+      return
+    }
     setSavingId(machineId)
     setError(null)
     try {
@@ -461,6 +468,7 @@ export default function Machinery() {
 
   const [form, setForm] = useState<Partial<MachineryMachine>>({
     name: '',
+    ip_address: null,
     machine_type: 'ทั่วไป',
     capacity_unit: 'หน่วย',
     product_ids: [],
@@ -483,6 +491,7 @@ export default function Machinery() {
   const [photoRemove, setPhotoRemove] = useState(false)
   const [photoPreview, setPhotoPreview] = useState<string | null>(null)
   const [isMachineFormOpen, setIsMachineFormOpen] = useState(false)
+  const [copySourceMachineId, setCopySourceMachineId] = useState<string | null>(null)
   const [draggedMachineId, setDraggedMachineId] = useState<string | null>(null)
   const [isReorderingMachines, setIsReorderingMachines] = useState(false)
 
@@ -496,6 +505,7 @@ export default function Machinery() {
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setForm({
       name: '',
+      ip_address: null,
       machine_type: 'ทั่วไป',
       capacity_unit: 'หน่วย',
       product_ids: [],
@@ -515,6 +525,7 @@ export default function Machinery() {
     setIncidentTitleDraft('')
     setPhotoRemove(false)
     setPhotoPreview(null)
+    setCopySourceMachineId(null)
   }
 
   const saveMachine = async (e: React.FormEvent) => {
@@ -525,6 +536,7 @@ export default function Machinery() {
       const base = {
         id: form.id,
         name: form.name.trim(),
+        ip_address: form.ip_address?.trim() || null,
         machine_type: form.machine_type?.trim() || 'ทั่วไป',
         capacity_unit: form.capacity_unit?.trim() || 'หน่วย',
         product_ids: form.product_ids || [],
@@ -542,14 +554,18 @@ export default function Machinery() {
           ? Number(form.sort_order) || 0
           : machines.reduce((highest, machine) => Math.max(highest, Number(machine.sort_order) || 0), -1) + 1,
       }
+      let savedMachine: MachineryMachine
       if (photoRemove && form.id) {
-        await upsertMachine({ ...base, name: base.name, image_url: null })
+        savedMachine = await upsertMachine({ ...base, name: base.name, image_url: null })
       } else if (photoFile) {
-        const saved = await upsertMachine({ ...base, name: base.name })
-        const url = await uploadMachineryPhoto(saved.id, photoFile)
-        await upsertMachine({ id: saved.id, name: saved.name, image_url: url })
+        savedMachine = await upsertMachine({ ...base, name: base.name })
+        const url = await uploadMachineryPhoto(savedMachine.id, photoFile)
+        savedMachine = await upsertMachine({ ...base, id: savedMachine.id, name: savedMachine.name, image_url: url })
       } else {
-        await upsertMachine({ ...base, name: base.name })
+        savedMachine = await upsertMachine({ ...base, name: base.name })
+      }
+      if (!form.id && copySourceMachineId) {
+        await copyMachineryChecklistSettings(copySourceMachineId, savedMachine.id)
       }
       resetForm()
       setIsMachineFormOpen(false)
@@ -561,6 +577,7 @@ export default function Machinery() {
 
   const editMachine = (m: MachineryMachine) => {
     setIsMachineFormOpen(true)
+    setCopySourceMachineId(null)
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setPhotoFile(null)
     setIncidentTitleDraft('')
@@ -570,6 +587,7 @@ export default function Machinery() {
     setForm({
       id: m.id,
       name: m.name,
+      ip_address: m.ip_address || null,
       machine_type: m.machine_type || 'ทั่วไป',
       capacity_unit: m.capacity_unit || 'หน่วย',
       product_ids: m.product_ids || [],
@@ -594,6 +612,7 @@ export default function Machinery() {
 
   const copyMachine = (m: MachineryMachine) => {
     setIsMachineFormOpen(true)
+    setCopySourceMachineId(m.id)
     if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
     setPhotoFile(null)
     setIncidentTitleDraft('')
@@ -610,6 +629,7 @@ export default function Machinery() {
     }
     setForm({
       name: copyName,
+      ip_address: m.ip_address || null,
       machine_type: m.machine_type || 'ทั่วไป',
       capacity_unit: m.capacity_unit || 'หน่วย',
       product_ids: [...(m.product_ids || [])],
@@ -828,7 +848,7 @@ export default function Machinery() {
           <div>
             <div className="flex items-start justify-between gap-3">
               <h3 className="min-w-0 text-base sm:text-lg font-bold leading-tight">{m.name}</h3>
-              <label
+              {canToggleMachinePower && <label
                 className={`inline-flex shrink-0 items-center gap-1.5 ${canTogglePower ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
                 title={canTogglePower ? (isPowerOn ? 'ปิดเครื่อง' : 'เปิดเครื่อง') : 'สถานะนี้ต้องจัดการผ่านกระบวนการแจ้งซ่อม'}
               >
@@ -842,8 +862,11 @@ export default function Machinery() {
                   aria-label={`${isPowerOn ? 'ปิด' : 'เปิด'}เครื่อง ${m.name}`}
                 />
                 <span className="relative h-6 w-11 rounded-full bg-slate-400 transition-colors peer-checked:bg-emerald-500 peer-disabled:opacity-60 after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition-transform peer-checked:after:translate-x-5" />
-              </label>
+              </label>}
             </div>
+            {m.ip_address?.trim() && (
+              <p className={`mt-1 text-xs font-mono ${subTextColor}`}>IP {m.ip_address}</p>
+            )}
             <p className={`mt-1 text-[11px] font-semibold uppercase tracking-wide ${subTextColor}`}>
               {m.machine_type || 'ทั่วไป'}
             </p>
@@ -1175,7 +1198,10 @@ export default function Machinery() {
           {!isMachineFormOpen && <div className="flex justify-end">
             <button
               type="button"
-              onClick={() => setIsMachineFormOpen(true)}
+              onClick={() => {
+                resetForm()
+                setIsMachineFormOpen(true)
+              }}
               className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
               aria-expanded="false"
             >
@@ -1205,6 +1231,19 @@ export default function Machinery() {
                   value={form.name || ''}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   required
+                />
+              </label>
+              <label className="block">
+                <span className={`text-sm ${isMobileRole ? 'text-gray-500' : 'text-gray-500'}`}>IP Address</span>
+                <input
+                  className={`mt-1 w-full border rounded-lg px-3 py-2.5 text-base font-mono ${
+                    isMobileRole ? 'border-slate-600 bg-slate-900/80 text-white' : ''
+                  }`}
+                  value={form.ip_address || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, ip_address: e.target.value }))}
+                  placeholder="เช่น 192.168.1.100"
+                  maxLength={45}
+                  autoComplete="off"
                 />
               </label>
               <label className="block">
@@ -1312,7 +1351,7 @@ export default function Machinery() {
                   )}
                 </select>
               </label>
-              <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2 xl:[grid-column:1/16] xl:row-start-4">
+              <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2 xl:[grid-column:1/16]">
                 <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition ${
                   form.is_primary_machine ?? true
                     ? 'border-emerald-300 bg-emerald-50'
@@ -1525,6 +1564,7 @@ export default function Machinery() {
                   <th className="w-20 px-3 py-3 whitespace-nowrap text-center">ลากลำดับ</th>
                   <th className="px-3 py-3 whitespace-nowrap w-16">รูป</th>
                   <th className="px-3 py-3 whitespace-nowrap">เครื่อง</th>
+                  <th className="px-3 py-3 whitespace-nowrap">IP Address</th>
                   <th className="px-3 py-3 whitespace-nowrap">ประเภท</th>
                   <th className="px-3 py-3 whitespace-nowrap min-w-[8rem]">สถานที่</th>
                   <th className="px-3 py-3 whitespace-nowrap">กะ</th>
@@ -1570,6 +1610,9 @@ export default function Machinery() {
                     </td>
                     <td className={`px-3 py-3 font-medium ${isMobileRole ? 'text-slate-100' : 'text-gray-900'}`}>
                       {m.name}
+                    </td>
+                    <td className={`px-3 py-3 font-mono text-sm ${isMobileRole ? 'text-gray-300' : 'text-gray-600'}`}>
+                      {m.ip_address?.trim() || '—'}
                     </td>
                     <td className="px-3 py-3 text-gray-600">{m.machine_type || 'ทั่วไป'}</td>
                     <td className={`px-3 py-3 ${isMobileRole ? 'text-gray-400' : 'text-gray-600'}`}>

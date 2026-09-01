@@ -25,6 +25,14 @@ export async function saveChecklistItem(row:Partial<ChecklistItem>&{machine_id:s
 }
 export async function disableChecklistItem(id:string){const {error}=await supabase.from('pr_machinery_checklist_items').update({is_active:false}).eq('id',id);if(error)throw error}
 
+export async function copyMachineryChecklistSettings(sourceMachineId:string,targetMachineId:string):Promise<void>{
+  const {error}=await supabase.rpc('rpc_copy_machinery_checklist_settings',{
+    p_source_machine_id:sourceMachineId,
+    p_target_machine_id:targetMachineId,
+  })
+  if(error)throw error
+}
+
 export async function fetchInspectionAccessUserIds(machineId:string):Promise<string[]> {
   const {data,error}=await supabase.from('pr_machinery_inspection_machine_users').select('user_id').eq('machine_id',machineId)
   if(error) throw error

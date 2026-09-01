@@ -11,6 +11,7 @@ export type PrMachineryStatus =
 export interface MachineryMachine {
   id: string
   name: string
+  ip_address: string | null
   machine_type: string
   capacity_unit: string
   product_ids: string[]
@@ -195,6 +196,7 @@ export async function upsertMachine(
 ): Promise<MachineryMachine> {
   const payload: Record<string, unknown> = {
     name: row.name,
+    ip_address: row.ip_address?.trim() || null,
     machine_type: row.machine_type?.trim() || 'ทั่วไป',
     capacity_unit: row.capacity_unit?.trim() || 'หน่วย',
     product_ids: row.product_ids || [],
