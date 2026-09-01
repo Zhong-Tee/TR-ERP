@@ -1067,7 +1067,7 @@ export default function IssueBoard({
       <Modal
         open={!!detailOrder || detailLoading}
         onClose={() => setDetailOrder(null)}
-        contentClassName="max-w-5xl w-full"
+        contentClassName="max-w-[96vw] w-full"
       >
         {detailLoading ? (
           <div className="flex justify-center items-center py-12">

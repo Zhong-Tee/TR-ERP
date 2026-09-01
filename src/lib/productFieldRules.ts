@@ -20,11 +20,13 @@ export type FieldRuleKey =
   | 'notes'
   | 'attachment'
 
+export type ProductFieldOverrideValue = boolean | null | 'required'
+
 export interface FieldRuleMaps {
   /** จาก pr_category_field_settings (key = category) */
   categorySettings: Record<string, Record<string, boolean | string | null>>
   /** จาก pr_product_field_overrides (key = product_id, ค่า null = inherit จากหมวด) */
-  productOverrides: Record<string, Record<string, boolean | null>>
+  productOverrides: Record<string, Record<string, ProductFieldOverrideValue>>
 }
 
 const OVERRIDE_FIELDS: FieldRuleKey[] = [
@@ -49,10 +51,13 @@ export async function loadFieldRuleMaps(): Promise<FieldRuleMaps> {
   ;(overrideRes.data || []).forEach((row: Record<string, unknown>) => {
     const pid = String(row.product_id ?? '')
     if (!pid) return
-    const map: Record<string, boolean | null> = {}
+    const requiredFields = new Set(
+      Array.isArray(row.required_fields) ? row.required_fields.map((value) => String(value)) : [],
+    )
+    const map: Record<string, ProductFieldOverrideValue> = {}
     OVERRIDE_FIELDS.forEach((f) => {
       const v = row[f]
-      map[f] = v === undefined ? null : (v as boolean | null)
+      map[f] = requiredFields.has(f) ? 'required' : v === undefined ? null : (v as boolean | null)
     })
     productOverrides[pid] = map
   })
@@ -72,7 +77,7 @@ export function resolveFieldEnabled(
   if (overrides) {
     const overrideVal = overrides[fieldKey]
     if (overrideVal !== undefined && overrideVal !== null) {
-      return overrideVal === true
+      return overrideVal === true || overrideVal === 'required'
     }
   }
 
@@ -85,4 +90,14 @@ export function resolveFieldEnabled(
   const v = categorySettings[fieldKey]
   if (v === undefined || v === null) return true
   return v === true || v === 'true'
+}
+
+/** ฟิลด์นี้ถูกตั้งค่า Override เปิด (บังคับกรอก) หรือไม่ */
+export function resolveFieldRequired(
+  product: { id: string; product_category?: string | null } | null | undefined,
+  fieldKey: FieldRuleKey | string,
+  maps: FieldRuleMaps,
+): boolean {
+  if (!product) return false
+  return maps.productOverrides[String(product.id)]?.[fieldKey] === 'required'
 }

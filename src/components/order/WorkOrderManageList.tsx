@@ -2727,7 +2727,7 @@ export default function WorkOrderManageList({
       </Modal>
 
       {/* Detail Modal */}
-      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-6xl w-full">
+      <Modal open={!!detailOrder} onClose={() => setDetailOrder(null)} contentClassName="max-w-[96vw] w-full">
         {detailOrder && <OrderDetailView order={detailOrder} onClose={() => setDetailOrder(null)} />}
       </Modal>
 

@@ -193,6 +193,7 @@ export default function Settings() {
     { key: 'attachment', label: 'ไฟล์แนบ' },
   ] as const
   type ProductFieldKey = (typeof PRODUCT_FIELD_KEYS)[number]['key']
+  type ProductFieldOverrideValue = boolean | null | 'required'
   const defaultCategoryFields: Record<ProductFieldKey, boolean> = {
     product_name: true,
     ink_color: true,
@@ -217,7 +218,7 @@ export default function Settings() {
   const categoryFileInputRef = useRef<HTMLInputElement>(null)
   // Product-level field overrides (null = ใช้ค่าจากหมวดหมู่)
   const [allProducts, setAllProducts] = useState<{ id: string; product_name: string; product_code: string; product_category: string | null }[]>([])
-  const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, boolean | null>>>({})
+  const [productOverrides, setProductOverrides] = useState<Record<string, Record<ProductFieldKey, ProductFieldOverrideValue>>>({})
   const [savingProductOverrides, setSavingProductOverrides] = useState(false)
   const [importingOverrides, setImportingOverrides] = useState(false)
   const overrideFileInputRef = useRef<HTMLInputElement>(null)
@@ -1670,15 +1671,16 @@ export default function Settings() {
     try {
       const { data, error } = await supabase.from('pr_product_field_overrides').select('*')
       if (error) throw error
-      const map: Record<string, Record<ProductFieldKey, boolean | null>> = {}
+      const map: Record<string, Record<ProductFieldKey, ProductFieldOverrideValue>> = {}
       ;(data || []).forEach((row: any) => {
         const pid = row.product_id
         if (!pid) return
-        const entry: Record<string, boolean | null> = {}
+        const requiredFields = new Set<string>(Array.isArray(row.required_fields) ? row.required_fields : [])
+        const entry: Record<string, ProductFieldOverrideValue> = {}
         for (const { key } of PRODUCT_FIELD_KEYS) {
-          entry[key] = row[key] ?? null
+          entry[key] = requiredFields.has(key) ? 'required' : row[key] ?? null
         }
-        map[pid] = entry as Record<ProductFieldKey, boolean | null>
+        map[pid] = entry as Record<ProductFieldKey, ProductFieldOverrideValue>
       })
       setProductOverrides(map)
     } catch (error: any) {
@@ -1687,14 +1689,14 @@ export default function Settings() {
     }
   }
 
-  function getProductOverrideFields(productId: string): Record<ProductFieldKey, boolean | null> {
+  function getProductOverrideFields(productId: string): Record<ProductFieldKey, ProductFieldOverrideValue> {
     if (productOverrides[productId]) return { ...productOverrides[productId] }
-    const empty: Record<string, boolean | null> = {}
+    const empty: Record<string, ProductFieldOverrideValue> = {}
     for (const { key } of PRODUCT_FIELD_KEYS) empty[key] = null
-    return empty as Record<ProductFieldKey, boolean | null>
+    return empty as Record<ProductFieldKey, ProductFieldOverrideValue>
   }
 
-  function setProductOverrideField(productId: string, field: ProductFieldKey, value: boolean | null) {
+  function setProductOverrideField(productId: string, field: ProductFieldKey, value: ProductFieldOverrideValue) {
     setProductOverrides((prev) => ({
       ...prev,
       [productId]: { ...getProductOverrideFields(productId), [field]: value },
@@ -1755,25 +1757,20 @@ export default function Settings() {
 
       for (const product of productsWithOverrides) {
         const fields = getProductOverrideFields(product.id)
-        await supabase.from('pr_product_field_overrides').upsert(
+        const { error } = await supabase.from('pr_product_field_overrides').upsert(
           {
             product_id: product.id,
-            ink_color: fields.ink_color,
-            layer: fields.layer,
-            cartoon_pattern: fields.cartoon_pattern,
-            line_pattern: fields.line_pattern,
-            font: fields.font,
-            line_1: fields.line_1,
-            line_2: fields.line_2,
-            line_3: fields.line_3,
-            quantity: fields.quantity,
-            unit_price: fields.unit_price,
-            notes: fields.notes,
-            attachment: fields.attachment,
+            ...Object.fromEntries(
+              PRODUCT_FIELD_KEYS
+                .filter(({ key }) => key !== 'product_name')
+                .map(({ key }) => [key, fields[key] === 'required' ? true : fields[key]]),
+            ),
+            required_fields: PRODUCT_FIELD_KEYS.filter(({ key }) => fields[key] === 'required').map(({ key }) => key),
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'product_id' }
         )
+        if (error) throw error
       }
 
       if (productsWithoutOverrides.length > 0) {
@@ -1799,18 +1796,20 @@ export default function Settings() {
   const OVERRIDE_ID_HEADERS = ['product_code', 'product_name', 'product_category'] as const
   const overrideExportHeaders = [...OVERRIDE_ID_HEADERS, ...PRODUCT_FIELD_KEYS.map((f) => f.label)]
 
-  /** boolean|null → ค่าที่เขียนลงเซลล์ — override เป็น 1/0, ตามหมวดหมู่แสดงค่าหมวดในวงเล็บ (1)/(0) */
-  function overrideValueToCell(value: boolean | null, categoryValue: boolean): string {
+  /** ค่า override → ค่าที่เขียนลงเซลล์ */
+  function overrideValueToCell(value: ProductFieldOverrideValue, categoryValue: boolean): string {
+    if (value === 'required') return 'R'
     if (value === true) return '1'
     if (value === false) return '0'
     return categoryValue ? '(1)' : '(0)'
   }
 
   /** ค่าในเซลล์ → boolean|null (รองรับ 1/0, เปิด/ปิด, true/false, y/n — ค่าในวงเล็บ = ตามหมวดหมู่) */
-  function overrideCellToValue(raw: unknown): boolean | null {
+  function overrideCellToValue(raw: unknown): ProductFieldOverrideValue {
     const s = String(raw ?? '').trim().toLowerCase()
     if (s === '') return null
     if (s.startsWith('(')) return null // ค่าจากหมวดหมู่ที่ export ไว้ให้ดู ไม่ใช่ override
+    if (['r', 'required', 'บังคับกรอก'].includes(s)) return 'required'
     if (['1', 'true', 'y', 'yes', 'on', 'เปิด'].includes(s)) return true
     if (['0', 'false', 'n', 'no', 'off', 'ปิด'].includes(s)) return false
     return null
@@ -1857,10 +1856,11 @@ export default function Settings() {
         ['2) ค่าที่กรอกได้ในคอลัมน์ฟิลด์ (ชื่อสินค้า ... ไฟล์แนบ)'],
         ['', '(1) หรือ (0)', 'ค่าที่ดึงมาจากหมวดหมู่ (มีวงเล็บ = แสดงให้ดูเฉยๆ) — Import แล้วนับเป็น "ตามหมวดหมู่"'],
         ['', 'เว้นว่าง', 'ตามหมวดหมู่ (ค่าเริ่มต้น) — ใช้ค่าจากตารางตั้งค่าหมวดหมู่'],
-        ['', '1', 'Override เปิด — บังคับให้กรอกฟิลด์นี้ แม้หมวดหมู่จะปิด'],
+        ['', '1', 'Override เปิด — แสดงฟิลด์นี้ แม้หมวดหมู่จะปิด'],
+        ['', 'R', 'Override เปิด (บังคับกรอก) — แสดงและตรวจว่าต้องกรอกก่อนเปิดบิล'],
         ['', '0', 'Override ปิด — ซ่อนฟิลด์นี้ แม้หมวดหมู่จะเปิด'],
-        ['', 'พิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้เช่นกัน'],
-        ['', 'ต้องการ override ช่องไหน ให้พิมพ์ทับค่าในวงเล็บด้วย 1 หรือ 0 (ไม่มีวงเล็บ)'],
+        ['', 'พิมพ์ required หรือ บังคับกรอก แทน R ได้ และพิมพ์ เปิด/ปิด, true/false, y/n แทน 1/0 ได้'],
+        ['', 'ต้องการ override ช่องไหน ให้พิมพ์ทับค่าในวงเล็บด้วย 1, R หรือ 0 (ไม่มีวงเล็บ)'],
         [],
         ['3) แถวที่ product_code ไม่มีในระบบจะถูกข้าม และรายงานจำนวนให้ทราบ'],
         ['4) สินค้าที่ไม่มีในไฟล์จะไม่ถูกแตะต้อง — ค่าเดิมบนหน้าจอยังอยู่'],
@@ -1923,11 +1923,11 @@ export default function Settings() {
           unknownCodes.push(code)
           continue
         }
-        const entry: Record<string, boolean | null> = {}
+        const entry: Record<string, ProductFieldOverrideValue> = {}
         for (const { key, label } of PRODUCT_FIELD_KEYS) {
           entry[key] = overrideCellToValue(row[label])
         }
-        next[product.id] = entry as Record<ProductFieldKey, boolean | null>
+        next[product.id] = entry as Record<ProductFieldKey, ProductFieldOverrideValue>
         applied++
       }
 
@@ -2022,11 +2022,11 @@ export default function Settings() {
         const current = nextFields[category] ? { ...nextFields[category] } : { ...defaultCategoryFields }
         for (const { key, label } of PRODUCT_FIELD_KEYS) {
           const v = overrideCellToValue(row[label])
-          if (v !== null) current[key] = v
+          if (v !== null) current[key] = v === 'required' ? true : v
         }
         nextFields[category] = current
         const sales = overrideCellToValue(row[CATEGORY_SALES_HEADER])
-        if (sales !== null) nextSales[category] = sales
+        if (sales !== null) nextSales[category] = sales === 'required' ? true : sales
         applied++
       }
 
@@ -3837,7 +3837,7 @@ export default function Settings() {
           <div className="flex justify-between items-center mb-4">
             <div>
               <h2 className="text-xl font-bold">ตั้งค่าฟิลด์ระดับสินค้า (Override)</h2>
-              <p className="text-sm text-gray-500 mt-1">ช่องเส้นประแสดงค่าที่หมวดหมู่อนุญาต — คลิกเพื่อสลับ 3 สถานะ (ตามหมวดหมู่ → Override เปิด → Override ปิด)</p>
+              <p className="text-sm text-gray-500 mt-1">ช่องเส้นประแสดงค่าที่หมวดหมู่อนุญาต — คลิกเพื่อสลับ (ตามหมวดหมู่ → Override เปิด → Override เปิด (บังคับกรอก) → Override ปิด)</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <input
@@ -3896,6 +3896,10 @@ export default function Settings() {
                 <svg className="w-3 h-3 text-white absolute inset-0 m-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
               </span>
               Override เปิด
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-flex w-4 h-4 rounded border-2 border-violet-600 bg-violet-600 items-center justify-center text-[10px] font-bold text-white">!</span>
+              Override เปิด (บังคับกรอก)
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block w-4 h-4 rounded border-2 border-red-400 bg-red-50 relative">
@@ -4898,27 +4902,30 @@ export default function Settings() {
   )
 }
 
-/** Tri-state checkbox สำหรับ override ระดับสินค้า: null (ตามหมวดหมู่) → true (เปิด) → false (ปิด) → null */
+/** Checkbox override: ตามหมวดหมู่ → เปิด → เปิดและบังคับกรอก → ปิด → ตามหมวดหมู่ */
 function TriStateOverrideCheckbox({
   value,
   categoryValue,
   onChange,
 }: {
-  value: boolean | null
+  value: boolean | null | 'required'
   categoryValue: boolean
-  onChange: (v: boolean | null) => void
+  onChange: (v: boolean | null | 'required') => void
 }) {
   function handleClick() {
     if (value === null) onChange(true)
-    else if (value === true) onChange(false)
+    else if (value === true) onChange('required')
+    else if (value === 'required') onChange(false)
     else onChange(null)
   }
 
   const title =
     value === null
       ? `ตามหมวดหมู่ (${categoryValue ? 'เปิด' : 'ปิด'}) — คลิกเพื่อ override เปิด`
-      : value
-        ? 'Override: เปิด — คลิกเพื่อ override ปิด'
+      : value === 'required'
+        ? 'Override: เปิด (บังคับกรอก) — คลิกเพื่อ override ปิด'
+        : value
+          ? 'Override: เปิด — คลิกเพื่อเปิดและบังคับกรอก'
         : 'Override: ปิด — คลิกเพื่อกลับตามหมวดหมู่'
 
   if (value === null) {
@@ -4958,6 +4965,19 @@ function TriStateOverrideCheckbox({
         <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
         </svg>
+      </button>
+    )
+  }
+
+  if (value === 'required') {
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        title={title}
+        className="w-5 h-5 rounded border-2 border-violet-600 bg-violet-600 flex items-center justify-center cursor-pointer hover:bg-violet-700 hover:border-violet-700 transition-colors mx-auto text-xs font-bold text-white"
+      >
+        !
       </button>
     )
   }

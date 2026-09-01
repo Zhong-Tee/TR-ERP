@@ -26,11 +26,14 @@ export default function UploadSection() {
   const durationCacheRef = useRef<Record<string, string>>({})
 
   useEffect(() => {
-    loadUsers()
+    void loadUsers()
+  }, [])
+
+  useEffect(() => {
     const scheduleReload = () => {
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       reloadTimerRef.current = setTimeout(() => {
-        void loadOrdersDashboard()
+        void loadOrdersDashboard(false)
         window.dispatchEvent(new Event('wms-data-changed'))
       }, 300)
     }
@@ -48,7 +51,7 @@ export default function UploadSection() {
       if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current)
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [filterDateStart, filterDateEnd, filterUser])
 
   useEffect(() => {
     const timer = setInterval(() => setTick((prev) => prev + 1), 1000)
@@ -57,9 +60,22 @@ export default function UploadSection() {
 
   useEffect(() => {
     if (filterDateStart || filterDateEnd || filterUser) {
-      loadOrdersDashboard()
+      void loadOrdersDashboard()
     }
   }, [filterDateStart, filterDateEnd, filterUser])
+
+  useEffect(() => {
+    const hasActiveOrder = orders.some((order) =>
+      order.items.some((item: any) => ['pending', 'wrong', 'not_find'].includes(item.status)),
+    )
+    if (!hasActiveOrder) return
+
+    // Realtime อาจพลาด event เมื่อเครือข่ายสะดุด จึง sync งานที่กำลังหยิบเป็น fallback โดยไม่กระพริบ loading
+    const timer = setInterval(() => {
+      void loadOrdersDashboard(false)
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [orders, filterDateStart, filterDateEnd, filterUser])
 
   async function loadUsers() {
     const { data } = await supabase.from('us_users').select('id, username, role').order('username')
@@ -68,9 +84,9 @@ export default function UploadSection() {
     }
   }
 
-  async function loadOrdersDashboard() {
+  async function loadOrdersDashboard(showLoading = true) {
     const requestId = ++loadRequestRef.current
-    setLoading(true)
+    if (showLoading) setLoading(true)
     let q = supabase
       .from('wms_orders')
       .select('id, work_order_id, order_id, assigned_to, created_at, end_time, status, product_code, product_name, location, qty, us_users(username)')
@@ -122,6 +138,13 @@ export default function UploadSection() {
     for (const o of Object.values(grouped) as any[]) {
       const consolidated = consolidateCondoStampWmsDisplayRows(o.items)
       const activeItems = consolidated.filter((i: any) => i.status !== 'cancelled')
+      const activeEndTimes: string[] = o.items.flatMap((item: any) =>
+        item.status !== 'cancelled' && item.end_time ? [String(item.end_time)] : [],
+      )
+      o.max_end = activeEndTimes.reduce((latest: string | null, endTime: string) => {
+        if (!latest || new Date(endTime) > new Date(latest)) return endTime
+        return latest
+      }, null as string | null)
       o.cancelled_count = consolidated.length - activeItems.length
       o.total = activeItems.length
       o.picked_count = activeItems.filter((i: any) =>
@@ -210,7 +233,7 @@ export default function UploadSection() {
                 className="h-[36px] min-w-[150px] rounded border bg-white px-3 text-sm outline-none shadow-sm"
               />
               <button
-                onClick={loadOrdersDashboard}
+                onClick={() => void loadOrdersDashboard()}
                 className="h-[36px] rounded bg-blue-600 px-4 py-1 text-sm font-bold text-white hover:bg-blue-700"
               >
                 Filter
@@ -222,7 +245,7 @@ export default function UploadSection() {
           ) : <div className="overflow-x-auto">
           <table className="w-full min-w-[1200px] table-fixed text-left text-sm" data-tick={tick}>
             <colgroup>
-              <col className="w-[22%]" />
+              <col className="w-[19%]" />
               <col className="w-[14%]" />
               <col className="w-[11%]" />
               <col className="w-[4.5%]" />
@@ -230,7 +253,7 @@ export default function UploadSection() {
               <col className="w-[4.5%]" />
               <col className="w-[4.5%]" />
               <col className="w-[8%]" />
-              <col className="w-[8%]" />
+              <col className="w-[11%]" />
               <col className="w-[10%]" />
               <col className="w-[9%]" />
             </colgroup>
@@ -286,7 +309,7 @@ export default function UploadSection() {
                     </td>
                     <td className={`${cellClass} text-center`}>
                       <span
-                        className={`px-3 py-1 rounded text-xs font-bold uppercase ${
+                        className={`inline-flex min-w-[7.5rem] items-center justify-center whitespace-nowrap rounded px-3 py-1 text-xs font-bold uppercase ${
                           isFullyCancelled
                             ? 'bg-red-100 text-red-700'
                             : !isWorking ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'

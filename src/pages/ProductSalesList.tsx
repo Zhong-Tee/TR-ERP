@@ -1,5 +1,7 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuthContext } from '../contexts/AuthContext'
+import { isRoleInAllowedList } from '../config/accessPolicy'
 import * as XLSX from 'xlsx'
 
 interface SalesRow {
@@ -50,7 +52,54 @@ function toLocalDate(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+function formatDateInputDisplay(value: string) {
+  const [year, month, day] = value.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : ''
+}
+
+function FixedFormatDateInput({ value, onChange, ariaLabel }: {
+  value: string
+  onChange: (value: string) => void
+  ariaLabel: string
+}) {
+  const nativeInputRef = useRef<HTMLInputElement>(null)
+
+  const openPicker = () => {
+    const input = nativeInputRef.current
+    if (!input) return
+    if (typeof input.showPicker === 'function') input.showPicker()
+    else input.click()
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={openPicker}
+        className="flex min-w-[136px] items-center justify-between gap-3 rounded-lg border bg-white px-3 py-2 text-sm text-gray-800 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+        aria-label={`${ariaLabel}: ${formatDateInputDisplay(value)}`}
+      >
+        <span className="tabular-nums">{formatDateInputDisplay(value)}</span>
+        <svg className="h-4 w-4 shrink-0 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3M5 11h14M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+        </svg>
+      </button>
+      <input
+        ref={nativeInputRef}
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="pointer-events-none absolute bottom-0 right-0 h-px w-px opacity-0"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+    </div>
+  )
+}
+
 export default function ProductSalesList() {
+  const { user } = useAuthContext()
+  const canViewSalesValue = !isRoleInAllowedList(user?.role, ['store'])
   const now = new Date()
   const [dateFrom, setDateFrom] = useState(() =>
     toLocalDate(new Date(now.getFullYear(), now.getMonth(), 1)),
@@ -119,20 +168,24 @@ export default function ProductSalesList() {
   }, [filtered])
 
   const handleDownloadExcel = useCallback(() => {
-    const sheetRows = filtered.map((r, idx) => ({
-      '#': idx + 1,
-      'รหัสสินค้า': r.product_code,
-      'ชื่อสินค้า': r.product_name,
-      'ประเภท': r.product_type || 'FG',
-      'จำนวนขาย': Number(r.total_qty),
-      'มูลค่า (฿)': Number(r.total_amount),
-      'ออเดอร์': Number(r.order_count),
-    }))
+    const sheetRows = filtered.map((r, idx) => {
+      const row = {
+        '#': idx + 1,
+        'รหัสสินค้า': r.product_code,
+        'ชื่อสินค้า': r.product_name,
+        'ประเภท': r.product_type || 'FG',
+        'จำนวนขาย': Number(r.total_qty),
+        'ออเดอร์': Number(r.order_count),
+      }
+      return canViewSalesValue
+        ? { ...row, 'มูลค่า (฿)': Number(r.total_amount) }
+        : row
+    })
     const ws = XLSX.utils.json_to_sheet(sheetRows)
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'รายการขายสินค้า')
     XLSX.writeFile(wb, `รายการขายสินค้า_${dateFrom}_${dateTo}.xlsx`)
-  }, [filtered, dateFrom, dateTo])
+  }, [filtered, dateFrom, dateTo, canViewSalesValue])
 
   return (
     <div className="space-y-4 mt-4 pb-8">
@@ -142,22 +195,20 @@ export default function ProductSalesList() {
           <label className="block text-sm font-semibold text-gray-600 mb-1">
             วันที่เริ่มต้น
           </label>
-          <input
-            type="date"
+          <FixedFormatDateInput
             value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="border rounded-lg px-3 py-2 text-sm"
+            onChange={setDateFrom}
+            ariaLabel="วันที่เริ่มต้น"
           />
         </div>
         <div>
           <label className="block text-sm font-semibold text-gray-600 mb-1">
             วันที่สิ้นสุด
           </label>
-          <input
-            type="date"
+          <FixedFormatDateInput
             value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="border rounded-lg px-3 py-2 text-sm"
+            onChange={setDateTo}
+            ariaLabel="วันที่สิ้นสุด"
           />
         </div>
         <button
@@ -202,7 +253,7 @@ export default function ProductSalesList() {
 
       {/* ── Summary ── */}
       {loaded && (
-        <div className="bg-white p-4 rounded-lg shadow grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+        <div className={`bg-white p-4 rounded-lg shadow grid grid-cols-2 ${canViewSalesValue ? 'sm:grid-cols-4' : 'sm:grid-cols-3'} gap-4 text-center`}>
           <div>
             <div className="text-xs text-gray-500">จำนวนสินค้า</div>
             <div className="text-lg font-bold text-gray-800">
@@ -213,10 +264,12 @@ export default function ProductSalesList() {
             <div className="text-xs text-gray-500">ยอดขายรวม (ชิ้น)</div>
             <div className="text-lg font-bold text-gray-800">{fmtInt(summary.totalQty)}</div>
           </div>
-          <div>
-            <div className="text-xs text-gray-500">มูลค่ารวม</div>
-            <div className="text-lg font-bold text-gray-800">{fmt(summary.totalAmount)} ฿</div>
-          </div>
+          {canViewSalesValue && (
+            <div>
+              <div className="text-xs text-gray-500">มูลค่ารวม</div>
+              <div className="text-lg font-bold text-gray-800">{fmt(summary.totalAmount)} ฿</div>
+            </div>
+          )}
           <div>
             <div className="text-xs text-gray-500">จำนวนออเดอร์ (ไม่ซ้ำ)</div>
             <div className="text-lg font-bold text-gray-800">{fmtInt(summary.totalOrders)}</div>
@@ -257,9 +310,11 @@ export default function ProductSalesList() {
                   <span className="bg-white/20 rounded-full px-3 py-0.5">
                     {fmtInt(cardQty)} ชิ้น
                   </span>
-                  <span className="bg-white/20 rounded-full px-3 py-0.5">
-                    {fmt(cardAmt)} ฿
-                  </span>
+                  {canViewSalesValue && (
+                    <span className="bg-white/20 rounded-full px-3 py-0.5">
+                      {fmt(cardAmt)} ฿
+                    </span>
+                  )}
                 </div>
               </button>
 
@@ -278,7 +333,7 @@ export default function ProductSalesList() {
                           <th className="px-4 py-2 text-left">รหัสสินค้า</th>
                           <th className="px-4 py-2 text-left">ชื่อสินค้า</th>
                           <th className="px-4 py-2 text-right">จำนวนขาย</th>
-                          <th className="px-4 py-2 text-right">มูลค่า (฿)</th>
+                          {canViewSalesValue && <th className="px-4 py-2 text-right">มูลค่า (฿)</th>}
                           <th className="px-4 py-2 text-right">ออเดอร์</th>
                         </tr>
                       </thead>
@@ -296,9 +351,11 @@ export default function ProductSalesList() {
                             <td className="px-4 py-2 text-right font-semibold">
                               {fmtInt(Number(r.total_qty))}
                             </td>
-                            <td className="px-4 py-2 text-right">
-                              {fmt(Number(r.total_amount))}
-                            </td>
+                            {canViewSalesValue && (
+                              <td className="px-4 py-2 text-right">
+                                {fmt(Number(r.total_amount))}
+                              </td>
+                            )}
                             <td className="px-4 py-2 text-right text-gray-500">
                               {fmtInt(Number(r.order_count))}
                             </td>

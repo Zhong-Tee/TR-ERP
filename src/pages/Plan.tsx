@@ -387,6 +387,13 @@ function buildProcessScheduleEntries(
 // --- Dashboard timeline helpers (จาก plan.html) ---
 function getLatestActualEndSecForDept(job: PlanJob, dept: string): number {
   const tmap = job.tracks?.[dept] || {}
+  const automaticFinish = (dept === 'QC' || dept === 'PACK') ? tmap['เสร็จแล้ว']?.end : null
+  if (automaticFinish) {
+    const finishedAt = new Date(automaticFinish)
+    const dayStart = new Date(finishedAt)
+    dayStart.setHours(0, 0, 0, 0)
+    return (finishedAt.getTime() - dayStart.getTime()) / 1000
+  }
   let maxEnd = ''
   Object.values(tmap).forEach((track) => {
     if (track?.end && track.end > maxEnd) maxEnd = track.end
@@ -572,7 +579,10 @@ function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettin
   if (allEntries.length === 0) return { actualStart: '-', actualEnd: '-', startDayOffset: 0, endDayOffset: 0 }
   let firstStart: Date | null = null
   let lastEnd: Date | null = null
-  const allFinished = processEntries.length > 0 && processEntries.every(([, t]) => !!t?.end)
+  // QC/PACK ปิดงานอัตโนมัติด้วย track "เสร็จแล้ว" ซึ่งเป็น source of truth เดียวกับสถานะบน Dashboard
+  // track เก่าหรือขั้นเสริมที่มีเพียง start ต้องไม่ทำให้เวลาเสร็จจริงที่บันทึกแล้วถูกซ่อน
+  const automaticFinish = (dept === 'QC' || dept === 'PACK') ? tracks['เสร็จแล้ว']?.end : null
+  const allFinished = Boolean(automaticFinish) || (processEntries.length > 0 && processEntries.every(([, t]) => !!t?.end))
   for (const [, t] of allEntries) {
     if (t?.start) {
       const d = new Date(t.start)
@@ -585,6 +595,7 @@ function getActualTimesForDept(job: PlanJob, dept: string, _settings: PlanSettin
       if (!lastEnd || d > lastEnd) lastEnd = d
     }
   }
+  if (automaticFinish) lastEnd = new Date(automaticFinish)
   const planDateStart = new Date(`${job.date}T00:00:00`)
   const dayDiffStart = firstStart ? Math.floor((firstStart.getTime() - planDateStart.getTime()) / 86400000) : 0
   const dayDiffEnd = (allFinished && lastEnd) ? Math.floor((lastEnd.getTime() - planDateStart.getTime()) / 86400000) : 0
@@ -2130,7 +2141,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
       </button>
     )
   }
-
   if (loading) {
     return (
       <div className="flex justify-center items-center py-12">
@@ -4985,7 +4995,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       <Modal
         open={!!stopProdOrderDetail}
         onClose={() => setStopProdOrderDetail(null)}
-        contentClassName="max-w-5xl w-full max-h-[90vh] overflow-y-auto"
+        contentClassName="max-w-[96vw] w-full max-h-[90vh] overflow-y-auto"
       >
         {stopProdOrderDetail && (
           <OrderDetailView

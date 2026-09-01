@@ -753,8 +753,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [categoryFieldSettings, setCategoryFieldSettings] = useState<Record<string, Record<string, boolean>>>({})
   /** หมวดที่เปิดใช้ในการขาย (pr_category_field_settings.is_active_for_sales) — ไม่มี key = เปิด */
   const [categorySalesActive, setCategorySalesActive] = useState<Record<string, boolean>>({})
-  /** Override ตั้งค่าฟิลด์ระดับสินค้า (product_id → { fieldKey → boolean | null }) */
-  const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null>>>({})
+  /** Override ตั้งค่าฟิลด์ระดับสินค้า ('required' = เปิดและบังคับกรอก) */
+  const [productFieldOverrides, setProductFieldOverrides] = useState<Record<string, Record<string, boolean | null | 'required'>>>({})
   /** index ของแถวที่ช่องหมายเหตุกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
   const [notesFocusedIndex, setNotesFocusedIndex] = useState<number | null>(null)
   /** index ของแถวที่ช่องไฟล์แนบกำลังโฟกัส (แสดงกล่องใหญ่); null = ปกติ */
@@ -1202,25 +1202,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (overrideRes.error) {
           console.error('Error loading product field overrides:', overrideRes.error)
         } else {
-          const overridesMap: Record<string, Record<string, boolean | null>> = {}
+          const overridesMap: Record<string, Record<string, boolean | null | 'required'>> = {}
           if (overrideRes.data && Array.isArray(overrideRes.data)) {
             overrideRes.data.forEach((row: any) => {
               const pid = row.product_id
               if (!pid) return
+              const requiredFields = new Set<string>(Array.isArray(row.required_fields) ? row.required_fields : [])
               overridesMap[pid] = {
-                product_name: row.product_name ?? null,
-                ink_color: row.ink_color ?? null,
-                layer: row.layer ?? null,
-                cartoon_pattern: row.cartoon_pattern ?? null,
-                line_pattern: row.line_pattern ?? null,
-                font: row.font ?? null,
-                line_1: row.line_1 ?? null,
-                line_2: row.line_2 ?? null,
-                line_3: row.line_3 ?? null,
-                quantity: row.quantity ?? null,
-                unit_price: row.unit_price ?? null,
-                notes: row.notes ?? null,
-                attachment: row.attachment ?? null,
+                ...Object.fromEntries(
+                  ['product_name', 'ink_color', 'layer', 'cartoon_pattern', 'line_pattern', 'font', 'line_1', 'line_2', 'line_3', 'quantity', 'unit_price', 'notes', 'attachment']
+                    .map((key) => [key, requiredFields.has(key) ? 'required' : row[key] ?? null]),
+                ),
               }
             })
           }
@@ -1501,25 +1493,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       setCategorySalesActive(salesMap)
 
       // โหลด product-level field overrides
-      const overridesMap: Record<string, Record<string, boolean | null>> = {}
+      const overridesMap: Record<string, Record<string, boolean | null | 'required'>> = {}
       if (productOverridesRes.data && Array.isArray(productOverridesRes.data)) {
         productOverridesRes.data.forEach((row: any) => {
           const pid = row.product_id
           if (!pid) return
+          const requiredFields = new Set<string>(Array.isArray(row.required_fields) ? row.required_fields : [])
           overridesMap[pid] = {
-            product_name: row.product_name ?? null,
-            ink_color: row.ink_color ?? null,
-            layer: row.layer ?? null,
-            cartoon_pattern: row.cartoon_pattern ?? null,
-            line_pattern: row.line_pattern ?? null,
-            font: row.font ?? null,
-            line_1: row.line_1 ?? null,
-            line_2: row.line_2 ?? null,
-            line_3: row.line_3 ?? null,
-            quantity: row.quantity ?? null,
-            unit_price: row.unit_price ?? null,
-            notes: row.notes ?? null,
-            attachment: row.attachment ?? null,
+            ...Object.fromEntries(
+              ['product_name', 'ink_color', 'layer', 'cartoon_pattern', 'line_pattern', 'font', 'line_1', 'line_2', 'line_3', 'quantity', 'unit_price', 'notes', 'attachment']
+                .map((key) => [key, requiredFields.has(key) ? 'required' : row[key] ?? null]),
+            ),
           }
         })
       }
@@ -1549,7 +1533,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     if (overrides) {
       const overrideVal = overrides[fieldKey]
       if (overrideVal !== undefined && overrideVal !== null) {
-        return overrideVal === true
+        return overrideVal === true || overrideVal === 'required'
       }
     }
 
@@ -1564,6 +1548,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     const v = categorySettings[fieldKey] as boolean | string | undefined
     if (v === undefined || v === null) return true
     return v === true || v === 'true'
+  }
+
+  /** เช็คสถานะ Override เปิด (บังคับกรอก) ของสินค้าในแถว */
+  function isFieldRequired(itemIndex: number, fieldKey: string): boolean {
+    const item = items[itemIndex]
+    if (!item?.product_id) return false
+    let product = products.find(p => String(p.id) === String(item.product_id))
+    if (!product && item.product_name) {
+      product = products.find(
+        p => p.product_name && String(p.product_name).trim().toLowerCase() === String(item.product_name).trim().toLowerCase()
+      )
+    }
+    if (!product) return false
+    return productFieldOverrides[String(product.id)]?.[fieldKey] === 'required'
   }
 
   /** รหัสฟอนต์เริ่มต้นตาม role ผู้ใช้ — sales-pump ใช้ TH01, role อื่นใช้ F01 */
@@ -6330,6 +6328,24 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 if (!isCondoSubRow(item) && isFieldEnabled(itemIndex, 'quantity') && (!item.quantity || item.quantity <= 0)) {
                   missing.push('จำนวน')
                 }
+                // สถานะ "Override เปิด (บังคับกรอก)" ตรวจทุกฟิลด์ที่ระบุเพิ่มเติม
+                // (สถานะ Override เปิดเดิมยังคงพฤติกรรมเดิม เพื่อไม่กระทบการเปิดบิลปัจจุบัน)
+                const requireWhenEmpty = (fieldKey: string, label: string, empty: boolean) => {
+                  if (isFieldRequired(itemIndex, fieldKey) && empty && !missing.includes(label)) missing.push(label)
+                }
+                requireWhenEmpty('product_name', 'ชื่อสินค้า', !item.product_name?.trim())
+                requireWhenEmpty('ink_color', 'สีหมึก', !item.ink_color?.trim())
+                requireWhenEmpty('layer', 'ชั้น', !item.product_type?.trim())
+                requireWhenEmpty('cartoon_pattern', 'ลาย', !item.cartoon_pattern?.trim())
+                requireWhenEmpty('line_pattern', 'ลายเส้น', !item.line_pattern?.trim())
+                requireWhenEmpty('font', 'ฟอนต์', !item.font?.trim())
+                requireWhenEmpty('line_1', 'บรรทัด 1', !item.line_1?.trim())
+                requireWhenEmpty('line_2', 'บรรทัด 2', !item.line_2?.trim())
+                requireWhenEmpty('line_3', 'บรรทัด 3', !item.line_3?.trim())
+                requireWhenEmpty('quantity', 'จำนวน', !item.quantity || item.quantity <= 0)
+                requireWhenEmpty('unit_price', 'ราคา/หน่วย', !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
+                requireWhenEmpty('notes', 'หมายเหตุ', !item.notes?.trim())
+                requireWhenEmpty('attachment', 'ไฟล์แนบ', !item.file_attachment?.trim())
                 if (missing.length > 0) {
                   missingFieldItemsComplete.push({
                     index: itemIndex + 1,

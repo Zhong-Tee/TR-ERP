@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import Modal from '../ui/Modal'
 import { useWmsModal } from '../wms/useWmsModal'
-import { loadFieldRuleMaps, resolveFieldEnabled, type FieldRuleMaps } from '../../lib/productFieldRules'
+import { loadFieldRuleMaps, resolveFieldEnabled, resolveFieldRequired, type FieldRuleMaps } from '../../lib/productFieldRules'
 import { openBillFromMpOrder, validateStockForItems } from '../../lib/marketplaceBilling'
 import { formatDateTime } from '../../lib/utils'
 import UrgencyBadge from '../common/UrgencyBadge'
@@ -379,6 +379,11 @@ export default function MarketplaceOrderModal({
     return resolveFieldEnabled(product, fieldKey, fieldRules)
   }
 
+  function fieldRequired(item: MpOrderItem, fieldKey: string): boolean {
+    const product = item.product_id ? productById.get(item.product_id) : null
+    return resolveFieldRequired(product, fieldKey, fieldRules)
+  }
+
   /** ฟอนต์เริ่มต้น = F01 (ตรรกะเดียวกับฟอร์มเปิดบิล) */
   const defaultFontName = useMemo(() => {
     if (!fonts.length) return ''
@@ -579,6 +584,21 @@ export default function MarketplaceOrderModal({
       if (fieldEnabled(it, 'font') && !it.font?.trim()) missing.push('ฟอนต์ (ไม่ต้องการฟอนต์ใส่ 0)')
       if (fieldEnabled(it, 'quantity') && (!it.qty || Number(it.qty) <= 0)) missing.push('จำนวน')
       if (!it.is_free && (!it.unit_price || Number(it.unit_price) <= 0)) missing.push('ราคา/หน่วย')
+      const requireWhenEmpty = (fieldKey: string, fieldLabel: string, empty: boolean) => {
+        if (fieldRequired(it, fieldKey) && empty && !missing.includes(fieldLabel)) missing.push(fieldLabel)
+      }
+      requireWhenEmpty('product_name', 'ชื่อสินค้า', !it.product_id)
+      requireWhenEmpty('ink_color', 'สีหมึก', !it.ink_color?.trim())
+      requireWhenEmpty('layer', 'ชั้น', !it.product_type?.trim())
+      requireWhenEmpty('cartoon_pattern', 'ลาย', !it.cartoon_pattern?.trim())
+      requireWhenEmpty('line_pattern', 'ลายเส้น', !it.line_pattern?.trim())
+      requireWhenEmpty('font', 'ฟอนต์', !it.font?.trim())
+      requireWhenEmpty('line_1', 'บรรทัด 1', !it.line_1?.trim())
+      requireWhenEmpty('line_2', 'บรรทัด 2', !it.line_2?.trim())
+      requireWhenEmpty('line_3', 'บรรทัด 3', !it.line_3?.trim())
+      requireWhenEmpty('quantity', 'จำนวน', !it.qty || Number(it.qty) <= 0)
+      requireWhenEmpty('unit_price', 'ราคา/หน่วย', !it.is_free && (!it.unit_price || Number(it.unit_price) <= 0))
+      requireWhenEmpty('notes', 'หมายเหตุ', !it.notes?.trim())
       if (
         fieldEnabled(it, 'line_1') &&
         !it.no_name_line &&

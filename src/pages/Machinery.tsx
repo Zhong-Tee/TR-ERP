@@ -537,6 +537,7 @@ export default function Machinery() {
         is_primary_machine: form.is_primary_machine ?? true,
         can_substitute: form.can_substitute ?? false,
         incident_titles: form.incident_titles || [],
+        image_url: photoRemove ? null : form.image_url ?? null,
         sort_order: form.id
           ? Number(form.sort_order) || 0
           : machines.reduce((highest, machine) => Math.max(highest, Number(machine.sort_order) || 0), -1) + 1,
@@ -587,6 +588,46 @@ export default function Machinery() {
       sort_order: m.sort_order,
       image_url: m.image_url ?? null,
       incident_titles: m.incident_titles || [],
+    })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const copyMachine = (m: MachineryMachine) => {
+    setIsMachineFormOpen(true)
+    if (photoPreview?.startsWith('blob:')) URL.revokeObjectURL(photoPreview)
+    setPhotoFile(null)
+    setIncidentTitleDraft('')
+    setPhotoRemove(false)
+    setPhotoPreview(m.image_url || null)
+    const configuredLineCount = m.department_name ? planLineSettings.linesPerDept[m.department_name] : 0
+    const copyBaseName = `${m.name} (สำเนา)`
+    const existingNames = new Set(machines.map((machine) => machine.name.trim()))
+    let copyName = copyBaseName
+    let copyNumber = 2
+    while (existingNames.has(copyName)) {
+      copyName = `${copyBaseName} ${copyNumber}`
+      copyNumber += 1
+    }
+    setForm({
+      name: copyName,
+      machine_type: m.machine_type || 'ทั่วไป',
+      capacity_unit: m.capacity_unit || 'หน่วย',
+      product_ids: [...(m.product_ids || [])],
+      location: m.location || '',
+      work_start: m.work_start.slice(0, 5),
+      work_end: m.work_end.slice(0, 5),
+      capacity_units_per_hour: m.capacity_units_per_hour,
+      department_name: m.department_name,
+      line_index: m.line_index == null
+        ? null
+        : configuredLineCount > 0
+          ? Math.min(Math.max(0, m.line_index), configuredLineCount - 1)
+          : m.line_index,
+      is_primary_machine: m.is_primary_machine,
+      can_substitute: m.can_substitute,
+      sort_order: 0,
+      image_url: m.image_url ?? null,
+      incident_titles: [...(m.incident_titles || [])],
     })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1543,21 +1584,42 @@ export default function Machinery() {
                     <td className={`px-3 py-3 tabular-nums font-medium ${isMobileRole ? 'text-emerald-300/90' : 'text-emerald-800'}`}>
                       {fmtInt(totalProductionCapacityPerShift(m))} {m.capacity_unit || 'หน่วย'}
                     </td>
-                    <td className="px-3 py-3 text-right space-x-2 whitespace-nowrap">
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-2">
                       <button
                         type="button"
-                        className={`font-semibold ${isMobileRole ? 'text-sky-400' : 'text-blue-600'}`}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
+                          isMobileRole
+                            ? 'border-emerald-500/70 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60'
+                            : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                        }`}
+                        onClick={() => copyMachine(m)}
+                      >
+                        คัดลอก
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
+                          isMobileRole
+                            ? 'border-sky-500/70 bg-sky-950/40 text-sky-300 hover:bg-sky-900/60'
+                            : 'border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                        }`}
                         onClick={() => editMachine(m)}
                       >
                         แก้ไข
                       </button>
                       <button
                         type="button"
-                        className={`font-semibold ${isMobileRole ? 'text-red-400' : 'text-red-600'}`}
+                        className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${
+                          isMobileRole
+                            ? 'border-red-500/70 bg-red-950/40 text-red-300 hover:bg-red-900/60'
+                            : 'border-red-300 bg-red-50 text-red-700 hover:bg-red-100'
+                        }`}
                         onClick={() => removeMachine(m.id)}
                       >
                         ลบ
                       </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

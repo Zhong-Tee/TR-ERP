@@ -335,12 +335,32 @@ function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefi
   return !Number.isFinite(time) || Date.now() - time >= limit
 }
 
-function UploadStatusCard({ label, value, className }: { label: string; value: number; className: string }) {
+type UploadStatusFilter = 'pending' | 'uploading' | 'success' | 'failed'
+
+function UploadStatusCard({
+  label,
+  value,
+  className,
+  active = false,
+  onClick,
+}: {
+  label: string
+  value: number
+  className: string
+  active?: boolean
+  onClick?: () => void
+}) {
   return (
-    <div className={`rounded-xl border p-4 shadow-sm ${className}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`w-full rounded-xl border p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''} ${className}`}
+      title={active ? `ยกเลิกตัวกรอง ${label}` : `แสดงเฉพาะ ${label}`}
+    >
       <div className="text-sm font-medium opacity-80">{label}</div>
       <div className="mt-1 text-2xl font-bold tabular-nums">{value.toLocaleString('th-TH')}</div>
-    </div>
+    </button>
   )
 }
 
@@ -477,6 +497,7 @@ export default function Packing() {
   const [reconnectOpen, setReconnectOpen] = useState(false)
   const [pathModal, setPathModal] = useState<{ open: boolean; value: string }>({ open: false, value: '' })
   const [queueItems, setQueueItems] = useState<UploadQueueItem[]>([])
+  const [queueStatusFilter, setQueueStatusFilter] = useState<UploadStatusFilter | null>(null)
   const queueSignatureRef = useRef('')
   const shouldPollQueueRef = useRef(true)
   const [queueLoading, setQueueLoading] = useState(false)
@@ -485,6 +506,7 @@ export default function Packing() {
   const [uploadReportLoading, setUploadReportLoading] = useState(false)
   const [uploadReportSearch, setUploadReportSearch] = useState('')
   const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
+  const [reportStatusFilter, setReportStatusFilter] = useState<UploadStatusFilter | null>(null)
   const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
   const [stationClaimDeviceId, setStationClaimDeviceId] = useState('')
   const [stationClaiming, setStationClaiming] = useState(false)
@@ -2671,6 +2693,16 @@ export default function Packing() {
     failed: queueItems.filter((item) => item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)).length,
   }), [queueItems])
 
+  const filteredQueueItems = useMemo(() => {
+    if (!queueStatusFilter) return queueItems
+    return queueItems.filter((item) => {
+      const stale = isStaleQueueTimestamp(item.status, item.updatedAt)
+      if (queueStatusFilter === 'failed') return item.status === 'failed' || stale
+      if (stale) return false
+      return item.status === queueStatusFilter
+    })
+  }, [queueItems, queueStatusFilter])
+
   const uploadReportDevices = useMemo(() => {
     const devices = new Map<string, string>()
     packingDevices.forEach((device) => {
@@ -2690,7 +2722,7 @@ export default function Packing() {
     [packingDevices],
   )
 
-  const filteredUploadReportRows = useMemo(() => {
+  const searchedUploadReportRows = useMemo(() => {
     const term = uploadReportSearch.trim().toLowerCase()
     return uploadReportRows.filter((row) => {
       if (uploadReportDeviceId && row.device_id !== uploadReportDeviceId) return false
@@ -2707,11 +2739,21 @@ export default function Packing() {
   }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId])
 
   const reportStatusSummary = useMemo(() => ({
-    pending: filteredUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
-    uploading: filteredUploadReportRows.filter((row) => row.status === 'uploading' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
-    success: filteredUploadReportRows.filter((row) => row.status === 'success').length,
-    failed: filteredUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
-  }), [filteredUploadReportRows])
+    pending: searchedUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    uploading: searchedUploadReportRows.filter((row) => row.status === 'uploading' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
+    success: searchedUploadReportRows.filter((row) => row.status === 'success').length,
+    failed: searchedUploadReportRows.filter((row) => row.status === 'failed' || isStaleQueueTimestamp(row.status, row.reported_at)).length,
+  }), [searchedUploadReportRows])
+
+  const filteredUploadReportRows = useMemo(() => {
+    if (!reportStatusFilter) return searchedUploadReportRows
+    return searchedUploadReportRows.filter((row) => {
+      const stale = isStaleQueueTimestamp(row.status, row.reported_at)
+      if (reportStatusFilter === 'failed') return row.status === 'failed' || stale
+      if (stale) return false
+      return row.status === reportStatusFilter
+    })
+  }, [searchedUploadReportRows, reportStatusFilter])
 
   const reportDeviceSummary = useMemo(() => ({
     online: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS).length,
@@ -3207,10 +3249,10 @@ export default function Packing() {
               </div>
 
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <UploadStatusCard label="รอคิว" value={reportStatusSummary.pending} className="border-amber-200 bg-amber-50 text-amber-800" />
-                <UploadStatusCard label="กำลังอัปโหลด" value={reportStatusSummary.uploading} className="border-sky-200 bg-sky-50 text-sky-800" />
-                <UploadStatusCard label="อัปโหลดสำเร็จ" value={reportStatusSummary.success} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
-                <UploadStatusCard label="มีปัญหา/ค้าง" value={reportStatusSummary.failed} className="border-red-200 bg-red-50 text-red-800" />
+                <UploadStatusCard label="รอคิว" value={reportStatusSummary.pending} active={reportStatusFilter === 'pending'} onClick={() => setReportStatusFilter((v) => v === 'pending' ? null : 'pending')} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={reportStatusSummary.uploading} active={reportStatusFilter === 'uploading'} onClick={() => setReportStatusFilter((v) => v === 'uploading' ? null : 'uploading')} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={reportStatusSummary.success} active={reportStatusFilter === 'success'} onClick={() => setReportStatusFilter((v) => v === 'success' ? null : 'success')} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={reportStatusSummary.failed} active={reportStatusFilter === 'failed'} onClick={() => setReportStatusFilter((v) => v === 'failed' ? null : 'failed')} className="border-red-200 bg-red-50 text-red-800" />
               </div>
 
               <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm">
@@ -3227,7 +3269,9 @@ export default function Packing() {
               {uploadReportLoading ? (
                 <div className="py-12 text-center text-gray-500">กำลังโหลดรายงาน...</div>
               ) : filteredUploadReportRows.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">ยังไม่มีข้อมูลคิวอัปโหลด</div>
+                <div className="rounded-xl border border-dashed border-gray-300 py-12 text-center text-gray-500">
+                  {reportStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ยังไม่มีข้อมูลคิวอัปโหลด'}
+                </div>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                   <table className="w-full min-w-[1700px] text-sm">
@@ -3459,15 +3503,17 @@ export default function Packing() {
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <UploadStatusCard label="รอคิว" value={queueStatusSummary.pending} className="border-amber-200 bg-amber-50 text-amber-800" />
-                <UploadStatusCard label="กำลังอัปโหลด" value={queueStatusSummary.uploading} className="border-sky-200 bg-sky-50 text-sky-800" />
-                <UploadStatusCard label="อัปโหลดสำเร็จ" value={queueStatusSummary.success} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
-                <UploadStatusCard label="มีปัญหา/ค้าง" value={queueStatusSummary.failed} className="border-red-200 bg-red-50 text-red-800" />
+                <UploadStatusCard label="รอคิว" value={queueStatusSummary.pending} active={queueStatusFilter === 'pending'} onClick={() => setQueueStatusFilter((v) => v === 'pending' ? null : 'pending')} className="border-amber-200 bg-amber-50 text-amber-800" />
+                <UploadStatusCard label="กำลังอัปโหลด" value={queueStatusSummary.uploading} active={queueStatusFilter === 'uploading'} onClick={() => setQueueStatusFilter((v) => v === 'uploading' ? null : 'uploading')} className="border-sky-200 bg-sky-50 text-sky-800" />
+                <UploadStatusCard label="อัปโหลดสำเร็จ" value={queueStatusSummary.success} active={queueStatusFilter === 'success'} onClick={() => setQueueStatusFilter((v) => v === 'success' ? null : 'success')} className="border-emerald-200 bg-emerald-50 text-emerald-800" />
+                <UploadStatusCard label="มีปัญหา/ค้าง" value={queueStatusSummary.failed} active={queueStatusFilter === 'failed'} onClick={() => setQueueStatusFilter((v) => v === 'failed' ? null : 'failed')} className="border-red-200 bg-red-50 text-red-800" />
               </div>
               {queueLoading ? (
                 <div className="text-center py-6 text-gray-500">กำลังโหลดคิว...</div>
-              ) : queueItems.length === 0 ? (
-                <div className="text-center py-6 text-gray-500">ไม่มีคิวอัปโหลด</div>
+              ) : filteredQueueItems.length === 0 ? (
+                <div className="text-center py-6 text-gray-500">
+                  {queueStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ไม่มีคิวอัปโหลด'}
+                </div>
               ) : (
                 <>
                   <div className="flex flex-wrap justify-end gap-2">
@@ -3507,10 +3553,10 @@ export default function Packing() {
                     </button>
                   </div>
                 <div className="space-y-2">
-                  {queueItems.map((item) => {
+                  {filteredQueueItems.map((item) => {
                     const isSuccess = item.status === 'success'
-                    const isFailed = item.status === 'failed'
-                    const isUploading = item.status === 'uploading'
+                    const isFailed = item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)
+                    const isUploading = item.status === 'uploading' && !isFailed
                     const cardClass = isSuccess
                       ? 'bg-blue-50 border-blue-200 text-blue-900'
                       : isFailed
@@ -3526,7 +3572,7 @@ export default function Packing() {
                         </div>
                         <div className="text-xs opacity-70">
                           {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : item.filename} • {
-                            isSuccess ? 'อัปโหลดสำเร็จ' : isFailed ? 'อัปโหลดไม่สำเร็จ' : isUploading ? 'กำลังอัปโหลด...' : 'รอคิว'
+                            isSuccess ? 'อัปโหลดสำเร็จ' : isFailed ? (item.status === 'failed' ? 'อัปโหลดไม่สำเร็จ' : 'คิวค้าง') : isUploading ? 'กำลังอัปโหลด...' : 'รอคิว'
                           }
                           {' • '}{formatFileSize(item.fileSize)}
                           {item.localDeleted ? ' • ลบไฟล์แล้ว' : ''}
