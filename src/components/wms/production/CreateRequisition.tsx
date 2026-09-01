@@ -70,9 +70,13 @@ export default function CreateRequisition() {
 
   const loadTopics = async () => {
     try {
-      const { data } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+      const { data, error } = await supabase.from('wms_requisition_topics').select('*').order('topic_name')
+      if (error) throw error
       setRequisitionTopics(data || [])
-    } catch {}
+    } catch (e: any) {
+      setRequisitionTopics([])
+      showMessage({ message: `โหลดหัวข้อเบิกไม่สำเร็จ: ${e.message}` })
+    }
   }
 
   const loadAllProducts = async () => {
