@@ -1188,10 +1188,25 @@ export default function Plan({ tvMode = false }: PlanProps) {
       .channel('plan-menu-counts-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_orders' }, scheduleRefreshMenuCounts)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_work_orders' }, scheduleRefreshMenuCounts)
-      .subscribe()
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') scheduleRefreshMenuCounts()
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`Plan menu counts realtime: ${status}`)
+        }
+      })
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') scheduleRefreshMenuCounts()
+    }
+    const fallbackInterval = window.setInterval(refreshWhenVisible, 15_000)
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
 
     return () => {
       if (menuCountsRefreshTimerRef.current) clearTimeout(menuCountsRefreshTimerRef.current)
+      window.clearInterval(fallbackInterval)
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       supabase.removeChannel(channel)
     }
   }, [loadMenuCounts])
@@ -1648,6 +1663,31 @@ export default function Plan({ tvMode = false }: PlanProps) {
     return s
   }, [])
 
+  const renameDepartment = useCallback(async (oldName: string, requestedName: string) => {
+    const newName = requestedName.trim()
+    if (!newName || newName === oldName) return true
+    if (settings.departments.some((department) => department !== oldName && department === newName)) {
+      alert(`มีแผนกชื่อ ${newName} อยู่แล้ว`)
+      return false
+    }
+    setDbStatus('กำลังเปลี่ยนชื่อแผนกและย้ายข้อมูลที่เกี่ยวข้อง...')
+    const { data, error } = await supabase.rpc('plan_rename_department', {
+      p_old_name: oldName,
+      p_new_name: newName,
+    })
+    if (error) {
+      console.error('Plan: rename department', error)
+      setDbStatus('เปลี่ยนชื่อแผนกไม่สำเร็จ')
+      alert(`เปลี่ยนชื่อแผนกไม่สำเร็จ: ${error.message}`)
+      return false
+    }
+    const next = ensureDeptBaseline(data as unknown as PlanSettingsData)
+    if (selectedDeptForSettings === oldName) setSelectedDeptForSettings(newName)
+    setSettings(next)
+    setDbStatus('เชื่อมต่อฐานข้อมูลแล้ว')
+    return true
+  }, [ensureDeptBaseline, selectedDeptForSettings, settings.departments])
+
   const createJobObject = useCallback(
     (data: { date: string; name: string; cut: string | null; qty: Record<string, number> }): PlanJob => {
       const job: PlanJob = {
@@ -1752,7 +1792,9 @@ export default function Plan({ tvMode = false }: PlanProps) {
     setFName('')
     setFCut('')
     setFQty({})
-    setCurrentView('jobs')
+    setDDate(newJob.date)
+    setDashboardSubView('assignment')
+    setCurrentView('dash')
   }, [fDate, fName, fCut, fQty, jobs, settings, createJobObject, editingJobId])
 
   const updateJobField = useCallback(async (jobId: string, updates: Partial<PlanJob>) => {
@@ -2182,7 +2224,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     ['work-orders-manage', `จัดการใบงาน (${manageNewCount})`],
                     ['dept', 'หน้าแผนก (คิวงาน)'],
                     ['jobs', 'ใบงานทั้งหมด'],
-                    ['form', 'สร้าง/แก้ไขใบงาน'],
                     ['set', 'ตั้งค่า'],
                     ['manpower-set', 'ตั้งค่ากำลังคน'],
                     ['employee-skills', 'ทักษะพนักงาน'],
@@ -3113,6 +3154,12 @@ export default function Plan({ tvMode = false }: PlanProps) {
           return Array.from({length: lines}, (_, line) => ({dept, line, ...lineMachineStatus(dept,line)}))
         }).filter((row) => row.machines.length > 0)
         const readyLineRows = lineRows.filter((row) => row.status === 'ready')
+        const warningLineRows = lineRows.filter((row) => row.status !== 'ready')
+        const compactMachineNames = (machines: MachineryMachine[]) => {
+          const visible = machines.slice(0, 5).map((machine) => machine.name)
+          const remaining = machines.length - visible.length
+          return `${visible.join(', ')}${remaining > 0 ? ` และอีก ${remaining} เครื่อง` : ''}`
+        }
         const plannedCapacity = lineRows.reduce((sum,row) => {
           const seconds=(dashTimelines[row.dept]||[]).filter(item=>item.line===row.line).reduce((value,item)=>value+item.dur,0)
           return sum + seconds/3600 * row.machines.filter(machine=>machine.is_primary_machine).reduce((value,machine)=>value+Number(machine.capacity_units_per_hour||0),0)
@@ -3197,7 +3244,41 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   </button>
                 )}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                <div className={`relative rounded-xl border p-3 ${warningLineRows.length > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                  <div className={`text-xs ${warningLineRows.length > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>แจ้งเตือนความพร้อมเครื่องจักร</div>
+                  <b className={`text-xl ${warningLineRows.length > 0 ? 'text-amber-800' : 'text-emerald-800'}`}>{warningLineRows.length}</b>
+                  {warningLineRows.length > 0 ? (
+                    <details className="group mt-1">
+                      <summary className="cursor-pointer list-none text-xs font-semibold text-amber-800">
+                        <span className="group-open:hidden">ดูรายละเอียด ▾</span>
+                        <span className="hidden group-open:inline">ซ่อนรายละเอียด ▴</span>
+                      </summary>
+                      <div className="absolute left-0 top-full z-30 mt-2 w-[min(34rem,calc(100vw-3rem))] space-y-2 rounded-xl border border-amber-200 bg-white p-3 text-xs shadow-xl">
+                        {warningLineRows.map((row) => {
+                          const issueMachines = [...new Map(
+                            [...row.broken, ...row.failed, ...row.pending].map((machine) => [machine.id, machine]),
+                          ).values()]
+                          const statusLabel = row.status === 'blocked' ? 'ไม่พร้อม' : row.status === 'partial' ? 'พร้อมบางส่วน' : 'รอตรวจ'
+                          return (
+                            <div key={`${row.dept}-${row.line}`} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <b className={row.status === 'blocked' ? 'text-red-700' : 'text-amber-800'}>{row.dept} L{row.line + 1} · {statusLabel}</b>
+                                <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700">พร้อม {row.ready.length}/{row.machines.length}</span>
+                                <span className="rounded-full bg-slate-200 px-2 py-0.5 font-semibold text-slate-600">ต้องตรวจสอบ {issueMachines.length}</span>
+                              </div>
+                              <div className="mt-1 space-y-0.5 text-slate-600">
+                                {row.broken.length > 0 && <p><b className="text-red-700">แจ้งปัญหา:</b> {compactMachineNames(row.broken)}</p>}
+                                {row.failed.length > 0 && <p><b className="text-red-700">ตรวจไม่ผ่าน:</b> {compactMachineNames(row.failed)}</p>}
+                                {row.pending.length > 0 && <p><b className="text-amber-700">รอตรวจ:</b> {compactMachineNames(row.pending)}</p>}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </details>
+                  ) : <div className="mt-1 text-xs font-medium text-emerald-700">ทุกไลน์พร้อมใช้งาน</div>}
+                </div>
                 <div className="rounded-xl border bg-emerald-50 p-3">
                   <div className="text-xs text-emerald-700">ไลน์พร้อมใช้งาน</div>
                   <b className="text-xl text-emerald-800">{readyLineRows.length}/{lineRows.length}</b>
@@ -3212,7 +3293,6 @@ export default function Plan({ tvMode = false }: PlanProps) {
                 <div className="rounded-xl border bg-orange-50 p-3"><div className="text-xs text-orange-700">งานที่มีความเสี่ยง</div><b className="text-xl text-orange-800">{affectedJobs.length}</b></div>
                 <div className="rounded-xl border bg-blue-50 p-3"><div className="text-xs text-blue-700">กำลังผลิต ตามแผน → คาดการณ์</div><b className="text-lg text-blue-800">{Math.round(plannedCapacity).toLocaleString()} → {Math.round(expectedCapacity).toLocaleString()}</b><div className="text-xs text-red-600">สูญเสีย {Math.round(lostCapacity).toLocaleString()}</div></div>
               </div>
-              {lineRows.some(row=>row.status!=='ready')&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-3"><b className="text-amber-900">แจ้งเตือนความพร้อมเครื่องจักร</b><div className="mt-2 flex flex-wrap gap-2">{lineRows.filter(row=>row.status!=='ready').map(row=><span key={`${row.dept}-${row.line}`} className={`rounded-full px-3 py-1 text-xs font-semibold ${row.status==='blocked'?'bg-red-100 text-red-800':'bg-amber-100 text-amber-800'}`}>{row.dept} L{row.line+1}: {row.status==='blocked'?'ไม่พร้อม':row.status==='partial'?'พร้อมบางส่วน':'รอตรวจ'} ({row.machines.map(machine=>machine.name).join(', ')})</span>)}</div></div>}
               {dashViewMode === 'table' && (
                 <>
                   <p className="text-xs text-gray-500">
@@ -3834,25 +3914,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
                       <div key={d} className="flex gap-2 items-center">
                         <input
                           type="text"
-                          value={d}
+                          defaultValue={d}
                           disabled={!unlocked}
-                          onChange={(e) => {
-                            const newName = e.target.value.trim() || d
-                            if (newName === d) return
-                            const next = { ...settings }
-                            const idx = next.departments.indexOf(d)
-                            if (idx > -1) next.departments[idx] = newName
-                            ;['processes', 'prepPerJob', 'startDelayPerJob', 'deptBreaks', 'linesPerDept', 'departmentProductCategories'].forEach((k) => {
-                              const key = k as keyof PlanSettingsData
-                              const obj = next[key] as Record<string, unknown>
-                              if (obj[d] != null) {
-                                ;(obj as Record<string, unknown>)[newName] = obj[d]
-                                delete (obj as Record<string, unknown>)[d]
-                              }
-                            })
-                            if (selectedDeptForSettings === d) setSelectedDeptForSettings(newName)
-                            setSettings(next)
-                            saveSettings(next)
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') e.currentTarget.blur()
+                            if (e.key === 'Escape') {
+                              e.currentTarget.value = d
+                              e.currentTarget.blur()
+                            }
+                          }}
+                          onBlur={async (e) => {
+                            const input = e.currentTarget
+                            const renamed = await renameDepartment(d, input.value)
+                            if (!renamed) input.value = d
                           }}
                           className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
                         />

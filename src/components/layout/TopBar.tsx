@@ -250,18 +250,35 @@ export default function TopBar({ sidebarOpen, onToggleSidebar }: TopBarProps) {
     const channel = supabase
       .channel('topbar-issue-counts')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issues' }, () => debouncedLoadChatCounts())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_issue_messages' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issue_messages' }, (payload) => {
         const sid = (payload.new as { sender_id?: string })?.sender_id
         if (user?.id && sid === user.id) return
         debouncedLoadChatCounts()
       })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_chat_logs' }, (payload) => {
         const sid = (payload.new as { sender_id?: string })?.sender_id
         if (user?.id && sid === user.id) return
         debouncedLoadChatCounts()
       })
-      .subscribe()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_issue_reads' }, () => debouncedLoadChatCounts())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'or_order_chat_reads' }, () => debouncedLoadChatCounts())
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') loadChatCounts()
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`TopBar issue counts realtime: ${status}`)
+        }
+      })
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') loadChatCounts()
+    }
+    const fallbackInterval = window.setInterval(refreshWhenVisible, 15_000)
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
+      window.clearInterval(fallbackInterval)
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       supabase.removeChannel(channel)
     }
   }, [canSeeChat, user?.id, loadChatCounts, debouncedLoadChatCounts])

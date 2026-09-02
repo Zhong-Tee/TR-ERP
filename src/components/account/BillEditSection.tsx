@@ -5,6 +5,7 @@ import { Order, OrderStatus } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import { formatDateTime } from '../../lib/utils'
 import OrderForm, { type OrderFormRef } from '../order/OrderForm'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import Modal from '../ui/Modal'
 
 const ALL_STATUSES: OrderStatus[] = [
@@ -738,7 +739,10 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                         onClick={() => handleSelectOrder(r.id)}>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="font-mono font-bold text-blue-600">{r.bill_no}</span>
+                            <span className="font-mono font-bold text-blue-600">
+                              {r.bill_no}
+                              <ExpressReceiptNumberInline value={r.express_receipt_number} />
+                            </span>
                             {r.has_edit_log && (
                               <span
                                 className="text-xs px-2 py-0.5 rounded-full font-semibold bg-teal-100 text-teal-800 border border-teal-200"
@@ -753,11 +757,6 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
                               </span>
                             )}
                           </div>
-                          {r.express_receipt_number && (
-                            <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
-                              รับด่วน: {r.express_receipt_number}
-                            </div>
-                          )}
                         </td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold">{r.channel_code}</span>

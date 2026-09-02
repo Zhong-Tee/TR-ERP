@@ -36,6 +36,7 @@ import {
 } from '../lib/orderFlowFilter'
 import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
 import UrgencyBadge, { WoUrgencyChips, type DueBillInfo } from '../components/common/UrgencyBadge'
+import ExpressReceiptNumberInline from '../components/common/ExpressReceiptNumberInline'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -3701,7 +3702,7 @@ export default function Packing() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(300px,340px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(380px,400px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
             <div className="bg-white p-4 rounded-lg shadow space-y-3 h-full min-h-0 flex flex-col">
               <div className="flex items-center gap-2 whitespace-nowrap">
                 <span className="font-bold text-base">
@@ -3760,14 +3761,10 @@ export default function Packing() {
                         <div className="min-w-0">
                           <div className="text-lg font-bold break-all leading-snug">
                             {icon} {trackingDisp}
+                            <ExpressReceiptNumberInline value={expressReceiptNumber} />
                             {!isDone && <UrgencyBadge order={group[0]} className="ml-1.5" />}
                           </div>
                           <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
-                          {expressReceiptNumber && (
-                            <div className="mt-0.5 font-mono text-xs font-semibold text-cyan-700">
-                              เลขรับพัสดุด่วน: {expressReceiptNumber}
-                            </div>
-                          )}
                           <div className="mt-1 flex items-center gap-2 flex-wrap">
                             <div className="text-sm font-bold text-indigo-700 tabular-nums">
                               Tag {group[0].packingTag ?? '—'}
@@ -3891,6 +3888,7 @@ export default function Packing() {
                           <div className="flex items-center gap-3 flex-wrap">
                             <div className="text-lg font-semibold break-all">
                               เลขพัสดุ: {formatParcelNo(currentGroup[0].tracking_number)}
+                              <ExpressReceiptNumberInline value={currentGroup[0].express_receipt_number} />
                             </div>
                             <button
                               type="button"

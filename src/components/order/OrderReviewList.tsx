@@ -6,6 +6,7 @@ import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
 import UrgencyBadge from '../common/UrgencyBadge'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import { canSeeOfficeChannel } from '../../config/accessPolicy'
 
 const PRODUCT_IMAGES_BUCKET = 'product-images'
@@ -834,6 +835,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                           </span>
                         )}
                       {order.bill_no}
+                      <ExpressReceiptNumberInline value={order.express_receipt_number} />
                       <UrgencyBadge order={order} />
                       {(order.claim_type != null || (order.bill_no || '').startsWith('REQ')) && (
                         <span className="px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800 border border-amber-200">
@@ -885,6 +887,7 @@ export default function OrderReviewList({ onStatusUpdate }: OrderReviewListProps
                     <div className="w-24 text-gray-600 font-medium text-sm shrink-0">เลขบิล</div>
                     <div className="text-base font-semibold">
                       {selectedOrder.bill_no}
+                      <ExpressReceiptNumberInline value={selectedOrder.express_receipt_number} />
                       {(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length > 0 && (
                         <span className="text-gray-600 font-normal ml-2 text-sm">
                           ({(((selectedOrder as any).order_items || (selectedOrder as any).or_order_items) || []).length} รายการ)

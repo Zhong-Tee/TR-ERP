@@ -90,16 +90,24 @@ function toLocalYmd(d: Date): string {
 }
 
 function startOfDayIso(ymd: string): string {
-  return `${ymd}T00:00:00`
+  return `${ymd}T00:00:00+07:00`
+}
+
+type PeriodBalance = {
+  opening: number
+  closing: number
 }
 
 function endOfDayIso(ymd: string): string {
-  return `${ymd}T23:59:59`
+  return `${ymd}T23:59:59.999+07:00`
 }
+
+const SUB_WAREHOUSE_READ_ONLY_ROLES = new Set(['production', 'qc_staff', 'packing_staff'])
 
 export default function WarehouseSub() {
   const { user } = useAuthContext()
   const canManageSubWarehouseSettings = user?.role === 'superadmin' || user?.role === 'admin'
+  const canModifySubWarehouseStock = !!user && !SUB_WAREHOUSE_READ_ONLY_ROLES.has(user.role)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   const [subWarehouses, setSubWarehouses] = useState<SubWarehouse[]>([])
@@ -116,7 +124,7 @@ export default function WarehouseSub() {
 
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date()
-    d.setDate(d.getDate() - 7)
+    d.setDate(1)
     return toLocalYmd(d)
   })
   const [dateTo, setDateTo] = useState(() => toLocalYmd(new Date()))
@@ -131,6 +139,8 @@ export default function WarehouseSub() {
   const [warehouseProductSearch, setWarehouseProductSearch] = useState('')
   const [dailyRows, setDailyRows] = useState<DailySheetRow[]>([])
   const [loadingDaily, setLoadingDaily] = useState(false)
+  const [periodBalances, setPeriodBalances] = useState<Record<string, PeriodBalance>>({})
+  const [loadingPeriodBalances, setLoadingPeriodBalances] = useState(false)
 
   const productStockExportRef = useRef<HTMLDivElement>(null)
   const [savingTableImage, setSavingTableImage] = useState(false)
@@ -191,6 +201,41 @@ export default function WarehouseSub() {
     const order = new Map(products.map((product, index) => [product.product_id, index]))
     return [...filtered].sort((a, b) => (order.get(a.product_id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.product_id) ?? Number.MAX_SAFE_INTEGER))
   }, [dailyRows, products, warehouseProductSearch])
+  const filteredMoves = useMemo(() => {
+    const term = historyProductCode.trim().toLocaleLowerCase('th')
+    if (!term) return moves
+    return moves.filter((move) =>
+      `${move.product_code} ${move.product_name}`.toLocaleLowerCase('th').includes(term),
+    )
+  }, [historyProductCode, moves])
+  const chronologicalMoves = useMemo(
+    () => [...filteredMoves].sort((a, b) => {
+      const timeDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      return timeDiff || a.id.localeCompare(b.id)
+    }),
+    [filteredMoves],
+  )
+  const rangeMoveTotals = useMemo(() => {
+    const totals = new Map<string, { added: number; removed: number }>()
+    moves.forEach((move) => {
+      const current = totals.get(move.product_id) || { added: 0, removed: 0 }
+      const delta = Number(move.qty_delta || 0)
+      if (delta >= 0) current.added += delta
+      else current.removed += Math.abs(delta)
+      totals.set(move.product_id, current)
+    })
+    return totals
+  }, [moves])
+  const historySummaryRows = useMemo(() => {
+    const productById = new Map<string, Pick<MoveRow, 'product_id' | 'product_code' | 'product_name' | 'unit_name'>>()
+    filteredMoves.forEach((move) => productById.set(move.product_id, move))
+    return [...productById.values()].map((product) => {
+      const totals = rangeMoveTotals.get(product.product_id) || { added: 0, removed: 0 }
+      const wmsUsed = Number(wmsCorrectMap[product.product_code] || 0)
+      const balance = periodBalances[product.product_id]
+      return { ...product, ...totals, wmsUsed, opening: balance?.opening, closing: balance?.closing }
+    })
+  }, [filteredMoves, periodBalances, rangeMoveTotals, wmsCorrectMap])
 
   async function applyDynamicWmsMapsToCorrectMap(map: Record<string, number>, subId: string) {
     if (!subId) return
@@ -582,7 +627,9 @@ export default function WarehouseSub() {
         p_sub_warehouse_id: subId,
         p_date_from: dateFrom,
         p_date_to: dateTo,
-        p_product_code: historyProductCode.trim() || null,
+        // Load every move in the selected period. History search is applied in the UI,
+        // while the range summary must always use the complete period.
+        p_product_code: null,
       })
       if (error) throw error
       const rows = (data || []).map((r: any) => ({
@@ -670,6 +717,44 @@ export default function WarehouseSub() {
     }
   }
 
+  async function loadPeriodBalances(subId: string) {
+    if (!dateFrom || !dateTo) return
+    setLoadingPeriodBalances(true)
+    try {
+      const loadForDate = async (date: string) => {
+        const { data, error } = await supabase.rpc('rpc_get_sub_warehouse_daily_stock_sheet', {
+          p_sub_warehouse_id: subId,
+          p_date: date,
+        })
+        if (error) throw error
+        return data || []
+      }
+      const startRowsPromise = loadForDate(dateFrom)
+      const endRowsPromise = dateFrom === dateTo ? startRowsPromise : loadForDate(dateTo)
+      const [startRows, endRows] = await Promise.all([startRowsPromise, endRowsPromise])
+      const next: Record<string, PeriodBalance> = {}
+      ;(startRows as Array<{ product_id: string; balance_opening: number | string | null }>).forEach((row) => {
+        next[String(row.product_id)] = {
+          opening: Number(row.balance_opening || 0),
+          closing: 0,
+        }
+      })
+      ;(endRows as Array<{ product_id: string; balance_eod: number | string | null }>).forEach((row) => {
+        const productId = String(row.product_id)
+        next[productId] = {
+          opening: next[productId]?.opening ?? 0,
+          closing: Number(row.balance_eod || 0),
+        }
+      })
+      setPeriodBalances(next)
+    } catch (e) {
+      console.error('Load period balances failed:', e)
+      setPeriodBalances({})
+    } finally {
+      setLoadingPeriodBalances(false)
+    }
+  }
+
   const refreshAllForSelected = useCallback(async () => {
     if (!selectedSubId) return
     await Promise.all([
@@ -677,8 +762,9 @@ export default function WarehouseSub() {
       loadMoves(selectedSubId),
       loadWmsCorrect(),
       loadDailySheet(selectedSubId),
+      loadPeriodBalances(selectedSubId),
     ])
-  }, [selectedSubId, dateFrom, dateTo, historyProductCode, countDate]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedSubId, dateFrom, dateTo, countDate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     loadSubWarehouses()
@@ -741,12 +827,24 @@ export default function WarehouseSub() {
   }
 
   const openAdjustForProduct = (productId: string) => {
+    if (!canModifySubWarehouseStock) {
+      showMessage({ message: 'บัญชีนี้มีสิทธิ์ดูข้อมูลคลังย่อยเท่านั้น' })
+      return
+    }
     setAdjustProductId(productId)
     setAdjustType('add')
     setAdjustQty('')
     setAdjustReason('เติมสต๊อค')
     setAdjustNote('')
     setAdjustModalOpen(true)
+  }
+
+  const selectAdjustType = (type: 'add' | 'remove') => {
+    setAdjustType(type)
+    const currentReason = adjustReason.trim()
+    if (!currentReason || currentReason === 'เติมสต๊อค' || currentReason === 'ลดสต๊อค') {
+      setAdjustReason(type === 'add' ? 'เติมสต๊อค' : 'ลดสต๊อค')
+    }
   }
 
   const createSubWarehouse = async () => {
@@ -813,6 +911,10 @@ export default function WarehouseSub() {
   }
 
   const saveAdjust = async () => {
+    if (!canModifySubWarehouseStock) {
+      showMessage({ message: 'บัญชีนี้ไม่มีสิทธิ์เพิ่มหรือลดสต๊อคคลังย่อย' })
+      return
+    }
     if (!selectedSubId || !adjustProductId) return
     const q = Number(String(adjustQty || '').replace(/,/g, '').trim())
     if (!Number.isFinite(q) || q <= 0) {
@@ -845,6 +947,10 @@ export default function WarehouseSub() {
   }
 
   const deleteAssignedProduct = async (productId: string) => {
+    if (!canModifySubWarehouseStock) {
+      showMessage({ message: 'บัญชีนี้ไม่มีสิทธิ์ลบสินค้าออกจากคลังย่อย' })
+      return
+    }
     if (!selectedSubId) return
     const ok = await showConfirm({
       title: 'ลบสินค้าออกจากคลังย่อย',
@@ -920,223 +1026,203 @@ export default function WarehouseSub() {
     showMessage,
   ])
 
-  const moveHistoryContent = loadingMoves ? (
+  const moveHistoryContent = loadingMoves || loadingPeriodBalances || loadingWms ? (
     <div className="py-10 text-center text-slate-400">กำลังโหลด...</div>
-  ) : moves.length === 0 ? (
+  ) : filteredMoves.length === 0 ? (
     <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-6 py-14 text-center">
       <div className="text-base font-black text-slate-800">ไม่มีประวัติในช่วงวันที่ที่เลือก</div>
       <div className="text-sm text-slate-600 mt-2">ลองขยายช่วงวันที่ หรือกดรีเฟรชข้อมูลหลังมีการบันทึกสต๊อค</div>
     </div>
   ) : (
-    <div className="overflow-x-auto"><table className="w-full text-sm">
-      <thead><tr className="bg-slate-900 text-white">
-        <th className="p-3 text-left rounded-tl-xl">เวลา</th><th className="p-3 text-left">รหัส</th>
-        <th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">+/-</th>
-        <th className="p-3 text-right">คงเหลือหลังรายการ</th><th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
-      </tr></thead>
-      <tbody className="divide-y">{moves.map((move) => {
-        const delta = Number(move.qty_delta || 0)
-        return <tr key={move.id} className="hover:bg-slate-50">
-          <td className="p-3 whitespace-nowrap text-slate-600">{new Date(move.created_at).toLocaleString('th-TH')}</td>
-          <td className="p-3 font-semibold">{move.product_code}</td><td className="p-3">{move.product_name}</td>
-          <td className={`p-3 text-right font-bold tabular-nums ${delta > 0 ? 'text-emerald-700' : 'text-red-700'}`}>{delta > 0 ? `+${delta.toLocaleString()}` : delta.toLocaleString()}</td>
-          <td className="p-3 text-right font-bold tabular-nums">{Number(move.balance_after || 0).toLocaleString()}</td>
-          <td className="p-3 text-slate-600"><div className="font-semibold text-slate-700">{move.reason || '-'}</div>{move.note && <div className="text-xs text-slate-500">{move.note}</div>}</td>
-        </tr>
-      })}</tbody>
-    </table></div>
+    <div className="space-y-5">
+      <div className="overflow-x-auto rounded-xl border border-emerald-100">
+        <div className="border-b border-emerald-100 bg-emerald-50 px-4 py-3">
+          <div className="font-black text-emerald-950">สรุปยอดในช่วงวันที่เลือก</div>
+        </div>
+        <table className="w-full min-w-[900px] text-sm">
+          <thead>
+            <tr className="bg-white text-slate-600">
+              <th className="p-3 text-left">รหัส / สินค้า</th>
+              <th className="p-3 text-right">ยอดต้นช่วง</th>
+              <th className="p-3 text-right">เติมรวม</th>
+              <th className="p-3 text-right">ลดด้วยมือ</th>
+              <th className="p-3 text-right">ผลิต WMS</th>
+              <th className="p-3 text-right">คงเหลือปลายช่วง</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-emerald-100">
+            {historySummaryRows.map((row) => (
+              <tr key={row.product_id} className="bg-emerald-50/30">
+                <td className="p-3">
+                  <div className="font-bold text-slate-900">{row.product_code}</div>
+                  <div className="text-xs text-slate-600">{row.product_name}</div>
+                </td>
+                <td className="p-3 text-right font-semibold tabular-nums">{row.opening?.toLocaleString() ?? '-'}</td>
+                <td className="p-3 text-right font-bold text-emerald-700 tabular-nums">+{row.added.toLocaleString()}</td>
+                <td className="p-3 text-right font-bold text-red-700 tabular-nums">-{row.removed.toLocaleString()}</td>
+                <td className="p-3 text-right font-bold text-amber-700 tabular-nums">-{row.wmsUsed.toLocaleString()}</td>
+                <td className="p-3 text-right font-black text-slate-950 tabular-nums">{row.closing?.toLocaleString() ?? '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="overflow-x-auto">
+        <div className="mb-2 font-black text-slate-800">รายการเพิ่ม/ลดด้วยมือ</div>
+        <table className="w-full min-w-[980px] text-sm">
+          <thead><tr className="bg-emerald-600 text-white">
+            <th className="p-3 text-left rounded-tl-xl">เวลา</th>
+            <th className="p-3 text-left">รหัส / สินค้า</th>
+            <th className="p-3 text-center">ประเภท</th>
+            <th className="p-3 text-right">จำนวน</th>
+            <th className="p-3 text-right">ยอดสุทธิจากการปรับมือ</th>
+            <th className="p-3 text-left rounded-tr-xl">เหตุผล/หมายเหตุ</th>
+          </tr></thead>
+          <tbody className="divide-y">{chronologicalMoves.map((move) => {
+            const delta = Number(move.qty_delta || 0)
+            const isAdd = delta >= 0
+            const savedReason = move.reason?.trim() || ''
+            const displayReason = !isAdd && savedReason === 'เติมสต๊อค' ? 'ลดสต๊อค' : savedReason || '-'
+            return <tr key={move.id} className="hover:bg-slate-50">
+              <td className="p-3 whitespace-nowrap text-slate-600">{new Date(move.created_at).toLocaleString('th-TH')}</td>
+              <td className="p-3"><div className="font-semibold">{move.product_code}</div><div className="text-xs text-slate-600">{move.product_name}</div></td>
+              <td className="p-3 text-center"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${isAdd ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>{isAdd ? 'เติม' : 'ลดมือ'}</span></td>
+              <td className={`p-3 text-right font-bold tabular-nums ${isAdd ? 'text-emerald-700' : 'text-red-700'}`}>{Math.abs(delta).toLocaleString()}</td>
+              <td className="p-3 text-right font-bold tabular-nums">{Number(move.balance_after || 0).toLocaleString()}</td>
+              <td className="p-3 text-slate-600"><div className="font-semibold text-slate-700">{displayReason}</div>{move.note && <div className="text-xs text-slate-500">{move.note}</div>}</td>
+            </tr>
+          })}</tbody>
+        </table>
+      </div>
+    </div>
   )
 
   return (
-    <div className="space-y-6 mt-4">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-black text-slate-800">{headerTitle}</h1>
-        </div>
-        <div className="flex gap-2">
-          {canManageSubWarehouseSettings && (
-            <button
-              type="button"
-              onClick={() => setCreateModalOpen(true)}
-              className="px-4 py-2 rounded-xl font-semibold text-sm bg-emerald-600 text-white hover:bg-emerald-700"
-            >
-              + เพิ่มชื่อคลังย่อย
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={openAddProduct}
-            className="px-4 py-2 rounded-xl font-semibold text-sm bg-blue-600 text-white hover:bg-blue-700"
-          >
-            + เพิ่มสินค้า
-          </button>
-          {canManageSubWarehouseSettings && (
-            <button
-              type="button"
-              onClick={openRubberMapSettings}
-              disabled={!selectedSubId}
-              className="px-4 py-2 rounded-xl font-semibold text-sm bg-white text-slate-800 border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
-            >
-              ตั้งค่าหน้ายาง
-            </button>
-          )}
-        </div>
-      </div>
-
+    <div className="mt-4">
       <div className="space-y-6">
-        {/* Top controls: split left/right (รายชื่อคลังย่อย / ตัวกรองประวัติ) */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="min-w-0 bg-white p-5 rounded-2xl shadow-sm border">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-black text-slate-800">รายชื่อคลังย่อย</div>
-              {loadingSubs && <div className="text-xs text-slate-400">กำลังโหลด...</div>}
-            </div>
-            {subWarehouses.length === 0 ? (
-              <div className="text-sm text-slate-500">ยังไม่มีคลังย่อย</div>
-            ) : (
-              <div className="space-y-2">
-                {subWarehouses.map((s) => {
-                  const active = s.id === selectedSubId
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => setSelectedSubId(s.id)}
-                      className={`w-full text-left px-3 py-2 rounded-xl border transition-colors ${
-                        active
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-bold'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      {s.name}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="min-w-0 bg-white p-5 rounded-2xl shadow-sm border">
-            <div className="font-black text-slate-800 mb-3">ตัวกรองประวัติ/ยอดผลิต</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-bold text-slate-600">จากวันที่</label>
-                <input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-600">ถึงวันที่</label>
-                <input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
-                />
-              </div>
-              <div className="sm:col-span-2">
-                <label className="text-xs font-bold text-slate-600">ค้นหารหัส/ชื่อสินค้า (เฉพาะประวัติ)</label>
-                <input
-                  type="text"
-                  value={historyProductCode}
-                  onChange={(e) => setHistoryProductCode(e.target.value)}
-                  placeholder="เช่น 110000001 หรือ PCA"
-                  className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-200"
-                />
-              </div>
-              <div className="sm:col-span-2 flex items-center justify-between gap-3 flex-wrap">
-                <button
-                  type="button"
-                  disabled={!canQuery || loadingMoves || loadingWms || loadingProducts || loadingDaily}
-                  onClick={refreshAllForSelected}
-                  className="px-4 py-2 rounded-xl font-semibold text-sm bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 w-full sm:w-auto"
-                >
-                  รีเฟรชข้อมูล
-                </button>
-                {(loadingMoves || loadingWms || loadingDaily) && (
-                  <div className="text-xs text-slate-400">กำลังโหลดข้อมูล…</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right side data should expand full width */}
         <div className="min-w-0 flex flex-col gap-6">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden w-full">
             <div className="px-7 py-5 bg-gradient-to-r from-emerald-50 via-white to-white border-b border-slate-200">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="min-w-0 flex-1">
-                  <div className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">สินค้าในคลังย่อย</div>
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-                      <button
-                        type="button"
-                        onClick={() => setProductViewMode('daily')}
-                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
-                          productViewMode === 'daily'
-                            ? 'bg-emerald-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        นับสต๊อครายวัน
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProductViewMode('history')}
-                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
-                          productViewMode === 'history'
-                            ? 'bg-emerald-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        ประวัติการเติม/ลด
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setProductViewMode('range')}
-                        className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-colors min-h-[44px] sm:min-h-0 ${
-                          productViewMode === 'range'
-                            ? 'bg-emerald-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        ยอดรวมในช่วง
-                      </button>
-                    </div>
-                    {productViewMode === 'daily' && (
-                      <label className="flex items-center gap-3 text-sm font-bold text-slate-600">
-                        <span className="whitespace-nowrap">วันที่นับ</span>
-                        <input
-                          type="date"
-                          value={countDate}
-                          onChange={(e) => setCountDate(e.target.value)}
-                          className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-800 shadow-sm"
-                        />
-                      </label>
-                    )}
-                    {productViewMode === 'daily' && loadingDaily && (
-                      <span className="text-sm text-slate-400">กำลังคำนวณรายวัน…</span>
-                    )}
-                  </div>
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <div className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">{headerTitle}</div>
                 </div>
-                <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                <div className="flex flex-wrap items-end justify-end gap-2">
+                  <div className="min-w-[240px]">
+                    <select
+                      value={selectedSubId}
+                      onChange={(e) => setSelectedSubId(e.target.value)}
+                      disabled={loadingSubs || subWarehouses.length === 0}
+                      className="min-h-[44px] w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-sm font-bold text-slate-800 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-50"
+                    >
+                      {subWarehouses.length === 0 && <option value="">ยังไม่มีคลังย่อย</option>}
+                      {subWarehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+                    </select>
+                  </div>
+                  {canManageSubWarehouseSettings && (
+                    <button
+                      type="button"
+                      onClick={() => setCreateModalOpen(true)}
+                      className="min-h-[44px] rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                    >
+                      + เพิ่มชื่อคลังย่อย
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={openAddProduct}
+                    className="min-h-[44px] rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                  >
+                    + เพิ่มสินค้า
+                  </button>
+                  {canManageSubWarehouseSettings && (
+                    <button
+                      type="button"
+                      onClick={openRubberMapSettings}
+                      disabled={!selectedSubId}
+                      className="min-h-[44px] rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      ตั้งค่าหน้ายาง
+                    </button>
+                  )}
                   {productViewMode !== 'history' && <button
                     type="button"
                     onClick={() => void saveProductTableImage()}
                     disabled={!canSaveProductTableImage || savingTableImage || loadingProducts}
-                    className="px-4 py-2.5 rounded-xl text-sm font-bold bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 disabled:opacity-50 disabled:pointer-events-none shadow-sm whitespace-nowrap min-h-[44px]"
+                    className="min-h-[44px] rounded-xl border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-800 shadow-sm hover:bg-emerald-50 disabled:pointer-events-none disabled:opacity-50"
                   >
                     {savingTableImage ? 'กำลังบันทึก…' : 'บันทึกภาพ'}
                   </button>}
-                  <div className="text-sm text-slate-500 bg-white/70 border border-slate-200 rounded-2xl px-4 py-2.5">
-                    คลังที่เลือก: <span className="font-bold text-slate-800">{selectedSub?.name || '-'}</span>
-                  </div>
                 </div>
               </div>
+
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <div className="inline-flex max-w-full overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
+                  {([
+                    ['daily', 'นับสต๊อครายวัน'],
+                    ['history', 'ประวัติการเติม/ลด'],
+                    ['range', 'ยอดรวมในช่วง'],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setProductViewMode(mode)}
+                      className={`min-h-[42px] whitespace-nowrap rounded-xl px-5 py-2.5 text-sm font-bold transition-colors ${
+                        productViewMode === mode ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
+                {productViewMode === 'daily' ? (
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="text-xs font-bold text-slate-600">
+                      วันที่นับ
+                      <input
+                        type="date"
+                        value={countDate}
+                        onChange={(e) => setCountDate(e.target.value)}
+                        className="mt-1 min-h-[42px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800"
+                      />
+                    </label>
+                    {loadingDaily && <span className="pb-2 text-sm text-slate-400">กำลังคำนวณรายวัน…</span>}
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="w-full text-xs font-bold text-slate-600 sm:w-[180px]">
+                      จากวันที่
+                      <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    </label>
+                    <label className="w-full text-xs font-bold text-slate-600 sm:w-[180px]">
+                      ถึงวันที่
+                      <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                    </label>
+                    {productViewMode === 'history' && (
+                      <label className="w-full text-xs font-bold text-slate-600 md:w-[420px]">
+                        ค้นหารหัส/ชื่อสินค้า
+                        <input type="search" value={historyProductCode} onChange={(e) => setHistoryProductCode(e.target.value)} placeholder="เช่น 110000001 หรือ PCA" className="mt-1 min-h-[42px] w-full rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      disabled={!canQuery || loadingMoves || loadingWms || loadingProducts || loadingPeriodBalances}
+                      onClick={refreshAllForSelected}
+                      className="min-h-[42px] w-auto shrink-0 rounded-xl bg-emerald-700 px-5 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      {(loadingMoves || loadingWms || loadingPeriodBalances) ? 'กำลังโหลด…' : 'แสดงข้อมูล'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {productViewMode === 'range' && <div className="mt-3 max-w-5xl rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 text-sm text-slate-700">
+                สรุปเฉพาะช่วงวันที่เลือก: <span className="font-bold">เติม − ลดด้วยมือ − ผลิตใช้ไป (WMS) = เปลี่ยนแปลงสุทธิในช่วง</span>
+              </div>}
             </div>
 
             <div className="p-6">
@@ -1158,20 +1244,12 @@ export default function WarehouseSub() {
             >
               <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-slate-100 pb-3">
                 <div className="text-sm font-black text-slate-800">
-                  {productViewMode === 'history' ? 'ประวัติการเติม/ลดสต๊อค' : 'สินค้าในคลังย่อย'}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {selectedSub?.name || '-'}
-                  {productViewMode === 'daily'
-                    ? ` · รายวัน ${countDate}`
-                    : productViewMode === 'history'
-                      ? ` · ประวัติ ${dateFrom} – ${dateTo}`
-                      : ` · รวมช่วง ${dateFrom} – ${dateTo}`}
+                  {productViewMode === 'history' ? 'ประวัติการเติม/ลดสต๊อค' : productViewMode === 'range' ? 'ยอดรวมในช่วง' : 'รายการสินค้า'}
                 </div>
               </div>
-              {productViewMode !== 'history' && products.length > 1 && (
+              {productViewMode !== 'history' && products.length > 1 && (warehouseProductSearch.trim() || savingProductOrder) && (
                 <div className="mb-3 text-xs text-slate-500">
-                  {warehouseProductSearch.trim() ? 'ล้างคำค้นหาเพื่อจัดลำดับสินค้า' : savingProductOrder ? 'กำลังบันทึกลำดับ…' : 'ลากไอคอน ≡ เพื่อเปลี่ยนลำดับสินค้า'}
+                  {warehouseProductSearch.trim() ? 'ล้างคำค้นหาเพื่อจัดลำดับสินค้า' : 'กำลังบันทึกลำดับ…'}
                 </div>
               )}
             {productViewMode === 'history' ? (
@@ -1209,7 +1287,7 @@ export default function WarehouseSub() {
                         <th className="p-3 text-center whitespace-nowrap">ลด (มือ)</th>
                         <th className="p-3 text-center whitespace-nowrap">ผลิตใช้ไป</th>
                         <th className="p-3 text-center whitespace-nowrap">คงเหลือ (สิ้นวัน)</th>
-                        <th className="p-3 text-center rounded-tr-xl">จัดการ</th>
+                        {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -1242,7 +1320,7 @@ export default function WarehouseSub() {
                               {dash ? '…' : p.replenish_day.toLocaleString()}
                             </td>
                             <td className="p-3 text-center tabular-nums text-slate-600">
-                              {dash ? '…' : p.reduce_day === 0 ? '0' : p.reduce_day.toLocaleString()}
+                              {dash ? '…' : Math.abs(p.reduce_day).toLocaleString()}
                             </td>
                             <td className="p-3 text-center tabular-nums text-slate-800">
                               {dash ? '…' : p.wms_day.toLocaleString()}
@@ -1254,10 +1332,9 @@ export default function WarehouseSub() {
                             >
                               {dash ? '…' : p.balance_eod.toLocaleString()}
                             </td>
-                            <td className="p-3">
-                              <div className="grid w-full min-w-[13rem] grid-cols-3 items-center gap-1">
-                                <div aria-hidden className="min-w-0" />
-                                <div className="flex justify-center min-w-0">
+                            {canModifySubWarehouseStock && (
+                              <td className="p-3">
+                                <div className="flex min-w-[10rem] items-center justify-between gap-2">
                                   <button
                                     type="button"
                                     onClick={() => openAdjustForProduct(p.product_id)}
@@ -1265,8 +1342,6 @@ export default function WarehouseSub() {
                                   >
                                     เพิ่ม/ลด
                                   </button>
-                                </div>
-                                <div className="flex justify-end min-w-0">
                                   <button
                                     type="button"
                                     onClick={() => deleteAssignedProduct(p.product_id)}
@@ -1275,8 +1350,8 @@ export default function WarehouseSub() {
                                     ลบ
                                   </button>
                                 </div>
-                              </div>
-                            </td>
+                              </td>
+                            )}
                           </tr>
                         )
                       })}
@@ -1296,17 +1371,18 @@ export default function WarehouseSub() {
                       <th className="p-3 text-left">รหัสสินค้า</th>
                       <th className="p-3 text-left">ชื่อสินค้า</th>
                       <th className="p-3 text-center">หน่วย</th>
-                      <th className="p-3 text-center">รับเข้า</th>
-                      <th className="p-3 text-center">ยอดผลิต (WMS)</th>
-                      <th className="p-3 text-center">คงเหลือ</th>
-                      <th className="p-3 text-center rounded-tr-xl">จัดการ</th>
+                      <th className="p-3 text-center">เติมในช่วง</th>
+                      <th className="p-3 text-center">ลดด้วยมือ</th>
+                      <th className="p-3 text-center">ผลิตใช้ไป (WMS)</th>
+                      <th className="p-3 text-center">เปลี่ยนแปลงสุทธิ</th>
+                      {canModifySubWarehouseStock && <th className="p-3 text-center rounded-tr-xl">จัดการ</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y">
                     {filteredWarehouseProducts.map((p) => {
-                      const receivedIn = Number(p.qty_on_hand || 0)
+                      const moveTotals = rangeMoveTotals.get(p.product_id) || { added: 0, removed: 0 }
                       const wmsQty = wmsCorrectMap[p.product_code] ?? 0
-                      const onHand = receivedIn - Number(wmsQty || 0)
+                      const netChange = moveTotals.added - moveTotals.removed - Number(wmsQty || 0)
                       return (
                         <tr
                           key={p.product_id}
@@ -1324,22 +1400,24 @@ export default function WarehouseSub() {
                           <td className="p-3">{p.product_name}</td>
                           <td className="p-3 text-center text-slate-500">{p.unit_name || '-'}</td>
                           <td className="p-3 text-center font-bold tabular-nums">
-                            {receivedIn.toLocaleString()}
+                            {moveTotals.added.toLocaleString()}
+                          </td>
+                          <td className="p-3 text-center tabular-nums text-red-600">
+                            {moveTotals.removed.toLocaleString()}
                           </td>
                           <td className="p-3 text-center tabular-nums">
                             {loadingWms ? '-' : Number(wmsQty || 0).toLocaleString()}
                           </td>
                           <td
                             className={`p-3 text-center font-bold tabular-nums ${
-                              !loadingWms && onHand < 0 ? 'text-red-600' : 'text-slate-900'
+                              !loadingWms && netChange < 0 ? 'text-red-600' : 'text-slate-900'
                             }`}
                           >
-                            {loadingWms ? '-' : onHand.toLocaleString()}
+                            {loadingWms ? '-' : netChange.toLocaleString()}
                           </td>
-                          <td className="p-3">
-                            <div className="grid w-full min-w-[13rem] grid-cols-3 items-center gap-1">
-                              <div aria-hidden className="min-w-0" />
-                              <div className="flex justify-center min-w-0">
+                          {canModifySubWarehouseStock && (
+                            <td className="p-3">
+                              <div className="flex min-w-[10rem] items-center justify-between gap-2">
                                 <button
                                   type="button"
                                   onClick={() => openAdjustForProduct(p.product_id)}
@@ -1347,8 +1425,6 @@ export default function WarehouseSub() {
                                 >
                                   เพิ่ม/ลด
                                 </button>
-                              </div>
-                              <div className="flex justify-end min-w-0">
                                 <button
                                   type="button"
                                   onClick={() => deleteAssignedProduct(p.product_id)}
@@ -1357,8 +1433,8 @@ export default function WarehouseSub() {
                                   ลบ
                                 </button>
                               </div>
-                            </div>
-                          </td>
+                            </td>
+                          )}
                         </tr>
                       )
                     })}
@@ -1508,7 +1584,7 @@ export default function WarehouseSub() {
             <div className="mt-2 flex gap-2">
               <button
                 type="button"
-                onClick={() => setAdjustType('add')}
+                onClick={() => selectAdjustType('add')}
                 className={`px-4 py-2 rounded-xl font-semibold border ${
                   adjustType === 'add'
                     ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
@@ -1519,7 +1595,7 @@ export default function WarehouseSub() {
               </button>
               <button
                 type="button"
-                onClick={() => setAdjustType('remove')}
+                onClick={() => selectAdjustType('remove')}
                 className={`px-4 py-2 rounded-xl font-semibold border ${
                   adjustType === 'remove'
                     ? 'bg-red-600 text-white border-red-600 shadow-sm'
@@ -1548,7 +1624,7 @@ export default function WarehouseSub() {
                 type="text"
                 value={adjustReason}
                 onChange={(e) => setAdjustReason(e.target.value)}
-                placeholder="เช่น เติมสต๊อค"
+                placeholder={adjustType === 'add' ? 'เช่น เติมสต๊อค' : 'เช่น ลดสต๊อค'}
                 className="w-full mt-2 px-4 py-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900"
               />
             </div>

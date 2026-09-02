@@ -6,6 +6,7 @@ import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import OrderDetailView from './OrderDetailView'
 import FailedClaimEditModal from '../claim/FailedClaimEditModal'
@@ -730,6 +731,7 @@ export default function OrderList({
               <div className="flex items-center gap-2.5 mb-2 flex-wrap">
                 <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-700 text-xl font-bold hover:text-blue-900 hover:underline transition-colors">
                   {order.bill_no}
+                  <ExpressReceiptNumberInline value={order.express_receipt_number} />
                 </button>
                 <UrgencyBadge order={order} />
                 {order.work_order_name && (
@@ -931,9 +933,6 @@ export default function OrderList({
                   )}
                   {order.tracking_number && (
                     <span><span className="font-medium">เลขพัสดุ:</span> {order.tracking_number}</span>
-                  )}
-                  {order.express_receipt_number && (
-                    <span className="text-cyan-800"><span className="font-medium">เลขรับพัสดุด่วน:</span> {order.express_receipt_number}</span>
                   )}
                 </p>
                 <p className="mb-1 font-bold">

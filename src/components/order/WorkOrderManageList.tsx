@@ -4,6 +4,7 @@ import { buildIlikeOr } from '../../lib/searchFilter'
 import { Order, WorkOrder } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
 import * as ExcelJS from 'exceljs'
@@ -2139,12 +2140,8 @@ export default function WorkOrderManageList({
                                     <td className="p-3 align-middle">
                                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                                         {order.bill_no ?? '-'}
+                                        <ExpressReceiptNumberInline value={order.express_receipt_number} />
                                       </button>
-                                      {order.express_receipt_number && (
-                                        <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
-                                          รับด่วน: {order.express_receipt_number}
-                                        </div>
-                                      )}
                                       {!isOrderAllowedInFulfillmentFlow(order.status) && (
                                         <div className="mt-1 w-fit rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
                                           ยกเลิกบิล

@@ -5,7 +5,6 @@ import Modal from '../components/ui/Modal'
 import { getProductImageUrl } from '../components/wms/wmsUtils'
 import { useAuthContext } from '../contexts/AuthContext'
 import { InventoryAdjustment, InventoryAdjustmentItem, Product } from '../types'
-import { adjustStockBalancesBulkRPC, bulkUpdateSafetyStock } from '../lib/inventory'
 
 interface DraftItem {
   product_id: string
@@ -20,34 +19,59 @@ interface StockBalance {
   safety_stock: number | null
 }
 
-type AdjustmentType = 'audit_adjustment' | 'safety_reclass'
+interface RollMapping {
+  config_id: string
+  rm_product_id: string
+  fg_product_id: string
+  sheets_per_roll: number
+}
 
-const TEMPLATE_HEADERS = ['product_code', 'qty', 'safety_stock', 'order_point'] as const
+type AdjustmentType = 'audit_adjustment' | 'stocktake_reconcile' | 'safety_reclass'
 
-async function generateCode(prefix: string) {
-  const date = new Date()
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  const dayPrefix = `${prefix}-${y}${m}${d}-`
+const ADJUSTMENT_STATUS: Record<string, { label: string; className: string }> = {
+  pending: { label: 'รออนุมัติ', className: 'bg-amber-500 text-white' },
+  approved: { label: 'อนุมัติแล้ว', className: 'bg-green-500 text-white' },
+  cancelled: { label: 'ยกเลิก', className: 'bg-gray-400 text-white' },
+}
 
-  const { data } = await supabase
-    .from('inv_adjustments')
-    .select('adjust_no')
-    .like('adjust_no', `${dayPrefix}%`)
+const TEMPLATE_HEADERS = ['product_code', 'on_hand', 'safety_stock'] as const
 
-  let maxNum = 0
-  if (data) {
-    for (const row of data) {
-      const suffix = row.adjust_no.replace(dayPrefix, '')
-      if (/^\d{3}$/.test(suffix)) {
-        const num = parseInt(suffix, 10)
-        if (num > maxNum) maxNum = num
-      }
-    }
+type ImportColumn = 'product_code' | 'qty' | 'on_hand' | 'safety_stock' | 'order_point'
+
+const IMPORT_HEADER_ALIASES: Record<ImportColumn, string[]> = {
+  product_code: ['product_code', 'productcode', 'sku', 'รหัสสินค้า', 'รหัส_สินค้า'],
+  qty: ['qty', 'quantity', 'จำนวน', 'จำนวนจริง', 'สต๊อกใหม่', 'สต็อกใหม่'],
+  on_hand: ['on_hand', 'onhand', 'current_stock', 'สต๊อกปัจจุบัน', 'สต็อกปัจจุบัน', 'คงเหลือ', 'ยอดคงเหลือ'],
+  safety_stock: ['safety_stock', 'safetystock', 'safety', 'สต๊อกสำรอง', 'สต็อกสำรอง'],
+  order_point: ['order_point', 'orderpoint', 'reorder_point', 'จุดสั่งซื้อ', 'จุดสั่งซื้อใหม่'],
+}
+
+function normalizeImportHeader(value: unknown): string {
+  return String(value ?? '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\u00A0/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-/]+/g, '_')
+    .replace(/[().]/g, '')
+}
+
+function canonicalImportHeader(value: unknown): ImportColumn | null {
+  const normalized = normalizeImportHeader(value)
+  for (const [column, aliases] of Object.entries(IMPORT_HEADER_ALIASES) as [ImportColumn, string[]][]) {
+    if (aliases.includes(normalized)) return column
   }
+  return null
+}
 
-  return `${dayPrefix}${String(maxNum + 1).padStart(3, '0')}`
+function normalizeImportProductCode(value: unknown): string {
+  return String(value ?? '').replace(/^\uFEFF/, '').trim().toUpperCase()
+}
+
+function parseImportNumber(value: unknown): number | null {
+  if (value == null || String(value).trim() === '') return null
+  const parsed = Number(String(value).replace(/,/g, '').trim())
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 export default function WarehouseAdjust() {
@@ -57,6 +81,7 @@ export default function WarehouseAdjust() {
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
   const [nonAdjustableProductIds, setNonAdjustableProductIds] = useState<Set<string>>(new Set())
+  const [rollMappings, setRollMappings] = useState<RollMapping[]>([])
   const [userMap, setUserMap] = useState<Record<string, string>>({})
   const [itemCountMap, setItemCountMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
@@ -69,8 +94,16 @@ export default function WarehouseAdjust() {
   const [productSearch, setProductSearch] = useState('')
   const [viewing, setViewing] = useState<InventoryAdjustment | null>(null)
   const [viewItems, setViewItems] = useState<InventoryAdjustmentItem[]>([])
+  const [viewSearch, setViewSearch] = useState('')
   const [viewBalanceMap, setViewBalanceMap] = useState<Record<string, StockBalance>>({})
   const [updating, setUpdating] = useState<string | null>(null)
+  const [approveTarget, setApproveTarget] = useState<InventoryAdjustment | null>(null)
+  const [approveDriftCount, setApproveDriftCount] = useState(0)
+  const [approveSaving, setApproveSaving] = useState(false)
+  const [cancelTarget, setCancelTarget] = useState<InventoryAdjustment | null>(null)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelSaving, setCancelSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
   const importInputRef = useRef<HTMLInputElement>(null)
 
   // Notification modal state
@@ -89,20 +122,36 @@ export default function WarehouseAdjust() {
   async function loadAll() {
     setLoading(true)
     try {
-      const [adjustRes, productRes, balanceRes, usersRes, itemCountRes, specialTrackedRes] = await Promise.all([
+      const [adjustRes, productRes, balanceRes, usersRes, itemCountRes, specialTrackedRes, rollConfigRes, rollRmRes] = await Promise.all([
         supabase.from('inv_adjustments').select('*').order('created_at', { ascending: false }),
         supabase.from('pr_products').select('id, product_code, product_name, order_point, unit_name').eq('is_active', true).order('product_code', { ascending: true }),
         supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock'),
         supabase.from('us_users').select('id, username'),
-        supabase.from('inv_adjustment_items').select('adjustment_id'),
+        supabase.rpc('rpc_inventory_adjustment_item_counts'),
         supabase.from('wh_sub_wms_map_spares').select('product_id'),
+        supabase.from('roll_material_configs').select('id, fg_product_id, sheets_per_roll'),
+        supabase.from('roll_material_config_rms').select('config_id, rm_product_id'),
       ])
       if (adjustRes.error) throw adjustRes.error
       if (productRes.error) throw productRes.error
+      if (itemCountRes.error) throw itemCountRes.error
       setAdjustments((adjustRes.data || []) as InventoryAdjustment[])
       setProducts((productRes.data || []) as Product[])
       if (specialTrackedRes.error) throw specialTrackedRes.error
+      if (rollConfigRes.error) throw rollConfigRes.error
+      if (rollRmRes.error) throw rollRmRes.error
       setNonAdjustableProductIds(new Set((specialTrackedRes.data || []).map((row: { product_id: string }) => row.product_id)))
+      const configMap = new Map((rollConfigRes.data || []).map((row) => [row.id, row]))
+      setRollMappings((rollRmRes.data || []).flatMap((row) => {
+        const config = configMap.get(row.config_id)
+        if (!config) return []
+        return [{
+          config_id: row.config_id,
+          rm_product_id: row.rm_product_id,
+          fg_product_id: config.fg_product_id,
+          sheets_per_roll: Number(config.sheets_per_roll || 0),
+        }]
+      }))
 
       // stock balances map
       const bMap: Record<string, StockBalance> = {}
@@ -118,8 +167,8 @@ export default function WarehouseAdjust() {
 
       // item count per adjustment
       const cMap: Record<string, number> = {}
-      ;(itemCountRes.data || []).forEach((row: any) => {
-        cMap[row.adjustment_id] = (cMap[row.adjustment_id] || 0) + 1
+      ;(itemCountRes.data || []).forEach((row: { adjustment_id: string; item_count: number | string }) => {
+        cMap[row.adjustment_id] = Number(row.item_count) || 0
       })
       setItemCountMap(cMap)
     } catch (e) {
@@ -129,13 +178,31 @@ export default function WarehouseAdjust() {
     }
   }
 
+  const derivedRollFgIds = useMemo(
+    () => new Set(rollMappings.map((mapping) => mapping.fg_product_id)),
+    [rollMappings],
+  )
+
+  const ambiguousRollRmIds = useMemo(() => {
+    const configsByRm = new Map<string, Set<string>>()
+    rollMappings.forEach((mapping) => {
+      const configIds = configsByRm.get(mapping.rm_product_id) || new Set<string>()
+      configIds.add(mapping.config_id)
+      configsByRm.set(mapping.rm_product_id, configIds)
+    })
+    return new Set([...configsByRm.entries()].filter(([, ids]) => ids.size > 1).map(([id]) => id))
+  }, [rollMappings])
+
   const productOptions = useMemo(
     () =>
-      products.filter((p) => !nonAdjustableProductIds.has(p.id)).map((p) => ({
+      products.filter((p) =>
+        !nonAdjustableProductIds.has(p.id)
+        && (adjustmentType !== 'stocktake_reconcile' || !derivedRollFgIds.has(p.id))
+      ).map((p) => ({
         value: p.id,
         label: `${p.product_code} - ${p.product_name} (${p.unit_name || 'ชิ้น'})`,
       })),
-    [products, nonAdjustableProductIds]
+    [products, nonAdjustableProductIds, adjustmentType, derivedRollFgIds]
   )
 
   const filteredProductOptions = useMemo(() => {
@@ -144,10 +211,20 @@ export default function WarehouseAdjust() {
     return productOptions.filter((opt) => opt.label.toLowerCase().includes(keyword))
   }, [productOptions, productSearch])
 
+  const visibleDraftCount = useMemo(() => {
+    const keyword = productSearch.trim().toLowerCase()
+    if (!keyword) return draftItems.length
+    return draftItems.filter((item) => {
+      if (!item.product_id) return true
+      const product = products.find((candidate) => candidate.id === item.product_id)
+      return `${product?.product_code || ''} ${product?.product_name || ''}`.toLowerCase().includes(keyword)
+    }).length
+  }, [draftItems, productSearch, products])
+
   const productCodeMap = useMemo(() => {
     const map: Record<string, Product> = {}
     products.forEach((p) => {
-      map[p.product_code] = p
+      map[normalizeImportProductCode(p.product_code)] = p
     })
     return map
   }, [products])
@@ -157,6 +234,77 @@ export default function WarehouseAdjust() {
     products.forEach((p) => { map[p.id] = p })
     return map
   }, [products])
+
+  const rollImpacts = useMemo(() => {
+    if (adjustmentType !== 'stocktake_reconcile') return []
+    const targetByProduct = new Map(draftItems.map((item) => [item.product_id, item.qty]))
+    const impactedConfigIds = new Set(
+      rollMappings
+        .filter((mapping) => targetByProduct.has(mapping.rm_product_id))
+        .map((mapping) => mapping.config_id),
+    )
+    return [...impactedConfigIds].map((configId) => {
+      const mappings = rollMappings.filter((mapping) => mapping.config_id === configId)
+      const first = mappings[0]
+      const rmTotal = mappings.reduce((sum, mapping) => (
+        sum + (targetByProduct.get(mapping.rm_product_id) ?? balances[mapping.rm_product_id]?.on_hand ?? 0)
+      ), 0)
+      return {
+        configId,
+        fgProductId: first.fg_product_id,
+        sheetsPerRoll: first.sheets_per_roll,
+        rmTotal,
+        fgTarget: rmTotal * first.sheets_per_roll,
+      }
+    })
+  }, [adjustmentType, balances, draftItems, rollMappings])
+
+  async function formatApprovalError(error: unknown): Promise<{ title: string; message: string }> {
+    const rawMessage = error instanceof Error
+      ? error.message
+      : String((error as { message?: unknown } | null)?.message ?? error)
+    const fifoMatch = rawMessage.match(
+      /(?:fn_consume_stock_fifo:\s*)?insufficient(?:\s+sellable)?\s+lots\s+for\s+product\s+([0-9a-f-]{36}),?\s*short\s+by\s+([0-9]+(?:\.[0-9]+)?)(?:\s+units?)?/i,
+    )
+
+    if (!fifoMatch) {
+      if (rawMessage.includes('no items')) {
+        return { title: 'ไม่มีรายการสินค้า', message: 'ใบปรับสต๊อกนี้ไม่มีรายการสินค้า กรุณายกเลิกใบนี้แล้วสร้างใหม่' }
+      }
+      if (rawMessage.includes('already has stock movements')) {
+        return { title: 'ไม่ดำเนินการซ้ำ', message: 'ใบปรับสต๊อกนี้มีรายการเคลื่อนไหวสต๊อกแล้ว กรุณารีเฟรชและตรวจสอบสถานะล่าสุด' }
+      }
+      if (rawMessage.includes('Only a pending')) {
+        return { title: 'สถานะเปลี่ยนแปลงแล้ว', message: 'อนุมัติได้เฉพาะใบที่อยู่ในสถานะรออนุมัติ กรุณารีเฟรชข้อมูลล่าสุด' }
+      }
+      return { title: 'อนุมัติไม่สำเร็จ', message: rawMessage }
+    }
+
+    const [, productId, shortText] = fifoMatch
+    let product: Product | undefined = productIdMap[productId]
+    if (!product) {
+      const { data } = await supabase
+        .from('pr_products')
+        .select('id, product_code, product_name, unit_name')
+        .eq('id', productId)
+        .maybeSingle()
+      if (data) product = data as Product
+    }
+
+    const shortQty = Number(shortText)
+    const formattedShort = Number.isFinite(shortQty)
+      ? shortQty.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      : shortText
+    const productLabel = product
+      ? `${product.product_code} - ${product.product_name}`
+      : 'สินค้ารายการนี้'
+    const unit = product?.unit_name || 'หน่วย'
+
+    return {
+      title: 'สต๊อกสินค้าไม่เพียงพอ',
+      message: `สินค้า ${productLabel}\nสต๊อกที่สามารถตัดได้ไม่เพียงพอ ขาดอีก ${formattedShort} ${unit}\n\nกรุณาตรวจสอบยอดล่าสุด หรือยกเลิกใบเดิมแล้วสร้างใบปรับสต๊อกใหม่`,
+    }
+  }
 
   function addDraftItem() {
     setDraftItems((prev) => [...prev, { product_id: '', qty: 0, safety_stock: null, order_point: null }])
@@ -173,11 +321,8 @@ export default function WarehouseAdjust() {
   }, [])
 
   function downloadTemplate() {
-    const ws = XLSX.utils.aoa_to_sheet([
-      TEMPLATE_HEADERS as unknown as string[],
-      ['P001', 50, 10, 'จุดA'],
-      ['P002', 100, 20, 'จุดB'],
-    ])
+    const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS as unknown as string[]])
+    ws['!cols'] = [{ wch: 18 }, { wch: 14 }, { wch: 16 }]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'ปรับสต๊อค')
     XLSX.writeFile(wb, 'Template_ปรับสต๊อค.xlsx')
@@ -212,52 +357,113 @@ export default function WarehouseAdjust() {
   }
 
   async function handleImport(file: File) {
+    setImporting(true)
     try {
       const buf = await file.arrayBuffer()
       const wb = XLSX.read(new Uint8Array(buf), { type: 'array' })
       const firstSheet = wb.SheetNames[0]
       if (!firstSheet) throw new Error('ไม่มีชีตในไฟล์')
       const sheet = wb.Sheets[firstSheet]
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
-      if (!rows.length) throw new Error('ไม่มีข้อมูลในไฟล์')
+      const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
+      if (!grid.length) throw new Error('ไม่มีข้อมูลในไฟล์')
 
-      // รองรับทั้งรูปแบบ template (product_code, qty, safety_stock) และไฟล์ดาวน์โหลดสินค้าปัจจุบัน (product_code, on_hand, safety_stock)
-      const firstRow = rows[0]
-      const hasQty = 'qty' in firstRow
-      const hasOnHand = 'on_hand' in firstRow
-
-      if (!hasQty && !hasOnHand) {
-        throw new Error('ไม่พบคอลัมน์ qty หรือ on_hand ในไฟล์ — กรุณาใช้ไฟล์ Template หรือไฟล์ดาวน์โหลดสินค้าปัจจุบัน')
+      let headerRowIndex = -1
+      let columnIndex: Partial<Record<ImportColumn, number>> = {}
+      for (let rowIndex = 0; rowIndex < Math.min(grid.length, 20); rowIndex++) {
+        const candidate: Partial<Record<ImportColumn, number>> = {}
+        ;(grid[rowIndex] || []).forEach((cell, index) => {
+          const canonical = canonicalImportHeader(cell)
+          if (canonical && candidate[canonical] == null) candidate[canonical] = index
+        })
+        if (candidate.product_code != null && (candidate.qty != null || candidate.on_hand != null)) {
+          headerRowIndex = rowIndex
+          columnIndex = candidate
+          break
+        }
+      }
+      if (headerRowIndex < 0) {
+        throw new Error('ไม่พบหัวคอลัมน์รหัสสินค้าและจำนวน (product_code + qty หรือ on_hand) ใน 20 แถวแรก')
       }
 
-      const qtyKey = hasQty ? 'qty' : 'on_hand'
-
-      const nextItems: DraftItem[] = []
+      const qtyIndex = columnIndex.qty ?? columnIndex.on_hand
+      const nextItemByProductId = new Map<string, DraftItem>()
       const blockedCodes: string[] = []
-      rows.forEach((row) => {
-        const code = String(row.product_code ?? '').trim()
-        const qty = Number(row[qtyKey] ?? 0)
+      const skippedDerivedFgCodes: string[] = []
+      const ambiguousRmCodes: string[] = []
+      const unknownCodes: string[] = []
+      const invalidRows: string[] = []
+      let duplicateCount = 0
+      grid.slice(headerRowIndex + 1).forEach((row, offset) => {
+        const excelRow = headerRowIndex + offset + 2
+        const code = normalizeImportProductCode(row[columnIndex.product_code!])
+        if (!code) return
         const product = productCodeMap[code]
-        if (!product) return
+        if (!product) {
+          unknownCodes.push(`${code} (แถว ${excelRow})`)
+          return
+        }
         if (nonAdjustableProductIds.has(product.id)) {
           blockedCodes.push(code)
           return
         }
-        const ss = row.safety_stock != null && String(row.safety_stock).trim() !== '' ? Number(row.safety_stock) : null
-        const opRaw = row.order_point != null && String(row.order_point).trim() !== '' ? Number(row.order_point) : null
+        if (derivedRollFgIds.has(product.id)) {
+          skippedDerivedFgCodes.push(code)
+          return
+        }
+        if (ambiguousRollRmIds.has(product.id)) {
+          ambiguousRmCodes.push(code)
+          return
+        }
+        const qty = parseImportNumber(row[qtyIndex!])
+        if (qty == null || qty < 0) {
+          invalidRows.push(`แถว ${excelRow}: ${code} จำนวนไม่ถูกต้อง`)
+          return
+        }
+        const safetyRaw = columnIndex.safety_stock != null ? row[columnIndex.safety_stock] : ''
+        const ss = parseImportNumber(safetyRaw)
+        if (String(safetyRaw ?? '').trim() !== '' && (ss == null || ss < 0)) {
+          invalidRows.push(`แถว ${excelRow}: ${code} Safety Stock ไม่ถูกต้อง`)
+          return
+        }
+        const orderPointRaw = columnIndex.order_point != null ? row[columnIndex.order_point] : ''
+        const opRaw = parseImportNumber(orderPointRaw)
         const op = opRaw != null && Number.isFinite(opRaw) ? opRaw : (product.order_point != null ? Number(product.order_point) || null : null)
-        nextItems.push({ product_id: product.id, qty, safety_stock: ss, order_point: op })
+        const targetSafety = ss ?? balances[product.id]?.safety_stock ?? 0
+        if (nextItemByProductId.has(product.id)) duplicateCount++
+        nextItemByProductId.set(product.id, { product_id: product.id, qty, safety_stock: targetSafety, order_point: op })
       })
+      if (unknownCodes.length) {
+        throw new Error(`ไม่พบรหัสสินค้าในระบบ: ${unknownCodes.slice(0, 10).join(', ')}${unknownCodes.length > 10 ? ` และอีก ${unknownCodes.length - 10} รายการ` : ''}`)
+      }
+      if (invalidRows.length) throw new Error(invalidRows.slice(0, 10).join('\n'))
       if (blockedCodes.length) {
         throw new Error(`ไม่สามารถปรับสินค้า ST ได้ กรุณาปรับ SKU สินค้าผลิตที่ผูกไว้แทน: ${blockedCodes.join(', ')}`)
       }
+      if (ambiguousRmCodes.length) {
+        throw new Error(`RM ถูกผูกกับสูตร FG มากกว่าหนึ่งรายการ กรุณาแก้การตั้งค่า Roll Material Calculator ก่อน: ${ambiguousRmCodes.join(', ')}`)
+      }
+      const nextItems = [...nextItemByProductId.values()]
       if (!nextItems.length) throw new Error('ไม่มีแถวที่ valid (ต้องมี product_code)')
       setDraftItems(nextItems)
+      setAdjustmentType('stocktake_reconcile')
+      setReasonCode('stocktake_import')
+      setProductSearch('')
       setCreateOpen(true)
+      const importWarnings: string[] = []
+      if (skippedDerivedFgCodes.length > 0) {
+        importWarnings.push(`ข้าม FG ที่คำนวณจาก RM ${skippedDerivedFgCodes.length} รายการ: ${skippedDerivedFgCodes.slice(0, 10).join(', ')}`)
+      }
+      if (duplicateCount > 0) {
+        importWarnings.push(`พบรหัสซ้ำ ${duplicateCount} แถว ระบบใช้ค่าจากแถวสุดท้าย`)
+      }
+      if (importWarnings.length > 0) {
+        showNotify('warning', 'นำเข้ายอดตรวจนับแล้ว', importWarnings.join('\n'))
+      }
     } catch (e: any) {
       console.error('Import error:', e)
       showNotify('error', 'นำเข้าไม่สำเร็จ', e?.message || String(e))
     } finally {
+      setImporting(false)
       importInputRef.current && (importInputRef.current.value = '')
     }
   }
@@ -272,9 +478,30 @@ export default function WarehouseAdjust() {
       showNotify('warning', 'ไม่สามารถปรับสินค้า ST ได้', 'กรุณาปรับ SKU สินค้าผลิตที่ผูกไว้ในหน้าตั้งค่าหน้ายางแทน')
       return
     }
+    if (adjustmentType === 'stocktake_reconcile') {
+      const derivedFg = draftItems.find((item) => item.product_id && derivedRollFgIds.has(item.product_id))
+      if (derivedFg) {
+        const product = productIdMap[derivedFg.product_id]
+        showNotify('warning', 'ไม่รับยอด FG ที่คำนวณจากม้วน', `${product?.product_code || 'FG รายการนี้'} จะคำนวณจากยอด RM โดยอัตโนมัติ`)
+        return
+      }
+      const ambiguousRm = draftItems.find((item) => item.product_id && ambiguousRollRmIds.has(item.product_id))
+      if (ambiguousRm) {
+        const product = productIdMap[ambiguousRm.product_id]
+        showNotify('warning', 'การผูกสูตร RM ไม่ชัดเจน', `${product?.product_code || 'RM รายการนี้'} ถูกผูกกับ FG มากกว่าหนึ่งสูตร กรุณาแก้การตั้งค่าก่อน`)
+        return
+      }
+      const invalidRollFormula = rollImpacts.find((impact) => impact.sheetsPerRoll <= 0)
+      if (invalidRollFormula) {
+        const fg = productIdMap[invalidRollFormula.fgProductId]
+        showNotify('warning', 'สูตรจำนวนแผ่นต่อม้วนไม่ถูกต้อง', `${fg?.product_code || 'FG รายการนี้'} ยังไม่ได้กำหนดจำนวนแผ่นต่อม้วน กรุณาแก้ใน Roll Material Calculator ก่อน`)
+        return
+      }
+    }
     // กรองรายการที่มีสินค้า และมีการเปลี่ยนแปลงตามประเภทเอกสาร
     const validItems = draftItems.filter((i) => {
       if (!i.product_id) return false
+      if (adjustmentType === 'stocktake_reconcile') return true
       const currentOnHand = balances[i.product_id]?.on_hand ?? 0
       const currentSafety = balances[i.product_id]?.safety_stock ?? 0
       const targetSafety = i.safety_stock ?? 0
@@ -289,46 +516,23 @@ export default function WarehouseAdjust() {
     }
     setSaving(true)
     try {
-      const adjustNo = await generateCode('ADJ')
-      const { data: adjustData, error: adjustError } = await supabase
-        .from('inv_adjustments')
-        .insert({
-          adjust_no: adjustNo,
-          status: 'pending',
-          adjustment_type: adjustmentType,
-          reason_code: reasonCode.trim() || null,
-          created_by: user?.id || null,
-          note: note.trim(),
-        })
-        .select('*')
-        .single()
-      if (adjustError) throw adjustError
+      const rpcItems = validItems.map((item) => ({
+        product_id: item.product_id,
+        target_on_hand: item.qty,
+        target_safety: item.safety_stock ?? 0,
+      }))
+      const { data: createResult, error: createError } = await supabase.rpc(
+        'rpc_create_inventory_adjustment',
+        {
+          p_adjustment_type: adjustmentType,
+          p_reason_code: reasonCode.trim() || null,
+          p_note: note.trim(),
+          p_items: rpcItems,
+        },
+      )
+      if (createError) throw createError
 
-      // เก็บ target + snapshot ไว้ใน items ทั้งหมด (รออนุมัติ)
-      const itemsPayload = validItems.map((item) => {
-        const currentOnHand = balances[item.product_id]?.on_hand ?? 0
-        const currentSafety = balances[item.product_id]?.safety_stock ?? 0
-        const targetSafety = item.safety_stock ?? 0
-        const qtyDelta = adjustmentType === 'safety_reclass' ? 0 : item.qty - currentOnHand
-        const nextOnHand = adjustmentType === 'safety_reclass'
-          ? currentOnHand - (targetSafety - currentSafety)
-          : currentOnHand + qtyDelta
-        return {
-          adjustment_id: adjustData.id,
-          product_id: item.product_id,
-          qty_delta: qtyDelta,
-          new_safety_stock: targetSafety,
-          new_order_point: null,
-          before_on_hand: currentOnHand,
-          after_on_hand: nextOnHand,
-          before_safety_stock: currentSafety,
-          after_safety_stock: targetSafety,
-          before_total_qty: currentOnHand + currentSafety,
-          after_total_qty: nextOnHand + targetSafety,
-        }
-      })
-      const { error: itemError } = await supabase.from('inv_adjustment_items').insert(itemsPayload)
-      if (itemError) throw itemError
+      const createdItemCount = Number(createResult?.item_count ?? validItems.length)
 
       // ไม่อัปเดตทันที — ทุกค่ารออนุมัติก่อน
 
@@ -339,7 +543,7 @@ export default function WarehouseAdjust() {
       setProductSearch('')
       setCreateOpen(false)
       await loadAll()
-      showNotify('success', 'สร้างใบปรับสต๊อคเรียบร้อย', `${validItems.length} รายการ — รออนุมัติ`)
+      showNotify('success', 'สร้างใบปรับสต๊อคเรียบร้อย', `${createdItemCount} รายการ — รออนุมัติ`)
     } catch (e: any) {
       console.error('Create adjustment failed:', e)
       showNotify('error', 'สร้างใบปรับสต๊อคไม่สำเร็จ', e?.message || String(e))
@@ -348,81 +552,113 @@ export default function WarehouseAdjust() {
     }
   }
 
-  async function approveAdjustment(adjustment: InventoryAdjustment) {
-    setUpdating(adjustment.id)
-    try {
-      const { data: items, error: itemsError } = await supabase
+  async function openApproveAdjustment(adjustment: InventoryAdjustment) {
+    if ((itemCountMap[adjustment.id] || 0) === 0) {
+      showNotify('warning', 'ไม่สามารถอนุมัติได้', 'ใบปรับสต๊อกนี้ไม่มีรายการสินค้า กรุณายกเลิกใบนี้แล้วสร้างใหม่')
+      return
+    }
+    setApproveDriftCount(0)
+    if (adjustment.adjustment_type === 'stocktake_reconcile') {
+      const { data: itemRows, error: itemError } = await supabase
         .from('inv_adjustment_items')
-        .select('id, product_id, qty_delta, new_safety_stock, new_order_point')
+        .select('product_id, before_on_hand, before_safety_stock')
         .eq('adjustment_id', adjustment.id)
-      if (itemsError) throw itemsError
+        .eq('is_system_generated', false)
+      if (itemError) {
+        showNotify('error', 'ตรวจสอบยอดล่าสุดไม่สำเร็จ', itemError.message)
+        return
+      }
+      const productIds = (itemRows || []).map((item) => item.product_id)
+      const { data: balanceRows, error: balanceError } = productIds.length
+        ? await supabase.from('inv_stock_balances').select('product_id, on_hand, safety_stock').in('product_id', productIds)
+        : { data: [], error: null }
+      if (balanceError) {
+        showNotify('error', 'ตรวจสอบยอดล่าสุดไม่สำเร็จ', balanceError.message)
+        return
+      }
+      const liveByProduct = new Map((balanceRows || []).map((row) => [row.product_id, row]))
+      const changedCount = (itemRows || []).filter((item) => {
+        const live = liveByProduct.get(item.product_id)
+        return Number(item.before_on_hand || 0) !== Number(live?.on_hand || 0)
+          || Number(item.before_safety_stock || 0) !== Number(live?.safety_stock || 0)
+      }).length
+      setApproveDriftCount(changedCount)
+    }
+    setApproveTarget(adjustment)
+  }
 
-      const { error } = await supabase
-        .from('inv_adjustments')
-        .update({
-          status: 'approved',
-          approved_by: user?.id || null,
-          approved_at: new Date().toISOString(),
-        })
-        .eq('id', adjustment.id)
+  async function confirmApproveAdjustment() {
+    if (!approveTarget) return
+    setApproveSaving(true)
+    setUpdating(approveTarget.id)
+    try {
+      const { error } = await supabase.rpc('rpc_approve_inventory_adjustment', {
+        p_adjustment_id: approveTarget.id,
+      })
       if (error) throw error
 
-      // อัปเดต on_hand + movement ทั้ง batch ผ่าน RPC ครั้งเดียว (แทน N×3 queries)
-      const qtyItems = (items || []).filter((i) => Number(i.qty_delta) !== 0)
-      if (qtyItems.length) {
-        await adjustStockBalancesBulkRPC(
-          qtyItems.map((item) => ({
-            productId: item.product_id,
-            qtyDelta: Number(item.qty_delta),
-            movementType: 'adjust',
-            refType: 'inv_adjustments',
-            refId: adjustment.id,
-            note: `ปรับสต๊อค ${adjustment.adjust_no}`,
-          }))
-        )
-      }
-
-      // ตรวจสอบก่อนว่า on_hand เพียงพอสำหรับย้ายเข้า safety stock
-      const safetyItems = (items || []).filter((i) => i.new_safety_stock != null)
-      for (const si of safetyItems) {
-        const curBal = balances[si.product_id]
-        const onHandAfterAdjust = (curBal?.on_hand ?? 0) + Number(qtyItems.find((q) => q.product_id === si.product_id)?.qty_delta ?? 0)
-        const curSafety = curBal?.safety_stock ?? 0
-        const newSafety = Number(si.new_safety_stock)
-        const delta = newSafety - curSafety
-        if (delta > 0 && delta > onHandAfterAdjust) {
-          showNotify('error', 'on_hand ไม่เพียงพอ', `สินค้า ${productIdMap[si.product_id]?.product_code || si.product_id} — ต้องการย้าย ${delta} แต่ on_hand หลังปรับมีเพียง ${onHandAfterAdjust}`)
-          setUpdating(null)
-          return
-        }
-      }
-
-      if (safetyItems.length) {
-        await bulkUpdateSafetyStock(
-          safetyItems.map((item) => ({
-            productId: item.product_id,
-            safetyStock: Number(item.new_safety_stock),
-          }))
-        )
-      }
-
+      const approvedNo = approveTarget.adjust_no
+      setApproveTarget(null)
       await loadAll()
-      // แจ้ง Sidebar ให้อัปเดตจำนวนสินค้าต่ำกว่าจุดสั่งซื้อ
       window.dispatchEvent(new Event('sidebar-refresh-counts'))
-      showNotify('success', 'อนุมัติการปรับสต๊อคเรียบร้อย')
-    } catch (e: any) {
+      showNotify('success', 'อนุมัติการปรับสต๊อกเรียบร้อย', approvedNo)
+    } catch (e: unknown) {
       console.error('Approve adjustment failed:', e)
-      showNotify('error', 'อนุมัติไม่สำเร็จ', e?.message || String(e))
+      const readableError = await formatApprovalError(e)
+      showNotify('error', readableError.title, readableError.message)
     } finally {
+      setApproveSaving(false)
       setUpdating(null)
     }
   }
 
+  function openCancelAdjustment(adjustment: InventoryAdjustment) {
+    setCancelTarget(adjustment)
+    setCancelReason('')
+  }
+
+  async function confirmCancelAdjustment() {
+    if (!cancelTarget) return
+    const reason = cancelReason.trim()
+    if (reason.length < 3) {
+      showNotify('warning', 'กรุณาระบุเหตุผล', 'เหตุผลการยกเลิกต้องมีอย่างน้อย 3 ตัวอักษร')
+      return
+    }
+
+    setCancelSaving(true)
+    try {
+      const { error } = await supabase.rpc('rpc_cancel_inventory_adjustment', {
+        p_adjustment_id: cancelTarget.id,
+        p_reason: reason,
+      })
+      if (error) throw error
+      const cancelledNo = cancelTarget.adjust_no
+      setCancelTarget(null)
+      setCancelReason('')
+      await loadAll()
+      showNotify('success', 'ยกเลิกใบปรับสต๊อกแล้ว', cancelledNo)
+    } catch (error: unknown) {
+      console.error('Cancel adjustment failed:', error)
+      const rawMessage = error instanceof Error
+        ? error.message
+        : String((error as { message?: unknown } | null)?.message ?? error)
+      const friendlyMessage = rawMessage.includes('stock movements')
+        ? 'ใบปรับสต๊อกนี้มีรายการเคลื่อนไหวสต๊อกแล้ว จึงไม่สามารถยกเลิกได้'
+        : rawMessage.includes('Only a pending')
+          ? 'ยกเลิกได้เฉพาะใบปรับสต๊อกที่อยู่ในสถานะรออนุมัติเท่านั้น'
+          : rawMessage
+      showNotify('error', 'ยกเลิกไม่สำเร็จ', friendlyMessage)
+    } finally {
+      setCancelSaving(false)
+    }
+  }
+
   async function openView(adjustment: InventoryAdjustment) {
+    setViewSearch('')
     setViewing(adjustment)
     const { data, error } = await supabase
       .from('inv_adjustment_items')
-      .select(`id, adjustment_id, product_id, qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock${canSeeCost ? ', estimated_total_cost_impact, approved_total_cost_impact' : ''}, pr_products(product_code, product_name, unit_name)`)
+      .select(`id, adjustment_id, product_id, qty_delta, approved_qty_delta, new_safety_stock, new_order_point, before_on_hand, after_on_hand, before_safety_stock, after_safety_stock${canSeeCost ? ', estimated_total_cost_impact, approved_total_cost_impact' : ''}, pr_products(product_code, product_name, unit_name)`)
       .eq('adjustment_id', adjustment.id)
     if (!error) {
       const rows = (data || []) as unknown as InventoryAdjustmentItem[]
@@ -456,6 +692,20 @@ export default function WarehouseAdjust() {
     }
   }
 
+  const filteredViewItems = useMemo(() => {
+    const keyword = viewSearch.trim().toLocaleLowerCase('th')
+    if (!keyword) return viewItems
+
+    return viewItems.filter((item) => {
+      const product = (item as InventoryAdjustmentItem & {
+        pr_products?: { product_code?: string | null; product_name?: string | null }
+      }).pr_products
+      return `${product?.product_code || ''} ${product?.product_name || ''}`
+        .toLocaleLowerCase('th')
+        .includes(keyword)
+    })
+  }, [viewItems, viewSearch])
+
   return (
     <div className="space-y-6 mt-12">
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -473,23 +723,31 @@ export default function WarehouseAdjust() {
         >
           ดาวน์โหลดสินค้าปัจจุบัน
         </button>
-        <label className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-semibold text-sm cursor-pointer inline-block">
-          Import Excel
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              e.target.value = ''
-              if (file) handleImport(file)
-            }}
-          />
-        </label>
         <button
           type="button"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => importInputRef.current?.click()}
+          disabled={importing || loading}
+          className="px-4 py-2 bg-green-600 text-white rounded-xl hover:bg-green-700 font-semibold text-sm disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {importing ? 'กำลัง Import...' : 'Import ยอดตรวจนับ'}
+        </button>
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) void handleImport(file)
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => {
+            setAdjustmentType('audit_adjustment')
+            setReasonCode('')
+            setCreateOpen(true)
+          }}
           className="px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-semibold"
         >
           + สร้างใบปรับสต๊อค
@@ -524,14 +782,16 @@ export default function WarehouseAdjust() {
                   <tr key={adjustment.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                     <td className="p-3 font-medium">{adjustment.adjust_no}</td>
                     <td className="p-3 text-sm text-gray-700">
-                      {adjustment.adjustment_type === 'safety_reclass' ? 'โยก Safety' : 'Audit ปรับจำนวน'}
+                      {adjustment.adjustment_type === 'safety_reclass'
+                        ? 'โยก Safety'
+                        : adjustment.adjustment_type === 'stocktake_reconcile'
+                          ? 'ตั้งยอดตามการตรวจนับ'
+                          : 'ปรับเพิ่ม/ลดทั่วไป'}
                     </td>
                     <td className="p-3 text-sm text-gray-700">{adjustment.note || '-'}</td>
                     <td className="p-3">
-                      <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${
-                        adjustment.status === 'approved' ? 'bg-green-500 text-white' : 'bg-amber-500 text-white'
-                      }`}>
-                        {adjustment.status}
+                      <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${ADJUSTMENT_STATUS[adjustment.status]?.className || 'bg-gray-200 text-gray-700'}`}>
+                        {updating === adjustment.id ? 'กำลังอนุมัติ...' : (ADJUSTMENT_STATUS[adjustment.status]?.label || adjustment.status)}
                       </span>
                     </td>
                     <td className="p-3">{new Date(adjustment.created_at).toLocaleString()}</td>
@@ -548,14 +808,24 @@ export default function WarehouseAdjust() {
                           ดูรายละเอียด
                         </button>
                         {adjustment.status === 'pending' && (
-                          <button
-                            type="button"
-                            onClick={() => approveAdjustment(adjustment)}
-                            disabled={updating === adjustment.id}
-                            className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold disabled:opacity-50"
-                          >
-                            อนุมัติ
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openCancelAdjustment(adjustment)}
+                              disabled={updating === adjustment.id}
+                              className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100 text-sm font-semibold disabled:opacity-50"
+                            >
+                              ยกเลิก
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void openApproveAdjustment(adjustment)}
+                              disabled={updating === adjustment.id}
+                              className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold disabled:opacity-50"
+                            >
+                              {updating === adjustment.id ? 'กำลังอนุมัติ...' : 'อนุมัติ'}
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -567,11 +837,16 @@ export default function WarehouseAdjust() {
         )}
       </div>
 
-      <Modal open={createOpen} onClose={() => setCreateOpen(false)} contentClassName="max-w-5xl !overflow-hidden flex flex-col">
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} contentClassName="w-[96vw] max-w-7xl !overflow-hidden flex flex-col">
         {/* Sticky Header */}
         <div className="px-6 pt-6 pb-3 border-b border-surface-200 shrink-0">
           <h2 className="text-xl font-bold">สร้างใบปรับสต๊อค</h2>
-          <p className="text-sm text-gray-500 mt-1">กรอกเป้าหมายสต๊อคปัจจุบัน (เคลื่อนไหว + Safety Stock) ระบบคำนวณผลรวมและส่วนต่างให้อัตโนมัติ — รายการทั้งหมด {draftItems.length} รายการ</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {adjustmentType === 'stocktake_reconcile'
+              ? 'จำนวนที่กรอกคือยอดคงเหลือใหม่หลังอนุมัติ ระบบจะปรับ Balance และ FIFO ให้ตรงกับยอดตรวจนับ'
+              : 'กรอกเป้าหมายสต๊อคปัจจุบัน (เคลื่อนไหว + Safety Stock) ระบบคำนวณผลรวมและส่วนต่างให้อัตโนมัติ'}
+            {' '}— รายการทั้งหมด {draftItems.length} รายการ
+          </p>
           <p className="mt-2 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-700">สินค้า ST ไม่สามารถสร้างใบปรับสต๊อคได้ กรุณาปรับที่ SKU สินค้าผลิตซึ่งผูกไว้ใน “ตั้งค่าหน้ายาง”</p>
           {/* หัวข้อการปรับ (บังคับกรอก) */}
           <div className="mt-3 grid grid-cols-12 gap-2">
@@ -582,7 +857,8 @@ export default function WarehouseAdjust() {
                 onChange={(e) => setAdjustmentType(e.target.value as AdjustmentType)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
               >
-                <option value="audit_adjustment">Audit ปรับจำนวนจริง (มีผลมูลค่า)</option>
+                <option value="audit_adjustment">ปรับยอดทั่วไป (ใช้ FIFO เดิม)</option>
+                <option value="stocktake_reconcile">ตั้งยอดตามการตรวจนับ (ปรับ Balance และ FIFO ให้ตรง)</option>
                 <option value="safety_reclass">โยก On-hand &lt;-&gt; Safety (ไม่เปลี่ยนมูลค่ารวม)</option>
               </select>
             </div>
@@ -620,7 +896,9 @@ export default function WarehouseAdjust() {
                 placeholder="ค้นหารหัสหรือชื่อสินค้า เช่น P001, แก้ว 16oz"
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
               />
-              <span className="text-xs text-gray-500 whitespace-nowrap">{filteredProductOptions.length} รายการ</span>
+              <span className="text-xs text-gray-500 whitespace-nowrap">
+                แสดง {visibleDraftCount.toLocaleString()} จาก {draftItems.length.toLocaleString()} แถว
+              </span>
             </div>
           </div>
           {/* Column Headers */}
@@ -640,9 +918,33 @@ export default function WarehouseAdjust() {
             balances={balances}
             productIdMap={productIdMap}
             adjustmentType={adjustmentType}
+            searchTerm={productSearch}
             onUpdate={updateDraftItem}
             onRemove={removeDraftItem}
           />
+          {adjustmentType === 'stocktake_reconcile' && rollImpacts.length > 0 && (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <h3 className="text-sm font-bold text-emerald-900">FG ที่ระบบจะคำนวณจาก RM</h3>
+              <div className="mt-2 space-y-2">
+                {rollImpacts.map((impact) => {
+                  const fg = productIdMap[impact.fgProductId]
+                  const currentFg = balances[impact.fgProductId]?.on_hand ?? 0
+                  return (
+                    <div key={impact.configId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-sm">
+                      <span className="font-medium text-gray-800">
+                        {fg?.product_code || impact.fgProductId} - {fg?.product_name || 'FG'}
+                      </span>
+                      <span className="text-gray-600">
+                        {impact.rmTotal.toLocaleString()} ม้วน × {impact.sheetsPerRoll.toLocaleString()} ={' '}
+                        <strong className="text-emerald-700">{impact.fgTarget.toLocaleString()} แผ่น</strong>
+                        {' '}({currentFg.toLocaleString()} → {impact.fgTarget.toLocaleString()})
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
         {/* Sticky Footer */}
         <div className="px-6 py-4 border-t border-surface-200 shrink-0">
@@ -668,7 +970,7 @@ export default function WarehouseAdjust() {
         </div>
       </Modal>
 
-      <Modal open={!!viewing} onClose={() => setViewing(null)} contentClassName="max-w-2xl">
+      <Modal open={!!viewing} onClose={() => { setViewing(null); setViewSearch('') }} contentClassName="max-w-6xl">
         <div className="p-6 space-y-4">
           <h2 className="text-xl font-bold">รายละเอียดการปรับสต๊อค</h2>
           {viewing && (
@@ -676,6 +978,18 @@ export default function WarehouseAdjust() {
               เลขที่: <span className="font-medium text-gray-900">{viewing.adjust_no}</span>
             </div>
           )}
+          <div className="flex items-center gap-3">
+            <input
+              type="search"
+              value={viewSearch}
+              onChange={(event) => setViewSearch(event.target.value)}
+              placeholder="ค้นหารหัสหรือชื่อสินค้า"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+            <span className="shrink-0 text-xs text-gray-500">
+              แสดง {filteredViewItems.length.toLocaleString()} จาก {viewItems.length.toLocaleString()} รายการ
+            </span>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-100">
@@ -688,7 +1002,7 @@ export default function WarehouseAdjust() {
                 </tr>
               </thead>
               <tbody>
-                {viewItems.map((item: any) => (
+                {filteredViewItems.map((item: any) => (
                   <tr key={item.id} className="border-t">
                     <td className="p-2">
                       <div className="flex items-center gap-2">
@@ -703,6 +1017,9 @@ export default function WarehouseAdjust() {
                         />
                         <span>
                           {item.pr_products?.product_code} - {item.pr_products?.product_name}
+                          {item.is_system_generated && (
+                            <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">คำนวณจาก RM</span>
+                          )}
                         </span>
                       </div>
                     </td>
@@ -728,23 +1045,137 @@ export default function WarehouseAdjust() {
                         return `${oldSafety.toLocaleString()} -> ${newSafety.toLocaleString()} ${item.pr_products?.unit_name || 'ชิ้น'}`
                       })()}
                     </td>
-                    <td className={`p-2 text-right font-medium ${Number(item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {Number(item.qty_delta) > 0 ? '+' : ''}{Number(item.qty_delta).toLocaleString()} {item.pr_products?.unit_name || 'ชิ้น'}
+                    <td className={`p-2 text-right font-medium ${Number(item.approved_qty_delta ?? item.qty_delta) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {Number(item.approved_qty_delta ?? item.qty_delta) > 0 ? '+' : ''}{Number(item.approved_qty_delta ?? item.qty_delta).toLocaleString()} {item.pr_products?.unit_name || 'ชิ้น'}
                     </td>
                     {canSeeCost && <td className="p-2 text-right font-medium text-gray-700">
                       {Number(item.approved_total_cost_impact ?? item.estimated_total_cost_impact ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>}
                   </tr>
                 ))}
-                {!viewItems.length && (
+                {!filteredViewItems.length && (
                   <tr>
                     <td className="p-2 text-center text-gray-500" colSpan={canSeeCost ? 5 : 4}>
-                      ไม่มีรายการ
+                      {viewSearch.trim() ? 'ไม่พบสินค้าที่ค้นหา' : 'ไม่มีรายการ'}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Approve adjustment confirmation */}
+      <Modal
+        open={Boolean(approveTarget)}
+        onClose={() => !approveSaving && setApproveTarget(null)}
+        closeOnBackdropClick={!approveSaving}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-green-100 text-green-600">
+              <i className="fas fa-check" aria-hidden="true"></i>
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">ยืนยันอนุมัติใบปรับสต๊อก</h2>
+              <p className="mt-1 text-sm text-gray-600">
+                <span className="font-semibold text-gray-900">{approveTarget?.adjust_no}</span>
+                {' '}จำนวน {(approveTarget ? itemCountMap[approveTarget.id] || 0 : 0).toLocaleString()} รายการ
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {approveTarget?.adjustment_type === 'stocktake_reconcile'
+              ? 'ระบบจะตั้งยอดตามผลตรวจนับ ปรับ FIFO ให้ตรง และคำนวณ FG จาก RM ใหม่ ทุกขั้นตอนทำพร้อมกัน หากผิดพลาดจะไม่มีการเปลี่ยนแปลงทั้งใบ'
+              : 'ระบบจะคำนวณจากยอดสต๊อกล่าสุด และดำเนินการทุกขั้นตอนพร้อมกัน หากรายการใดผิดพลาดจะไม่มีการเปลี่ยนแปลงทั้งใบ'}
+          </div>
+          {approveTarget?.adjustment_type === 'stocktake_reconcile' && approveDriftCount > 0 && (
+            <div className="rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-sm text-orange-800">
+              ยอดปัจจุบันเปลี่ยนหลังสร้างใบ {approveDriftCount.toLocaleString()} รายการ ระบบยังคงตั้งยอดปลายทางตามผลตรวจนับในใบนี้ กรุณาตรวจสอบก่อนอนุมัติ
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 border-t pt-4">
+            <button
+              type="button"
+              onClick={() => setApproveTarget(null)}
+              disabled={approveSaving}
+              className="rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+            >
+              ย้อนกลับ
+            </button>
+            <button
+              type="button"
+              onClick={confirmApproveAdjustment}
+              disabled={approveSaving}
+              className="rounded-lg bg-green-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {approveSaving ? 'กำลังอนุมัติ...' : 'ยืนยันอนุมัติ'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Cancel pending adjustment confirmation */}
+      <Modal
+        open={Boolean(cancelTarget)}
+        onClose={() => !cancelSaving && setCancelTarget(null)}
+        closeOnBackdropClick={!cancelSaving}
+        contentClassName="max-w-md"
+      >
+        <div className="p-6 space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600">
+              <i className="fas fa-ban" aria-hidden="true"></i>
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">ยกเลิกใบปรับสต๊อก</h2>
+              <p className="mt-1 text-sm text-gray-600">
+                ต้องการยกเลิก <span className="font-semibold text-gray-900">{cancelTarget?.adjust_no}</span> ใช่หรือไม่
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            ยกเลิกได้เฉพาะใบที่ยังไม่อนุมัติและยังไม่มีการเคลื่อนไหวสต๊อก
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-700">
+              เหตุผลการยกเลิก <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={cancelReason}
+              onChange={(event) => setCancelReason(event.target.value)}
+              rows={3}
+              maxLength={500}
+              disabled={cancelSaving}
+              placeholder="เช่น ยอดสต๊อกเปลี่ยนแปลงก่อนอนุมัติ ต้องสร้างใบใหม่"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-100 disabled:bg-gray-100"
+            />
+            <p className="mt-1 text-xs text-gray-400">อย่างน้อย 3 ตัวอักษร</p>
+          </div>
+
+          <div className="flex justify-end gap-3 border-t pt-4">
+            <button
+              type="button"
+              onClick={() => setCancelTarget(null)}
+              disabled={cancelSaving}
+              className="rounded-lg bg-gray-100 px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-200 disabled:opacity-50"
+            >
+              ปิด
+            </button>
+            <button
+              type="button"
+              onClick={confirmCancelAdjustment}
+              disabled={cancelSaving || cancelReason.trim().length < 3}
+              className="rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cancelSaving ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกใบปรับ'}
+            </button>
           </div>
         </div>
       </Modal>
@@ -777,7 +1208,7 @@ export default function WarehouseAdjust() {
             {notifyModal.title}
           </h3>
           {notifyModal.message && (
-            <p className="text-sm text-gray-600 mt-1">{notifyModal.message}</p>
+            <p className="text-sm text-gray-600 mt-2 whitespace-pre-line leading-relaxed">{notifyModal.message}</p>
           )}
           <button
             type="button"
@@ -803,6 +1234,7 @@ const DraftItemsList = React.memo(function DraftItemsList({
   balances,
   productIdMap,
   adjustmentType,
+  searchTerm,
   onUpdate,
   onRemove,
 }: {
@@ -811,12 +1243,22 @@ const DraftItemsList = React.memo(function DraftItemsList({
   balances: Record<string, StockBalance>
   productIdMap: Record<string, Product>
   adjustmentType: AdjustmentType
+  searchTerm: string
   onUpdate: (index: number, patch: Partial<DraftItem>) => void
   onRemove: (index: number) => void
 }) {
+  const keyword = searchTerm.trim().toLowerCase()
+  const visibleItems = items
+    .map((item, originalIndex) => ({ item, originalIndex }))
+    .filter(({ item }) => {
+      if (!keyword || !item.product_id) return true
+      const product = productIdMap[item.product_id]
+      return `${product?.product_code || ''} ${product?.product_name || ''}`.toLowerCase().includes(keyword)
+    })
+
   return (
     <div className="space-y-3">
-      {items.map((item, index) => (
+      {visibleItems.map(({ item, originalIndex: index }) => (
         <div key={`draft-${index}`} className="space-y-1">
           <div className="grid grid-cols-12 gap-2 items-center">
             <div className="col-span-4">
@@ -916,6 +1358,11 @@ const DraftItemsList = React.memo(function DraftItemsList({
           })()}
         </div>
       ))}
+      {visibleItems.length === 0 && (
+        <div className="rounded-lg border border-dashed border-gray-300 py-10 text-center text-sm text-gray-500">
+          ไม่พบสินค้าในรายการที่ตรงกับ “{searchTerm}”
+        </div>
+      )}
     </div>
   )
 })

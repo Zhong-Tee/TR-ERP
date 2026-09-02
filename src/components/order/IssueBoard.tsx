@@ -6,6 +6,7 @@ import { formatDateTime } from '../../lib/utils'
 import { Issue, IssueMessage, IssueType, Order } from '../../types'
 import { useAuthContext } from '../../contexts/AuthContext'
 import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import { FiMessageCircle, FiInfo, FiCheckCircle } from 'react-icons/fi'
 import { canOperationalRoleSeeIssue, getIssueVisibilityScope, isSalesTrTeamRole, isSuperadmin } from '../../config/accessPolicy'
@@ -1125,9 +1126,11 @@ export default function IssueBoard({
                     }}
                     className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-b-0"
                   >
-                    <span className="font-semibold text-blue-600">{o.bill_no}</span>
+                    <span className="font-semibold text-blue-600">
+                      {o.bill_no}
+                      <ExpressReceiptNumberInline value={o.express_receipt_number} />
+                    </span>
                     {o.customer_name && <span className="text-gray-500 ml-2">{o.customer_name}</span>}
-                    {o.express_receipt_number && <span className="ml-2 font-mono text-xs text-cyan-700">รับด่วน: {o.express_receipt_number}</span>}
                     {o.work_order_name && <span className="text-gray-400 ml-2 text-xs">[{o.work_order_name}]</span>}
                   </button>
                 ))}

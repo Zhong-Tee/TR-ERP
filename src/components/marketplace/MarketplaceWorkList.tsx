@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { parseBangkokDateTime } from '../../lib/marketplaceImport'
 import { computeDueTimestamps } from '../../lib/shipDueBadge'
 import { formatDateTime } from '../../lib/utils'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import MarketplaceOrderModal from './MarketplaceOrderModal'
 import { useWmsModal } from '../wms/useWmsModal'
@@ -509,13 +510,11 @@ export default function MarketplaceWorkList({
                         </td>
                       )}
                       <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">
-                        <span className="mr-2">{o.marketplace_order_no}</span>
+                        <span className="mr-2">
+                          {o.marketplace_order_no}
+                          <ExpressReceiptNumberInline value={o.express_receipt_number} />
+                        </span>
                         <UrgencyBadge order={o} />
-                        {o.express_receipt_number && (
-                          <div className="mt-1 font-mono text-xs font-semibold text-cyan-700">
-                            รับด่วน: {o.express_receipt_number}
-                          </div>
-                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold">

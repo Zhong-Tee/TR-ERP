@@ -370,10 +370,23 @@ export async function closeAudit(auditId: string) {
 
 // ── Create Adjustment from Audit ─────────────────────────────
 
-export async function createAdjustmentFromAudit(auditId: string, userId: string) {
+export async function createAdjustmentFromAudit(auditId: string) {
   const items = await fetchAuditItems(auditId)
-  const varianceItems = items.filter((i) => i.is_counted && Number(i.variance) !== 0)
+  const countedVarianceItems = items.filter((i) => i.is_counted && Number(i.variance) !== 0)
   const locationItems = items.filter((i) => i.location_match === false && i.actual_location)
+
+  const varianceProductIds = [...new Set(countedVarianceItems.map((item) => item.product_id))]
+  let derivedFgIds = new Set<string>()
+  if (varianceProductIds.length > 0) {
+    const { data: rollConfigs, error: rollConfigError } = await supabase
+      .from('roll_material_configs')
+      .select('fg_product_id')
+      .in('fg_product_id', varianceProductIds)
+    if (rollConfigError) throw rollConfigError
+    derivedFgIds = new Set((rollConfigs || []).map((row) => row.fg_product_id))
+  }
+  // A mapped roll FG is derived from its RM balance and must never be counted twice.
+  const varianceItems = countedVarianceItems.filter((item) => !derivedFgIds.has(item.product_id))
 
   if (varianceItems.length) {
     const productIds = [...new Set(varianceItems.map((item) => item.product_id))]
@@ -387,57 +400,43 @@ export async function createAdjustmentFromAudit(auditId: string, userId: string)
     }
   }
 
-  if (!varianceItems.length && !locationItems.length) {
-    throw new Error('ไม่มีรายการที่ต้องปรับ')
-  }
-
-  const d = new Date()
-  const adjPrefix = `ADJ-AUDIT-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-`
-  const { data: lastAdj } = await supabase
-    .from('inv_adjustments')
-    .select('adjust_no')
-    .like('adjust_no', `${adjPrefix}%`)
-
-  let adjMax = 0
-  if (lastAdj) {
-    for (const row of lastAdj) {
-      const suffix = row.adjust_no.replace(adjPrefix, '')
-      if (/^\d{3}$/.test(suffix)) {
-        const num = parseInt(suffix, 10)
-        if (num > adjMax) adjMax = num
-      }
-    }
-  }
-  const adjustNo = `${adjPrefix}${String(adjMax + 1).padStart(3, '0')}`
-
   // Fetch audit info
   const audit = await fetchAuditById(auditId)
+  let adjustment: { id: string; adjust_no?: string } | null = null
 
-  // สร้างใบปรับสต๊อค
-  const { data: adjustment, error: adjErr } = await supabase
-    .from('inv_adjustments')
-    .insert({
-      adjust_no: adjustNo,
-      status: 'pending',
-      created_by: userId,
-      note: `ปรับสต๊อคจากผล Audit ${audit.audit_no}`,
-    })
-    .select('*')
-    .single()
-  if (adjErr) throw adjErr
-
-  // สร้าง adjustment items จาก variance
   if (varianceItems.length) {
-    const adjItems = varianceItems.map((item) => ({
-      adjustment_id: adjustment.id,
-      product_id: item.product_id,
-      qty_delta: Number(item.variance),
-      new_safety_stock: item.safety_stock_match === false && item.counted_safety_stock != null
-        ? item.counted_safety_stock
-        : null,
-    }))
-    const { error: itemErr } = await supabase.from('inv_adjustment_items').insert(adjItems)
-    if (itemErr) throw itemErr
+    const rpcItems = varianceItems.map((item) => {
+      const targetTotal = Number(item.counted_qty || 0)
+      const targetSafety = item.counted_safety_stock != null
+        ? Number(item.counted_safety_stock)
+        : Number(item.system_safety_stock || 0)
+      if (targetTotal < targetSafety) {
+        throw new Error(`ยอดนับรวมของ ${item.pr_products?.product_code || item.product_id} น้อยกว่า Safety Stock`)
+      }
+      return {
+        product_id: item.product_id,
+        target_on_hand: targetTotal - targetSafety,
+        target_safety: targetSafety,
+      }
+    })
+    const { data, error } = await supabase.rpc('rpc_create_inventory_adjustment', {
+      p_adjustment_type: 'stocktake_reconcile',
+      p_reason_code: 'audit_count',
+      p_note: `ปรับสต๊อคจากผล Audit ${audit.audit_no}`,
+      p_items: rpcItems,
+    })
+    if (error) throw error
+    adjustment = {
+      id: String(data.adjustment_id),
+      adjust_no: data.adjust_no ? String(data.adjust_no) : undefined,
+    }
+  }
+
+  if (!varianceItems.length && !locationItems.length) {
+    if (derivedFgIds.size > 0) {
+      throw new Error('ผลต่างมีเฉพาะ FG ที่ระบบคำนวณจาก RM กรุณาตรวจนับและปรับรหัส RM ที่ผูกไว้แทน')
+    }
+    throw new Error('ไม่มีรายการที่ต้องปรับ')
   }
 
   // อัปเดต storage_location สำหรับรายการที่จุดเก็บไม่ตรง
@@ -450,11 +449,13 @@ export async function createAdjustmentFromAudit(auditId: string, userId: string)
     }
   }
 
-  // เชื่อม audit กับ adjustment
-  await supabase
-    .from('inv_audits')
-    .update({ adjustment_id: adjustment.id })
-    .eq('id', auditId)
+  // เชื่อม audit กับ adjustment เมื่อมีผลต่างจำนวนจริง
+  if (adjustment) {
+    await supabase
+      .from('inv_audits')
+      .update({ adjustment_id: adjustment.id })
+      .eq('id', auditId)
+  }
 
   return adjustment
 }

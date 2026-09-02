@@ -5,6 +5,7 @@ import { localISODate } from '../../lib/localDate'
 import { PLAN_WORK_QUEUE_POSTGREST_FILTER } from '../../lib/planWorkQueue'
 import { Order } from '../../types'
 import Modal from '../ui/Modal'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import OrderDetailView from './OrderDetailView'
 
@@ -472,6 +473,7 @@ export default function WorkOrderSelectionList({
                     <td className="p-2 align-middle whitespace-nowrap">
                       <button type="button" onClick={(e) => { e.stopPropagation(); setDetailOrder(order) }} className="text-blue-600 font-medium hover:text-blue-800 hover:underline transition-colors">
                         {order.bill_no}
+                        <ExpressReceiptNumberInline value={order.express_receipt_number} />
                       </button>
                       {order.requires_confirm_design === true && (
                         <span className="ml-1.5 inline-flex rounded-full bg-purple-100 px-2 py-0.5 text-[11px] font-semibold text-purple-700">
@@ -479,11 +481,6 @@ export default function WorkOrderSelectionList({
                         </span>
                       )}
                       <UrgencyBadge order={order} className="ml-1.5" />
-                      {order.express_receipt_number && (
-                        <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">
-                          รับด่วน: {order.express_receipt_number}
-                        </div>
-                      )}
                     </td>
                     <td className="p-2 align-middle text-gray-700 max-w-[220px] truncate" title={order.recipient_name ?? ''}>
                       {order.recipient_name ?? '-'}

@@ -141,9 +141,13 @@ export default function AuditReviewView() {
     setConfirmModal(null)
     setCreatingAdj(true)
     try {
-      const adj = await createAdjustmentFromAudit(id, user.id)
+      const adj = await createAdjustmentFromAudit(id)
       await completeAudit(id, user.id)
-      showModal('success', 'สร้างใบปรับสต๊อคสำเร็จ', `เลขที่ ${adj.adjust_no}\nรอการอนุมัติจากผู้จัดการ`)
+      showModal(
+        'success',
+        adj ? 'สร้างใบปรับสต๊อคสำเร็จ' : 'อัปเดตจุดจัดเก็บสำเร็จ',
+        adj ? `เลขที่ ${adj.adjust_no}\nรอการอนุมัติจากผู้จัดการ` : 'ไม่มีผลต่างจำนวนที่ต้องสร้างใบปรับสต๊อค',
+      )
       await loadData()
     } catch (e: any) {
       showModal('error', 'ไม่สำเร็จ', e?.message || String(e))

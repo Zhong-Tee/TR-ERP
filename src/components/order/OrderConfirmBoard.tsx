@@ -13,6 +13,7 @@ import { fetchSalesTrTeamAdminValues } from '../../lib/salesTrTeam'
 import { orderQualifiesForConfirmBoard } from '../../lib/pumpConfirmRouting'
 import { buildProductionExportRows, productionRowsToTsv } from '../../lib/productionExportRows'
 import OrderDetailView from './OrderDetailView'
+import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
 import { deriveChatDeliveryStatuses, type ChatDeliveryStatus } from '../../lib/chatDeliveryReceipt'
 
@@ -1531,11 +1532,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                             className="font-semibold text-blue-600 hover:text-blue-800 hover:underline text-left"
                           >
                             {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
                           </button>
                           <UrgencyBadge order={order} className="ml-1.5" />
-                          {order.express_receipt_number && (
-                            <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
-                          )}
                         </td>
                         <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                           {order.customer_name}
@@ -1795,10 +1794,8 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                           </td>
                           <td className="p-4 font-semibold text-blue-600 whitespace-nowrap align-top">
                             {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
                             <UrgencyBadge order={order} className="ml-1.5" />
-                            {order.express_receipt_number && (
-                              <div className="mt-1 font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
-                            )}
                           </td>
                           <td className="p-4 text-gray-900 align-top max-w-[12rem] break-words">
                             {order.customer_name}
@@ -1962,11 +1959,9 @@ export default function OrderConfirmBoard({ onCountChange }: OrderConfirmBoardPr
                         <div className="min-w-0 flex-1">
                           <div className="font-semibold text-blue-600 text-base leading-6 truncate">
                             {order.bill_no}
+                            <ExpressReceiptNumberInline value={order.express_receipt_number} />
                             <UrgencyBadge order={order} className="ml-1.5" />
                           </div>
-                          {order.express_receipt_number && (
-                            <div className="font-mono text-[10px] font-semibold text-cyan-700">รับด่วน: {order.express_receipt_number}</div>
-                          )}
                           <div className="mt-1 min-h-7 text-sm leading-7 text-gray-500 truncate">{order.customer_name}</div>
                         </div>
                         <div className="text-right shrink-0">

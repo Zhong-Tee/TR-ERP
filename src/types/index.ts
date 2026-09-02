@@ -580,7 +580,7 @@ export interface InventoryAdjustment {
   id: string
   adjust_no: string
   status: string
-  adjustment_type?: 'audit_adjustment' | 'safety_reclass'
+  adjustment_type?: 'audit_adjustment' | 'stocktake_reconcile' | 'safety_reclass'
   reason_code?: string | null
   created_by?: string | null
   created_at: string
@@ -606,6 +606,7 @@ export interface InventoryAdjustmentItem {
   estimated_total_cost_impact?: number | null
   approved_unit_cost?: number | null
   approved_total_cost_impact?: number | null
+  is_system_generated?: boolean
   created_at: string
 }
 

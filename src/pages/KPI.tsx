@@ -40,6 +40,7 @@ interface WmsOrder {
   end_time: string | null
 }
 interface QcSession {
+  id: string
   username: string
   start_time: string
   end_time: string
@@ -47,6 +48,16 @@ interface QcSession {
   pass_count: number
   fail_count: number
   kpi_score: number
+}
+interface QcAttempt {
+  session_id: string
+  attempt_no: number
+  attempt_type: 'initial' | 'recheck' | 'special_recheck'
+  result: 'pass' | 'fail'
+  qc_by: string
+  duration_seconds: number
+  completed_at: string
+  qc_records: { qty: number | null } | { qty: number | null }[] | null
 }
 interface PackLog {
   packed_by: string
@@ -212,6 +223,32 @@ function aggregateMachineryPeriod(
   return { totalShiftH, totalWorkH, totalDownH, totalUnits, uptimePct, byMachine }
 }
 
+async function fetchQcAttemptsForRange(tsFrom: string, tsTo: string): Promise<QcAttempt[]> {
+  const pageSize = 1000
+  const rows: QcAttempt[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from('qc_record_attempts')
+      .select('session_id, attempt_no, attempt_type, result, qc_by, duration_seconds, completed_at, qc_records(qty)')
+      .gte('completed_at', tsFrom)
+      .lte('completed_at', tsTo)
+      .order('completed_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    const page = (data || []) as unknown as QcAttempt[]
+    rows.push(...page)
+    if (page.length < pageSize) break
+  }
+  return rows
+}
+
+function getQcAttemptQty(attempt: QcAttempt): number {
+  const record = Array.isArray(attempt.qc_records) ? attempt.qc_records[0] : attempt.qc_records
+  const qty = Number(record?.qty)
+  return Number.isFinite(qty) && qty > 0 ? qty : 1
+}
+
 /* ================================================================== */
 /*  Component                                                          */
 /* ================================================================== */
@@ -235,6 +272,8 @@ export default function KPIDashboard() {
   const [prevWmsOrders, setPrevWmsOrders] = useState<WmsOrder[]>([])
   const [qcData, setQcData] = useState<QcSession[]>([])
   const [prevQcData, setPrevQcData] = useState<QcSession[]>([])
+  const [qcAttemptData, setQcAttemptData] = useState<QcAttempt[]>([])
+  const [prevQcAttemptData, setPrevQcAttemptData] = useState<QcAttempt[]>([])
   const [packData, setPackData] = useState<PackLog[]>([])
   const [prevPackData, setPrevPackData] = useState<PackLog[]>([])
   const [prodData, setProdData] = useState<PlanJob[]>([])
@@ -257,7 +296,7 @@ export default function KPIDashboard() {
     const tsFrom = from + 'T00:00:00'
     const tsTo = to + 'T23:59:59'
 
-    const [sales, wms, wmsOrd, qc, pack, prod, issues, audits, requisitions, requisitionItems, machMachines, machEvents] = await Promise.all([
+    const [sales, wms, wmsOrd, qc, qcAttempts, pack, prod, issues, audits, requisitions, requisitionItems, machMachines, machEvents] = await Promise.all([
       supabase.from('or_orders')
         .select('channel_code, total_amount, entry_date, admin_user, status, or_order_items(quantity, unit_price, is_free)')
         .gte('entry_date', from).lte('entry_date', to).in('status', ['จัดส่งแล้ว', 'เสร็จสิ้น']),
@@ -271,9 +310,10 @@ export default function KPIDashboard() {
         .gte('created_at', tsFrom)
         .lte('created_at', tsTo),
       supabase.from('qc_sessions')
-        .select('username, start_time, end_time, total_items, pass_count, fail_count, kpi_score')
+        .select('id, username, start_time, end_time, total_items, pass_count, fail_count, kpi_score')
         .not('end_time', 'is', null)
         .gte('start_time', tsFrom).lte('start_time', tsTo),
+      fetchQcAttemptsForRange(tsFrom, tsTo),
       supabase.from('pk_packing_logs')
         .select('packed_by, packed_at, order_id')
         .gte('packed_at', tsFrom).lte('packed_at', tsTo),
@@ -308,11 +348,14 @@ export default function KPIDashboard() {
       requisitionProductTypes = (productTypeRows || []) as ProductTypeRow[]
     }
 
+    const completedQcSessionIds = new Set((qc.data || []).map((session) => session.id))
+
     return {
       sales: (sales.data || []) as SalesOrder[],
       wms: (wms.data || []) as unknown as WmsSummary[],
       wmsOrd: (wmsOrd.data || []) as WmsOrder[],
       qc: (qc.data || []) as QcSession[],
+      qcAttempts: qcAttempts.filter((attempt) => completedQcSessionIds.has(attempt.session_id)),
       pack: (pack.data || []) as PackLog[],
       prod: (prod.data || []) as PlanJob[],
       issues: (issues.data || []) as unknown as IssueRow[],
@@ -334,6 +377,7 @@ export default function KPIDashboard() {
       setWmsData(curr.wms); setPrevWmsData(prev.wms)
       setWmsOrders(curr.wmsOrd); setPrevWmsOrders(prev.wmsOrd)
       setQcData(curr.qc); setPrevQcData(prev.qc)
+      setQcAttemptData(curr.qcAttempts); setPrevQcAttemptData(prev.qcAttempts)
       setPackData(curr.pack); setPrevPackData(prev.pack)
       setProdData(curr.prod)
       setIssueData(curr.issues); setPrevIssueData(prev.issues)
@@ -545,38 +589,94 @@ export default function KPIDashboard() {
   }, [reqItems, reqProductTypeMap])
 
   // --- QC ---
-  function calcQcKpi(data: QcSession[]) {
-    let totalScore = 0, totalItems = 0, totalPass = 0, totalFail = 0, countScore = 0
-    data.forEach((s) => {
-      totalItems += s.total_items || 0
-      totalPass += s.pass_count || 0
-      totalFail += s.fail_count || 0
-      if (s.kpi_score > 0) { totalScore += s.kpi_score; countScore++ }
+  function calcQcKpi(sessions: QcSession[], attempts: QcAttempt[]) {
+    const initialAttempts = attempts.filter((attempt) => attempt.attempt_type === 'initial' || attempt.attempt_no === 1)
+    if (initialAttempts.length > 0) {
+      let totalItems = 0, totalPass = 0, totalFail = 0, totalDurationSeconds = 0
+      const sessionIds = new Set<string>()
+      initialAttempts.forEach((attempt) => {
+        const qty = getQcAttemptQty(attempt)
+        totalItems += qty
+        if (attempt.result === 'pass') totalPass += qty
+        else totalFail += qty
+        totalDurationSeconds += Math.max(0, Number(attempt.duration_seconds) || 0)
+        if (attempt.session_id) sessionIds.add(attempt.session_id)
+      })
+      return {
+        sessions: sessionIds.size,
+        avgScore: totalItems > 0 ? totalDurationSeconds / totalItems : 0,
+        passRate: totalItems > 0 ? (totalPass / totalItems) * 100 : 0,
+        totalItems, totalPass, totalFail,
+      }
+    }
+
+    // Legacy fallback: attempts before the audit table was introduced cannot be reconstructed.
+    let totalScore = 0, totalItems = 0, totalPass = 0, totalFail = 0, weightedItems = 0
+    sessions.forEach((session) => {
+      const items = Number(session.total_items) || 0
+      totalItems += items
+      totalPass += Number(session.pass_count) || 0
+      totalFail += Number(session.fail_count) || 0
+      if (session.kpi_score > 0 && items > 0) {
+        totalScore += session.kpi_score * items
+        weightedItems += items
+      }
     })
     return {
-      sessions: data.length,
-      avgScore: countScore ? totalScore / countScore : 0,
+      sessions: sessions.length,
+      avgScore: weightedItems ? totalScore / weightedItems : 0,
       passRate: (totalPass + totalFail) > 0 ? (totalPass / (totalPass + totalFail)) * 100 : 0,
       totalItems, totalPass, totalFail,
     }
   }
 
-  const qcKpi = useMemo(() => calcQcKpi(qcData), [qcData])
-  const prevQcKpi = useMemo(() => calcQcKpi(prevQcData), [prevQcData])
+  const qcKpi = useMemo(() => calcQcKpi(qcData, qcAttemptData), [qcData, qcAttemptData])
+  const prevQcKpi = useMemo(() => calcQcKpi(prevQcData, prevQcAttemptData), [prevQcData, prevQcAttemptData])
 
   const qcByStaff = useMemo(() => {
-    const m: Record<string, { name: string; sessions: number; items: number; pass: number; fail: number; totalScore: number; countScore: number }> = {}
-    qcData.forEach((s) => {
-      const n = s.username || 'N/A'
-      if (!m[n]) m[n] = { name: n, sessions: 0, items: 0, pass: 0, fail: 0, totalScore: 0, countScore: 0 }
-      m[n].sessions++
-      m[n].items += s.total_items || 0
-      m[n].pass += s.pass_count || 0
-      m[n].fail += s.fail_count || 0
-      if (s.kpi_score > 0) { m[n].totalScore += s.kpi_score; m[n].countScore++ }
+    const initialAttempts = qcAttemptData.filter((attempt) => attempt.attempt_type === 'initial' || attempt.attempt_no === 1)
+    if (initialAttempts.length > 0) {
+      const m: Record<string, { name: string; sessionIds: Set<string>; items: number; pass: number; fail: number; totalDurationSeconds: number }> = {}
+      initialAttempts.forEach((attempt) => {
+        const name = attempt.qc_by || 'N/A'
+        if (!m[name]) m[name] = { name, sessionIds: new Set(), items: 0, pass: 0, fail: 0, totalDurationSeconds: 0 }
+        const qty = getQcAttemptQty(attempt)
+        if (attempt.session_id) m[name].sessionIds.add(attempt.session_id)
+        m[name].items += qty
+        if (attempt.result === 'pass') m[name].pass += qty
+        else m[name].fail += qty
+        m[name].totalDurationSeconds += Math.max(0, Number(attempt.duration_seconds) || 0)
+      })
+      return Object.values(m)
+        .map((row) => ({
+          name: row.name,
+          sessions: row.sessionIds.size,
+          items: row.items,
+          pass: row.pass,
+          fail: row.fail,
+          avgScore: row.items > 0 ? row.totalDurationSeconds / row.items : 0,
+        }))
+        .sort((a, b) => b.items - a.items)
+    }
+
+    const m: Record<string, { name: string; sessions: number; items: number; pass: number; fail: number; weightedScore: number; weightedItems: number }> = {}
+    qcData.forEach((session) => {
+      const name = session.username || 'N/A'
+      if (!m[name]) m[name] = { name, sessions: 0, items: 0, pass: 0, fail: 0, weightedScore: 0, weightedItems: 0 }
+      const items = Number(session.total_items) || 0
+      m[name].sessions++
+      m[name].items += items
+      m[name].pass += Number(session.pass_count) || 0
+      m[name].fail += Number(session.fail_count) || 0
+      if (session.kpi_score > 0 && items > 0) {
+        m[name].weightedScore += session.kpi_score * items
+        m[name].weightedItems += items
+      }
     })
-    return Object.values(m).sort((a, b) => b.items - a.items)
-  }, [qcData])
+    return Object.values(m)
+      .map((row) => ({ ...row, avgScore: row.weightedItems ? row.weightedScore / row.weightedItems : 0 }))
+      .sort((a, b) => b.items - a.items)
+  }, [qcData, qcAttemptData])
 
   // --- Packing ---
   function calcPackKpi(data: PackLog[]) {
@@ -714,7 +814,7 @@ export default function KPIDashboard() {
       ['ความแม่นยำจัดสินค้า', wmsKpi.avgAccuracy.toFixed(2), '%'],
       ['เวลาจัดสินค้าเฉลี่ย', fmtDuration(wmsKpi.avgPickMs), 'HH:MM:SS'],
       ['QC คะแนนเฉลี่ย', (qcKpi.avgScore / 60).toFixed(2), 'นาที/ชิ้น'],
-      ['QC อัตรา Pass', qcKpi.passRate.toFixed(2), '%'],
+      ['QC First Pass Rate', qcKpi.passRate.toFixed(2), '%'],
       ['แก้ปัญหาเฉลี่ย', fmtMinutes(issueKpi.avgResMin), ''],
       ['ตรวจนับแม่นยำ', auditKpi.avgQtyAcc.toFixed(2), '%'],
       ['Machinery อัตราทำงาน (กะ)', machineryKpi.uptimePct.toFixed(2), '%'],
@@ -753,10 +853,10 @@ export default function KPIDashboard() {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rq), 'การเบิก')
 
     // Sheet 5: QC
-    const qr = [['พนักงาน', 'เซสชัน', 'รายการ', 'Pass', 'Fail', 'อัตรา Pass(%)', 'คะแนนเฉลี่ย(นาที/ชิ้น)']]
+    const qr = [['พนักงาน', 'เซสชัน', 'ตรวจครั้งแรก', 'Pass ครั้งแรก', 'Fail ครั้งแรก', 'First Pass(%)', 'เฉลี่ย(นาที/ชิ้น)']]
     qcByStaff.forEach((r) => {
       const pr = (r.pass + r.fail) > 0 ? ((r.pass / (r.pass + r.fail)) * 100).toFixed(2) : '0'
-      const sc = r.countScore ? (r.totalScore / r.countScore / 60).toFixed(2) : '-'
+      const sc = r.avgScore > 0 ? (r.avgScore / 60).toFixed(2) : '-'
       qr.push([r.name, r.sessions as any, r.items as any, r.pass as any, r.fail as any, pr as any, sc as any])
     })
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(qr), 'QC')
@@ -948,7 +1048,7 @@ export default function KPIDashboard() {
             <KpiCard label="แม่นยำจัดสินค้า" value={wmsKpi.avgAccuracy} prev={prevWmsKpi.avgAccuracy} colorClass="text-cyan-600" unit="%" />
             <KpiCard label="เวลาจัดเฉลี่ย" value={wmsKpi.avgPickMs} prev={prevWmsKpi.avgPickMs} colorClass="text-teal-600" unit="time" />
             <KpiCard label="QC นาที/ชิ้น" value={qcKpi.avgScore / 60} prev={prevQcKpi.avgScore / 60} colorClass="text-purple-600" />
-            <KpiCard label="QC Pass Rate" value={qcKpi.passRate} prev={prevQcKpi.passRate} colorClass="text-indigo-600" unit="%" />
+            <KpiCard label="QC First Pass Rate" value={qcKpi.passRate} prev={prevQcKpi.passRate} colorClass="text-indigo-600" unit="%" />
             <KpiCard label="แก้ปัญหาเฉลี่ย" value={issueKpi.avgResMin} prev={prevIssueKpi.avgResMin} colorClass="text-amber-600" unit="min" />
             <KpiCard label="ตรวจนับแม่นยำ" value={auditKpi.avgQtyAcc} prev={prevAuditKpi.avgQtyAcc} colorClass="text-rose-600" unit="%" />
             <KpiCard label="Machinery ทำงาน/กะ" value={machineryKpi.uptimePct} prev={prevMachineryKpi.uptimePct} colorClass="text-slate-700" unit="%" />
@@ -1179,17 +1279,19 @@ export default function KPIDashboard() {
               {/* ===== QC TAB ===== */}
               {tab === 'qc' && (
                 <div className="space-y-6">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
                     <KpiCard label="จำนวนเซสชัน" value={qcKpi.sessions} prev={prevQcKpi.sessions} colorClass="text-blue-600" />
-                    <KpiCard label="คะแนนเฉลี่ย (นาที/ชิ้น)" value={qcKpi.avgScore / 60} prev={prevQcKpi.avgScore / 60} colorClass="text-purple-600" />
-                    <KpiCard label="อัตรา Pass" value={qcKpi.passRate} prev={prevQcKpi.passRate} colorClass="text-emerald-600" unit="%" />
-                    <KpiCard label="รายการตรวจรวม" value={qcKpi.totalItems} colorClass="text-indigo-600" />
+                    <KpiCard label="ตรวจครั้งแรก" value={qcKpi.totalItems} colorClass="text-indigo-600" />
+                    <KpiCard label="Pass ครั้งแรก" value={qcKpi.totalPass} colorClass="text-emerald-600" />
+                    <KpiCard label="Fail ครั้งแรก" value={qcKpi.totalFail} colorClass="text-red-600" />
+                    <KpiCard label="First Pass Rate" value={qcKpi.passRate} prev={prevQcKpi.passRate} colorClass="text-emerald-600" unit="%" />
+                    <KpiCard label="เฉลี่ย (นาที/ชิ้น)" value={qcKpi.avgScore / 60} prev={prevQcKpi.avgScore / 60} colorClass="text-purple-600" />
                   </div>
                   <RankTable title="ผลงานพนักงาน QC"
-                    headers={['พนักงาน', 'เซสชัน', 'รายการ', 'Pass', 'Fail', 'Pass(%)', 'นาที/ชิ้น']}
+                    headers={['พนักงาน', 'เซสชัน', 'ตรวจครั้งแรก', 'Pass ครั้งแรก', 'Fail ครั้งแรก', 'First Pass(%)', 'นาที/ชิ้น']}
                     rows={qcByStaff.map((r) => {
                       const pr = (r.pass + r.fail) > 0 ? Number(((r.pass / (r.pass + r.fail)) * 100).toFixed(1)) : 0
-                      const sc = r.countScore ? Number((r.totalScore / r.countScore / 60).toFixed(2)) : 0
+                      const sc = Number((r.avgScore / 60).toFixed(2))
                       return [r.name, r.sessions, r.items, r.pass, r.fail, pr, sc]
                     })}
                     colorFrom="from-purple-600" colorTo="to-purple-700" />
