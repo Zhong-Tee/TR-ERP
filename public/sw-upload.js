@@ -5,6 +5,11 @@ const STORE_SETTINGS = 'settings'
 
 let processing = false
 const STALE_UPLOAD_MS = 10 * 60 * 1000
+// The current Edge Function reads the incoming multipart body and creates a
+// second multipart Blob for Google Drive. Keep automatic uploads below this
+// guard so one oversized video cannot exhaust the worker and block the queue.
+const MAX_AUTOMATIC_UPLOAD_BYTES = 80 * 1024 * 1024
+const UPLOAD_TIMEOUT_MS = 4 * 60 * 1000
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -122,13 +127,41 @@ async function processQueue() {
 
     const items = await listQueueItems()
     const now = Date.now()
-    const candidates = items.filter((i) => {
-      if (i.status === 'pending' || i.status === 'failed') return true
-      if (i.status !== 'uploading') return false
-      const updatedAt = new Date(i.updatedAt || i.createdAt || 0).getTime()
-      return !Number.isFinite(updatedAt) || now - updatedAt >= STALE_UPLOAD_MS
-    })
+    const candidates = items
+      .filter((i) => {
+        // Failed items must only run again after the user explicitly changes
+        // them back to pending. Otherwise every new recording retries all old
+        // failures before reaching the healthy queue.
+        if (i.status === 'pending') return true
+        if (i.status !== 'uploading') return false
+        const updatedAt = new Date(i.updatedAt || i.createdAt || 0).getTime()
+        return !Number.isFinite(updatedAt) || now - updatedAt >= STALE_UPLOAD_MS
+      })
+      // Let small, likely-to-succeed recordings leave the queue first.
+      .sort((a, b) => {
+        const sizeDiff = Number(a.fileSize || a.blob?.size || 0) - Number(b.fileSize || b.blob?.size || 0)
+        return sizeDiff || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+      })
     for (const item of candidates) {
+      const itemSize = Number(item.fileSize || item.blob?.size || 0)
+      if (itemSize > MAX_AUTOMATIC_UPLOAD_BYTES) {
+        const retryCount = (item.retryCount || 0) + 1
+        const maxMb = Math.round(MAX_AUTOMATIC_UPLOAD_BYTES / (1024 * 1024))
+        const actualMb = (itemSize / (1024 * 1024)).toFixed(2)
+        const lastError = `ไฟล์ใหญ่เกินขีดจำกัดอัปโหลดอัตโนมัติ (${actualMb} MB / สูงสุด ${maxMb} MB) ไฟล์สำรองยังอยู่ในเครื่อง กรุณาใช้ไฟล์สำรองหรือระบบอัปโหลดไฟล์ขนาดใหญ่`
+        await updateQueueItem(item.id, {
+          status: 'failed',
+          retryCount,
+          lastError,
+        })
+        await reportQueueStatus(item, {
+          status: 'failed',
+          retryCount,
+          lastError,
+        }).catch(() => null)
+        continue
+      }
+
       await updateQueueItem(item.id, { status: 'uploading', lastError: null })
       await reportQueueStatus(item, { status: 'uploading', lastError: null }).catch(() => null)
       try {
@@ -169,11 +202,24 @@ async function processQueue() {
           }),
         )
 
-        const uploadRes = await fetch(edgeFnUrl, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}` },
-          body: formData,
-        })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS)
+        let uploadRes
+        try {
+          uploadRes = await fetch(edgeFnUrl, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}` },
+            body: formData,
+            signal: controller.signal,
+          })
+        } catch (error) {
+          if (error?.name === 'AbortError') {
+            throw new Error('หมดเวลาอัปโหลด 4 นาที ระบบข้ามรายการนี้เพื่ออัปโหลดรายการถัดไป')
+          }
+          throw error
+        } finally {
+          clearTimeout(timeoutId)
+        }
 
         const result = await uploadRes.json().catch(() => null)
         if (!uploadRes.ok || !result?.success) {

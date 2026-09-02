@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Order, OrderItem } from '../types'
 import { sortOrderItemsForExport } from './orderItemExportSort'
+import { identifyCondoStampItems, isCondoStampItem } from './condoStamp'
 
 /** หัวตารางเดียวกับปุ่ม "ดาวน์โหลด Excel" ในรายละเอียดบิล (ProductionData) */
 export const PRODUCTION_EXCEL_HEADERS = [
@@ -22,10 +23,6 @@ export const PRODUCTION_EXCEL_HEADERS = [
   'ไฟล์แนบ',
   'หมวด',
 ] as const
-
-const LAYER_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู']
-
-const TIER_PRODUCT_NAMES = ['ตรายางคอนโด TWP ชมพู', 'ตรายางคอนโด TWB ฟ้า']
 
 export function fmtThAmount(n: number | null | undefined) {
   return Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -55,10 +52,10 @@ export function buildProductionDataRowsForOrder(
   productCategoryByProductId: Record<string, string>
 ): unknown[][] {
   const sorted = sortOrderItemsForExport(items)
+  const condoStampItems = identifyCondoStampItems(sorted, productCategoryByProductId)
   return sorted.map((item) => {
-    const productName = String(item.product_name ?? '').trim()
-    const showLayer = LAYER_PRODUCT_NAMES.includes(productName)
     const pid = item.product_id ? String(item.product_id) : ''
+    const showLayer = isCondoStampItem(item, condoStampItems, productCategoryByProductId[pid])
     const noName = !!item.no_name_line
     const cleanNotes = noName
       ? ('ไม่รับชื่อ' + ((item.notes || '').replace(/\[SET-.*?\]/g, '').trim() ? ' ' + (item.notes || '').replace(/\[SET-.*?\]/g, '').trim() : ''))
@@ -160,8 +157,9 @@ export function buildBillLineItemsRows(order: Order, items: OrderItem[]): unknow
     ]]
   }
   const sorted = sortOrderItemsForExport(items)
+  const condoStampItems = identifyCondoStampItems(sorted)
   return sorted.map((item, idx) => {
-    const isTierProduct = TIER_PRODUCT_NAMES.includes(item.product_name || '')
+    const isTierProduct = isCondoStampItem(item, condoStampItems)
     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
     const noteCell = item.no_name_line
       ? `ไม่รับชื่อ${item.notes ? ' ' + item.notes : ''}`

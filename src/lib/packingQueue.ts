@@ -140,16 +140,10 @@ export async function setDeviceName(name: string): Promise<void> {
 
 export async function getVideoQualityProfile(): Promise<VideoQualityProfileId> {
   const saved = await getSetting<string>('packingVideoQualityProfile')
-  const validProfiles: VideoQualityProfileId[] = [
-    'original',
-    'ultra',
-    'very_high',
-    'high',
-    'standard',
-    'balanced',
-    'data_saver',
-  ]
-  return validProfiles.includes(saved as VideoQualityProfileId)
+  // จำกัดการบันทึกอัตโนมัติไว้ไม่เกิน 720p / 2 Mbps เครื่องที่เคย
+  // บันทึกโปรไฟล์ 1080p ไว้ใน Browser จะกลับมาใช้ standard โดยอัตโนมัติ
+  const safeProfiles: VideoQualityProfileId[] = ['standard', 'balanced', 'data_saver']
+  return safeProfiles.includes(saved as VideoQualityProfileId)
     ? saved as VideoQualityProfileId
     : 'standard'
 }

@@ -763,6 +763,7 @@ export default function Settings() {
     { key: 'wms-return-requisition', label: 'รายการคืน', group: 'wms' },
     { key: 'wms-borrow-requisition', label: 'รายการยืม', group: 'wms' },
     { key: 'wms-notif', label: 'แจ้งเตือน', group: 'wms' },
+    { key: 'wms-stock-anomaly', label: 'สต๊อคผิดปกติ', group: 'wms' },
     { key: 'wms-settings', label: 'ตั้งค่า', group: 'wms' },
     // ── QC ──
     { key: 'qc', label: 'QC', group: '' },

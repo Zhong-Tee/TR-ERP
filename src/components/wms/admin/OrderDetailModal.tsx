@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Modal from '../../ui/Modal'
 import { supabase } from '../../../lib/supabase'
 import { getProductImageUrl, sortOrderItems, WMS_STATUS_LABELS, WMS_FULFILLMENT_PICK_OR_LEGACY } from '../wmsUtils'
@@ -10,6 +10,7 @@ import {
   getCondoStampLayersLabel,
 } from '../../../lib/wmsCondoStampConsolidation'
 import { useWmsModal } from '../useWmsModal'
+import { useAuthContext } from '../../../contexts/AuthContext'
 
 interface OrderDetailModalProps {
   /** ตัวตนจริงของใบงาน — ต้องใช้กรอง wms_orders ไม่ให้ปนกับใบงานเก่าที่ชื่อซ้ำ */
@@ -19,34 +20,53 @@ interface OrderDetailModalProps {
   onClose: () => void
 }
 
+type WmsDetailItem = {
+  id: string
+  product_name: string
+  product_code: string
+  location?: string | null
+  qty?: number | null
+  unit_name?: string | null
+  status: string
+  created_at?: string | null
+  _consolidated_wms_ids?: string[]
+  _consolidated_line_count?: number
+  _consolidated_statuses?: string[]
+}
+
+type VoidAuditRow = {
+  id: string
+  product_name: string | null
+  product_code: string | null
+  qty: number
+  previous_status: string
+  reason: string
+  voided_at: string
+}
+
 export default function OrderDetailModal({ workOrderId, orderDisplayName, onClose }: OrderDetailModalProps) {
-  const [items, setItems] = useState<any[]>([])
+  const [items, setItems] = useState<WmsDetailItem[]>([])
+  const [voidHistory, setVoidHistory] = useState<VoidAuditRow[]>([])
+  const [voidTarget, setVoidTarget] = useState<{ id: string; _consolidated_wms_ids?: string[]; product_name?: string } | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const [voiding, setVoiding] = useState(false)
   const [loading, setLoading] = useState(true)
-  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
+  const { user } = useAuthContext()
+  const isSuperadmin = user?.role === 'superadmin'
+  const { showMessage, MessageModal } = useWmsModal({ showCancelButton: false })
 
-  useEffect(() => {
-    loadOrderDetails()
-
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose()
-      }
-    }
-    document.addEventListener('keydown', handleEscape)
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [workOrderId, orderDisplayName, onClose])
-
-  const loadOrderDetails = async () => {
-    let q = supabase.from('wms_orders').select('*').or(WMS_FULFILLMENT_PICK_OR_LEGACY)
+  const loadOrderDetails = useCallback(async () => {
+    let q = supabase.from('wms_orders').select('*').or(WMS_FULFILLMENT_PICK_OR_LEGACY).neq('status', 'cancelled')
     if (workOrderId) {
       q = q.eq('work_order_id', workOrderId)
     } else {
       q = q.eq('order_id', orderDisplayName)
     }
-    const { data, error } = await q
+    let historyQuery = supabase.from('wms_order_void_audit').select('*').order('voided_at', { ascending: false })
+    historyQuery = workOrderId
+      ? historyQuery.eq('work_order_id', workOrderId)
+      : historyQuery.eq('order_display_name', orderDisplayName)
+    const [{ data, error }, { data: historyData, error: historyError }] = await Promise.all([q, historyQuery])
 
     if (error) {
       console.error('Error fetching order details:', error)
@@ -54,10 +74,23 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
       return
     }
 
-    const sortedData = consolidateCondoStampWmsDisplayRows(sortOrderItems(data || []) as any[])
-    setItems(consolidateDuplicateWmsRows(sortedData as any[]))
+    const sortedData = consolidateCondoStampWmsDisplayRows(sortOrderItems((data || []) as WmsDetailItem[]))
+    setItems(consolidateDuplicateWmsRows(sortedData))
+    if (!historyError) setVoidHistory((historyData || []) as VoidAuditRow[])
     setLoading(false)
-  }
+  }, [workOrderId, orderDisplayName])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadOrderDetails() }, 0)
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [loadOrderDetails, onClose])
 
   const updateItemStatus = async (row: { id: string; _consolidated_wms_ids?: string[] }, newStatus: string) => {
     const ids = getWmsConsolidatedRowIds(row)
@@ -71,20 +104,22 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
     loadOrderDetails()
   }
 
-  const deleteOrderItem = async (row: { id: string; _consolidated_wms_ids?: string[] }) => {
-    const ids = getWmsConsolidatedRowIds(row)
-    const msg =
-      ids.length > 1 ? `ยืนยันการลบ ${ids.length} รายการ (รวมสินค้าเดียวกัน) หรือไม่?` : 'ยืนยันการลบรายการนี้หรือไม่?'
-    const ok = await showConfirm({ title: 'ยืนยันการลบ', message: msg })
-    if (!ok) return
-
-    const { error } = await supabase.from('wms_orders').delete().in('id', ids)
+  const voidOrderItem = async () => {
+    if (!voidTarget || voidReason.trim().length < 3) return
+    setVoiding(true)
+    const { error } = await supabase.rpc('rpc_void_wms_orders', {
+      p_wms_order_ids: getWmsConsolidatedRowIds(voidTarget),
+      p_reason: voidReason.trim(),
+    })
+    setVoiding(false)
 
     if (error) {
-      showMessage({ message: `ไม่สามารถลบข้อมูลได้: ${error.message}` })
+      showMessage({ message: `ไม่สามารถยกเลิกรายการได้: ${error.message}` })
       return
     }
-
+    setVoidTarget(null)
+    setVoidReason('')
+    window.dispatchEvent(new CustomEvent('wms-data-changed'))
     loadOrderDetails()
   }
 
@@ -188,14 +223,12 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                           </select>
                         </td>
                         <td className="p-3 text-center">
-                          <button
-                            onClick={() => deleteOrderItem(item)}
+                          {isSuperadmin ? <button
+                            onClick={() => setVoidTarget(item)}
                             className="text-red-600 hover:text-red-800 transition-all hover:scale-125 active:scale-100 p-2 rounded-lg hover:bg-red-50 inline-flex items-center justify-center"
-                            title="ลบรายการ"
-                            aria-label="ลบรายการ"
-                          >
-                            <i className="fas fa-trash-alt" style={{ fontSize: '1.25rem', display: 'block' }}></i>
-                          </button>
+                            title="ยกเลิกรายการ (เก็บประวัติ)"
+                            aria-label="ยกเลิกรายการ"
+                          ><i className="fas fa-trash-alt" style={{ fontSize: '1.25rem', display: 'block' }}></i></button> : <span className="text-xs text-slate-400">-</span>}
                         </td>
                       </tr>
                     )
@@ -203,11 +236,23 @@ export default function OrderDetailModal({ workOrderId, orderDisplayName, onClos
                 </tbody>
               </table>
             )}
+            {!loading && voidHistory.length > 0 && <div className="mt-8 border-t pt-5">
+              <h4 className="mb-3 font-black text-slate-700">ประวัติรายการที่ยกเลิก</h4>
+              <div className="overflow-x-auto rounded-xl border border-slate-200"><table className="w-full text-sm"><thead className="bg-slate-100 text-left"><tr><th className="p-3">สินค้า</th><th className="p-3">จำนวน</th><th className="p-3">สถานะเดิม</th><th className="p-3">เหตุผล</th><th className="p-3">เวลา</th></tr></thead><tbody className="divide-y">{voidHistory.map((h) => <tr key={h.id}><td className="p-3"><div className="font-bold">{h.product_name}</div><div className="text-xs text-slate-400">{h.product_code}</div></td><td className="p-3">{h.qty}</td><td className="p-3">{WMS_STATUS_LABELS[h.previous_status] || h.previous_status}</td><td className="p-3">{h.reason}</td><td className="p-3">{new Date(h.voided_at).toLocaleString('th-TH')}</td></tr>)}</tbody></table></div>
+            </div>}
           </div>
         </div>
       </Modal>
+      <Modal open={!!voidTarget} onClose={() => !voiding && setVoidTarget(null)} contentClassName="max-w-md" stackClassName="z-[70]">
+        <div className="p-6">
+          <h3 className="text-lg font-black text-red-700">ยกเลิกรายการและเก็บประวัติ</h3>
+          <p className="mt-2 text-sm text-slate-600">{voidTarget?.product_name || 'รายการที่เลือก'} หากเคยตัดสต๊อคแล้ว ระบบจะคืนสต๊อคให้อัตโนมัติ</p>
+          <label className="mt-4 block text-sm font-bold">เหตุผล <span className="text-red-600">*</span></label>
+          <textarea autoFocus value={voidReason} onChange={(e) => setVoidReason(e.target.value)} rows={3} className="mt-1 w-full rounded-xl border p-3" placeholder="ระบุเหตุผลอย่างน้อย 3 ตัวอักษร" />
+          <div className="mt-5 flex justify-end gap-2"><button onClick={() => setVoidTarget(null)} disabled={voiding} className="rounded-xl border px-4 py-2 font-bold">ยกเลิก</button><button onClick={voidOrderItem} disabled={voiding || voidReason.trim().length < 3} className="rounded-xl bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-50">{voiding ? 'กำลังดำเนินการ...' : 'ยืนยันยกเลิกรายการ'}</button></div>
+        </div>
+      </Modal>
       {MessageModal}
-      {ConfirmModal}
     </>
   )
 }

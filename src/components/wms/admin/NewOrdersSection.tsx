@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../../lib/supabase'
 import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
-import { fetchWorkOrderNamesWithWmsAssigned } from '../wmsUtils'
+import {
+  fetchWmsNonPickerCategories,
+  fetchWorkOrderNamesWithWmsAssigned,
+  isWmsPickableCategory,
+} from '../wmsUtils'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
 import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
 
@@ -19,16 +23,6 @@ function dedupeWorkOrdersByName<T extends { work_order_name: string }>(rows: T[]
 }
 
 // Category matching — same groups as Plan Dashboard "เบิก" + SUBLIMATION + อะไหล่ (rubber_code)
-const MAIN_KEYWORDS = ['STAMP', 'LASER', 'SUBLIMATION']
-const ETC_CATEGORIES = ['CALENDAR', 'ETC', 'INK', 'SUB-KTA', 'SUB-KTC']
-const isMainCategory = (cat: string, rubberCode?: string): boolean => {
-  if ((rubberCode || '').trim() !== '') return true
-  const upper = (cat || '').toUpperCase()
-  if (MAIN_KEYWORDS.some((kw) => upper.includes(kw))) return true
-  if (ETC_CATEGORIES.includes(upper)) return true
-  return false
-}
-
 export default function NewOrdersSection() {
   const [workOrders, setWorkOrders] = useState<
     Array<{ id: string; work_order_name: string; order_count: number; created_at: string; plan_wo_modified?: boolean }>
@@ -96,13 +90,14 @@ export default function NewOrdersSection() {
     const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
-      const [{ data }, assignedNames] = await Promise.all([
+      const [{ data }, assignedNames, nonPickerCategories] = await Promise.all([
         supabase
           .from('or_work_orders')
           .select('id, work_order_name, order_count, created_at, plan_wo_modified')
           .eq('status', 'กำลังผลิต')
           .order('created_at', { ascending: false }),
         fetchWorkOrderNamesWithWmsAssigned(),
+        fetchWmsNonPickerCategories(),
       ])
 
       if (!data || data.length === 0) {
@@ -144,13 +139,10 @@ export default function NewOrdersSection() {
         if (productIds.length > 0) {
           const { data: products } = await supabase
             .from('pr_products')
-            .select('id, product_category, rubber_code')
+            .select('id, product_category')
             .in('id', productIds)
           productCategoryMap = (products || []).reduce((acc: Record<string, string>, p: any) => {
-            const category = String(p.product_category || '')
-            const rubberCode = String(p.rubber_code || '').trim()
-            // เก็บ rubber_code เป็น marker ใน map เดียว เพื่อลดการแตก state/map เพิ่ม
-            acc[p.id] = rubberCode ? `${category}__RUBBER__${rubberCode}` : category
+            acc[p.id] = String(p.product_category || '')
             return acc
           }, {})
         }
@@ -158,13 +150,7 @@ export default function NewOrdersSection() {
         const woQualifiesForAssign = new Set<string>()
         allItems.forEach((item: any) => {
           if (!item.product_id) return
-          const raw = productCategoryMap[item.product_id] || ''
-          const marker = '__RUBBER__'
-          const markerIdx = raw.indexOf(marker)
-          const hasRubber = markerIdx >= 0
-          const cat = hasRubber ? raw.slice(0, markerIdx) : raw
-          const rubberCode = hasRubber ? raw.slice(markerIdx + marker.length) : ''
-          if (isMainCategory(cat, rubberCode) && item.work_order_id) {
+          if (isWmsPickableCategory(productCategoryMap[item.product_id], nonPickerCategories) && item.work_order_id) {
             woQualifiesForAssign.add(String(item.work_order_id))
           }
         })

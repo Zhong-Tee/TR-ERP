@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../../lib/supabase'
 import { useWmsModal } from '../useWmsModal'
 
 type Category4M = 'Man' | 'Machine' | 'Material' | 'Method' | '-'
 type TopicRow = { id: string; topic_name: string; category_4m?: Category4M }
+type NonPickerCategory = { id: string; category_name: string }
 
 const CATEGORY_4M_OPTIONS: Category4M[] = ['-', 'Man', 'Machine', 'Material', 'Method']
 const CATEGORY_4M_LABELS: Record<Category4M, string> = {
@@ -37,19 +38,26 @@ export default function SettingsSection() {
   const [topics, setTopics] = useState<TopicRow[]>([])
   const [sectionTopics, setSectionTopics] = useState<Record<string, TopicRow[]>>({})
   const [newTopic, setNewTopic] = useState('')
+  const [nonPickerCategories, setNonPickerCategories] = useState<NonPickerCategory[]>([])
+  const [productCategories, setProductCategories] = useState<string[]>([])
+  const [newNonPickerCategory, setNewNonPickerCategory] = useState('')
   const [newSectionInputs, setNewSectionInputs] = useState<Record<string, { name: string; category: Category4M }>>({})
-  const { MessageModal } = useWmsModal({ showCancelButton: false })
+  const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
 
-  useEffect(() => {
-    loadSettings()
-  }, [])
-
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     const { data: topicsData } = await supabase
       .from('wms_notification_topics')
       .select('*')
       .order('topic_name')
     if (topicsData) setTopics(topicsData as TopicRow[])
+
+    const [{ data: nonPickerData }, { data: productCategoryData }] = await Promise.all([
+      supabase.from('wms_non_picker_categories').select('id, category_name').order('category_name'),
+      supabase.from('pr_products').select('product_category').not('product_category', 'is', null),
+    ])
+    setNonPickerCategories((nonPickerData || []) as NonPickerCategory[])
+    setProductCategories(Array.from(new Set((productCategoryData || [])
+      .map((row) => String(row.product_category || '').trim()).filter(Boolean))).sort())
 
     const results: Record<string, TopicRow[]> = {}
     for (const sec of TOPIC_SECTIONS) {
@@ -57,7 +65,12 @@ export default function SettingsSection() {
       results[sec.table] = (data || []) as TopicRow[]
     }
     setSectionTopics(results)
-  }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadSettings() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [loadSettings])
 
   const addTopic = async () => {
     if (!newTopic) return
@@ -69,6 +82,36 @@ export default function SettingsSection() {
   const deleteTopic = async (id: string) => {
     await supabase.from('wms_notification_topics').delete().eq('id', id)
     loadSettings()
+  }
+
+  const addNonPickerCategory = async () => {
+    const categoryName = newNonPickerCategory.trim()
+    if (!categoryName) return
+    const { error } = await supabase.from('wms_non_picker_categories').insert([{
+      category_name: categoryName,
+    }])
+    if (error) {
+      showMessage({ message: error.code === '23505' ? 'หมวดสินค้านี้อยู่ในรายการแล้ว' : `เพิ่มหมวดสินค้าไม่สำเร็จ: ${error.message}` })
+      return
+    }
+    setNewNonPickerCategory('')
+    await loadSettings()
+    window.dispatchEvent(new CustomEvent('wms-data-changed'))
+  }
+
+  const deleteNonPickerCategory = async (category: NonPickerCategory) => {
+    const ok = await showConfirm({
+      title: 'ยืนยันเปลี่ยนเป็นต้อง Picker',
+      message: `เมื่อลบ “${category.category_name}” สินค้าในหมวดนี้จะเปลี่ยนเป็นต้องผ่าน Picker สำหรับใบงานใหม่ ยืนยันหรือไม่?`,
+    })
+    if (!ok) return
+    const { error } = await supabase.from('wms_non_picker_categories').delete().eq('id', category.id)
+    if (error) {
+      showMessage({ message: `ลบหมวดสินค้าไม่สำเร็จ: ${error.message}` })
+      return
+    }
+    await loadSettings()
+    window.dispatchEvent(new CustomEvent('wms-data-changed'))
   }
 
   const getSectionInput = (table: string) => newSectionInputs[table] || { name: '', category: '-' as Category4M }
@@ -191,8 +234,40 @@ export default function SettingsSection() {
             </div>
           )
         })}
+
+
+        <div className="bg-white p-6 rounded-2xl border shadow-sm flex flex-col">
+          <h3 className="font-bold text-[16px] uppercase tracking-widest mb-2 border-b pb-2 text-slate-800">
+            หมวดสินค้าไม่ต้อง Picker
+          </h3>
+          <p className="mb-4 text-xs text-slate-500">หมวดในรายการนี้จะสร้าง WMS แบบ system_complete และตัดสต๊อคอัตโนมัติ หมวดใหม่ที่ยังไม่ได้เพิ่มจะต้องผ่าน Picker</p>
+          <div className="flex gap-2 mb-4 shrink-0">
+            <input
+              type="text"
+              list="wms-product-category-options"
+              value={newNonPickerCategory}
+              onChange={(e) => setNewNonPickerCategory(e.target.value)}
+              placeholder="เช่น UV-FLATBED"
+              className="flex-1 border p-2.5 rounded-lg text-sm"
+              onKeyDown={(e) => e.key === 'Enter' && addNonPickerCategory()}
+            />
+            <datalist id="wms-product-category-options">
+              {productCategories.map((category) => <option key={category} value={category} />)}
+            </datalist>
+            <button onClick={addNonPickerCategory} className="bg-slate-800 text-white px-5 rounded-lg font-bold hover:bg-black transition">+</button>
+          </div>
+          <div className="divide-y flex-1 overflow-y-auto min-h-0 max-h-80">
+            {nonPickerCategories.map((category) => (
+              <div key={category.id} className="flex justify-between items-center py-2 text-sm gap-2">
+                <span className="font-semibold text-slate-700">{category.category_name}</span>
+                <button onClick={() => deleteNonPickerCategory(category)} className="text-red-400 hover:text-red-600" title="เปลี่ยนกลับเป็นต้อง Picker"><i className="fas fa-trash-alt"></i></button>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
       {MessageModal}
+      {ConfirmModal}
     </section>
   )
 }

@@ -218,6 +218,11 @@ const VIDEO_QUALITY_PROFILES: Record<VideoQualityProfileId, VideoQualityProfile>
   data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.65 Mbps (~5 MB/นาที)', width: 854, height: 480, fps: 15, bitrate: 650_000 },
 }
 
+const SELECTABLE_VIDEO_QUALITY_PROFILES: VideoQualityProfileId[] = ['standard', 'balanced', 'data_saver']
+// ตัดวิดีโอที่บันทึกนานเป็นไฟล์ย่อยก่อนถึงเพดานอัปโหลดอัตโนมัติ 80 MB
+const RECORDING_SEGMENT_LIMIT_BYTES = 70 * 1024 * 1024
+const RECORDING_TIMESLICE_MS = 5_000
+
 const DEVICE_ONLINE_MS = 2 * 60 * 1000
 
 type PackingUploadReportRow = {
@@ -323,7 +328,7 @@ function uploadRecoveryAdvice(row: PackingUploadReportRow, deviceOnline: boolean
   if (/ไม่พบไฟล์|missing.*file|no.*file/.test(error)) return 'ไม่พบไฟล์ในคิว: ใช้ปุ่ม “นำไฟล์ .webm กลับเข้าคิว” ที่เครื่องต้นทาง'
   if (/401|403|unauthor|jwt|token|session/.test(error)) return 'Session หมดอายุ: เข้าสู่ระบบใหม่ที่เครื่องต้นทาง แล้วกดอัปโหลดใหม่'
   if (/failed to fetch|network|internet|connection|เชื่อมต่อ/.test(error)) return 'ตรวจอินเทอร์เน็ตของเครื่องต้นทาง แล้วกดอัปโหลดใหม่'
-  if (/413|too large|payload|ขนาด/.test(error)) return 'ไฟล์ใหญ่เกินไป: ใช้โปรไฟล์มาตรฐาน/ประหยัด และลองอัปโหลดบนเครือข่ายที่เสถียร'
+  if (/413|too large|payload|ขนาด|ไฟล์ใหญ่|ขีดจำกัด/.test(error)) return 'ไฟล์ใหญ่เกินไป: ใช้ไฟล์สำรองในเครื่อง หรือระบบอัปโหลดไฟล์ขนาดใหญ่'
   if (/google drive|timeout|timed out|500|502|503|504/.test(error)) return 'บริการปลายทางหรือเครือข่ายขัดข้อง: รอสักครู่แล้วกดอัปโหลดใหม่'
   if (row.status === 'failed') return 'ไปที่เครื่องต้นทาง → คิวอัปโหลด → ตรวจ Error และกด “อัปโหลดใหม่”'
   return 'เครื่องยังออนไลน์แต่คิวไม่ขยับ: เปิดแท็บคิวที่เครื่องต้นทางและสั่งอัปโหลดใหม่'
@@ -565,10 +570,12 @@ export default function Packing() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingChunksRef = useRef<Blob[]>([])
+  const recordingBytesRef = useRef(0)
   const recordingStartRef = useRef<number | null>(null)
   const recordingVideoMetadataRef = useRef<RecordingVideoMetadata | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const previewLoadingRef = useRef(false)
+  const recordingStartingRef = useRef(false)
   const confirmActionRef = useRef<null | (() => void)>(null)
   const stopAdvanceRef = useRef(false)
   const requeueFileInputRef = useRef<HTMLInputElement | null>(null)
@@ -2470,7 +2477,7 @@ export default function Packing() {
   }
 
   async function startRecording(trackingNumber: string) {
-    if (recordingState.status === 'recording') return
+    if (recordingState.status === 'recording' || recordingStartingRef.current) return
     if (!folderHandle) {
       openAlert('กรุณาเลือกโฟลเดอร์จัดเก็บก่อนเริ่มบันทึก')
       return
@@ -2481,6 +2488,7 @@ export default function Packing() {
       openAlert('ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ก่อนเริ่มบันทึก')
       return
     }
+    recordingStartingRef.current = true
     try {
       const ok = await ensurePreview()
       if (!ok && !streamRef.current) {
@@ -2514,11 +2522,19 @@ export default function Packing() {
       }
       recorderRef.current = recorder
       recordingChunksRef.current = []
+      recordingBytesRef.current = 0
       recordingStartRef.current = Date.now()
       setRecordingState({ status: 'recording', tracking: trackingNumber })
 
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) recordingChunksRef.current.push(event.data)
+        if (event.data.size <= 0) return
+        recordingChunksRef.current.push(event.data)
+        recordingBytesRef.current += event.data.size
+        // MediaRecorder แต่ละช่วงเป็นไฟล์ WebM ที่เล่นได้เอง เมื่อถึงขนาดนี้
+        // ให้ปิดช่วงปัจจุบัน; effect เดิมจะเริ่มช่วงถัดไปให้งานเดียวกันอัตโนมัติ
+        if (recordingBytesRef.current >= RECORDING_SEGMENT_LIMIT_BYTES && recorder.state === 'recording') {
+          recorder.stop()
+        }
       }
 
       recorder.onstop = async () => {
@@ -2547,8 +2563,10 @@ export default function Packing() {
         }
       }
 
-      recorder.start()
+      recorder.start(RECORDING_TIMESLICE_MS)
+      recordingStartingRef.current = false
     } catch (error: any) {
+      recordingStartingRef.current = false
       cleanupRecording()
       throw error
     }
@@ -2557,6 +2575,7 @@ export default function Packing() {
   function cleanupRecording(markIdle = true, stopStream = false) {
     recorderRef.current = null
     recordingChunksRef.current = []
+    recordingBytesRef.current = 0
     recordingStartRef.current = null
     recordingVideoMetadataRef.current = null
     if (stopStream) {
@@ -2678,13 +2697,16 @@ export default function Packing() {
       cleanupRecording()
       return
     }
-    recorderRef.current?.stop()
+    if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
   }
 
   function stopRecordingAndAdvance() {
-    if (recordingState.status !== 'recording') return
     stopAdvanceRef.current = true
-    stopRecording()
+    if (recordingState.status === 'recording') stopRecording()
+    else if (recordingState.status === 'idle') {
+      stopAdvanceRef.current = false
+      goToNextGroup()
+    }
   }
 
   const queueStatusSummary = useMemo(() => ({
@@ -3393,10 +3415,11 @@ export default function Packing() {
                     disabled={recordingState.status === 'recording'}
                     className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2 disabled:opacity-50"
                   >
-                    {Object.values(VIDEO_QUALITY_PROFILES).map((profile) => (
+                    {SELECTABLE_VIDEO_QUALITY_PROFILES.map((profileId) => VIDEO_QUALITY_PROFILES[profileId]).map((profile) => (
                       <option key={profile.id} value={profile.id}>{profile.label} — {profile.description}</option>
                     ))}
                   </select>
+                  <span className="text-xs text-gray-500">จำกัดสูงสุด 720p และแบ่งไฟล์อัตโนมัติเมื่อบันทึกนาน</span>
                 </div>
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
                   <div className="mb-2 font-semibold text-blue-900">ผูก Browser นี้กับทะเบียนสถานีเดิม</div>
@@ -3558,6 +3581,7 @@ export default function Packing() {
                     const isSuccess = item.status === 'success'
                     const isFailed = item.status === 'failed' || isStaleQueueTimestamp(item.status, item.updatedAt)
                     const isUploading = item.status === 'uploading' && !isFailed
+                    const isOversized = /ไฟล์ใหญ่|ขีดจำกัดอัปโหลด/.test(item.lastError || '')
                     const cardClass = isSuccess
                       ? 'bg-blue-50 border-blue-200 text-blue-900'
                       : isFailed
@@ -3583,7 +3607,7 @@ export default function Packing() {
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        {isFailed && (
+                        {isFailed && !isOversized && (
                           <button
                             className="px-3 py-1 text-sm bg-yellow-500 text-white rounded hover:bg-yellow-600 font-medium"
                             onClick={async () => {
@@ -3601,6 +3625,11 @@ export default function Packing() {
                           >
                             อัปโหลดใหม่
                           </button>
+                        )}
+                        {isFailed && isOversized && (
+                          <span className="rounded bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                            ใช้ไฟล์สำรองในเครื่อง
+                          </span>
                         )}
                         {isSuccess && (
                           <button

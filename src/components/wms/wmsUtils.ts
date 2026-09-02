@@ -67,6 +67,7 @@ export const WMS_MENU_KEYS = {
   RETURN_REQUISITION: 'wms-return-requisition',
   BORROW_REQUISITION: 'wms-borrow-requisition',
   NOTIF: 'wms-notif',
+  STOCK_ANOMALY: 'wms-stock-anomaly',
   SETTINGS: 'wms-settings',
 } as const
 
@@ -79,10 +80,34 @@ export const WMS_COUNTED_KEYS = [
   WMS_MENU_KEYS.RETURN_REQUISITION,
   WMS_MENU_KEYS.BORROW_REQUISITION,
   WMS_MENU_KEYS.NOTIF,
+  WMS_MENU_KEYS.STOCK_ANOMALY,
 ]
 
 export interface WmsTabCounts {
   [key: string]: number
+}
+
+const normalizeWmsCategory = (value: string | null | undefined) =>
+  String(value || '').trim().toUpperCase()
+
+export async function fetchWmsNonPickerCategories(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('wms_non_picker_categories')
+    .select('category_name')
+  if (error) throw error
+  return new Set(
+    (data || [])
+      .map((row: { category_name: string | null }) => normalizeWmsCategory(row.category_name))
+      .filter(Boolean)
+  )
+}
+
+export function isWmsPickableCategory(
+  category: string | null | undefined,
+  nonPickerCategories: Set<string>
+): boolean {
+  const normalized = normalizeWmsCategory(category)
+  return normalized !== '' && !nonPickerCategories.has(normalized)
 }
 
 /**
@@ -90,7 +115,9 @@ export interface WmsTabCounts {
  * เพื่อให้ตัวเลขตรงกันเสมอ
  */
 export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total: number }> {
-  const today = new Date().toISOString().split('T')[0]
+  const dateParts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  const datePart = (type: Intl.DateTimeFormatPartTypes) => dateParts.find((part) => part.type === type)?.value || ''
+  const today = `${datePart('year')}-${datePart('month')}-${datePart('day')}`
 
   // 1. ใบงานใหม่: work orders with status "กำลังผลิต" not yet assigned picker + มีสินค้าในหมวดหมู่ที่ต้องหยิบ
   const { data: woData } = await supabase
@@ -100,18 +127,13 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   let newOrdersCount = 0
   if (woData && woData.length > 0) {
     const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
-    const assignedNames = await fetchWorkOrderNamesWithWmsAssigned()
+    const [assignedNames, nonPickerCategories] = await Promise.all([
+      fetchWorkOrderNamesWithWmsAssigned(),
+      fetchWmsNonPickerCategories(),
+    ])
     const unassignedNames = woNames.filter((n) => !assignedNames.has(n))
 
     if (unassignedNames.length > 0) {
-      const mainKW = ['STAMP', 'LASER', 'SUBLIMATION']
-      const etcCats = ['CALENDAR', 'ETC', 'INK', 'SUB-KTA', 'SUB-KTC']
-      const isPickable = (cat: string, rubberCode?: string) => {
-        if ((rubberCode || '').trim() !== '') return true
-        const u = (cat || '').toUpperCase()
-        return mainKW.some((kw) => u.includes(kw)) || etcCats.includes(u)
-      }
-
       const { data: orders } = await supabase
         .from('or_orders')
         .select('work_order_name, or_order_items(product_id, is_free)')
@@ -128,25 +150,19 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
       if (productIds.length > 0) {
         const { data: prods } = await supabase
           .from('pr_products')
-          .select('id, product_category, rubber_code')
+          .select('id, product_category')
           .in('id', productIds)
         catMap = (prods || []).reduce((acc: Record<string, string>, p: any) => {
-          const category = String(p.product_category || '')
-          const rubberCode = String(p.rubber_code || '').trim()
-          acc[p.id] = rubberCode ? `${category}__RUBBER__${rubberCode}` : category
+          acc[p.id] = String(p.product_category || '')
           return acc
         }, {})
       }
       const woQualifies = new Set<string>()
       allItems.forEach((item: any) => {
         if (!item.product_id) return
-        const raw = catMap[item.product_id] || ''
-        const marker = '__RUBBER__'
-        const markerIdx = raw.indexOf(marker)
-        const hasRubber = markerIdx >= 0
-        const cat = hasRubber ? raw.slice(0, markerIdx) : raw
-        const rubberCode = hasRubber ? raw.slice(markerIdx + marker.length) : ''
-        if (isPickable(cat, rubberCode)) woQualifies.add(item.work_order_name)
+        if (isWmsPickableCategory(catMap[item.product_id], nonPickerCategories)) {
+          woQualifies.add(item.work_order_name)
+        }
       })
       newOrdersCount = unassignedNames.filter((n) => woQualifies.has(n)).length
     }
@@ -184,7 +200,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   }
 
   // 4-7. รายการเบิก + รายการคืน + รายการยืม + แจ้งเตือน — ยิง parallel
-  const [reqRes, returnReqRes, borrowReqRes, notifRowsRes] = await Promise.all([
+  const [reqRes, returnReqRes, borrowReqRes, notifRowsRes, anomalyRes] = await Promise.all([
     supabase
       .from('wms_requisitions')
       .select('id', { count: 'exact', head: true })
@@ -201,6 +217,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
       .from('wms_notifications')
       .select('id, type, order_id')
       .eq('is_read', false),
+    supabase.rpc('rpc_get_wms_stock_anomalies', { p_from_date: today, p_to_date: today }),
   ])
 
   const notifRows = (notifRowsRes.data || []) as { id: string; type: string; order_id: string | null }[]
@@ -226,6 +243,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
     [WMS_MENU_KEYS.RETURN_REQUISITION]: returnReqRes.count ?? 0,
     [WMS_MENU_KEYS.BORROW_REQUISITION]: borrowReqRes.count ?? 0,
     [WMS_MENU_KEYS.NOTIF]: notifCount,
+    [WMS_MENU_KEYS.STOCK_ANOMALY]: anomalyRes.data?.length ?? 0,
   }
   const total = Object.values(counts).reduce((s, n) => s + n, 0)
   return { counts, total }

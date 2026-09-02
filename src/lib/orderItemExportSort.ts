@@ -1,13 +1,12 @@
+import { identifyCondoStampItems, isCondoStampItem, isCondoStampProductName } from './condoStamp'
+
 /**
- * ลำดับรายการสำหรับ Export (Excel/คลิปบอร์ด): ตรายางคอนโด TWP/TWB เรียงชั้น 1→5 ก่อน
+ * ลำดับรายการสำหรับ Export (Excel/คลิปบอร์ด): ตรายางคอนโดเรียงชั้น 1→5 ก่อน
  * แล้วตามด้วยสินค้าอื่น (เรียงตาม created_at, id, item_uid)
  */
 
-export const CONDO_EXPORT_PRODUCT_NAMES = ['ตรายางคอนโด TWB ฟ้า', 'ตรายางคอนโด TWP ชมพู'] as const
-
 export function isCondoTierExportProduct(productName: string | null | undefined): boolean {
-  const n = String(productName ?? '').trim()
-  return (CONDO_EXPORT_PRODUCT_NAMES as readonly string[]).includes(n)
+  return isCondoStampProductName(productName)
 }
 
 /** ดึงเลขชั้นจาก product_type (เช่น ชั้น1) สำหรับเรียงลำดับ */
@@ -22,18 +21,19 @@ export function condoFloorSortKey(productType: string | null | undefined): numbe
 }
 
 export type ExportSortableItem = {
+  id?: string | null
+  product_id?: string | null
   product_name?: string | null
   product_type?: string | null
+  is_detail_row?: boolean | null
+  parent_item_id?: string | null
   created_at?: string | null
-  id?: string | null
   item_uid?: string | null
 }
 
-export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortableItem): number {
-  const aC = isCondoTierExportProduct(a.product_name)
-  const bC = isCondoTierExportProduct(b.product_name)
-  if (aC !== bC) return aC ? -1 : 1
-  if (aC && bC) {
+function compareItems(a: ExportSortableItem, b: ExportSortableItem, aCondo: boolean, bCondo: boolean): number {
+  if (aCondo !== bCondo) return aCondo ? -1 : 1
+  if (aCondo && bCondo) {
     const fa = condoFloorSortKey(a.product_type)
     const fb = condoFloorSortKey(b.product_type)
     if (fa !== fb) return fa - fb
@@ -46,6 +46,18 @@ export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortable
   return String(a.item_uid || '').localeCompare(String(b.item_uid || ''))
 }
 
+export function compareExportOrderItems(a: ExportSortableItem, b: ExportSortableItem): number {
+  const aC = isCondoTierExportProduct(a.product_name)
+  const bC = isCondoTierExportProduct(b.product_name)
+  return compareItems(a, b, aC, bC)
+}
+
 export function sortOrderItemsForExport<T extends ExportSortableItem>(items: T[]): T[] {
-  return [...items].sort(compareExportOrderItems)
+  const condoStampItems = identifyCondoStampItems(items)
+  return [...items].sort((a, b) => compareItems(
+    a,
+    b,
+    isCondoStampItem(a, condoStampItems),
+    isCondoStampItem(b, condoStampItems),
+  ))
 }

@@ -8,6 +8,7 @@ import RequisitionDashboard from './RequisitionDashboard'
 import ReturnRequisitionDashboard from './ReturnRequisitionDashboard'
 import BorrowRequisitionDashboard from './BorrowRequisitionDashboard'
 import NotificationSection from './NotificationSection'
+import StockAnomalySection from './StockAnomalySection'
 import SettingsSection from './SettingsSection'
 import { useWmsModal } from '../useWmsModal'
 import NewOrdersSection from './NewOrdersSection'
@@ -70,6 +71,7 @@ export default function AdminLayout() {
     { key: WMS_MENU_KEYS.RETURN_REQUISITION, label: 'รายการคืน' },
     { key: WMS_MENU_KEYS.BORROW_REQUISITION, label: 'รายการยืม' },
     { key: WMS_MENU_KEYS.NOTIF, label: 'แจ้งเตือน' },
+    { key: WMS_MENU_KEYS.STOCK_ANOMALY, label: 'สต๊อคผิดปกติ' },
     { key: WMS_MENU_KEYS.SETTINGS, label: 'ตั้งค่า' },
   ].filter((item) => hasAccess(item.key))
 
@@ -121,6 +123,7 @@ export default function AdminLayout() {
         {activeMenu === WMS_MENU_KEYS.RETURN_REQUISITION && <ReturnRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.BORROW_REQUISITION && <BorrowRequisitionDashboard />}
         {activeMenu === WMS_MENU_KEYS.NOTIF && <NotificationSection />}
+        {activeMenu === WMS_MENU_KEYS.STOCK_ANOMALY && <StockAnomalySection />}
         {activeMenu === WMS_MENU_KEYS.SETTINGS && <SettingsSection />}
       </div>
       {MessageModal}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { formatDateTime } from '../../lib/utils'
-import { Order, OrderItem, IssueType } from '../../types'
+import { BillingDetails, Order, OrderItem, IssueType } from '../../types'
 import { parseAddressText, ParsedAddress, splitAddressParts } from '../../lib/thaiAddress'
 import { e164ToLocal } from '../../lib/thaiPhone'
 import * as XLSX from 'xlsx'
@@ -12,6 +12,7 @@ import UrgencyBadge from '../common/UrgencyBadge'
 import Modal from '../ui/Modal'
 import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
+import { identifyCondoStampItems, isCondoStampItem } from '../../lib/condoStamp'
 
 /** Helper: แสดงเฉพาะฟิลด์ที่มีค่า */
 function InfoRow({ label, value }: { label: string; value?: string | number | null }) {
@@ -22,6 +23,23 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
       <dd className="text-sm text-gray-900 font-medium select-all break-all">{value}</dd>
     </div>
   )
+}
+
+type TaxRequestBillingDetails = BillingDetails & {
+  account_confirmed_tax?: boolean
+  account_confirmed_tax_at?: string | null
+  account_confirmed_tax_by?: string | null
+  tax_request_closed?: boolean
+  tax_request_closed_reason?: string | null
+  tax_requested_at?: string | null
+  tax_requested_by?: string | null
+}
+
+type LateTaxInvoiceForm = {
+  customerName: string
+  address: string
+  taxId: string
+  phone: string
 }
 
 export default function OrderDetailView({
@@ -50,6 +68,16 @@ export default function OrderDetailView({
     open: false,
     title: '',
     message: '',
+  })
+  const [billingOverride, setBillingOverride] = useState<TaxRequestBillingDetails | null>(null)
+  const [taxRequestOpen, setTaxRequestOpen] = useState(false)
+  const [taxRequestSaving, setTaxRequestSaving] = useState(false)
+  const [taxRequestError, setTaxRequestError] = useState('')
+  const [taxRequestForm, setTaxRequestForm] = useState<LateTaxInvoiceForm>({
+    customerName: '',
+    address: '',
+    taxId: '',
+    phone: '',
   })
   const [workflowActors, setWorkflowActors] = useState<{ qc: string[]; packing: string[] }>({ qc: [], packing: [] })
 
@@ -128,7 +156,7 @@ export default function OrderDetailView({
   const order = (isPartial && fullOrder) ? fullOrder : initialOrder
 
   const inlineItems = ((order as any).or_order_items || []) as OrderItem[]
-  const billing = order.billing_details
+  const billing = (billingOverride || order.billing_details || null) as TaxRequestBillingDetails | null
   const billingPhone =
     (typeof billing?.mobile_phone === 'string' && billing.mobile_phone.trim()) ||
     (billing && typeof (billing as { mobilePhone?: unknown }).mobilePhone === 'string'
@@ -172,6 +200,9 @@ export default function OrderDetailView({
   useEffect(() => {
     setFullOrder(null)
     setLoadedItems(null)
+    setBillingOverride(null)
+    setTaxRequestOpen(false)
+    setTaxRequestError('')
   }, [initialOrder.id])
 
   // Lazy-load full order เมื่อได้ข้อมูลไม่ครบ
@@ -248,6 +279,113 @@ export default function OrderDetailView({
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
   const displayItems = useMemo(() => sortOrderItemsForExport(items as any[]), [items])
   const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
+  const canManageTaxRequest = !!user && hasAccess('orders-create')
+  const taxRequestAlreadyConfirmed = billing?.account_confirmed_tax === true && billing?.tax_request_closed !== true
+
+  function openTaxRequestForm() {
+    setTaxRequestError('')
+    setTaxRequestForm({
+      customerName: billing?.tax_customer_name?.trim() || order.customer_name?.trim() || '',
+      address: billing?.tax_customer_address?.trim() || order.customer_address?.trim() || '',
+      taxId: billing?.tax_id?.trim() || '',
+      phone: billing?.tax_customer_phone?.trim() || displayPhone || '',
+    })
+    setTaxRequestOpen(true)
+  }
+
+  async function saveLateTaxInvoiceRequest() {
+    if (!user || !order.id || taxRequestSaving) return
+    const customerName = taxRequestForm.customerName.trim()
+    const address = taxRequestForm.address.trim()
+    const taxId = taxRequestForm.taxId.trim()
+    const phone = taxRequestForm.phone.trim()
+    if (!customerName || !address || !taxId) {
+      setTaxRequestError('กรุณากรอกชื่อ ที่อยู่ และเลขประจำตัวผู้เสียภาษีให้ครบ')
+      return
+    }
+
+    setTaxRequestSaving(true)
+    setTaxRequestError('')
+    try {
+      // อ่านค่าล่าสุดก่อนบันทึก ป้องกันการเขียนทับกรณีบัญชีเพิ่งยืนยันพร้อมกัน
+      const [latestOrderResult, latestItemsResult] = await Promise.all([
+        supabase
+          .from('or_orders')
+          .select('status, billing_details')
+          .eq('id', order.id)
+          .single(),
+        supabase
+          .from('or_order_items')
+          .select('product_name, quantity, unit_price, is_detail_row, is_free')
+          .eq('order_id', order.id)
+          .order('created_at', { ascending: true }),
+      ])
+      const { data: latestOrder, error: loadError } = latestOrderResult
+      if (loadError) throw loadError
+      if (latestItemsResult.error) throw latestItemsResult.error
+      if (latestOrder.status === 'ยกเลิก') {
+        throw new Error('บิลถูกยกเลิกแล้ว ไม่สามารถส่งคำขอใบกำกับภาษีได้')
+      }
+
+      const latestBilling = (latestOrder.billing_details || {}) as TaxRequestBillingDetails
+      if (latestBilling.account_confirmed_tax === true && latestBilling.tax_request_closed !== true) {
+        throw new Error('ฝ่ายบัญชียืนยันใบกำกับภาษีรายการนี้แล้ว ไม่สามารถแก้ไขคำขอได้')
+      }
+
+      const latestItems = (latestItemsResult.data || []) as Array<{
+        product_name: string | null
+        quantity: number | null
+        unit_price: number | null
+        is_detail_row: boolean | null
+        is_free: boolean | null
+      }>
+      const taxItems = latestItems
+        .filter((item) => !item.is_detail_row && !item.is_free)
+        .map((item) => ({
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity || 1),
+          unit_price: Number(item.unit_price || 0),
+        }))
+      const nextBilling: TaxRequestBillingDetails = {
+        ...latestBilling,
+        request_tax_invoice: true,
+        tax_customer_name: customerName,
+        tax_customer_address: address,
+        tax_customer_phone: phone || null,
+        tax_id: taxId,
+        tax_items: taxItems,
+        account_confirmed_tax: false,
+        account_confirmed_tax_at: null,
+        account_confirmed_tax_by: null,
+        tax_request_closed: false,
+        tax_request_closed_reason: null,
+        tax_requested_at: new Date().toISOString(),
+        tax_requested_by: user.id,
+      }
+      const { error: saveError } = await supabase
+        .from('or_orders')
+        .update({
+          billing_details: nextBilling,
+          last_edited_by: user.username || user.email,
+        })
+        .eq('id', order.id)
+      if (saveError) throw saveError
+
+      setBillingOverride(nextBilling)
+      setTaxRequestOpen(false)
+      setFeedbackModal({
+        open: true,
+        title: 'ส่งคำขอเรียบร้อย',
+        message: `ส่งคำขอใบกำกับภาษีของบิล ${order.bill_no || ''} ไปยังฝ่ายบัญชีแล้ว`,
+      })
+      window.dispatchEvent(new CustomEvent('sidebar-refresh-counts'))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'บันทึกคำขอใบกำกับภาษีไม่สำเร็จ'
+      setTaxRequestError(message)
+    } finally {
+      setTaxRequestSaving(false)
+    }
+  }
 
   const stopProductionTicketTypeId = useMemo(
     () => issueTypes.find((t) => (t.slug || '').trim() === STOP_PRODUCTION_ISSUE_SLUG)?.id ?? '',
@@ -507,8 +645,8 @@ export default function OrderDetailView({
 
         {/* ── รายการสินค้า ── */}
         {displayItems.length > 0 && (() => {
-          const SHOW_TIER_PRODUCTS = ['ตรายางคอนโด TWP ชมพู', 'ตรายางคอนโด TWB ฟ้า']
-          const hasAnyTierProduct = displayItems.some((item) => SHOW_TIER_PRODUCTS.includes(item.product_name || ''))
+          const condoStampItems = identifyCondoStampItems(displayItems)
+          const hasAnyTierProduct = displayItems.some((item) => isCondoStampItem(item, condoStampItems))
           const hasAnyFileAttachment = displayItems.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
           const showAttachmentColumn = hasAnyFileAttachment || !readOnly
           const attachmentOrder = new Map(
@@ -543,7 +681,7 @@ export default function OrderDetailView({
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {displayItems.map((item, idx) => {
-                    const isTierProduct = SHOW_TIER_PRODUCTS.includes(item.product_name || '')
+                    const isTierProduct = isCondoStampItem(item, condoStampItems)
                     const hasFile = item.file_attachment && item.file_attachment.trim() !== ''
                     const attachmentLabel = item.attachment_name?.trim() || `ไฟล์ ${attachmentOrder.get(item.id) || 1}`
                     return (
@@ -611,23 +749,122 @@ export default function OrderDetailView({
           )
         })()}
 
-        {/* ── ข้อมูลใบกำกับภาษี ── */}
-        {billing && billing.request_tax_invoice && (
+        {/* ── ข้อมูล/คำขอใบกำกับภาษี ── */}
+        {(canManageTaxRequest || billing?.request_tax_invoice) && (
           <section>
-            <h4 className="text-sm font-bold text-gray-800 border-b border-gray-200 pb-1.5 mb-2">
-              ใบกำกับภาษี
-            </h4>
-            <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
-              <InfoRow label="ชื่อ" value={billing.tax_customer_name} />
-              <InfoRow label="เลข Tax ID" value={billing.tax_id} />
-              <div className="md:col-span-2">
-                <InfoRow label="ที่อยู่" value={billing.tax_customer_address} />
-              </div>
-              <InfoRow label="เบอร์โทร" value={billing.tax_customer_phone} />
-            </dl>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 pb-2">
+              <h4 className="text-sm font-bold text-gray-800">ใบกำกับภาษี</h4>
+              {canManageTaxRequest && order.status !== 'ยกเลิก' && !taxRequestAlreadyConfirmed && (
+                <button
+                  type="button"
+                  onClick={openTaxRequestForm}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                >
+                  {billing?.request_tax_invoice ? 'แก้ไขข้อมูลคำขอ' : '+ ขอใบกำกับภาษี'}
+                </button>
+              )}
+              {taxRequestAlreadyConfirmed && (
+                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  ฝ่ายบัญชียืนยันแล้ว
+                </span>
+              )}
+              {order.status === 'ยกเลิก' && (
+                <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-semibold text-red-700">
+                  ไม่สามารถขอได้ เนื่องจากบิลถูกยกเลิก
+                </span>
+              )}
+            </div>
+            {billing?.request_tax_invoice ? (
+              <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
+                <InfoRow label="ชื่อ" value={billing.tax_customer_name} />
+                <InfoRow label="เลข Tax ID" value={billing.tax_id} />
+                <div className="md:col-span-2">
+                  <InfoRow label="ที่อยู่" value={billing.tax_customer_address} />
+                </div>
+                <InfoRow label="เบอร์โทร" value={billing.tax_customer_phone} />
+              </dl>
+            ) : (
+              <p className="text-sm text-gray-500">ยังไม่มีคำขอใบกำกับภาษีสำหรับบิลนี้</p>
+            )}
           </section>
         )}
       </div>
+
+      {/* ── Late tax invoice request dialog ── */}
+      {taxRequestOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 p-4" onClick={() => !taxRequestSaving && setTaxRequestOpen(false)}>
+          <div className="w-full max-w-2xl rounded-xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4">
+              <h4 className="text-lg font-bold text-gray-900">
+                {billing?.request_tax_invoice ? 'แก้ไขคำขอใบกำกับภาษี' : 'ขอใบกำกับภาษี'}
+              </h4>
+              <p className="mt-1 text-sm text-gray-500">บิล {order.bill_no} · การบันทึกนี้ไม่เปลี่ยนยอดเงินหรือสถานะบิล</p>
+            </div>
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">
+                ชื่อลูกค้า/บริษัท <span className="text-red-500">*</span>
+                <input
+                  type="text"
+                  value={taxRequestForm.customerName}
+                  onChange={(event) => setTaxRequestForm((current) => ({ ...current, customerName: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                ที่อยู่ <span className="text-red-500">*</span>
+                <textarea
+                  rows={3}
+                  value={taxRequestForm.address}
+                  onChange={(event) => setTaxRequestForm((current) => ({ ...current, address: event.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  เลขประจำตัวผู้เสียภาษี <span className="text-red-500">*</span>
+                  <input
+                    type="text"
+                    value={taxRequestForm.taxId}
+                    onChange={(event) => setTaxRequestForm((current) => ({ ...current, taxId: event.target.value }))}
+                    placeholder="เช่น 0-0000-00000-00-0"
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </label>
+                <label className="block text-sm font-medium text-gray-700">
+                  เบอร์โทร
+                  <input
+                    type="text"
+                    value={taxRequestForm.phone}
+                    onChange={(event) => setTaxRequestForm((current) => ({ ...current, phone: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                </label>
+              </div>
+            </div>
+            {taxRequestError && (
+              <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{taxRequestError}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTaxRequestOpen(false)}
+                disabled={taxRequestSaving}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveLateTaxInvoiceRequest()}
+                disabled={taxRequestSaving}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {taxRequestSaving ? 'กำลังบันทึก...' : 'ส่งคำขอให้ฝ่ายบัญชี'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Edit Link Dialog ── */}
       {editLinkItem && (
