@@ -12,6 +12,30 @@ import OrderDetailView from './OrderDetailView'
 const WO_PREFIX_MAP: Record<string, string> = { OFFICE: 'OF' }
 function woPrefix(channelCode: string) { return WO_PREFIX_MAP[channelCode] || channelCode }
 
+async function readableWorkOrderCreateError(error: unknown): Promise<string> {
+  const raw = String((error as { message?: unknown } | null)?.message ?? error ?? '')
+  const fifoMatch = raw.match(
+    /insufficient(?:\s+sellable)?\s+lots\s+for\s+product\s+([0-9a-f-]{36}),?\s*short\s+by\s+([0-9]+(?:\.[0-9]+)?)/i,
+  )
+  if (!fifoMatch) return raw || 'สร้างใบงานไม่สำเร็จ'
+
+  const [, productId, shortageText] = fifoMatch
+  const { data: product } = await supabase
+    .from('pr_products')
+    .select('product_code, product_name, unit_name')
+    .eq('id', productId)
+    .maybeSingle()
+  const shortage = Number(shortageText)
+  const shortageLabel = Number.isFinite(shortage)
+    ? shortage.toLocaleString('th-TH', { maximumFractionDigits: 2 })
+    : shortageText
+  const productLabel = product
+    ? `${product.product_code} - ${product.product_name}`
+    : productId
+
+  return `สต๊อกล็อตพร้อมขายของ ${productLabel} ไม่เพียงพอ ขาด ${shortageLabel} ${product?.unit_name || 'หน่วย'}\nกรุณาตรวจสอบหรือปรับยอดสต๊อกสินค้านี้ แล้วลองตัดใบงานอีกครั้ง`
+}
+
 interface WorkOrderSelectionListProps {
   searchTerm?: string
   channelFilter?: string
@@ -38,6 +62,7 @@ export default function WorkOrderSelectionList({
   const [pillChannel, setPillChannel] = useState<string | null>(null)
   /** Popup แจ้งผลหลังสร้างใบงาน (แสดงครั้งเดียว) */
   const [successPopup, setSuccessPopup] = useState<{ count: number } | null>(null)
+  const [errorPopup, setErrorPopup] = useState<{ title: string; message: string } | null>(null)
 
   useEffect(() => {
     loadOrders()
@@ -284,7 +309,10 @@ export default function WorkOrderSelectionList({
       setSuccessPopup({ count: Object.keys(byChannel).length })
     } catch (error: any) {
       console.error('Error creating work order:', error)
-      alert('เกิดข้อผิดพลาด: ' + (error?.message || error))
+      setErrorPopup({
+        title: 'สร้างใบงานไม่สำเร็จ',
+        message: await readableWorkOrderCreateError(error),
+      })
     } finally {
       setCreating(false)
     }
@@ -511,6 +539,42 @@ export default function WorkOrderSelectionList({
             >
               ตกลง
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {errorPopup && (
+        <Modal
+          open
+          onClose={() => setErrorPopup(null)}
+          closeOnBackdropClick
+          contentClassName="max-w-md w-full"
+        >
+          <div className="p-6 sm:p-7">
+            <div className="mb-4 flex items-start gap-3 pr-8">
+              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-red-100 text-red-600">
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="h-6 w-6" fill="none">
+                  <path d="M12 8v5M12 17h.01" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-bold text-gray-900">{errorPopup.title}</h3>
+                <p className="mt-2 whitespace-pre-line break-words text-sm leading-6 text-gray-600">
+                  {errorPopup.message}
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setErrorPopup(null)}
+                autoFocus
+                className="min-w-24 rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              >
+                ตกลง
+              </button>
+            </div>
           </div>
         </Modal>
       )}
