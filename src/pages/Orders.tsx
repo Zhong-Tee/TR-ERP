@@ -672,13 +672,29 @@ export default function Orders() {
         {activeTab !== 'create' && activeTab !== 'confirm' && activeTab !== 'claim-req' && activeTab !== 'refund-return' && (
           <div className="w-full px-4 sm:px-6 lg:px-8 py-3 bg-surface-100 border-t border-surface-200">
             <div className="flex flex-wrap gap-3">
-              <input
-                type="text"
-                placeholder="ค้นหา..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="flex-1 min-w-[200px] px-4 py-2.5 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-300 bg-surface-50 text-base"
-              />
+              <div className="relative flex-1 min-w-[200px]">
+                <input
+                  type="search"
+                  aria-label="ค้นหาออเดอร์"
+                  placeholder="ค้นหาเลขบิล เลขคำสั่งซื้อ ลูกค้า ชื่อสินค้า หรือเลขพัสดุ..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full px-4 py-2.5 pr-11 border border-surface-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-300 bg-surface-50 text-base [&::-webkit-search-cancel-button]:hidden"
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    aria-label="ล้างคำค้นหา"
+                    title="ล้างคำค้นหา"
+                    className="absolute right-3 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-surface-500 transition-colors hover:bg-surface-200 hover:text-surface-800 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none">
+                      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+              </div>
               <select
                 value={channelFilter}
                 onChange={(e) => setChannelFilter(e.target.value)}

@@ -240,7 +240,9 @@ export default function SettingsSection() {
           <h3 className="font-bold text-[16px] uppercase tracking-widest mb-2 border-b pb-2 text-slate-800">
             หมวดสินค้าไม่ต้อง Picker
           </h3>
-          <p className="mb-4 text-xs text-slate-500">หมวดในรายการนี้จะสร้าง WMS แบบ system_complete และตัดสต๊อคอัตโนมัติ หมวดใหม่ที่ยังไม่ได้เพิ่มจะต้องผ่าน Picker</p>
+          <p className="mb-4 text-xs text-slate-500">
+            หมวดในรายการนี้จะสร้าง WMS แบบ system_complete และตัดสต๊อคหลักอัตโนมัติ ส่วนสินค้าที่ผูกกับคลังย่อยจะข้าม Picker แต่ยังตัดสต๊อคหลักและแสดงยอดผลิตใช้ไป หมวดใหม่ที่ยังไม่ได้เพิ่มจะต้องผ่าน Picker
+          </p>
           <div className="flex gap-2 mb-4 shrink-0">
             <input
               type="text"

@@ -4,8 +4,9 @@ import Modal from '../../ui/Modal'
 import { useWmsModal } from '../useWmsModal'
 import {
   fetchWmsNonPickerCategories,
+  fetchSubWarehouseProductIds,
   fetchWorkOrderNamesWithWmsAssigned,
-  isWmsPickableCategory,
+  isWmsPickableProduct,
 } from '../wmsUtils'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN } from '../../../lib/orderFlowFilter'
 import { WoUrgencyChips, type DueBillInfo } from '../../common/UrgencyBadge'
@@ -90,7 +91,7 @@ export default function NewOrdersSection() {
     const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
-      const [{ data }, assignedNames, nonPickerCategories] = await Promise.all([
+      const [{ data }, assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
         supabase
           .from('or_work_orders')
           .select('id, work_order_name, order_count, created_at, plan_wo_modified')
@@ -98,6 +99,7 @@ export default function NewOrdersSection() {
           .order('created_at', { ascending: false }),
         fetchWorkOrderNamesWithWmsAssigned(),
         fetchWmsNonPickerCategories(),
+        fetchSubWarehouseProductIds(),
       ])
 
       if (!data || data.length === 0) {
@@ -150,7 +152,10 @@ export default function NewOrdersSection() {
         const woQualifiesForAssign = new Set<string>()
         allItems.forEach((item: any) => {
           if (!item.product_id) return
-          if (isWmsPickableCategory(productCategoryMap[item.product_id], nonPickerCategories) && item.work_order_id) {
+          if (
+            isWmsPickableProduct(item.product_id, productCategoryMap[item.product_id], nonPickerCategories, subWarehouseProductIds)
+            && item.work_order_id
+          ) {
             woQualifiesForAssign.add(String(item.work_order_id))
           }
         })
@@ -215,6 +220,8 @@ export default function NewOrdersSection() {
         .from('wms_orders')
         .select('id', { count: 'exact', head: true })
         .eq('work_order_id', selectedWorkOrder)
+        .or('fulfillment_mode.eq.warehouse_pick,fulfillment_mode.is.null')
+        .neq('status', 'cancelled')
       if ((count || 0) > 0) {
         showMessage({ message: 'ใบงานนี้ถูกสร้างในระบบ WMS แล้ว' })
         return

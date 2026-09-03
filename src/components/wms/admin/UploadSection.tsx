@@ -89,7 +89,7 @@ export default function UploadSection() {
     if (showLoading) setLoading(true)
     let q = supabase
       .from('wms_orders')
-      .select('id, work_order_id, order_id, assigned_to, created_at, end_time, status, product_code, product_name, location, qty, us_users(username)')
+      .select('id, work_order_id, order_id, assigned_to, created_at, end_time, status, product_code, product_name, location, qty, us_users!assigned_to(username)')
       .or(WMS_FULFILLMENT_PICK_OR_LEGACY)
 
     if (filterDateStart) {
@@ -102,8 +102,14 @@ export default function UploadSection() {
       q = q.eq('assigned_to', filterUser)
     }
 
-    const { data } = await q.order('created_at', { ascending: false })
+    const { data, error } = await q.order('created_at', { ascending: false })
     if (requestId !== loadRequestRef.current) return
+    if (error) {
+      console.error('Load WMS work-order dashboard failed:', error)
+      setOrders([])
+      setLoading(false)
+      return
+    }
     if (!data) { setLoading(false); return }
 
     const grouped = (data as any[]).reduce((acc: Record<string, any>, obj) => {

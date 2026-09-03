@@ -280,6 +280,43 @@ export default function OrderList({
     try {
       let filteredData: any[] = []
       const orderSelect = loadOrderRelations ? '*, or_order_items(*), or_order_reviews(*)' : '*'
+      const searchRaw = searchTerm.trim()
+      let matchingSearchOrderIds: string[] | null = null
+
+      if (searchRaw) {
+        const [orderMatches, productMatches] = await Promise.all([
+          supabase
+            .from('or_orders')
+            .select('id')
+            .or(
+              buildIlikeOr(searchRaw, [
+                'bill_no',
+                'channel_order_no',
+                'customer_name',
+                'recipient_name',
+                'tracking_number',
+                'express_receipt_number',
+              ]),
+            ),
+          supabase
+            .from('or_order_items')
+            .select('order_id')
+            .or(buildIlikeOr(searchRaw, ['product_name'])),
+        ])
+        if (orderMatches.error) throw orderMatches.error
+        if (productMatches.error) throw productMatches.error
+
+        matchingSearchOrderIds = Array.from(
+          new Set([
+            ...(orderMatches.data || []).map((row: { id: string }) => String(row.id)),
+            ...(productMatches.data || []).map((row: { order_id: string }) => String(row.order_id)),
+          ]),
+        )
+        if (matchingSearchOrderIds.length === 0) {
+          commitEmptyResult()
+          return
+        }
+      }
 
       if (filterByRejectedOverpayRefund) {
         // โหลดบิลที่ปฏิเสธโอนคืน: จาก ac_refunds (status=rejected, reason โอนเกิน) แล้วดึง or_orders
@@ -298,10 +335,8 @@ export default function OrderList({
           .select(orderSelect)
           .in('id', orderIds)
           .order('created_at', { ascending: false })
-        if (searchTerm) {
-          query = query.or(
-            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
-          )
+        if (matchingSearchOrderIds) {
+          query = query.in('id', matchingSearchOrderIds)
         }
         if (channelFilter) {
           query = query.eq('channel_code', channelFilter)
@@ -341,10 +376,8 @@ export default function OrderList({
           query = query.is('claim_type', null)
         }
 
-        if (searchTerm) {
-          query = query.or(
-            buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
-          )
+        if (matchingSearchOrderIds) {
+          query = query.in('id', matchingSearchOrderIds)
         }
 
         if (channelFilter) {
@@ -388,10 +421,8 @@ export default function OrderList({
               .in('id', rejectedIds)
               .neq('status', 'ยกเลิก')
               .order('created_at', { ascending: false })
-            if (searchTerm) {
-              extraQuery = extraQuery.or(
-                buildIlikeOr(searchTerm, ['bill_no', 'customer_name', 'tracking_number', 'express_receipt_number'])
-              )
+            if (matchingSearchOrderIds) {
+              extraQuery = extraQuery.in('id', matchingSearchOrderIds)
             }
             if (channelFilter) {
               extraQuery = extraQuery.eq('channel_code', channelFilter)

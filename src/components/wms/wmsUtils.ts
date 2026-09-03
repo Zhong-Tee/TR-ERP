@@ -102,12 +102,40 @@ export async function fetchWmsNonPickerCategories(): Promise<Set<string>> {
   )
 }
 
+/** สินค้าที่ถูกผูกไว้กับคลังย่อยจะไม่ถูกส่งให้ Picker คลังหลัก */
+export async function fetchSubWarehouseProductIds(): Promise<Set<string>> {
+  const { data: warehouses, error: warehouseError } = await supabase
+    .from('wh_sub_warehouses')
+    .select('id')
+    .eq('is_active', true)
+  if (warehouseError) throw warehouseError
+  const warehouseIds = (warehouses || []).map((row: { id: string }) => row.id)
+  if (warehouseIds.length === 0) return new Set()
+
+  const { data, error } = await supabase
+    .from('wh_sub_warehouse_products')
+    .select('product_id')
+    .in('sub_warehouse_id', warehouseIds)
+  if (error) throw error
+  return new Set((data || []).map((row: { product_id: string | null }) => row.product_id).filter(Boolean) as string[])
+}
+
 export function isWmsPickableCategory(
   category: string | null | undefined,
   nonPickerCategories: Set<string>
 ): boolean {
   const normalized = normalizeWmsCategory(category)
   return normalized !== '' && !nonPickerCategories.has(normalized)
+}
+
+export function isWmsPickableProduct(
+  productId: string | null | undefined,
+  category: string | null | undefined,
+  nonPickerCategories: Set<string>,
+  subWarehouseProductIds: Set<string>
+): boolean {
+  if (productId && subWarehouseProductIds.has(productId)) return false
+  return isWmsPickableCategory(category, nonPickerCategories)
 }
 
 /**
@@ -127,9 +155,10 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
   let newOrdersCount = 0
   if (woData && woData.length > 0) {
     const woNames = [...new Set(woData.map((wo: any) => wo.work_order_name as string))]
-    const [assignedNames, nonPickerCategories] = await Promise.all([
+    const [assignedNames, nonPickerCategories, subWarehouseProductIds] = await Promise.all([
       fetchWorkOrderNamesWithWmsAssigned(),
       fetchWmsNonPickerCategories(),
+      fetchSubWarehouseProductIds(),
     ])
     const unassignedNames = woNames.filter((n) => !assignedNames.has(n))
 
@@ -160,7 +189,7 @@ export async function loadWmsTabCounts(): Promise<{ counts: WmsTabCounts; total:
       const woQualifies = new Set<string>()
       allItems.forEach((item: any) => {
         if (!item.product_id) return
-        if (isWmsPickableCategory(catMap[item.product_id], nonPickerCategories)) {
+        if (isWmsPickableProduct(item.product_id, catMap[item.product_id], nonPickerCategories, subWarehouseProductIds)) {
           woQualifies.add(item.work_order_name)
         }
       })

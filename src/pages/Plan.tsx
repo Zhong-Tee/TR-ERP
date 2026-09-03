@@ -2694,7 +2694,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       {currentView === 'work-orders-manage' && (
         <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="p-4 space-y-4">
-            <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-200 pb-3">
+            <div className="flex flex-wrap items-end gap-3 border-b border-gray-200 pb-3">
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
@@ -2719,19 +2719,34 @@ export default function Plan({ tvMode = false }: PlanProps) {
                   ใบงานทั้งหมด ({workOrdersManageCount})
                 </button>
               </div>
-              <div className="flex flex-col gap-1 w-full min-w-0 sm:w-auto sm:max-w-md sm:min-w-[220px]">
+              <div className="flex w-full min-w-0 flex-col gap-1 sm:w-[440px] lg:w-[560px]">
                 <label htmlFor="plan-manage-wo-search" className="text-xs font-semibold text-gray-600">
                   ค้นหา
                 </label>
-                <input
-                  id="plan-manage-wo-search"
-                  type="search"
-                  value={manageWorkOrderSearch}
-                  onChange={(e) => setManageWorkOrderSearch(e.target.value)}
-                  placeholder="ชื่อใบงาน, เลขบิล, ชื่อลูกค้า, เลขพัสดุ…"
-                  autoComplete="off"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
+                <div className="relative">
+                  <input
+                    id="plan-manage-wo-search"
+                    type="search"
+                    value={manageWorkOrderSearch}
+                    onChange={(e) => setManageWorkOrderSearch(e.target.value)}
+                    placeholder="ชื่อใบงาน, เลขบิล, ชื่อลูกค้า, รหัส/ชื่อสินค้า, เลขพัสดุ…"
+                    autoComplete="off"
+                    className="w-full px-3 py-2 pr-11 border border-gray-300 rounded-lg bg-white text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 [&::-webkit-search-cancel-button]:hidden"
+                  />
+                  {manageWorkOrderSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setManageWorkOrderSearch('')}
+                      aria-label="ล้างคำค้นหาใบงาน"
+                      title="ล้างคำค้นหา"
+                      className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4" fill="none">
+                        <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 

@@ -433,6 +433,8 @@ export default function WorkOrderManageList({
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
   /** จำนวนบิลต่อใบงาน — นับจาก or_orders ชุดเดียวกับตาราง (ไม่พึ่ง order_count ที่อาจค้าง) */
   const [billCountByWo, setBillCountByWo] = useState<Record<string, number>>({})
+  /** บิลที่ตรงจากชื่อ/รหัสสินค้า ใช้ไฮไลต์ผลค้นหาในตาราง */
+  const [productMatchedOrderIds, setProductMatchedOrderIds] = useState<Set<string>>(() => new Set())
 
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, message: '' })
   /** Modal แสดงสถานะกำลัง Export — กันกดซ้ำระหว่างสร้างไฟล์ */
@@ -514,20 +516,65 @@ export default function WorkOrderManageList({
       const searchRaw = searchTerm.trim()
       if (searchRaw) {
         const needle = searchRaw.toLowerCase()
-        let orderMatchQuery = supabase
-          .from('or_orders')
-          .select('work_order_id')
-          .not('work_order_id', 'is', null)
-          .or(
-            buildIlikeOr(searchRaw, ['bill_no', 'customer_name', 'recipient_name', 'tracking_number', 'express_receipt_number', 'channel_order_no'])
-          )
+        let orderMatchQuery = supabase.from('or_orders').select('work_order_id').not('work_order_id', 'is', null).or(
+          buildIlikeOr(searchRaw, ['bill_no', 'customer_name', 'recipient_name', 'tracking_number', 'express_receipt_number', 'channel_order_no'])
+        )
         if (mode === 'active') {
           orderMatchQuery = orderMatchQuery
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
             .neq('status', 'จัดส่งแล้ว')
         }
-        const { data: orderMatch } = await orderMatchQuery
-        const woIdsFromOrders = new Set((orderMatch || []).map((r: { work_order_id: string }) => r.work_order_id))
+        const [orderMatchResult, itemNameResult, productResult] = await Promise.all([
+          orderMatchQuery,
+          supabase
+            .from('or_order_items')
+            .select('order_id')
+            .or(buildIlikeOr(searchRaw, ['product_name', 'product_type'])),
+          supabase
+            .from('pr_products')
+            .select('id')
+            .or(buildIlikeOr(searchRaw, ['product_code', 'product_name'])),
+        ])
+        if (orderMatchResult.error) throw orderMatchResult.error
+        if (itemNameResult.error) throw itemNameResult.error
+        if (productResult.error) throw productResult.error
+
+        const matchingProductIds = (productResult.data || []).map((r: { id: string }) => r.id)
+        const productOrderIds = new Set((itemNameResult.data || []).map((r: { order_id: string }) => r.order_id))
+        if (matchingProductIds.length > 0) {
+          const { data: productItemRows, error: productItemError } = await supabase
+            .from('or_order_items')
+            .select('order_id')
+            .in('product_id', matchingProductIds)
+          if (productItemError) throw productItemError
+          for (const row of productItemRows || []) productOrderIds.add(String(row.order_id))
+        }
+
+        const woIdsFromOrders = new Set(
+          (orderMatchResult.data || []).map((r: { work_order_id: string }) => r.work_order_id),
+        )
+        if (productOrderIds.size > 0) {
+          let productOrderQuery = supabase
+            .from('or_orders')
+            .select('id, work_order_id')
+            .in('id', Array.from(productOrderIds))
+            .not('work_order_id', 'is', null)
+          if (mode === 'active') {
+            productOrderQuery = productOrderQuery
+              .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
+              .neq('status', 'จัดส่งแล้ว')
+          }
+          const { data: matchedProductOrders, error: matchedProductOrdersError } = await productOrderQuery
+          if (matchedProductOrdersError) throw matchedProductOrdersError
+          const activeProductOrderIds = new Set<string>()
+          for (const row of matchedProductOrders || []) {
+            if (row.work_order_id) woIdsFromOrders.add(String(row.work_order_id))
+            activeProductOrderIds.add(String(row.id))
+          }
+          setProductMatchedOrderIds(activeProductOrderIds)
+        } else {
+          setProductMatchedOrderIds(new Set())
+        }
         list = list.filter(
           (w) =>
             woIdsFromOrders.has(w.id) ||
@@ -535,6 +582,8 @@ export default function WorkOrderManageList({
               .toLowerCase()
               .includes(needle)
         )
+      } else {
+        setProductMatchedOrderIds(new Set())
       }
 
       if (mode === 'active' && list.length > 0) {
@@ -2117,7 +2166,9 @@ export default function WorkOrderManageList({
                             </thead>
                             <tbody>
                               {orders.map((order) => {
-                                const rowMatchesSearch = searchNeedle.length > 0 && orderMatchesSearch(order, searchNeedle)
+                                const rowMatchesSearch = searchNeedle.length > 0 && (
+                                  orderMatchesSearch(order, searchNeedle) || productMatchedOrderIds.has(order.id)
+                                )
                                 return (
                                   <tr
                                     key={order.id}

@@ -261,69 +261,21 @@ export default function WorkOrderSelectionList({
         const workOrderName = String(nextName || '').trim()
         if (!workOrderName) throw new Error('สร้างเลขใบงานไม่สำเร็จ')
 
-        const { data: insertedWO, error: insertError } = await supabase
-          .from('or_work_orders')
-          .insert({
-            work_order_name: workOrderName,
-            status: 'กำลังผลิต',
-            order_count: channelOrders.length,
-          })
-          .select('id, work_order_name')
-          .single()
-        if (insertError) throw insertError
-        const workOrderId = String((insertedWO as any)?.id || '')
-
         const orderIds = channelOrders.map((o) => o.id)
-        const { error: updateError } = await supabase
-          .from('or_orders')
-          .update({
-            work_order_id: workOrderId,
-            work_order_name: workOrderName,
-            // บิลที่ถูกดึงกลับเข้าใบงานใหม่ ไม่ควรถูกมองว่า "ย้ายออกจากใบงาน" อีก
-            plan_released_from_work_order: null,
-            plan_released_from_work_order_id: null,
-            plan_released_at: null,
-          })
-          .in('id', orderIds)
-        if (updateError) throw updateError
-
-        // ถ้าบิลถูกปล่อยกลับมาจากใบงาน (status=ย้ายจากใบงาน)
-        // เมื่อสร้างใบงานใหม่ให้กลับไปสถานะใบสั่งงาน
-        const { error: normalizeStatusError } = await supabase
-          .from('or_orders')
-          .update({ status: 'ใบสั่งงาน' })
-          .in('id', orderIds)
-          .eq('status', 'ย้ายจากใบงาน')
-        if (normalizeStatusError) throw normalizeStatusError
-
-        const { data: existingPlan } = await supabase
-          .from('plan_jobs')
-          .select('id')
-          .eq('work_order_id', workOrderId)
-          .limit(1)
-        if (!existingPlan?.length) {
-          const cutTime = `${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`
-          const qty = await computeQtyFromOrders(orderIds)
-          const planRow = {
-            id: planJobId(),
-            date: dateISO,
-            name: workOrderName,
-            work_order_id: workOrderId,
-            cut: cutTime,
-            qty,
-            tracks: {},
-            line_assignments: {},
-            manual_plan_starts: {},
-            locked_plans: {},
-            order_index: nextOrderIndex++,
-          }
-          const { error: planErr } = await supabase.from('plan_jobs').insert([planRow])
-          if (planErr) {
-            console.warn('Sync plan_jobs failed for', workOrderName, planErr)
-            alert(
-              `สร้างใบงาน "${workOrderName}" แล้ว แต่บันทึกแผนผลิต (plan_jobs) ไม่สำเร็จ — ตรวจสิทธิ์ role หรือดู Console\n${planErr.message}`
-            )
-          }
+        const cutTime = `${String(today.getHours()).padStart(2, '0')}:${String(today.getMinutes()).padStart(2, '0')}`
+        const qty = await computeQtyFromOrders(orderIds)
+        const { data: createResult, error: createError } = await supabase.rpc('rpc_create_work_order_with_plan', {
+          p_work_order_name: workOrderName,
+          p_order_ids: orderIds,
+          p_plan_job_id: planJobId(),
+          p_plan_date: dateISO,
+          p_cut: cutTime,
+          p_qty: qty,
+          p_order_index: nextOrderIndex++,
+        })
+        if (createError) throw createError
+        if (!(createResult as { success?: boolean } | null)?.success) {
+          throw new Error((createResult as { error?: string } | null)?.error || 'สร้างใบงานและแผนผลิตไม่สำเร็จ')
         }
       }
 
