@@ -9,6 +9,10 @@ import * as XLSX from 'xlsx'
 
 const BUCKET_PRODUCT_IMAGES = 'product-images'
 type WarehouseProductTypeFilter = '' | ProductType | 'ST'
+type FifoStatus = {
+  sellableLotCount: number
+  sellableLotQty: number
+}
 
 function getProductImageUrl(productCode: string | null | undefined, ext: string = '.jpg'): string {
   return getPublicUrl(BUCKET_PRODUCT_IMAGES, productCode, ext)
@@ -50,6 +54,8 @@ export default function Warehouse() {
 
   const [products, setProducts] = useState<Product[]>([])
   const [balances, setBalances] = useState<Record<string, StockBalance>>({})
+  const [fifoStatusMap, setFifoStatusMap] = useState<Record<string, FifoStatus>>({})
+  const [fifoStatusLoaded, setFifoStatusLoaded] = useState(false)
   const [pendingPoMap, setPendingPoMap] = useState<Record<string, number>>({})
   const [specialTrackedSources, setSpecialTrackedSources] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
@@ -58,6 +64,7 @@ export default function Warehouse() {
   const [sellerFilter, setSellerFilter] = useState('')
   const [productTypeFilter, setProductTypeFilter] = useState<WarehouseProductTypeFilter>('')
   const [onlyBelowOrderPoint, setOnlyBelowOrderPoint] = useState(false)
+  const [onlyWithoutFifo, setOnlyWithoutFifo] = useState(false)
   const [categories, setCategories] = useState<string[]>([])
   const [sellers, setSellers] = useState<string[]>([])
   const [salesFromDate, setSalesFromDate] = useState(() => {
@@ -72,6 +79,7 @@ export default function Warehouse() {
   useEffect(() => {
     loadProducts()
     loadBalances()
+    loadFifoStatus()
     loadPendingPoMap()
     loadSpecialTrackedSources()
     loadCategories()
@@ -112,6 +120,59 @@ export default function Warehouse() {
       setBalances(map)
     } catch (e) {
       console.error('Load stock balances failed:', e)
+    }
+  }
+
+  async function loadFifoStatus() {
+    const toMap = (rows: Array<{ product_id: string; sellable_lot_count?: number | null; sellable_lot_qty?: number | null }>) => {
+      const map: Record<string, FifoStatus> = {}
+      rows.forEach((row) => {
+        map[row.product_id] = {
+          sellableLotCount: Number(row.sellable_lot_count || 0),
+          sellableLotQty: Number(row.sellable_lot_qty || 0),
+        }
+      })
+      setFifoStatusMap(map)
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('rpc_get_warehouse_fifo_status')
+      if (error) throw error
+      toMap(data || [])
+      setFifoStatusLoaded(true)
+      return
+    } catch (e) {
+      // Migration 505 may not have been applied yet. Superadmin can still use
+      // the existing cost-protected lot policy as a temporary read-only fallback.
+      if (!canSeeCost) {
+        console.error('Load FIFO status failed:', e)
+        setFifoStatusMap({})
+        setFifoStatusLoaded(false)
+        return
+      }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('inv_stock_lots')
+        .select('product_id, qty_remaining')
+        .gt('qty_remaining', 0)
+        .eq('is_safety_stock', false)
+      if (error) throw error
+
+      const map: Record<string, FifoStatus> = {}
+      ;(data || []).forEach((row: { product_id: string; qty_remaining: number | null }) => {
+        const current = map[row.product_id] || { sellableLotCount: 0, sellableLotQty: 0 }
+        current.sellableLotCount += 1
+        current.sellableLotQty += Number(row.qty_remaining || 0)
+        map[row.product_id] = current
+      })
+      setFifoStatusMap(map)
+      setFifoStatusLoaded(true)
+    } catch (e) {
+      console.error('Load FIFO status fallback failed:', e)
+      setFifoStatusMap({})
+      setFifoStatusLoaded(false)
     }
   }
 
@@ -303,6 +364,9 @@ export default function Warehouse() {
       const matchSeller = !sellerFilter || (p.seller_name || '') === sellerFilter
       const displayType = isSpecialTracked(p.id) ? 'ST' : (p.product_type || 'FG')
       const matchProductType = !productTypeFilter || displayType === productTypeFilter
+      const matchFifo =
+        !onlyWithoutFifo ||
+        (fifoStatusLoaded && !isSpecialTracked(p.id) && Number(fifoStatusMap[p.id]?.sellableLotQty || 0) <= 0)
 
       // ตัวกรองถึงจุดสั่งซื้อ
       let matchOrderPoint = true
@@ -312,9 +376,9 @@ export default function Warehouse() {
         matchOrderPoint = isBelowReorderThreshold(p, onHand)
       }
 
-      return matchTerm && matchCategory && matchSeller && matchProductType && matchOrderPoint
+      return matchTerm && matchCategory && matchSeller && matchProductType && matchFifo && matchOrderPoint
     })
-  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, balances, pendingPoMap, salesFromDate, salesMap, isSpecialTracked])
+  }, [products, search, categoryFilter, sellerFilter, productTypeFilter, onlyBelowOrderPoint, onlyWithoutFifo, fifoStatusLoaded, fifoStatusMap, balances, pendingPoMap, salesFromDate, salesMap, isSpecialTracked])
 
   const specialTrackedDetail = useMemo(() => {
     if (!specialTrackedDetailId) return null
@@ -472,20 +536,22 @@ export default function Warehouse() {
               </span>
             )}
           </button>
-          <div className="flex items-center gap-2">
-            <label htmlFor="sales-from-date" className="text-sm text-gray-600 whitespace-nowrap">
+          <div className="flex flex-col items-center gap-0.5">
+            <div className="flex items-center gap-2">
+              <input
+                id="sales-from-date"
+                type="date"
+                value={salesFromDate}
+                onChange={(e) => setSalesFromDate(e.target.value)}
+                className="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-sm"
+              />
+              {salesLoading && (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+              )}
+            </div>
+            <label htmlFor="sales-from-date" className="text-[10px] leading-tight text-gray-500 whitespace-nowrap">
               คำนวณยอดขายตั้งแต่
             </label>
-            <input
-              id="sales-from-date"
-              type="date"
-              value={salesFromDate}
-              onChange={(e) => setSalesFromDate(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white text-sm"
-            />
-            {salesLoading && (
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
-            )}
           </div>
           <button
             type="button"
@@ -494,6 +560,19 @@ export default function Warehouse() {
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
             ดาวน์โหลด Excel
+          </button>
+          <button
+            type="button"
+            onClick={() => setOnlyWithoutFifo((value) => !value)}
+            disabled={!fifoStatusLoaded}
+            title={fifoStatusLoaded ? 'แสดงเฉพาะสินค้าที่ไม่มีล็อต FIFO คงเหลือ' : 'กำลังโหลดข้อมูล FIFO'}
+            className={`px-4 py-2.5 rounded-xl font-semibold text-sm border transition-colors whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${
+              onlyWithoutFifo
+                ? 'border-red-500 bg-red-500 text-white hover:bg-red-600'
+                : 'border-red-300 bg-white text-red-600 hover:bg-red-50'
+            }`}
+          >
+            ไม่มี FIFO
           </button>
         </div>
 
@@ -531,13 +610,26 @@ export default function Warehouse() {
                   const pendingQty = Number(pendingPoMap[product.id] || 0)
                   const safetyStock = stockDisplay.safetyStock
                   const specialTracked = isSpecialTracked(product.id)
+                  const fifoStatus = fifoStatusMap[product.id]
+                  const hasFifo = !specialTracked && Number(fifoStatus?.sellableLotQty || 0) > 0
                   const totalInStock = stockDisplay.total
                   const isLow = isBelowReorderThreshold(product, onHand)
                   const unitName = product.unit_name?.trim() || 'ชิ้น'
                   return (
                     <tr key={product.id} className={`border-t border-surface-200 hover:bg-blue-50 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
                       <td className="p-3">
-                        <ProductImage code={product.product_code} name={product.product_name} />
+                        <div className="inline-flex items-center gap-1">
+                          {hasFifo && (
+                            <span
+                              className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-bold leading-none text-white"
+                              title={`มี FIFO ${fifoStatus.sellableLotQty.toLocaleString()} ${product.unit_name?.trim() || 'ชิ้น'} (${fifoStatus.sellableLotCount.toLocaleString()} ล็อต)`}
+                              aria-label="มี FIFO"
+                            >
+                              F
+                            </span>
+                          )}
+                          <ProductImage code={product.product_code} name={product.product_name} />
+                        </div>
                       </td>
                       <td className="p-3 font-medium">{product.product_code}</td>
                       <td className="p-3 text-center">

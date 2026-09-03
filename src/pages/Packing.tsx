@@ -1639,15 +1639,22 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
+        const packingOrderSelect = 'id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
         const [
-          { data: allProductionOrders },
+          { data: productionOrdersById, error: productionOrdersByIdError },
+          { data: productionOrdersByName, error: productionOrdersByNameError },
           { data: finishedSessions },
           { data: skipLogsData },
         ] = await Promise.all([
           supabase
             .from('or_orders')
-            .select('id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity, cancellation_stock_action)')
+            .select(packingOrderSelect)
             .in('work_order_id', workOrderIds)
+            .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
+          supabase
+            .from('or_orders')
+            .select(packingOrderSelect)
+            .in('work_order_name', names)
             .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN),
           supabase
             .from('qc_sessions')
@@ -1659,6 +1666,14 @@ export default function Packing() {
             .select('work_order_name')
             .in('work_order_name', names),
         ])
+        if (productionOrdersByIdError) throw productionOrdersByIdError
+        if (productionOrdersByNameError) throw productionOrdersByNameError
+        const allProductionOrders = Array.from(
+          new Map(
+            [...(productionOrdersById || []), ...(productionOrdersByName || [])]
+              .map((order: any) => [order.id, order] as const)
+          ).values()
+        )
 
         const finishedWoSet = new Set(
           (finishedSessions || []).map((s: any) => (s.filename as string).replace(/^WO-/, ''))
@@ -1710,7 +1725,7 @@ export default function Packing() {
           let readyBills = 0
           let packedBills = 0
           const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
-          billsWithTracking.forEach((o: any) => {
+          ordersInWo.forEach((o: any) => {
             const items = activePackingOrderItems(o)
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
@@ -1730,10 +1745,12 @@ export default function Packing() {
               }
             })
             totalItems += unitTotal
-            const isReady = unitTotal > 0 && unitReady === unitTotal
-            if (isReady) readyBills++
             packedItems += unitScanned
-            if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
+            if (o.tracking_number) {
+              const isReady = unitTotal > 0 && unitReady === unitTotal
+              if (isReady) readyBills++
+              if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
+            }
           })
 
           // ตรวจว่า "ทุกชิ้นในใบงานถูกข้าม QC (skip)" หรือไม่ — ใช้เป็น fallback ของ qcSkipped
