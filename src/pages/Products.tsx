@@ -491,15 +491,13 @@ export default function Products() {
 
   async function loadCategories() {
     try {
-      const { data, error } = await supabase
-        .from('pr_products')
-        .select('product_category')
-        .not('product_category', 'is', null)
+      const { data, error } = await supabase.rpc('get_distinct_product_categories')
       if (error) throw error
-      const list = (data || [])
-        .map((r: { product_category: string | null }) => r.product_category)
-        .filter(Boolean) as string[]
-      setCategories([...new Set(list)].sort())
+      const list = ((data || []) as Array<{ product_category: string | null }>)
+        .map((r) => r.product_category)
+        .filter((category: string | null): category is string => Boolean(category?.trim()))
+        .map((category) => category.trim())
+      setCategories(Array.from(new Set<string>(list)).sort((a, b) => a.localeCompare(b, 'th', { numeric: true })))
     } catch (e) {
       console.error('Error loading categories:', e)
     }
@@ -1879,13 +1877,15 @@ export default function Products() {
             {/* หมวดหมู่ */}
             <div>
               <label className="block text-sm font-semibold text-surface-700 mb-1">หมวดหมู่</label>
-              <input
-                type="text"
+              <SearchableSelect
+                options={categories}
                 value={form.product_category}
-                onChange={(e) => setForm((f) => ({ ...f, product_category: e.target.value }))}
-                placeholder="หมวดหมู่สินค้า"
-                className="w-full px-3 py-2 border border-surface-300 rounded-xl text-base"
+                onChange={(value) => setForm((f) => ({ ...f, product_category: value }))}
+                placeholder="ค้นหาหรือเลือกหมวดหมู่..."
+                allowCustom
+                customOptionLabel="เพิ่มหมวดหมู่ใหม่"
               />
+              <p className="mt-1 text-xs text-surface-500">เลือกจากหมวดหมู่ที่มีอยู่ หรือพิมพ์ชื่อใหม่แล้วกด Enter</p>
             </div>
             {/* ประเภทสินค้า */}
             <div>
@@ -2264,11 +2264,15 @@ function SearchableSelect({
   value,
   onChange,
   placeholder = 'ค้นหา...',
+  allowCustom = false,
+  customOptionLabel = 'เพิ่มรายการใหม่',
 }: {
   options: string[]
   value: string
   onChange: (v: string) => void
   placeholder?: string
+  allowCustom?: boolean
+  customOptionLabel?: string
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -2288,6 +2292,15 @@ function SearchableSelect({
   const filtered = options.filter((o) =>
     o.toLowerCase().includes(search.toLowerCase())
   )
+  const trimmedSearch = search.trim()
+  const hasExactOption = options.some((option) => option.toLocaleLowerCase('th-TH') === trimmedSearch.toLocaleLowerCase('th-TH'))
+  const canAddCustom = allowCustom && trimmedSearch.length > 0 && !hasExactOption
+
+  const commitValue = (nextValue: string) => {
+    onChange(nextValue.trim())
+    setOpen(false)
+    setSearch('')
+  }
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -2300,6 +2313,12 @@ function SearchableSelect({
           value={open ? search : value || ''}
           onChange={(e) => { setSearch(e.target.value); if (!open) setOpen(true) }}
           onFocus={() => { setOpen(true); setSearch('') }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && canAddCustom) {
+              event.preventDefault()
+              commitValue(trimmedSearch)
+            }
+          }}
           placeholder={value ? value : placeholder}
           className="flex-1 px-3 py-2 rounded-xl text-base outline-none bg-transparent"
         />
@@ -2319,14 +2338,25 @@ function SearchableSelect({
       </div>
       {open && (
         <ul className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-surface-300 rounded-xl shadow-lg">
-          {filtered.length === 0 ? (
+          {canAddCustom && (
+            <li>
+              <button
+                type="button"
+                className="w-full border-b border-blue-100 bg-blue-50 px-3 py-2 text-left text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                onClick={() => commitValue(trimmedSearch)}
+              >
+                + {customOptionLabel} “{trimmedSearch}”
+              </button>
+            </li>
+          )}
+          {filtered.length === 0 && !canAddCustom ? (
             <li className="px-3 py-2 text-gray-400 italic text-sm">ไม่พบข้อมูล</li>
           ) : (
             filtered.map((opt) => (
               <li
                 key={opt}
                 className={`px-3 py-2 cursor-pointer hover:bg-blue-50 text-sm ${opt === value ? 'bg-blue-100 font-semibold text-blue-700' : ''}`}
-                onClick={() => { onChange(opt); setOpen(false); setSearch('') }}
+                onClick={() => commitValue(opt)}
               >
                 {opt}
               </li>

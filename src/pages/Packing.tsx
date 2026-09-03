@@ -60,6 +60,8 @@ type PackingItem = {
   unit_uid: string
   /** Source line UID from or_order_items (for tracing only) */
   source_line_uid: string | null
+  /** Source row in or_order_items, used to resolve WMS readiness per product line. */
+  source_order_item_id: string | null
   scanned: boolean
   parcelScanned: boolean
   isOrderComplete: boolean
@@ -70,6 +72,8 @@ type PackingItem = {
   file_attachment: string | null
   notes: string | null
   qc_status: 'pass' | 'fail' | 'skip' | null
+  /** สินค้าที่ต้อง Picker ถูกตรวจถูกและตัดสต๊อคครบแล้ว */
+  wmsReady: boolean
   /** หมายเลข Tag ประจำวัน (เซ็ตเมื่อสแกนพัสดุสำเร็จ) */
   packingTag: number | null
   /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
@@ -108,7 +112,9 @@ function resolvePackingQcStatus(
 function buildPackingItemsFromOrder(
   order: OrderWithItems,
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
-  scannedUnitKeySet: Set<string>
+  scannedUnitKeySet: Set<string>,
+  wmsReady = true,
+  wmsReadyByOrderItem: Record<string, boolean> = {}
 ): PackingItem[] {
   const isOrderShipped = order.status === 'จัดส่งแล้ว'
   const isParcelScanned = order.packing_meta?.parcelScanned || false
@@ -148,6 +154,7 @@ function buildPackingItemsFromOrder(
         font: item.font,
         unit_uid: unitUid,
         source_line_uid: item.item_uid ?? null,
+        source_order_item_id: item.id ?? null,
         scanned: scannedUnitKeySet.has(key),
         parcelScanned: isParcelScanned,
         isOrderComplete: isOrderShipped,
@@ -158,6 +165,7 @@ function buildPackingItemsFromOrder(
         file_attachment: item.file_attachment,
         notes: item.notes,
         qc_status: qcStatus,
+        wmsReady: item.id ? (wmsReadyByOrderItem[String(item.id)] ?? wmsReady) : wmsReady,
         packingTag,
         ship_due_at: order.ship_due_at ?? null,
         overdue_at: order.overdue_at ?? null,
@@ -224,9 +232,12 @@ const RECORDING_SEGMENT_LIMIT_BYTES = 70 * 1024 * 1024
 const RECORDING_TIMESLICE_MS = 5_000
 
 const DEVICE_ONLINE_MS = 2 * 60 * 1000
+const UPLOAD_REPORT_PAGE_SIZE = 50
+const UPLOAD_REPORT_FETCH_BATCH_SIZE = 1000
 
 type PackingUploadReportRow = {
   id: string
+  user_id: string
   recorded_by: string
   device_id: string
   device_name: string
@@ -512,6 +523,11 @@ export default function Packing() {
   const [uploadReportLoading, setUploadReportLoading] = useState(false)
   const [uploadReportSearch, setUploadReportSearch] = useState('')
   const [uploadReportDeviceId, setUploadReportDeviceId] = useState('')
+  const [uploadReportDateFrom, setUploadReportDateFrom] = useState('')
+  const [uploadReportDateTo, setUploadReportDateTo] = useState('')
+  const [uploadReportPage, setUploadReportPage] = useState(1)
+  const [deletingUploadReportId, setDeletingUploadReportId] = useState<string | null>(null)
+  const [reportDeviceListFilter, setReportDeviceListFilter] = useState<'online' | 'offline' | null>(null)
   const [reportStatusFilter, setReportStatusFilter] = useState<UploadStatusFilter | null>(null)
   const [packingDevices, setPackingDevices] = useState<PackingDeviceRow[]>([])
   const [stationClaimDeviceId, setStationClaimDeviceId] = useState('')
@@ -666,11 +682,13 @@ export default function Packing() {
   }, [aggregatedData])
 
   const isQcPassGroup = (group: PackingItem[]) => group.every((item) => item.qc_status === 'pass' || item.qc_status === 'skip')
+  const isWmsReadyGroup = (group: PackingItem[]) => group.every((item) => item.wmsReady)
 
   const goToNextGroup = () => {
     const nextIndex = aggregatedDataRef.current.findIndex(
       (g, idx) =>
         idx !== currentIndexRef.current &&
+        isWmsReadyGroup(g) &&
         isQcPassGroup(g) &&
         !g.every((item) => item.scanned) &&
         !g[0].isOrderComplete
@@ -1075,12 +1093,26 @@ export default function Packing() {
 
   async function loadUploadReport(showLoading = false) {
     if (showLoading) setUploadReportLoading(true)
+    const fetchAllReports = async () => {
+      const rows: PackingUploadReportRow[] = []
+      let from = 0
+      while (true) {
+        const { data, error } = await supabase
+          .from('pk_packing_upload_queue_reports')
+          .select('id, user_id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
+          .is('dismissed_at', null)
+          .order('client_created_at', { ascending: false })
+          .range(from, from + UPLOAD_REPORT_FETCH_BATCH_SIZE - 1)
+        if (error) return { data: null, error }
+        const batch = (data || []) as PackingUploadReportRow[]
+        rows.push(...batch)
+        if (batch.length < UPLOAD_REPORT_FETCH_BATCH_SIZE) break
+        from += UPLOAD_REPORT_FETCH_BATCH_SIZE
+      }
+      return { data: rows, error: null }
+    }
     const [reportResult, deviceResult] = await Promise.all([
-      supabase
-        .from('pk_packing_upload_queue_reports')
-        .select('id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
-        .order('client_created_at', { ascending: false })
-        .limit(1000),
+      fetchAllReports(),
       supabase
         .from('pk_packing_devices')
         .select('device_id, user_id, device_name, last_username, is_active, quality_profile, folder_name, folder_path, pending_count, uploading_count, failed_count, last_seen_at')
@@ -1092,6 +1124,22 @@ export default function Packing() {
     if (deviceResult.error) console.warn('Load packing devices failed:', deviceResult.error.message)
     else setPackingDevices((deviceResult.data || []) as PackingDeviceRow[])
     if (showLoading) setUploadReportLoading(false)
+  }
+
+  async function deleteProblemUploadReport(row: PackingUploadReportRow) {
+    if (deletingUploadReportId) return
+    setDeletingUploadReportId(row.id)
+    try {
+      const { error } = await supabase.rpc('rpc_dismiss_packing_upload_report', {
+        p_report_id: row.id,
+      })
+      if (error) throw error
+      setUploadReportRows((current) => current.filter((item) => item.id !== row.id))
+    } catch (error: any) {
+      openAlert(`ลบรายการไม่สำเร็จ: ${error?.message || error}`, 'เกิดข้อผิดพลาด')
+    } finally {
+      setDeletingUploadReportId(null)
+    }
   }
 
   async function syncDeviceHeartbeat() {
@@ -1360,7 +1408,7 @@ export default function Packing() {
     const set = new Set<number>()
     aggregatedData.forEach((group, index) => {
       // พร้อมจัดส่งเป็นรายบิล: QC ต้องผ่าน/ข้ามครบทุกชิ้น และแพ็คสแกนครบทั้งบิล
-      if (isQcPassGroup(group) && group.every((item) => item.scanned)) set.add(index)
+      if (isWmsReadyGroup(group) && isQcPassGroup(group) && group.every((item) => item.scanned)) set.add(index)
     })
     return set
   }, [aggregatedData])
@@ -1555,7 +1603,7 @@ export default function Packing() {
     if (recordingState.status === 'recording' && (recordingState.tracking !== trackingNumber || !parcelScanned)) {
       stopRecording()
     }
-    if (recordingState.status === 'idle' && parcelScanned && !isFullyScanned) {
+    if (recordingState.status === 'idle' && parcelScanned && !isFullyScanned && isWmsReadyGroup(currentGroup)) {
       startRecording(trackingNumber).catch((error) => {
         setRecordingState({ status: 'error', tracking: trackingNumber, error: error?.message || 'เริ่มบันทึกไม่สำเร็จ' })
       })
@@ -1570,6 +1618,8 @@ export default function Packing() {
 
     if (isDone) {
       setStatusMessage({ text: '✅ จัดส่งเรียบร้อย', type: 'success' })
+    } else if (!isWmsReadyGroup(currentGroup)) {
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
     } else if (!isQcPassGroup(currentGroup)) {
       setStatusMessage({ text: '⏳ รอ QC Pass ครบทุกชิ้นจึงจะสแกนได้', type: '' })
     } else if (!isParcelScanned) {
@@ -1852,6 +1902,23 @@ export default function Packing() {
       if (error) throw error
       const orders = (data || []) as OrderWithItems[]
       const ordersWithTracking = orders.filter((order) => order.tracking_number && order.tracking_number.trim() !== '')
+      const wmsReadyByOrder: Record<string, boolean> = {}
+      const wmsReadyByOrderItem: Record<string, boolean> = {}
+      if (workOrderHeader?.id) {
+        const [orderReadinessResult, itemReadinessResult] = await Promise.all([
+          supabase.rpc('rpc_get_packing_wms_readiness', { p_work_order_id: workOrderHeader.id }),
+          supabase.rpc('rpc_get_packing_wms_item_readiness', { p_work_order_id: workOrderHeader.id }),
+        ])
+        const { data: readinessRows, error: readinessError } = orderReadinessResult
+        if (readinessError) throw readinessError
+        for (const row of readinessRows || []) {
+          wmsReadyByOrder[String(row.order_id)] = Boolean(row.ready)
+        }
+        if (itemReadinessResult.error) throw itemReadinessResult.error
+        for (const row of itemReadinessResult.data || []) {
+          wmsReadyByOrderItem[String(row.order_item_id)] = Boolean(row.ready)
+        }
+      }
       const scannedKeySet = await fetchPackingUnitScanKeySet(ordersWithTracking.map((o) => o.id))
       const unitUids: string[] = []
       ordersWithTracking.forEach((order) => {
@@ -1869,7 +1936,13 @@ export default function Packing() {
         })
       })
       const qcStatusMap = await fetchQcStatusMap(unitUids)
-      await prepareDataForPacking(ordersWithTracking, qcStatusMap, scannedKeySet)
+      await prepareDataForPacking(
+        ordersWithTracking,
+        qcStatusMap,
+        scannedKeySet,
+        wmsReadyByOrder,
+        wmsReadyByOrderItem
+      )
       setView('main')
     } catch (error: any) {
       openAlert('ดึงข้อมูลไม่ได้: ' + error.message)
@@ -1932,11 +2005,19 @@ export default function Packing() {
   async function prepareDataForPacking(
     orders: OrderWithItems[],
     qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
-    scannedKeySet: Set<string>
+    scannedKeySet: Set<string>,
+    wmsReadyByOrder: Record<string, boolean>,
+    wmsReadyByOrderItem: Record<string, boolean>
   ) {
     const flatData: PackingItem[] = []
     orders.forEach((order) => {
-      flatData.push(...buildPackingItemsFromOrder(order, qcStatusMap, scannedKeySet))
+      flatData.push(...buildPackingItemsFromOrder(
+        order,
+        qcStatusMap,
+        scannedKeySet,
+        wmsReadyByOrder[order.id] ?? false,
+        wmsReadyByOrderItem
+      ))
     })
 
     const grouped: Record<string, PackingItem[]> = {}
@@ -1990,6 +2071,7 @@ export default function Packing() {
     const nextIndex = aggregatedTagged.findIndex(
       (group) =>
         isQcPassGroup(group) &&
+        isWmsReadyGroup(group) &&
         !group.every((item) => item.scanned) &&
         !group[0].isOrderComplete
     )
@@ -2137,6 +2219,11 @@ export default function Packing() {
     const scanValue = parcelScanValue.trim().toUpperCase()
     if (!scanValue) return
     const group = currentGroup
+    if (!isWmsReadyGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
+      return
+    }
     if (!isQcPassGroup(group)) {
       playErrorSound()
       setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
@@ -2226,6 +2313,11 @@ export default function Packing() {
     const scanValue = itemScanValue.trim().toUpperCase()
     if (!scanValue) return
     const group = currentGroup
+    if (!isWmsReadyGroup(group)) {
+      playErrorSound()
+      setStatusMessage({ text: '⛔ ยังไม่ได้หยิบและตรวจสินค้าใน WMS ครบ จึงยังแพ็คไม่ได้', type: 'error' })
+      return
+    }
     if (!isQcPassGroup(group)) {
       playErrorSound()
       setStatusMessage({ text: '❌ ยังไม่ได้ QC Pass ครบทุกชิ้น', type: 'error' })
@@ -2352,10 +2444,10 @@ export default function Packing() {
   async function shipAllAndFinalize() {
     if (!currentWorkOrderName) return
     const incompleteGroups = aggregatedData.filter(
-      (group) => !group[0].isOrderComplete && (!isQcPassGroup(group) || !group.every((item) => item.scanned))
+      (group) => !group[0].isOrderComplete && (!isWmsReadyGroup(group) || !isQcPassGroup(group) || !group.every((item) => item.scanned))
     )
     if (incompleteGroups.length > 0) {
-      openAlert(`ยังปิดใบงานไม่ได้: มี ${incompleteGroups.length} บิลที่ QC หรือแพ็คยังไม่ครบ`)
+      openAlert(`ยังปิดใบงานไม่ได้: มี ${incompleteGroups.length} บิลที่ WMS, QC หรือแพ็คยังไม่ครบ`)
       return
     }
     setIsLoadingOrders(true)
@@ -2515,7 +2607,10 @@ export default function Packing() {
         throw new Error('ไม่สามารถเปิดกล้องได้')
       }
 
-      const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      // Google Drive can store VP9, but its built-in preview officially supports
+      // WebM playback with VP8. Prefer VP8 so recordings open on Drive/mobile;
+      // keep VP9 and the browser default as fallbacks for devices without VP8.
+      const mimeTypes = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
       const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
       const recorder = new MediaRecorder(streamRef.current, {
@@ -2763,9 +2858,17 @@ export default function Packing() {
   )
 
   const searchedUploadReportRows = useMemo(() => {
-    const term = uploadReportSearch.trim().toLowerCase()
+    const term = normalizeParcelScanInput(uploadReportSearch).toLowerCase()
+    const fromTime = uploadReportDateFrom
+      ? new Date(`${uploadReportDateFrom}T00:00:00`).getTime()
+      : Number.NEGATIVE_INFINITY
+    const toTime = uploadReportDateTo
+      ? new Date(`${uploadReportDateTo}T23:59:59.999`).getTime()
+      : Number.POSITIVE_INFINITY
     return uploadReportRows.filter((row) => {
       if (uploadReportDeviceId && row.device_id !== uploadReportDeviceId) return false
+      const recordedTime = new Date(row.client_created_at).getTime()
+      if (recordedTime < fromTime || recordedTime > toTime) return false
       if (!term) return true
       return [
         row.recorded_by,
@@ -2774,9 +2877,10 @@ export default function Packing() {
         row.folder_name,
         row.work_order_name,
         row.tracking_number,
-      ].some((value) => String(value || '').toLowerCase().includes(term))
+        row.filename,
+      ].some((value) => normalizeParcelScanInput(String(value || '')).toLowerCase().includes(term))
     })
-  }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId])
+  }, [uploadReportRows, uploadReportSearch, uploadReportDeviceId, uploadReportDateFrom, uploadReportDateTo])
 
   const reportStatusSummary = useMemo(() => ({
     pending: searchedUploadReportRows.filter((row) => row.status === 'pending' && !isStaleQueueTimestamp(row.status, row.reported_at)).length,
@@ -2795,10 +2899,31 @@ export default function Packing() {
     })
   }, [searchedUploadReportRows, reportStatusFilter])
 
+  const uploadReportTotalPages = Math.max(1, Math.ceil(filteredUploadReportRows.length / UPLOAD_REPORT_PAGE_SIZE))
+  const effectiveUploadReportPage = Math.min(uploadReportPage, uploadReportTotalPages)
+  const pagedUploadReportRows = useMemo(() => {
+    const start = (effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE
+    return filteredUploadReportRows.slice(start, start + UPLOAD_REPORT_PAGE_SIZE)
+  }, [filteredUploadReportRows, effectiveUploadReportPage])
+
+  useEffect(() => {
+    setUploadReportPage(1)
+  }, [uploadReportSearch, uploadReportDeviceId, uploadReportDateFrom, uploadReportDateTo, reportStatusFilter])
+
   const reportDeviceSummary = useMemo(() => ({
     online: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS).length,
     offline: packingDevices.filter((device) => Date.now() - new Date(device.last_seen_at).getTime() >= DEVICE_ONLINE_MS).length,
   }), [packingDevices])
+
+  const visibleReportDevices = useMemo(() => {
+    if (!reportDeviceListFilter) return []
+    return packingDevices
+      .filter((device) => {
+        const online = Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS
+        return reportDeviceListFilter === 'online' ? online : !online
+      })
+      .sort((a, b) => String(a.device_name || '').localeCompare(String(b.device_name || ''), 'th', { numeric: true }))
+  }, [packingDevices, reportDeviceListFilter])
 
   if (loading) {
     return (
@@ -3272,12 +3397,46 @@ export default function Packing() {
                       <option key={device.id} value={device.id}>{device.name}</option>
                     ))}
                   </select>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                    ตั้งแต่
+                    <input
+                      type="date"
+                      value={uploadReportDateFrom}
+                      max={uploadReportDateTo || undefined}
+                      onChange={(event) => setUploadReportDateFrom(event.target.value)}
+                      className="rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm text-gray-800"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
+                    ถึง
+                    <input
+                      type="date"
+                      value={uploadReportDateTo}
+                      min={uploadReportDateFrom || undefined}
+                      onChange={(event) => setUploadReportDateTo(event.target.value)}
+                      className="rounded-lg border border-gray-300 bg-white px-2 py-2 text-sm text-gray-800"
+                    />
+                  </label>
                   <input
                     value={uploadReportSearch}
                     onChange={(event) => setUploadReportSearch(event.target.value)}
-                    className="min-w-[240px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm sm:flex-none"
+                    className="min-w-[360px] flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm sm:flex-none lg:min-w-[420px]"
                     placeholder="ค้นหา User, เครื่อง, ใบงาน, เลขพัสดุ..."
                   />
+                  {(uploadReportSearch || uploadReportDeviceId || uploadReportDateFrom || uploadReportDateTo) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadReportSearch('')
+                        setUploadReportDeviceId('')
+                        setUploadReportDateFrom('')
+                        setUploadReportDateTo('')
+                      }}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                    >
+                      ล้างตัวกรอง
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void loadUploadReport(true)}
@@ -3297,13 +3456,57 @@ export default function Packing() {
 
               <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm shadow-sm">
                 <span className="font-semibold text-gray-800">สถานะเครื่อง:</span>
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700">
+                <button
+                  type="button"
+                  onClick={() => setReportDeviceListFilter((current) => current === 'online' ? null : 'online')}
+                  className={`inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 font-medium text-emerald-700 transition hover:bg-emerald-200 ${reportDeviceListFilter === 'online' ? 'ring-2 ring-emerald-400 ring-offset-1' : ''}`}
+                  aria-expanded={reportDeviceListFilter === 'online'}
+                >
                   <span className="h-2 w-2 rounded-full bg-emerald-500" /> ออนไลน์ {reportDeviceSummary.online}
-                </span>
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600">
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportDeviceListFilter((current) => current === 'offline' ? null : 'offline')}
+                  className={`inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-3 py-1 font-medium text-gray-600 transition hover:bg-gray-200 ${reportDeviceListFilter === 'offline' ? 'ring-2 ring-gray-400 ring-offset-1' : ''}`}
+                  aria-expanded={reportDeviceListFilter === 'offline'}
+                >
                   <span className="h-2 w-2 rounded-full bg-gray-400" /> ออฟไลน์ {reportDeviceSummary.offline}
-                </span>
+                </button>
                 <span className="text-xs text-gray-500">ออนไลน์ = ติดต่อระบบภายใน 2 นาทีล่าสุด</span>
+                {reportDeviceListFilter && (
+                  <div className="basis-full border-t border-gray-100 pt-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="font-semibold text-gray-700">
+                        รายชื่อเครื่อง{reportDeviceListFilter === 'online' ? 'ออนไลน์' : 'ออฟไลน์'} ({visibleReportDevices.length.toLocaleString('th-TH')})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setReportDeviceListFilter(null)}
+                        className="text-xs font-medium text-gray-500 hover:text-gray-800"
+                      >
+                        ปิดรายชื่อ
+                      </button>
+                    </div>
+                    {visibleReportDevices.length === 0 ? (
+                      <div className="rounded-lg bg-gray-50 px-3 py-4 text-center text-gray-500">ไม่มีเครื่องในสถานะนี้</div>
+                    ) : (
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                        {visibleReportDevices.map((device) => (
+                          <div key={device.device_id} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                            <div className="flex items-center gap-2 font-semibold text-gray-800">
+                              <span className={`h-2 w-2 shrink-0 rounded-full ${reportDeviceListFilter === 'online' ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                              <span className="break-words">{device.device_name || 'ไม่ระบุชื่อเครื่อง'}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-gray-600">User: {device.last_username || 'ไม่ทราบ User'}</div>
+                            <div className="mt-0.5 text-xs text-gray-500">
+                              ติดต่อครั้งล่าสุด: {device.last_seen_at ? new Date(device.last_seen_at).toLocaleString('th-TH') : '-'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {uploadReportLoading ? (
@@ -3313,8 +3516,9 @@ export default function Packing() {
                   {reportStatusFilter ? 'ไม่มีรายการที่ตรงกับสถานะที่เลือก' : 'ยังไม่มีข้อมูลคิวอัปโหลด'}
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-                  <table className="w-full min-w-[1700px] text-sm">
+                <div className="space-y-3">
+                  <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <table className="w-full min-w-[1780px] text-sm">
                     <thead className="bg-blue-600 text-white">
                       <tr>
                         <th className="px-3 py-3 text-left">เวลาบันทึก</th>
@@ -3326,10 +3530,11 @@ export default function Packing() {
                         <th className="px-3 py-3 text-left">ข้อมูลวิดีโอ</th>
                         <th className="px-3 py-3 text-center">สถานะ</th>
                         <th className="px-3 py-3 text-left">อัปเดตล่าสุด / วิธีแก้ไข</th>
+                        <th className="px-3 py-3 text-center">จัดการ</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredUploadReportRows.map((row, index) => {
+                      {pagedUploadReportRows.map((row, index) => {
                         const device = packingDeviceById.get(row.device_id)
                         const deviceOnline = Boolean(device && Date.now() - new Date(device.last_seen_at).getTime() < DEVICE_ONLINE_MS)
                         const stale = isStaleQueueTimestamp(row.status, row.reported_at)
@@ -3402,11 +3607,59 @@ export default function Packing() {
                                 </div>
                               )}
                             </td>
+                            <td className="px-3 py-3 text-center">
+                              {(stale || row.status === 'failed') && (isViewOnly || row.user_id === user?.id) ? (
+                                <button
+                                  type="button"
+                                  disabled={deletingUploadReportId === row.id}
+                                  onClick={() => openConfirm(
+                                    `ลบรายการคิวที่มีปัญหา/ค้างของเลขพัสดุ ${formatParcelNo(row.tracking_number) || '-'}?\nรายการจะถูกซ่อนจากรายงานและไม่กลับมาแสดงซ้ำ`,
+                                    () => void deleteProblemUploadReport(row),
+                                    'ยืนยันลบรายการ',
+                                    'ลบรายการ',
+                                  )}
+                                  className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {deletingUploadReportId === row.id ? 'กำลังลบ...' : 'ลบ'}
+                                </button>
+                              ) : (
+                                <span className="text-gray-300">-</span>
+                              )}
+                            </td>
                           </tr>
                         )
                       })}
                     </tbody>
                   </table>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                    <span className="text-gray-500">
+                      แสดง {((effectiveUploadReportPage - 1) * UPLOAD_REPORT_PAGE_SIZE) + 1}–{Math.min(effectiveUploadReportPage * UPLOAD_REPORT_PAGE_SIZE, filteredUploadReportRows.length)} จาก {filteredUploadReportRows.length.toLocaleString('th-TH')} รายการ
+                    </span>
+                    {uploadReportTotalPages > 1 && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={effectiveUploadReportPage <= 1}
+                          onClick={() => setUploadReportPage((page) => Math.max(1, page - 1))}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          ก่อนหน้า
+                        </button>
+                        <span className="min-w-[110px] text-center font-medium text-gray-700">
+                          หน้า {effectiveUploadReportPage.toLocaleString('th-TH')} / {uploadReportTotalPages.toLocaleString('th-TH')}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={effectiveUploadReportPage >= uploadReportTotalPages}
+                          onClick={() => setUploadReportPage((page) => Math.min(uploadReportTotalPages, page + 1))}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          ถัดไป
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -3778,6 +4031,7 @@ export default function Packing() {
               <div className="space-y-2.5 flex-1 min-h-0 overflow-y-auto pr-1 pb-8">
                 {aggregatedData.map((group, index) => {
                   const isDone = group[0].isOrderComplete
+                  const wmsReady = isWmsReadyGroup(group)
                   const isFullScanned = group.every((item) => item.scanned)
                   const icon = isDone ? '✅' : isFullScanned ? '🟢' : '📦'
                   const tracking = group[0].tracking_number
@@ -3810,25 +4064,34 @@ export default function Packing() {
                             <ExpressReceiptNumberInline value={expressReceiptNumber} />
                             {!isDone && <UrgencyBadge order={group[0]} className="ml-1.5" />}
                           </div>
-                          <div className="text-sm text-gray-600 mt-0.5">{group[0].customer_name || 'N/A'}</div>
-                          <div className="mt-1 flex items-center gap-2 flex-wrap">
+                          <div className="text-sm text-gray-600 mt-0.5">
+                            ลูกค้า: {group[0].customer_name || 'N/A'}
+                          </div>
+                          <div className="mt-1 flex items-start gap-2 flex-wrap">
                             <div className="text-sm font-bold text-indigo-700 tabular-nums">
                               Tag {group[0].packingTag ?? '—'}
                             </div>
-                            <div
-                              className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
-                                isQcPassGroup(group)
+                            <div className="flex flex-col items-start gap-1">
+                              <div
+                                className={`inline-flex items-center justify-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap shrink-0 max-w-full ${
+                                  isQcPassGroup(group)
+                                    ? group.every((i) => i.qc_status === 'skip')
+                                      ? 'bg-orange-100 text-orange-700'
+                                      : 'bg-green-100 text-green-700'
+                                    : 'bg-red-100 text-red-700'
+                                }`}
+                              >
+                                {isQcPassGroup(group)
                                   ? group.every((i) => i.qc_status === 'skip')
-                                    ? 'bg-orange-100 text-orange-700'
-                                    : 'bg-green-100 text-green-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}
-                            >
-                              {isQcPassGroup(group)
-                                ? group.every((i) => i.qc_status === 'skip')
-                                  ? 'Not QC'
-                                  : 'QC Pass'
-                                : 'ยังไม่ QC'}
+                                    ? 'Not QC'
+                                    : 'QC Pass'
+                                  : 'ยังไม่ QC'}
+                              </div>
+                              {!isDone && !wmsReady && (
+                                <div className="inline-flex items-center justify-center rounded-full bg-red-100 px-2.5 py-1 text-xs font-bold text-red-700 whitespace-nowrap">
+                                  ยังไม่ได้หยิบ
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -3851,6 +4114,7 @@ export default function Packing() {
                             isViewOnly ||
                             currentGroup[0].parcelScanned ||
                             currentGroup[0].isOrderComplete ||
+                            !isWmsReadyGroup(currentGroup) ||
                             !isQcPassGroup(currentGroup)
                           return (
                         <input
@@ -3876,6 +4140,7 @@ export default function Packing() {
                           const itemDisabled =
                             isViewOnly ||
                             !isQcPassGroup(currentGroup) ||
+                            !isWmsReadyGroup(currentGroup) ||
                             !currentGroup[0].parcelScanned ||
                             currentGroup[0].isOrderComplete ||
                             currentGroup.every((item) => item.scanned) ||
@@ -4116,23 +4381,30 @@ export default function Packing() {
                                 </td>
                                 <td className="p-2 border">
                                   <div className="flex items-start gap-2 min-w-0">
-                                    {item.qc_status === 'pass' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
-                                        QC Pass
-                                      </span>
-                                    ) : item.qc_status === 'skip' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
-                                        Not QC
-                                      </span>
-                                    ) : item.qc_status === 'fail' ? (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
-                                        QC Fail
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 shrink-0 whitespace-nowrap">
-                                        ยังไม่ได้ QC
-                                      </span>
-                                    )}
+                                    <div className="flex flex-col items-start gap-1 shrink-0">
+                                      {item.qc_status === 'pass' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          QC Pass
+                                        </span>
+                                      ) : item.qc_status === 'skip' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-orange-100 text-orange-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          Not QC
+                                        </span>
+                                      ) : item.qc_status === 'fail' ? (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          QC Fail
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-500 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          ยังไม่ได้ QC
+                                        </span>
+                                      )}
+                                      {!item.wmsReady && (
+                                        <span className="inline-flex items-center justify-center rounded-full bg-red-100 text-red-700 text-[11px] font-semibold px-2 py-0.5 whitespace-nowrap">
+                                          ยังไม่ได้หยิบ
+                                        </span>
+                                      )}
+                                    </div>
                                     <span className="min-w-0 break-words">{item.product_name}</span>
                                   </div>
                                 </td>

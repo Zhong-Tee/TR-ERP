@@ -742,7 +742,13 @@ export default function Plan({ tvMode = false }: PlanProps) {
   const [manageNewCount, setManageNewCount] = useState(0)
   const [workOrdersManageCount, setWorkOrdersManageCount] = useState(0)
   const [manageSubView, setManageSubView] = useState<ManageSubView>('new')
-  const [cancelledByWO, setCancelledByWO] = useState<Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]>>({})
+  const [cancelledByWO, setCancelledByWO] = useState<Record<string, {
+    id: string
+    bill_no: string
+    channel_order_no: string
+    customer_name: string
+    wo_name?: string
+  }[]>>({})
   const [cancelledDetailWO, setCancelledDetailWO] = useState<string | null>(null) // work_order_id
   const [selectedCancelledOrderId, setSelectedCancelledOrderId] = useState<string | null>(null)
   const [cancelledWmsLines, setCancelledWmsLines] = useState<any[]>([])
@@ -1279,7 +1285,7 @@ export default function Plan({ tvMode = false }: PlanProps) {
       const [{ data: cancelledOrders }, { data: cancelledItems }] = await Promise.all([
         supabase
           .from('or_orders')
-          .select('id, bill_no, customer_name, work_order_id')
+          .select('id, bill_no, channel_order_no, customer_name, work_order_id')
           .eq('status', 'ยกเลิก')
           .not('work_order_id', 'is', null),
         supabase
@@ -1291,13 +1297,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
       const { data: partialOrders } = partialOrderIds.length > 0
         ? await supabase
             .from('or_orders')
-            .select('id, bill_no, customer_name, work_order_id')
+            .select('id, bill_no, channel_order_no, customer_name, work_order_id')
             .in('id', partialOrderIds)
             .not('work_order_id', 'is', null)
         : { data: [] as any[] }
 
       const allOrders = [...(cancelledOrders || []), ...(partialOrders || [])]
-      const map: Record<string, { id: string; bill_no: string; customer_name: string; wo_name?: string }[]> = {}
+      const map: Record<string, {
+        id: string
+        bill_no: string
+        channel_order_no: string
+        customer_name: string
+        wo_name?: string
+      }[]> = {}
       const seen = new Set<string>()
       allOrders.forEach((o: any) => {
         const woId = String(o.work_order_id || '')
@@ -1305,7 +1317,12 @@ export default function Plan({ tvMode = false }: PlanProps) {
         if (!woId || !orderId || seen.has(`${woId}:${orderId}`)) return
         seen.add(`${woId}:${orderId}`)
         if (!map[woId]) map[woId] = []
-        map[woId].push({ id: orderId, bill_no: o.bill_no || '-', customer_name: o.customer_name || '-' })
+        map[woId].push({
+          id: orderId,
+          bill_no: o.bill_no || '-',
+          channel_order_no: o.channel_order_no || '-',
+          customer_name: o.customer_name || '-',
+        })
       })
       setCancelledByWO(map)
     } catch (e) {
@@ -4790,14 +4807,19 @@ export default function Plan({ tvMode = false }: PlanProps) {
                     <button
                       key={o.id}
                       onClick={() => loadCancelledWmsLines(cancelledDetailWO, o.id)}
-                      className={`px-2 py-1 border rounded-lg text-sm transition ${
+                      className={`px-2 py-1 border rounded-lg text-left text-sm transition ${
                         selectedCancelledOrderId === o.id
                           ? 'bg-red-100 border-red-300'
                           : 'bg-white border-red-200 hover:bg-red-50'
                       }`}
                     >
-                      <span className="font-mono font-bold text-red-700">{o.bill_no}</span>
-                      <span className="text-gray-500 ml-1">({o.customer_name})</span>
+                      <span className="block">
+                        <span className="font-mono font-bold text-red-700">{o.bill_no}</span>
+                        <span className="text-gray-500 ml-1">({o.customer_name})</span>
+                      </span>
+                      <span className="block mt-0.5 text-xs text-gray-600">
+                        เลขคำสั่งซื้อ: <span className="font-mono font-semibold text-gray-800">{o.channel_order_no}</span>
+                      </span>
                     </button>
                   ))}
                 </div>

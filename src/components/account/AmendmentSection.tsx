@@ -30,12 +30,17 @@ type AmendmentRow = {
   approved_at: string | null
   executed_at: string | null
   requested_by_user?: { username: string | null; email: string | null } | null
+  approved_by_user?: { username: string | null; email: string | null } | null
+  order?: { channel_order_no: string | null } | null
 }
 
 const REASON_OPTIONS: { value: string; label: string }[] = [
   { value: 'staff_error', label: 'พนักงานลงผิด' },
   { value: 'customer_change', label: 'ลูกค้าขอเปลี่ยน' },
 ]
+
+const reasonLabel = (reasonType: string) =>
+  REASON_OPTIONS.find((option) => option.value === reasonType)?.label ?? reasonType
 
 const isCondoTableItem = (item: any) =>
   item?.is_detail_row === true ||
@@ -48,6 +53,9 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
 
   const [amendments, setAmendments] = useState<AmendmentRow[]>([])
   const [amendmentsLoading, setAmendmentsLoading] = useState(false)
+  const [amendmentSearch, setAmendmentSearch] = useState('')
+  const [amendmentDateFrom, setAmendmentDateFrom] = useState('')
+  const [amendmentDateTo, setAmendmentDateTo] = useState('')
   const [detailAmendment, setDetailAmendment] = useState<AmendmentRow | null>(null)
   const [detailModalOpen, setDetailModalOpen] = useState(false)
   const [detailOrder, setDetailOrder] = useState<any>(null)
@@ -74,7 +82,7 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
     try {
       const { data, error } = await supabase
         .from('or_order_amendments')
-        .select('*, requested_by_user:us_users!requested_by(username, email)')
+        .select('*, requested_by_user:us_users!requested_by(username, email), approved_by_user:us_users!approved_by(username, email), order:or_orders(channel_order_no)')
         .order('created_at', { ascending: false })
         .limit(50)
       if (error) throw error
@@ -248,8 +256,47 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
     loadDetailOrder(row.order_id)
   }
 
-  const reasonLabel = (rt: string) =>
-    REASON_OPTIONS.find((o) => o.value === rt)?.label ?? rt
+  const filteredAmendments = useMemo(() => {
+    const search = amendmentSearch.trim().toLocaleLowerCase('th-TH')
+    const fromTime = amendmentDateFrom
+      ? new Date(`${amendmentDateFrom}T00:00:00`).getTime()
+      : Number.NEGATIVE_INFINITY
+    const toTime = amendmentDateTo
+      ? new Date(`${amendmentDateTo}T23:59:59.999`).getTime()
+      : Number.POSITIVE_INFINITY
+    const statusLabels: Record<string, string> = {
+      pending: 'รออนุมัติ',
+      executed: 'ยกเลิกแล้ว',
+      approved: 'อนุมัติแล้ว',
+      rejected: 'ปฏิเสธ',
+    }
+
+    return amendments.filter((row) => {
+      const createdTime = new Date(row.created_at).getTime()
+      if (createdTime < fromTime || createdTime > toTime) return false
+      if (!search) return true
+
+      const requester = row.requested_by_user?.username
+        || row.requested_by_user?.email
+        || row.requested_by
+        || ''
+      const approver = row.approved_by_user?.username
+        || row.approved_by_user?.email
+        || row.approved_by
+        || ''
+      const searchableText = [
+        row.amendment_no,
+        row.bill_no,
+        row.order?.channel_order_no,
+        reasonLabel(row.reason_type),
+        row.reason_detail,
+        statusLabels[row.status] || row.status,
+        requester,
+        approver,
+      ].filter(Boolean).join(' ').toLocaleLowerCase('th-TH')
+      return searchableText.includes(search)
+    })
+  }, [amendments, amendmentSearch, amendmentDateFrom, amendmentDateTo])
 
   const statusBadge = (status: string) => {
     const map: Record<string, string> = {
@@ -426,6 +473,60 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
           </h2>
           <p className="text-sm text-gray-500 mt-0.5">รายการคำขอยกเลิก (ล่าสุด 50 รายการ)</p>
         </div>
+        <div className="px-4 py-3 border-b border-surface-200 bg-white">
+          <div className="flex flex-col xl:flex-row xl:items-end gap-3">
+            <label className="flex-1 min-w-0">
+              <span className="block text-xs font-semibold text-gray-600 mb-1">ค้นหา</span>
+              <div className="relative">
+                <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm" />
+                <input
+                  type="search"
+                  value={amendmentSearch}
+                  onChange={(event) => setAmendmentSearch(event.target.value)}
+                  placeholder="เลขคำขอ / เลขบิล / เลขคำสั่งซื้อ / เหตุผล / ผู้ขอ / ผู้อนุมัติ"
+                  className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label>
+                <span className="block text-xs font-semibold text-gray-600 mb-1">วันที่ขอ ตั้งแต่</span>
+                <input
+                  type="date"
+                  value={amendmentDateFrom}
+                  max={amendmentDateTo || undefined}
+                  onChange={(event) => setAmendmentDateFrom(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <label>
+                <span className="block text-xs font-semibold text-gray-600 mb-1">ถึงวันที่</span>
+                <input
+                  type="date"
+                  value={amendmentDateTo}
+                  min={amendmentDateFrom || undefined}
+                  onChange={(event) => setAmendmentDateTo(event.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAmendmentSearch('')
+                setAmendmentDateFrom('')
+                setAmendmentDateTo('')
+              }}
+              disabled={!amendmentSearch && !amendmentDateFrom && !amendmentDateTo}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-600 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ล้างตัวกรอง
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            แสดง {filteredAmendments.length.toLocaleString('th-TH')} จาก {amendments.length.toLocaleString('th-TH')} รายการ
+          </p>
+        </div>
         {amendmentsLoading ? (
           <div className="flex justify-center py-12">
             <span className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
@@ -435,6 +536,11 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
             <i className="fas fa-inbox text-4xl mb-3 block" />
             <p>ไม่มีรายการคำขอยกเลิก</p>
           </div>
+        ) : filteredAmendments.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            <i className="fas fa-search text-4xl mb-3 block text-gray-300" />
+            <p>ไม่พบรายการที่ตรงกับตัวกรอง</p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -442,14 +548,16 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                 <tr className="bg-gray-50 text-left text-gray-600">
                   <th className="px-4 py-3 font-semibold">เลขที่คำขอ</th>
                   <th className="px-4 py-3 font-semibold">เลขบิล</th>
+                  <th className="px-4 py-3 font-semibold">เลขคำสั่งซื้อ</th>
                   <th className="px-4 py-3 font-semibold">เหตุผล</th>
                   <th className="px-4 py-3 font-semibold">สถานะ</th>
                   <th className="px-4 py-3 font-semibold">ผู้ขอ</th>
+                  <th className="px-4 py-3 font-semibold">ผู้อนุมัติ</th>
                   <th className="px-4 py-3 font-semibold">วันที่ขอ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {amendments.map((row) => (
+                {filteredAmendments.map((row) => (
                   <tr
                     key={row.id}
                     className="hover:bg-blue-50/50 cursor-pointer transition-colors"
@@ -457,9 +565,11 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   >
                     <td className="px-4 py-3 font-mono text-blue-600 font-semibold">{row.amendment_no}</td>
                     <td className="px-4 py-3 font-mono">{row.bill_no ?? '-'}</td>
+                    <td className="px-4 py-3 font-mono">{row.order?.channel_order_no || '-'}</td>
                     <td className="px-4 py-3">{reasonLabel(row.reason_type)}</td>
                     <td className="px-4 py-3">{statusBadge(row.status)}</td>
                     <td className="px-4 py-3">{(row.requested_by_user?.username || row.requested_by_user?.email || row.requested_by) ?? '-'}</td>
+                    <td className="px-4 py-3">{(row.approved_by_user?.username || row.approved_by_user?.email || row.approved_by) ?? '-'}</td>
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateTime(row.created_at)}</td>
                   </tr>
                 ))}
@@ -490,12 +600,20 @@ export default function AmendmentSection({ orderToAmend, onDone }: Props) {
                   <span className="font-mono font-bold text-blue-600">{detailAmendment.bill_no ?? '-'}</span>
                 </div>
                 <div>
+                  <span className="text-gray-500 block">เลขคำสั่งซื้อ</span>
+                  <span className="font-mono font-bold text-blue-600">{detailOrder?.channel_order_no || detailAmendment.order?.channel_order_no || '-'}</span>
+                </div>
+                <div>
                   <span className="text-gray-500 block">ประเภทเหตุผล</span>
                   <span className="font-semibold">{reasonLabel(detailAmendment.reason_type)}</span>
                 </div>
                 <div>
                   <span className="text-gray-500 block">ผู้ขอ</span>
                   <span>{(detailAmendment.requested_by_user?.username || detailAmendment.requested_by_user?.email || detailAmendment.requested_by) ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">ผู้อนุมัติ</span>
+                  <span>{(detailAmendment.approved_by_user?.username || detailAmendment.approved_by_user?.email || detailAmendment.approved_by) ?? '-'}</span>
                 </div>
                 <div>
                   <span className="text-gray-500 block">วันที่ขอ</span>

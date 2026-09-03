@@ -8,6 +8,7 @@ type AnomalyRow = {
   order_item_id: string
   bill_no: string
   entry_date: string
+  work_order_id: string
   work_order_name: string | null
   product_code: string
   product_name: string
@@ -54,8 +55,22 @@ export default function StockAnomalySection() {
   const [repairing, setRepairing] = useState<string | null>(null)
   const [bulkRepairing, setBulkRepairing] = useState(false)
   const [bulkResult, setBulkResult] = useState<BulkRepairResult | null>(null)
+  const [pickers, setPickers] = useState<Array<{ id: string; username: string | null }>>([])
+  const [recoveryTarget, setRecoveryTarget] = useState<AnomalyRow | null>(null)
+  const [recoveryPickerId, setRecoveryPickerId] = useState('')
+  const [recovering, setRecovering] = useState(false)
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal()
   const canRepair = ['superadmin', 'admin', 'store'].includes(user?.role || '')
+
+  useEffect(() => {
+    if (!canRepair) return
+    void supabase
+      .from('us_users')
+      .select('id, username')
+      .eq('role', 'picker')
+      .order('username')
+      .then(({ data }) => setPickers((data || []) as Array<{ id: string; username: string | null }>))
+  }, [canRepair])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -120,6 +135,31 @@ export default function StockAnomalySection() {
     load()
   }
 
+  const recoverWithPicker = async () => {
+    if (!recoveryTarget?.work_order_id || !recoveryPickerId) return
+    setRecovering(true)
+    const { data, error } = await supabase.rpc('rpc_assign_wms_for_work_order_v2', {
+      p_work_order_id: recoveryTarget.work_order_id,
+      p_picker_id: recoveryPickerId,
+    })
+    setRecovering(false)
+    if (error) {
+      showMessage({ message: `มอบหมาย Picker ไม่สำเร็จ: ${error.message}` })
+      return
+    }
+    const result = data as { success?: boolean; error?: string; warehouse_pick_main?: number; warehouse_pick_spare?: number }
+    if (!result?.success) {
+      showMessage({ message: result?.error || 'มอบหมาย Picker ไม่สำเร็จ' })
+      return
+    }
+    const created = Number(result.warehouse_pick_main || 0) + Number(result.warehouse_pick_spare || 0)
+    setRecoveryTarget(null)
+    setRecoveryPickerId('')
+    showMessage({ message: `มอบหมาย Picker และสร้างรายการ WMS ที่ขาดแล้ว ${created} รายการ กรุณาให้ Picker หยิบและฝ่ายคลังตรวจสินค้าให้ครบ` })
+    window.dispatchEvent(new CustomEvent('wms-data-changed'))
+    void load()
+  }
+
   const anomalyLabel = (row: AnomalyRow) => {
     if (row.anomaly_type === 'missing_wms') return 'รายการ WMS ขาด'
     if (row.anomaly_type === 'excess_wms') return 'รายการ WMS เกิน'
@@ -152,12 +192,38 @@ export default function StockAnomalySection() {
                 <td className="p-3"><div className="font-bold">{row.product_name}</div><div className="text-xs text-slate-500">{row.product_code}</div></td>
                 <td className="p-3 text-center font-bold">{row.expected_qty}</td><td className="p-3 text-center">{row.wms_qty}</td><td className="p-3 text-center">{row.correct_qty}</td><td className="p-3 text-center">{row.deducted_qty}</td>
                 <td className="p-3"><span className="rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700">{anomalyLabel(row)}</span></td>
-                <td className="p-3 text-center">{row.repairable && canRepair ? <button onClick={() => repair(row)} disabled={repairing === row.order_item_id} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{repairing === row.order_item_id ? 'กำลังซ่อม...' : 'ซ่อมรายการ'}</button> : <span className="text-xs text-slate-500">ตรวจด้วยตนเอง</span>}</td>
+                <td className="p-3 text-center">
+                  {row.repairable && canRepair ? (
+                    <div className="flex flex-col gap-1.5">
+                      <button onClick={() => repair(row)} disabled={repairing === row.order_item_id} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{repairing === row.order_item_id ? 'กำลังซ่อม...' : 'ซ่อมรายการ'}</button>
+                      <button onClick={() => { setRecoveryTarget(row); setRecoveryPickerId('') }} className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white">มอบหมาย Picker</button>
+                    </div>
+                  ) : <span className="text-xs text-slate-500">ตรวจด้วยตนเอง</span>}
+                </td>
               </tr>)}
             </tbody>
           </table>
         </div>
       )}
+      <Modal open={recoveryTarget !== null} onClose={() => { setRecoveryTarget(null); setRecoveryPickerId('') }} contentClassName="max-w-md">
+        {recoveryTarget && (
+          <div className="p-6">
+            <h3 className="text-lg font-black text-slate-800">กู้คืนใบงานที่ยังไม่ได้หยิบ</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              ใบงาน <strong>{recoveryTarget.work_order_name || '-'}</strong> · บิล {recoveryTarget.bill_no}
+            </p>
+            <p className="mt-2 text-sm text-amber-700">ระบบจะสร้างรายการ WMS ที่ขาดของทั้งใบงานและส่งให้ Picker ที่เลือก โดยยังไม่ตัดสต๊อคจนกว่าฝ่ายคลังจะตรวจถูก</p>
+            <select value={recoveryPickerId} onChange={(event) => setRecoveryPickerId(event.target.value)} className="mt-4 w-full rounded-lg border px-3 py-2">
+              <option value="">-- เลือก User Picker --</option>
+              {pickers.map((picker) => <option key={picker.id} value={picker.id}>{picker.username || picker.id}</option>)}
+            </select>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => { setRecoveryTarget(null); setRecoveryPickerId('') }} className="rounded-lg bg-slate-100 px-4 py-2 font-bold text-slate-700">ยกเลิก</button>
+              <button type="button" onClick={recoverWithPicker} disabled={!recoveryPickerId || recovering} className="rounded-lg bg-violet-600 px-4 py-2 font-bold text-white disabled:opacity-50">{recovering ? 'กำลังมอบหมาย...' : 'ยืนยันมอบหมาย'}</button>
+            </div>
+          </div>
+        )}
+      </Modal>
       <Modal open={bulkResult !== null} onClose={() => setBulkResult(null)} closeOnBackdropClick={false} contentClassName="max-w-4xl">
         {bulkResult && (
           <div className="p-6 sm:p-8">

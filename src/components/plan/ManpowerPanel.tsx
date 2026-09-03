@@ -100,12 +100,17 @@ function ManpowerJobCard({job,employeeMap,jobNameMap,canEdit,onAssign,onRemove,o
  </article>
 }
 
-function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,available,leaveEmployees,error,assignments,canEdit,onAssign,onRemove,onRefresh,onLock}:{selectedDate:string;workOrders:WorkOrderSummary[];coverage:CoverageRow[];employees:ManpowerEmployee[];profiles:EmployeeProfile[];available:ManpowerEmployee[];leaveEmployees:ManpowerEmployee[];error:string;assignments:WorkerAssignment[];canEdit:boolean;onAssign:(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor',options?:AssignOptions)=>Promise<boolean>;onRemove:(id:string)=>void;onRefresh:()=>Promise<void>;onLock:(job:PreparedJob)=>void}){
+function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,available,leaveEmployees,error,assignments,canEdit,onAssign,onRemove,onRefresh,onLock}:{selectedDate:string;workOrders:WorkOrderSummary[];coverage:CoverageRow[];employees:ManpowerEmployee[];profiles:EmployeeProfile[];available:ManpowerEmployee[];leaveEmployees:ManpowerEmployee[];error:string;assignments:WorkerAssignment[];canEdit:boolean;onAssign:(job:WorkOrderSummary,row:CoverageRow,skill:EmployeeSkill,role:'operator'|'supervisor',options?:AssignOptions)=>Promise<boolean>;onRemove:(id:string)=>void;onRefresh:(silent?:boolean)=>Promise<void>;onLock:(job:PreparedJob)=>void}){
  const [nowTick,setNowTick]=useState(()=>Date.now())
  const [conflictHighlight,setConflictHighlight]=useState<ConflictHighlight|null>(null)
  const [automaticJobId,setAutomaticJobId]=useState<string|null>(null)
+ const [automaticProgress,setAutomaticProgress]=useState({current:0,total:0})
+ const [automaticPopupOpen,setAutomaticPopupOpen]=useState(false)
+ const [automaticJobName,setAutomaticJobName]=useState('')
+ const automaticPopupCloseTimer=useRef<number|null>(null)
  const automaticAttemptedJobIds=useRef(new Set<string>())
  useEffect(()=>{const timer=window.setInterval(()=>setNowTick(Date.now()),30000);return()=>window.clearInterval(timer)},[])
+ useEffect(()=>()=>{if(automaticPopupCloseTimer.current!==null)window.clearTimeout(automaticPopupCloseTimer.current)},[])
  const allowSupervisorAsWorker=coverage.some(row=>row.allowSupervisorAsWorker)
  const profileMap=new Map(profiles.map(p=>[p.employee_id,p]))
  const employeeMap=new Map(employees.map(e=>[e.id,e]))
@@ -150,7 +155,7 @@ function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,a
     if(allowSupervisorAsWorker&&row.requirement.required_supervisors>0){await assignMissing('supervisor',[...row.supervisors],row.assignedSupervisorShortage);await assignMissing('operator',[...row.operators],row.assignedOperatorShortage)}
     else{await assignMissing('operator',[...row.operators],row.assignedOperatorShortage);await assignMissing('supervisor',[...row.supervisors],row.assignedSupervisorShortage)}
   }
-  await onRefresh()
+   await onRefresh(true)
  }
  const isJobDone=(job:PreparedJob)=>job.rows.length>0&&job.rows.every(row=>(job.processStates?.[`${row.dept}|${row.process}`]||'pending')==='done')
  const pendingJobs=jobs.filter(job=>!isJobDone(job))
@@ -164,23 +169,50 @@ function ManpowerOverview({selectedDate,workOrders,coverage,employees,profiles,a
    !assignments.some(assignment=>assignment.plan_job_id===job.id)&&
    !automaticAttemptedJobIds.current.has(job.id)
   )
-  if(!candidate)return
-  automaticAttemptedJobIds.current.add(candidate.id)
-  setAutomaticJobId(candidate.id)
-  void autoAssignJob(candidate,()=>{}).finally(()=>setAutomaticJobId(null))
+   if(!candidate)return
+   automaticAttemptedJobIds.current.add(candidate.id)
+   if(automaticPopupCloseTimer.current!==null)window.clearTimeout(automaticPopupCloseTimer.current)
+   setAutomaticPopupOpen(true)
+   setAutomaticJobName(candidate.name)
+   setAutomaticProgress({current:0,total:candidate.shortage})
+   setAutomaticJobId(candidate.id)
+   void autoAssignJob(candidate,(current,total)=>setAutomaticProgress({current,total})).finally(()=>{
+    setAutomaticJobId(null)
+    automaticPopupCloseTimer.current=window.setTimeout(()=>setAutomaticPopupOpen(false),500)
+   })
  },[assignments,automaticJobId,canEdit,jobs]) // eslint-disable-line react-hooks/exhaustive-deps
  return <section className="space-y-4 pb-4 [&_article_.uppercase]:hidden [&_article_header_div_p]:hidden">
   <div className="rounded-xl border bg-white p-5 shadow-sm">
    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">มอบหมายงานตามใบงาน</h2><p className="text-sm text-gray-500">วันที่ {new Date(`${selectedDate}T00:00:00`).toLocaleDateString('th-TH',{dateStyle:'long'})} · แยกคนลงผลิตออกจากหัวหน้าคุมงาน</p></div><div className="flex items-start gap-2"><EmployeeRoster label="พร้อมจัดแผน" employees={available} tone="emerald"/><EmployeeRoster label="ลา" employees={leaveEmployees} tone="amber"/></div></div>
    {error&&<p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-   {automaticJobId&&<p className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">กำลังจัดสรรพนักงานอัตโนมัติให้ใบงาน {jobs.find(job=>job.id===automaticJobId)?.name||automaticJobId}…</p>}
    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="text-sm font-semibold text-slate-600">ใบงานวันนี้</div><b className="mt-1 block text-2xl text-slate-800">{jobs.length} <span className="text-sm font-semibold">ใบงาน</span></b></div><div className="rounded-xl border border-blue-100 bg-blue-50 p-4"><div className="text-sm font-semibold text-blue-700">งานที่ต้องจัดคน</div><b className="mt-1 block text-2xl text-blue-800">{totalProcesses} <span className="text-sm font-semibold">งาน</span></b></div><div className="rounded-xl border border-violet-100 bg-violet-50 p-4"><div className="text-sm font-semibold text-violet-700">พนักงานที่ถูกจัด</div><b className="mt-1 block text-2xl text-violet-800">{assignedPeople} <span className="text-sm font-medium">คน</span></b></div><div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4"><div className="text-sm font-semibold text-emerald-700">งานที่จัดครบ</div><b className="mt-1 block text-2xl text-emerald-800">{completedProcesses}<span className="text-sm font-semibold">/{totalProcesses} งาน</span></b></div><div className={`rounded-xl border p-4 ${shortageProcesses?'border-red-200 bg-red-50':'border-emerald-200 bg-emerald-50'}`}><div className={`text-sm font-semibold ${shortageProcesses?'text-red-600':'text-emerald-600'}`}>งานที่ยังจัดไม่ครบ</div><b className={`mt-1 block text-2xl ${shortageProcesses?'text-red-700':'text-emerald-700'}`}>{shortageProcesses} <span className="text-sm font-semibold">งาน</span></b></div></div>
   </div>
   {jobs.length===0?<div className="rounded-xl border border-dashed bg-white p-12 text-center text-gray-500"><p className="font-semibold">ไม่มีใบงานในวันที่เลือก</p><p className="mt-1 text-sm">เลือกวันที่มีใบงาน หรือสร้างใบงานก่อนมอบหมายงาน</p></div>:<div className="space-y-4">
    {pendingJobs.length>0&&<div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">{pendingJobs.map(job=><ManpowerJobCard key={job.id} job={job} employeeMap={employeeMap} jobNameMap={jobNameMap} canEdit={canEdit} onAssign={onAssign} onRemove={onRemove} onAutoAssign={autoAssignJob} allAssignments={assignments} onLock={onLock} selectedDate={selectedDate} nowTick={nowTick} conflictHighlight={conflictHighlight} onConflictHighlight={toggleConflictHighlight}/>)}</div>}
    {completedJobs.length>0&&<details className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><summary className="flex cursor-pointer list-none items-center justify-between px-5 py-4 font-bold text-slate-700 hover:bg-slate-100"><span>งานเสร็จแล้ว</span><span className="rounded-full bg-slate-200 px-3 py-1 text-xs">{completedJobs.length} ใบงาน ▾</span></summary><div className="grid items-start gap-4 border-t border-slate-200 p-4 md:grid-cols-2 xl:grid-cols-3">{completedJobs.map(job=><ManpowerJobCard key={job.id} job={job} employeeMap={employeeMap} jobNameMap={jobNameMap} canEdit={canEdit} onAssign={onAssign} onRemove={onRemove} onAutoAssign={autoAssignJob} allAssignments={assignments} onLock={onLock} selectedDate={selectedDate} nowTick={nowTick} conflictHighlight={conflictHighlight} onConflictHighlight={toggleConflictHighlight}/>)}</div></details>}
   </div>}
- </section>
+   <Modal open={automaticPopupOpen} onClose={()=>{}} contentClassName="max-w-md">
+    <div className="p-6">
+     <div className="flex items-start gap-3">
+      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600">
+       <span className="h-6 w-6 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+      </span>
+      <div className="min-w-0">
+       <h3 className="text-lg font-bold text-slate-900">กำลังจัดสรรพนักงานอัตโนมัติ</h3>
+       <p className="mt-1 truncate text-sm text-slate-500">ใบงาน {automaticJobName||automaticJobId}</p>
+      </div>
+     </div>
+     <div className="mt-5 h-3 overflow-hidden rounded-full bg-slate-200">
+      <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{width:`${automaticProgress.total?Math.min(100,(automaticProgress.current/automaticProgress.total)*100):0}%`}} />
+     </div>
+     <div className="mt-2 flex items-center justify-between gap-3 text-sm">
+      <span className="font-semibold text-blue-700">ดำเนินการแล้ว {automaticProgress.current}/{automaticProgress.total} งาน</span>
+      <span className="font-bold tabular-nums text-slate-600">{automaticProgress.total?Math.round((automaticProgress.current/automaticProgress.total)*100):0}%</span>
+     </div>
+     <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">กรุณารอสักครู่ ระบบจะปิดหน้าต่างนี้เมื่อจัดสรรและตรวจสอบข้อมูลเรียบร้อย</p>
+    </div>
+   </Modal>
+  </section>
 }
 
  function CandidateBox({title,color,skills,employeeMap,canEdit=false,assigned=[],role,onAssign,busyAssignments=[],jobNameMap=new Map(),highlightEmployeeId=null,onHighlightEmployee}:{title:string;color:'emerald'|'blue'|'amber';skills:EmployeeSkill[];employeeMap:Map<string,ManpowerEmployee>;canEdit?:boolean;assigned?:WorkerAssignment[];role?:'operator'|'supervisor';onAssign?:(skill:EmployeeSkill)=>void;busyAssignments?:WorkerAssignment[];jobNameMap?:Map<string,string>;highlightEmployeeId?:string|null;onHighlightEmployee?:(employeeId:string)=>void}){
@@ -242,7 +274,7 @@ export default function ManpowerPanel({mode,departments,processes,selectedDate,c
  const activeManpowerView=view||manpowerView
  const workOrderScheduleKey=JSON.stringify(workOrders.map(job=>[job.id,job.manpowerLockedAt,job.lineAssignments,job.schedules]))
  useEffect(()=>{const first=processes[department]?.[0]?.name||'';if(!processes[department]?.some(p=>p.name===processName))setProcessName(first)},[department,processes,processName])
- const load=useCallback(async()=>{setLoading(true);setError('');const [er,pr,sr,rr,lr,tr,ar,ahr,her,jhr,psr]=await Promise.all([
+  const load=useCallback(async(silent=false)=>{if(!silent)setLoading(true);setError('');const [er,pr,sr,rr,lr,tr,ar,ahr,her,jhr,psr]=await Promise.all([
   supabase.rpc('plan_list_employees'),
   supabase.from('plan_employee_profiles').select('*'),supabase.from('plan_employee_skills').select('*').order('department_name').order('process_name'),
   supabase.from('plan_operation_requirements').select('*').order('department_name').order('process_name'),
