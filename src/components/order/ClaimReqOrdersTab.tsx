@@ -343,7 +343,6 @@ export default function ClaimReqOrdersTab({
   const [reqFilterDateFrom, setReqFilterDateFrom] = useState(defaultReqFilterDateFrom)
   const [reqFilterDateTo, setReqFilterDateTo] = useState(defaultReqFilterDateTo)
   const [reqFilterSearch, setReqFilterSearch] = useState('')
-  const [channelLabels, setChannelLabels] = useState<Record<string, string>>({})
   const [compareOpen, setCompareOpen] = useState(false)
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareDetail, setCompareDetail] = useState<ClaimCompareDetail | null>(null)
@@ -393,15 +392,6 @@ export default function ClaimReqOrdersTab({
 
   useEffect(() => {
     void fetchClaimTypeLabelMap().then(setClaimLabels)
-  }, [])
-
-  useEffect(() => {
-    void supabase
-      .from('channels')
-      .select('channel_code, channel_name')
-      .then(({ data }) => {
-        setChannelLabels(Object.fromEntries((data || []).map((c) => [c.channel_code, c.channel_name])))
-      })
   }, [])
 
   async function openClaimCompare(requestId: string) {
@@ -1489,7 +1479,6 @@ export default function ClaimReqOrdersTab({
                 detail={compareDetail}
                 refOrder={compareRefOrder}
                 refLoading={compareLoading}
-                channelLabels={channelLabels}
                 claimLabels={claimLabels}
                 latestPriorReqBillNo={compareLatestPrior}
                 approvedResultBillNo={compareApprovedResult}

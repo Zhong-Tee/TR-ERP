@@ -19,6 +19,8 @@ import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
 import { generateBillNo } from '../../lib/billNo'
 import { findWyProduct } from '../../lib/wyProductMatcher'
 import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
+import { buildIlikeOr } from '../../lib/searchFilter'
+import { isSelfPickupChannel } from '../../lib/channelBehavior'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -589,6 +591,14 @@ type ClaimDraftRecord = {
   proposed_snapshot: { order?: Record<string, unknown>; items?: Record<string, unknown>[] } | null
 }
 
+type ClaimRefMeta = { hasPending: boolean; hasDraft: boolean; latestReqBillNo: string | null }
+type ClaimRequestMetaRow = {
+  ref_order_id: string
+  status: string
+  created_claim_order_id: string | null
+  reviewed_at: string | null
+}
+
 /** map รายการจาก proposed_snapshot.items กลับเป็น ClaimDraftRow (เติม key ที่ไม่ได้เก็บใน DB) */
 function snapshotItemToClaimDraftRow(item: Record<string, unknown>, idx: number): ClaimDraftRow {
   return {
@@ -733,6 +743,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [claimOrders, setClaimOrders] = useState<Order[]>([])
   const [claimOrdersLoading, setClaimOrdersLoading] = useState(false)
   const [claimFilterSearch, setClaimFilterSearch] = useState('')
+  const [claimSearchResults, setClaimSearchResults] = useState<Order[] | null>(null)
+  const [claimSearchLoading, setClaimSearchLoading] = useState(false)
   const undoStackRef = useRef<Array<{ formData: typeof formData; items: Partial<OrderItem>[] }>>([])
   const undoingRef = useRef(false)
   const [claimFilterChannel, setClaimFilterChannel] = useState('')
@@ -753,8 +765,13 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [claimDraftLoading, setClaimDraftLoading] = useState(false)
   /** บิลจัดส่ง: มีคำขอรออนุมัติ / มีร่างเคลม / บิล REQ ล่าสุดหลังอนุมัติ (แสดงแทนเลขบิลเดิม + เคลมซ้ำ) */
   const [claimRefMetaByOrderId, setClaimRefMetaByOrderId] = useState<
-    Record<string, { hasPending: boolean; hasDraft: boolean; latestReqBillNo: string | null }>
+    Record<string, ClaimRefMeta>
   >({})
+  const claimOrderCandidates = useMemo(() => {
+    const unique = new Map<string, Order>()
+    for (const order of [...(claimSearchResults || []), ...claimOrders]) unique.set(order.id, order)
+    return [...unique.values()]
+  }, [claimOrders, claimSearchResults])
   /** เมื่อออเดอร์สถานะ "ลงข้อมูลผิด": ฟิลด์ระดับบิลที่ติ๊กผิดจาก review (แสดงกรอบแดง) */
   const [reviewErrorFields, setReviewErrorFields] = useState<Record<string, boolean> | null>(null)
   /** ฟิลด์ระดับรายการที่ผิดต่อ index (error_fields.items) — ถ้ามีใช้แยกรายการ ไม่ใช่ทั้งบิล */
@@ -1244,6 +1261,57 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return () => { cancelled = true }
   }, [])
 
+  async function fetchClaimRefMeta(orders: Order[]): Promise<Record<string, ClaimRefMeta>> {
+    const meta: Record<string, ClaimRefMeta> = {}
+    for (const order of orders) {
+      meta[order.id] = { hasPending: false, hasDraft: false, latestReqBillNo: null }
+    }
+
+    const ids = orders.map((order) => order.id)
+    const chunkSize = 100
+    const reqRows: ClaimRequestMetaRow[] = []
+    for (let index = 0; index < ids.length; index += chunkSize) {
+      const chunk = ids.slice(index, index + chunkSize)
+      if (!chunk.length) continue
+      const { data } = await supabase
+        .from('or_claim_requests')
+        .select('ref_order_id, status, created_claim_order_id, reviewed_at')
+        .in('ref_order_id', chunk)
+        .in('status', ['pending', 'approved', 'draft'])
+      if (data) reqRows.push(...(data as ClaimRequestMetaRow[]))
+    }
+
+    for (const row of reqRows) {
+      if (!meta[row.ref_order_id]) continue
+      if (row.status === 'pending') meta[row.ref_order_id].hasPending = true
+      else if (row.status === 'draft') meta[row.ref_order_id].hasDraft = true
+    }
+
+    const bestApproved = new Map<string, { reviewedAt: string; claimOrderId: string }>()
+    for (const row of reqRows) {
+      if (row.status !== 'approved' || !row.created_claim_order_id) continue
+      const reviewedAt = row.reviewed_at || ''
+      const previous = bestApproved.get(row.ref_order_id)
+      if (!previous || reviewedAt > previous.reviewedAt) {
+        bestApproved.set(row.ref_order_id, { reviewedAt, claimOrderId: row.created_claim_order_id })
+      }
+    }
+
+    const claimOrderIds = [...new Set([...bestApproved.values()].map((row) => row.claimOrderId))]
+    const billByOrderId: Record<string, string> = {}
+    for (let index = 0; index < claimOrderIds.length; index += chunkSize) {
+      const chunk = claimOrderIds.slice(index, index + chunkSize)
+      const { data } = await supabase.from('or_orders').select('id, bill_no').in('id', chunk)
+      for (const row of data || []) {
+        if (row.bill_no) billByOrderId[row.id] = row.bill_no
+      }
+    }
+    for (const [refOrderId, approved] of bestApproved) {
+      if (meta[refOrderId]) meta[refOrderId].latestReqBillNo = billByOrderId[approved.claimOrderId] || null
+    }
+    return meta
+  }
+
   /** เมื่อเปิด Modal เคลม: โหลดรายการบิลและ claim_type */
   useEffect(() => {
     if (!claimModalOpen) return
@@ -1254,6 +1322,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     setClaimDescription('')
     setClaimFilterSearch('')
     setClaimFilterChannel('')
+    setClaimSearchResults(null)
+    setClaimSearchLoading(false)
     setClaimDraftItems([])
     setClaimShippingCost(0)
     setEditingClaimDraftId(null)
@@ -1269,62 +1339,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         if (ordersRes.data) setClaimOrders(orders)
         if (typesRes.data) setClaimTypes(typesRes.data as { code: string; name: string }[])
 
-        const meta: Record<string, { hasPending: boolean; hasDraft: boolean; latestReqBillNo: string | null }> = {}
-        for (const o of orders) {
-          meta[o.id] = { hasPending: false, hasDraft: false, latestReqBillNo: null }
-        }
-        const ids = orders.map((o) => o.id)
-        const CHUNK = 100
-        type ReqRow = {
-          ref_order_id: string
-          status: string
-          created_claim_order_id: string | null
-          reviewed_at: string | null
-        }
-        const reqRows: ReqRow[] = []
-        for (let i = 0; i < ids.length; i += CHUNK) {
-          const chunk = ids.slice(i, i + CHUNK)
-          if (chunk.length === 0) continue
-          const { data: part } = await supabase
-            .from('or_claim_requests')
-            .select('ref_order_id, status, created_claim_order_id, reviewed_at')
-            .in('ref_order_id', chunk)
-            .in('status', ['pending', 'approved', 'draft'])
-          if (part) reqRows.push(...(part as ReqRow[]))
-        }
-        for (const r of reqRows) {
-          if (!meta[r.ref_order_id]) continue
-          if (r.status === 'pending') meta[r.ref_order_id].hasPending = true
-          else if (r.status === 'draft') meta[r.ref_order_id].hasDraft = true
-        }
-        const bestApproved = new Map<string, { reviewed_at: string; created_claim_order_id: string }>()
-        for (const r of reqRows) {
-          if (r.status !== 'approved' || !r.created_claim_order_id) continue
-          const prev = bestApproved.get(r.ref_order_id)
-          const rt = r.reviewed_at || ''
-          if (!prev || rt > prev.reviewed_at) {
-            bestApproved.set(r.ref_order_id, {
-              reviewed_at: rt,
-              created_claim_order_id: r.created_claim_order_id,
-            })
-          }
-        }
-        const createdIds = [...new Set([...bestApproved.values()].map((v) => v.created_claim_order_id))]
-        const billByOrderId: Record<string, string> = {}
-        for (let i = 0; i < createdIds.length; i += CHUNK) {
-          const ch = createdIds.slice(i, i + CHUNK)
-          if (ch.length === 0) continue
-          const { data: orows } = await supabase.from('or_orders').select('id, bill_no').in('id', ch)
-          for (const row of orows || []) {
-            const ro = row as { id: string; bill_no: string | null }
-            if (ro.bill_no) billByOrderId[ro.id] = ro.bill_no
-          }
-        }
-        for (const [refId, v] of bestApproved) {
-          const bn = billByOrderId[v.created_claim_order_id]
-          if (bn && meta[refId]) meta[refId].latestReqBillNo = bn
-        }
-        setClaimRefMetaByOrderId(meta)
+        setClaimRefMetaByOrderId(await fetchClaimRefMeta(orders))
 
         // ถ้ามีร่างรอโหลด → เติมข้อมูลร่างและกระโดดไปขั้นแก้รายการ (step 3)
         const pd = pendingClaimDraftRef.current
@@ -1362,6 +1377,52 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
     })()
   }, [claimModalOpen])
+
+  /** ค้นจากฐานข้อมูลโดยตรง เพื่อไม่ติดเพดานรายการล่าสุด 500 บิลของหน้าเริ่มต้น */
+  useEffect(() => {
+    if (!claimModalOpen || claimStep !== 1) return
+    const search = claimFilterSearch.trim()
+    if (!search) {
+      setClaimSearchResults(null)
+      setClaimSearchLoading(false)
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setClaimSearchLoading(true)
+      try {
+        let query = supabase
+          .from('or_orders')
+          .select('*')
+          .not('bill_no', 'is', null)
+          .eq('status', 'จัดส่งแล้ว')
+          .or(buildIlikeOr(search, ['bill_no', 'customer_name', 'channel_order_no', 'express_receipt_number']))
+          .order('created_at', { ascending: false })
+          .limit(100)
+        if (claimFilterChannel.trim()) query = query.eq('channel_code', claimFilterChannel.trim())
+
+        const { data, error } = await query
+        if (error) throw error
+        const results = (data || []) as Order[]
+        const resultMeta = await fetchClaimRefMeta(results)
+        if (!cancelled) {
+          setClaimSearchResults(results)
+          setClaimRefMetaByOrderId((current) => ({ ...current, ...resultMeta }))
+        }
+      } catch (error) {
+        console.error('Error searching claim reference orders:', error)
+        if (!cancelled) setClaimSearchResults([])
+      } finally {
+        if (!cancelled) setClaimSearchLoading(false)
+      }
+    }, 300)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [claimModalOpen, claimStep, claimFilterSearch, claimFilterChannel])
 
   /** เปิดร่างเคลมเข้า modal เพื่อแก้ต่อ (จากแท็บบันทึกร่างในบิลเคลม) */
   useEffect(() => {
@@ -1766,7 +1827,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
 
     // ถ้ามีเลขพัสดุ เช็คซ้ำ (ไม่บังคับกรอก แต่ถ้ากรอกต้องไม่ซ้ำ)
-    if (formData.tracking_number && formData.tracking_number.trim()) {
+    if (!isSelfPickupChannel(formData.channel_code) && formData.tracking_number && formData.tracking_number.trim()) {
       const { data: dup, error } = await supabase
         .from('or_orders')
         .select('id')
@@ -2028,6 +2089,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const currentUserName = user.username || user.email
       const orderData = {
         ...formDataForDb,
+        // SHOPP คือหน้าร้านรับเอง จึงต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
+        tracking_number: isSelfPickupChannel(channelCodeForSave) ? null : formDataForDb.tracking_number,
         requires_confirm_design: requiresConfirmDesign,
         customer_address: customerAddressToSave,
         price: calculatedPrice,
@@ -4549,6 +4612,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป; nameLinesOnly ล็อกทุกอย่างยกเว้นบรรทัดชื่อ */
   const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
   const limitedReferenceFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
+  const showExpressReceiptField = Boolean(
+    order?.requires_express_receipt_number ||
+    formData.express_receipt_number.trim() ||
+    order?.express_receipt_number?.trim(),
+  )
 
   useImperativeHandle(
     ref,
@@ -4568,7 +4636,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           })),
       getLimitedEditPayload: (): OrderFormLimitedEditPayload => ({
         channel_order_no: formData.channel_order_no.trim() || null,
-        tracking_number: formData.tracking_number.trim() || null,
+        tracking_number: isSelfPickupChannel(formData.channel_code) ? null : formData.tracking_number.trim() || null,
         express_receipt_number: formData.express_receipt_number.trim() || null,
         lines: items
           .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
@@ -4580,7 +4648,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           })),
       }),
     }),
-    [formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items],
+    [formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items],
   )
 
   return (
@@ -4595,7 +4663,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         )}
         {nameLinesOnlyMode && order && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-            <strong>แก้ไขบรรทัดชื่อ (1–3) และข้อมูลจัดส่ง</strong> — เลขคำสั่งซื้อ เลขพัสดุ และเลขรับพัสดุด่วน แก้ไขได้จนกว่าจะจัดส่ง
+            <strong>แก้ไขบรรทัดชื่อ (1–3) และข้อมูลจัดส่ง</strong> — ระบบจะแสดงเฉพาะช่องข้อมูลจัดส่งที่ใช้กับบิลนี้ และแก้ไขได้จนกว่าจะจัดส่ง
           </div>
         )}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -4967,18 +5035,20 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 })()}
               </div>
             )}
-            <div>
-              <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
-              <input
-                type="text"
-                value={formData.tracking_number}
-                onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
-                placeholder="กรอกเลขพัสดุ"
-                disabled={!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)}
-                className={`w-full px-3 py-2 border rounded-lg ${(!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
-              />
-            </div>
-            {(nameLinesOnlyMode || formData.express_receipt_number || order?.express_receipt_number) && (
+            {!isSelfPickupChannel(formData.channel_code) && (
+              <div>
+                <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
+                <input
+                  type="text"
+                  value={formData.tracking_number}
+                  onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
+                  placeholder="กรอกเลขพัสดุ"
+                  disabled={!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)}
+                  className={`w-full px-3 py-2 border rounded-lg ${(!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                />
+              </div>
+            )}
+            {showExpressReceiptField && (
               <div>
                 <label className="block text-sm font-medium mb-1">เลขรับพัสดุด่วน</label>
                 <input
@@ -6244,7 +6314,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 }
               }
 
-              if (formData.tracking_number && formData.tracking_number.trim()) {
+              if (!isSelfPickupChannel(formData.channel_code) && formData.tracking_number && formData.tracking_number.trim()) {
                 const { data: dup, error } = await supabase
                   .from('or_orders')
                   .select('id')
@@ -7005,7 +7075,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               </select>
             </div>
             <div className="border rounded-lg overflow-auto flex-1 min-h-[200px] max-h-[320px]">
-              {claimOrdersLoading ? (
+              {claimOrdersLoading || claimSearchLoading ? (
                 <div className="p-4 text-gray-500">กำลังโหลด...</div>
               ) : (
                 <table className="w-full text-sm">
@@ -7020,7 +7090,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     </tr>
                   </thead>
                   <tbody>
-                    {claimOrders
+                    {claimOrderCandidates
                       .filter((o) => {
                         const search = claimFilterSearch.trim().toLowerCase()
                         const ch = claimFilterChannel.trim()

@@ -1,7 +1,6 @@
 import { claimTypeLabel } from '../../lib/claimTypeLabels'
 import type { ClaimCompareDetail, OrderItemRow, RefOrderDetail } from './claimCompareShared'
 import {
-  channelLabel,
   customerFromProposedOrder,
   externalUrlOrNull,
   fmtMoney,
@@ -57,7 +56,6 @@ type Props = {
   detail: ClaimCompareDetail
   refOrder: RefOrderDetail | null
   refLoading: boolean
-  channelLabels: Record<string, string>
   claimLabels: Record<string, string>
   /** REQ ที่อนุมัติแล้วก่อนคำขอนี้ (เคลมซ้ำ) — จากแมปหรือจากโหลด */
   latestPriorReqBillNo?: string | null
@@ -69,7 +67,6 @@ export default function ClaimRequestComparePanel({
   detail,
   refOrder,
   refLoading,
-  channelLabels,
   claimLabels,
   latestPriorReqBillNo,
   approvedResultBillNo,
@@ -97,6 +94,7 @@ export default function ClaimRequestComparePanel({
         customer_address: refOrder.customer_address,
         mobile_phone: refOrder.mobile_phone,
         channel_code: refOrder.channel_code,
+        channel_order_no: refOrder.channel_order_no,
         admin_user: refOrder.admin_user,
       }
     : detail.ref_order
@@ -105,6 +103,7 @@ export default function ClaimRequestComparePanel({
           customer_address: detail.ref_order.customer_address,
           mobile_phone: detail.ref_order.mobile_phone,
           channel_code: detail.ref_order.channel_code,
+          channel_order_no: detail.ref_order.channel_order_no,
           admin_user: detail.ref_order.admin_user,
         }
       : proposedCustomerFallback
@@ -175,7 +174,7 @@ export default function ClaimRequestComparePanel({
           <div className="font-semibold text-slate-800">ข้อมูลลูกค้า (บิลอ้างอิง / จัดส่งเดิม)</div>
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-gray-800">
             <div className="sm:col-span-2">
-              <dt className="text-gray-500 text-xs font-medium">ชื่อลูกค้า</dt>
+              <dt className="text-gray-500 text-xs font-medium">ชื่อช่องทาง</dt>
               <dd className="mt-0.5 whitespace-pre-wrap break-words">{modalCustomer.customer_name?.trim() || '–'}</dd>
             </div>
             <div className="sm:col-span-2">
@@ -190,7 +189,11 @@ export default function ClaimRequestComparePanel({
             </div>
             <div>
               <dt className="text-gray-500 text-xs font-medium">ช่องทาง</dt>
-              <dd className="mt-0.5">{channelLabel(channelLabels, modalCustomer.channel_code)}</dd>
+              <dd className="mt-0.5">{modalCustomer.channel_code?.trim() || '–'}</dd>
+            </div>
+            <div>
+              <dt className="text-gray-500 text-xs font-medium">เลขคำสั่งซื้อ</dt>
+              <dd className="mt-0.5 font-mono">{modalCustomer.channel_order_no?.trim() || '–'}</dd>
             </div>
             <div className="sm:col-span-2">
               <dt className="text-gray-500 text-xs font-medium">ผู้เปิดบิล</dt>
@@ -218,7 +221,14 @@ export default function ClaimRequestComparePanel({
       ) : null}
 
       <div className="border rounded-lg overflow-hidden shrink-0">
-        <div className="bg-slate-100 px-3 py-2 font-semibold text-slate-800 text-sm">บิลเก่า (จัดส่งแล้ว)</div>
+        <div className="flex items-center gap-2 bg-slate-100 px-3 py-2 font-semibold text-slate-800 text-sm">
+          <span>บิลเก่า (จัดส่งแล้ว)</span>
+          {refOrder?.has_bill_edit ? (
+            <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+              มีการแก้ไข
+            </span>
+          ) : null}
+        </div>
         {refLoading ? (
           <p className="p-3 text-sm text-gray-500">กำลังโหลด...</p>
         ) : refOrder ? (

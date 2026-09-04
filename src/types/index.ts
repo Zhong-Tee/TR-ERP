@@ -96,6 +96,8 @@ export interface Order {
   /** ค่าตัวเลือกการจัดส่งต้นทางจากไฟล์ Marketplace */
   shipping_option?: string | null
   tracking_number: string | null
+  /** กฎขนส่ง Marketplace ระบุว่าบิลนี้ต้องใช้เลขรับพัสดุด่วน */
+  requires_express_receipt_number?: boolean
   /** เลขรับพัสดุด่วนจากหน้า Marketplace Assign */
   express_receipt_number?: string | null
   claim_type: string | null

@@ -2,6 +2,22 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ClaimCompareDetail, OrderItemRow, RefOrderDetail } from '../components/claim/claimCompareShared'
 import { ORDER_ITEM_DETAIL_COLUMNS, rowToRefEmbed } from '../components/claim/claimCompareShared'
 
+export async function fetchHasBillEditLog(
+  supabase: SupabaseClient,
+  orderId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('ac_bill_edit_logs')
+    .select('id')
+    .eq('order_id', orderId)
+    .limit(1)
+  if (error) {
+    console.warn('fetchHasBillEditLog', error)
+    return false
+  }
+  return (data?.length || 0) > 0
+}
+
 export async function fetchLatestPriorReqBillNo(
   supabase: SupabaseClient,
   refOrderId: string,
@@ -74,7 +90,7 @@ export async function fetchRefOrderDetailWithItems(
   const { data: o, error } = await supabase
     .from('or_orders')
     .select(
-      'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, admin_user, billing_details, tracking_number',
+      'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, channel_order_no, admin_user, billing_details, tracking_number',
     )
     .eq('id', refOrderId)
     .maybeSingle()
@@ -93,6 +109,8 @@ export async function fetchRefOrderDetailWithItems(
     items = (itemRows || []) as OrderItemRow[]
   }
 
+  const hasBillEdit = await fetchHasBillEditLog(supabase, refOrderId)
+
   const oo = o as {
     bill_no?: string
     price?: number
@@ -102,6 +120,7 @@ export async function fetchRefOrderDetailWithItems(
     customer_name?: string | null
     customer_address?: string | null
     channel_code?: string | null
+    channel_order_no?: string | null
     admin_user?: string | null
     tracking_number?: string | null
     billing_details?: unknown
@@ -109,6 +128,7 @@ export async function fetchRefOrderDetailWithItems(
   const emb = rowToRefEmbed(oo)
   return {
     bill_no: String(oo.bill_no || ''),
+    has_bill_edit: hasBillEdit,
     price: Number(oo.price) || 0,
     total_amount: Number(oo.total_amount) || 0,
     shipping_cost: Number(oo.shipping_cost) || 0,
@@ -117,6 +137,7 @@ export async function fetchRefOrderDetailWithItems(
     customer_address: emb.customer_address,
     mobile_phone: emb.mobile_phone,
     channel_code: emb.channel_code,
+    channel_order_no: emb.channel_order_no,
     admin_user: emb.admin_user,
     tracking_number: oo.tracking_number ?? null,
     order_items: items,

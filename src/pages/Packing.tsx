@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
+import { isSelfPickupChannel } from '../lib/channelBehavior'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -52,6 +53,8 @@ type OrderWithItems = Order & {
 }
 
 type PackingItem = {
+  bill_no: string
+  channel_code: string
   tracking_number: string
   channel_order_no: string | null
   express_receipt_number: string
@@ -115,6 +118,24 @@ function sortedPackingOrderItems(order: OrderWithItems | any): any[] {
   return sortOrderItemsForExport(activePackingOrderItems(order))
 }
 
+function isOrderPackableWithoutParcelNumber(order: Pick<Order, 'channel_code'>): boolean {
+  return isSelfPickupChannel(order.channel_code)
+}
+
+function hasPackingReference(order: Pick<Order, 'channel_code' | 'tracking_number'>): boolean {
+  return isOrderPackableWithoutParcelNumber(order) || Boolean(order.tracking_number?.trim())
+}
+
+function packingVideoReference(item: PackingItem): string {
+  return item.tracking_number.trim() || item.bill_no.trim() || item.order_id
+}
+
+function packingGroupLabel(item: PackingItem): string {
+  return isSelfPickupChannel(item.channel_code)
+    ? `SHOP PICKUP • ${item.bill_no}`
+    : formatParcelNo(item.tracking_number)
+}
+
 function resolvePackingQcStatus(
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
   unitUid: string,
@@ -131,7 +152,7 @@ function buildPackingItemsFromOrder(
   wmsReadyByOrderItem: Record<string, boolean> = {}
 ): PackingItem[] {
   const isOrderShipped = order.status === 'จัดส่งแล้ว'
-  const isParcelScanned = order.packing_meta?.parcelScanned || false
+  const isParcelScanned = isOrderPackableWithoutParcelNumber(order) || order.packing_meta?.parcelScanned || false
   const packingTag = order.packing_meta?.dailyPackingTag ?? null
   const rows: PackingItem[] = []
   // Keep the flattened bill UID aligned with the bill view: condo stamps must
@@ -151,6 +172,8 @@ function buildPackingItemsFromOrder(
       // QC Operation queue so Packing cannot disagree with a completed session.
       const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid)
       rows.push({
+        bill_no: order.bill_no || '',
+        channel_code: order.channel_code || '',
         tracking_number: order.tracking_number || '',
         channel_order_no: order.channel_order_no || null,
         express_receipt_number: order.express_receipt_number || '',
@@ -1606,7 +1629,7 @@ export default function Packing() {
 
   useEffect(() => {
     if (!currentGroup) return
-    const trackingNumber = currentGroup[0].tracking_number
+    const trackingNumber = packingVideoReference(currentGroup[0])
     const parcelScanned = currentGroup[0].parcelScanned
     const isFullyScanned = currentGroup.every((item) => item.scanned)
     ensurePreview().catch(() => null)
@@ -1763,7 +1786,8 @@ export default function Packing() {
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
           const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
-          const hasTracking = ordersInWo.some((o: any) => o.tracking_number)
+          // SHOPP เป็นลูกค้ารับเอง จึงถือว่าพร้อมเข้าแพ็คแม้ไม่มีเลขพัสดุ
+          const hasTracking = ordersInWo.some((o: any) => hasPackingReference(o))
           const isPartiallyPacked = ordersInWo.some((o: any) => {
             if (o.packing_meta?.parcelScanned) return true
             const bill = String(o.bill_no || '').trim() || '—'
@@ -1784,7 +1808,7 @@ export default function Packing() {
           let packedItems = 0
           let readyBills = 0
           let packedBills = 0
-          const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
+          const billsWithTracking = ordersInWo.filter((o: any) => hasPackingReference(o))
           ordersInWo.forEach((o: any) => {
             const items = sortedPackingOrderItems(o)
             const bill = String(o.bill_no || '').trim() || '—'
@@ -1806,7 +1830,7 @@ export default function Packing() {
             })
             totalItems += unitTotal
             packedItems += unitScanned
-            if (o.tracking_number) {
+            if (hasPackingReference(o)) {
               const isReady = unitTotal > 0 && unitReady === unitTotal
               if (isReady) readyBills++
               if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
@@ -1911,7 +1935,7 @@ export default function Packing() {
 
       if (error) throw error
       const orders = (data || []) as OrderWithItems[]
-      const ordersWithTracking = orders.filter((order) => order.tracking_number && order.tracking_number.trim() !== '')
+      const ordersWithTracking = orders.filter((order) => hasPackingReference(order))
       const wmsReadyByOrder: Record<string, boolean> = {}
       const wmsReadyByOrderItem: Record<string, boolean> = {}
       if (workOrderHeader?.id) {
@@ -2300,10 +2324,10 @@ export default function Packing() {
       setStatusMessage({ text: '', type: '' })
       startInactivityTimer()
       playSuccessSound()
-      startRecording(group[0].tracking_number).catch((error) => {
+      startRecording(packingVideoReference(group[0])).catch((error) => {
         setRecordingState({
           status: 'error',
-          tracking: group[0].tracking_number,
+          tracking: packingVideoReference(group[0]),
           error: error?.message || 'เริ่มบันทึกไม่สำเร็จ'
         })
       })
@@ -4086,12 +4110,13 @@ export default function Packing() {
                   const icon = isDone ? '✅' : isFullScanned ? '🟢' : '📦'
                   const tracking = group[0].tracking_number
                   const expressReceiptNumber = group[0].express_receipt_number
-                  const trackingDisp = formatParcelNo(tracking)
+                  const trackingDisp = packingGroupLabel(group[0])
                   const searchNorm = searchTerm.replace(/\s+/g, '').toLowerCase()
                   if (
                     searchTerm &&
                     !trackingDisp.toLowerCase().includes(searchNorm) &&
                     !tracking.toLowerCase().includes(searchTerm.toLowerCase()) &&
+                    !group[0].bill_no.toLowerCase().includes(searchTerm.toLowerCase()) &&
                     !expressReceiptNumber.toLowerCase().includes(searchTerm.toLowerCase())
                   ) {
                     return null
@@ -4101,7 +4126,7 @@ export default function Packing() {
                   }
                   return (
                     <button
-                      key={`${tracking}-${index}`}
+                      key={`${group[0].order_id}-${index}`}
                       className={`w-full text-left p-3 rounded-lg border ${
                         index === currentIndex ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
                       }`}
@@ -4158,8 +4183,16 @@ export default function Packing() {
                   <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
                     <div className="bg-white p-4 rounded-lg shadow space-y-3">
                       <div className="space-y-2">
-                        <h3 className="font-semibold text-center">ขั้นตอนที่ 1: สแกนเลขพัสดุ</h3>
-                        {(() => {
+                        <h3 className="font-semibold text-center">
+                          {isSelfPickupChannel(currentGroup[0].channel_code)
+                            ? 'ขั้นตอนที่ 1: ลูกค้ารับสินค้าเอง'
+                            : 'ขั้นตอนที่ 1: สแกนเลขพัสดุ'}
+                        </h3>
+                        {isSelfPickupChannel(currentGroup[0].channel_code) ? (
+                          <div className="rounded border-2 border-emerald-400 bg-emerald-50 px-3 py-2 text-center font-semibold text-emerald-700">
+                            SHOP PICKUP — ไม่ต้องสแกนเลขพัสดุ
+                          </div>
+                        ) : (() => {
                           const parcelDisabled =
                             isViewOnly ||
                             currentGroup[0].parcelScanned ||
@@ -4248,7 +4281,9 @@ export default function Packing() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-3 flex-wrap">
                             <div className="text-lg font-semibold break-all">
-                              เลขพัสดุ: {formatParcelNo(currentGroup[0].tracking_number)}
+                              {isSelfPickupChannel(currentGroup[0].channel_code)
+                                ? `รับสินค้าเอง: ${currentGroup[0].bill_no}`
+                                : `เลขพัสดุ: ${formatParcelNo(currentGroup[0].tracking_number)}`}
                               <ExpressReceiptNumberInline value={currentGroup[0].express_receipt_number} />
                             </div>
                             <button

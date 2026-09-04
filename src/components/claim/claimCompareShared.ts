@@ -5,6 +5,7 @@ export type RefOrderEmbed = {
   customer_address?: string | null
   mobile_phone?: string | null
   channel_code?: string | null
+  channel_order_no?: string | null
   admin_user?: string | null
   tracking_number?: string | null
   bill_created_at_display?: string | null
@@ -55,6 +56,8 @@ export const ORDER_ITEM_DETAIL_COLUMNS =
 
 export type RefOrderDetail = {
   bill_no: string
+  /** มีประวัติแก้ไขจากเมนู บัญชี > แก้ไขบิล */
+  has_bill_edit?: boolean
   price: number
   total_amount: number
   shipping_cost: number
@@ -63,6 +66,7 @@ export type RefOrderDetail = {
   customer_address?: string | null
   mobile_phone?: string | null
   channel_code?: string | null
+  channel_order_no?: string | null
   admin_user?: string | null
   /** สำหรับค้นหาวิดีโอแพค */
   tracking_number?: string | null
@@ -121,6 +125,7 @@ export function rowToRefEmbed(o: {
   customer_name?: string | null
   customer_address?: string | null
   channel_code?: string | null
+  channel_order_no?: string | null
   admin_user?: string | null
   tracking_number?: string | null
   billing_details?: unknown
@@ -132,6 +137,7 @@ export function rowToRefEmbed(o: {
     customer_address: o.customer_address ?? null,
     mobile_phone: mobilePhoneFromBillingDetails(o.billing_details),
     channel_code: o.channel_code ?? null,
+    channel_order_no: o.channel_order_no ?? null,
     admin_user: o.admin_user ?? null,
     tracking_number: o.tracking_number ?? null,
     bill_created_at_display: formatRefBillCreatedAt(o.entry_date, o.created_at),
@@ -143,6 +149,7 @@ export function customerFromProposedOrder(order: Record<string, unknown>): {
   customer_address?: string | null
   mobile_phone?: string | null
   channel_code?: string | null
+  channel_order_no?: string | null
   admin_user?: string | null
 } | null {
   if (!order || typeof order !== 'object') return null
@@ -150,6 +157,7 @@ export function customerFromProposedOrder(order: Record<string, unknown>): {
     order.customer_name != null ||
     order.customer_address != null ||
     order.channel_code != null ||
+    order.channel_order_no != null ||
     order.billing_details != null
   if (!has) return null
   const bd = order.billing_details
@@ -158,6 +166,7 @@ export function customerFromProposedOrder(order: Record<string, unknown>): {
     customer_address: order.customer_address != null ? String(order.customer_address) : null,
     mobile_phone: mobilePhoneFromBillingDetails(bd),
     channel_code: order.channel_code != null ? String(order.channel_code) : null,
+    channel_order_no: order.channel_order_no != null ? String(order.channel_order_no) : null,
     admin_user: null,
   }
 }

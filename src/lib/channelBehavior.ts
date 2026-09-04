@@ -14,3 +14,10 @@ export const CHANNELS_BLOCK_ADDRESS = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'SHOPP']
 
 /** ช่องทางที่แสดงฟิลด์ "เลขคำสั่งซื้อ" (เลขออเดอร์ของแพลตฟอร์ม) */
 export const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 'WY']
+
+/** ช่องทางที่ลูกค้าเข้ารับสินค้าเอง จึงไม่ใช้เลขพัสดุในขั้นตอนแพ็ค */
+export const SELF_PICKUP_CHANNELS = ['SHOPP']
+
+export function isSelfPickupChannel(channelCode: string | null | undefined): boolean {
+  return SELF_PICKUP_CHANNELS.includes(String(channelCode || '').trim().toUpperCase())
+}

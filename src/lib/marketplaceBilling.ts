@@ -173,6 +173,7 @@ export async function openBillFromMpOrder(params: {
     recipient_name: mpOrder.recipient_name || null,
     channel_order_no: mpOrder.marketplace_order_no,
     tracking_number: (trackingNo ?? mpOrder.tracking_no)?.trim() || null,
+    requires_express_receipt_number: !!mpOrder.requires_express_receipt_number,
     express_receipt_number: (expressReceiptNumber ?? mpOrder.express_receipt_number)?.trim() || null,
     admin_user: currentUserName,
     entry_date: new Date().toISOString().slice(0, 10),

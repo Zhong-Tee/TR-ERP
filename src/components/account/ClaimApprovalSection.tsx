@@ -6,6 +6,7 @@ import Modal from '../ui/Modal'
 import ClaimRequestComparePanel from '../claim/ClaimRequestComparePanel'
 import ClaimEditModal from '../claim/ClaimEditModal'
 import DateTimeStacked from '../ui/DateTimeStacked'
+import { fetchHasBillEditLog } from '../../lib/claimRequestCompareLoad'
 import type { ClaimCompareDetail, OrderItemRow, RefOrderDetail, RefOrderEmbed } from '../claim/claimCompareShared'
 import { externalUrlOrNull, fmtMoney, ORDER_ITEM_DETAIL_COLUMNS, rowToRefEmbed, submitterDisplayClaim } from '../claim/claimCompareShared'
 
@@ -34,18 +35,8 @@ export default function ClaimApprovalSection() {
     message: '',
   })
   const [claimLabels, setClaimLabels] = useState<Record<string, string>>({})
-  const [channelLabels, setChannelLabels] = useState<Record<string, string>>({})
   /** เคลมซ้ำ: ref_order_id → เลข REQ ล่าสุดที่อนุมัติแล้ว */
   const [latestReqBillByRefOrderId, setLatestReqBillByRefOrderId] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    void supabase
-      .from('channels')
-      .select('channel_code, channel_name')
-      .then(({ data }) => {
-        setChannelLabels(Object.fromEntries((data || []).map((c) => [c.channel_code, c.channel_name])))
-      })
-  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -69,7 +60,7 @@ export default function ClaimApprovalSection() {
         const { data: ordRows, error: ordErr } = await supabase
           .from('or_orders')
           .select(
-            'id, customer_name, customer_address, channel_code, admin_user, tracking_number, billing_details, entry_date, created_at',
+            'id, customer_name, customer_address, channel_code, channel_order_no, admin_user, tracking_number, billing_details, entry_date, created_at',
           )
           .in('id', orderIds)
         if (ordErr) console.warn('ClaimApprovalSection: or_orders batch', ordErr)
@@ -80,6 +71,7 @@ export default function ClaimApprovalSection() {
               customer_name?: string | null
               customer_address?: string | null
               channel_code?: string | null
+              channel_order_no?: string | null
               admin_user?: string | null
               tracking_number?: string | null
               billing_details?: unknown
@@ -220,7 +212,7 @@ export default function ClaimApprovalSection() {
       const { data: o, error } = await supabase
         .from('or_orders')
         .select(
-          'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, admin_user, tracking_number, billing_details',
+          'bill_no, price, total_amount, shipping_cost, discount, customer_name, customer_address, channel_code, channel_order_no, admin_user, tracking_number, billing_details',
         )
         .eq('id', r.ref_order_id)
         .maybeSingle()
@@ -238,12 +230,15 @@ export default function ClaimApprovalSection() {
         items = (itemRows || []) as OrderItemRow[]
       }
 
+      const hasBillEdit = await fetchHasBillEditLog(supabase, r.ref_order_id)
+
       if (o) {
         const emb = rowToRefEmbed(
           o as {
             customer_name?: string | null
             customer_address?: string | null
             channel_code?: string | null
+            channel_order_no?: string | null
             admin_user?: string | null
             tracking_number?: string | null
             billing_details?: unknown
@@ -251,6 +246,7 @@ export default function ClaimApprovalSection() {
         )
         setRefOrder({
           bill_no: String(o.bill_no || ''),
+          has_bill_edit: hasBillEdit,
           price: Number(o.price) || 0,
           total_amount: Number(o.total_amount) || 0,
           shipping_cost: Number(o.shipping_cost) || 0,
@@ -259,6 +255,7 @@ export default function ClaimApprovalSection() {
           customer_address: emb.customer_address,
           mobile_phone: emb.mobile_phone,
           channel_code: emb.channel_code,
+          channel_order_no: emb.channel_order_no,
           admin_user: emb.admin_user,
           tracking_number: emb.tracking_number,
           order_items: items,
@@ -448,7 +445,6 @@ export default function ClaimApprovalSection() {
               detail={detail}
               refOrder={refOrder}
               refLoading={refLoading}
-              channelLabels={channelLabels}
               claimLabels={claimLabels}
               latestPriorReqBillNo={latestReqBillByRefOrderId[detail.ref_order_id] ?? null}
             />
