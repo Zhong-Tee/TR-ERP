@@ -5,6 +5,7 @@ import { getPublicUrl, fetchInkTypes } from '../lib/qcApi'
 import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
+import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -40,6 +41,8 @@ import ExpressReceiptNumberInline from '../components/common/ExpressReceiptNumbe
 import {
   codecFromVideoMimeType,
   getSupportedPackingVideoMimeTypes,
+  isPackingRecorderMimeCompatible,
+  isSafePackingRecorderMimeType,
   videoFileExtension,
 } from '../lib/packingVideo'
 
@@ -108,6 +111,10 @@ function activePackingOrderItems(order: OrderWithItems | any): any[] {
   )
 }
 
+function sortedPackingOrderItems(order: OrderWithItems | any): any[] {
+  return sortOrderItemsForExport(activePackingOrderItems(order))
+}
+
 function resolvePackingQcStatus(
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
   unitUid: string,
@@ -127,12 +134,9 @@ function buildPackingItemsFromOrder(
   const isParcelScanned = order.packing_meta?.parcelScanned || false
   const packingTag = order.packing_meta?.dailyPackingTag ?? null
   const rows: PackingItem[] = []
-  const items = activePackingOrderItems(order)
-  const sorted = [...items].sort((a: any, b: any) => {
-    const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
-    if (ta !== 0) return ta
-    return String(a.id || '').localeCompare(String(b.id || ''))
-  })
+  // Keep the flattened bill UID aligned with the bill view: condo stamps must
+  // be ordered by floor (1 -> 5) before assigning bill-1, bill-2, ...
+  const sorted = sortedPackingOrderItems(order)
 
   const bill = String(order.bill_no || '').trim() || '—'
   let seq = 0
@@ -1386,13 +1390,13 @@ export default function Packing() {
 
       const ord = order as OrderWithItems
       const scannedKeySet = await fetchPackingUnitScanKeySet([ord.id])
-      const totalUnits = activePackingOrderItems(ord).reduce(
+      const totalUnits = sortedPackingOrderItems(ord).reduce(
         (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
         0
       )
       const bill = String(ord.bill_no || '').trim() || '—'
       const unitUids = Array.from({ length: totalUnits }, (_, i) => flatBillUnitUid(bill, i + 1))
-      activePackingOrderItems(ord).forEach((item: any) => {
+      sortedPackingOrderItems(ord).forEach((item: any) => {
         if (item.item_uid) unitUids.push(item.item_uid)
       })
       const qcStatusMap = await fetchQcStatusMap(unitUids)
@@ -1695,7 +1699,7 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
-        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
+        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
         const [
           { data: productionOrdersById, error: productionOrdersByIdError },
           { data: productionOrdersByName, error: productionOrdersByNameError },
@@ -1742,7 +1746,7 @@ export default function Packing() {
         ;(allProductionOrders || []).forEach((o: any) => {
           const bill = String(o.bill_no || '').trim() || '—'
           let seq = 0
-          activePackingOrderItems(o).forEach((oi: any) => {
+          sortedPackingOrderItems(o).forEach((oi: any) => {
             if (oi.item_uid) allUnitUids.push(oi.item_uid)
             const n = normalizedLineQuantity(oi.quantity)
             for (let i = 0; i < n; i += 1) {
@@ -1764,7 +1768,7 @@ export default function Packing() {
             if (o.packing_meta?.parcelScanned) return true
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
-            const anyScanned = activePackingOrderItems(o).some((oi: any) => {
+            const anyScanned = sortedPackingOrderItems(o).some((oi: any) => {
               const n = normalizedLineQuantity(oi.quantity)
               for (let i = 0; i < n; i += 1) {
                 seq += 1
@@ -1782,7 +1786,7 @@ export default function Packing() {
           let packedBills = 0
           const billsWithTracking = ordersInWo.filter((o: any) => o.tracking_number)
           ordersInWo.forEach((o: any) => {
-            const items = activePackingOrderItems(o)
+            const items = sortedPackingOrderItems(o)
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
             let unitTotal = 0
@@ -1817,7 +1821,7 @@ export default function Packing() {
           ordersInWo.forEach((o: any) => {
             const bill = String(o.bill_no || '').trim() || '—'
             let seq = 0
-            activePackingOrderItems(o).forEach((oi: any) => {
+            sortedPackingOrderItems(o).forEach((oi: any) => {
               const n = normalizedLineQuantity(oi.quantity)
               for (let i = 0; i < n; i += 1) {
                 seq += 1
@@ -1929,7 +1933,7 @@ export default function Packing() {
       const unitUids: string[] = []
       ordersWithTracking.forEach((order) => {
         const bill = String(order.bill_no || '').trim() || '—'
-        const activeItems = activePackingOrderItems(order)
+        const activeItems = sortedPackingOrderItems(order)
         const totalUnits = activeItems.reduce(
           (sum, it: any) => sum + normalizedLineQuantity(it.quantity),
           0
@@ -2635,10 +2639,15 @@ export default function Packing() {
       // in the constructor for the active camera. Continue down the same safe list.
       for (const mimeType of supportedMimeTypes) {
         try {
-          recorder = new MediaRecorder(streamRef.current, {
+          const candidate = new MediaRecorder(streamRef.current, {
             mimeType,
             videoBitsPerSecond: profile.bitrate,
           })
+          const candidateActualMimeType = candidate.mimeType || mimeType
+          if (!isPackingRecorderMimeCompatible(mimeType, candidateActualMimeType)) {
+            continue
+          }
+          recorder = candidate
           selectedMimeType = mimeType
           break
         } catch {
@@ -2647,7 +2656,11 @@ export default function Packing() {
       }
       // Preserve the previous browser-default behavior only as a last-resort path.
       if (!recorder) {
-        recorder = new MediaRecorder(streamRef.current, { videoBitsPerSecond: profile.bitrate })
+        const fallbackRecorder = new MediaRecorder(streamRef.current, { videoBitsPerSecond: profile.bitrate })
+        if (!isSafePackingRecorderMimeType(fallbackRecorder.mimeType)) {
+          throw new Error('Browser นี้ไม่สามารถสร้างวิดีโอ MP4/H.264 หรือ WebM/VP8 ที่รองรับการ Preview ได้')
+        }
+        recorder = fallbackRecorder
       }
       const trackSettings = streamRef.current.getVideoTracks()[0]?.getSettings()
       const actualMimeType = recorder.mimeType || selectedMimeType || 'video/webm'
@@ -3384,7 +3397,7 @@ export default function Packing() {
                                 </div>
                               </td>
                               <td className="p-2 border">
-                                {(item.shelf_location || '').trim() === 'ชั้น1' ? '' : item.shelf_location || ''}
+                                {item.shelf_location || ''}
                               </td>
                               <td className="p-2 border">{item.ink_color || ''}</td>
                               <td className="p-2 border">{combinedPattern}</td>
@@ -4038,7 +4051,7 @@ export default function Packing() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(380px,400px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(340px,360px)_1fr] gap-4 flex-1 min-h-0 h-full items-stretch">
             <div className="bg-white p-4 rounded-lg shadow space-y-3 h-full min-h-0 flex flex-col">
               <div className="flex items-center gap-2 whitespace-nowrap">
                 <span className="font-bold text-base">
@@ -4446,7 +4459,7 @@ export default function Packing() {
                                   </div>
                                 </td>
                                 <td className="p-2 border">
-                                  {(item.shelf_location || '').trim() === 'ชั้น1' ? '' : (item.shelf_location || '')}
+                                  {item.shelf_location || ''}
                                 </td>
                                 <td className="p-2 border">
                                   {item.ink_color ? (

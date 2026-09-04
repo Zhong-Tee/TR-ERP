@@ -7,6 +7,7 @@ import * as XLSX from 'xlsx'
 import type { QCItem, QCRecord, WorkOrder, SettingsReason, QCChecklistTopic, QCChecklistItem, QCChecklistTopicProduct, QCCategoryGroup } from '../types'
 import { FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN, isOrderAllowedInFulfillmentFlow } from './orderFlowFilter'
 import { flatBillUnitUid, normalizedLineQuantity } from './productionUnits'
+import { sortOrderItemsForExport } from './orderItemExportSort'
 
 const QC_SELECTED_WORK_ORDER = 'qc_selected_work_order'
 const QC_TEMP_SESSION = 'qc_temp_session'
@@ -180,30 +181,31 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
   const items = await fetchQueryInBatches<{
     order_id: string
     item_uid: string | null
+    product_id: string | null
+    product_name: string | null
+    product_type: string | null
+    is_detail_row: boolean | null
+    parent_item_id: string | null
     quantity: number | null
     created_at: string | null
     id: string
   }>(allOrderIds, (batch, from, to) =>
     supabase
       .from('or_order_items')
-      .select('order_id, item_uid, quantity, created_at, id')
+      .select('order_id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, id')
       .in('order_id', batch)
       .is('cancellation_stock_action', null)
       .order('id', { ascending: true })
       .range(from, to)
   )
 
-  const itemsByOrderId: Record<string, { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string }[]> = {}
+  const itemsByOrderId: Record<string, typeof items> = {}
   items.forEach((row) => {
     if (!itemsByOrderId[row.order_id]) itemsByOrderId[row.order_id] = []
-    itemsByOrderId[row.order_id].push(row as { order_id: string; item_uid: string | null; quantity: number | null; created_at: string | null; id: string })
+    itemsByOrderId[row.order_id].push(row)
   })
   Object.keys(itemsByOrderId).forEach((oid) => {
-    itemsByOrderId[oid].sort((a, b) => {
-      const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
-      if (ta !== 0) return ta
-      return String(a.id).localeCompare(String(b.id))
-    })
+    itemsByOrderId[oid] = sortOrderItemsForExport(itemsByOrderId[oid])
   })
 
   const totalByWo: Record<string, number> = {}
@@ -424,6 +426,9 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     item_uid: string | null
     product_id: string | null
     product_name: string | null
+    product_type: string | null
+    is_detail_row: boolean | null
+    parent_item_id: string | null
     quantity: number | null
     ink_color: string | null
     font: string | null
@@ -437,7 +442,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
   }>(orderIds, (batch, from, to) =>
     supabase
       .from('or_order_items')
-      .select('id, order_id, item_uid, product_id, product_name, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
+      .select('id, order_id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, ink_color, font, cartoon_pattern, line_1, line_2, line_3, notes, file_attachment, created_at')
       .in('order_id', batch)
       .is('cancellation_stock_action', null)
       .order('id', { ascending: true })
@@ -473,11 +478,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     byOrder[row.order_id].push(row)
   }
   Object.keys(byOrder).forEach((oid) => {
-    byOrder[oid].sort((a, b) => {
-      const ta = new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
-      if (ta !== 0) return ta
-      return String(a.id).localeCompare(String(b.id))
-    })
+    byOrder[oid] = sortOrderItemsForExport(byOrder[oid])
   })
 
   const qcItems: QCItem[] = []
@@ -498,7 +499,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
           bill_no: billByOrderId[o.id] || '',
           ink_color: row.ink_color ?? null,
           font: row.font ?? null,
-          floor: '-',
+          floor: row.product_type ?? '-',
           cartoon_name: row.cartoon_pattern ?? '0',
           line1: row.line_1 ?? '',
           line2: row.line_2 ?? '',

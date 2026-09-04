@@ -154,6 +154,38 @@ async function uploadFileToDrive(
   return (await res.json()) as { id: string; webViewLink: string }
 }
 
+async function validatePreviewableVideo(file: File, mimeType: string, codec: string): Promise<void> {
+  const mime = mimeType.toLowerCase()
+  const codecName = codec.toLowerCase()
+  const header = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+  const isMp4Signature = header.length >= 8
+    && String.fromCharCode(...header.slice(4, 8)) === 'ftyp'
+  const isEbmlSignature = header.length >= 4
+    && header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3
+
+  if (mime.includes('video/mp4')) {
+    if (!isMp4Signature) {
+      throw new Error('Video container does not match MP4 metadata; upload stopped to prevent an unplayable Drive file')
+    }
+    if (codecName && !/(avc1|avc3|h\.264|h264|mp4)/.test(codecName)) {
+      throw new Error(`Unsupported MP4 codec for Drive preview: ${codec}`)
+    }
+    return
+  }
+
+  if (mime.includes('video/webm')) {
+    if (!isEbmlSignature) {
+      throw new Error('Video container does not match WebM metadata; upload stopped to prevent an unplayable Drive file')
+    }
+    if (/(vp0?9|av01|avc1|avc3|h\.264|h264|hevc|hvc1|hev1)/.test(codecName)) {
+      throw new Error(`Unsupported WebM codec for Drive preview: ${codec}`)
+    }
+    return
+  }
+
+  throw new Error(`Unsupported video container for Drive preview: ${mimeType || 'unknown'}`)
+}
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -244,6 +276,10 @@ serve(async (req: Request) => {
       }
     }
 
+    const effectiveMimeType = String(meta.mime_type || file.type || '').toLowerCase()
+    const effectiveCodec = String(meta.codec || '')
+    await validatePreviewableVideo(file, effectiveMimeType, effectiveCodec)
+
     console.log(`[upload-gdrive] WO=${workOrderName} TN=${trackingNumber} size=${file.size}`)
 
     // ---- Google Drive: get access token ----
@@ -254,7 +290,6 @@ serve(async (req: Request) => {
 
     // ---- Google Drive: upload file ----
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const effectiveMimeType = String(meta.mime_type || file.type || '').toLowerCase()
     const extension = effectiveMimeType.includes('mp4') ? 'mp4' : 'webm'
     const fileName = `${trackingNumber}_${timestamp}.${extension}`
     const driveFile = await uploadFileToDrive(file, fileName, woFolderId, accessToken)
