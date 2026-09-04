@@ -15,6 +15,7 @@ const CAN_APPROVE_ROLES = ['superadmin', 'admin', 'store']
 export default function RequisitionDetailModal({ requisition, onClose }: RequisitionDetailModalProps) {
   const { user } = useAuthContext()
   const [items, setItems] = useState<any[]>([])
+  const [damagePhotoUrls, setDamagePhotoUrls] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [createdByUser, setCreatedByUser] = useState<any | null>(null)
   const [approvedByUser, setApprovedByUser] = useState<any | null>(null)
@@ -44,6 +45,17 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
       const sortedItems = sortOrderItems(data || [])
       setItems(sortedItems)
+      const paths = [...new Set<string>(sortedItems.flatMap((item: any) => item.damage_image_paths || []))]
+      if (paths.length) {
+        const { data: signed } = await supabase.storage.from('wms-damage-evidence').createSignedUrls(paths, 3600)
+        const urls: Record<string, string> = {}
+        ;(signed || []).forEach((row: any, index: number) => {
+          if (row.signedUrl) urls[paths[index]] = row.signedUrl
+        })
+        setDamagePhotoUrls(urls)
+      } else {
+        setDamagePhotoUrls({})
+      }
     } catch (error: any) {
       showMessage({ message: `เกิดข้อผิดพลาด: ${error.message}` })
     } finally {
@@ -172,8 +184,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
 
   return (
     <>
-      <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-4xl">
-        <div className="bg-white rounded-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+      <Modal open={true} onClose={onClose} closeOnBackdropClick={true} contentClassName="max-w-4xl" scrollable={false}>
+        <div className="bg-white rounded-2xl w-full max-h-[90vh] min-h-0 overflow-hidden flex flex-col shadow-2xl">
           <div className="p-6 pr-16 border-b border-gray-200 flex items-center bg-gradient-to-r from-blue-600 to-blue-700">
             <div>
               <h2 className="text-2xl font-black text-white">ใบเบิก: {requisition.requisition_id}</h2>
@@ -221,7 +233,8 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
               ) : (
                 <div className="space-y-3">
                   {items.map((item, idx) => (
-                    <div key={item.id} className="flex items-center gap-4 p-4 bg-gray-50 rounded-xl border hover:bg-blue-50 transition">
+                    <div key={item.id} className="p-4 bg-gray-50 rounded-xl border hover:bg-blue-50 transition">
+                      <div className="flex items-center gap-4">
                       <div className="text-lg font-black text-gray-400 w-8 text-center shrink-0">{idx + 1}</div>
                       <img
                         src={imgUrl(item.product_code)}
@@ -236,6 +249,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="font-bold text-slate-800 text-base mb-1">{item.product_name}</div>
                         <div className="text-xs text-gray-500 mb-1">รหัส: {item.product_code}</div>
                         <div className="mb-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
+                        {item.reference_bill_no && <div className="mb-1 text-xs font-bold text-amber-700">เลขบิลอ้างอิง: {item.reference_bill_no}</div>}
                         <div className="text-xs text-red-600 font-bold">จุดเก็บ: {item.location || '-'}</div>
                         <div className="md:hidden mt-2">
                           <div className="text-xs text-gray-500 font-bold uppercase mb-1">หมายเหตุ</div>
@@ -253,6 +267,19 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                       <div className="text-slate-800 font-black text-xl shrink-0 bg-blue-100 px-4 py-2 rounded-lg">
                         {item.qty} {item.unit_name || 'ชิ้น'}
                       </div>
+                      </div>
+                      {!!item.damage_image_paths?.length && (
+                        <div className="mt-4 border-t border-gray-200 pt-3 md:pl-12">
+                          <div className="mb-2 text-xs font-bold uppercase text-gray-500">รูปหลักฐาน</div>
+                          <div className="flex flex-wrap gap-2">
+                            {item.damage_image_paths.map((path: string) => damagePhotoUrls[path] && (
+                              <a key={path} href={damagePhotoUrls[path]} target="_blank" rel="noreferrer" className="block h-24 w-24 overflow-hidden rounded-lg border-2 border-red-200 bg-white shadow-sm">
+                                <img src={damagePhotoUrls[path]} alt="รูปหลักฐาน" className="h-full w-full object-cover" />
+                              </a>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

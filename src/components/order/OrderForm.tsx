@@ -490,8 +490,17 @@ export type OrderFormNameLinePayload = {
   line_3: string | null
 }
 
+export type OrderFormLimitedEditPayload = {
+  channel_order_no: string | null
+  tracking_number: string | null
+  express_receipt_number: string | null
+  lines: OrderFormNameLinePayload[]
+}
+
 export type OrderFormRef = {
   getNameLinesPayload: () => OrderFormNameLinePayload[]
+  getLimitedEditPayload: () => OrderFormLimitedEditPayload
+  submitBillEdit: (targetStatus: OrderStatus) => void
 }
 
 interface OrderFormProps {
@@ -646,6 +655,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   ref,
 ) {
   const { user } = useAuthContext()
+  const formElementRef = useRef<HTMLFormElement>(null)
+  const billEditTargetStatusRef = useRef<OrderStatus | null>(null)
   const nameLinesOnlyMode = billEditScope === 'nameLinesOnly'
   const [loading, setLoading] = useState(false)
   const [products, setProducts] = useState<Product[]>([])
@@ -1714,8 +1725,10 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent, targetStatus: OrderStatus = 'รอลงข้อมูล') {
     e.preventDefault()
+    targetStatus = billEditTargetStatusRef.current ?? targetStatus
+    billEditTargetStatusRef.current = null
     if (!user) return
 
     // Validation สำหรับบันทึก "รอลงข้อมูล" — บังคับแค่เลือกช่องทาง + สร้างบิลแล้ว
@@ -1810,17 +1823,17 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       setItems(updatedItems)
       // รอ state อัพเดตแล้วค่อยบันทึก
       setTimeout(async () => {
-        await handleSubmitInternal(updatedItems, 'รอลงข้อมูล')
+        await handleSubmitInternal(updatedItems, targetStatus)
       }, 100)
       return
     }
 
-      await handleSubmitInternal(items, 'รอลงข้อมูล')
+      await handleSubmitInternal(items, targetStatus)
   }
 
   async function handleSubmitInternal(
     itemsToSave: typeof items,
-    targetStatus: 'รอลงข้อมูล' | 'ลงข้อมูลเสร็จสิ้น' = 'รอลงข้อมูล',
+    targetStatus: OrderStatus = 'รอลงข้อมูล',
     skipDesignAttachmentConfirmation = false
   ) {
     if (!user) {
@@ -1955,12 +1968,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
-      let statusToSave:
-        | 'รอลงข้อมูล'
-        | 'ลงข้อมูลเสร็จสิ้น'
-        | 'ตรวจสอบแล้ว'
-        | 'ไม่ต้องออกแบบ'
-        | 'รอตรวจคำสั่งซื้อ' = targetStatus
+      let statusToSave: OrderStatus = targetStatus
       if (targetStatus === 'ลงข้อมูลเสร็จสิ้น') {
         const channelCode = formData.channel_code?.trim() || ''
         if (CHANNELS_COMPLETE_TO_VERIFIED.includes(channelCode)) {
@@ -2238,7 +2246,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       }
 
-      const statusText = targetStatus === 'ลงข้อมูลเสร็จสิ้น' ? 'บันทึกข้อมูลครบ' : 'บันทึก (รอลงข้อมูล)'
+      const statusText = targetStatus === 'ลงข้อมูลเสร็จสิ้น'
+        ? 'บันทึกข้อมูลครบ'
+        : targetStatus === 'รอลงข้อมูล'
+          ? 'บันทึก (รอลงข้อมูล)'
+          : 'บันทึกการแก้ไข'
       const successMessage = order ? `อัปเดตข้อมูลสำเร็จ (${statusText})` : `บันทึกสำเร็จ! (${statusText})`
 
       // โหลดรูปสลิปกลับมา (ถ้ามี bill_no) — ส่ง orderId เพื่อตัด path ที่ถูกลบแล้ว
@@ -4531,10 +4543,15 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   /** โหมดดูอย่างเดียว (ตรวจสอบแล้ว/ยกเลิก): บล็อกทุกฟิลด์และป้องกันการลบสลิป; nameLinesOnly ล็อกทุกอย่างยกเว้นบรรทัดชื่อ */
   const formDisabled = readOnly || viewOnly || nameLinesOnlyMode
+  const limitedReferenceFieldsEnabled = nameLinesOnlyMode && !readOnly && !viewOnly
 
   useImperativeHandle(
     ref,
     () => ({
+      submitBillEdit: (targetStatus: OrderStatus) => {
+        billEditTargetStatusRef.current = targetStatus
+        formElementRef.current?.requestSubmit()
+      },
       getNameLinesPayload: (): OrderFormNameLinePayload[] =>
         items
           .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
@@ -4544,13 +4561,26 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
             line_2: it.line_2 != null && String(it.line_2).trim() !== '' ? String(it.line_2) : null,
             line_3: it.line_3 != null && String(it.line_3).trim() !== '' ? String(it.line_3) : null,
           })),
+      getLimitedEditPayload: (): OrderFormLimitedEditPayload => ({
+        channel_order_no: formData.channel_order_no.trim() || null,
+        tracking_number: formData.tracking_number.trim() || null,
+        express_receipt_number: formData.express_receipt_number.trim() || null,
+        lines: items
+          .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
+          .map((it) => ({
+            item_uid: String(it.item_uid),
+            line_1: it.line_1 != null && String(it.line_1).trim() !== '' ? String(it.line_1) : null,
+            line_2: it.line_2 != null && String(it.line_2).trim() !== '' ? String(it.line_2) : null,
+            line_3: it.line_3 != null && String(it.line_3).trim() !== '' ? String(it.line_3) : null,
+          })),
+      }),
     }),
-    [items],
+    [formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items],
   )
 
   return (
     <>
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form ref={formElementRef} onSubmit={handleSubmit} className="space-y-6">
       <div className="bg-white p-6 rounded-lg shadow">
         {reviewRemarks && (
           <div className="mb-4 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
@@ -4560,7 +4590,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         )}
         {nameLinesOnlyMode && order && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
-            <strong>แก้เฉพาะบรรทัดชื่อ (1–3)</strong> — กด «บันทึกการแก้ไข» ด้านบนของหน้านี้เพื่อบันทึก
+            <strong>แก้ไขบรรทัดชื่อ (1–3) และข้อมูลจัดส่ง</strong> — เลขคำสั่งซื้อ เลขพัสดุ และเลขรับพัสดุด่วน แก้ไขได้จนกว่าจะจัดส่ง
           </div>
         )}
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -4876,8 +4906,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                       })
                     }
                   }}
-                  disabled={formDisabled}
-                  className={`w-full px-3 py-2 border rounded-lg ${formDisabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                  disabled={formDisabled && !limitedReferenceFieldsEnabled}
+                  className={`w-full px-3 py-2 border rounded-lg ${(formDisabled && !limitedReferenceFieldsEnabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.channel_order_no ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
               </div>
             )}
@@ -4939,19 +4969,19 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 value={formData.tracking_number}
                 onChange={(e) => setFormData({ ...formData, tracking_number: e.target.value })}
                 placeholder="กรอกเลขพัสดุ"
-                disabled={!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled}
-                className={`w-full px-3 py-2 border rounded-lg ${(!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
+                disabled={!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)}
+                className={`w-full px-3 py-2 border rounded-lg ${(!limitedReferenceFieldsEnabled && (!CHANNELS_ENABLE_TRACKING.includes(formData.channel_code) || formDisabled)) ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''} ${reviewErrorFields?.tracking_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
               />
             </div>
-            {formData.express_receipt_number && (
+            {(nameLinesOnlyMode || formData.express_receipt_number || order?.express_receipt_number) && (
               <div>
                 <label className="block text-sm font-medium mb-1">เลขรับพัสดุด่วน</label>
                 <input
                   type="text"
                   value={formData.express_receipt_number}
                   onChange={(e) => setFormData({ ...formData, express_receipt_number: e.target.value })}
-                  disabled={formDisabled}
-                  className={`w-full rounded-lg border border-cyan-300 px-3 py-2 font-mono ${formDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-500' : 'bg-cyan-50/40'}`}
+                  disabled={formDisabled && !limitedReferenceFieldsEnabled}
+                  className={`w-full rounded-lg border border-cyan-300 px-3 py-2 font-mono ${(formDisabled && !limitedReferenceFieldsEnabled) ? 'cursor-not-allowed bg-gray-100 text-gray-500' : 'bg-cyan-50/40'} ${reviewErrorFields?.express_receipt_number ? 'ring-2 ring-red-500 border-red-500' : ''}`}
                 />
               </div>
             )}

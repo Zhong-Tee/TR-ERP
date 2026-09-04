@@ -68,6 +68,8 @@ export interface MpOrder {
   billed_order_id: string | null
   billed_bill_no: string | null
   billed_at: string | null
+  /** เวลาจัดส่งจาก or_orders ที่ผูกไว้ ใช้หยุดการคำนวณป้ายความเร่งด่วน */
+  shipped_time?: string | null
   cancel_note: string | null
   cancelled_at: string | null
   cancelled_by: string | null

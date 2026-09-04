@@ -333,16 +333,16 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
 
   const handleSaveNameLinesOnly = async () => {
     if (!selectedOrder || editScope !== 'nameLinesOnly') return
-    const payload = orderFormRef.current?.getNameLinesPayload() ?? []
-    if (payload.length === 0) {
-      setSaveResultModal({ open: true, success: false, message: 'ไม่พบรายการสินค้าที่มี item_uid' })
-      return
-    }
+    const payload = orderFormRef.current?.getLimitedEditPayload()
+    if (!payload) return
     setNameLinesSaving(true)
     try {
-      const { data, error } = await supabase.rpc('rpc_update_order_item_name_lines', {
+      const { data, error } = await supabase.rpc('rpc_update_order_limited_fields', {
         p_order_id: selectedOrder.id,
-        p_lines: payload as unknown as Record<string, unknown>[],
+        p_lines: payload.lines as unknown as Record<string, unknown>[],
+        p_channel_order_no: payload.channel_order_no,
+        p_tracking_number: payload.tracking_number,
+        p_express_receipt_number: payload.express_receipt_number,
         p_edited_by: user?.username || user?.email || 'unknown',
       })
       if (error) throw error
@@ -483,8 +483,8 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
       channel_code: 'ช่องทางขาย', total_amount: 'ยอดรวม', price: 'ราคา',
       shipping_cost: 'ค่าขนส่ง', discount: 'ส่วนลด', payment_method: 'วิธีชำระเงิน',
       payment_date: 'วันที่ชำระ', payment_time: 'เวลาชำระ', promotion: 'โปรโมชั่น',
-      tracking_number: 'เลข Tracking', recipient_name: 'ชื่อผู้รับ',
-      channel_order_no: 'เลขคำสั่งซื้อ', confirm_note: 'หมายเหตุคอนเฟิร์ม',
+      tracking_number: 'เลขพัสดุ', recipient_name: 'ชื่อผู้รับ',
+      channel_order_no: 'เลขคำสั่งซื้อ', express_receipt_number: 'เลขรับพัสดุด่วน', confirm_note: 'หมายเหตุคอนเฟิร์ม',
     }
     const changes: { field: string; label: string; before: string; after: string }[] = []
     for (const field of Object.keys(LABEL_MAP)) {
@@ -576,17 +576,24 @@ export default function BillEditSection({ onRequestAmendment }: Props) {
               </button>
             )}
             <button
-              onClick={closeEditView}
-              className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-gray-600 hover:bg-gray-50 transition"
-            >
-              ปิด
-            </button>
-            <button
-              onClick={isNameLinesOnly ? handleSaveNameLinesOnly : handleSaveBillEdit}
+              onClick={isNameLinesOnly
+                ? handleSaveNameLinesOnly
+                : () => orderFormRef.current?.submitBillEdit(statusOverride || selectedOrder.status)}
               disabled={nameLinesSaving}
               className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition disabled:opacity-50"
             >
               <i className="fas fa-save mr-1"></i> {nameLinesSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+            </button>
+            <button
+              type="button"
+              onClick={closeEditView}
+              aria-label="ปิด"
+              title="ปิด"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-600 text-white transition hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none">
+                <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
         </div>

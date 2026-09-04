@@ -50,7 +50,7 @@ export interface WorkOrderWithProgress extends WorkOrder {
   fail_bills: number
   remaining_bills: number
   /** กำหนดส่งของบิลในใบงาน (เฉพาะบิลที่มี ship_due_at จากเมนู Marketplace) — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
-  due_bills: { ship_due_at: string | null; overdue_at: string | null }[]
+  due_bills: { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }[]
 }
 
 type QCProgressRecord = {
@@ -134,20 +134,21 @@ export async function fetchWorkOrdersWithProgress(excludeCompleted = true): Prom
     bill_no: string | null
     ship_due_at: string | null
     overdue_at: string | null
+    shipped_time: string | null
   }>(woNames, (batch, from, to) =>
     supabase
       .from('or_orders')
-      .select('id, work_order_name, bill_no, ship_due_at, overdue_at')
+      .select('id, work_order_name, bill_no, ship_due_at, overdue_at, shipped_time')
       .in('work_order_name', batch)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .order('id', { ascending: true })
       .range(from, to)
   )
-  const dueBillsByWo: Record<string, { ship_due_at: string | null; overdue_at: string | null }[]> = {}
+  const dueBillsByWo: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }[]> = {}
   woNames.forEach((n) => (dueBillsByWo[n] = []))
-  ;(orders || []).forEach((o: { work_order_name: string; ship_due_at?: string | null; overdue_at?: string | null }) => {
+  ;(orders || []).forEach((o: { work_order_name: string; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }) => {
     if (o.ship_due_at && dueBillsByWo[o.work_order_name]) {
-      dueBillsByWo[o.work_order_name].push({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null })
+      dueBillsByWo[o.work_order_name].push({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null })
     }
   })
   const orderIdsByWo: Record<string, string[]> = {}
@@ -396,10 +397,11 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
     bill_no: string | null
     ship_due_at: string | null
     overdue_at: string | null
+    shipped_time: string | null
   }>((from, to) =>
     supabase
       .from('or_orders')
-      .select('id, bill_no, ship_due_at, overdue_at')
+      .select('id, bill_no, ship_due_at, overdue_at, shipped_time')
       .eq('work_order_name', workOrderName)
       .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
       .order('bill_no', { ascending: true })
@@ -410,10 +412,10 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
 
   const orderIds = orders.map((o) => o.id)
   const billByOrderId: Record<string, string> = {}
-  const dueByOrderId: Record<string, { ship_due_at: string | null; overdue_at: string | null }> = {}
+  const dueByOrderId: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }> = {}
   orders.forEach((o) => {
     billByOrderId[o.id] = o.bill_no || ''
-    dueByOrderId[o.id] = { ship_due_at: o.ship_due_at ?? null, overdue_at: o.overdue_at ?? null }
+    dueByOrderId[o.id] = { ship_due_at: o.ship_due_at ?? null, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null }
   })
 
   const items = await fetchQueryInBatches<{
@@ -507,6 +509,7 @@ export async function fetchItemsByWorkOrder(workOrderName: string): Promise<QCIt
           status: 'pending',
           ship_due_at: dueByOrderId[o.id]?.ship_due_at ?? null,
           overdue_at: dueByOrderId[o.id]?.overdue_at ?? null,
+          shipped_time: dueByOrderId[o.id]?.shipped_time ?? null,
         })
       }
     }
@@ -765,10 +768,11 @@ export async function fetchRejectItems() {
     status: string | null
     ship_due_at: string | null
     overdue_at: string | null
+    shipped_time: string | null
   }>(billNos, (batch, from, to) =>
     supabase
       .from('or_orders')
-      .select('id, bill_no, status, ship_due_at, overdue_at')
+      .select('id, bill_no, status, ship_due_at, overdue_at, shipped_time')
       .in('bill_no', batch)
       .order('id', { ascending: true })
       .range(from, to)
@@ -792,10 +796,10 @@ export async function fetchRejectItems() {
   const activeBillNoSet = new Set(activeOrders.map((order) => order.bill_no).filter(Boolean))
 
   // ป้าย ส่งด่วน/ล่าช้า: map กำหนดส่งตามเลขบิล (บิลจากเมนู Marketplace เท่านั้นที่มีค่า)
-  const dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null }> = {}
-  ;(activeOrders || []).forEach((o: { bill_no?: string | null; ship_due_at?: string | null; overdue_at?: string | null }) => {
+  const dueByBillNo: Record<string, { ship_due_at: string | null; overdue_at: string | null; shipped_time: string | null }> = {}
+  ;(activeOrders || []).forEach((o: { bill_no?: string | null; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }) => {
     if (o.bill_no && o.ship_due_at) {
-      dueByBillNo[o.bill_no] = { ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null }
+      dueByBillNo[o.bill_no] = { ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null }
     }
   })
   return rejectedRecords
@@ -806,6 +810,7 @@ export async function fetchRejectItems() {
       ...r,
       ship_due_at: dueByBillNo[r.bill_no]?.ship_due_at ?? null,
       overdue_at: dueByBillNo[r.bill_no]?.overdue_at ?? null,
+      shipped_time: dueByBillNo[r.bill_no]?.shipped_time ?? null,
     }))
 }
 

@@ -95,8 +95,10 @@ export interface UrgencyBadgeSource {
  */
 export function getUrgencyBadge(order: UrgencyBadgeSource, now: Date = new Date()): UrgencyLevel {
   if (!order?.ship_due_at) return null
-  const frozen = order.status === 'จัดส่งแล้ว' && order.shipped_time
-  const t = frozen ? new Date(order.shipped_time as string) : now
+  // shipped_time is the authoritative stop point. Some consumers (for example
+  // QC) already use `status` for their own workflow status, so requiring the
+  // Thai order status here would make their urgency clock continue after ship.
+  const t = order.shipped_time ? new Date(order.shipped_time) : now
   if (Number.isNaN(t.getTime())) return null
 
   if (order.overdue_at) {

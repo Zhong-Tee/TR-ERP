@@ -168,17 +168,17 @@ export default function NewOrdersSection() {
       if (finalList.length > 0) {
         const { data: cntRows } = await supabase
           .from('or_orders')
-          .select('work_order_id, ship_due_at, overdue_at, urgency_label, urgency_color')
+          .select('work_order_id, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time')
           .in('work_order_id', finalList.map((w) => w.id))
           .not('status', 'in', FULFILLMENT_EXCLUDED_ORDER_STATUSES_IN)
           .neq('status', 'จัดส่งแล้ว')
         for (const r of cntRows || []) {
-          const row = r as { work_order_id: string; ship_due_at?: string | null; overdue_at?: string | null }
+          const row = r as { work_order_id: string; ship_due_at?: string | null; overdue_at?: string | null; shipped_time?: string | null }
           const wid = String(row.work_order_id)
           counts[wid] = (counts[wid] || 0) + 1
           if (row.ship_due_at) {
             if (!dueMap[wid]) dueMap[wid] = []
-            dueMap[wid].push({ ship_due_at: row.ship_due_at, overdue_at: row.overdue_at ?? null })
+            dueMap[wid].push({ ship_due_at: row.ship_due_at, overdue_at: row.overdue_at ?? null, shipped_time: row.shipped_time ?? null })
           }
         }
       }

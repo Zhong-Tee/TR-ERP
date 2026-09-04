@@ -169,7 +169,8 @@ async function processQueue() {
 
         const edgeFnUrl = `${supabaseUrl}/functions/v1/upload-gdrive`
         const formData = new FormData()
-        formData.append('file', item.blob, item.filename || 'video.webm')
+        const fallbackExtension = String(item.mimeType || item.fileType || item.blob.type || '').includes('mp4') ? 'mp4' : 'webm'
+        formData.append('file', item.blob, item.filename || `video.${fallbackExtension}`)
         formData.append(
           'metadata',
           JSON.stringify({

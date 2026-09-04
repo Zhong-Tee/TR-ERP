@@ -426,8 +426,6 @@ export default function WorkOrderManageList({
   const [expandedWoIds, setExpandedWoIds] = useState<Set<string>>(() => new Set())
   const [ordersByWo, setOrdersByWo] = useState<Record<string, Order[]>>({}) // key = work_order_id
   const [selectedByWo, setSelectedByWo] = useState<Record<string, Set<string>>>({}) // key = work_order_id
-  const [editingTrackingId, setEditingTrackingId] = useState<string | null>(null)
-  const [editingTrackingValue, setEditingTrackingValue] = useState('')
   const [updating, setUpdating] = useState(false)
   const [_channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   const [detailOrder, setDetailOrder] = useState<Order | null>(null)
@@ -819,41 +817,6 @@ export default function WorkOrderManageList({
           `ย้ายบิลไปใบสั่งงานเรียบร้อย (${ids.length} บิล)` +
           `\n\nหากมีรายการที่หยิบหรือตรวจสินค้าแล้ว ให้ไปเมนูจัดสินค้า → ตรวจสินค้า แล้วกด "คืนเข้าคลัง" ตามรายการที่มีป้ายย้ายบิล`,
       })
-    } catch (error: any) {
-      setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
-    } finally {
-      setUpdating(false)
-    }
-  }
-
-  async function saveTrackingNumber(orderId: string) {
-    const value = editingTrackingValue.trim()
-    setUpdating(true)
-    try {
-      // ถ้ามีเลขพัสดุ เช็คซ้ำกับออร์เดอร์อื่นในระบบ (ยกเว้นตัวเอง)
-      if (value) {
-        const { data: dup, error: dupError } = await supabase
-          .from('or_orders')
-          .select('id')
-          .eq('tracking_number', value)
-          .neq('id', orderId)
-          .limit(1)
-        if (dupError) throw dupError
-        if (dup && dup.length > 0) {
-          setMessageModal({ open: true, message: 'เลขพัสดุซ้ำกับรายการในระบบ' })
-          setUpdating(false)
-          return
-        }
-      }
-      const { error } = await supabase
-        .from('or_orders')
-        .update({ tracking_number: value || null })
-        .eq('id', orderId)
-      if (error) throw error
-      setEditingTrackingId(null)
-      setEditingTrackingValue('')
-      const woName = Object.keys(ordersByWo).find((wo) => ordersByWo[wo].some((o) => o.id === orderId))
-      if (woName) await loadOrdersForWo(woName)
     } catch (error: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด: ' + error.message })
     } finally {
@@ -2209,51 +2172,10 @@ export default function WorkOrderManageList({
                                     <td className="p-3 align-middle text-gray-600">{order.channel_order_no ?? '-'}</td>
                                     <td className="p-3 align-middle text-gray-600">{order.admin_user ?? '-'}</td>
                                     <td className="p-3 pl-2 align-middle w-56">
-                                      {editingTrackingId === order.id ? (
-                                        <div className="flex items-center gap-1 w-full max-w-[17.5rem]">
-                                          <input
-                                            type="text"
-                                            value={editingTrackingValue}
-                                            onChange={(e) => setEditingTrackingValue(e.target.value)}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') saveTrackingNumber(order.id)
-                                              if (e.key === 'Escape') setEditingTrackingId(null)
-                                            }}
-                                            className="w-48 min-w-0 flex-1 max-w-[14rem] px-2 py-0.5 border rounded text-sm"
-                                            autoFocus
-                                          />
-                                          <button
-                                            type="button"
-                                            onClick={() => saveTrackingNumber(order.id)}
-                                            disabled={updating}
-                                            className="shrink-0 px-1.5 py-0.5 bg-blue-500 text-white rounded text-xs"
-                                          >
-                                            บันทึก
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => setEditingTrackingId(null)}
-                                            className="shrink-0 px-1.5 py-0.5 border rounded text-xs"
-                                          >
-                                            ยกเลิก
-                                          </button>
-                                        </div>
+                                      {order.tracking_number ? (
+                                        <span className="block truncate px-1.5 py-0.5 text-xs text-gray-700">{order.tracking_number}</span>
                                       ) : (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setEditingTrackingId(order.id)
-                                            setEditingTrackingValue(order.tracking_number || '')
-                                          }}
-                                          className="flex items-center gap-0.5 text-left w-full min-w-0 px-1.5 py-0.5 rounded hover:bg-gray-100 text-gray-700 text-xs truncate"
-                                        >
-                                          {order.tracking_number ? (
-                                            <span className="truncate">{order.tracking_number}</span>
-                                          ) : (
-                                            <span className="text-gray-400">ยังไม่มี</span>
-                                          )}
-                                          <span className="shrink-0 text-gray-400 text-xs">✎</span>
-                                        </button>
+                                        <span className="block px-1.5 py-0.5 text-xs text-gray-400">ยังไม่มี</span>
                                       )}
                                     </td>
                                   </tr>

@@ -44,6 +44,7 @@ export interface DueBillInfo {
   overdue_at: string | null
   urgency_label?: string | null
   urgency_color?: string | null
+  shipped_time?: string | null
 }
 
 /**

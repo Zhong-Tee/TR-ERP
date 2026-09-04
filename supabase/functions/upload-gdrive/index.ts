@@ -254,7 +254,9 @@ serve(async (req: Request) => {
 
     // ---- Google Drive: upload file ----
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const fileName = `${trackingNumber}_${timestamp}.webm`
+    const effectiveMimeType = String(meta.mime_type || file.type || '').toLowerCase()
+    const extension = effectiveMimeType.includes('mp4') ? 'mp4' : 'webm'
+    const fileName = `${trackingNumber}_${timestamp}.${extension}`
     const driveFile = await uploadFileToDrive(file, fileName, woFolderId, accessToken)
 
     const gdriveUrl = `https://drive.google.com/file/d/${driveFile.id}/view`

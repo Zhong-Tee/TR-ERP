@@ -16,6 +16,7 @@ export const ERROR_FIELD_KEYS = [
   { key: 'customer_name', label: 'ชื่อลูกค้า' },
   { key: 'address', label: 'ที่อยู่' },
   { key: 'mobile_phone', label: 'เบอร์โทร' },
+  { key: 'express_receipt_number', label: 'เลขบิลเพิ่ม' },
   { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
   { key: 'tracking_number', label: 'เลขพัสดุ' },
   { key: 'product_name', label: 'ชื่อสินค้า' },
@@ -39,7 +40,7 @@ const CHANNELS_SHOW_CHANNEL_NAME = ['FBTR', 'PUMP', 'OATR', 'SHOP', 'SHOPP', 'IN
 const CHANNELS_ORDER_NO = ['SPTR', 'FSPTR', 'LZTR', 'TTTR']
 
 /** แมป ErrorFieldKey ระดับรายการ → ชื่อคอลัมน์ใน pr_category_field_settings */
-const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address' | 'mobile_phone' | 'channel_order_no' | 'tracking_number'>, string> = {
+const ITEM_FIELD_TO_SETTINGS_KEY: Record<Exclude<ErrorFieldKey, 'channel_name' | 'customer_name' | 'address' | 'mobile_phone' | 'express_receipt_number' | 'channel_order_no' | 'tracking_number'>, string> = {
   product_name: 'product_name',
   ink_color: 'ink_color',
   layer: 'layer',
@@ -130,15 +131,20 @@ function getVisibleErrorFieldsForOrder(
   const hasItems = items.length > 0
 
   const channelCode = (order as any).channel_code || ''
+  const expressReceiptField: Array<{ key: ErrorFieldKey; label: string }> = (order as any).express_receipt_number
+    ? [{ key: 'express_receipt_number', label: 'เลขบิลเพิ่ม' }]
+    : []
   const CHANNELS_SKIP_ORDER_FIELDS = ['OFFICE']
   const orderLevel: Array<{ key: ErrorFieldKey; label: string }> = CHANNELS_SKIP_ORDER_FIELDS.includes(channelCode)
     ? []
     : CHANNELS_ORDER_NO.includes(channelCode)
     ? [
+        ...expressReceiptField,
         { key: 'channel_order_no', label: 'เลขคำสั่งซื้อ' },
         { key: 'tracking_number', label: 'เลขพัสดุ' },
       ]
     : [
+        ...expressReceiptField,
         ...(CHANNELS_SHOW_CHANNEL_NAME.includes(channelCode) ? [{ key: 'channel_name' as const, label: 'ชื่อช่องทาง' }] : []),
         { key: 'customer_name', label: 'ชื่อลูกค้า' },
         { key: 'address', label: 'ที่อยู่' },
@@ -159,7 +165,7 @@ function getVisibleErrorFieldsForOrder(
 }
 
 /** ฟิลด์ระดับบิล (ไม่แยกรายการ) */
-const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'mobile_phone', 'channel_order_no', 'tracking_number']
+const ORDER_LEVEL_KEYS: ErrorFieldKey[] = ['channel_name', 'customer_name', 'address', 'mobile_phone', 'express_receipt_number', 'channel_order_no', 'tracking_number']
 
 /** แยกรายการฟิลด์ที่แสดงเป็นระดับบิล vs ระดับรายการ */
 function getOrderLevelAndItemLevelErrorFields(

@@ -37,6 +37,11 @@ import {
 import { claimTypeLabel, fetchClaimTypeLabelMap } from '../lib/claimTypeLabels'
 import UrgencyBadge, { WoUrgencyChips, type DueBillInfo } from '../components/common/UrgencyBadge'
 import ExpressReceiptNumberInline from '../components/common/ExpressReceiptNumberInline'
+import {
+  codecFromVideoMimeType,
+  getSupportedPackingVideoMimeTypes,
+  videoFileExtension,
+} from '../lib/packingVideo'
 
 type OrderWithItems = Order & {
   or_order_items?: (OrderItem & { pr_products?: { product_code?: string | null } })[]
@@ -79,6 +84,7 @@ type PackingItem = {
   /** กำหนดส่ง/เวลาที่นับเป็นล่าช้า จากบิล — ใช้แสดงป้าย ส่งด่วน/ล่าช้า */
   ship_due_at: string | null
   overdue_at: string | null
+  shipped_time: string | null
 }
 
 type WorkOrderStatus = {
@@ -169,6 +175,7 @@ function buildPackingItemsFromOrder(
         packingTag,
         ship_due_at: order.ship_due_at ?? null,
         overdue_at: order.overdue_at ?? null,
+        shipped_time: order.shipped_time ?? null,
       })
     }
   })
@@ -220,13 +227,13 @@ const VIDEO_QUALITY_PROFILES: Record<VideoQualityProfileId, VideoQualityProfile>
   original: { id: 'original', label: 'คมชัดสูงสุด', description: '1080p · 30 FPS · 8 Mbps (~60 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
   ultra: { id: 'ultra', label: 'คมชัดพิเศษ', description: '1080p · 30 FPS · 6 Mbps (~45 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000 },
   very_high: { id: 'very_high', label: 'คมชัดมาก', description: '1080p · 24 FPS · 4 Mbps (~30 MB/นาที)', width: 1920, height: 1080, fps: 24, bitrate: 4_000_000 },
-  high: { id: 'high', label: 'คุณภาพสูง', description: '720p · 30 FPS · 3 Mbps (~23 MB/นาที)', width: 1280, height: 720, fps: 30, bitrate: 3_000_000 },
-  standard: { id: 'standard', label: 'ชัดสมดุล (แนะนำ)', description: '720p · 24 FPS · 2 Mbps (~15 MB/นาที)', width: 1280, height: 720, fps: 24, bitrate: 2_000_000 },
+  high: { id: 'high', label: '1080p — High Quality', description: '1080p · 30 FPS · 5 Mbps (~38 MB/นาที)', width: 1920, height: 1080, fps: 30, bitrate: 5_000_000 },
+  standard: { id: 'standard', label: '720p — Recommended', description: '720p · 30 FPS · 3 Mbps (~23 MB/นาที)', width: 1280, height: 720, fps: 30, bitrate: 3_000_000 },
   balanced: { id: 'balanced', label: 'ไฟล์ขนาดกลาง', description: '720p · 20 FPS · 1.2 Mbps (~9 MB/นาที)', width: 1280, height: 720, fps: 20, bitrate: 1_200_000 },
   data_saver: { id: 'data_saver', label: 'ประหยัดพื้นที่', description: '480p · 15 FPS · 0.65 Mbps (~5 MB/นาที)', width: 854, height: 480, fps: 15, bitrate: 650_000 },
 }
 
-const SELECTABLE_VIDEO_QUALITY_PROFILES: VideoQualityProfileId[] = ['standard', 'balanced', 'data_saver']
+const SELECTABLE_VIDEO_QUALITY_PROFILES: VideoQualityProfileId[] = ['standard', 'high']
 // ตัดวิดีโอที่บันทึกนานเป็นไฟล์ย่อยก่อนถึงเพดานอัปโหลดอัตโนมัติ 80 MB
 const RECORDING_SEGMENT_LIMIT_BYTES = 70 * 1024 * 1024
 const RECORDING_TIMESLICE_MS = 5_000
@@ -328,15 +335,10 @@ function formatBitrate(bitsPerSecond: number | null | undefined): string {
   return `${(value / 1_000_000).toLocaleString('th-TH', { maximumFractionDigits: 2 })} Mbps`
 }
 
-function codecFromMimeType(mimeType: string): string {
-  const match = mimeType.match(/codecs?=([^;]+)/i)
-  return match?.[1]?.replace(/["']/g, '').trim() || mimeType.split('/')[1]?.split(';')[0] || '-'
-}
-
 function uploadRecoveryAdvice(row: PackingUploadReportRow, deviceOnline: boolean): string {
   const error = String(row.last_error || '').toLowerCase()
   if (!deviceOnline) return 'เครื่องต้นทางออฟไลน์: เปิดเครื่องและ Chrome profile เดิม แล้วเข้า “คิวอัปโหลด”'
-  if (/ไม่พบไฟล์|missing.*file|no.*file/.test(error)) return 'ไม่พบไฟล์ในคิว: ใช้ปุ่ม “นำไฟล์ .webm กลับเข้าคิว” ที่เครื่องต้นทาง'
+  if (/ไม่พบไฟล์|missing.*file|no.*file/.test(error)) return 'ไม่พบไฟล์ในคิว: ใช้ปุ่ม “นำไฟล์วิดีโอกลับเข้าคิว” ที่เครื่องต้นทาง'
   if (/401|403|unauthor|jwt|token|session/.test(error)) return 'Session หมดอายุ: เข้าสู่ระบบใหม่ที่เครื่องต้นทาง แล้วกดอัปโหลดใหม่'
   if (/failed to fetch|network|internet|connection|เชื่อมต่อ/.test(error)) return 'ตรวจอินเทอร์เน็ตของเครื่องต้นทาง แล้วกดอัปโหลดใหม่'
   if (/413|too large|payload|ขนาด|ไฟล์ใหญ่|ขีดจำกัด/.test(error)) return 'ไฟล์ใหญ่เกินไป: ใช้ไฟล์สำรองในเครื่อง หรือระบบอัปโหลดไฟล์ขนาดใหญ่'
@@ -989,7 +991,7 @@ export default function Packing() {
     try {
       const items = await listQueueItems()
       if (!folderHandle || !(await isFolderHandleUsable(folderHandle))) {
-        throw new Error('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์ .webm ได้ครบ')
+        throw new Error('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์วิดีโอได้ครบ')
       }
 
       const filenames = Array.from(new Set(
@@ -1020,7 +1022,7 @@ export default function Packing() {
       queueSignatureRef.current = ''
       await refreshQueue()
       openAlert(
-        `ล้างคิวในเครื่องนี้เรียบร้อย ${items.length.toLocaleString('th-TH')} รายการ\nลบไฟล์ .webm สำรองแล้ว ${deletedFileCount.toLocaleString('th-TH')} ไฟล์`,
+        `ล้างคิวในเครื่องนี้เรียบร้อย ${items.length.toLocaleString('th-TH')} รายการ\nลบไฟล์วิดีโอสำรองแล้ว ${deletedFileCount.toLocaleString('th-TH')} ไฟล์`,
         'ล้างคิวสำเร็จ',
       )
     } catch (error: any) {
@@ -1689,7 +1691,7 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
-        const packingOrderSelect = 'id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
+        const packingOrderSelect = 'id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
         const [
           { data: productionOrdersById, error: productionOrdersByIdError },
           { data: productionOrdersByName, error: productionOrdersByNameError },
@@ -1834,7 +1836,7 @@ export default function Packing() {
             packedBills,
             dueBills: ordersInWo
               .filter((o: any) => o.ship_due_at)
-              .map((o: any) => ({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null })),
+              .map((o: any) => ({ ship_due_at: o.ship_due_at, overdue_at: o.overdue_at ?? null, shipped_time: o.shipped_time ?? null })),
           }
         })
         setWorkOrderStatus(statusMap)
@@ -2130,8 +2132,10 @@ export default function Packing() {
 
   async function chooseBackupVideo(file: File | null) {
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.webm') && !file.type.includes('webm')) {
-      openAlert('รองรับเฉพาะไฟล์วิดีโอ .webm เท่านั้น')
+    const lowerName = file.name.toLowerCase()
+    const isSupportedVideo = /\.(mp4|webm)$/.test(lowerName) || /video\/(mp4|webm)/i.test(file.type)
+    if (!isSupportedVideo) {
+      openAlert('รองรับไฟล์วิดีโอ .mp4 และ .webm เท่านั้น')
       return
     }
     const metadata = await inspectBackupVideo(file)
@@ -2150,6 +2154,7 @@ export default function Packing() {
 
   async function importBackupVideoToQueue() {
     const file = requeueImport.file
+    const lowerName = file?.name.toLowerCase() || ''
     const workOrderName = requeueImport.workOrderName.trim()
     const trackingNumber = formatParcelNo(requeueImport.trackingNumber)
     if (!file || !workOrderName || !trackingNumber) {
@@ -2180,7 +2185,7 @@ export default function Packing() {
         retryCount: 0,
         lastError: null,
         durationSeconds,
-        fileType: file.type || 'video/webm',
+        fileType: file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm'),
         fileSize: file.size,
         recordedBy: user?.username || user?.email || 'unknown',
         recordedUserId: user?.id || null,
@@ -2199,8 +2204,8 @@ export default function Packing() {
         actualWidth: requeueImport.width,
         actualHeight: requeueImport.height,
         actualFps: null,
-        mimeType: file.type || 'video/webm',
-        codec: codecFromMimeType(file.type || 'video/webm'),
+        mimeType: file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm'),
+        codec: codecFromVideoMimeType(file.type || (lowerName.endsWith('.mp4') ? 'video/mp4' : 'video/webm')),
         recorderBitrate: null,
         actualBitrate: durationSeconds ? Math.round((file.size * 8) / durationSeconds) : null,
       }
@@ -2546,13 +2551,22 @@ export default function Packing() {
       const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: profile.width, max: profile.width },
-          height: { ideal: profile.height, max: profile.height },
-          frameRate: { ideal: profile.fps, max: profile.fps },
+          width: { ideal: profile.width },
+          height: { ideal: profile.height },
+          frameRate: { ideal: profile.fps },
         },
         audio: false,
       })
       streamRef.current = stream
+      const actualSettings = stream.getVideoTracks()[0]?.getSettings()
+      console.info('[packing-video] camera settings', {
+        requested: { width: profile.width, height: profile.height, frameRate: profile.fps },
+        actual: {
+          width: actualSettings?.width ?? null,
+          height: actualSettings?.height ?? null,
+          frameRate: actualSettings?.frameRate ?? null,
+        },
+      })
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         try {
@@ -2607,17 +2621,31 @@ export default function Packing() {
         throw new Error('ไม่สามารถเปิดกล้องได้')
       }
 
-      // Google Drive can store VP9, but its built-in preview officially supports
-      // WebM playback with VP8. Prefer VP8 so recordings open on Drive/mobile;
-      // keep VP9 and the browser default as fallbacks for devices without VP8.
-      const mimeTypes = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']
-      const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
       const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
-      const recorder = new MediaRecorder(streamRef.current, {
-        mimeType: mimeType || undefined,
-        videoBitsPerSecond: profile.bitrate,
-      })
+      const supportedMimeTypes = getSupportedPackingVideoMimeTypes((type) => MediaRecorder.isTypeSupported(type))
+      let recorder: MediaRecorder | null = null
+      let selectedMimeType = ''
+
+      // Some implementations report a MIME type as supported but still reject it
+      // in the constructor for the active camera. Continue down the same safe list.
+      for (const mimeType of supportedMimeTypes) {
+        try {
+          recorder = new MediaRecorder(streamRef.current, {
+            mimeType,
+            videoBitsPerSecond: profile.bitrate,
+          })
+          selectedMimeType = mimeType
+          break
+        } catch {
+          // Try the next explicitly supported MP4/H.264 or WebM/VP8 option.
+        }
+      }
+      // Preserve the previous browser-default behavior only as a last-resort path.
+      if (!recorder) {
+        recorder = new MediaRecorder(streamRef.current, { videoBitsPerSecond: profile.bitrate })
+      }
       const trackSettings = streamRef.current.getVideoTracks()[0]?.getSettings()
+      const actualMimeType = recorder.mimeType || selectedMimeType || 'video/webm'
       recordingVideoMetadataRef.current = {
         qualityProfile: profile.id,
         requestedWidth: profile.width,
@@ -2627,8 +2655,8 @@ export default function Packing() {
         actualWidth: trackSettings?.width ?? null,
         actualHeight: trackSettings?.height ?? null,
         actualFps: trackSettings?.frameRate ?? null,
-        mimeType: recorder.mimeType || mimeType || 'video/webm',
-        codec: codecFromMimeType(recorder.mimeType || mimeType || 'video/webm'),
+        mimeType: actualMimeType,
+        codec: codecFromVideoMimeType(actualMimeType),
         recorderBitrate: Number(recorder.videoBitsPerSecond || 0) || null,
         actualBitrate: null,
       }
@@ -2642,7 +2670,7 @@ export default function Packing() {
         if (event.data.size <= 0) return
         recordingChunksRef.current.push(event.data)
         recordingBytesRef.current += event.data.size
-        // MediaRecorder แต่ละช่วงเป็นไฟล์ WebM ที่เล่นได้เอง เมื่อถึงขนาดนี้
+        // เมื่อข้อมูลของ MediaRecorder ชุดนี้ถึงเพดาน ให้ stop เพื่อปิดเป็นไฟล์
         // ให้ปิดช่วงปัจจุบัน; effect เดิมจะเริ่มช่วงถัดไปให้งานเดียวกันอัตโนมัติ
         if (recordingBytesRef.current >= RECORDING_SEGMENT_LIMIT_BYTES && recorder.state === 'recording') {
           recorder.stop()
@@ -2655,7 +2683,7 @@ export default function Packing() {
           return
         }
 
-        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'video/webm' })
+        const blob = new Blob(recordingChunksRef.current, { type: actualMimeType })
         const durationSeconds = recordingStartRef.current
           ? Math.round((Date.now() - recordingStartRef.current) / 1000)
           : null
@@ -2716,7 +2744,8 @@ export default function Packing() {
     try {
       await requestNotificationPermission()
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-      const filename = `${timestamp}.webm`
+      const effectiveMimeType = videoMetadata?.mimeType || blob.type || 'video/webm'
+      const filename = `${timestamp}.${videoFileExtension(effectiveMimeType)}`
       const path = `work_orders/${currentWorkOrderName}/${trackingNumber}/${filename}`
 
       // ไฟล์ในโฟลเดอร์เป็นเพียงสำเนาสำรอง การอัปโหลดใช้ blob ใน IndexedDB
@@ -2775,7 +2804,7 @@ export default function Packing() {
         actualHeight: videoMetadata?.actualHeight ?? null,
         actualFps: videoMetadata?.actualFps ?? null,
         mimeType: videoMetadata?.mimeType ?? blob.type ?? null,
-        codec: videoMetadata?.codec ?? codecFromMimeType(blob.type || 'video/webm'),
+        codec: videoMetadata?.codec ?? codecFromVideoMimeType(blob.type || 'video/webm'),
         recorderBitrate: videoMetadata?.recorderBitrate ?? null,
         actualBitrate: videoMetadata?.actualBitrate ?? (durationSeconds ? Math.round((blob.size * 8) / durationSeconds) : null),
       }
@@ -3689,7 +3718,7 @@ export default function Packing() {
                       <option key={profile.id} value={profile.id}>{profile.label} — {profile.description}</option>
                     ))}
                   </select>
-                  <span className="text-xs text-gray-500">จำกัดสูงสุด 720p และแบ่งไฟล์อัตโนมัติเมื่อบันทึกนาน</span>
+                  <span className="text-xs text-gray-500">ค่าเริ่มต้น 720p/30 FPS/3 Mbps · รองรับ 1080p และแบ่งไฟล์อัตโนมัติเมื่อบันทึกนาน</span>
                 </div>
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
                   <div className="mb-2 font-semibold text-blue-900">ผูก Browser นี้กับทะเบียนสถานีเดิม</div>
@@ -3753,7 +3782,7 @@ export default function Packing() {
                   <input
                     ref={requeueFileInputRef}
                     type="file"
-                    accept="video/webm,.webm"
+                    accept="video/mp4,video/webm,.mp4,.webm"
                     className="hidden"
                     onChange={(event) => {
                       void chooseBackupVideo(event.target.files?.[0] || null)
@@ -3765,7 +3794,7 @@ export default function Packing() {
                     onClick={() => requeueFileInputRef.current?.click()}
                     className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-medium text-violet-700 hover:bg-violet-100"
                   >
-                    นำไฟล์ .webm กลับเข้าคิว
+                    นำไฟล์วิดีโอกลับเข้าคิว
                   </button>
                   {folderHandle ? (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">
@@ -3831,11 +3860,11 @@ export default function Packing() {
                       className="px-4 py-2 text-sm bg-red-700 text-white rounded-lg hover:bg-red-800 font-semibold shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
                       onClick={() => {
                         if (!folderHandle) {
-                          openAlert('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์ .webm ได้ครบ')
+                          openAlert('กรุณาเชื่อมต่อโฟลเดอร์จัดเก็บของเครื่องนี้ก่อน เพื่อให้ระบบลบไฟล์วิดีโอได้ครบ')
                           return
                         }
                         openConfirm(
-                          `ต้องการลบคิวทั้งหมดใน Chrome เครื่องนี้จำนวน ${queueItems.length.toLocaleString('th-TH')} รายการหรือไม่?\n\nระบบจะลบรายการรอคิว กำลังอัปโหลด ล้มเหลว และสำเร็จออกจาก IndexedDB พร้อมลบไฟล์ .webm ที่อ้างอิงอยู่ในโฟลเดอร์ที่เชื่อมต่อ การทำรายการนี้ย้อนกลับไม่ได้`,
+                          `ต้องการลบคิวทั้งหมดใน Chrome เครื่องนี้จำนวน ${queueItems.length.toLocaleString('th-TH')} รายการหรือไม่?\n\nระบบจะลบรายการรอคิว กำลังอัปโหลด ล้มเหลว และสำเร็จออกจาก IndexedDB พร้อมลบไฟล์วิดีโอที่อ้างอิงอยู่ในโฟลเดอร์ที่เชื่อมต่อ การทำรายการนี้ย้อนกลับไม่ได้`,
                           () => void clearAllLocalQueueItems(),
                           'ล้างคิวและไฟล์วิดีโอทั้งหมด',
                           'ยืนยันลบทั้งหมด',
@@ -4608,7 +4637,7 @@ export default function Packing() {
       >
         <div className="space-y-4 p-5">
           <div>
-            <h3 className="text-lg font-semibold">นำไฟล์ .webm สำรองกลับเข้าคิว</h3>
+            <h3 className="text-lg font-semibold">นำไฟล์วิดีโอสำรองกลับเข้าคิว</h3>
             <p className="mt-1 text-sm text-gray-500">ไฟล์จะถูกเก็บในคิวของ Chrome เครื่องนี้และอัปโหลดตามปกติ</p>
           </div>
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">

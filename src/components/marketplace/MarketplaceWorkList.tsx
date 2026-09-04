@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FiArrowDown, FiArrowUp, FiMinus } from 'react-icons/fi'
 import { supabase } from '../../lib/supabase'
 import { parseBangkokDateTime } from '../../lib/marketplaceImport'
 import { computeDueTimestamps } from '../../lib/shipDueBadge'
+import { buildIlikeOr } from '../../lib/searchFilter'
 import { formatDateTime } from '../../lib/utils'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import UrgencyBadge from '../common/UrgencyBadge'
@@ -23,6 +24,8 @@ const PAYMENT_SORT_TITLES = {
   asc: 'เรียงเวลาชำระเงินเก่าไปใหม่ (คลิกเพื่อเรียงใหม่ไปเก่า)',
   desc: 'เรียงเวลาชำระเงินใหม่ไปเก่า (คลิกเพื่อยกเลิกการเรียง)',
 } as const
+
+const DONE_PAGE_SIZE = 50
 
 export default function MarketplaceWorkList({
   status,
@@ -60,6 +63,12 @@ export default function MarketplaceWorkList({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkAssigneeId, setBulkAssigneeId] = useState('')
   const [bulkAssigning, setBulkAssigning] = useState(false)
+  const [donePage, setDonePage] = useState(1)
+  const [doneTotal, setDoneTotal] = useState(0)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const loadRequestRef = useRef(0)
   const canFilterAssignee = canAssign
   const canBulkAssign = status === 'assigned' && canAssign
   const assignableUsers = useMemo(() => salesUsers.filter((candidate) => candidate.role !== 'sales-pump'), [salesUsers])
@@ -70,43 +79,131 @@ export default function MarketplaceWorkList({
     return m
   }, [users])
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search.trim())
+      if (status === 'done') setDonePage(1)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search, status])
+
+  // Keep filters in active queues client-side. Only the completed-history tab
+  // needs server-side filters because it is paginated.
+  const doneDateFrom = status === 'done' ? dateFrom : ''
+  const doneDateTo = status === 'done' ? dateTo : ''
+  const doneSearch = status === 'done' ? debouncedSearch : ''
+  const doneChannel = status === 'done' ? filterChannel : ''
+  const doneAssignee = status === 'done' ? filterUser : ''
+  const donePaymentSort = status === 'done' ? paymentSort : null
+
   const loadOrders = useCallback(async () => {
+    const requestId = ++loadRequestRef.current
     setLoading(true)
     try {
       let query = supabase
         .from('mp_orders')
-        .select('*')
+        .select('*', status === 'done' ? { count: 'exact' } : undefined)
         .eq('status', status)
-        .order(status === 'done' ? 'billed_at' : status === 'cancelled' ? 'cancelled_at' : 'assigned_at', {
-          ascending: false,
-        })
+
+      if (status === 'done') {
+        if (doneDateFrom) query = query.gte('billed_at', `${doneDateFrom}T00:00:00.000+07:00`)
+        if (doneDateTo) query = query.lte('billed_at', `${doneDateTo}T23:59:59.999+07:00`)
+        if (doneChannel) query = query.eq('channel_code', doneChannel)
+        if (doneAssignee) query = query.eq('assigned_to', doneAssignee)
+        if (doneSearch) {
+          query = query.or(buildIlikeOr(doneSearch, [
+            'marketplace_order_no',
+            'billed_bill_no',
+            'buyer_username',
+            'recipient_name',
+            'phone',
+            'tracking_no',
+            'express_receipt_number',
+          ]))
+        }
+        if (donePaymentSort) {
+          query = query
+            .order('payment_time', { ascending: donePaymentSort === 'asc', nullsFirst: false })
+            .order('billed_at', { ascending: false })
+        } else {
+          query = query.order('billed_at', { ascending: false })
+        }
+        query = query.range((donePage - 1) * DONE_PAGE_SIZE, donePage * DONE_PAGE_SIZE - 1)
+      } else {
+        query = query.order(status === 'cancelled' ? 'cancelled_at' : 'assigned_at', { ascending: false })
+      }
       // แถบ Assign ของผู้ใช้ทั่วไป = งานที่รับผิดชอบเอง + งานที่ตนเป็นผู้มอบหมาย
       // superadmin เห็นงานที่ Assign ทั้งหมดของทุกคน
       if (status === 'assigned' && user.role !== 'superadmin') {
         query = query.or(`assigned_to.eq.${user.id},assigned_by.eq.${user.id}`)
       }
-      const { data, error } = await query
+      const { data, error, count } = await query
       if (error) throw error
-      setOrders((data || []) as MpOrder[])
+      if (requestId !== loadRequestRef.current) return
+      const rows = (data || []) as MpOrder[]
+      const billedOrderIds = [...new Set(rows.map((row) => row.billed_order_id).filter((id): id is string => Boolean(id)))]
+      let shippedTimeByOrderId = new Map<string, string | null>()
+      for (let start = 0; start < billedOrderIds.length; start += 200) {
+        const { data: billedOrders, error: billedOrdersError } = await supabase
+          .from('or_orders')
+          .select('id, shipped_time')
+          .in('id', billedOrderIds.slice(start, start + 200))
+        if (billedOrdersError) throw billedOrdersError
+        if (requestId !== loadRequestRef.current) return
+        shippedTimeByOrderId = new Map([
+          ...shippedTimeByOrderId,
+          ...(billedOrders || []).map((row) => [row.id, row.shipped_time ?? null] as const),
+        ])
+      }
+      const nextRows = rows.map((row) => ({
+        ...row,
+        shipped_time: row.billed_order_id ? (shippedTimeByOrderId.get(row.billed_order_id) ?? null) : null,
+      }))
+      if (requestId !== loadRequestRef.current) return
+      setOrders(nextRows)
+      if (status === 'done') setDoneTotal(count || 0)
+      setOpenOrder((current) => current ? (nextRows.find((row) => row.id === current.id) ?? current) : null)
     } catch (err) {
       console.error('Error loading mp_orders:', err)
     } finally {
-      setLoading(false)
+      if (requestId === loadRequestRef.current) setLoading(false)
     }
-  }, [status, user.id, user.role])
+  }, [doneAssignee, doneChannel, doneDateFrom, doneDateTo, donePage, donePaymentSort, doneSearch, status, user.id, user.role])
 
   useEffect(() => {
     loadOrders()
   }, [loadOrders, refreshKey])
 
+  useEffect(() => {
+    if (status !== 'done') return
+    const channel = supabase
+      .channel(`mp-billed-orders-shipping-${user.id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'or_orders' }, (payload) => {
+        const changedOrder = payload.new as { id?: string; shipped_time?: string | null } | null
+        const changedOrderId = String(changedOrder?.id || '')
+        if (!changedOrderId) return
+        setOrders((current) => current.map((order) => order.billed_order_id === changedOrderId
+          ? { ...order, shipped_time: changedOrder?.shipped_time ?? null }
+          : order))
+        setOpenOrder((current) => current?.billed_order_id === changedOrderId
+          ? { ...current, shipped_time: changedOrder?.shipped_time ?? null }
+          : current)
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [status, user.id])
+
   /** ช่องทางที่เลือกกรองได้ — เอาเฉพาะที่มีจริงในรายการของแท็บนี้ */
   const channelOptions = useMemo(() => {
+    if (status === 'done') {
+      return [...new Set(configs.map((config) => config.channel_code).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    }
     const codes = new Set<string>()
     orders.forEach((o) => {
       if (o.channel_code) codes.add(o.channel_code)
     })
     return [...codes].sort((a, b) => a.localeCompare(b))
-  }, [orders])
+  }, [configs, orders, status])
 
   // ช่องทางที่เลือกไว้หายไปจากรายการ (เช่นโหลดใหม่แล้วไม่มีงานช่องทางนั้น) → ล้างตัวกรอง
   useEffect(() => {
@@ -115,6 +212,7 @@ export default function MarketplaceWorkList({
 
   const filteredOrders = useMemo(() => {
     const q = search.trim().toLowerCase()
+    if (status === 'done') return orders
     const rows = orders.filter((o) => {
       if (filterUser && o.assigned_to !== filterUser) return false
       if (draftOnly && !o.draft_saved_at) return false
@@ -146,7 +244,11 @@ export default function MarketplaceWorkList({
       if (ta == null || tb == null) return ta == null ? (tb == null ? 0 : 1) : -1
       return paymentSort === 'asc' ? ta - tb : tb - ta
     })
-  }, [orders, search, draftOnly, filterChannel, filterUser, paymentSort, userById])
+  }, [orders, search, draftOnly, filterChannel, filterUser, paymentSort, status, userById])
+
+  const doneTotalPages = Math.max(1, Math.ceil(doneTotal / DONE_PAGE_SIZE))
+  const doneRangeStart = doneTotal === 0 ? 0 : (donePage - 1) * DONE_PAGE_SIZE + 1
+  const doneRangeEnd = Math.min(donePage * DONE_PAGE_SIZE, doneTotal)
 
   const readOnly = status === 'done' || status === 'cancelled'
   const selectedCount = useMemo(
@@ -365,18 +467,20 @@ export default function MarketplaceWorkList({
               : `ซ่อมยอดรวมออเดอร์ (${repairableOrderTotals.length})`}
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => setDraftOnly((v) => !v)}
-          title="กรองเฉพาะงานที่บันทึกร่างแล้ว"
-          className={`px-3 py-2 rounded-lg border font-medium whitespace-nowrap transition-colors ${
-            draftOnly
-              ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-              : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50'
-          }`}
-        >
-          บันทึกร่าง
-        </button>
+        {status === 'assigned' && (
+          <button
+            type="button"
+            onClick={() => setDraftOnly((v) => !v)}
+            title="กรองเฉพาะงานที่บันทึกร่างแล้ว"
+            className={`px-3 py-2 rounded-lg border font-medium whitespace-nowrap transition-colors ${
+              draftOnly
+                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50'
+            }`}
+          >
+            บันทึกร่าง
+          </button>
+        )}
         <input
           type="text"
           value={search}
@@ -384,9 +488,55 @@ export default function MarketplaceWorkList({
           placeholder="ค้นหา"
           className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-80"
         />
+        {status === 'done' && (
+          <>
+            <label className="flex items-center gap-2 text-sm text-gray-600 whitespace-nowrap">
+              <span>จากวันที่</span>
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(event) => {
+                  setDateFrom(event.target.value)
+                  setDonePage(1)
+                }}
+                className="border border-gray-300 rounded-lg px-3 py-2"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600 whitespace-nowrap">
+              <span>ถึงวันที่</span>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(event) => {
+                  setDateTo(event.target.value)
+                  setDonePage(1)
+                }}
+                className="border border-gray-300 rounded-lg px-3 py-2"
+              />
+            </label>
+            {(dateFrom || dateTo) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDateFrom('')
+                  setDateTo('')
+                  setDonePage(1)
+                }}
+                className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap"
+              >
+                ล้างวันที่
+              </button>
+            )}
+          </>
+        )}
         <select
           value={filterChannel}
-          onChange={(e) => setFilterChannel(e.target.value)}
+          onChange={(e) => {
+            setFilterChannel(e.target.value)
+            if (status === 'done') setDonePage(1)
+          }}
           aria-label="กรองช่องทาง"
           className="border border-gray-300 rounded-lg px-3 py-2 w-full sm:w-auto sm:min-w-[180px]"
         >
@@ -403,7 +553,10 @@ export default function MarketplaceWorkList({
         {canFilterAssignee && (
           <select
             value={filterUser}
-            onChange={(e) => setFilterUser(e.target.value)}
+            onChange={(e) => {
+              setFilterUser(e.target.value)
+              if (status === 'done') setDonePage(1)
+            }}
             className="border border-gray-300 rounded-lg px-3 py-2"
           >
             <option value="">ผู้รับผิดชอบ: ทั้งหมด</option>
@@ -439,9 +592,10 @@ export default function MarketplaceWorkList({
                   {/* คลิกวน: ค่าเริ่มต้นของแท็บ → เก่าไปใหม่ → ใหม่ไปเก่า → ค่าเริ่มต้น */}
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      if (status === 'done') setDonePage(1)
                       setPaymentSort((prev) => (prev === null ? 'asc' : prev === 'asc' ? 'desc' : null))
-                    }
+                    }}
                     title={PAYMENT_SORT_TITLES[paymentSort ?? 'none']}
                     aria-label={PAYMENT_SORT_TITLES[paymentSort ?? 'none']}
                     className={`inline-flex items-center gap-2 hover:text-blue-600 ${
@@ -474,7 +628,7 @@ export default function MarketplaceWorkList({
               </tr>
             </thead>
             <tbody>
-              {loading && (
+              {loading && orders.length === 0 && (
                 <tr>
                   <td colSpan={11} className="px-4 py-8 text-center text-gray-400">กำลังโหลด...</td>
                 </tr>
@@ -486,8 +640,7 @@ export default function MarketplaceWorkList({
                   </td>
                 </tr>
               )}
-              {!loading &&
-                filteredOrders.map((o) => {
+              {filteredOrders.map((o) => {
                   const assignee = o.assigned_to ? userById.get(o.assigned_to) : null
                   const assigner = o.assigned_by ? userById.get(o.assigned_by) : null
                   return (
@@ -535,7 +688,7 @@ export default function MarketplaceWorkList({
                       )}
                       <td className="px-4 py-3 whitespace-nowrap">
                         {o.assigned_at ? formatDateTime(o.assigned_at) : '-'}
-                        {o.draft_saved_at && (
+                        {status === 'assigned' && o.draft_saved_at && (
                           <span className="ml-2 px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-100 text-blue-700 border border-blue-300">
                             บันทึกร่าง
                           </span>
@@ -571,6 +724,36 @@ export default function MarketplaceWorkList({
           </table>
         </div>
       </div>
+
+      {status === 'done' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-surface-200 bg-white px-4 py-3 shadow-soft">
+          <div className="text-sm text-gray-600">
+            {loading && <span className="mr-2 text-blue-600">กำลังอัปเดต...</span>}
+            แสดง {doneRangeStart.toLocaleString('th-TH')}–{doneRangeEnd.toLocaleString('th-TH')} จาก {doneTotal.toLocaleString('th-TH')} รายการ
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={loading || donePage <= 1}
+              onClick={() => setDonePage((page) => Math.max(1, page - 1))}
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ‹ ก่อนหน้า
+            </button>
+            <span className="min-w-[110px] text-center text-sm font-semibold text-gray-700">
+              หน้า {donePage.toLocaleString('th-TH')} / {doneTotalPages.toLocaleString('th-TH')}
+            </span>
+            <button
+              type="button"
+              disabled={loading || donePage >= doneTotalPages}
+              onClick={() => setDonePage((page) => Math.min(doneTotalPages, page + 1))}
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ถัดไป ›
+            </button>
+          </div>
+        </div>
+      )}
 
       {openOrder && (
         <MarketplaceOrderModal

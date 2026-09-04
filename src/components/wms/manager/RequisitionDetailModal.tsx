@@ -196,6 +196,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
                         <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
                         <div className="mt-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
+                        {item.reference_bill_no && <div className="mt-1 text-xs font-bold text-amber-700">เลขบิลอ้างอิง: {item.reference_bill_no}</div>}
                         <div className="mt-1 text-xs text-gray-700 break-words"><span className="font-bold">เหตุผล/หมายเหตุ:</span> {itemReason(item)}</div>
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>
@@ -254,6 +255,7 @@ export default function RequisitionDetailModal({ requisition, onClose }: Requisi
                         <div className="font-bold text-gray-900 text-sm">{item.product_name}</div>
                         <div className="text-xs text-gray-500">รหัส: {item.product_code}</div>
                         <div className="mt-1"><span className="inline-flex rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold text-blue-700">หัวข้อ: {itemTopic(item)}</span></div>
+                        {item.reference_bill_no && <div className="mt-1 text-xs font-bold text-amber-700">เลขบิลอ้างอิง: {item.reference_bill_no}</div>}
                         <div className="mt-1 text-xs text-gray-700 break-words"><span className="font-bold">เหตุผล/หมายเหตุ:</span> {itemReason(item)}</div>
                         <div className="text-xs text-red-500">จุดเก็บ: {item.location}</div>
                       </div>

@@ -14,6 +14,102 @@ const requiresDamageEvidence = (topic: string) => PHOTO_REQUIRED_TOPICS.has(topi
 const DAMAGE_BUCKET = 'wms-damage-evidence'
 const PAGE_SIZE = 25
 
+type ReferenceBill = {
+  id: string
+  bill_no: string
+  channel_code: string
+  channel_order_no: string | null
+  customer_name: string | null
+}
+
+type ChannelOption = { channel_code: string; channel_name: string }
+
+function ReferenceBillSelector({
+  selectedOrderId,
+  selectedBillNo,
+  channels,
+  onChange,
+}: {
+  selectedOrderId: string
+  selectedBillNo: string
+  channels: ChannelOption[]
+  onChange: (bill: ReferenceBill | null) => void
+}) {
+  const [search, setSearch] = useState('')
+  const [channel, setChannel] = useState('')
+  const [bills, setBills] = useState<ReferenceBill[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setLoading(true)
+      let query = supabase
+        .from('or_orders')
+        .select('id, bill_no, channel_code, channel_order_no, customer_name')
+        .neq('status', 'จัดส่งแล้ว')
+        .is('shipped_time', null)
+        .order('created_at', { ascending: false })
+        .limit(50)
+
+      if (channel) query = query.eq('channel_code', channel)
+      if (search.trim()) query = query.or(buildIlikeOr(search, ['bill_no', 'channel_order_no', 'customer_name']))
+
+      const { data, error } = await query
+      if (!cancelled) {
+        setBills(error ? [] : (data || []) as ReferenceBill[])
+        setLoading(false)
+      }
+    }, 250)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [search, channel])
+
+  const selectedIsMissing = selectedOrderId && !bills.some((bill) => bill.id === selectedOrderId)
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-bold text-amber-800">เลขบิลอ้างอิง *</label>
+        <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">เฉพาะยังไม่จัดส่ง</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="ค้นหาเลขบิล / เลขคำสั่งซื้อ / ลูกค้า"
+          className="w-full rounded-lg border border-amber-200 bg-white p-2 text-sm outline-none focus:border-amber-500"
+        />
+        <select
+          value={channel}
+          onChange={(event) => setChannel(event.target.value)}
+          className="w-full rounded-lg border border-amber-200 bg-white p-2 text-sm outline-none focus:border-amber-500"
+        >
+          <option value="">ทุกช่องทาง</option>
+          {channels.map((item) => <option key={item.channel_code} value={item.channel_code}>{item.channel_code} - {item.channel_name}</option>)}
+        </select>
+      </div>
+      <select
+        value={selectedOrderId || ''}
+        onChange={(event) => onChange(bills.find((bill) => bill.id === event.target.value) || null)}
+        className={`w-full rounded-lg border bg-white p-2 text-sm outline-none ${selectedOrderId ? 'border-amber-200' : 'border-red-400'}`}
+      >
+        <option value="">{loading ? 'กำลังค้นหาบิล...' : `-- เลือกเลขบิล (${bills.length}) --`}</option>
+        {selectedIsMissing && <option value={selectedOrderId}>{selectedBillNo}</option>}
+        {bills.map((bill) => (
+          <option key={bill.id} value={bill.id}>
+            {bill.bill_no} — {bill.channel_code}{bill.channel_order_no ? ` / ${bill.channel_order_no}` : ''}{bill.customer_name ? ` — ${bill.customer_name}` : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export default function RequisitionDashboard() {
   const { user } = useAuthContext()
   const [requisitions, setRequisitions] = useState<any[]>([])
@@ -27,6 +123,7 @@ export default function RequisitionDashboard() {
   const [page, setPage] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
   const [listTopics, setListTopics] = useState<string[]>([])
+  const [listDamagePhotoUrls, setListDamagePhotoUrls] = useState<Record<string, string>>({})
   const { showMessage, showConfirm, MessageModal, ConfirmModal } = useWmsModal({ showCancelButton: false })
 
   // --- Create requisition state ---
@@ -41,6 +138,7 @@ export default function RequisitionDashboard() {
   const [cLoadingProducts, setCLoadingProducts] = useState(false)
   const [cProductType, setCProductType] = useState<ProductType>('FG')
   const [cSubmitting, setCSubmitting] = useState(false)
+  const [cChannels, setCChannels] = useState<ChannelOption[]>([])
 
   useEffect(() => {
     const now = new Date()
@@ -71,8 +169,8 @@ export default function RequisitionDashboard() {
     try {
       setLoading(true)
       const itemRelation = filterTopic
-        ? 'wms_requisition_items!inner(requisition_topic)'
-        : 'wms_requisition_items(requisition_topic)'
+        ? 'wms_requisition_items!inner(requisition_topic,damage_image_paths,reference_bill_no)'
+        : 'wms_requisition_items(requisition_topic,damage_image_paths,reference_bill_no)'
       let query = supabase
         .from('wms_requisitions')
         .select(`*, ${itemRelation}`, { count: 'exact' })
@@ -101,6 +199,18 @@ export default function RequisitionDashboard() {
       setListTopics((topicRows || []).map((row: any) => String(row.topic_name || '').trim()).filter(Boolean))
 
       const rows = data || []
+      const damagePaths = [...new Set(rows.flatMap((requisition: any) =>
+        (requisition.wms_requisition_items || []).flatMap((item: any) => item.damage_image_paths || [])))] as string[]
+      if (damagePaths.length) {
+        const { data: signed } = await supabase.storage.from(DAMAGE_BUCKET).createSignedUrls(damagePaths, 3600)
+        const urls: Record<string, string> = {}
+        ;(signed || []).forEach((row: any, index: number) => {
+          if (row.signedUrl) urls[damagePaths[index]] = row.signedUrl
+        })
+        setListDamagePhotoUrls(urls)
+      } else {
+        setListDamagePhotoUrls({})
+      }
       const userIds = [...new Set(rows.flatMap((r: any) => [r.created_by, r.approved_by].filter(Boolean)))]
       const userMap = new Map<string, string>()
       if (userIds.length > 0) {
@@ -185,16 +295,22 @@ export default function RequisitionDashboard() {
           วันที่ทำรายการ: formatDate(requisition.created_at),
           วันที่อนุมัติ: formatDate(requisition.approved_at),
           สถานะ: requisition.status === 'pending' ? 'รออนุมัติ' : requisition.status === 'approved' ? 'อนุมัติแล้ว' : 'ปฏิเสธ',
-          หมายเหตุ: requisition.notes || '-',
+          หมายเหตุใบเบิก: requisition.notes || '-',
         }
 
         if (!items || items.length === 0) {
           return [
             {
               ...baseData,
+              รหัสสินค้า: '-',
               รายการสินค้า: '-',
+              หัวข้อการเบิก: '-',
+              เลขบิลอ้างอิง: '-',
+              หมายเหตุ: '-',
+              จุดเก็บ: '-',
               จำนวน: '-',
               หน่วย: '-',
+              จำนวนรูปหลักฐาน: 0,
               _requisitionId: requisition.requisition_id,
             },
           ]
@@ -202,9 +318,15 @@ export default function RequisitionDashboard() {
 
         return items.map((item: any) => ({
           ...baseData,
-          รายการสินค้า: item.product_name,
+          รหัสสินค้า: item.product_code || '-',
+          รายการสินค้า: item.product_name || '-',
+          หัวข้อการเบิก: item.requisition_topic || '-',
+          เลขบิลอ้างอิง: item.reference_bill_no || '-',
+          หมายเหตุ: item.item_note?.trim() || '-',
+          จุดเก็บ: item.location || '-',
           จำนวน: item.qty.toString(),
           หน่วย: item.unit_name || 'ชิ้น',
+          จำนวนรูปหลักฐาน: (item.damage_image_paths || []).length,
           _requisitionId: requisition.requisition_id,
         }))
       })
@@ -219,13 +341,15 @@ export default function RequisitionDashboard() {
       worksheet.columns = headerKeys.map((key) => ({
         header: key,
         key,
-        width: 20,
+        width: key === 'รายการสินค้า' ? 32
+          : key === 'หมายเหตุ' || key === 'หมายเหตุใบเบิก' ? 36
+            : key.includes('วันที่') ? 22
+              : 18,
       }))
 
       const headerRow = worksheet.getRow(1)
       headerRow.height = 25
-      const maxColumns = Math.min(headerKeys.length, 10)
-      for (let colIndex = 0; colIndex < maxColumns; colIndex++) {
+      for (let colIndex = 0; colIndex < headerKeys.length; colIndex++) {
         const cell = headerRow.getCell(colIndex + 1)
         cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } }
@@ -244,7 +368,7 @@ export default function RequisitionDashboard() {
         }
         excelRow.eachCell((cell) => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: useBlueBackground ? 'FFE3F2FD' : 'FFFFFFFF' } }
-          cell.alignment = { vertical: 'middle', horizontal: 'left' }
+          cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true }
           cell.border = {
             top: { style: 'thin', color: { argb: 'FFD0D0D0' } },
             left: { style: 'thin', color: { argb: 'FFD0D0D0' } },
@@ -282,7 +406,7 @@ export default function RequisitionDashboard() {
     setCSearchTerm('')
     setCProducts([])
     setCProductType('FG')
-    await Promise.all([generateCRequisitionId(), loadCAllProducts('FG'), loadCTopics()])
+    await Promise.all([generateCRequisitionId(), loadCAllProducts('FG'), loadCTopics(), loadCChannels()])
   }
 
   const generateCRequisitionId = async () => {
@@ -329,6 +453,11 @@ export default function RequisitionDashboard() {
     }
   }
 
+  const loadCChannels = async () => {
+    const { data } = await supabase.from('channels').select('channel_code, channel_name').order('channel_code')
+    setCChannels((data || []) as ChannelOption[])
+  }
+
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
   const setFilterAndResetPage = (setter: (value: string) => void, value: string) => {
     setPage(1)
@@ -366,9 +495,17 @@ export default function RequisitionDashboard() {
       if (i.product_code !== code) return i
       if (!requiresDamageEvidence(topic)) (i.damage_previews || []).forEach(URL.revokeObjectURL)
       return { ...i, requisition_topic: topic,
+        reference_order_id: topic === 'ผลิตเสีย' ? i.reference_order_id : null,
+        reference_bill_no: topic === 'ผลิตเสีย' ? i.reference_bill_no : '',
         damage_files: requiresDamageEvidence(topic) ? i.damage_files : [],
         damage_previews: requiresDamageEvidence(topic) ? i.damage_previews : [] }
     }))
+  }
+
+  const cUpdateReferenceBill = (code: string, bill: ReferenceBill | null) => {
+    setCSelectedItems((current) => current.map((item: any) => item.product_code === code
+      ? { ...item, reference_order_id: bill?.id || null, reference_bill_no: bill?.bill_no || '' }
+      : item))
   }
 
   const cUpdateNote = (code: string, item_note: string) => {
@@ -404,6 +541,9 @@ export default function RequisitionDashboard() {
     if (cSelectedItems.some((i: any) => requiresDamageEvidence(i.requisition_topic) && !(i.damage_files || []).length)) {
       showMessage({ message: 'หัวข้อผลิตเสียและสินค้าชำรุดต้องแนบรูปอย่างน้อย 1 รูปต่อรายการ' }); return
     }
+    if (cSelectedItems.some((i: any) => i.requisition_topic === 'ผลิตเสีย' && !i.reference_order_id)) {
+      showMessage({ message: 'หัวข้อผลิตเสียต้องเลือกเลขบิลอ้างอิงให้ครบทุกรายการ' }); return
+    }
 
     const ok = await showConfirm({ title: 'ยืนยันสร้างใบเบิก', message: `สร้างใบเบิก ${cRequisitionId}?\nจำนวน ${cSelectedItems.length} รายการ` })
     if (!ok) return
@@ -432,7 +572,8 @@ export default function RequisitionDashboard() {
         }
         items.push({ requisition_id: cRequisitionId, product_code: item.product_code, product_name: item.product_name,
           location: item.storage_location || null, qty: item.qty, unit_name: item.unit_name?.trim() || 'ชิ้น', requisition_topic: item.requisition_topic || null,
-          item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths })
+          item_note: item.item_note?.trim() || null, damage_image_paths: damagePaths,
+          reference_order_id: item.reference_order_id || null, reference_bill_no: item.reference_bill_no || null })
       }
       const { error: itemErr } = await supabase.from('wms_requisition_items').insert(items)
       if (itemErr) throw itemErr
@@ -560,6 +701,7 @@ export default function RequisitionDashboard() {
             <thead className="bg-slate-50 text-sm font-semibold text-slate-700">
               <tr>
                 <th className="p-4">รายการเบิก</th>
+                <th className="p-4 text-center">รูปหลักฐาน</th>
                 <th className="p-4">ผู้เบิก</th>
                 <th className="p-4">ผู้อนุมัติ</th>
                 <th className="p-4">วันที่ทำรายการ</th>
@@ -571,7 +713,7 @@ export default function RequisitionDashboard() {
             <tbody className="divide-y divide-slate-200 text-slate-700">
               {requisitions.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-8 text-center text-gray-400">
+                  <td colSpan={8} className="p-8 text-center text-gray-400">
                     <i className="fas fa-inbox text-4xl mb-2"></i>
                     <div>ไม่มีข้อมูล</div>
                   </td>
@@ -583,10 +725,28 @@ export default function RequisitionDashboard() {
                       <div className="font-black text-blue-600">{req.requisition_id}</div>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {getRequisitionTopics(req).map((topic) => (
-                          <span key={topic} className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${topic === 'ผลิตเสีย' ? 'bg-red-100 text-red-700 ring-1 ring-red-200' : 'bg-blue-50 text-blue-700'}`}>
-                            {topic === 'ผลิตเสีย' && <i className="fas fa-triangle-exclamation mr-1" />}{topic}
-                          </span>
+                          <div key={topic} className="inline-flex items-center gap-1">
+                            <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${topic === 'ผลิตเสีย' ? 'bg-red-100 text-red-700 ring-1 ring-red-200' : 'bg-blue-50 text-blue-700'}`}>
+                              {topic === 'ผลิตเสีย' && <i className="fas fa-triangle-exclamation mr-1" />}{topic}
+                            </span>
+                            {topic === 'ผลิตเสีย' && [...new Set<string>((req.wms_requisition_items || [])
+                              .filter((item: any) => item.requisition_topic === 'ผลิตเสีย')
+                              .map((item: any) => String(item.reference_bill_no || '').trim()).filter(Boolean))].map((billNo) => (
+                                <span key={billNo} className="text-xs font-semibold text-amber-700">อ้างอิง: {billNo}</span>
+                              ))}
+                          </div>
                         ))}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex min-w-[84px] justify-center -space-x-2">
+                        {[...new Set((req.wms_requisition_items || []).flatMap((item: any) => item.damage_image_paths || []))]
+                          .slice(0, 3).map((path: any) => listDamagePhotoUrls[path] && (
+                            <a key={path} href={listDamagePhotoUrls[path]} target="_blank" rel="noreferrer" className="relative block h-11 w-11 overflow-hidden rounded-lg border-2 border-white bg-gray-100 shadow-sm">
+                              <img src={listDamagePhotoUrls[path]} alt="รูปหลักฐาน" className="h-full w-full object-cover" />
+                            </a>
+                          ))}
+                        {!(req.wms_requisition_items || []).some((item: any) => (item.damage_image_paths || []).length) && <span className="text-gray-400">-</span>}
                       </div>
                     </td>
                     <td className="p-4 font-bold text-slate-700">{req.created_by_user?.username || '---'}</td>
@@ -719,6 +879,14 @@ export default function RequisitionDashboard() {
                               <button onClick={() => cUpdateQty(item.product_code, item.qty + 1)} className="w-8 h-8 rounded-lg bg-green-100 text-green-600 font-bold hover:bg-green-200">+</button>
                             </div>
                           </div>
+                          {item.requisition_topic === 'ผลิตเสีย' && (
+                            <ReferenceBillSelector
+                              selectedOrderId={item.reference_order_id || ''}
+                              selectedBillNo={item.reference_bill_no || ''}
+                              channels={cChannels}
+                              onChange={(bill) => cUpdateReferenceBill(item.product_code, bill)}
+                            />
+                          )}
                           <textarea
                             value={item.item_note || ''}
                             onChange={(e) => cUpdateNote(item.product_code, e.target.value)}
