@@ -20,7 +20,7 @@ import { generateBillNo } from '../../lib/billNo'
 import { findWyProduct } from '../../lib/wyProductMatcher'
 import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
 import { buildIlikeOr } from '../../lib/searchFilter'
-import { isSelfPickupChannel } from '../../lib/channelBehavior'
+import { isSelfPickupBill, isSelfPickupChannel } from '../../lib/channelBehavior'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -676,7 +676,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [cartoonPatterns, setCartoonPatterns] = useState<CartoonPattern[]>([])
   const [channels, setChannels] = useState<{ channel_code: string; channel_name: string }[]>([])
   /** metadata ช่องทางจาก migration 280 (โหลดแยกแบบ fail-safe — ถ้า migration ยังไม่รันจะว่าง แล้ว fallback พฤติกรรมเดิม) */
-  const [channelMeta, setChannelMeta] = useState<Record<string, { is_active: boolean; receive_transfer: boolean; roles: string[] }>>({})
+  const [channelMeta, setChannelMeta] = useState<Record<string, { is_active: boolean; receive_transfer: boolean; is_self_pickup: boolean; roles: string[] }>>({})
   const [channelOrderNoPrefixMap, setChannelOrderNoPrefixMap] = useState<Record<string, string[]>>({})
   const [promotions, setPromotions] = useState<{ id: string; name: string }[]>([])
   const [inkTypes, setInkTypes] = useState<{ id: number; ink_name: string }[]>([])
@@ -691,6 +691,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   const [bankSettings, setBankSettings] = useState<BankSetting[]>([])
   /** ช่องทางที่อยู่ใน bank_settings_channels (ต้องอัพโหลดสลิปเมื่อชำระโอน) */
   const [channelCodesWithSlipVerification, setChannelCodesWithSlipVerification] = useState<Set<string>>(new Set())
+  const isCurrentBillSelfPickup = (channelCode: string | null | undefined = formData.channel_code) =>
+    isSelfPickupBill(order?.fulfillment_method, channelCode, channelMeta)
   const [creatingBill, setCreatingBill] = useState(false)
   const [verificationModal, setVerificationModal] = useState<{
     type: VerificationResultType
@@ -994,13 +996,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     try {
       const { data, error } = await supabase
         .from('channels')
-        .select('channel_code, is_active, receive_transfer, channel_role_visibility(role)')
+        .select('channel_code, is_active, receive_transfer, is_self_pickup, channel_role_visibility(role)')
       if (error) throw error
-      const map: Record<string, { is_active: boolean; receive_transfer: boolean; roles: string[] }> = {}
+      const map: Record<string, { is_active: boolean; receive_transfer: boolean; is_self_pickup: boolean; roles: string[] }> = {}
       for (const c of (data || []) as any[]) {
         map[c.channel_code] = {
           is_active: c.is_active !== false,
           receive_transfer: c.receive_transfer !== false,
+          is_self_pickup: c.is_self_pickup === true,
           roles: Array.isArray(c.channel_role_visibility)
             ? c.channel_role_visibility.map((r: any) => r.role).filter(Boolean)
             : [],
@@ -1827,7 +1830,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     }
 
     // ถ้ามีเลขพัสดุ เช็คซ้ำ (ไม่บังคับกรอก แต่ถ้ากรอกต้องไม่ซ้ำ)
-    if (!isSelfPickupChannel(formData.channel_code) && formData.tracking_number && formData.tracking_number.trim()) {
+    if (!isCurrentBillSelfPickup() && formData.tracking_number && formData.tracking_number.trim()) {
       const { data: dup, error } = await supabase
         .from('or_orders')
         .select('id')
@@ -2089,8 +2092,9 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       const currentUserName = user.username || user.email
       const orderData = {
         ...formDataForDb,
-        // SHOPP คือหน้าร้านรับเอง จึงต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
-        tracking_number: isSelfPickupChannel(channelCodeForSave) ? null : formDataForDb.tracking_number,
+        fulfillment_method: order?.fulfillment_method || (isSelfPickupChannel(channelCodeForSave, channelMeta) ? 'self_pickup' : 'shipping'),
+        // ช่องทางรับสินค้าเองต้องไม่มีเลขพัสดุ แม้บิลเก่าจะเคยมีค่าค้างอยู่
+        tracking_number: isCurrentBillSelfPickup(channelCodeForSave) ? null : formDataForDb.tracking_number,
         requires_confirm_design: requiresConfirmDesign,
         customer_address: customerAddressToSave,
         price: calculatedPrice,
@@ -4636,7 +4640,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           })),
       getLimitedEditPayload: (): OrderFormLimitedEditPayload => ({
         channel_order_no: formData.channel_order_no.trim() || null,
-        tracking_number: isSelfPickupChannel(formData.channel_code) ? null : formData.tracking_number.trim() || null,
+        tracking_number: isCurrentBillSelfPickup() ? null : formData.tracking_number.trim() || null,
         express_receipt_number: formData.express_receipt_number.trim() || null,
         lines: items
           .filter((it) => it.item_uid != null && String(it.item_uid).trim() !== '')
@@ -4648,7 +4652,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           })),
       }),
     }),
-    [formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items],
+    [channelMeta, formData.channel_code, formData.channel_order_no, formData.express_receipt_number, formData.tracking_number, items, order?.fulfillment_method],
   )
 
   return (
@@ -5035,7 +5039,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 })()}
               </div>
             )}
-            {!isSelfPickupChannel(formData.channel_code) && (
+            {!isCurrentBillSelfPickup() && (
               <div>
                 <label className="block text-sm font-medium mb-1">เลขพัสดุ</label>
                 <input
@@ -6307,14 +6311,14 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               }
 
               // ช่องทาง SPTR, FSPTR, TTTR, LZTR บังคับกรอกเลขพัสดุ
-              if (CHANNELS_ENABLE_TRACKING.includes(formData.channel_code)) {
+              if (!isCurrentBillSelfPickup() && CHANNELS_ENABLE_TRACKING.includes(formData.channel_code)) {
                 if (!formData.tracking_number || !formData.tracking_number.trim()) {
                   setMessageModal({ open: true, title: 'แจ้งเตือน', message: 'กรุณากรอกเลขพัสดุ' })
                   return
                 }
               }
 
-              if (!isSelfPickupChannel(formData.channel_code) && formData.tracking_number && formData.tracking_number.trim()) {
+              if (!isCurrentBillSelfPickup() && formData.tracking_number && formData.tracking_number.trim()) {
                 const { data: dup, error } = await supabase
                   .from('or_orders')
                   .select('id')

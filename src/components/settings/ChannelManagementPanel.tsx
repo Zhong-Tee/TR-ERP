@@ -24,6 +24,7 @@ interface ManagedChannel {
   channel_name: string
   default_carrier: string | null
   receive_transfer: boolean
+  is_self_pickup: boolean
   is_active: boolean
   sort_order: number
   roles: string[] // role ที่มองเห็น (ว่าง = เห็นทุก role)
@@ -34,6 +35,7 @@ interface ChannelFormState {
   channel_name: string
   default_carrier: string
   receive_transfer: boolean
+  is_self_pickup: boolean
   is_active: boolean
   roles: string[]
 }
@@ -43,6 +45,7 @@ const EMPTY_FORM: ChannelFormState = {
   channel_name: '',
   default_carrier: '',
   receive_transfer: true,
+  is_self_pickup: false,
   is_active: true,
   roles: [],
 }
@@ -66,7 +69,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
     try {
       const { data, error } = await supabase
         .from('channels')
-        .select('id, channel_code, channel_name, default_carrier, receive_transfer, is_active, sort_order, channel_role_visibility(role)')
+        .select('id, channel_code, channel_name, default_carrier, receive_transfer, is_self_pickup, is_active, sort_order, channel_role_visibility(role)')
         .order('sort_order', { ascending: true })
         .order('channel_code', { ascending: true })
       if (error) throw error
@@ -76,6 +79,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
         channel_name: c.channel_name,
         default_carrier: c.default_carrier || null,
         receive_transfer: c.receive_transfer !== false,
+        is_self_pickup: c.is_self_pickup === true,
         is_active: c.is_active !== false,
         sort_order: Number(c.sort_order || 0),
         roles: Array.isArray(c.channel_role_visibility)
@@ -108,6 +112,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
       channel_name: ch.channel_name,
       default_carrier: ch.default_carrier || '',
       receive_transfer: ch.receive_transfer,
+      is_self_pickup: ch.is_self_pickup,
       is_active: ch.is_active,
       roles: [...ch.roles],
     })
@@ -165,6 +170,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
             channel_name: name,
             default_carrier: defaultCarrier,
             receive_transfer: form.receive_transfer,
+            is_self_pickup: form.is_self_pickup,
             is_active: form.is_active,
           })
           .eq('channel_code', editing.channel_code)
@@ -184,6 +190,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
           channel_name: name,
           default_carrier: defaultCarrier,
           receive_transfer: form.receive_transfer,
+          is_self_pickup: form.is_self_pickup,
           is_active: form.is_active,
           sort_order: nextSort,
         })
@@ -298,6 +305,7 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ชื่อช่องทาง</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ขนส่งเริ่มต้น</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">ประเภทการรับเงิน</th>
+              <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">การรับสินค้า</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">role ที่มองเห็น</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap">สถานะ</th>
               <th className="px-3 py-2.5 font-semibold text-gray-700 whitespace-nowrap text-right">การจัดการ</th>
@@ -306,11 +314,11 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="px-3 py-10 text-center text-gray-400">กำลังโหลด...</td>
+                <td colSpan={8} className="px-3 py-10 text-center text-gray-400">กำลังโหลด...</td>
               </tr>
             ) : channels.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-10 text-center text-gray-400">ยังไม่มีช่องทาง</td>
+                <td colSpan={8} className="px-3 py-10 text-center text-gray-400">ยังไม่มีช่องทาง</td>
               </tr>
             ) : (
               channels.map((ch) => (
@@ -333,6 +341,15 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
                       <span className="inline-flex px-2 py-0.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-600">
                         ไม่ต้องรับเงินโอน
                       </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {ch.is_self_pickup ? (
+                      <span className="inline-flex px-2 py-0.5 rounded-lg text-xs font-medium bg-violet-100 text-violet-700">
+                        รับสินค้าเอง
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">จัดส่ง</span>
                     )}
                   </td>
                   <td className="px-3 py-2.5">
@@ -463,6 +480,23 @@ export default function ChannelManagementPanel({ onChannelsChanged }: { onChanne
                   </span>
                 </label>
               </div>
+            </div>
+
+            <div className="rounded-lg border border-violet-200 bg-violet-50 p-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.is_self_pickup}
+                  onChange={(e) => setForm({ ...form, is_self_pickup: e.target.checked })}
+                  className="mt-1"
+                />
+                <span className="text-sm">
+                  <span className="font-medium text-violet-800">รับสินค้าเอง</span>
+                  <span className="block text-xs text-violet-700/80">
+                    ไม่ใช้เลขพัสดุ และข้ามเฉพาะขั้นตอนสแกนเลขพัสดุในหน้าแพ็ค (ยังตรวจ WMS, QC และสแกนสินค้าครบทุกชิ้น)
+                  </span>
+                </span>
+              </label>
             </div>
 
             <div>

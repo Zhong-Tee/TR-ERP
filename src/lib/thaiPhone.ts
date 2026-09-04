@@ -38,6 +38,10 @@ export function extractPhoneCandidates(text: string): string[] {
   let normalized = normalizePhoneString(text)
   if (!normalized) return []
   normalized = normalized.replace(/(\d{5})(0[6-9]\d{8})/g, '$1 $2')
+  // normalizePhoneString removes whitespace from the whole address. Restore a
+  // boundary when a local mobile number follows a house/address number, e.g.
+  // "ที่อยู่ 123 0812345678" -> "ที่อยู่123 0812345678".
+  normalized = normalized.replace(/(\d)(0[6-9]\d{8})(?!\d)/g, '$1 $2')
 
   const seen = new Set<string>()
   const out: string[] = []

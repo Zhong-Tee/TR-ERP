@@ -6,7 +6,9 @@ import { supabase } from '../lib/supabase'
 import { Order, OrderItem, WorkOrder, InkType, PackingMeta } from '../types'
 import { flatBillUnitUid, normalizedLineQuantity } from '../lib/productionUnits'
 import { sortOrderItemsForExport } from '../lib/orderItemExportSort'
-import { isSelfPickupChannel } from '../lib/channelBehavior'
+import { SELF_PICKUP_CHANNELS } from '../lib/channelBehavior'
+import { parseAddressText } from '../lib/thaiAddress'
+import { downloadFlashWaybillXlsx } from '../lib/flashWaybillExport'
 import Modal from '../components/ui/Modal'
 import {
   addQueueItem,
@@ -55,6 +57,10 @@ type OrderWithItems = Order & {
 type PackingItem = {
   bill_no: string
   channel_code: string
+  is_self_pickup: boolean
+  fulfillment_method: 'self_pickup' | 'shipping'
+  converted_from_self_pickup_at: string | null
+  converted_from_self_pickup_by: string | null
   tracking_number: string
   channel_order_no: string | null
   express_receipt_number: string
@@ -118,21 +124,47 @@ function sortedPackingOrderItems(order: OrderWithItems | any): any[] {
   return sortOrderItemsForExport(activePackingOrderItems(order))
 }
 
-function isOrderPackableWithoutParcelNumber(order: Pick<Order, 'channel_code'>): boolean {
-  return isSelfPickupChannel(order.channel_code)
+function isOrderPackableWithoutParcelNumber(
+  order: Pick<Order, 'channel_code' | 'fulfillment_method'>,
+  selfPickupChannelCodes: ReadonlySet<string>,
+): boolean {
+  if (order.fulfillment_method) return order.fulfillment_method === 'self_pickup'
+  return selfPickupChannelCodes.has(String(order.channel_code || '').trim().toUpperCase())
 }
 
-function hasPackingReference(order: Pick<Order, 'channel_code' | 'tracking_number'>): boolean {
-  return isOrderPackableWithoutParcelNumber(order) || Boolean(order.tracking_number?.trim())
+function hasPackingReference(
+  order: Pick<Order, 'channel_code' | 'tracking_number' | 'fulfillment_method' | 'converted_from_self_pickup_at'>,
+  selfPickupChannelCodes: ReadonlySet<string>,
+): boolean {
+  return isOrderPackableWithoutParcelNumber(order, selfPickupChannelCodes)
+    || Boolean(order.converted_from_self_pickup_at)
+    || Boolean(order.tracking_number?.trim())
+}
+
+async function fetchSelfPickupChannelCodes(): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('channels')
+    .select('channel_code')
+    .eq('is_self_pickup', true)
+
+  if (error) {
+    // Keep SHOPP working during a staggered deployment where the migration has
+    // not reached the database yet. Once the query succeeds, DB config wins.
+    console.warn('Unable to load self-pickup channel settings:', error)
+    return new Set(SELF_PICKUP_CHANNELS)
+  }
+
+  return new Set((data || []).map((row: { channel_code: string }) => String(row.channel_code || '').trim().toUpperCase()).filter(Boolean))
 }
 
 function packingVideoReference(item: PackingItem): string {
+  if (item.is_self_pickup) return item.bill_no.trim() || item.order_id
   return item.tracking_number.trim() || item.bill_no.trim() || item.order_id
 }
 
 function packingGroupLabel(item: PackingItem): string {
-  return isSelfPickupChannel(item.channel_code)
-    ? `SHOP PICKUP • ${item.bill_no}`
+  return item.is_self_pickup
+    ? `รับสินค้าเอง • ${item.bill_no}`
     : formatParcelNo(item.tracking_number)
 }
 
@@ -148,11 +180,13 @@ function buildPackingItemsFromOrder(
   order: OrderWithItems,
   qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
   scannedUnitKeySet: Set<string>,
+  selfPickupChannelCodes: ReadonlySet<string>,
   wmsReady = true,
   wmsReadyByOrderItem: Record<string, boolean> = {}
 ): PackingItem[] {
   const isOrderShipped = order.status === 'จัดส่งแล้ว'
-  const isParcelScanned = isOrderPackableWithoutParcelNumber(order) || order.packing_meta?.parcelScanned || false
+  const isSelfPickup = isOrderPackableWithoutParcelNumber(order, selfPickupChannelCodes)
+  const isParcelScanned = isSelfPickup || order.packing_meta?.parcelScanned || false
   const packingTag = order.packing_meta?.dailyPackingTag ?? null
   const rows: PackingItem[] = []
   // Keep the flattened bill UID aligned with the bill view: condo stamps must
@@ -174,6 +208,10 @@ function buildPackingItemsFromOrder(
       rows.push({
         bill_no: order.bill_no || '',
         channel_code: order.channel_code || '',
+        is_self_pickup: isSelfPickup,
+        fulfillment_method: isSelfPickup ? 'self_pickup' : 'shipping',
+        converted_from_self_pickup_at: order.converted_from_self_pickup_at || null,
+        converted_from_self_pickup_by: order.converted_from_self_pickup_by || null,
         tracking_number: order.tracking_number || '',
         channel_order_no: order.channel_order_no || null,
         express_receipt_number: order.express_receipt_number || '',
@@ -324,6 +362,7 @@ type PackingDeviceRow = {
 }
 
 type RecordingVideoMetadata = {
+  startedAt: string | null
   qualityProfile: VideoQualityProfileId | 'imported'
   requestedWidth: number | null
   requestedHeight: number | null
@@ -385,6 +424,22 @@ function isStaleQueueTimestamp(status: string, updatedAt: string | null | undefi
 }
 
 type UploadStatusFilter = 'pending' | 'uploading' | 'success' | 'failed'
+
+type ConvertToShippingForm = {
+  orderId: string
+  billNo: string
+  isShipped: boolean
+  recipientName: string
+  originalAddress: string
+  addressLine: string
+  subDistrict: string
+  district: string
+  province: string
+  postalCode: string
+  mobilePhone: string
+  reason: string
+  cod: string
+}
 
 function UploadStatusCard({
   label,
@@ -471,7 +526,9 @@ function naturalSortCompare(a: string, b: string) {
 export default function Packing() {
   const { user } = useAuthContext()
   const { hasAccess } = useMenuAccess()
-  const isViewOnly = isAdminOrSuperadmin(user?.role)
+  const roleViewOnly = isAdminOrSuperadmin(user?.role)
+  const [operationViewOnly, setOperationViewOnly] = useState(false)
+  const isViewOnly = roleViewOnly || operationViewOnly
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([])
   const [claimTypeLabels, setClaimTypeLabels] = useState<Record<string, string>>({})
   const [workOrderStatus, setWorkOrderStatus] = useState<Record<string, WorkOrderStatus>>({})
@@ -537,6 +594,9 @@ export default function Packing() {
   const [recordingState, setRecordingState] = useState<RecordingState>({ status: 'idle', tracking: null })
   const [isLoadingOrders, setIsLoadingOrders] = useState(false)
   const [previewModal, setPreviewModal] = useState<{ open: boolean; message: string }>({ open: false, message: '' })
+  const [convertShippingForm, setConvertShippingForm] = useState<ConvertToShippingForm | null>(null)
+  const [convertShippingLoading, setConvertShippingLoading] = useState(false)
+  const [convertAddressLoading, setConvertAddressLoading] = useState(false)
   const [folderHandle, setFolderHandleState] = useState<FileSystemDirectoryHandle | null>(null)
   const [folderPath, setFolderPath] = useState('')
   const [deviceId, setDeviceId] = useState('')
@@ -622,7 +682,7 @@ export default function Packing() {
   const recordingStartRef = useRef<number | null>(null)
   const recordingVideoMetadataRef = useRef<RecordingVideoMetadata | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const previewLoadingRef = useRef(false)
+  const previewPromiseRef = useRef<Promise<boolean> | null>(null)
   const recordingStartingRef = useRef(false)
   const confirmActionRef = useRef<null | (() => void)>(null)
   const stopAdvanceRef = useRef(false)
@@ -673,7 +733,7 @@ export default function Packing() {
     return data as { success: boolean; shipped_count: number; closed_at: string }
   }
 
-  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean) => {
+  const handleSelectNewWorkOrder = async (workOrderName: string, hasTracking: boolean, hasBillsWithTracking: boolean, viewOnly = false) => {
     if (!hasTracking) {
       openAlert('ใบงานนี้ยังไม่มีเลขพัสดุ ไม่สามารถจัดของได้')
       return
@@ -682,15 +742,19 @@ export default function Packing() {
       openAlert('ใบงานนี้ยังไม่มีบิลที่มีเลขพัสดุ')
       return
     }
-    try {
-      await ensurePlanDeptStart(workOrderName)
-    } catch (error: any) {
-      console.error('PACK ensurePlanDeptStart error:', error)
-      openAlert('เริ่มแพ็คไม่สำเร็จ: ไม่สามารถบันทึกเวลาเริ่ม PACK ได้\n' + (error?.message || error))
-      return
+    const shouldViewOnly = roleViewOnly || viewOnly
+    setOperationViewOnly(shouldViewOnly)
+    if (!shouldViewOnly) {
+      try {
+        await ensurePlanDeptStart(workOrderName)
+      } catch (error: any) {
+        console.error('PACK ensurePlanDeptStart error:', error)
+        openAlert('เริ่มแพ็คไม่สำเร็จ: ไม่สามารถบันทึกเวลาเริ่ม PACK ได้\n' + (error?.message || error))
+        return
+      }
     }
 
-    let startTime: Date = new Date()
+    let startTime: Date | null = shouldViewOnly ? null : new Date()
     const { data: planJob } = await supabase
       .from('plan_jobs')
       .select('tracks')
@@ -699,10 +763,10 @@ export default function Packing() {
       .limit(1)
       .single()
     const planStart = planJob?.tracks?.PACK?.['เริ่มแพ็ค']?.start
-    if (planStart) startTime = new Date(planStart)
+    if (planStart && !shouldViewOnly) startTime = new Date(planStart)
 
     setPackStartTime(startTime)
-    await loadPackingData(workOrderName)
+    await loadPackingData(workOrderName, shouldViewOnly)
   }
 
   useEffect(() => {
@@ -1250,6 +1314,141 @@ export default function Packing() {
     setDialog({ open: true, mode: 'alert', title, message, confirmText: 'รับทราบ' })
   }
 
+  async function openConvertToShipping(orderId: string) {
+    if (isViewOnly) return
+    try {
+      setConvertShippingLoading(true)
+      const { data, error } = await supabase
+        .from('or_orders')
+        .select('id, bill_no, status, customer_name, recipient_name, customer_address, billing_details, payment_method, total_amount')
+        .eq('id', orderId)
+        .single()
+      if (error) throw error
+      const billing = (data.billing_details || {}) as Record<string, any>
+      setConvertShippingForm({
+        orderId: data.id,
+        billNo: data.bill_no || '',
+        isShipped: data.status === 'จัดส่งแล้ว',
+        recipientName: data.recipient_name || data.customer_name || '',
+        originalAddress: billing.original_customer_address || data.customer_address || '',
+        addressLine: billing.address_line || '',
+        subDistrict: billing.sub_district || '',
+        district: billing.district || '',
+        province: billing.province || '',
+        postalCode: billing.postal_code || '',
+        mobilePhone: billing.mobile_phone || '',
+        reason: data.status === 'จัดส่งแล้ว' ? '' : 'ลูกค้าเปลี่ยนจากรับสินค้าเองเป็นจัดส่ง',
+        cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
+      })
+    } catch (error: any) {
+      openAlert('โหลดข้อมูลบิลไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setConvertShippingLoading(false)
+    }
+  }
+
+  async function autoFillConvertAddress() {
+    if (!convertShippingForm) return
+    setConvertAddressLoading(true)
+    try {
+      const parsed = await parseAddressText(convertShippingForm.originalAddress, supabase)
+      setConvertShippingForm((current) => current ? ({
+        ...current,
+        recipientName: parsed.recipientName?.trim() || current.recipientName,
+        addressLine: parsed.addressLine || current.addressLine,
+        subDistrict: parsed.subDistrict || current.subDistrict,
+        district: parsed.district || current.district,
+        province: parsed.province || current.province,
+        postalCode: parsed.postalCode || current.postalCode,
+        mobilePhone: parsed.mobilePhone || current.mobilePhone,
+      }) : current)
+    } catch (error: any) {
+      openAlert('แยกที่อยู่อัตโนมัติไม่สำเร็จ: ' + (error?.message || error))
+    } finally {
+      setConvertAddressLoading(false)
+    }
+  }
+
+  function waybillAddressFromForm(form: ConvertToShippingForm): string {
+    return [form.addressLine, form.subDistrict, form.district, form.province].filter(Boolean).join(' ').trim()
+  }
+
+  async function exportConvertedWaybill(orderId: string) {
+    const { data, error } = await supabase
+      .from('or_orders')
+      .select('bill_no, customer_name, recipient_name, customer_address, billing_details, payment_method, total_amount')
+      .eq('id', orderId)
+      .single()
+    if (error) throw error
+    const billing = (data.billing_details || {}) as Record<string, any>
+    const address = [billing.address_line, billing.sub_district, billing.district, billing.province]
+      .filter(Boolean).join(' ').trim() || data.customer_address || ''
+    await downloadFlashWaybillXlsx([{
+      billNo: data.bill_no || '',
+      consigneeName: data.recipient_name || data.customer_name || '',
+      address,
+      postalCode: billing.postal_code || '',
+      phone1: billing.mobile_phone || '',
+      cod: String(data.payment_method || '').toLowerCase().includes('cod') ? String(data.total_amount || 0) : '0',
+    }], data.bill_no || 'waybill')
+  }
+
+  async function saveConversionAndExport() {
+    if (isViewOnly) return
+    const form = convertShippingForm
+    if (!form) return
+    if (!form.recipientName.trim() || !form.addressLine.trim() || !form.province.trim() || !form.postalCode.trim() || !form.mobilePhone.trim()) {
+      openAlert('กรุณากรอกชื่อผู้รับ ที่อยู่ จังหวัด รหัสไปรษณีย์ และเบอร์โทรให้ครบ')
+      return
+    }
+    if (form.isShipped && !form.reason.trim()) {
+      openAlert('กรุณาระบุเหตุผลที่ยกเลิกการจัดส่งและเปลี่ยนเป็นจัดส่งใหม่')
+      return
+    }
+
+    let converted = false
+    setConvertShippingLoading(true)
+    try {
+      const { error } = await supabase.rpc('pk_convert_self_pickup_to_shipping', {
+        p_order_id: form.orderId,
+        p_recipient_name: form.recipientName.trim(),
+        p_original_address: form.originalAddress.trim(),
+        p_address_line: form.addressLine.trim(),
+        p_sub_district: form.subDistrict.trim(),
+        p_district: form.district.trim(),
+        p_province: form.province.trim(),
+        p_postal_code: form.postalCode.trim(),
+        p_mobile_phone: form.mobilePhone.trim(),
+        p_reason: form.reason.trim(),
+        p_changed_by: user?.username || user?.email || 'unknown',
+      })
+      if (error) throw error
+      converted = true
+      await downloadFlashWaybillXlsx([{
+        billNo: form.billNo,
+        consigneeName: form.recipientName.trim(),
+        address: waybillAddressFromForm(form),
+        postalCode: form.postalCode.trim(),
+        phone1: form.mobilePhone.trim(),
+        cod: form.cod,
+      }], form.billNo || 'waybill')
+      openAlert('เปลี่ยนเป็นจัดส่งและ Export ใบปะหน้าเรียบร้อยแล้ว กรุณาสแกนเลขพัสดุเพื่อแพ็คใหม่', 'สำเร็จ')
+    } catch (error: any) {
+      openAlert(
+        converted
+          ? 'เปลี่ยนบิลเป็นจัดส่งแล้ว แต่ Export ใบปะหน้าไม่สำเร็จ สามารถกด Export ใบปะหน้าอีกครั้งได้\n' + (error?.message || error)
+          : 'เปลี่ยนเป็นจัดส่งไม่สำเร็จ: ' + (error?.message || error),
+        converted ? 'Export ไม่สำเร็จ' : 'เกิดข้อผิดพลาด',
+      )
+    } finally {
+      setConvertShippingLoading(false)
+      if (converted) {
+        setConvertShippingForm(null)
+        if (currentWorkOrderName) await loadPackingData(currentWorkOrderName)
+      }
+    }
+  }
+
   const openConfirm = (message: string, onConfirm: () => void, title = 'ยืนยันการทำรายการ', confirmText = 'ตกลง', cancelText = 'ยกเลิก') => {
     confirmActionRef.current = onConfirm
     setDialog({ open: true, mode: 'confirm', title, message, confirmText, cancelText })
@@ -1423,7 +1622,8 @@ export default function Packing() {
         if (item.item_uid) unitUids.push(item.item_uid)
       })
       const qcStatusMap = await fetchQcStatusMap(unitUids)
-      const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet)
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
+      const rows = buildPackingItemsFromOrder(ord, qcStatusMap, scannedKeySet, selfPickupChannelCodes)
       setTagSearchRows(rows)
       setTagSearchMeta({
         workOrderName: ord.work_order_name ?? null,
@@ -1628,7 +1828,7 @@ export default function Packing() {
   }, [shippedOrders])
 
   useEffect(() => {
-    if (!currentGroup) return
+    if (!currentGroup || isViewOnly) return
     const trackingNumber = packingVideoReference(currentGroup[0])
     const parcelScanned = currentGroup[0].parcelScanned
     const isFullyScanned = currentGroup.every((item) => item.scanned)
@@ -1636,12 +1836,15 @@ export default function Packing() {
     if (recordingState.status === 'recording' && (recordingState.tracking !== trackingNumber || !parcelScanned)) {
       stopRecording()
     }
-    if (recordingState.status === 'idle' && parcelScanned && !isFullyScanned && isWmsReadyGroup(currentGroup)) {
+    // Recovery path for an already-scanned order (page reload, segment rollover,
+    // or SHOP pickup). A fresh parcel scan starts the recorder directly in
+    // handleParcelScan, before any database round-trip.
+    if (recordingState.status === 'idle' && !recordingStartingRef.current && parcelScanned && !isFullyScanned && isWmsReadyGroup(currentGroup)) {
       startRecording(trackingNumber).catch((error) => {
         setRecordingState({ status: 'error', tracking: trackingNumber, error: error?.message || 'เริ่มบันทึกไม่สำเร็จ' })
       })
     }
-  }, [currentGroup, recordingState.status, recordingState.tracking])
+  }, [currentGroup, recordingState.status, recordingState.tracking, isViewOnly])
 
   useEffect(() => {
     if (!currentGroup) return
@@ -1673,8 +1876,8 @@ export default function Packing() {
   }, [currentGroup])
 
   useEffect(() => {
-    if (currentIndex >= 0) startInactivityTimer()
-  }, [currentIndex])
+    if (currentIndex >= 0 && !isViewOnly) startInactivityTimer()
+  }, [currentIndex, isViewOnly])
 
   function clearInactivityTimer() {
     if (inactivityTimerRef.current) {
@@ -1685,6 +1888,7 @@ export default function Packing() {
 
   function startInactivityTimer() {
     clearInactivityTimer()
+    if (isViewOnly) return
     const index = currentIndexRef.current
     if (index < 0) return
     const group = aggregatedDataRef.current[index]
@@ -1708,7 +1912,9 @@ export default function Packing() {
     setLoading(true)
     setView('selection')
     setPackStartTime(null)
+    setOperationViewOnly(false)
     try {
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
       const { data, error } = await supabase
         .from('or_work_orders')
         .select('*')
@@ -1722,7 +1928,7 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
-        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
+        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, fulfillment_method, converted_from_self_pickup_at, converted_from_self_pickup_by, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, product_id, product_name, product_type, is_detail_row, parent_item_id, quantity, created_at, cancellation_stock_action)'
         const [
           { data: productionOrdersById, error: productionOrdersByIdError },
           { data: productionOrdersByName, error: productionOrdersByNameError },
@@ -1786,8 +1992,8 @@ export default function Packing() {
         const statusMap: Record<string, WorkOrderStatus> = {}
         orders.forEach((wo) => {
           const ordersInWo = (allProductionOrders || []).filter((o: any) => o.work_order_id === wo.id || o.work_order_name === wo.work_order_name)
-          // SHOPP เป็นลูกค้ารับเอง จึงถือว่าพร้อมเข้าแพ็คแม้ไม่มีเลขพัสดุ
-          const hasTracking = ordersInWo.some((o: any) => hasPackingReference(o))
+          // ช่องทางรับสินค้าเองถือว่าพร้อมเข้าแพ็คแม้ไม่มีเลขพัสดุ
+          const hasTracking = ordersInWo.some((o: any) => hasPackingReference(o, selfPickupChannelCodes))
           const isPartiallyPacked = ordersInWo.some((o: any) => {
             if (o.packing_meta?.parcelScanned) return true
             const bill = String(o.bill_no || '').trim() || '—'
@@ -1808,7 +2014,7 @@ export default function Packing() {
           let packedItems = 0
           let readyBills = 0
           let packedBills = 0
-          const billsWithTracking = ordersInWo.filter((o: any) => hasPackingReference(o))
+          const billsWithTracking = ordersInWo.filter((o: any) => hasPackingReference(o, selfPickupChannelCodes))
           ordersInWo.forEach((o: any) => {
             const items = sortedPackingOrderItems(o)
             const bill = String(o.bill_no || '').trim() || '—'
@@ -1830,7 +2036,7 @@ export default function Packing() {
             })
             totalItems += unitTotal
             packedItems += unitScanned
-            if (hasPackingReference(o)) {
+            if (hasPackingReference(o, selfPickupChannelCodes)) {
               const isReady = unitTotal > 0 && unitReady === unitTotal
               if (isReady) readyBills++
               if (unitTotal > 0 && unitScanned === unitTotal) packedBills++
@@ -1914,10 +2120,11 @@ export default function Packing() {
     }
   }
 
-  async function loadPackingData(workOrderName: string) {
+  async function loadPackingData(workOrderName: string, viewOnly = isViewOnly) {
     setIsLoadingOrders(true)
     setCurrentWorkOrderName(workOrderName)
     try {
+      const selfPickupChannelCodes = await fetchSelfPickupChannelCodes()
       const { data: workOrderHeader } = await supabase
         .from('or_work_orders')
         .select('id')
@@ -1935,7 +2142,7 @@ export default function Packing() {
 
       if (error) throw error
       const orders = (data || []) as OrderWithItems[]
-      const ordersWithTracking = orders.filter((order) => hasPackingReference(order))
+      const ordersWithTracking = orders.filter((order) => hasPackingReference(order, selfPickupChannelCodes))
       const wmsReadyByOrder: Record<string, boolean> = {}
       const wmsReadyByOrderItem: Record<string, boolean> = {}
       if (workOrderHeader?.id) {
@@ -1974,8 +2181,10 @@ export default function Packing() {
         ordersWithTracking,
         qcStatusMap,
         scannedKeySet,
+        selfPickupChannelCodes,
         wmsReadyByOrder,
-        wmsReadyByOrderItem
+        wmsReadyByOrderItem,
+        viewOnly
       )
       setView('main')
     } catch (error: any) {
@@ -2040,8 +2249,10 @@ export default function Packing() {
     orders: OrderWithItems[],
     qcStatusMap: Record<string, 'pass' | 'fail' | 'skip'>,
     scannedKeySet: Set<string>,
+    selfPickupChannelCodes: ReadonlySet<string>,
     wmsReadyByOrder: Record<string, boolean>,
-    wmsReadyByOrderItem: Record<string, boolean>
+    wmsReadyByOrderItem: Record<string, boolean>,
+    viewOnly = false
   ) {
     const flatData: PackingItem[] = []
     orders.forEach((order) => {
@@ -2049,6 +2260,7 @@ export default function Packing() {
         order,
         qcStatusMap,
         scannedKeySet,
+        selfPickupChannelCodes,
         wmsReadyByOrder[order.id] ?? false,
         wmsReadyByOrderItem
       ))
@@ -2069,11 +2281,12 @@ export default function Packing() {
     })
 
     const aggregated = groupOrder.map((groupKey) => grouped[groupKey])
-    const needTagCount = aggregated.filter((group) => group[0].packingTag == null).length
-    const reservedTags = reserveDailyPackingTags(needTagCount)
+    const needTagCount = viewOnly ? 0 : aggregated.filter((group) => group[0].packingTag == null).length
+    const reservedTags = viewOnly ? [] : reserveDailyPackingTags(needTagCount)
     let tagIdx = 0
     const aggregatedTagged = aggregated.map((group) => {
       if (group[0].packingTag != null) return group
+      if (viewOnly) return group
       const t = reservedTags[tagIdx++]!
       return group.map((item) => ({ ...item, packingTag: t }))
     })
@@ -2095,7 +2308,7 @@ export default function Packing() {
           })
           .eq('id', group[0].order_id)
       })
-    await Promise.allSettled(persistNewTags)
+    if (!viewOnly) await Promise.allSettled(persistNewTags)
 
     setAggregatedData(aggregatedTagged)
     if (aggregatedTagged.length === 0) {
@@ -2119,6 +2332,7 @@ export default function Packing() {
   }
 
   async function performResetAction(index = currentIndexRef.current) {
+    if (isViewOnly) return
     if (index < 0 || !currentWorkOrderName) return
     const group = aggregatedDataRef.current[index]
     if (!group) return
@@ -2253,6 +2467,7 @@ export default function Packing() {
   }
 
   async function handleParcelScan() {
+    if (isViewOnly) return
     if (!currentGroup) return
     const scanValue = parcelScanValue.trim().toUpperCase()
     if (!scanValue) return
@@ -2269,7 +2484,37 @@ export default function Packing() {
     }
     const scanNorm = normalizeParcelScanInput(scanValue)
     const trackingNorm = normalizeParcelScanInput(String(group[0].tracking_number))
-    if (scanNorm === trackingNorm) {
+    const isConvertedAwaitingTracking = Boolean(group[0].converted_from_self_pickup_at) && !trackingNorm
+    if (scanNorm === trackingNorm || isConvertedAwaitingTracking) {
+      if (isConvertedAwaitingTracking) {
+        const { data: duplicate, error: duplicateError } = await supabase
+          .from('or_orders')
+          .select('id')
+          .eq('tracking_number', scanNorm)
+          .neq('id', group[0].order_id)
+          .limit(1)
+        if (duplicateError) {
+          playErrorSound()
+          setStatusMessage({ text: '❌ ตรวจสอบเลขพัสดุซ้ำไม่สำเร็จ', type: 'error' })
+          return
+        }
+        if (duplicate && duplicate.length > 0) {
+          playErrorSound()
+          setStatusMessage({ text: '❌ เลขพัสดุนี้มีอยู่ในระบบแล้ว', type: 'error' })
+          return
+        }
+      }
+      const acceptedTracking = trackingNorm || scanNorm
+      // Start capturing as soon as the barcode is confirmed. Persisting scan
+      // metadata must not delay the beginning of the packing video.
+      startRecording(acceptedTracking).catch((error) => {
+        setRecordingState({
+          status: 'error',
+          tracking: acceptedTracking,
+          error: error?.message || 'เริ่มบันทึกไม่สำเร็จ'
+        })
+      })
+
       const scannedBy = user?.username || user?.email || 'unknown'
       const scanTime = new Date().toISOString()
       const { data: ordRow, error: metaFetchErr } = await supabase
@@ -2294,6 +2539,7 @@ export default function Packing() {
       const { error: orderUpdateError } = await supabase
         .from('or_orders')
         .update({
+          ...(isConvertedAwaitingTracking ? { tracking_number: acceptedTracking } : {}),
           packing_meta: {
             ...prev,
             parcelScanned: true,
@@ -2305,32 +2551,28 @@ export default function Packing() {
         .eq('id', group[0].order_id)
       if (orderUpdateError) {
         console.error('Error updating parcel scan:', orderUpdateError)
-      } else {
-        const { error: logError } = await supabase.from('pk_packing_logs').insert({
-          order_id: group[0].order_id,
-          item_id: null,
-          packed_by: scannedBy,
-          notes: 'parcel_scan'
-        })
-        if (logError) console.warn('Failed to log parcel scan:', logError)
+        stopRecording()
+        playErrorSound()
+        setStatusMessage({ text: '❌ บันทึกเลขพัสดุไม่สำเร็จ: ' + orderUpdateError.message, type: 'error' })
+        return
       }
+      const { error: logError } = await supabase.from('pk_packing_logs').insert({
+        order_id: group[0].order_id,
+        item_id: null,
+        packed_by: scannedBy,
+        notes: 'parcel_scan'
+      })
+      if (logError) console.warn('Failed to log parcel scan:', logError)
 
       setAggregatedData((prev) =>
         prev.map((g, idx) =>
-          idx === currentIndex ? g.map((item) => ({ ...item, parcelScanned: true, packingTag: nextTag })) : g
+          idx === currentIndex ? g.map((item) => ({ ...item, tracking_number: acceptedTracking, parcelScanned: true, packingTag: nextTag })) : g
         )
       )
       setParcelScanValue('')
       setStatusMessage({ text: '', type: '' })
-      startInactivityTimer()
+      if (!isViewOnly) startInactivityTimer()
       playSuccessSound()
-      startRecording(packingVideoReference(group[0])).catch((error) => {
-        setRecordingState({
-          status: 'error',
-          tracking: packingVideoReference(group[0]),
-          error: error?.message || 'เริ่มบันทึกไม่สำเร็จ'
-        })
-      })
       const needsBilling = group[0].needsTaxInvoice || group[0].needsCashBill
       if (needsBilling) {
         const billType = group[0].needsTaxInvoice ? 'ใบกำกับภาษี' : 'บิลเงินสด'
@@ -2347,6 +2589,7 @@ export default function Packing() {
   }
 
   async function handleItemScan() {
+    if (isViewOnly) return
     if (!currentGroup) return
     const scanValue = itemScanValue.trim().toUpperCase()
     if (!scanValue) return
@@ -2430,6 +2673,7 @@ export default function Packing() {
   }
 
   async function shipAllScannedOrders() {
+    if (isViewOnly) return
     setIsLoadingOrders(true)
     try {
       const ids: string[] = []
@@ -2464,6 +2708,7 @@ export default function Packing() {
   }
 
   async function finalizeWorkOrder() {
+    if (isViewOnly) return
     if (!currentWorkOrderName) return
     openConfirm('ปิดใบงานนี้?', async () => {
       setIsLoadingOrders(true)
@@ -2480,6 +2725,7 @@ export default function Packing() {
   }
 
   async function shipAllAndFinalize() {
+    if (isViewOnly) return
     if (!currentWorkOrderName) return
     const incompleteGroups = aggregatedData.filter(
       (group) => !group[0].isOrderComplete && (!isWmsReadyGroup(group) || !isQcPassGroup(group) || !group.every((item) => item.scanned))
@@ -2537,7 +2783,7 @@ export default function Packing() {
 
   async function switchToOrder(index: number) {
     const previousIndex = currentIndexRef.current
-    if (previousIndex !== -1 && previousIndex !== index) {
+    if (!isViewOnly && previousIndex !== -1 && previousIndex !== index) {
       const oldGroup = aggregatedDataRef.current[previousIndex]
       if (oldGroup && !oldGroup.every((item) => item.scanned)) {
         const hasStarted = oldGroup.some((item) => item.scanned || item.parcelScanned)
@@ -2570,82 +2816,92 @@ export default function Packing() {
 
   async function ensurePreview(): Promise<boolean> {
     if (streamRef.current && videoRef.current?.srcObject) return true
-    if (previewLoadingRef.current) return !!streamRef.current
-    previewLoadingRef.current = true
-    if (!navigator?.mediaDevices?.getUserMedia) {
-      setPreviewModal({
-        open: true,
-        message: 'ไม่สามารถเปิดกล้องได้ (อุปกรณ์ไม่รองรับหรือไม่ได้เปิดผ่าน https)'
-      })
-      previewLoadingRef.current = false
-      return false
-    }
-    try {
-      const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: profile.width },
-          height: { ideal: profile.height },
-          frameRate: { ideal: profile.fps },
-        },
-        audio: false,
-      })
-      streamRef.current = stream
-      const actualSettings = stream.getVideoTracks()[0]?.getSettings()
-      console.info('[packing-video] camera settings', {
-        requested: { width: profile.width, height: profile.height, frameRate: profile.fps },
-        actual: {
-          width: actualSettings?.width ?? null,
-          height: actualSettings?.height ?? null,
-          frameRate: actualSettings?.frameRate ?? null,
-        },
-      })
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        try {
-          await videoRef.current.play()
-        } catch (err: any) {
-          const msg = String(err?.message || '')
-          if (msg.includes('interrupted by a new load request')) {
-            previewLoadingRef.current = false
-            return true
+    if (previewPromiseRef.current) return previewPromiseRef.current
+
+    const previewPromise = (async (): Promise<boolean> => {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        setPreviewModal({
+          open: true,
+          message: 'ไม่สามารถเปิดกล้องได้ (อุปกรณ์ไม่รองรับหรือไม่ได้เปิดผ่าน https)'
+        })
+        return false
+      }
+      try {
+        const profile = VIDEO_QUALITY_PROFILES[videoQualityProfile]
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: profile.width },
+            height: { ideal: profile.height },
+            frameRate: { ideal: profile.fps },
+          },
+          audio: false,
+        })
+        streamRef.current = stream
+        const actualSettings = stream.getVideoTracks()[0]?.getSettings()
+        console.info('[packing-video] camera settings', {
+          requested: { width: profile.width, height: profile.height, frameRate: profile.fps },
+          actual: {
+            width: actualSettings?.width ?? null,
+            height: actualSettings?.height ?? null,
+            frameRate: actualSettings?.frameRate ?? null,
+          },
+        })
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          try {
+            await videoRef.current.play()
+          } catch (err: any) {
+            const msg = String(err?.message || '')
+            if (msg.includes('interrupted by a new load request')) return true
+            throw err
           }
-          throw err
         }
-      }
-      previewLoadingRef.current = false
-      setRecordingState((prev) =>
-        prev.status === 'error' ? { status: 'idle', tracking: null } : prev
-      )
-      return true
-    } catch (error: any) {
-      previewLoadingRef.current = false
-      const msg = String(error?.message || '')
-      if (msg.includes('interrupted by a new load request')) {
+        setRecordingState((prev) =>
+          prev.status === 'error' ? { status: 'idle', tracking: null } : prev
+        )
         return true
+      } catch (error: any) {
+        const msg = String(error?.message || '')
+        if (msg.includes('interrupted by a new load request')) return true
+        setPreviewModal({
+          open: true,
+          message: error?.message || 'ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตสิทธิ์กล้อง'
+        })
+        return false
       }
-      setPreviewModal({
-        open: true,
-        message: error?.message || 'ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตสิทธิ์กล้อง'
-      })
-      return false
+    })()
+
+    previewPromiseRef.current = previewPromise
+    try {
+      return await previewPromise
+    } finally {
+      if (previewPromiseRef.current === previewPromise) previewPromiseRef.current = null
     }
   }
 
   async function startRecording(trackingNumber: string) {
-    if (recordingState.status === 'recording' || recordingStartingRef.current) return
+    if (
+      recordingState.status === 'recording'
+      || recordingStartingRef.current
+      || (recorderRef.current && recorderRef.current.state !== 'inactive')
+    ) return
+    // Lock before the first await. The parcel-scan handler and the recovery
+    // effect can run in the same render cycle; without this early lock they can
+    // create two MediaRecorders that write into the same chunk array.
+    recordingStartingRef.current = true
     if (!folderHandle) {
+      recordingStartingRef.current = false
       openAlert('กรุณาเลือกโฟลเดอร์จัดเก็บก่อนเริ่มบันทึก')
       return
     }
-    // เตือนตั้งแต่ก่อนอัด ดีกว่าไปพังตอนเซฟหลังแพ็คเสร็จ
-    if (!(await isFolderHandleUsable(folderHandle))) {
-      await forgetFolder()
-      openAlert('ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ก่อนเริ่มบันทึก')
-      return
-    }
-    recordingStartingRef.current = true
     try {
+      // เตือนตั้งแต่ก่อนอัด ดีกว่าไปพังตอนเซฟหลังแพ็คเสร็จ
+      if (!(await isFolderHandleUsable(folderHandle))) {
+        await forgetFolder()
+        recordingStartingRef.current = false
+        openAlert('ไม่พบโฟลเดอร์ที่เลือกไว้ (อาจถูกย้าย เปลี่ยนชื่อ ลบ หรือไดรฟ์ถูกถอด)\nกรุณากด "เลือกโฟลเดอร์จัดเก็บ" ใหม่ก่อนเริ่มบันทึก')
+        return
+      }
       const ok = await ensurePreview()
       if (!ok && !streamRef.current) {
         throw new Error('ไม่สามารถเปิดกล้องได้')
@@ -2689,6 +2945,7 @@ export default function Packing() {
       const trackSettings = streamRef.current.getVideoTracks()[0]?.getSettings()
       const actualMimeType = recorder.mimeType || selectedMimeType || 'video/webm'
       recordingVideoMetadataRef.current = {
+        startedAt: null,
         qualityProfile: profile.id,
         requestedWidth: profile.width,
         requestedHeight: profile.height,
@@ -2705,8 +2962,22 @@ export default function Packing() {
       recorderRef.current = recorder
       recordingChunksRef.current = []
       recordingBytesRef.current = 0
-      recordingStartRef.current = Date.now()
-      setRecordingState({ status: 'recording', tracking: trackingNumber })
+      recordingStartRef.current = null
+
+      recorder.onstart = () => {
+        const startedAt = new Date()
+        recordingStartRef.current = startedAt.getTime()
+        if (recordingVideoMetadataRef.current) {
+          recordingVideoMetadataRef.current.startedAt = startedAt.toISOString()
+        }
+        recordingStartingRef.current = false
+        setRecordingState({ status: 'recording', tracking: trackingNumber })
+        console.info('[packing-video] recording started', {
+          trackingNumber,
+          startedAt: startedAt.toISOString(),
+          mimeType: actualMimeType,
+        })
+      }
 
       recorder.ondataavailable = (event) => {
         if (event.data.size <= 0) return
@@ -2746,7 +3017,6 @@ export default function Packing() {
       }
 
       recorder.start(RECORDING_TIMESLICE_MS)
-      recordingStartingRef.current = false
     } catch (error: any) {
       recordingStartingRef.current = false
       cleanupRecording()
@@ -2755,6 +3025,7 @@ export default function Packing() {
   }
 
   function cleanupRecording(markIdle = true, stopStream = false) {
+    recordingStartingRef.current = false
     recorderRef.current = null
     recordingChunksRef.current = []
     recordingBytesRef.current = 0
@@ -2831,7 +3102,7 @@ export default function Packing() {
         fileSize: blob.size,
         recordedBy,
         recordedUserId: user?.id || null,
-        recordedAt: new Date().toISOString(),
+        recordedAt: videoMetadata?.startedAt || new Date().toISOString(),
         deviceId,
         deviceName,
         folderName: folderHandle.name,
@@ -2877,11 +3148,12 @@ export default function Packing() {
   }
 
   function stopRecording() {
-    if (recordingState.status !== 'recording') {
-      cleanupRecording()
+    const recorder = recorderRef.current
+    if (recorder?.state === 'recording' || recorder?.state === 'paused') {
+      recorder.stop()
       return
     }
-    if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
+    cleanupRecording()
   }
 
   function stopRecordingAndAdvance() {
@@ -3085,13 +3357,9 @@ export default function Packing() {
                   if (!canSelect) cardClass += ' opacity-70 cursor-not-allowed'
 
                   return (
-                    <button
+                    <div
                       key={wo.id}
                       className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
-                      disabled={!canSelect}
-                      onClick={() => {
-                        handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0)
-                      }}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
@@ -3151,16 +3419,32 @@ export default function Packing() {
                           </div>
                         </div>
                         {canSelect ? (
-                          <span className="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
-                            เริ่มจัดของ
-                          </span>
+                          <div className="flex shrink-0 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0, true)}
+                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700"
+                              title="เปิดดูรายการโดยไม่บันทึกเวลาเริ่มและไม่สามารถแพ็คสินค้า"
+                            >
+                              <i className="fas fa-eye" aria-hidden="true"></i>
+                              ดู
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectNewWorkOrder(wo.work_order_name, hasTracking, totalBills > 0)}
+                              disabled={roleViewOnly}
+                              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              เริ่มแพ็คสินค้า
+                            </button>
+                          </div>
                         ) : (
                           <span className="shrink-0 px-3 py-1.5 rounded-lg bg-gray-200 text-gray-400 text-sm font-medium">
                             ไม่พร้อม
                           </span>
                         )}
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -4068,7 +4352,8 @@ export default function Packing() {
                 )}
                 {isViewOnly && (
                   <div className="text-sm text-gray-500 bg-gray-100 px-4 py-2 rounded-lg">
-                    โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถจัดของได้)
+                    <i className="fas fa-eye mr-2" aria-hidden="true"></i>
+                    โหมดดูอย่างเดียว — ไม่บันทึกเวลาเริ่มและไม่สามารถแพ็คสินค้าได้
                   </div>
                 )}
               </div>
@@ -4184,13 +4469,22 @@ export default function Packing() {
                     <div className="bg-white p-4 rounded-lg shadow space-y-3">
                       <div className="space-y-2">
                         <h3 className="font-semibold text-center">
-                          {isSelfPickupChannel(currentGroup[0].channel_code)
+                          {currentGroup[0].is_self_pickup
                             ? 'ขั้นตอนที่ 1: ลูกค้ารับสินค้าเอง'
                             : 'ขั้นตอนที่ 1: สแกนเลขพัสดุ'}
                         </h3>
-                        {isSelfPickupChannel(currentGroup[0].channel_code) ? (
-                          <div className="rounded border-2 border-emerald-400 bg-emerald-50 px-3 py-2 text-center font-semibold text-emerald-700">
-                            SHOP PICKUP — ไม่ต้องสแกนเลขพัสดุ
+                        {currentGroup[0].is_self_pickup ? (
+                          <div className="flex flex-wrap items-center justify-center gap-2 rounded border-2 border-emerald-400 bg-emerald-50 px-3 py-2 text-center font-semibold text-emerald-700">
+                            <span>รับสินค้าเอง — ไม่ต้องสแกนเลขพัสดุ</span>
+                            <button
+                              type="button"
+                              onClick={() => void openConvertToShipping(currentGroup[0].order_id)}
+                              disabled={isViewOnly || convertShippingLoading || (currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role))}
+                              className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                              title={currentGroup[0].isOrderComplete && !isAdminOrSuperadmin(user?.role) ? 'บิลที่จัดส่งแล้วต้องให้ Admin ดำเนินการ' : 'เปลี่ยนบิลนี้จากรับเองเป็นจัดส่ง'}
+                            >
+                              เปลี่ยนเป็นจัดส่ง
+                            </button>
                           </div>
                         ) : (() => {
                           const parcelDisabled =
@@ -4200,6 +4494,7 @@ export default function Packing() {
                             !isWmsReadyGroup(currentGroup) ||
                             !isQcPassGroup(currentGroup)
                           return (
+                        <>
                         <input
                           ref={parcelScanRef}
                           className="w-full border-2 border-green-500 rounded px-3 py-2 text-center bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:ring-2 focus:ring-green-200 focus:border-green-600 disabled:bg-slate-300 disabled:text-slate-700 disabled:placeholder:text-slate-600 disabled:border-slate-500 disabled:cursor-not-allowed"
@@ -4214,6 +4509,16 @@ export default function Packing() {
                           }}
                           disabled={parcelDisabled}
                         />
+                        {currentGroup[0].converted_from_self_pickup_at && (
+                          <button
+                            type="button"
+                            onClick={() => void exportConvertedWaybill(currentGroup[0].order_id).catch((error) => openAlert('Export ใบปะหน้าไม่สำเร็จ: ' + (error?.message || error)))}
+                            className="mt-2 w-full rounded-lg border border-orange-300 bg-orange-50 px-3 py-2 text-sm font-semibold text-orange-700 hover:bg-orange-100"
+                          >
+                            Export ใบปะหน้า
+                          </button>
+                        )}
+                        </>
                           )
                         })()}
                       </div>
@@ -4281,7 +4586,7 @@ export default function Packing() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-3 flex-wrap">
                             <div className="text-lg font-semibold break-all">
-                              {isSelfPickupChannel(currentGroup[0].channel_code)
+                              {currentGroup[0].is_self_pickup
                                 ? `รับสินค้าเอง: ${currentGroup[0].bill_no}`
                                 : `เลขพัสดุ: ${formatParcelNo(currentGroup[0].tracking_number)}`}
                               <ExpressReceiptNumberInline value={currentGroup[0].express_receipt_number} />
@@ -4580,6 +4885,92 @@ export default function Packing() {
           </div>
         </div>
       )}
+      <Modal
+        open={Boolean(convertShippingForm)}
+        onClose={() => { if (!convertShippingLoading) setConvertShippingForm(null) }}
+        contentClassName="max-w-3xl w-full mx-4"
+      >
+        {convertShippingForm && (
+          <div className="p-6 space-y-4">
+            <div>
+              <h3 className="text-xl font-bold text-gray-900">เปลี่ยนเป็นจัดส่ง</h3>
+              <p className="mt-1 text-sm text-gray-600">
+                บิล {convertShippingForm.billNo} จะคงช่องทางและเลขบิลเดิม ระบบจะล้างข้อมูลสแกนแพ็คเดิมและให้แพ็คใหม่
+              </p>
+              {convertShippingForm.isShipped && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+                  บิลนี้จัดส่งแล้ว ระบบจะยกเลิกการจัดส่งและเปิดใบงานกลับอัตโนมัติ
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">วางชื่อ ที่อยู่ และเบอร์โทร</label>
+              <textarea
+                value={convertShippingForm.originalAddress}
+                onChange={(event) => setConvertShippingForm({ ...convertShippingForm, originalAddress: event.target.value })}
+                rows={3}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2"
+                placeholder="วางข้อมูลลูกค้า แล้วกด Auto Fill"
+              />
+              <button
+                type="button"
+                onClick={() => void autoFillConvertAddress()}
+                disabled={convertAddressLoading || !convertShippingForm.originalAddress.trim()}
+                className="mt-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-700 disabled:opacity-50"
+              >
+                {convertAddressLoading ? 'กำลังแยกที่อยู่...' : 'Auto Fill ที่อยู่'}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm font-medium">ชื่อผู้รับ *</label>
+                <input value={convertShippingForm.recipientName} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, recipientName: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">เบอร์โทร *</label>
+                <input value={convertShippingForm.mobilePhone} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, mobilePhone: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-sm font-medium">บ้านเลขที่/ถนน/ซอย *</label>
+                <input value={convertShippingForm.addressLine} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, addressLine: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">แขวง/ตำบล</label>
+                <input value={convertShippingForm.subDistrict} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, subDistrict: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">เขต/อำเภอ</label>
+                <input value={convertShippingForm.district} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, district: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">จังหวัด *</label>
+                <input value={convertShippingForm.province} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, province: e.target.value })} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">รหัสไปรษณีย์ *</label>
+                <input value={convertShippingForm.postalCode} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, postalCode: e.target.value })} maxLength={5} className="w-full rounded-lg border px-3 py-2" />
+              </div>
+              {convertShippingForm.isShipped && (
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-sm font-medium">เหตุผลที่ยกเลิกจัดส่งและแพ็คใหม่ *</label>
+                  <textarea value={convertShippingForm.reason} onChange={(e) => setConvertShippingForm({ ...convertShippingForm, reason: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2" />
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
+              <button type="button" onClick={() => setConvertShippingForm(null)} disabled={convertShippingLoading} className="rounded-lg border px-4 py-2 text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">
+                ยกเลิก
+              </button>
+              <button type="button" onClick={() => void saveConversionAndExport()} disabled={convertShippingLoading || convertAddressLoading} className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50">
+                {convertShippingLoading ? 'กำลังบันทึก...' : 'บันทึกและ Export ใบปะหน้า'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
       <Modal
         open={previewModal.open}
         onClose={() => setPreviewModal({ open: false, message: '' })}

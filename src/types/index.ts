@@ -96,6 +96,11 @@ export interface Order {
   /** ค่าตัวเลือกการจัดส่งต้นทางจากไฟล์ Marketplace */
   shipping_option?: string | null
   tracking_number: string | null
+  /** วิธีส่งมอบจริงของบิล; ค่าเริ่มต้นถูกคัดลอกจากการตั้งค่าช่องทางตอนสร้างบิล */
+  fulfillment_method?: 'self_pickup' | 'shipping'
+  /** Audit แบบอ่านเร็วสำหรับป้าย "เปลี่ยนเป็นจัดส่ง" */
+  converted_from_self_pickup_at?: string | null
+  converted_from_self_pickup_by?: string | null
   /** กฎขนส่ง Marketplace ระบุว่าบิลนี้ต้องใช้เลขรับพัสดุด่วน */
   requires_express_receipt_number?: boolean
   /** เลขรับพัสดุด่วนจากหน้า Marketplace Assign */
@@ -115,6 +120,9 @@ export interface Order {
     verified_by?: string
     carrier?: string
     parcel_type?: string
+    customer_received?: boolean
+    customer_received_at?: string
+    customer_received_by?: string
   } | null
   created_at: string
   updated_at: string

@@ -10,7 +10,7 @@ import { useAuthContext } from '../../contexts/AuthContext'
 import { useMenuAccess } from '../../contexts/MenuAccessContext'
 import UrgencyBadge from '../common/UrgencyBadge'
 import Modal from '../ui/Modal'
-import { sortOrderItemsForExport } from '../../lib/orderItemExportSort'
+import { sortOrderItemsForBillDisplay } from '../../lib/orderItemExportSort'
 import { STOP_PRODUCTION_ISSUE_SLUG } from '../../lib/issueTypeSlugs'
 import { identifyCondoStampItems, isCondoStampItem } from '../../lib/condoStamp'
 
@@ -151,7 +151,8 @@ export default function OrderDetailView({
   // โหลดบิลเต็มเมื่อ payload ไม่ครบ — รวมกรณี WorkOrderManageList (มี status/ที่อยู่ แต่ไม่ select billing_details)
   const isPartial =
     (!initialOrder.status && !initialOrder.customer_address) ||
-    initialOrder.billing_details === undefined
+    initialOrder.billing_details === undefined ||
+    initialOrder.fulfillment_method === undefined
 
   const order = (isPartial && fullOrder) ? fullOrder : initialOrder
 
@@ -277,7 +278,7 @@ export default function OrderDetailView({
   }, [order.id, order.work_order_name])
 
   const items = inlineItems.length > 0 ? inlineItems : (loadedItems || [])
-  const displayItems = useMemo(() => sortOrderItemsForExport(items as any[]), [items])
+  const displayItems = useMemo(() => sortOrderItemsForBillDisplay(items as any[]), [items])
   const canOpenTicket = !!user && (hasAccess('orders-issue') || hasAccess('plan-issue'))
   const canManageTaxRequest = !!user && hasAccess('orders-create')
   const taxRequestAlreadyConfirmed = billing?.account_confirmed_tax === true && billing?.tax_request_closed !== true
@@ -578,6 +579,18 @@ export default function OrderDetailView({
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-8">
             <InfoRow label="เลขบิล" value={order.bill_no} />
             <InfoRow label="ช่องทาง" value={order.channel_code} />
+            {order.converted_from_self_pickup_at && (
+              <div className="flex gap-2 py-1.5">
+                <dt className="w-28 shrink-0 text-sm text-gray-500">การรับสินค้า</dt>
+                <dd className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="inline-flex rounded-full bg-orange-100 px-2.5 py-0.5 font-bold text-orange-700">เปลี่ยนเป็นจัดส่ง</span>
+                  <span className="text-xs text-gray-500">
+                    {formatDateTime(order.converted_from_self_pickup_at)}
+                    {order.converted_from_self_pickup_by ? ` โดย ${order.converted_from_self_pickup_by}` : ''}
+                  </span>
+                </dd>
+              </div>
+            )}
             <InfoRow label="สถานะ" value={order.status} />
             <InfoRow label="ชื่อลูกค้า" value={order.customer_name} />
             <InfoRow label="ชื่อผู้รับ" value={displayRecipientName} />
@@ -647,6 +660,27 @@ export default function OrderDetailView({
         {displayItems.length > 0 && (() => {
           const condoStampItems = identifyCondoStampItems(displayItems)
           const hasAnyTierProduct = displayItems.some((item) => isCondoStampItem(item, condoStampItems))
+          const condoParentIds = new Set(
+            displayItems.map((item) => String(item.parent_item_id || '').trim()).filter(Boolean),
+          )
+          const condoSetIndexByKey = new Map<string, number>()
+          const condoSetToneByRow = displayItems.map((item, index) => {
+            if (!isCondoStampItem(item, condoStampItems)) return ''
+            const parentId = String(item.parent_item_id || '').trim()
+            const itemId = String(item.id || '').trim()
+            const productId = String(item.product_id || '').trim()
+            const setKey = parentId
+              ? `parent:${parentId}`
+              : itemId && condoParentIds.has(itemId)
+                ? `parent:${itemId}`
+                : productId
+                  ? `product:${productId}`
+                  : `row:${index}`
+            if (!condoSetIndexByKey.has(setKey)) condoSetIndexByKey.set(setKey, condoSetIndexByKey.size)
+            return (condoSetIndexByKey.get(setKey) || 0) % 2 === 0
+              ? 'bg-sky-50/80 hover:bg-sky-100/80'
+              : 'bg-amber-50/80 hover:bg-amber-100/80'
+          })
           const hasAnyFileAttachment = displayItems.some((item) => item.file_attachment && item.file_attachment.trim() !== '')
           const showAttachmentColumn = hasAnyFileAttachment || !readOnly
           const attachmentOrder = new Map(
@@ -687,7 +721,7 @@ export default function OrderDetailView({
                     return (
                     <tr
                       key={item.id}
-                      className="hover:bg-blue-50/40 transition-colors"
+                      className={`${isTierProduct ? condoSetToneByRow[idx] : 'hover:bg-blue-50/40'} transition-colors`}
                     >
                       <td className="px-3 py-2 text-gray-400">{idx + 1}</td>
                       <td className="px-3 py-2 font-medium text-gray-900 select-all">{item.product_name}</td>

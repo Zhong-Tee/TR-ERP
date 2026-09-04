@@ -134,7 +134,7 @@ export default function QC() {
   const { hasAccess } = useMenuAccess()
   const canAlwaysSkipQc = isAdminOrSuperadmin(user?.role)
   const isProduction = user?.role === 'production'
-  const isViewOnly = isAdminOrSuperadmin(user?.role)
+  const roleViewOnly = isAdminOrSuperadmin(user?.role)
 
   const { menuAccessLoading } = useMenuAccess()
   const [currentView, setCurrentView] = useState<QCView>('qc')
@@ -154,6 +154,8 @@ export default function QC() {
   const [workOrdersLoading, setWorkOrdersLoading] = useState(true)
   const [workOrdersError, setWorkOrdersError] = useState('')
   const [qcState, setQcState] = useState<{ step: QCStep; startTime: Date | null; filename: string; sessionId: string | null }>({ step: 'select', startTime: null, filename: '', sessionId: null })
+  const [operationViewOnly, setOperationViewOnly] = useState(false)
+  const isViewOnly = roleViewOnly || (currentView === 'qc' && operationViewOnly)
   const [qcData, setQcData] = useState<{ items: QCItem[] }>({ items: [] })
   const [activeSessionItemUids, setActiveSessionItemUids] = useState<Set<string>>(new Set())
   const [currentItem, setCurrentItem] = useState<QCItem | null>(null)
@@ -738,12 +740,14 @@ export default function QC() {
     }, 0)
   }, [])
 
-  async function handleLoadWo(woName: string) {
+  async function handleLoadWo(woName: string, viewOnly = false) {
     if (!woName) return
+    const shouldViewOnly = roleViewOnly || viewOnly
     setLoading(true)
+    setOperationViewOnly(shouldViewOnly)
     setQcCategoryFilter('')
     try {
-      const skipTrack = isAdminOrSuperadmin(user?.role)
+      const skipTrack = shouldViewOnly
       if (!skipTrack) await ensurePlanDeptStart(woName)
       const items = await fetchItemsByWorkOrder(woName)
       if (items.length === 0) {
@@ -770,10 +774,10 @@ export default function QC() {
 
       const openSession = await fetchOpenSessionForWo(woName)
       if (openSession) {
-        sessionId = openSession.id
+        sessionId = shouldViewOnly ? null : openSession.id
         startTime = new Date(openSession.start_time)
       } else {
-        if (!skipTrack) {
+        if (!shouldViewOnly) {
           const { data: newSession, error: sessErr } = await supabase
             .from('qc_sessions')
             .insert({
@@ -790,7 +794,7 @@ export default function QC() {
           if (sessErr) throw sessErr
           sessionId = newSession?.id ?? null
         } else {
-          // superadmin/admin: view-only — ไม่สร้าง session ใหม่
+          // โหมดดูอย่างเดียว: ไม่สร้าง session และไม่บันทึกเวลาเริ่ม
           sessionId = null
           if (!planStart) startTime = new Date()
         }
@@ -824,6 +828,10 @@ export default function QC() {
   }
 
   function handleSwitchJob() {
+    if (isViewOnly) {
+      proceedSwitchJob()
+      return
+    }
     if (qcData.items.some((i) => i.status !== 'pending')) {
       setSwitchJobConfirmOpen(true)
       return
@@ -837,6 +845,7 @@ export default function QC() {
     setActiveSessionItemUids(new Set())
     setCurrentItem(null)
     setQcCategoryFilter('')
+    setOperationViewOnly(false)
     clearSessionBackup()
     loadWorkOrders()
   }
@@ -890,6 +899,7 @@ export default function QC() {
   }
 
   async function applyFailReasonQc(reason: string | null) {
+    if (isViewOnly) { alert('โหมดดูอย่างเดียว ไม่สามารถบันทึกผล QC ได้'); return }
     if (!currentItem || !qcState.sessionId) return
     const updated = { ...currentItem, status: 'fail' as const, fail_reason: reason ?? undefined, check_time: new Date() }
     try {
@@ -1731,11 +1741,9 @@ export default function QC() {
                     }
 
                     return (
-                      <button
+                      <div
                         key={wo.id}
                         className={`p-4 border border-l-4 rounded-xl text-left transition-all duration-200 shadow-sm ${cardClass} ${borderLeftColor}`}
-                        onClick={() => handleLoadWo(wo.work_order_name)}
-                        disabled={loading || skipQcLoading === wo.work_order_name}
                       >
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0 flex-1">
@@ -1772,17 +1780,32 @@ export default function QC() {
                             </div>
                           </div>
                           <div className="flex gap-2 shrink-0">
-                            <span className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors">
-                              {loading ? 'กำลังโหลด...' : 'โหลดรายการ'}
-                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleLoadWo(wo.work_order_name, true)}
+                              disabled={loading || skipQcLoading === wo.work_order_name}
+                              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              title="เปิดดูรายการโดยไม่บันทึกเวลาเริ่มและไม่สามารถทำ QC"
+                            >
+                              <i className="fas fa-eye" aria-hidden="true"></i>
+                              ดู
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleLoadWo(wo.work_order_name)}
+                              disabled={loading || skipQcLoading === wo.work_order_name || roleViewOnly}
+                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {loading ? 'กำลังโหลด...' : 'เริ่ม QC'}
+                            </button>
                             {canSkipThisWorkOrder && (
-                              <span
-                                role="button"
-                                onClick={(e) => { e.stopPropagation(); setProductionSkipReason(''); setSkipQcConfirmWo(wo.work_order_name) }}
+                              <button
+                                type="button"
+                                onClick={() => { setProductionSkipReason(''); setSkipQcConfirmWo(wo.work_order_name) }}
                                 className="px-3 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold shadow-sm hover:bg-amber-600 transition-colors"
                               >
                                 {skipQcLoading === wo.work_order_name ? 'กำลังข้าม...' : 'ไม่ต้อง QC'}
-                              </span>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -1795,7 +1818,7 @@ export default function QC() {
                                 : 'ยังไม่เข้าเงื่อนไขความเร่งด่วน'}
                           </div>
                         )}
-                      </button>
+                      </div>
                     )
                   })}
                 </div>
@@ -2095,7 +2118,8 @@ export default function QC() {
                         <div className="shrink-0 p-4 pt-2 border-t bg-gray-50/50 space-y-2">
                           {isViewOnly ? (
                             <div className="text-center py-3 text-sm text-gray-500 bg-gray-100 rounded-xl">
-                              โหมดดูอย่างเดียว (superadmin/admin ไม่สามารถทำ QC ได้)
+                              <i className="fas fa-eye mr-2" aria-hidden="true"></i>
+                              โหมดดูอย่างเดียว — ไม่บันทึกเวลาเริ่มและไม่สามารถทำ QC ได้
                             </div>
                           ) : (
                           <div className="flex gap-4">

@@ -7,7 +7,6 @@ import Modal from '../ui/Modal'
 import ExpressReceiptNumberInline from '../common/ExpressReceiptNumberInline'
 import OrderDetailView from './OrderDetailView'
 import * as XLSX from 'xlsx'
-import * as ExcelJS from 'exceljs'
 import Papa from 'papaparse'
 import { extractPhonesFromText, e164ToLocal } from '../../lib/thaiPhone'
 import { isRoleInAllowedList } from '../../config/accessPolicy'
@@ -26,7 +25,7 @@ import {
   deptExportOrder,
   isStampDepartmentName,
 } from '../../lib/planPickingDepartments'
-import { WAYBILL_TEMPLATE_BASE64 } from '../../assets/waybillTemplateBase64'
+import { downloadFlashWaybillXlsx } from '../../lib/flashWaybillExport'
 
 function pickSpareQtyForLine(lineQty: number, rawCategory: string): number {
   if (String(rawCategory || '').toUpperCase().includes('CONDO STAMP')) return Math.ceil(lineQty / 5)
@@ -254,55 +253,6 @@ function orderMatchesSearch(order: Order, needleLower: string): boolean {
     order.channel_order_no,
   ]
   return fields.some((f) => String(f || '').toLowerCase().includes(needleLower))
-}
-
-/** Flash Express template: ต้องตรง 100% กับ template ที่กำหนด */
-const FLASH_EXPRESS_H = [
-  "客户订单号\r\nCustomer_order_number\r\n(เลขออเดอร์ของลูกค้า)",
-  "收件人名称\r\n*Consignee_name\r\n(ชื่อผู้รับ)",
-  "地址\r\n*Address\r\n(ทิ่อยู่)",
-  "邮编\r\n*Postal_code\r\n(รหัสไปรษณีย์)",
-  "手机号\r\n*Phone_number\r\n(เบอร์โทรศัพท์)",
-  "手机号2\r\nPhone_number2\r\n(เบอร์โทรศัพท์)",
-  "包裹数量\r\nNumber of parcels \r\n（จำนวนพัสดุ）",
-  "COD\r\n(ยอดเรียกเก็บ)",
-  "\r\n商品描述1（名称|尺寸/重量|颜色|数量）\r\nItem description1(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 1 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
-  "商品描述2（名称|尺寸/重量|颜色|数量）\r\nItem description2(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 2 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
-  "商品描述3（名称|尺寸/重量|颜色|数量）\r\nItem description3(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 3 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
-  "商品描述4（名称|尺寸/重量|颜色|数量）\r\nItem description4(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 4 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
-  "商品描述5（名称|尺寸/重量|颜色|数量）\r\nItem description5(Name|Size/Weight|color|quantity)\r\nรายละเอียดสินค้า 5 (ชื่อสินค้า | ขนาด/น้ำหนัก | สี | จำนวน)",
-  "物品类型\r\nItem_type\r\n(ประเภทสินค้า)",
-  "重量\r\n*Weight_kg\r\n(น้ำหนัก)",
-  "长\r\nLength\r\n(ยาว)",
-  "宽\r\nWidth\r\n(กว้าง)",
-  "高\r\nHeight\r\n(สูง)",
-  "Flash_care",
-  "Flash_care_plus",
-  "申报价值\r\nDeclared_value\r\n(มูลค่าสินค้าที่ระบุโดยลูกค้า)",
-  "Box_shield ",
-  "文件归还服务\r\nDocument return service\r\n(บริการส่งคืนเอกสาร)",
-  "寄件产品\r\n*Product_type         \r\n(ประเภทสินค้า）",
-  "付款方式\r\n*Payment method\r\n（วิธีชำระเงิน）",
-  "备注\r\nRemark\r\n(หมายเหตุ)",
-  "配送偏好地点备注\r\nDelivery Preference_location note \r\nหมายเหตุความต้องการในการจัดส่ง ",
-  "配送联系偏好备注\r\nDelivery Preference_contact note \r\nหมายเหตุการติดต่อในการจัดส่ง",
-]
-
-/** แถวแรกของข้อมูลใน template ใหม่ — แถว 1 หัวตาราง, แถว 2 คำอธิบายวิธีกรอกของ Flash */
-const FLASH_EXPRESS_DATA_START_ROW = 3
-
-/** Cache buffer ของ template ใบปะหน้า — decode จาก base64 ที่ฝังในบันเดิลครั้งเดียว ใช้ซ้ำได้ทุกครั้งที่ Export */
-let waybillTemplateBufCache: ArrayBuffer | null = null
-
-/** Decode template ใบปะหน้าที่ฝังเป็น base64 → ArrayBuffer (ไม่ต้อง fetch — ตัดปัญหา Failed to fetch) */
-function getWaybillTemplateBuf(): ArrayBuffer {
-  if (!waybillTemplateBufCache) {
-    const bin = atob(WAYBILL_TEMPLATE_BASE64)
-    const bytes = new Uint8Array(bin.length)
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-    waybillTemplateBufCache = bytes.buffer
-  }
-  return waybillTemplateBufCache
 }
 
 /** คอลัมน์ Preview ใบปะหน้า — key ตรงกับ WaybillPreviewRow */
@@ -1407,80 +1357,7 @@ export default function WorkOrderManageList({
     if (exportLoading.open) return
     setExportLoading({ open: true, message: 'กำลังสร้างไฟล์ใบปะหน้า Flash Express (.xlsx)... กรุณารอสักครู่' })
     try {
-      const workbook = new ExcelJS.Workbook()
-      await workbook.xlsx.load(getWaybillTemplateBuf())
-
-      const worksheet = workbook.getWorksheet('Order Template') ?? workbook.worksheets[0]
-      if (!worksheet) throw new Error('ไม่พบ worksheet ในไฟล์ template')
-
-      // ใช้ style แถวข้อมูลแถวแรกของ template เป็น “แม่แบบ” — clone ครั้งเดียวต่อคอลัมน์ แล้วใช้ซ้ำทุกแถว (เร็วกว่า clone ทุก cell)
-      const styleRow = worksheet.getRow(FLASH_EXPRESS_DATA_START_ROW)
-      const styleHeight = styleRow.height
-
-      const deepClone = <T,>(v: T): T => {
-        try {
-          return structuredClone(v)
-        } catch {
-          return JSON.parse(JSON.stringify(v)) as T
-        }
-      }
-
-      const colCount = FLASH_EXPRESS_H.length // 28 ตาม template ใหม่ (เพิ่ม Flash_care, Flash_care_plus)
-      const colStyles: Array<Partial<ExcelJS.Style> | undefined> = []
-      for (let c = 1; c <= colCount; c++) {
-        const s = styleRow.getCell(c).style
-        colStyles[c] = s && Object.keys(s).length > 0 ? deepClone(s) : undefined
-      }
-
-      rows.forEach((row, idx) => {
-        const excelRowNumber = FLASH_EXPRESS_DATA_START_ROW + idx
-        const excelRow = worksheet.getRow(excelRowNumber)
-        if (styleHeight != null) excelRow.height = styleHeight
-
-        const r = new Array(colCount).fill('')
-        r[0] = row.billNo            // Customer_order_number
-        r[1] = row.consigneeName     // *Consignee_name
-        r[2] = row.address           // *Address
-        r[3] = row.postalCode        // *Postal_code
-        r[4] = row.phone1            // *Phone_number
-        r[5] = row.phone2            // Phone_number2
-        r[6] = '1'                   // Number of parcels
-        r[7] = row.cod               // COD
-        // Item descriptions (8-12) = empty
-        r[13] = 'อื่นๆ'             // Item_type
-        r[14] = '0.1'               // *Weight_kg
-        r[15] = '1'                  // Length
-        r[16] = '1'                  // Width
-        r[17] = '1'                  // Height
-        // Flash_care (18) = empty → Flash default N
-        // Flash_care_plus (19) = empty → Flash default N
-        // Declared_value (20) = empty
-        // Box_shield (21) = empty
-        // Document return service (22) = empty
-        r[23] = 'Standard'           // *Product_type
-        r[24] = 'payment by sender'  // *Payment method
-        r[25] = row.billNo           // Remark
-        // 26-27: Delivery Preference notes (ว่าง)
-
-        for (let c = 1; c <= colCount; c++) {
-          const cell = excelRow.getCell(c)
-          const colStyle = colStyles[c]
-          if (colStyle) cell.style = colStyle
-          cell.value = r[c - 1]
-        }
-        excelRow.commit()
-      })
-
-      const buffer = await workbook.xlsx.writeBuffer()
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${workOrderName || 'output'}.xlsx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      await downloadFlashWaybillXlsx(rows, workOrderName || 'output')
     } catch (err: any) {
       setMessageModal({ open: true, message: 'เกิดข้อผิดพลาด Export ใบปะหน้า: ' + (err?.message ?? err) })
     } finally {

@@ -18,6 +18,34 @@ export const CHANNELS_SHOW_ORDER_NO = ['SPTR', 'FSPTR', 'TTTR', 'LZTR', 'PGTR', 
 /** ช่องทางที่ลูกค้าเข้ารับสินค้าเอง จึงไม่ใช้เลขพัสดุในขั้นตอนแพ็ค */
 export const SELF_PICKUP_CHANNELS = ['SHOPP']
 
-export function isSelfPickupChannel(channelCode: string | null | undefined): boolean {
-  return SELF_PICKUP_CHANNELS.includes(String(channelCode || '').trim().toUpperCase())
+export type SelfPickupChannelMetadata = Record<
+  string,
+  { is_self_pickup?: boolean | null } | undefined
+>
+
+export function isSelfPickupChannel(
+  channelCode: string | null | undefined,
+  channelMetadata?: SelfPickupChannelMetadata,
+): boolean {
+  const normalized = String(channelCode || '').trim().toUpperCase()
+  if (!normalized) return false
+
+  // Once channel metadata is available it is the source of truth, including
+  // the ability for an admin to turn SHOPP back into a normal shipping channel.
+  if (channelMetadata && Object.prototype.hasOwnProperty.call(channelMetadata, normalized)) {
+    return channelMetadata[normalized]?.is_self_pickup === true
+  }
+
+  // Preserve the legacy SHOPP behavior while the new migration/metadata is not
+  // available (for example during a staggered deployment).
+  return SELF_PICKUP_CHANNELS.includes(normalized)
+}
+
+export function isSelfPickupBill(
+  fulfillmentMethod: 'self_pickup' | 'shipping' | null | undefined,
+  channelCode: string | null | undefined,
+  channelMetadata?: SelfPickupChannelMetadata,
+): boolean {
+  if (fulfillmentMethod) return fulfillmentMethod === 'self_pickup'
+  return isSelfPickupChannel(channelCode, channelMetadata)
 }

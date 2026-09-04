@@ -106,13 +106,13 @@ aside > .max-h-\[570px\] {
   flex: 1 1 0%;
 }
 
-/* Evaluation belongs to its own sub-tab; keep only responsibility in Skill Matrix. */
+/* Employee Skill Matrix */
 .employee-skills-page {
   padding-bottom: 16px;
 }
 
-.employee-skills-page main > div:first-child .mt-4.grid > label:nth-child(n + 2) {
-  display: none;
+.employee-skills-page main > .overflow-hidden table thead th:nth-child(3) {
+  text-align: center;
 }
 
 /* Standard close control for every dialog/popup. */

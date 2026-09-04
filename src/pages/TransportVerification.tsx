@@ -4,9 +4,10 @@ import { Order } from '../types'
 import { useAuthContext } from '../contexts/AuthContext'
 import Modal from '../components/ui/Modal'
 
-type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null }
+type ChannelRow = { channel_code: string; channel_name: string; default_carrier?: string | null; is_self_pickup?: boolean }
 type MessageModal = { open: boolean; title: string; message: string }
-type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void }
+type ConfirmModal = { open: boolean; title: string; message: string; onConfirm: () => void; tone?: 'danger' | 'success' }
+type TransportTab = 'verification' | 'self-pickup' | 'delivery-check'
 
 const PARCEL_TYPES = ['กล่อง', 'ซองกระดาษ', 'ซองบับเบิล', 'ถุงพัสดุ'] as const
 type ParcelType = (typeof PARCEL_TYPES)[number]
@@ -33,13 +34,47 @@ function formatTime(iso?: string | null) {
   return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+function formatDateTime(iso?: string | null) {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '-'
+  return d.toLocaleString('th-TH', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return localDateISO(new Date())
+}
+
+function localDateISO(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function monthStartISO() {
+  const today = new Date()
+  return localDateISO(new Date(today.getFullYear(), today.getMonth(), 1))
+}
+
+function isInDateRange(iso: string | null | undefined, from: string, to: string) {
+  if (!iso) return false
+  const date = new Date(iso)
+  if (isNaN(date.getTime())) return false
+  const key = localDateISO(date)
+  return key >= from && key <= to
 }
 
 export default function TransportVerification() {
   const { user } = useAuthContext()
+  const [activeTab, setActiveTab] = useState<TransportTab>('verification')
   const [dateFilter, setDateFilter] = useState(todayISO())
+  const [pickupDateFrom, setPickupDateFrom] = useState(monthStartISO())
+  const [pickupDateTo, setPickupDateTo] = useState(todayISO())
   const [channels, setChannels] = useState<ChannelRow[]>([])
   const [orders, setOrders] = useState<Order[]>([])
   const [activeCarrier, setActiveCarrier] = useState<string | null>(null)
@@ -48,6 +83,8 @@ export default function TransportVerification() {
   const [statusMsg, setStatusMsg] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' })
   const [loading, setLoading] = useState(false)
   const [exportingPng, setExportingPng] = useState(false)
+  const [lastExportSize, setLastExportSize] = useState<{ width: number; height: number } | null>(null)
+  const [pickupActionId, setPickupActionId] = useState<string | null>(null)
   const [messageModal, setMessageModal] = useState<MessageModal>({ open: false, title: '', message: '' })
   const [confirmModal, setConfirmModal] = useState<ConfirmModal>({ open: false, title: '', message: '', onConfirm: () => {} })
 
@@ -67,7 +104,7 @@ export default function TransportVerification() {
 
   useEffect(() => {
     loadOrders().catch(() => null)
-  }, [dateFilter])
+  }, [dateFilter, pickupDateFrom, pickupDateTo])
 
   useEffect(() => {
     if (activeCarrier) {
@@ -78,7 +115,7 @@ export default function TransportVerification() {
   async function loadChannels() {
     const { data, error } = await supabase
       .from('channels')
-      .select('channel_code, channel_name, default_carrier')
+      .select('channel_code, channel_name, default_carrier, is_self_pickup')
     if (error) {
       console.error('loadChannels:', error)
       setChannels([])
@@ -92,12 +129,21 @@ export default function TransportVerification() {
     return (channel?.default_carrier || 'OTHER').toUpperCase()
   }
 
+  function isSelfPickupOrder(order: Order) {
+    if (order.fulfillment_method) return order.fulfillment_method === 'self_pickup'
+    return channels.some(
+      (channel) => channel.channel_code === order.channel_code && channel.is_self_pickup === true
+    )
+  }
+
   async function loadOrders() {
     setLoading(true)
     try {
-      const start = `${dateFilter}T00:00:00`
-      const end = `${dateFilter}T23:59:59.999`
-      const baseSelect = 'id,bill_no,tracking_number,customer_name,channel_code,status,shipped_time,shipped_by,claim_type,claim_details,transport_meta'
+      const start = new Date(`${dateFilter}T00:00:00`).toISOString()
+      const end = new Date(`${dateFilter}T23:59:59.999`).toISOString()
+      const pickupStart = new Date(`${pickupDateFrom}T00:00:00`).toISOString()
+      const pickupEnd = new Date(`${pickupDateTo}T23:59:59.999`).toISOString()
+      const baseSelect = 'id,bill_no,tracking_number,customer_name,channel_code,status,shipped_time,shipped_by,scheduled_pickup_at,fulfillment_method,claim_type,claim_details,transport_meta'
       const shippedRes = await supabase
         .from('or_orders')
         .select(baseSelect)
@@ -119,9 +165,27 @@ export default function TransportVerification() {
       } else {
         verifiedData = (verifiedRes.data || []) as Order[]
       }
+      const pickupScheduledRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .gte('scheduled_pickup_at', pickupStart)
+        .lte('scheduled_pickup_at', pickupEnd)
+      const pickupPackedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .gte('shipped_time', pickupStart)
+        .lte('shipped_time', pickupEnd)
+      const pickupReceivedRes = await supabase
+        .from('or_orders')
+        .select(baseSelect)
+        .filter('transport_meta->>customer_received_at', 'gte', pickupStart)
+        .filter('transport_meta->>customer_received_at', 'lte', pickupEnd)
       const merged = new Map<string, Order>()
       ;((shippedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
       verifiedData.forEach((o) => merged.set(o.id, o))
+      ;((pickupScheduledRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      ;((pickupPackedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
+      ;((pickupReceivedRes.data || []) as Order[]).forEach((o) => merged.set(o.id, o))
       setOrders(Array.from(merged.values()))
     } catch (err: any) {
       console.error('loadOrders:', err)
@@ -133,24 +197,44 @@ export default function TransportVerification() {
 
   const carriersList = useMemo(() => {
     const list = Array.from(
-      new Set(channels.map((c) => (c.default_carrier || 'OTHER').toUpperCase()))
+      new Set(
+        channels
+          .filter((c) => !c.is_self_pickup)
+          .map((c) => (c.default_carrier || 'OTHER').toUpperCase())
+          .filter((carrier) => carrier !== 'SELF' && carrier !== 'SEFL')
+      )
     ).sort()
     return list
   }, [channels])
 
   const relevantOrders = useMemo(() => {
     return orders.filter((o) => {
-      const sDate = o.shipped_time?.substring(0, 10)
-      const vDate = o.transport_meta?.verified_at?.substring(0, 10)
-      return sDate === dateFilter || vDate === dateFilter
+      if (isSelfPickupOrder(o)) return false
+      return isInDateRange(o.shipped_time, dateFilter, dateFilter)
+        || isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
     })
-  }, [orders, dateFilter])
+  }, [orders, dateFilter, channels])
+
+  const pickupOrders = useMemo(() => {
+    return orders
+      .filter((order) => isSelfPickupOrder(order))
+      .filter((order) => {
+        return isInDateRange(order.scheduled_pickup_at, pickupDateFrom, pickupDateTo)
+          || isInDateRange(order.shipped_time, pickupDateFrom, pickupDateTo)
+          || isInDateRange(order.transport_meta?.customer_received_at, pickupDateFrom, pickupDateTo)
+      })
+      .sort((a, b) => {
+        const aTime = a.scheduled_pickup_at || a.shipped_time || a.created_at
+        const bTime = b.scheduled_pickup_at || b.shipped_time || b.created_at
+        return new Date(aTime).getTime() - new Date(bTime).getTime()
+      })
+  }, [orders, pickupDateFrom, pickupDateTo, channels])
 
   const summaryData = useMemo(() => {
     const nested: Record<string, Record<string, Record<string, number>>> = {}
     relevantOrders.forEach((o) => {
-      const isTodayVer = o.transport_meta?.verified && o.transport_meta?.verified_at?.substring(0, 10) === dateFilter
-      if (!isTodayVer) return
+      const isRangeVerified = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
+      if (!isRangeVerified) return
       const carrier = getCarrierName(o.channel_code)
       const ch = (o.channel_code || 'N/A').toUpperCase()
       const pType = normalizeParcelType(o.transport_meta?.parcel_type)
@@ -171,7 +255,7 @@ export default function TransportVerification() {
     let cVer = 0
     relevantOrders.forEach((o) => {
       if (o.status === 'จัดส่งแล้ว') gTotal += 1
-      const isV = o.transport_meta?.verified && o.transport_meta?.verified_at?.substring(0, 10) === dateFilter
+      const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       if (isV) gVer += 1
       if (activeCarrier && getCarrierName(o.channel_code) === activeCarrier) {
         if (o.status === 'จัดส่งแล้ว') cTotal += 1
@@ -241,9 +325,20 @@ export default function TransportVerification() {
   async function exportSummaryPng() {
     if (!summaryRef.current) return
     setExportingPng(true)
+    let captureNode: HTMLElement | null = null
     try {
       const html2canvas = (await import('html2canvas')).default
-      const canvas = await html2canvas(summaryRef.current, { scale: 2, backgroundColor: '#ffffff' })
+      captureNode = summaryRef.current.cloneNode(true) as HTMLElement
+      captureNode.style.position = 'fixed'
+      captureNode.style.left = '-10000px'
+      captureNode.style.top = '0'
+      captureNode.style.width = '850px'
+      captureNode.style.maxWidth = '850px'
+      captureNode.style.boxSizing = 'border-box'
+      captureNode.style.zIndex = '-1'
+      document.body.appendChild(captureNode)
+      const canvas = await html2canvas(captureNode, { scale: 2, backgroundColor: '#ffffff' })
+      setLastExportSize({ width: canvas.width, height: canvas.height })
       const link = document.createElement('a')
       link.download = `สรุปยอดขนส่ง_${dateFilter}.png`
       link.href = canvas.toDataURL('image/png')
@@ -251,6 +346,7 @@ export default function TransportVerification() {
     } catch (err: any) {
       setMessageModal({ open: true, title: 'สร้างภาพไม่ได้', message: err?.message || String(err) })
     } finally {
+      captureNode?.remove()
       setExportingPng(false)
     }
   }
@@ -262,7 +358,7 @@ export default function TransportVerification() {
     }
     const rows = [['เวลาสแกน', 'เลขบิล', 'เลขพัสดุ', 'ประเภทพัสดุ', 'ชื่อลูกค้า', 'สถานะ']]
     displayOrders.forEach((o) => {
-      const isV = o.transport_meta?.verified && o.transport_meta?.verified_at?.substring(0, 10) === dateFilter
+      const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
       rows.push([
         isV ? formatTime(o.transport_meta?.verified_at) : '-',
         o.bill_no,
@@ -297,10 +393,78 @@ export default function TransportVerification() {
     })
   }
 
+  function handleCustomerReceived(order: Order) {
+    if (order.transport_meta?.customer_received) return
+    setConfirmModal({
+      open: true,
+      title: 'ยืนยันลูกค้ารับสินค้า',
+      message: `ยืนยันว่าลูกค้ารับสินค้าในบิล ${order.bill_no} แล้ว?`,
+      tone: 'success',
+      onConfirm: async () => {
+        setConfirmModal((prev) => ({ ...prev, open: false }))
+        setPickupActionId(order.id)
+        try {
+          const transportMeta = {
+            ...(order.transport_meta || {}),
+            customer_received: true,
+            customer_received_at: new Date().toISOString(),
+            customer_received_by: user?.username || user?.email || 'unknown',
+          }
+          const { error } = await supabase
+            .from('or_orders')
+            .update({ transport_meta: transportMeta })
+            .eq('id', order.id)
+          if (error) throw error
+          setOrders((previous) => previous.map((item) => (
+            item.id === order.id ? { ...item, transport_meta: transportMeta } : item
+          )))
+        } catch (error: any) {
+          setMessageModal({
+            open: true,
+            title: 'บันทึกไม่สำเร็จ',
+            message: error?.message || String(error),
+          })
+        } finally {
+          setPickupActionId(null)
+        }
+      },
+    })
+  }
+
   return (
     <div className="space-y-4">
+      <div className="bg-white border-b border-gray-200 -mx-6 px-6">
+        <nav className="flex gap-1 overflow-x-auto" aria-label="เมนูย่อยทวนสอบขนส่ง">
+          {([
+            ['verification', 'ทวนสอบขนส่ง'],
+            ['self-pickup', 'ลูกค้ารับสินค้าเอง'],
+            ['delivery-check', 'ตรวจสอบการส่ง'],
+          ] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setActiveTab(tab)}
+              className={`whitespace-nowrap border-b-2 px-5 py-3 text-sm font-semibold transition-colors ${
+                activeTab === tab
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              }`}
+            >
+              {label}
+              {tab === 'self-pickup' && pickupOrders.length > 0 && (
+                <span className="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs text-violet-700">
+                  {pickupOrders.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeTab !== 'delivery-check' && (
       <div className="sticky top-0 z-10 bg-white border-b border-surface-200 shadow-soft -mx-6 px-6">
         <div className="flex items-center justify-end py-3">
+          {activeTab === 'verification' ? (
           <div className="flex items-center gap-2">
             <span className="text-gray-500 font-semibold">วันที่:</span>
             <input
@@ -310,9 +474,41 @@ export default function TransportVerification() {
               className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
             />
           </div>
+          ) : (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-gray-500 font-semibold">ช่วงวันที่:</span>
+            <input
+              type="date"
+              value={pickupDateFrom}
+              max={pickupDateTo}
+              onChange={(e) => {
+                const value = e.target.value
+                setPickupDateFrom(value)
+                if (value > pickupDateTo) setPickupDateTo(value)
+              }}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+            <span className="text-gray-400">ถึง</span>
+            <input
+              type="date"
+              value={pickupDateTo}
+              min={pickupDateFrom}
+              max={todayISO()}
+              onChange={(e) => {
+                const value = e.target.value
+                setPickupDateTo(value)
+                if (value < pickupDateFrom) setPickupDateFrom(value)
+              }}
+              className="border border-gray-300 rounded-xl px-4 py-2 text-blue-600 font-semibold text-base focus:ring-2 focus:ring-blue-400 focus:border-blue-400 focus:outline-none"
+            />
+          </div>
+          )}
         </div>
       </div>
+      )}
 
+      {activeTab === 'verification' && (
+      <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
         <div className="bg-white rounded-xl border border-gray-200 p-4 text-center">
           <div className="flex flex-wrap justify-center gap-2 mb-3">
@@ -422,7 +618,7 @@ export default function TransportVerification() {
               </tr>
             ) : (
               displayOrders.map((o) => {
-                const isV = o.transport_meta?.verified && o.transport_meta?.verified_at?.substring(0, 10) === dateFilter
+                const isV = o.transport_meta?.verified && isInDateRange(o.transport_meta?.verified_at, dateFilter, dateFilter)
                 return (
                   <tr key={o.id} className={`border-b border-gray-200 hover:bg-blue-50 transition-colors ${isV ? 'bg-green-50' : ''}`}>
                     <td className="p-3 text-gray-500">{isV ? formatTime(o.transport_meta?.verified_at) : '-'}</td>
@@ -452,18 +648,25 @@ export default function TransportVerification() {
         </table>
       </div>
 
-      <div ref={summaryRef} className="bg-white rounded-xl border border-gray-200 p-4">
+      <div ref={summaryRef} className="w-full bg-white rounded-xl border border-gray-200 p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold">📊 สรุปยอดตามช่องทาง (เฉพาะที่สแกนแล้ว)</h3>
-          <button
-            type="button"
-            onClick={exportSummaryPng}
-            disabled={exportingPng}
-            className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            <span className="inline-flex items-center leading-none">📸</span>
-            <span className="inline-flex items-center leading-none">บันทึกเป็นภาพ (PNG)</span>
-          </button>
+          <div data-html2canvas-ignore="true" className="flex items-center gap-3">
+            <span className="text-xs font-medium text-gray-500">
+              {lastExportSize
+                ? `ขนาดภาพล่าสุด ${lastExportSize.width.toLocaleString()} × ${lastExportSize.height.toLocaleString()} px`
+                : 'ขนาดภาพกว้างประมาณ 1,700 px'}
+            </span>
+            <button
+              type="button"
+              onClick={exportSummaryPng}
+              disabled={exportingPng}
+              className="inline-flex h-9 items-center justify-center gap-1 px-4 py-0 rounded-xl text-sm font-semibold leading-none bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <span className="inline-flex items-center leading-none">📸</span>
+              <span className="inline-flex items-center leading-none">บันทึกเป็นภาพ (PNG)</span>
+            </button>
+          </div>
         </div>
         <table className="w-full text-sm [&_th]:align-middle [&_td]:align-middle [&_th]:leading-tight [&_td]:leading-tight">
           <thead>
@@ -566,6 +769,102 @@ export default function TransportVerification() {
           </tbody>
         </table>
       </div>
+      </>
+      )}
+
+      {activeTab === 'self-pickup' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+              <div className="text-sm font-semibold text-violet-700">รายการรับเองทั้งหมด</div>
+              <div className="mt-1 text-3xl font-black text-violet-800">{pickupOrders.length}</div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="text-sm font-semibold text-amber-700">รอลูกค้ารับ</div>
+              <div className="mt-1 text-3xl font-black text-amber-700">
+                {pickupOrders.filter((order) => !order.transport_meta?.customer_received).length}
+              </div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="text-sm font-semibold text-emerald-700">ลูกค้ารับแล้ว</div>
+              <div className="mt-1 text-3xl font-black text-emerald-700">
+                {pickupOrders.filter((order) => order.transport_meta?.customer_received).length}
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-sm">
+                <thead>
+                  <tr className="bg-violet-600 text-white">
+                    <th className="p-3 text-left font-semibold">เลขบิล</th>
+                    <th className="p-3 text-left font-semibold">ช่องทาง</th>
+                    <th className="p-3 text-left font-semibold">ลูกค้า</th>
+                    <th className="p-3 text-left font-semibold">เวลานัดรับ</th>
+                    <th className="p-3 text-left font-semibold">แพ็คเสร็จ</th>
+                    <th className="p-3 text-left font-semibold">เวลารับจริง</th>
+                    <th className="p-3 text-center font-semibold">สถานะ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={7} className="py-12 text-center text-gray-400">กำลังโหลดข้อมูล...</td></tr>
+                  ) : pickupOrders.length === 0 ? (
+                    <tr><td colSpan={7} className="py-12 text-center text-gray-400">ไม่พบรายการลูกค้ารับสินค้าเองในวันที่เลือก</td></tr>
+                  ) : pickupOrders.map((order) => {
+                    const received = order.transport_meta?.customer_received === true
+                    const ready = order.status === 'จัดส่งแล้ว'
+                    return (
+                      <tr key={order.id} className={`border-b border-gray-100 ${received ? 'bg-emerald-50/60' : 'hover:bg-violet-50/50'}`}>
+                        <td className="p-3 font-bold text-blue-700">{order.bill_no}</td>
+                        <td className="p-3">{order.channel_code}</td>
+                        <td className="p-3">{order.customer_name || '-'}</td>
+                        <td className="p-3 whitespace-nowrap">{formatDateTime(order.scheduled_pickup_at)}</td>
+                        <td className="p-3 whitespace-nowrap">{formatDateTime(order.shipped_time)}</td>
+                        <td className="p-3 whitespace-nowrap">
+                          {formatDateTime(order.transport_meta?.customer_received_at)}
+                          {received && order.transport_meta?.customer_received_by && (
+                            <div className="mt-0.5 text-xs text-gray-500">โดย {order.transport_meta.customer_received_by}</div>
+                          )}
+                        </td>
+                        <td className="p-3 text-center">
+                          {received ? (
+                            <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                              ✓ ลูกค้ารับแล้ว
+                            </span>
+                          ) : ready ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCustomerReceived(order)}
+                              disabled={pickupActionId === order.id}
+                              className="rounded-lg bg-emerald-600 px-4 py-2 font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {pickupActionId === order.id ? 'กำลังบันทึก...' : 'ลูกค้ารับแล้ว'}
+                            </button>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-700">
+                              รอแพ็คสินค้า
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'delivery-check' && (
+        <div className="flex min-h-[360px] flex-col items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white p-10 text-center">
+          <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-2xl">🚚</div>
+          <h2 className="text-xl font-bold text-gray-800">ตรวจสอบการส่ง</h2>
+          <p className="mt-2 text-gray-500">เมนูนี้อยู่ระหว่างรอพัฒนา</p>
+        </div>
+      )}
 
       <Modal
         open={messageModal.open}
@@ -606,7 +905,11 @@ export default function TransportVerification() {
             <button
               type="button"
               onClick={confirmModal.onConfirm}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+              className={`px-4 py-2 text-white rounded-lg ${
+                confirmModal.tone === 'success'
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'bg-red-600 hover:bg-red-700'
+              }`}
             >
               ยืนยัน
             </button>
