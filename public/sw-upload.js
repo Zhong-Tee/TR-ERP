@@ -84,6 +84,7 @@ async function reportQueueStatus(item, patch = {}) {
         folder_path: next.folderPath || null,
         work_order_name: next.workOrderName,
         tracking_number: next.trackingNumber,
+        channel_order_no: next.channelOrderNo || null,
         filename: next.filename,
         storage_path: next.storagePath,
         file_size_bytes: next.fileSize || 0,

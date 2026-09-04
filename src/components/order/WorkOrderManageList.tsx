@@ -1311,7 +1311,7 @@ export default function WorkOrderManageList({
       }
       const rows: WaybillPreviewRow[] = []
       for (const order of orders) {
-        const addressRaw = (order.customer_address || '').trim()
+        const addressRaw = (order.billing_details?.original_customer_address || order.customer_address || '').trim()
 
         // 1. ดึงเบอร์โทรออกจากข้อความ + ใช้ billing_details.mobile_phone เป็น fallback
         const { candidates: phoneCandidates, rest: textAfterPhones } = extractPhonesFromText(addressRaw)
@@ -2606,8 +2606,8 @@ export default function WorkOrderManageList({
           {/* Header */}
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-bold text-gray-900">ตรวจสอบและ Export ใบปะหน้า</h2>
-              <p className="text-sm text-gray-500 mt-0.5">
+              <h2 className="text-xl font-bold text-gray-900">ตรวจสอบและ Export ใบปะหน้า</h2>
+              <p className="text-base text-gray-500 mt-0.5">
                 ใบงาน: <span className="font-semibold text-gray-700">{waybillPreviewModal.workOrderName}</span>
                 {' '}&bull;{' '}{waybillPreviewModal.rows.length} แถว
                 {waybillPreviewModal.rows.some(isWaybillRowMissing) && (
@@ -2617,7 +2617,7 @@ export default function WorkOrderManageList({
                 )}
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 pr-10">
               <button
                 type="button"
                 onClick={exportWaybillXlsx}
@@ -2626,24 +2626,17 @@ export default function WorkOrderManageList({
               >
                 {exportLoading.open ? 'กำลัง Export...' : 'Export เป็น Excel (.xlsx)'}
               </button>
-              <button
-                type="button"
-                onClick={() => setWaybillPreviewModal({ open: false, workOrderName: null, rows: [] })}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition"
-              >
-                ปิด
-              </button>
             </div>
           </div>
 
           {/* Table */}
           <div className="overflow-auto max-h-[calc(100vh-220px)] border border-gray-200 rounded-xl">
-            <table className="w-full border-collapse text-sm">
+            <table className="w-full border-collapse text-base">
               <thead className="sticky top-0 z-10">
                 <tr>
-                  <th className="px-2 py-2.5 bg-gray-100 border-b border-gray-200 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wide w-8">#</th>
+                  <th className="px-2 py-3 bg-gray-100 border-b border-gray-200 text-left text-sm font-bold text-gray-600 uppercase tracking-wide w-8">#</th>
                   {WAYBILL_PREVIEW_COLS.map(col => (
-                    <th key={col.key} className={`px-2 py-2.5 bg-gray-100 border-b border-gray-200 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wide ${col.width}`}>
+                    <th key={col.key} className={`px-2 py-3 bg-gray-100 border-b border-gray-200 text-left text-sm font-bold text-gray-600 uppercase tracking-wide ${col.width}`}>
                       {col.label}
                       {col.required && <span className="text-red-400 ml-0.5">*</span>}
                     </th>
@@ -2657,7 +2650,7 @@ export default function WorkOrderManageList({
                   const rowBg = missing ? 'bg-red-50' : stripe
                   return (
                     <tr key={idx} className={`${rowBg} hover:bg-blue-100/40 transition-colors`}>
-                      <td className="px-2 py-1.5 border-b border-gray-100 text-gray-400 text-xs text-center tabular-nums">{idx + 1}</td>
+                      <td className="px-2 py-2 border-b border-gray-100 text-gray-500 text-sm text-center tabular-nums">{idx + 1}</td>
                       {WAYBILL_PREVIEW_COLS.map(col => {
                         const val = row[col.key as keyof WaybillPreviewRow]
                         const isEmpty = col.required && !val.trim()
@@ -2666,13 +2659,13 @@ export default function WorkOrderManageList({
                         return (
                           <td key={col.key} className={`px-1.5 py-1.5 border-b border-gray-100 align-top ${col.width}`}>
                             {isReadOnly ? (
-                              <div className="px-2 py-1.5 text-[13px] text-gray-500 whitespace-pre-line leading-relaxed max-h-32 overflow-y-auto">{val}</div>
+                              <div className="px-2 py-2 text-base text-gray-600 whitespace-pre-line leading-relaxed max-h-32 overflow-y-auto">{val}</div>
                             ) : (
                               <textarea
                                 value={val}
                                 onChange={(e) => updateWaybillPreviewRow(idx, col.key as keyof WaybillPreviewRow, e.target.value)}
                                 rows={isMultiLine ? 3 : 1}
-                                className={`w-full px-2 py-1.5 text-[13px] leading-relaxed rounded-md border resize-vertical focus:outline-none focus:ring-1 focus:ring-blue-400
+                                className={`w-full px-2 py-2 text-base leading-relaxed rounded-md border resize-vertical focus:outline-none focus:ring-1 focus:ring-blue-400
                                   ${isEmpty ? 'border-red-300 bg-red-50/50' : 'border-gray-200 bg-transparent hover:border-gray-300'}
                                 `}
                               />
@@ -2688,7 +2681,7 @@ export default function WorkOrderManageList({
           </div>
 
           {/* Footer hint */}
-          <p className="text-xs text-gray-400 mt-3 text-center">
+          <p className="text-sm text-gray-500 mt-3 text-center">
             คอลัมน์ที่มี <span className="text-red-400 font-bold">*</span> เป็นข้อมูลจำเป็น &bull;
             แก้ไขข้อมูลได้โดยคลิกที่ช่อง &bull;
             กด Export เพื่อดาวน์โหลดไฟล์ Flash Express (.xlsx)

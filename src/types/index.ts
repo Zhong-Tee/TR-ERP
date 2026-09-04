@@ -172,6 +172,8 @@ export interface BillingDetails {
   province?: string | null
   postal_code?: string | null
   mobile_phone?: string | null
+  /** ข้อความที่อยู่ตามที่ผู้ใช้กรอก/วาง ก่อน Auto Fill แยกเป็นช่องย่อย */
+  original_customer_address?: string | null
 }
 
 export interface TaxItem {

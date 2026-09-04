@@ -17,6 +17,7 @@ export interface UploadQueueItem {
   id: string
   workOrderName: string
   trackingNumber: string
+  channelOrderNo?: string | null
   orderId: string
   filename: string
   storagePath: string

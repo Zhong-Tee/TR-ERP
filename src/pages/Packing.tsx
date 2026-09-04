@@ -50,6 +50,7 @@ type OrderWithItems = Order & {
 
 type PackingItem = {
   tracking_number: string
+  channel_order_no: string | null
   express_receipt_number: string
   customer_name: string
   order_id: string
@@ -147,6 +148,7 @@ function buildPackingItemsFromOrder(
       const qcStatus = resolvePackingQcStatus(qcStatusMap, unitUid, item.item_uid)
       rows.push({
         tracking_number: order.tracking_number || '',
+        channel_order_no: order.channel_order_no || null,
         express_receipt_number: order.express_receipt_number || '',
         customer_name: order.customer_name || '',
         order_id: order.id,
@@ -252,6 +254,7 @@ type PackingUploadReportRow = {
   folder_path: string | null
   work_order_name: string
   tracking_number: string
+  channel_order_no: string | null
   filename: string
   storage_path: string
   file_size_bytes: number
@@ -1047,6 +1050,7 @@ export default function Packing() {
       folder_path: item.folderPath || folderPath || null,
       work_order_name: item.workOrderName,
       tracking_number: item.trackingNumber,
+      channel_order_no: item.channelOrderNo || null,
       filename: item.filename,
       storage_path: item.storagePath,
       file_size_bytes: Number(item.fileSize || 0),
@@ -1101,7 +1105,7 @@ export default function Packing() {
       while (true) {
         const { data, error } = await supabase
           .from('pk_packing_upload_queue_reports')
-          .select('id, user_id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
+          .select('id, user_id, recorded_by, device_id, device_name, folder_name, folder_path, work_order_name, tracking_number, channel_order_no, filename, storage_path, file_size_bytes, duration_seconds, status, retry_count, last_error, local_deleted, client_created_at, client_updated_at, uploaded_at, reported_at, quality_profile, requested_width, requested_height, requested_fps, requested_bitrate, actual_width, actual_height, actual_fps, mime_type, codec, recorder_bitrate, actual_bitrate')
           .is('dismissed_at', null)
           .order('client_created_at', { ascending: false })
           .range(from, from + UPLOAD_REPORT_FETCH_BATCH_SIZE - 1)
@@ -1691,7 +1695,7 @@ export default function Packing() {
       if (orders.length > 0) {
         const names = orders.map((wo) => wo.work_order_name)
         const workOrderIds = orders.map((wo) => wo.id)
-        const packingOrderSelect = 'id, bill_no, channel_code, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
+        const packingOrderSelect = 'id, bill_no, channel_code, channel_order_no, work_order_id, work_order_name, tracking_number, packing_meta, ship_due_at, overdue_at, urgency_label, urgency_color, shipped_time, or_order_items(id, item_uid, quantity, cancellation_stock_action)'
         const [
           { data: productionOrdersById, error: productionOrdersByIdError },
           { data: productionOrdersByName, error: productionOrdersByNameError },
@@ -2165,7 +2169,7 @@ export default function Packing() {
     try {
       const { data: order } = await supabase
         .from('or_orders')
-        .select('id')
+        .select('id, channel_order_no')
         .eq('work_order_name', workOrderName)
         .eq('tracking_number', trackingNumber)
         .limit(1)
@@ -2176,6 +2180,7 @@ export default function Packing() {
         id: crypto.randomUUID(),
         workOrderName,
         trackingNumber,
+        channelOrderNo: order?.channel_order_no || null,
         orderId: order?.id || '',
         filename: file.name,
         storagePath: `work_orders/${workOrderName}/${trackingNumber}/${file.name}`,
@@ -2775,6 +2780,7 @@ export default function Packing() {
         id: crypto.randomUUID(),
         workOrderName: currentWorkOrderName,
         trackingNumber,
+        channelOrderNo: currentGroup[0].channel_order_no,
         orderId: currentGroup[0].order_id,
         filename,
         storagePath: path,
@@ -2906,6 +2912,7 @@ export default function Packing() {
         row.folder_name,
         row.work_order_name,
         row.tracking_number,
+        row.channel_order_no,
         row.filename,
       ].some((value) => normalizeParcelScanInput(String(value || '')).toLowerCase().includes(term))
     })
@@ -3553,7 +3560,7 @@ export default function Packing() {
                         <th className="px-3 py-3 text-left">เวลาบันทึก</th>
                         <th className="px-3 py-3 text-left">User</th>
                         <th className="px-3 py-3 text-left">เครื่อง / โฟลเดอร์</th>
-                        <th className="px-3 py-3 text-left">ใบงาน / เลขพัสดุ</th>
+                        <th className="px-3 py-3 text-left">ใบงาน / เลขคำสั่งซื้อ / เลขพัสดุ</th>
                         <th className="px-3 py-3 text-right">ระยะเวลา</th>
                         <th className="px-3 py-3 text-right">ขนาดไฟล์</th>
                         <th className="px-3 py-3 text-left">ข้อมูลวิดีโอ</th>
@@ -3599,6 +3606,7 @@ export default function Packing() {
                             </td>
                             <td className="px-3 py-3">
                               <div className="font-medium">{row.work_order_name}</div>
+                              <div className="text-xs text-indigo-600">เลขคำสั่งซื้อ: {row.channel_order_no || '-'}</div>
                               <div className="text-xs text-gray-500">{formatParcelNo(row.tracking_number)}</div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">{formatDuration(row.duration_seconds)}</td>

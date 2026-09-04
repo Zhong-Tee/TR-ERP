@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
-import { buildIlikeOr } from '../../lib/searchFilter'
+import { buildIlikeOr, buildWhitespaceTolerantTrackingPattern } from '../../lib/searchFilter'
 import { fetchLatestRejectedManualSlipOrderIds, fetchLatestRejectedOverpayOrderIds } from '../../lib/rejectedOverpayRefunds'
 import { Order, OrderStatus } from '../../types'
 import { formatDateTime } from '../../lib/utils'
@@ -284,7 +284,14 @@ export default function OrderList({
       let matchingSearchOrderIds: string[] | null = null
 
       if (searchRaw) {
-        const [orderMatches, productMatches] = await Promise.all([
+        const whitespaceTolerantTrackingPattern = buildWhitespaceTolerantTrackingPattern(searchRaw)
+        const trackingMatchesPromise = whitespaceTolerantTrackingPattern
+          ? supabase
+              .from('or_orders')
+              .select('id')
+              .ilike('tracking_number', whitespaceTolerantTrackingPattern)
+          : Promise.resolve({ data: [] as { id: string }[], error: null })
+        const [orderMatches, productMatches, whitespaceTolerantTrackingMatches] = await Promise.all([
           supabase
             .from('or_orders')
             .select('id')
@@ -302,14 +309,17 @@ export default function OrderList({
             .from('or_order_items')
             .select('order_id')
             .or(buildIlikeOr(searchRaw, ['product_name'])),
+          trackingMatchesPromise,
         ])
         if (orderMatches.error) throw orderMatches.error
         if (productMatches.error) throw productMatches.error
+        if (whitespaceTolerantTrackingMatches.error) throw whitespaceTolerantTrackingMatches.error
 
         matchingSearchOrderIds = Array.from(
           new Set([
             ...(orderMatches.data || []).map((row: { id: string }) => String(row.id)),
             ...(productMatches.data || []).map((row: { order_id: string }) => String(row.order_id)),
+            ...(whitespaceTolerantTrackingMatches.data || []).map((row: { id: string }) => String(row.id)),
           ]),
         )
         if (matchingSearchOrderIds.length === 0) {

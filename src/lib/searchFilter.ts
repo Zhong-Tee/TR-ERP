@@ -22,3 +22,14 @@ export function buildIlikeOr(term: string, columns: string[]): string {
   const safe = escapeIlikeTerm(term)
   return columns.map((c) => `${c}.ilike."%${safe}%"`).join(',')
 }
+
+/**
+ * สร้าง ILIKE pattern สำหรับเลขพัสดุที่ยอมให้ข้อมูลในฐานข้อมูลมีช่องว่างคั่น
+ * เช่นคำค้น TH123456789 จะตรงกับค่า "TH 123 456 789" ด้วย
+ * จำกัดเป็นรหัส ASCII อย่างน้อย 6 ตัว เพื่อไม่ให้คำค้นชื่อทั่วไปกว้างเกินไป
+ */
+export function buildWhitespaceTolerantTrackingPattern(term: string): string | null {
+  const compact = term.replace(/\s+/g, '')
+  if (compact.length < 6 || !/^[a-z0-9-]+$/i.test(compact)) return null
+  return `%${compact.split('').join('%')}%`
+}

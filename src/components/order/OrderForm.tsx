@@ -18,6 +18,7 @@ import { countThaiBillChars } from '../../lib/thaiBillCharCount'
 import { isAdminOrSuperadmin, normalizeRole } from '../../config/accessPolicy'
 import { generateBillNo } from '../../lib/billNo'
 import { findWyProduct } from '../../lib/wyProductMatcher'
+import { calculateChargeableItemsTotal } from '../../lib/orderItemPricing'
 
 // Component for uploading slips without immediate verification
 function SlipUploadSimple({
@@ -836,6 +837,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     items_note: '',
   })
   const [autoFillAddressLoading, setAutoFillAddressLoading] = useState(false)
+  const [originalCustomerAddress, setOriginalCustomerAddress] = useState('')
   /** เบอร์โทรที่ parse ได้หลายเบอร์ (จาก Auto fill) — แสดง dropdown ให้เลือก */
   const [mobilePhoneCandidates, setMobilePhoneCandidates] = useState<string[]>([])
   /** รายการแขวง/ตำบล + เขต (จาก Auto fill) — แสดง dropdown แขวง/เขต */
@@ -847,7 +849,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
   async function handleAutoFillAddress(addressText?: string) {
     setAutoFillAddressLoading(true)
     try {
-      const parsed = await parseAddressText(addressText ?? (formData.customer_address || ''), supabase)
+      const rawAddress = String(addressText ?? formData.customer_address ?? '').trim()
+      if (rawAddress) {
+        setOriginalCustomerAddress((current) => current.trim() || rawAddress)
+      }
+      const parsed = await parseAddressText(rawAddress, supabase)
       setMobilePhoneCandidates(parsed.mobilePhoneCandidates ?? [])
       setSubDistrictOptions(parsed.subDistrictOptions ?? [])
       const channelCode = formData.channel_code
@@ -997,7 +1003,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
     loadChannelMeta()
     async function loadOrderData() {
       if (order) {
-        const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string } | undefined
+        const bd = order.billing_details as { address_line?: string; sub_district?: string; district?: string; province?: string; postal_code?: string; mobile_phone?: string; original_customer_address?: string } | undefined
         const hasAddressParts = bd?.address_line != null || bd?.sub_district != null || bd?.province != null || bd?.postal_code != null
         const customerAddress = hasAddressParts
           ? [bd?.address_line, bd?.sub_district, bd?.district, bd?.province, bd?.postal_code].filter(Boolean).join(' ')
@@ -1038,6 +1044,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           payment_date: order.payment_date || '',
           payment_time: order.payment_time || '',
         })
+        setOriginalCustomerAddress((bd?.original_customer_address || order.customer_address || '').trim())
         {
           const oc = ((order as Order).channel_code ?? '').trim()
           setRequiresConfirmDesign(
@@ -1096,6 +1103,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         }
       } else {
         setItems([{ product_type: 'ชั้น1', quantity: 1 }])
+        setOriginalCustomerAddress('')
         setUploadedSlipPaths([])
         setRequiresConfirmDesign(false)
       }
@@ -1599,12 +1607,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
 
   // คำนวณราคารวมจากรายการสินค้า
   function calculateItemsTotal() {
-    const total = items.reduce((sum, item) => {
-      const quantity = item.quantity || 1
-      const unitPrice = item.unit_price || 0
-      return sum + (quantity * unitPrice)
-    }, 0)
-    return total
+    return calculateChargeableItemsTotal(items, isCondoSubRow)
   }
 
   const isManualPriceChannel = CHANNELS_MANUAL_PRICE.includes(formData.channel_code || '')
@@ -1683,6 +1686,11 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       let changed = false
       const next = prev.map((item) => {
         if (!item.product_id) return item
+        if (isCondoSubRow(item)) {
+          if ((item.unit_price || 0) === 0) return item
+          changed = true
+          return { ...item, unit_price: 0 }
+        }
         const autoPrice = getAutoProductPrice(String(item.product_id), currentChannel)
         if ((item.unit_price || 0) === autoPrice) return item
         changed = true
@@ -1915,13 +1923,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       // คำนวณราคารวมจากรายการสินค้า หรือใช้ราคาที่กรอกเอง
       const calculatedPrice = isManualPriceChannel
         ? (formData.price || 0)
-        : itemsToSave
-            .filter(item => item.product_id)
-            .reduce((sum, item) => {
-              const quantity = item.quantity || 1
-              const unitPrice = item.unit_price || 0
-              return sum + (quantity * unitPrice)
-            }, 0)
+        : calculateChargeableItemsTotal(itemsToSave.filter(item => item.product_id), isCondoSubRow)
       
       // คำนวณยอดสุทธิ (เหมือนกับ calculateTotal)
       const discountBahtForSave = getDiscountInBaht(calculatedPrice, formData.discount, discountType)
@@ -1965,6 +1967,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         province: formData.province?.trim() || null,
         postal_code: formData.postal_code?.trim() || null,
         mobile_phone: formData.mobile_phone?.trim() || null,
+        original_customer_address: originalCustomerAddress.trim() || formData.customer_address?.trim() || null,
       }
 
       // บิลที่บันทึก "ข้อมูลครบ": ช่องทางใน CHANNELS_COMPLETE_TO_VERIFIED → สถานะ "ตรวจสอบแล้ว" โดยตรง; ช่องทางอื่นที่ไม่มี slip verification → บันทึกเป็น "ตรวจสอบแล้ว"
@@ -2034,7 +2037,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
         payment_time: paymentTime,
         status: statusToSave,
         entry_date: new Date().toISOString().slice(0, 10),
-        billing_details: (showTaxInvoice || hasAddressParts) ? billingDetails : (order?.billing_details ?? null),
+        billing_details: (showTaxInvoice || hasAddressParts || !!originalCustomerAddress.trim()) ? billingDetails : (order?.billing_details ?? null),
         scheduled_pickup_at: formData.scheduled_pickup_at?.trim() ? new Date(formData.scheduled_pickup_at.trim()).toISOString() : null,
       }
 
@@ -2104,7 +2107,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
               quantity: item.quantity || 1,
               is_detail_row: isCondoSubRow(item),
               parent_item_id: isCondoSubRow(item) ? (item.parent_item_id || null) : null,
-              unit_price: item.unit_price || 0,
+              unit_price: isCondoSubRow(item) || (item as { is_free?: boolean }).is_free ? 0 : (item.unit_price || 0),
               ink_color: item.ink_color || null,
               product_type: item.product_type || 'ชั้น1',
               cartoon_pattern: item.cartoon_pattern || null,
@@ -4219,6 +4222,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
           id: next[rowIndex].id || crypto.randomUUID(),
           is_detail_row: true,
           parent_item_id: parentId,
+          unit_price: 0,
         }
       })
       setItems(next)
@@ -4254,6 +4258,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
       product_name: product.product_name,
       product_type: layer,
       quantity: 1,
+      unit_price: 0,
       is_detail_row: true,
       parent_item_id: parentId,
     }))
@@ -5627,8 +5632,8 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                     {/* ราคา/หน่วย — ล็อกถาวร ราคามาจากระบบ (product master / ข้อมูลชำระเงิน) เท่านั้น */}
                     <input
                       type="number"
-                      value={item.unit_price ?? ''}
-                      placeholder="0.00"
+                      value={isCondoSubRow(item) ? '' : (item.unit_price ?? '')}
+                      placeholder={isCondoSubRow(item) ? '-' : '0.00'}
                       disabled
                       title="ราคา/หน่วยกำหนดโดยระบบ แก้ไขเองไม่ได้"
                       className={`w-full px-1.5 py-1 border rounded text-xs min-w-0 bg-gray-100 text-gray-500 cursor-not-allowed ${(reviewErrorFieldsByItem?.[index]?.['unit_price'] ?? (!isManualPriceChannel && reviewErrorFields?.unit_price)) ? 'ring-2 ring-red-500 border-red-500' : ''}`}
@@ -6373,7 +6378,7 @@ const OrderForm = forwardRef<OrderFormRef, OrderFormProps>(function OrderForm(
                 requireWhenEmpty('line_2', 'บรรทัด 2', !item.line_2?.trim())
                 requireWhenEmpty('line_3', 'บรรทัด 3', !item.line_3?.trim())
                 requireWhenEmpty('quantity', 'จำนวน', !item.quantity || item.quantity <= 0)
-                requireWhenEmpty('unit_price', 'ราคา/หน่วย', !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
+                requireWhenEmpty('unit_price', 'ราคา/หน่วย', !isCondoSubRow(item) && !(item as { is_free?: boolean }).is_free && (!item.unit_price || item.unit_price <= 0))
                 requireWhenEmpty('notes', 'หมายเหตุ', !item.notes?.trim())
                 requireWhenEmpty('attachment', 'ไฟล์แนบ', !item.file_attachment?.trim())
                 if (missing.length > 0) {
